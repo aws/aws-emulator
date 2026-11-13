@@ -472,7 +472,6 @@ mod cognito_post_confirmation_lambda_trigger;
 mod cognito_group_role_mapping;
 #[path = "all/cognito_sms_caller_role_trust.rs"]
 mod cognito_sms_caller_role_trust;
-// Declared beside its sibling cognito suites, at the head, for the same reason they are
 // here: whether a session already vended survives the teardown of the pool that vended it
 // spans Amazon Cognito Identity, IAM, STS, Amazon S3 and the emulator's own credential gate.
 #[path = "all/cognito_vended_session_outlives_pool_deletion.rs"]
@@ -1648,7 +1647,6 @@ mod logs_subscription_filter_to_lambda;
 // service crate's test target can see both ends of it.
 #[path = "all/cloudformation_ci_topology_runs_its_pipeline.rs"]
 mod cloudformation_ci_topology_runs_its_pipeline;
-// Declared in the appended tail, which is where every new suite inserts its lines: the
 // deploy -> read-back -> update -> delete round trip of the Amplify UI Builder entities a stack
 // declares, which spans CloudFormation (the template and the calls), AWS Amplify (the app they
 // belong to) and Amplify UI Builder (the component, the form and the theme) at once, so no
@@ -1807,10 +1805,6 @@ mod cloudformation_rest_api_token_authorizer_credentials;
 // see both ends of it.
 #[path = "all/kafka_msk_own_refusals_precede_the_subnet_lookup.rs"]
 mod kafka_msk_own_refusals_precede_the_subnet_lookup;
-#[path = "all/cloudformation_monitored_alb_search_estate.rs"]
-mod cloudformation_monitored_alb_search_estate;
-#[path = "all/cloudformation_domain_endpoint_outputs.rs"]
-mod cloudformation_domain_endpoint_outputs;
 #[path = "all/cloudfront_edge_generated_headers.rs"]
 mod cloudfront_edge_generated_headers;
 // Declared beside those two, in the same quiet span and for the same reason. This one pins
@@ -1823,7 +1817,6 @@ mod ec2_management_events;
 // no single crate's test target can make the call and then read the item it wrote.
 #[path = "all/apigateway_dynamodb_service_integration.rs"]
 mod apigateway_dynamodb_service_integration;
-// Declared in the appended tail, which is where every new suite inserts its lines: what a
 // client that dials the address an Application Load Balancer PUBLISHES is answered with when
 // the listener forwards to a `lambda` target group spans CloudFormation (which archives the
 // handler into a deployment package), IAM and STS (the execution role and its session), Amazon
@@ -1845,7 +1838,5 @@ mod logs_vended_group_lambda_subscriber_permission;
 // Declared in the appended tail, which is where every new suite inserts its lines. Both
 // suites exist under tests/all/ and had lost their declaration when two branches removed
 // the same duplicated pair, which compiles them nowhere.
-#[path = "all/cloudformation_monitored_alb_search_estate.rs"]
-mod cloudformation_monitored_alb_search_estate;
-#[path = "all/cloudformation_domain_endpoint_outputs.rs"]
-mod cloudformation_domain_endpoint_outputs;
+// (`cloudformation_monitored_alb_search_estate` and `cloudformation_domain_endpoint_outputs`
+// are declared further up this tail already: a module may be declared only once.)

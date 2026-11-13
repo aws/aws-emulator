@@ -58,6 +58,17 @@
 //! other provider is decided by the provider that issued it, which this emulator does not
 //! reach.
 //!
+//! An entry presented under this service's own provider name is honoured only as a token
+//! THIS service minted, so a value no issuance of this service resolves buys no credential,
+//! and WHICH refusal it carries follows from what the value itself claims to be: a value of
+//! this service's own token form is the unverifiable token it claims to be, while a value
+//! that claims this service as its issuer in no way — a developer user identifier, an opaque
+//! credential of some other provider, a token of another issuer's form — is no Cognito token
+//! at all, the refusal a token another identity pool minted carries as well. Every presented
+//! login is decided BEFORE the request's role-selection parameters are looked at, so a
+//! request whose login does not stand up is answered for the login, whatever else it asked
+//! for.
+//!
 //! ## Shape of an operation
 //!
 //! Each operation is a struct that owns the shared engine and implements
@@ -385,7 +396,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> GetCredentialsFor
                 // token this service cannot resolve at all, and a token minted for another
                 // identity — the token of another identity pool among them, each identity
                 // belonging to the pool that minted it — are refused rather than vended
-                // for.
+                // for. WHICH refusal such a value carries is decided by what the value
+                // itself claims to be, not by this call
+                // ([`crate::state::ComAmazonawsCognitoidentityAwscognitoidentityserviceState::refuse_presented_login_tokens`]).
                 if let Some(refusal) =
                     store.refuse_presented_login_tokens(&input.identity_id, &logins, now)
                 {
@@ -459,7 +472,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> GetCredentialsFor
             // with RoleMappings support custom role ARN"
             // ([`crate::state::custom_role_arn_is_supported`]) — so an exchange of any other
             // provider is refused the bad parameter it sent, before the roles that exchange
-            // could have resolved are considered at all.
+            // could have resolved are considered at all. The logins the exchange presents
+            // are decided BEFORE this: whether the request may name a role at all is a
+            // question about a request whose login stands up, so a login that does not is
+            // answered for the login rather than for the parameter.
             if input.custom_role_arn.is_some()
                 && !crate::state::custom_role_arn_is_supported(pool, configured, &logins)
             {

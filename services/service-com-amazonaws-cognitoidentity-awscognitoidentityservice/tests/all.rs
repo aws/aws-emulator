@@ -41,6 +41,8 @@ mod developer_identity_resolution;
 mod developer_identity_tokens;
 #[path = "all/developer_link_conflict_refusals.rs"]
 mod developer_link_conflict_refusals;
+#[path = "all/developer_login_credential_exchange.rs"]
+mod developer_login_credential_exchange;
 #[path = "all/developer_login_linking.rs"]
 mod developer_login_linking;
 #[path = "all/developer_provider_name_immutability.rs"]

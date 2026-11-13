@@ -48,9 +48,14 @@ const COGNITO_IDENTITY_PROVIDER: &str = "cognito-identity.amazonaws.com";
 /// reason. Fixed text: it carries no part taken from the request or from stored state.
 const EXPIRED_MESSAGE: &str = "Invalid login token. Token is expired.";
 
-/// The message the refusal of a token this service cannot resolve carries
-/// (`crate::state::UNVERIFIABLE_LOGIN_TOKEN_MESSAGE`).
+/// The message the refusal of a value of this service's OWN token form that it cannot
+/// resolve carries (`crate::state::UNVERIFIABLE_LOGIN_TOKEN_MESSAGE`).
 const UNVERIFIABLE_MESSAGE: &str = "Invalid login token. Couldn't verify signed token.";
+
+/// The message the refusal of a token this service cannot resolve at all carries, when the
+/// value does not even claim this service as its issuer
+/// (`crate::state::NOT_A_COGNITO_TOKEN_MESSAGE`).
+const NOT_A_COGNITO_TOKEN_MESSAGE: &str = "Invalid login token. Not a Cognito token.";
 
 /// The modelled bounds of `TokenDuration` (`long range 1..86400`,
 /// `smithy_query(query="operation",operation="GetOpenIdTokenForDeveloperIdentity")`): the
@@ -338,7 +343,10 @@ fn unsecured_jws(claims: &Value) -> String {
 
 /// RULE, the resolution half: a value presented under this service's own provider name has
 /// to be a token this service issued, so one it never issued vouches for nothing and buys
-/// no credential.
+/// no credential — and WHICH refusal it carries follows from what the value itself claims to
+/// be: a value of this service's own token form is the unverifiable token it claims to be,
+/// while a value that claims this service as its issuer in no way is no Cognito token at
+/// all.
 #[tokio::test]
 async fn a_token_this_service_never_issued_buys_no_credential() {
     let emulator = Emulator::new();
@@ -364,12 +372,17 @@ async fn a_token_this_service_never_issued_buys_no_credential() {
     // window rather than for being unknown.
     let far_future = 4_102_444_800u64;
     // The rows differ along the FORM of the value presented: none of them is a token this
-    // service minted.
-    let rows: Vec<(&str, String)> = vec![
-        ("a value that is no token at all", "not-a-token".to_string()),
+    // service minted, and the third field is the sentence that form is owed.
+    let rows: Vec<(&str, String, &str)> = vec![
+        (
+            "a value that is no token at all",
+            "not-a-token".to_string(),
+            NOT_A_COGNITO_TOKEN_MESSAGE,
+        ),
         (
             "a JWS whose payload is not a claim set",
             unsecured_jws(&json!("a string, not an object")),
+            NOT_A_COGNITO_TOKEN_MESSAGE,
         ),
         (
             "a JWS naming another issuer",
@@ -379,6 +392,7 @@ async fn a_token_this_service_never_issued_buys_no_credential() {
                 "sub": &identity_id,
                 "exp": far_future,
             })),
+            NOT_A_COGNITO_TOKEN_MESSAGE,
         ),
         (
             "a JWS of this service's own form that no mint produced",
@@ -388,12 +402,13 @@ async fn a_token_this_service_never_issued_buys_no_credential() {
                 "sub": &identity_id,
                 "exp": far_future,
             })),
+            UNVERIFIABLE_MESSAGE,
         ),
     ];
 
-    for (case, token) in rows {
+    for (case, token, owed) in rows {
         let (status, body) = exchange(&emulator, &identity_id, &token).await;
-        assert_refused(case, status, &body, UNVERIFIABLE_MESSAGE);
+        assert_refused(case, status, &body, owed);
     }
 
     // The token that WAS issued is untouched by any of it: the refusals decided on the

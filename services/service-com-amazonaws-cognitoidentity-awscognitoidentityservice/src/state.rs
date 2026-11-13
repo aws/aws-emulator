@@ -1974,16 +1974,21 @@ pub const COGNITO_IDENTITY_LOGIN_PROVIDER: &str = COGNITO_IDENTITY_PRINCIPAL;
 /// about the identity, the pool or the token it was made with.
 pub const EXPIRED_LOGIN_TOKEN_MESSAGE: &str = "Invalid login token. Token is expired.";
 
-/// How AWS words the refusal of a request presenting a token under this service's own
-/// provider name that this service cannot resolve at all: one it never issued, or one it
-/// has forgotten. Nothing in it is vouched for, so nothing in it authorizes anything.
+/// How AWS words the refusal of a request presenting, under this service's own provider
+/// name, a value of this service's OWN token form — its `iss` claim names this service —
+/// that no issuance of this service resolves: one it never issued, one whose claims were
+/// tampered with, or one it has forgotten. The value claims to carry a signature of this
+/// service, and nothing here vouches for it, so nothing in it authorizes anything.
 pub const UNVERIFIABLE_LOGIN_TOKEN_MESSAGE: &str =
     "Invalid login token. Couldn't verify signed token.";
 
-/// How AWS words the refusal of a token presented under this service's own provider name
-/// that is a token of ANOTHER identity pool: the token is read against the pool that owns
-/// the identity the call names — each identity belongs to the pool that minted it — and a
-/// token some other pool minted is no Cognito token of this one, whatever it claims.
+/// How AWS words the refusal of a value presented under this service's own provider name
+/// that is no Cognito token of the pool the call addresses AT ALL: a value that does not even
+/// claim this service as its issuer — an opaque credential of some other provider, a
+/// developer user identifier, a token of another issuer's form — and a token ANOTHER identity
+/// pool minted, read against the pool that owns the identity the call names, each identity
+/// belonging to the pool that minted it, so a token some other pool minted is no Cognito
+/// token of this one whatever it claims.
 ///
 /// Fixed text with no request- or state-derived part, as the other refusals of a presented
 /// token are: the caller of a credential exchange holds no credential yet, so the refusal
@@ -1995,8 +2000,13 @@ pub const NOT_A_COGNITO_TOKEN_MESSAGE: &str = "Invalid login token. Not a Cognit
 pub enum LoginTokenRefusal {
     /// The validity window the issuance recorded has closed.
     Expired,
-    /// This service holds no issuance for the token.
+    /// The value carries this service's OWN issuer and no issuance of this service resolves
+    /// it: a token of this service's form whose signature nothing here can vouch for.
     Unverifiable,
+    /// The value is no token of this service AT ALL — it does not even claim this service as
+    /// its issuer — so nothing about it is a Cognito token: an opaque credential of some
+    /// other provider, a developer user identifier, a token of another issuer's form.
+    NotACognitoToken,
     /// The issuance was made by ANOTHER identity pool than the one that owns the identity
     /// the request was made for, so the token is no token of that pool at all — which is
     /// what keeps a token one identity pool minted out of another pool's identities.
@@ -2012,9 +2022,38 @@ impl LoginTokenRefusal {
         match self {
             Self::Expired => EXPIRED_LOGIN_TOKEN_MESSAGE,
             Self::Unverifiable => UNVERIFIABLE_LOGIN_TOKEN_MESSAGE,
+            Self::NotACognitoToken => NOT_A_COGNITO_TOKEN_MESSAGE,
             Self::AnotherPool => NOT_A_COGNITO_TOKEN_MESSAGE,
             Self::AnotherIdentity => UNMATCHED_LOGINS_MESSAGE,
         }
+    }
+}
+
+/// Which refusal a value presented under this service's own provider name that NO issuance
+/// of this service resolves carries, read from the value ITSELF.
+///
+/// The two refusals AWS words for such a value say different things about it, and which one
+/// is owed follows from what the value claims to be. A value whose own `iss` claim names
+/// THIS service ([`names_the_same_issuer`], the comparison every presented token's issuer is
+/// made with) claims to be a token this service signed, so what is wrong with it is that
+/// nothing here vouches for that signature ([`UNVERIFIABLE_LOGIN_TOKEN_MESSAGE`]). A value
+/// that claims no such thing — an opaque credential of some other provider, a developer user
+/// identifier, a token some other issuer's claim set names — is not a Cognito token in the
+/// first place ([`NOT_A_COGNITO_TOKEN_MESSAGE`]), which is the refusal a token this pool
+/// never minted carries.
+///
+/// The claim set is read through [`::service_common::jwt::read_unsecured`], the reading that
+/// leaves the signature judgement out: the issuer a value CLAIMS is what is being read here,
+/// and this service's own tokens are read the same way everywhere else.
+fn unresolved_login_token_refusal(token: &str) -> LoginTokenRefusal {
+    let claimed_issuer = ::service_common::jwt::read_unsecured(token)
+        .ok()
+        .and_then(|read| read.claim_str(ISSUER_CLAIM).map(ToString::to_string));
+    match claimed_issuer {
+        Some(issuer) if names_the_same_issuer(COGNITO_IDENTITY_LOGIN_PROVIDER, &issuer) => {
+            LoginTokenRefusal::Unverifiable
+        }
+        _ => LoginTokenRefusal::NotACognitoToken,
     }
 }
 
@@ -2506,6 +2545,12 @@ impl ComAmazonawsCognitoidentityAwscognitoidentityserviceState {
     /// this pool at all ([`LoginTokenRefusal::AnotherPool`]), which is the refusal that keeps
     /// one pool's tokens out of another pool's identities.
     ///
+    /// Which refusal a value NO issuance of this service resolves carries is decided by what
+    /// that value itself claims to be ([`unresolved_login_token_refusal`]): a value of this
+    /// service's own token form is the unverifiable token it claims to be, while a value that
+    /// claims this service as its issuer in no way is no Cognito token at all — the refusal a
+    /// token this pool never minted carries.
+    ///
     /// A map presenting no token of this service's is decided by the providers that issued
     /// its tokens, which this emulator does not reach, so it is not refused here.
     pub fn refuse_presented_login_tokens(
@@ -2515,7 +2560,21 @@ impl ComAmazonawsCognitoidentityAwscognitoidentityserviceState {
         now: SystemTime,
     ) -> Option<LoginTokenRefusal> {
         let token = logins.get(COGNITO_IDENTITY_LOGIN_PROVIDER)?;
+        self.refuse_presented_token(identity_id, token, now)
+    }
+
+    /// Why ONE presented value that has to be a token of this service buys the identity
+    /// `identity_id` nothing, if so.
+    fn refuse_presented_token(
+        &self,
+        identity_id: &str,
+        token: &str,
+        now: SystemTime,
+    ) -> Option<LoginTokenRefusal> {
         let issued = match self.resolve_login_token(token, now) {
+            Err(LoginTokenRefusal::Unverifiable) => {
+                return Some(unresolved_login_token_refusal(token))
+            }
             Err(refusal) => return Some(refusal),
             Ok(issued) => issued,
         };
