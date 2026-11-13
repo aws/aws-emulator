@@ -270,21 +270,29 @@ pub const CROSS_ACCOUNT_PASS_ROLE_DENIED: &str = "Cross-account pass role is not
 ///   naming no account names no other one. The pattern itself is refused by the constraint
 ///   walk ahead of this gate, so a value that reaches here and reads as no role of this
 ///   account is one whose embedded 12-digit account is another's;
-/// * the TRUST the role of this account carries. Amazon Bedrock takes the role on to write
+/// * the TRUST the role of this account carries, where this account's IAM HOLDS that role.
+///   Amazon Bedrock takes the role on to write
 ///   into the log group beside it, which it can do only where that role's trust policy
 ///   admits [`BEDROCK_SERVICE_PRINCIPAL`] the `sts:AssumeRole` such a hand-off is
-///   ([`::service_common::iam_role::role_is_unassumable`], the tree's one reading of a
-///   caller-supplied role against this account's IAM). This call STORES a trust
+///   ([`::service_common::iam_role::held_role_is_unassumable`], the reading that judges a
+///   caller-supplied role IAM ANSWERED about and stays silent about a role it holds nothing
+///   under). This call STORES a trust
 ///   relationship for every later invocation to be logged under rather than authorizing one
 ///   named assume, so the trust is validated as a relationship: a statement's `Condition`
 ///   narrows which assumes it covers, not whether the role trusts the service, and the
 ///   confused-deputy clauses AWS documents on a logging role are over keys a single
 ///   invocation carries rather than values of this request.
 ///
+/// A role this account's IAM holds NOTHING under is not judged here at all: it is a
+/// destination that does not resolve, which this operation answers before this decision is
+/// taken and with a different modelled error
+/// ([`super::unvalidated_cloud_watch_destination`]), so the denial below is reserved for a
+/// role that DOES resolve and still may not be handed over.
+///
 /// Refused only on what this account's IAM ANSWERED: a document it holds for the calling
 /// principal that does not allow the `iam:PassRole` of that role, or an answer about the
-/// role itself — it holds no such role, or the trust document it reported withholds the
-/// grant. An emulator with no IAM to ask, a caller it holds no policies for, or an answer
+/// role itself — the trust document it reported withholds the grant. An emulator with no IAM
+/// to ask, a caller it holds no policies for, a role it holds nothing under, or an answer
 /// that could not be read, leaves the pass admitted, because a refusal has to be grounded.
 ///
 /// A denied pass is [`CROSS_ACCOUNT_PASS_ROLE_DENIED`] in the modelled
@@ -304,7 +312,7 @@ pub async fn pass_role_denial<Eng: Send + Sync + 'static>(
     if crate::service::authorization::pass_role_is_withheld(engine, ctx, role_arn) {
         return Some(CROSS_ACCOUNT_PASS_ROLE_DENIED.to_string());
     }
-    ::service_common::iam_role::role_is_unassumable(
+    ::service_common::iam_role::held_role_is_unassumable(
         ctx,
         region,
         role_arn,

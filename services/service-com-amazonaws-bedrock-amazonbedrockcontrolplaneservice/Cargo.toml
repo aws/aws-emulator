@@ -56,6 +56,9 @@ emulator-core-build-support = { workspace = true }
 # records back into it, which is asserted end to end by staging the input through S3 and
 # fetching the output back through it.
 service-com-amazonaws-s3-amazons3 = { workspace = true }
+# The CloudWatch Logs emulator, mounted beside this service so the log group a model
+# invocation logging destination names is resolved against the service that OWNS it.
+service-com-amazonaws-cloudwatchlogs-logs-20140328 = { workspace = true }
 # The execution suite waits out the clock-owed span after which a submitted job has begun.
 tokio = { workspace = true, features = ["time"] }
 

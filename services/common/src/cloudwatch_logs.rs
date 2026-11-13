@@ -18,17 +18,23 @@
 //! the envelope its own API refuses with (the status, the error shape and which member the
 //! refusal is keyed by).
 //!
-//! Beside the NAME, this module holds the two things a service that WRITES into a group
+//! Beside the NAME, this module holds the three things a service that WRITES into a group
 //! needs: the reading of a log group's own ARN, which is how a caller names the destination
-//! it is pointing a service at ([`log_group_of_arn`]), and the vended-logs write itself
-//! ([`delivered`]) — the one path a service delivering records on the account's behalf puts
-//! them in the group through.
+//! it is pointing a service at ([`log_group_of_arn`]), whether CloudWatch Logs holds the
+//! group a destination names at all ([`log_group_is_absent`]), and the vended-logs write
+//! itself ([`delivered`]) — the one path a service delivering records on the account's
+//! behalf puts them in the group through.
 //!
 //! `service-com-amazonaws-mediapackage-mediapackage` still carries its own copy of this
 //! reading (`state::is_log_group_name`), inlined before this module existed and pinned by
 //! that service's own refusal suite; it is to be MIGRATED onto this one rather than copied
-//! again, exactly as the claim-rule copies this crate lists are. Nothing new should restate
-//! the rule — call this module.
+//! again, exactly as the claim-rule copies this crate lists are. The same holds for the two
+//! copies of the EXISTENCE reading [`log_group_is_absent`] now states: `log_group_is_absent`
+//! in `service-com-amazonaws-ivschat-amazoninteractivevideoservicechat/src/state/log_destinations.rs`
+//! and the variant in
+//! `service-com-amazonaws-cognitoidentityprovider-awscognitoidentityproviderservice/src/ops/set_log_delivery_configuration/log_destinations.rs`,
+//! each to be migrated in the change that owns its service. Nothing new should restate any of
+//! it — call this module.
 
 /// The shortest log group name CloudWatch Logs holds — so the empty string names no group.
 pub const MIN_LOG_GROUP_NAME_CHARS: usize = 1;
@@ -128,6 +134,53 @@ pub fn log_group_of_arn(arn: &str) -> Option<&str> {
         .strip_suffix(EVERYTHING_UNDER_THE_GROUP)
         .unwrap_or(resource);
     is_log_group_name(name).then_some(name)
+}
+
+/// Whether CloudWatch Logs ANSWERED that `region` holds no log group under `name`.
+///
+/// A service POINTED at a log group it is to deliver into has to resolve that group where
+/// CloudWatch Logs holds it before it stores the destination, or it leaves an operator
+/// believing a trail exists where no record is ever written. The question is put with
+/// `DescribeLogGroups`, whose `logGroupIdentifiers` names groups "by name or ARN": an answer
+/// carrying no group of exactly that name is CloudWatch Logs saying the group is not there.
+///
+/// `false` — establish nothing — for every answer that is NOT that one: an emulator
+/// assembled with no CloudWatch Logs to ask, and an answer that could not be read. A
+/// refusal has to be grounded in what the owning service said, which is the rule every
+/// cross-service pre-condition in this tree follows.
+///
+/// The hop is the in-process callback into this same emulator ([`logs_client`]), so nothing
+/// here opens a socket or leaves the process. Call it with NO state guard held — it awaits.
+pub async fn log_group_is_absent(
+    ctx: &::smithy_server_runtime::OperationContext<'_>,
+    region: &str,
+    name: &str,
+) -> bool {
+    match logs_client(ctx.callback(), region)
+        .describe_log_groups()
+        .log_group_identifiers(name)
+        .send()
+        .await
+    {
+        Ok(answer) => !answer
+            .log_groups()
+            .iter()
+            .any(|group| group.log_group_name() == Some(name)),
+        Err(error) => {
+            // Not CloudWatch Logs reporting what it holds, so this establishes nothing about
+            // the group — and it is worth a warning, because an emulator with no CloudWatch
+            // Logs mounted to ask is one where the pre-condition cannot be decided. The
+            // caller's own value is rendered in its escaped `Debug` form, so a name carrying
+            // a newline cannot forge a log line.
+            ::tracing::warn!(
+                log_group = ?name,
+                detail = %::aws_smithy_types::error::display::DisplayErrorContext(&error),
+                "the log group a destination names could not be resolved in this emulator's \
+                 CloudWatch Logs"
+            );
+            false
+        }
+    }
 }
 
 /// Write one log event per entry of `records` into `log_group`, in the stream `log_stream`.

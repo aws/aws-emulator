@@ -18,9 +18,18 @@
 //! validation walk BEFORE this handler runs, so a request that reaches here carries a
 //! well-formed configuration.
 //!
-//! A well-formed configuration is still not an installable one. A destination that names
-//! a role the CALLER supplied can only be installed by passing Amazon Bedrock that role,
-//! and [`crate::state::pass_role_denial`] takes that decision — for the CloudWatch Logs
+//! A well-formed configuration is still not an installable one. A destination has to RESOLVE
+//! where the service that owns it holds it: the CloudWatch Logs destination names the group
+//! the records are written into and the role they are written under, and Amazon Bedrock
+//! validates the delivery permissions that pair describes before it enables the destination,
+//! so a group CloudWatch Logs reports it does not hold or a role this account's IAM reports
+//! it holds nothing under is refused with the modelled `ValidationException` (HTTP 400)
+//! stating the submitted pair back, with nothing stored
+//! ([`crate::state::unvalidated_cloud_watch_destination`]).
+//!
+//! A destination that names a role the CALLER supplied can only be installed by passing
+//! Amazon Bedrock that role, and [`crate::state::pass_role_denial`] takes that decision —
+//! for the CloudWatch Logs
 //! destination, the one whose `roleArn` is `@required` — BEFORE anything is stored. That
 //! decision is taken over the SUBMITTED value: the account's pass-role boundary over that
 //! role has to allow the CALLING principal the `iam:PassRole` the hand-off is, the role has
@@ -148,8 +157,27 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // The region the request was signed for, which is where the role a destination
         // names is resolved against this account's IAM.
         let region = crate::state::request_region(ctx.parts());
-        // The PassRole step first, ahead of the store: a destination whose role may not be
-        // passed to Amazon Bedrock is refused, and a refused put installs nothing.
+        // The destination is RESOLVED first: Amazon Bedrock validates the delivery
+        // permissions a CloudWatch Logs destination describes before it enables it, and
+        // neither half of that pair can be validated while the service that owns it reports
+        // the resource absent — so such a configuration is refused as input, with the
+        // submitted pair stated back ([`crate::state::unvalidated_cloud_watch_destination`]).
+        if let Some(refusal) =
+            crate::state::unvalidated_cloud_watch_destination(ctx, &region, &input.logging_config)
+                .await
+        {
+            return Err(
+                PutModelInvocationLoggingConfigurationErrorModeled::ValidationException(
+                    ValidationException {
+                        message: Some(refusal),
+                    },
+                )
+                .into(),
+            );
+        }
+        // Then the PassRole step, still ahead of the store: a destination whose role DOES
+        // resolve and may not be passed to Amazon Bedrock is refused, and a refused put
+        // installs nothing.
         if let Some(denial) =
             crate::state::pass_role_denial(&*self.engine, ctx, &region, &input.logging_config)
                 .await
@@ -163,7 +191,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 .into(),
             );
         }
-        // Then the destinations themselves: delivery is regional, so a bucket outside this
+        // Then the object destinations: delivery is regional, so a bucket outside this
         // Region is not a destination this configuration could be served from and the
         // configuration is refused as input rather than installed
         // ([`crate::state::logging_destination`]).

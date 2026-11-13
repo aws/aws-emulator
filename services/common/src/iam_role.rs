@@ -295,6 +295,32 @@ pub async fn held_role_is_unassumable(
     }
 }
 
+/// Whether IAM ANSWERED that this account holds no role under the name `role_arn` carries.
+///
+/// The EXISTENCE half of the question the readings above answer, on its own: a service that
+/// has to tell a value naming no role of this account apart from one naming a role it may
+/// not be given — because its API answers the two with different modelled errors — asks this
+/// first and takes the other reading afterwards.
+///
+/// `false` — establish nothing — for every answer that is NOT IAM reporting the role absent:
+/// a value that names no role of THIS account (another account's IAM is not this emulator's
+/// to ask, and whether such a value may be passed at all is the pass-role question), an
+/// answer this emulator could not read, and an emulator with no IAM mounted to ask. A
+/// refusal has to be grounded in what IAM said.
+pub async fn role_is_absent(
+    ctx: &smithy_server_runtime::OperationContext<'_>,
+    region: &str,
+    role_arn: &str,
+) -> bool {
+    let Some(role_name) = role_name(role_arn) else {
+        return false;
+    };
+    matches!(
+        role_answer(ctx.callback(), region, role_name).await,
+        RoleAnswer::Absent
+    )
+}
+
 /// Whether the trust document IAM reported for a role it HOLDS withholds `service_principal`:
 /// the ONE reading of a stored trust document both readings above take, so a role IAM
 /// answered about is judged the same way whichever of them asked.

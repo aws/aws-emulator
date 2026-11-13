@@ -537,6 +537,32 @@ pub fn emulator_with_inference() -> Emulator {
     Emulator { router, engine }
 }
 
+/// The same emulator with CloudWatch Logs and IAM mounted beside this control plane on the
+/// one shared engine, exactly as `core/router` assembles them.
+///
+/// The form a suite drives when its rule spans this service and the services that OWN the
+/// resources a request names — the log group a model invocation logging destination writes
+/// into, the role it writes under — so the question this control plane puts over its
+/// in-process callback reaches those very stores. Requests to the other two go through
+/// [`Emulator::call_awsjson`] (CloudWatch Logs) and [`Emulator::engine`] (the IAM records a
+/// suite seeds).
+pub fn emulator_with_logs_and_iam() -> Emulator {
+    let engine: Arc<engine::InMemoryEngine> = Arc::new(engine::InMemoryEngine::new());
+    let mut router = smithy_server_runtime::MultiServiceRouter::new();
+    router.register_service(bedrock::EmulatedService::new(Arc::clone(&engine)));
+    router.register_service(
+        ::service_com_amazonaws_cloudwatchlogs_logs_20140328::EmulatedService::new(Arc::clone(
+            &engine,
+        )),
+    );
+    router.register_service(
+        ::service_com_amazonaws_iam_awsidentitymanagementv20100508::EmulatedService::new(
+            Arc::clone(&engine),
+        ),
+    );
+    Emulator { router, engine }
+}
+
 impl Emulator {
     /// One request signed for [`REGION`], the region these suites address.
     pub async fn call(&self, method: &str, path: &str, body: Option<Value>) -> Reply {
@@ -597,34 +623,75 @@ impl Emulator {
             .expect("a well-formed request");
 
         let response = self.router.dispatch(request).await;
-        let status = response.status().as_u16();
-        let content_type = response
-            .headers()
-            .get("content-type")
-            .and_then(|value| value.to_str().ok())
-            .map(str::to_string);
-        let header_error = response
-            .headers()
-            .get("x-amzn-errortype")
-            .and_then(|value| value.to_str().ok())
-            .map(|value| error_code(value).to_string());
-        let body: Value = if response.body().is_empty() {
-            Value::Null
-        } else {
-            serde_json::from_slice(response.body()).unwrap_or(Value::Null)
-        };
-        let error = header_error.or_else(|| {
-            body.get("__type")
-                .and_then(Value::as_str)
-                .map(|value| error_code(value).to_string())
-        });
-        Reply {
-            status,
-            content_type,
-            body,
-            error,
-        }
+        reply_of(response)
     }
+
+    /// One awsJson1.1 call to ANOTHER emulated service mounted beside this one — `POST /`
+    /// with `target` in `x-amz-target`, which is how an RPC-protocol service addresses its
+    /// operation.
+    ///
+    /// The form a suite drives to stage a resource in the service that OWNS it, so what this
+    /// control plane then resolves over its in-process callback is a resource that service
+    /// really holds. `signing_name` travels in the SigV4 credential scope, which is what
+    /// routes the request to that service.
+    pub async fn call_awsjson(&self, signing_name: &str, target: &str, body: Value) -> Reply {
+        let request = http::Request::builder()
+            .method("POST")
+            .uri("/")
+            .header("content-type", "application/x-amz-json-1.1")
+            .header("x-amz-target", target)
+            .header(
+                "authorization",
+                format!(
+                    "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20260101/{REGION}/{signing_name}/\
+                     aws4_request, SignedHeaders=host, Signature=00"
+                ),
+            )
+            .body(bytes::Bytes::from(
+                serde_json::to_vec(&body).expect("a serializable request body"),
+            ))
+            .expect("a well-formed request");
+        reply_of(self.router.dispatch(request).await)
+    }
+}
+
+/// One emulator answer, read off the HTTP response: the status, the `content-type`, the
+/// parsed body and the wire error code, wherever the protocol put it (`x-amzn-errortype`, or
+/// the body's `__type`).
+///
+/// One reading for every call above, so a suite driving this service and a suite driving a
+/// service mounted beside it decode an answer the same way.
+fn reply_of(response: http::Response<bytes::Bytes>) -> Reply {
+    let status = response.status().as_u16();
+    let content_type = response
+        .headers()
+        .get("content-type")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+    let header_error = response
+        .headers()
+        .get("x-amzn-errortype")
+        .and_then(|value| value.to_str().ok())
+        .map(|value| error_code(value).to_string());
+    let body: Value = if response.body().is_empty() {
+        Value::Null
+    } else {
+        serde_json::from_slice(response.body()).unwrap_or(Value::Null)
+    };
+    let error = header_error.or_else(|| {
+        body.get("__type")
+            .and_then(Value::as_str)
+            .map(|value| error_code(value).to_string())
+    });
+    Reply {
+        status,
+        content_type,
+        body,
+        error,
+    }
+}
+
+impl Emulator {
 
     pub async fn create(&self, body: Value) -> Reply {
         self.call("POST", "/guardrails", Some(body)).await

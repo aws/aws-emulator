@@ -15,6 +15,13 @@
 //! the modelled `AccessDeniedException` (HTTP 403) and installs NOTHING, so the
 //! configuration in force is left exactly as it was.
 //!
+//! A role this account's IAM holds NOTHING under is a different answer, and this suite pins
+//! it too: such a destination does not RESOLVE, so the delivery permissions it describes
+//! cannot be validated at all and it is refused with the modelled `ValidationException`
+//! (HTTP 400) naming the submitted log group and role, ahead of the pass-role decision — the
+//! whole table of that rule lives in the service crate's
+//! `tests/all/model_invocation_logging_destination_validation.rs`.
+//!
 //! The put stores a trust RELATIONSHIP for every later invocation to be logged under rather
 //! than authorizing one named assume, so the trust is validated as a relationship: a
 //! statement's `Condition` narrows which assumes the grant covers, not whether the role
@@ -54,6 +61,16 @@ const ACCOUNT: &str = "000000000000";
 /// The sentence Amazon Bedrock states a denied pass-role with, spelled here so this suite
 /// pins the wording a client sees rather than reading it off the service.
 const PASS_ROLE_REFUSAL: &str = "Cross-account pass role is not allowed.";
+
+/// What Amazon Bedrock states for a destination whose delivery permissions it could not
+/// validate — here, a role this account's IAM holds nothing under: the fixed text, with the
+/// log group and the role the request SUBMITTED.
+fn unvalidated_destination(log_group: &str, role_arn: &str) -> String {
+    format!(
+        "Failed to validate permissions for log group: {log_group}, with role: {role_arn}. \
+         Verify the IAM role permissions are correct."
+    )
+}
 
 /// The URI `PutModelInvocationLoggingConfiguration`,
 /// `GetModelInvocationLoggingConfiguration` and
@@ -284,11 +301,23 @@ fn role_fixtures() -> Vec<RoleFixture> {
     ]
 }
 
-/// One row: the configuration a put carries, and whether the pass it makes is admitted.
+/// One row: the configuration a put carries, and the answer the decision gives it.
 struct Row {
     case: &'static str,
     logging_config: Value,
-    admitted: bool,
+    expected: Answer,
+}
+
+/// What a row expects the put to answer.
+#[derive(Debug, PartialEq, Eq)]
+enum Answer {
+    /// 200, and the configuration is the one in force afterwards.
+    Installed,
+    /// 403 `AccessDeniedException`: the pass this account may not make.
+    PassRoleDenied,
+    /// 400 `ValidationException`: the destination does not resolve, so the permissions it
+    /// describes cannot be validated.
+    Unvalidated,
 }
 
 /// A CloudWatch Logs destination naming `role`, under a log group named for `stem` so each
@@ -308,22 +337,22 @@ fn rows() -> Vec<Row> {
         Row {
             case: "a role this account holds that grants the assume",
             logging_config: cloud_watch_config("trusted", role_arn("logging-role")),
-            admitted: true,
+            expected: Answer::Installed,
         },
         Row {
             case: "a role that trusts another service only",
             logging_config: cloud_watch_config("lambda-role", role_arn("lambda-only-role")),
-            admitted: false,
+            expected: Answer::PassRoleDenied,
         },
         Row {
             case: "a trust policy whose Action and Service are lists",
             logging_config: cloud_watch_config("trusted-lists", role_arn("logging-role-lists")),
-            admitted: true,
+            expected: Answer::Installed,
         },
         Row {
             case: "a role whose statement names another action",
             logging_config: cloud_watch_config("other-action", role_arn("other-action-role")),
-            admitted: false,
+            expected: Answer::PassRoleDenied,
         },
         Row {
             case: "a trust policy granting the whole sts namespace",
@@ -331,12 +360,12 @@ fn rows() -> Vec<Row> {
                 "trusted-wildcard",
                 role_arn("logging-role-wildcard"),
             ),
-            admitted: true,
+            expected: Answer::Installed,
         },
         Row {
             case: "a role whose statement denies the assume",
             logging_config: cloud_watch_config("denied-role", role_arn("denied-role")),
-            admitted: false,
+            expected: Answer::PassRoleDenied,
         },
         Row {
             case: "a role under a path",
@@ -344,7 +373,7 @@ fn rows() -> Vec<Row> {
                 "trusted-path",
                 format!("arn:aws:iam::{ACCOUNT}:role/service-role/logging-role-path"),
             ),
-            admitted: true,
+            expected: Answer::Installed,
         },
         Row {
             case: "a role that both grants and explicitly denies the assume",
@@ -352,7 +381,7 @@ fn rows() -> Vec<Row> {
                 "allow-then-deny",
                 role_arn("allow-then-deny-role"),
             ),
-            admitted: false,
+            expected: Answer::PassRoleDenied,
         },
         Row {
             // The grant is narrowed to the assumes a logged invocation makes; the role
@@ -362,7 +391,7 @@ fn rows() -> Vec<Row> {
                 "trusted-conditioned",
                 role_arn("logging-role-conditioned"),
             ),
-            admitted: true,
+            expected: Answer::Installed,
         },
         Row {
             case: "a role whose trust policy grants an account principal rather than a \
@@ -371,7 +400,7 @@ fn rows() -> Vec<Row> {
                 "account-principal",
                 role_arn("account-principal-role"),
             ),
-            admitted: false,
+            expected: Answer::PassRoleDenied,
         },
         Row {
             // The member's published pattern admits an EMPTY account field, which names no
@@ -381,12 +410,12 @@ fn rows() -> Vec<Row> {
                 "no-account",
                 "arn:aws:iam:::role/logging-role".to_string(),
             ),
-            admitted: true,
+            expected: Answer::Installed,
         },
         Row {
             case: "a role this account was never given",
             logging_config: cloud_watch_config("absent-role", role_arn("never-created-role")),
-            admitted: false,
+            expected: Answer::Unvalidated,
         },
         Row {
             // An IAM ARN is partition-global and the account is this one, so the role it
@@ -396,7 +425,7 @@ fn rows() -> Vec<Row> {
                 "other-partition",
                 format!("arn:aws-cn:iam::{ACCOUNT}:role/logging-role"),
             ),
-            admitted: true,
+            expected: Answer::Installed,
         },
         Row {
             // `iam:PassRole` is granted by the account that HOLDS the role, so another
@@ -407,7 +436,7 @@ fn rows() -> Vec<Row> {
                 "foreign-role",
                 "arn:aws:iam::123456789012:role/logging-role".to_string(),
             ),
-            admitted: false,
+            expected: Answer::PassRoleDenied,
         },
         Row {
             // `S3Config` declares no role member at all, so this configuration passes no
@@ -417,7 +446,7 @@ fn rows() -> Vec<Row> {
                 "s3Config": { "bucketName": "bedrock-invocation-logs", "keyPrefix": "prod/" },
                 "imageDataDeliveryEnabled": true,
             }),
-            admitted: true,
+            expected: Answer::Installed,
         },
     ]
 }
@@ -476,26 +505,46 @@ async fn invocation_logging_is_installed_only_for_a_role_iam_lets_bedrock_assume
         )
         .await;
 
-        if row.admitted {
-            // `PutModelInvocationLoggingConfigurationOutput` declares no members, so the
-            // answer carries nothing beyond the 200.
-            let members = body.as_object().map(serde_json::Map::len).unwrap_or(0);
-            assert_eq!(
-                (status, error.as_str(), members),
-                (200, "", 0),
-                "case {:?}: an admitted pass must answer 200 with no members, got {status} \
-                 {error} ({body})",
-                row.case
-            );
-            in_force = row.logging_config.clone();
-        } else {
-            assert_eq!(
-                (status, error.as_str(), text(&body, "message").as_str()),
-                (403, "AccessDeniedException", PASS_ROLE_REFUSAL),
-                "case {:?}: a pass IAM does not authorize must be refused 403 \
-                 AccessDeniedException, got {status} {error} ({body})",
-                row.case
-            );
+        match row.expected {
+            Answer::Installed => {
+                // `PutModelInvocationLoggingConfigurationOutput` declares no members, so the
+                // answer carries nothing beyond the 200.
+                let members = body.as_object().map(serde_json::Map::len).unwrap_or(0);
+                assert_eq!(
+                    (status, error.as_str(), members),
+                    (200, "", 0),
+                    "case {:?}: an admitted pass must answer 200 with no members, got {status} \
+                     {error} ({body})",
+                    row.case
+                );
+                in_force = row.logging_config.clone();
+            }
+            Answer::PassRoleDenied => {
+                assert_eq!(
+                    (status, error.as_str(), text(&body, "message").as_str()),
+                    (403, "AccessDeniedException", PASS_ROLE_REFUSAL),
+                    "case {:?}: a pass IAM does not authorize must be refused 403 \
+                     AccessDeniedException, got {status} {error} ({body})",
+                    row.case
+                );
+            }
+            Answer::Unvalidated => {
+                // The message is composed from the values THIS row submitted, so a refusal
+                // naming anything else fails here.
+                let destination = &row.logging_config["cloudWatchConfig"];
+                let expected = unvalidated_destination(
+                    destination["logGroupName"].as_str().unwrap_or_default(),
+                    destination["roleArn"].as_str().unwrap_or_default(),
+                );
+                assert_eq!(
+                    (status, error.as_str(), text(&body, "message").as_str()),
+                    (400, "ValidationException", expected.as_str()),
+                    "case {:?}: a destination IAM holds no such role for must be refused 400 \
+                     ValidationException naming the submitted pair, got {status} {error} \
+                     ({body})",
+                    row.case
+                );
+            }
         }
 
         // The record a client reads back: exactly what the last ADMITTED put submitted,
@@ -525,9 +574,10 @@ async fn invocation_logging_is_installed_only_for_a_role_iam_lets_bedrock_assume
     );
 }
 
-/// RULE (the ordering half): the pass is authorized BEFORE anything is stored, so a put
-/// whose role cannot be passed leaves the configuration in force untouched however many
-/// times it is repeated, and the same configuration under a passable role installs at once.
+/// RULE (the ordering half): every decision is taken BEFORE anything is stored, so a put the
+/// destination's resolution or the pass refuses leaves the configuration in force untouched
+/// however many times it is repeated, and the same configuration under a passable role
+/// installs at once.
 #[tokio::test]
 async fn a_refused_put_never_replaces_the_configuration_in_force() {
     let router = emulator();
@@ -547,30 +597,55 @@ async fn a_refused_put_never_replaces_the_configuration_in_force() {
         "setup: the first put must install the configuration, got {status} {error} ({body})"
     );
 
-    // The rows differ along the reason the pass is refused: the role is another account's,
-    // this account holds no such role, and the role it holds trusts another service.
+    // The rows differ along the reason the put is refused: the role is another account's and
+    // the role it holds trusts another service — both passes this account may not make — and
+    // this account holds no such role, which is a destination that does not resolve at all.
     let refused = [
         (
             "another account's role",
             "arn:aws:iam::123456789012:role/logging-role".to_string(),
+            Answer::PassRoleDenied,
         ),
-        ("a role never created", role_arn("never-created-role")),
-        ("a role trusting another service", role_arn("lambda-only-role")),
+        (
+            "a role never created",
+            role_arn("never-created-role"),
+            Answer::Unvalidated,
+        ),
+        (
+            "a role trusting another service",
+            role_arn("lambda-only-role"),
+            Answer::PassRoleDenied,
+        ),
     ];
-    for (case, role) in refused {
+    for (case, role, expected) in refused {
         for attempt in 1..=2 {
+            let config = cloud_watch_config("replacement", role.clone());
             let (status, error, body) = bedrock(
                 &router,
                 "PUT",
                 LOGGING_URI,
-                Some(json!({
-                    "loggingConfig": cloud_watch_config("replacement", role.clone()),
-                })),
+                Some(json!({ "loggingConfig": config.clone() })),
             )
             .await;
+            let (expected_status, expected_error, expected_message) = match expected {
+                Answer::PassRoleDenied => {
+                    (403, "AccessDeniedException", PASS_ROLE_REFUSAL.to_string())
+                }
+                Answer::Unvalidated => (
+                    400,
+                    "ValidationException",
+                    unvalidated_destination(
+                        config["cloudWatchConfig"]["logGroupName"]
+                            .as_str()
+                            .unwrap_or_default(),
+                        &role,
+                    ),
+                ),
+                Answer::Installed => unreachable!("every row of this table is refused"),
+            };
             assert_eq!(
                 (status, error.as_str(), text(&body, "message").as_str()),
-                (403, "AccessDeniedException", PASS_ROLE_REFUSAL),
+                (expected_status, expected_error, expected_message.as_str()),
                 "case {case:?} attempt {attempt}: the refusal is the same every time, got \
                  {status} {error} ({body})"
             );

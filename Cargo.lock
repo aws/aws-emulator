@@ -10037,6 +10037,7 @@ dependencies = [
  "serde_json",
  "service-com-amazonaws-bedrockdataautomation-amazonbedrockkeystonebuildtimeservice",
  "service-com-amazonaws-bedrockruntime-amazonbedrockfrontendservice",
+ "service-com-amazonaws-cloudwatchlogs-logs-20140328",
  "service-com-amazonaws-iam-awsidentitymanagementv20100508",
  "service-com-amazonaws-s3-amazons3",
  "service-com-amazonaws-sts-awssecuritytokenservicev20110615",

@@ -145,6 +145,8 @@ mod model_invocation_job_terminal_status;
 mod model_invocation_jobs;
 #[path = "all/model_invocation_logging.rs"]
 mod model_invocation_logging;
+#[path = "all/model_invocation_logging_destination_validation.rs"]
+mod model_invocation_logging_destination_validation;
 #[path = "all/model_invocation_logging_pass_role_boundary.rs"]
 mod model_invocation_logging_pass_role_boundary;
 #[path = "all/path_label_values_are_not_echoed.rs"]

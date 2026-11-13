@@ -1,41 +1,102 @@
 // SPDX-License-Identifier: CC0-1.0
 
-//! Whether the Amazon S3 destinations a model invocation logging configuration names are
-//! destinations Amazon Bedrock would deliver into.
+//! Whether the destinations a model invocation logging configuration names are destinations
+//! Amazon Bedrock would deliver into — the Amazon S3 buckets it writes objects to, and the
+//! CloudWatch Logs group it writes log events to under the role the same destination names.
 //!
-//! A logging destination is a bucket Amazon Bedrock itself writes the invocation records
-//! into, and it writes them from the Region the configuration was installed in: delivery is
-//! regional, so a bucket that lives in another Region is not a destination this
-//! configuration could ever be served from, whatever policy that bucket carries. A
-//! configuration naming one is therefore refused as input rather than installed — the
-//! modelled `ValidationException` (`@httpError(400)`) — because installing it would leave
-//! an operator believing an audit trail exists where no record is ever delivered.
-//!
-//! Both destinations a configuration can carry are judged, since both are buckets Amazon
-//! Bedrock delivers into: `loggingConfig.s3Config`, the object destination, and
-//! `cloudWatchConfig.largeDataDeliveryS3Config`, the bucket the CloudWatch Logs destination
-//! spills a large record into — the two `S3Config` members the modelled `LoggingConfig` and
-//! `CloudWatchConfig` shapes of this service declare.
-//!
-//! WHERE a bucket lives is a question the object store ANSWERS, asked over the in-process
-//! callback every cross-service call of an emulated service uses
-//! ([`super::model_invocation_run::s3_client`] — no socket, no outbound request, no host
-//! resolution; the caller's value reaches it only as a bucket name). The answer is
-//! `GetBucketLocation`'s own, whose `locationConstraint` is the bucket's Region and is
-//! absent for the one Region S3 reports no constraint for
-//! (`GetBucketLocationOutput$LocationConstraint`: "Buckets in Region us-east-1 have a
-//! LocationConstraint of null").
-//!
-//! Refused only on what the object store ANSWERED: a bucket it holds, in a Region that is
-//! not the one this request was signed for. A bucket it says it does not hold, an emulator
-//! assembled with no Amazon S3 to ask, and an answer that could not be read all leave the
-//! configuration admitted, because a refusal has to be grounded — the same rule the rest of
-//! this service's cross-service decisions follow ([`super::model_source`],
+//! A destination is a resource of ANOTHER service that Amazon Bedrock itself writes the
+//! invocation records into, so a configuration naming one it could not deliver into is
+//! refused as input rather than installed — the modelled `ValidationException`
+//! (`@httpError(400)`) — because installing it would leave an operator believing an audit
+//! trail exists where no record is ever delivered. Every such question is put to the service
+//! that OWNS the resource, over the in-process callback every cross-service call of an
+//! emulated service uses (no socket, no outbound request, no host resolution; the caller's
+//! value reaches it only as a resource name), and only that service's ANSWER refuses
+//! anything: an emulator assembled without it to ask, and an answer that could not be read,
+//! leave the configuration admitted, because a refusal has to be grounded — the same rule the
+//! rest of this service's cross-service decisions follow ([`super::model_source`],
 //! [`super::model_invocation_run`]).
+//!
+//! # The Amazon S3 destinations
+//!
+//! Delivery is REGIONAL — the records are written from the Region the configuration is
+//! installed in — so a bucket that lives in another Region is not a destination this
+//! configuration could ever be served from, whatever policy that bucket carries. Both
+//! buckets a configuration can carry are judged: `loggingConfig.s3Config`, the object
+//! destination, and `cloudWatchConfig.largeDataDeliveryS3Config`, the bucket the CloudWatch
+//! Logs destination spills a large record into — the two `S3Config` members the modelled
+//! `LoggingConfig` and `CloudWatchConfig` shapes of this service declare.
+//!
+//! WHERE a bucket lives is a question the object store ANSWERS
+//! ([`super::model_invocation_run::s3_client`]). The answer is `GetBucketLocation`'s own,
+//! whose `locationConstraint` is the bucket's Region and is absent for the one Region S3
+//! reports no constraint for (`GetBucketLocationOutput$LocationConstraint`: "Buckets in
+//! Region us-east-1 have a LocationConstraint of null").
+//!
+//! # The CloudWatch Logs destination
+//!
+//! The CloudWatch Logs destination names both the group the records are written INTO
+//! (`logGroupName`) and the role they are written UNDER (`roleArn`), each `@required`
+//! (`smithy_query(query="shape",shape="CloudWatchConfig")`), and Amazon Bedrock validates
+//! the delivery permissions that pair describes before it enables the destination. So the
+//! group has to be one CloudWatch Logs holds in this Region, and the role has to be one this
+//! account's IAM resolves: a destination either half of which the owning service reports
+//! absent is one whose permissions cannot be validated, and it is refused with the submitted
+//! pair stated back ([`unvalidated_cloud_watch_destination_message`]) so the operator can see
+//! which value to fix.
+//!
+//! What this asks of the role is that it RESOLVES. Two further questions about it are
+//! deliberately not asked here. Whether a role that resolves may be handed to Amazon Bedrock
+//! at all has a different modelled answer — the pass-role decision
+//! ([`super::pass_role_denial`], the `AccessDeniedException` at `@httpError(403)`). And
+//! whether the role's own identity policies grant the log-delivery actions is a question this
+//! emulator's IAM cannot answer about a role provisioned OUT OF BAND: an empty policy listing
+//! is evidence about this store rather than about the role, so refusing on it would make the
+//! recorded success path unreachable for a client that created its delivery role elsewhere —
+//! the same reading [`::service_common::iam_role::held_role_is_unassumable`] takes of a role
+//! this account's IAM holds nothing under.
 
 use crate::ops::types::LoggingConfig;
 
 use super::model_invocation_run::s3_client;
+
+/// What Amazon Bedrock answers for a CloudWatch Logs destination whose delivery permissions
+/// it could not validate.
+///
+/// The sentence names the two values that pair describes and nothing else — the log group the
+/// records would be written into and the role they would be written under — and both come
+/// from the call being served rather than from one recorded run, so the operator sees the
+/// very pair it submitted.
+#[must_use]
+pub fn unvalidated_cloud_watch_destination_message(log_group: &str, role_arn: &str) -> String {
+    format!(
+        "Failed to validate permissions for log group: {log_group}, with role: {role_arn}. \
+         Verify the IAM role permissions are correct."
+    )
+}
+
+/// Why the CloudWatch Logs destination `config` names is not one this Region's model
+/// invocation logging could deliver into, or `None` when it is — which is the ordinary case,
+/// and the answer whenever nothing could be established, and the answer for a configuration
+/// that names no CloudWatch Logs destination at all.
+///
+/// The two halves of the destination are asked about in the order the shape declares them, so
+/// a destination wrong in both is refused on the group; either half ANSWERED absent is the
+/// whole refusal, because the permissions that pair describes cannot be validated without
+/// both of its resources. Call it with NO store of this service held: it awaits.
+pub async fn unvalidated_cloud_watch_destination(
+    ctx: &smithy_server_runtime::OperationContext<'_>,
+    region: &str,
+    config: &LoggingConfig,
+) -> Option<String> {
+    let destination = config.cloud_watch_config.as_ref()?;
+    let log_group = destination.log_group_name.as_str();
+    let role_arn = destination.role_arn.as_str();
+    let unvalidated =
+        ::service_common::cloudwatch_logs::log_group_is_absent(ctx, region, log_group).await
+            || ::service_common::iam_role::role_is_absent(ctx, region, role_arn).await;
+    unvalidated.then(|| unvalidated_cloud_watch_destination_message(log_group, role_arn))
+}
 
 /// The Region a bucket lives in when `GetBucketLocation` reports no constraint for it:
 /// "Buckets in Region us-east-1 have a LocationConstraint of null"

@@ -268,10 +268,12 @@ pub mod evaluation_datasets;
 /// storage) whose bucket a name is, while the records the decision guards live here.
 pub mod model_source;
 
-/// Whether the Amazon S3 destinations a model invocation logging configuration names are in
-/// the Region whose logging it configures. Beside this module for the reason
-/// [`model_source`] is: deciding it means asking another emulated service (object storage)
-/// where a bucket lives, while the configuration the decision guards lives here.
+/// Whether the destinations a model invocation logging configuration names are ones Amazon
+/// Bedrock could deliver into: the Amazon S3 buckets in the Region whose logging it
+/// configures, and the CloudWatch Logs group with the role it would deliver under. Beside
+/// this module for the reason [`model_source`] is: deciding it means asking the services that
+/// OWN those resources (object storage, CloudWatch Logs, IAM), while the configuration the
+/// decision guards lives here.
 pub mod logging_destination;
 pub use logging_destination::*;
 
