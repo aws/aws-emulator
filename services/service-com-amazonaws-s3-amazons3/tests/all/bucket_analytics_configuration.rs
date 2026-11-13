@@ -20,8 +20,10 @@
 //! * `GetBucketAnalyticsConfiguration` reports exactly that container, with every member the
 //!   request named — including `AnalyticsS3BucketDestination$BucketAccountId`, "The account
 //!   ID that owns the destination S3 bucket", which is a value of the request and so comes
-//!   back verbatim — and no member it did not. A bucket carrying none under the id answers
-//!   `NoSuchConfiguration` (HTTP 404).
+//!   back verbatim, whichever account it names and whether that account exists at all: the
+//!   check that the account owns the destination bucket belongs to the export S3 writes, not
+//!   to the call that records where to write it — and no member it did not. A bucket carrying
+//!   none under the id answers `NoSuchConfiguration` (HTTP 404).
 //! * "You can have up to 1,000 analytics configurations per bucket" and the operation's
 //!   special error "TooManyConfigurations … HTTP 400 Bad Request": a put that would create
 //!   one past [`MAX_ANALYTICS_CONFIGURATIONS_PER_BUCKET`] is refused, while replacing an id
@@ -570,6 +572,44 @@ fn round_trip_rows() -> Vec<(&'static str, Configuration)> {
                 Some(DataExport::new("analytics-destination", None, None)),
             ),
         ),
+        // The destination's owning account is a value S3 RECORDS rather than resolves: the
+        // check that the account owns the destination bucket belongs to the export S3
+        // writes, not to the call that records where to write it. So an account id of no
+        // account at all round-trips verbatim, as the rows below state it — an id of the
+        // right form that nothing answers to, one of the wrong width, a value that is no
+        // account id at all, and the empty element.
+        (
+            "an export naming an account id of the right form that nothing answers to",
+            configuration(
+                "unanswered-account",
+                None,
+                Some(DataExport::new(
+                    "analytics-destination",
+                    Some("999988887777"),
+                    None,
+                )),
+            ),
+        ),
+        (
+            "an export naming an account id of the wrong width",
+            configuration(
+                "narrow-account",
+                None,
+                Some(DataExport::new("analytics-destination", Some("12345"), None)),
+            ),
+        ),
+        (
+            "an export naming a value that is no account id at all",
+            configuration(
+                "worded-account",
+                None,
+                Some(DataExport::new(
+                    "analytics-destination",
+                    Some("not-an-account"),
+                    None,
+                )),
+            ),
+        ),
     ]
 }
 
@@ -890,22 +930,6 @@ async fn a_configuration_s3_cannot_record_is_refused_and_changes_nothing() {
             ),
             400,
             INVALID_DESTINATION_CODE,
-        ),
-        (
-            "an export destination account id that is not an account id",
-            "bad-account".to_string(),
-            format!(
-                "<AnalyticsConfiguration xmlns=\"{XMLNS}\"><Id>bad-account</Id>\
-                 <StorageClassAnalysis><DataExport>\
-                 <OutputSchemaVersion>{SCHEMA_VERSION}</OutputSchemaVersion><Destination>\
-                 <S3BucketDestination><Format>{EXPORT_FORMAT}</Format>\
-                 <BucketAccountId></BucketAccountId>\
-                 <Bucket>arn:aws:s3:::analytics-destination</Bucket>\
-                 </S3BucketDestination></Destination>\
-                 </DataExport></StorageClassAnalysis></AnalyticsConfiguration>"
-            ),
-            400,
-            MALFORMED_XML_CODE,
         ),
     ];
 

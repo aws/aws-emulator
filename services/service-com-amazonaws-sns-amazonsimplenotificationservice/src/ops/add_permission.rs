@@ -265,12 +265,30 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         );
         // "A unique identifier for the new policy statement" (`Label` doc): the label
         // IS the statement's `Sid`, so a label the policy already carries a statement
-        // for names a grant that has already been made — the call asks to ADD a
-        // statement, not to replace one, so it is refused and the policy is left
-        // exactly as it was. Recorded evidence: a second `AddPermission` of one label
-        // answers 400 `InvalidParameter` with
-        // [`state::STATEMENT_ALREADY_EXISTS_REFUSAL`].
-        if policy.position_of(&input.label).is_some() {
+        // for names a grant that has already been made. Which answer that earns depends
+        // on WHAT the policy carries under it:
+        //
+        // * the very statement this request would add — the same principals on the same
+        //   actions of the same topic — is the state the topic is already in, so the
+        //   request is already satisfied: it is served and the policy is left byte for
+        //   byte as it was, the same way a revoke of a label the policy does not carry is
+        //   served ([`crate::ops::remove_permission`]);
+        // * a DIFFERENT statement under that label would have to be replaced for this
+        //   grant to be made, and the call adds a statement rather than replacing one, so
+        //   it is refused and the policy is left exactly as it was. Recorded evidence: a
+        //   second `AddPermission` of one label answers 400 `InvalidParameter` with
+        //   [`state::STATEMENT_ALREADY_EXISTS_REFUSAL`].
+        if let Some(position) = policy.position_of(&input.label) {
+            if policy.statement.get(position) == Some(&statement) {
+                // The access record for a state-changing call that changed nothing:
+                // which operation ran and how it ended. No request value travels here.
+                ::tracing::info!(
+                    operation = "AddPermission",
+                    outcome = "unchanged",
+                    "the topic's policy already carries the statement this grant would add"
+                );
+                return Ok(AddPermissionOutput);
+            }
             return Err(invalid_parameter(
                 state::STATEMENT_ALREADY_EXISTS_REFUSAL.to_string(),
             ));

@@ -25,15 +25,15 @@
 //!
 //! The rows differ along what the rule generalises over: the resource type the ARN names
 //! (every type this service mints an ARN for, and the forms an ARN can take that name none),
-//! the ARN's partition, region and account segments, the form and length of the resource id,
-//! the content and size of the policy document, how many writes preceded the delete and how
-//! many deletes follow it.
+//! the ARN's partition, region and account segments, the endpoint configuration the accepted
+//! resource was created from, the content and size of the policy document, how many writes
+//! preceded the delete and how many deletes follow it.
 //!
 //! The wire harness is the one [`crate::distribution_lifecycle`] builds and the surface's
 //! request helpers are the ones [`crate::resource_policy_lifecycle`] already writes.
 
 use service_com_amazonaws_cloudfront_cloudfront2020_05_31::state::{
-    vpc_origin_arn, INVALID_RESOURCE_POLICY_RESOURCE_TYPE_MESSAGE, MALFORMED_ARN_MESSAGE,
+    INVALID_RESOURCE_POLICY_RESOURCE_TYPE_MESSAGE, MALFORMED_ARN_MESSAGE,
     NO_SUCH_RESOURCE_MESSAGE, RESOURCE_POLICY_NOT_FOUND_MESSAGE, RESOURCE_POLICY_RESOURCE_TYPE,
     TAGGABLE_RESOURCE_TYPES,
 };
@@ -42,8 +42,8 @@ use smithy_server_runtime::MultiServiceRouter;
 use crate::distribution_lifecycle::{call, create_distribution, emulator, Answer, ACCOUNT_ID, API_VERSION};
 use crate::distribution_tenant_lifecycle::escape;
 use crate::resource_policy_lifecycle::{
-    distribution_config, get_resource_policy, message, policy, put_resource_policy,
-    reported_document, OTHER_RESOURCE_TYPES,
+    created_vpc_origin_arn, distribution_config, get_resource_policy, message, policy,
+    put_resource_policy, reported_document, OTHER_RESOURCE_TYPES,
 };
 
 /// `POST /2020-05-31/delete-resource-policy`, removing the policy attached to `arn`.
@@ -71,10 +71,10 @@ pub(crate) async fn delete_resource_policy(router: &MultiServiceRouter, arn: &st
 /// Every row of the round-trip table: the case, the ARN the policy is attached to and the
 /// document attached to it.
 ///
-/// The rows differ along the form and length of the resource id, the ARN's partition, region
-/// and account segments, and the content and size of the document.
-fn rows() -> Vec<(&'static str, String, String)> {
-    let long_id = format!("vo-{}", "0123456789".repeat(6));
+/// Each ARN is one a `CreateVpcOrigin` really minted, since a policy is attached to a
+/// resource that EXISTS. The rows differ along the endpoint configuration's name, and along
+/// the content and size of the document.
+async fn rows(router: &MultiServiceRouter) -> Vec<(&'static str, String, String)> {
     let bulky = format!(
         "{{\"Version\":\"2008-10-17\",\"Statement\":[{}]}}",
         (0..40)
@@ -84,46 +84,48 @@ fn rows() -> Vec<(&'static str, String, String)> {
             .collect::<Vec<_>>()
             .join(",")
     );
-    vec![
+    let table: Vec<(&'static str, String, String)> = vec![
         (
-            "the ARN this service mints",
-            vpc_origin_arn("vo_delete_1"),
+            "a document a caller would write",
+            "vo-delete-1".to_string(),
             policy("minted"),
         ),
         (
-            "an upper-case id",
-            vpc_origin_arn("VO-DELETE-UPPER"),
-            policy("upper"),
-        ),
-        ("a one-character id", vpc_origin_arn("7"), policy("short")),
-        (
-            "an id of sixty-three characters",
-            vpc_origin_arn(&long_id),
-            policy("long-id"),
+            "a statement id in upper case",
+            "vo-delete-upper".to_string(),
+            policy("UPPER"),
         ),
         (
-            "the other partition",
-            format!("arn:aws-cn:cloudfront::{ACCOUNT_ID}:{RESOURCE_POLICY_RESOURCE_TYPE}/vo-cn"),
-            policy("partition"),
+            "a one-character resource name",
+            "7".to_string(),
+            policy("short"),
         ),
         (
-            "a region segment and another account",
-            format!(
-                "arn:aws:cloudfront:us-east-1:111122223333:{RESOURCE_POLICY_RESOURCE_TYPE}/vo-regional"
-            ),
-            policy("regional"),
+            "a resource name of sixty-four characters",
+            "d".repeat(64),
+            policy("long-name"),
+        ),
+        (
+            "a resource name carrying separators",
+            "vo.delete_5".to_string(),
+            policy("separators"),
         ),
         (
             "an empty JSON object",
-            vpc_origin_arn("vo-delete-empty-object"),
+            "vo-delete-empty-object".to_string(),
             "{}".to_string(),
         ),
         (
             "a document of forty statements",
-            vpc_origin_arn("vo-delete-bulky"),
+            "vo-delete-bulky".to_string(),
             bulky,
         ),
-    ]
+    ];
+    let mut out = Vec::new();
+    for (case, name, document) in table {
+        out.push((case, created_vpc_origin_arn(router, &name).await, document));
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -133,7 +135,7 @@ fn rows() -> Vec<(&'static str, String, String)> {
 #[tokio::test]
 async fn deleting_the_policy_of_an_accepted_arn_removes_only_that_policy() {
     let router = emulator();
-    let rows = rows();
+    let rows = rows(&router).await;
 
     // Every row is attached first, so each delete below runs against a store holding every
     // other row's policy too.
@@ -226,7 +228,7 @@ async fn deleting_a_policy_an_accepted_arn_does_not_carry_is_entity_not_found() 
     // Rows spanning the ways an accepted ARN comes to carry no policy: never written,
     // written and already deleted, deleted twice, and an ARN beside one that does carry a
     // policy.
-    let neighbour = vpc_origin_arn("vo-keeps-its-policy");
+    let neighbour = created_vpc_origin_arn(&router, "vo-keeps-its-policy").await;
     let kept = policy("kept");
     let written = put_resource_policy(&router, &neighbour, &kept).await;
     assert_eq!(
@@ -235,9 +237,9 @@ async fn deleting_a_policy_an_accepted_arn_does_not_carry_is_entity_not_found() 
         written.status, written.raw
     );
 
-    let never_written = vpc_origin_arn("vo-never-written-delete");
-    let once_written = vpc_origin_arn("vo-written-once");
-    let twice_deleted = vpc_origin_arn("vo-deleted-twice");
+    let never_written = created_vpc_origin_arn(&router, "vo-never-written-delete").await;
+    let once_written = created_vpc_origin_arn(&router, "vo-written-once").await;
+    let twice_deleted = created_vpc_origin_arn(&router, "vo-deleted-twice").await;
     for arn in [&once_written, &twice_deleted] {
         let put = put_resource_policy(&router, arn, &policy("to-be-removed")).await;
         assert_eq!(
@@ -257,17 +259,10 @@ async fn deleting_a_policy_an_accepted_arn_does_not_carry_is_entity_not_found() 
         ("an ARN no write ever named", never_written),
         ("an ARN whose policy was deleted", once_written),
         ("the same ARN deleted a second time", twice_deleted.clone()),
+        ("the same ARN deleted a third time", twice_deleted),
         (
-            "the same ARN deleted a third time",
-            twice_deleted,
-        ),
-        (
-            "an ARN in the other partition no write named",
-            format!("arn:aws-cn:cloudfront::{ACCOUNT_ID}:{RESOURCE_POLICY_RESOURCE_TYPE}/vo-cn-absent"),
-        ),
-        (
-            "another account's resource no write named",
-            format!("arn:aws:cloudfront::111122223333:{RESOURCE_POLICY_RESOURCE_TYPE}/vo-other"),
+            "a resource created after the others, no write named",
+            created_vpc_origin_arn(&router, "vo-late-arrival").await,
         ),
     ];
 
@@ -313,7 +308,7 @@ async fn deleting_under_an_arn_the_surface_does_not_accept_is_refused() {
 
     // The policy the gate must leave alone: every refusal below is decided before anything
     // is removed.
-    let kept_arn = vpc_origin_arn("vo-survives-the-gate");
+    let kept_arn = created_vpc_origin_arn(&router, "vo-survives-the-gate").await;
     let kept = policy("survivor");
     let written = put_resource_policy(&router, &kept_arn, &kept).await;
     assert_eq!(
@@ -482,7 +477,7 @@ async fn deleting_under_an_arn_the_surface_does_not_accept_is_refused() {
 #[tokio::test]
 async fn a_resource_takes_a_new_policy_after_its_policy_is_deleted() {
     let router = emulator();
-    let arn = vpc_origin_arn("vo-reattached");
+    let arn = created_vpc_origin_arn(&router, "vo-reattached").await;
 
     // Attach, remove and attach again, several times over and with a different document
     // each round: the delete removes the policy rather than the key's ability to carry one,

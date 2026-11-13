@@ -390,19 +390,18 @@ async fn an_identifier_scoped_instance_report_refuses_an_instance_nothing_create
 /// The scaling configurations a cluster create is spanned over: `(case, min, max)`, with
 /// whether the configuration is one the Neptune engine serves.
 ///
-/// The capacities span the serverless capacity range this engine's releases publish — the
-/// published floor up to the published ceiling, in the half-step increments
-/// `ServerlessV2ScalingConfiguration$MinCapacity` documents — so the rows are both
-/// published bounds, values inside them, one below the floor, one past the ceiling, one off
-/// the half-step grid and a floor above the ceiling.
+/// The capacities span the range a Neptune Serverless CLUSTER is configured in — zero
+/// capacity up to the published ceiling, in the half-step increments
+/// `ServerlessV2ScalingConfiguration$MinCapacity` documents — so the rows are both bounds
+/// of that range, values inside them, one past the ceiling, one off the half-step grid and
+/// a floor above the ceiling. That range is the one a refusal of a capacity value states;
+/// the floor the engine VERSION publishes in `ServerlessV2FeaturesSupport` is a different
+/// member, asserted where that report is.
 const SCALING_ROWS: &[(&str, &str, &str, bool)] = &[
-    ("both published bounds", "0.5", "128.0", true),
+    ("both bounds of the configurable range", "0.0", "128.0", true),
     ("a range inside the bounds", "2.5", "8.0", true),
     ("a half capacity unit floor", "0.5", "8.0", true),
     ("one capacity unit, floor and ceiling alike", "1.0", "1.0", true),
-    // This engine's serverless clusters do not pause, so zero is below the floor its
-    // releases publish rather than one of its bounds.
-    ("a floor below the published minimum", "0.0", "128.0", false),
     ("a ceiling past the published maximum", "1.0", "128.5", false),
     ("a capacity off the half-step grid", "1.2", "8.0", false),
     ("a floor above the ceiling", "8.0", "4.0", false),

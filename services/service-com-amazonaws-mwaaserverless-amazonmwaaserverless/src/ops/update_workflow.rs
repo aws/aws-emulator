@@ -223,6 +223,33 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let state = crate::state::service_state(&*self.engine).ok_or_else(unavailable)?;
         let fingerprint = request_fingerprint(&input);
 
+        // The entity this operation ADDRESSES is resolved BEFORE the configuration the
+        // request carries is judged: an update is sent TO a workflow, so a reference that
+        // resolves to nothing is the lookup miss it is whatever else the request names —
+        // a definition object this service cannot read, a role it cannot assume — and a
+        // client that branches on `ResourceNotFoundException` to re-create the workflow
+        // is never told to fix a member instead. A workflow of ANOTHER region is not one
+        // this endpoint holds, so its ARN resolves to nothing here either; the refusal
+        // names the workflow by its OWN identifier, the ARN's resource-id segment, not by
+        // the ARN the request addressed it with. The guard is released again before the
+        // reads below, which call into other emulated services.
+        {
+            let mut store = state.lock();
+            // Finish every workflow teardown the clock already made due, so a workflow
+            // past its `DELETING` span is a lookup miss here too.
+            store.advance_clock();
+            if store.workflow_in(&region, &input.workflow_arn).is_none() {
+                return Err(crate::state::lookup_miss(
+                    UpdateWorkflowErrorModeled::ResourceNotFoundException(
+                        crate::state::unresolved(
+                            crate::state::UnresolvedEntity::Workflow,
+                            crate::state::workflow_resource_id(&input.workflow_arn),
+                        ),
+                    ),
+                ));
+            }
+        }
+
         // An update "creates a new version with the updated configuration", and a
         // version freezes the definition file as it stands when the version is created,
         // so the definition object is read HERE, once, exactly as `CreateWorkflow` reads
@@ -242,9 +269,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // version history — and the latest version — it already had
         // (`crate::state::configuration_dependencies`). Asked with no store guard held,
         // because resolving the role is a call into another emulated service, and judged
-        // with the rest of what the request CARRIES — beside `validate_input` above and
-        // before the workflow the request ADDRESSES is resolved — so a refusal about the
-        // configuration reads the same whichever workflow it was sent to.
+        // after the workflow the request ADDRESSES has been resolved above.
         if let Some(unmet) = crate::state::configuration_dependencies::unmet_dependency(
             ctx,
             &region,

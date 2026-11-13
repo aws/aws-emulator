@@ -76,14 +76,11 @@
 //! * `ResourceNotFoundFault` (HTTP 404) — The specified resource ID was not found.
 //!
 //! `ResourceIdentifier` carries the ARN of the resource this call ACTS ON. An ARN that
-//! resolves to no resource of the account is answered by the CLASS of resource it names: an
-//! ARN naming a resource KIND this front door owns — a DB instance or a DB cluster, the
-//! kinds that carry pending maintenance actions — gets the modelled `ResourceNotFoundFault`
-//! (HTTP 404) with the identifier that ARN names ([`resource_not_found_message`]), and a
-//! value naming no such resource at all — another resource type, another vendor's ARN, or a
-//! value that is no ARN — is answered on the MEMBER: HTTP 400 `InvalidParameterValue`
-//! ([`unknown_resource_message`]). The two state faults need a maintenance action to be
-//! pending, and nothing in this service schedules one.
+//! resolves to no resource of the account is answered on the MEMBER that carried it: HTTP
+//! 400 `InvalidParameterValue` with the `Unknown resource: <identifier>` sentence
+//! ([`unknown_resource_message`]), echoing the value the request supplied — whichever
+//! resource kind the ARN names, and whether it is an ARN at all. The two state faults need
+//! a maintenance action to be pending, and nothing in this service schedules one.
 
 #[allow(unused_imports)]
 use super::types::*;
@@ -157,46 +154,12 @@ fn check_value(member: &str, value: &str, allowed: &[&str]) -> Result<(), String
 ///
 /// The whole value is echoed rather than a segment of it: the member takes "the RDS Amazon
 /// Resource Name (ARN) of the resource that the pending maintenance action applies to", so
-/// what the caller has to correct is that value, and a value that is no ARN at all is
-/// reported the same way.
+/// what the caller has to correct is that value. ONE sentence covers every value that
+/// resolves to nothing — an ARN of a DB instance or DB cluster this account does not hold,
+/// an ARN of another resource type or vendor, and a value that is no ARN at all — because
+/// what the refusal reports is that this parameter named no resource.
 fn unknown_resource_message(resource_identifier: &str) -> String {
     format!("Unknown resource: {resource_identifier}")
-}
-
-/// The resource types an RDS ARN gives the kinds of resource this front door owns:
-/// `arn:aws:rds:<region>:<account>:db:<identifier>` for a DB instance and
-/// `arn:aws:rds:<region>:<account>:cluster:<identifier>` for a DB cluster ("Constructing an
-/// RDS Amazon Resource Name (ARN)") — the two kinds that carry pending maintenance actions,
-/// and so the ones whose absent resource is the modelled not-found fault below.
-const MAINTAINABLE_RESOURCE_TYPES: [&str; 2] = ["db", "cluster"];
-
-/// The message this operation's modelled `ResourceNotFoundFault` carries for a resource the
-/// account does not hold: the fixed text `Resource not found: `, then the IDENTIFIER the
-/// request's ARN names.
-///
-/// The identifier rather than the whole ARN, as the RECORDED refusal of this class words it
-/// (the DocumentDB front door's `docdb-instance-not-found-envelope-variants` answers
-/// `Resource not found: <identifier>` for an ARN-form `ResourceIdentifier`): the fault is
-/// about the resource the ARN resolved to, so what it names is that resource — the identifier
-/// field of the ARN's `<type>:<identifier>` resource — while the sentence for a value naming
-/// no such resource echoes the whole value the request supplied
-/// ([`unknown_resource_message`]).
-fn resource_not_found_message(identifier: &str) -> String {
-    format!("Resource not found: {identifier}")
-}
-
-/// The identifier `resource_identifier` names, for a value that is an ARN of this service
-/// naming one of the resource KINDS this front door owns ([`MAINTAINABLE_RESOURCE_TYPES`]);
-/// `None` for every other value — an ARN of another resource type or another vendor, and a
-/// value that is no ARN at all.
-///
-/// Read through the crate's one reader of its own resource ARNs
-/// ([`crate::state::parse_rds_resource_arn`]), so which type an ARN names is decided in one
-/// place.
-fn maintainable_identifier_named_by(resource_identifier: &str) -> Option<&str> {
-    crate::state::parse_rds_resource_arn(resource_identifier)
-        .filter(|arn| MAINTAINABLE_RESOURCE_TYPES.contains(&arn.resource_type))
-        .map(|arn| arn.identifier)
 }
 
 /// The `ApplyPendingMaintenanceAction` operation.
@@ -266,30 +229,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     .map(|record| record.arn()),
             )
             .find(|arn| *arn == resource);
-        // An identifier that resolves to no resource of this account is answered by the
-        // CLASS of resource it names.
-        //
-        // An ARN naming a resource KIND this front door owns — a DB instance or a DB cluster
-        // — that the account does not hold is this operation's modelled
-        // `ResourceNotFoundFault` — "the specified resource ID was not found" — HTTP 404 with
-        // the identifier the ARN names: the request named a resource of a kind this front
-        // door owns, and the fault the model declares for a resource id it cannot find is
-        // what says so.
-        //
-        // A value naming no such resource AT ALL is refused on the MEMBER that carried it:
-        // HTTP 400 with the Query API's `InvalidParameterValue` and the `Unknown resource:
-        // <identifier>` sentence. `ResourceIdentifier` is an ARN the caller composes, so a
-        // value that is no ARN at all, or one of another resource type or vendor, is a value
-        // this parameter does not accept — a 4xx a client treats as "fix the request".
+        // An identifier that resolves to no resource of this account is refused on the
+        // MEMBER that carried it: HTTP 400 with the Query API's `InvalidParameterValue` and
+        // the `Unknown resource: <identifier>` sentence, echoing the value the request
+        // supplied. `ResourceIdentifier` is an ARN the caller COMPOSES, so a value naming
+        // no resource this account holds is a value this parameter does not accept —
+        // whatever resource kind the ARN names, and whether it is an ARN at all — which is
+        // a 4xx a client treats as "fix the request".
         let Some(resource_arn) = resolved else {
-            if let Some(named) = maintainable_identifier_named_by(&resource) {
-                return Err(ApplyPendingMaintenanceActionErrorModeled::ResourceNotFoundFault(
-                    ResourceNotFoundFault {
-                        message: Some(resource_not_found_message(named)),
-                    },
-                )
-                .into());
-            }
             return Err(ApplyPendingMaintenanceActionError::invalid_parameter_value(
                 unknown_resource_message(&input.resource_identifier),
             ));

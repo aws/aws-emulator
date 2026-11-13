@@ -666,35 +666,42 @@ async fn add_permission_grants_and_remove_permission_revokes_a_labelled_statemen
             "case {case:?}: the grant must be on this topic alone, got {added}"
         );
 
-        // A label identifies ONE statement, so a label the policy already carries one
-        // for names a grant that has already been made: the call is refused and the
-        // policy is left exactly as it was — with the same value for the same label and
-        // with a different one alike.
+        // A label identifies ONE statement, so a label the policy already carries one for
+        // names a grant that has already been made: a repeat of the SAME grant asks for the
+        // state the topic is already in and is served, while a DIFFERENT grant under that
+        // label would have to replace the statement and is refused. Either way the policy is
+        // left exactly as it was.
         let changed: Vec<(&str, &str)> = vec![
             ("TopicArn", &arn),
             ("Label", label),
             ("AWSAccountId.member.1", "999988887777"),
             ("ActionName.member.1", "Subscribe"),
         ];
-        for (repeat, request) in [("the same grant", &params), ("a different grant", &changed)] {
+        for (repeat, request, expected_status) in [
+            ("the same grant", &params, 200),
+            ("a different grant", &changed, 400),
+        ] {
             let again = sns.call("AddPermission", request).await;
             assert_eq!(
-                again.status, 400,
-                "case {case:?}: a repeated label ({repeat}) expected 400, got {} / {}",
+                again.status, expected_status,
+                "case {case:?}: a repeated label ({repeat}) expected {expected_status}, got \
+                 {} / {}",
                 again.status, again.body
             );
-            assert_eq!(
-                again.code(),
-                "InvalidParameter",
-                "case {case:?}: a repeated label ({repeat}) expected the InvalidParameter \
-                 code, got {}",
-                again.body
-            );
+            if expected_status == 400 {
+                assert_eq!(
+                    again.code(),
+                    "InvalidParameter",
+                    "case {case:?}: a repeated label ({repeat}) expected the InvalidParameter \
+                     code, got {}",
+                    again.body
+                );
+            }
             let repeated = attribute_map(&read(&sns, case, &arn).await);
             let repeated = json_of(case, "Policy", &repeated["Policy"]);
             assert_eq!(
                 repeated, policy,
-                "case {case:?}: a refused grant ({repeat}) must leave the policy as it \
+                "case {case:?}: a repeated grant ({repeat}) must leave the policy as it \
                  was, got {repeated}"
             );
         }

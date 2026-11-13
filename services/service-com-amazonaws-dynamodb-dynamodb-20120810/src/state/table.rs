@@ -446,10 +446,11 @@ impl Table {
 
     /// The primary key a paging member (`ExclusiveStartKey`) resumes from: read
     /// through the same key schema as a `Key`, and refused as the INVALID RESUME
-    /// TOKEN it is when it is not a key of that schema ([`START_KEY_INVALID_MESSAGE`]) —
-    /// with the schema reason stated for the one defect AWS diagnoses further, a key
-    /// element of another TYPE than the schema declares
-    /// ([`START_KEY_TYPE_MISMATCH_MESSAGE`]).
+    /// TOKEN it is when it is no key of that schema at all
+    /// ([`START_KEY_INVALID_MESSAGE`]) — with the schema reason stated after it when the
+    /// token's attributes ARE that schema's key attributes but one of them is stated
+    /// wrongly, left out or carrying another TYPE than the schema declares
+    /// ([`START_KEY_SCHEMA_MISMATCH_MESSAGE`]).
     pub fn key_of_start_key(&self, key: &Item) -> Result<ItemKey, RequestError> {
         self.key_of_map(key, KeySource::StartKey).map_err(Into::into)
     }
@@ -480,6 +481,11 @@ impl Table {
     /// The one walk a `Key`-shaped map is read through, whichever member carried it:
     /// exactly the key attributes the schema declares, with their declared types.
     fn key_of_map(&self, key: &Item, source: KeySource) -> Result<ItemKey, KeyRefusal> {
+        // A map carrying NOTHING names no key element of this schema to be held to it, so
+        // it is not shaped like a key at all rather than a key stated wrongly.
+        if key.is_empty() {
+            return Err(KeyRefusal::Request(source.mismatch()));
+        }
         for name in key.keys() {
             if name != self.partition_key_name() && Some(name.as_str()) != self.sort_key_name() {
                 // A map carrying an attribute that is no key of this schema is not
@@ -896,8 +902,10 @@ impl Table {
     /// a map that names an attribute neither declares or leaves one of them out is the
     /// INVALID RESUME TOKEN it is ([`START_KEY_INVALID_MESSAGE`]), and one carrying a key
     /// attribute with a type other than the table declared states the schema reason after
-    /// it ([`START_KEY_TYPE_MISMATCH_MESSAGE`]) — the same way a base-table token is
-    /// ([`Self::key_of_start_key`]).
+    /// it ([`START_KEY_SCHEMA_MISMATCH_MESSAGE`]) — as a base-table token does
+    /// ([`Self::key_of_start_key`]), which words a DROPPED table key attribute that way
+    /// too. An index cursor carries both schemas' key attributes, so one it does not carry
+    /// in full is not that cursor at all.
     pub fn index_key_of_start_key(
         &self,
         index: &SecondaryIndex<'_>,

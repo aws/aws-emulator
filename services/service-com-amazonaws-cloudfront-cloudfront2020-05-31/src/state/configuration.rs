@@ -3207,23 +3207,24 @@ pub const NO_SUCH_PUBLIC_KEY_MESSAGE: &str = "The specified CloudFront public ke
 /// The modelled `NoSuchPublicKey` (HTTP 404) an operation that ADDRESSES a public key by its
 /// `Id` answers an id it cannot resolve.
 ///
-/// The public key surface applies NO identifier-format gate: `GetPublicKey$Id` and the `Id`
-/// of every sibling that addresses a key are plain `string` with no `@pattern` and no
-/// `@length`, so which ids were ever issued is a property of the STORE alone — and an `Id` the
-/// store holds no key for is the key reported ABSENT ([`NO_SUCH_PUBLIC_KEY_MESSAGE`]),
-/// whatever form the value takes. A well-formed identifier of another resource kind of this
-/// service, an id of this namespace that was never minted, a name, a caller reference and a
-/// word of no id shape at all are one condition here, under one sentence, and that sentence
-/// carries nothing the request submitted — which is why the id it was asked about is taken
-/// (so every operation of that surface reads the same) and goes nowhere.
-///
-/// That is what separates this surface from the ones that DO read a form before the store —
-/// [`unresolved_key_group_id`] for a key group and
-/// [`unresolved_field_level_encryption_profile_id`] for a profile, each of which answers the
-/// identifier it cannot read ([`id_format_invalid_message`]) for a value outside its kind's
-/// own id shape. Each surface reads its identifier as wide as its own recorded contract does.
-pub fn unresolved_public_key_id(_id: &str) -> crate::ops::types::NoSuchPublicKey {
-    no_such_public_key()
+/// `GetPublicKey`'s model declares this one error, so one code and one status cover both
+/// outcomes and the MESSAGE is what tells them apart — the same split
+/// [`unresolved_key_group_id`] makes for a key group and
+/// [`unresolved_field_level_encryption_profile_id`] makes for a profile: an `Id` outside the
+/// shape every public key id takes ([`crate::state::is_public_key_id`]) is refused as an
+/// identifier CloudFront cannot read ([`id_format_invalid_message`]), while a well-formed id
+/// the store holds no key for is the absent-key sentence ([`NO_SUCH_PUBLIC_KEY_MESSAGE`]).
+/// A well-formed identifier of ANOTHER resource kind of this service is therefore the former:
+/// it was never a public key id at all. Both sentences are fixed text and neither echoes the
+/// value submitted.
+pub fn unresolved_public_key_id(id: &str) -> crate::ops::types::NoSuchPublicKey {
+    if crate::state::is_public_key_id(id) {
+        no_such_public_key()
+    } else {
+        crate::ops::types::NoSuchPublicKey {
+            message: Some(id_format_invalid_message("Id")),
+        }
+    }
 }
 
 /// The modelled `PublicKeyInUse` (HTTP 409) for a delete of a public key a stored record

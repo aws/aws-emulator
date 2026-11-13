@@ -651,7 +651,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             )
             .ok()
             .flatten()
-            .and_then(|entry| entry.profile.serverless_v2_capacity);
+            .and_then(|entry| entry.profile.serverless_v2_scaling_range());
             let version_label =
                 effective_version.unwrap_or_else(|| "(default)".to_string());
             crate::state::check_serverless_v2_scaling(

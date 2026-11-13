@@ -46,6 +46,7 @@ use crate::public_key_lifecycle::{create_key, get_key, pem, Key};
 /// The sentences CloudFront sends for these refusals, spelled out here rather than taken from
 /// the crate, so a reworded refusal fails this suite.
 const NO_SUCH_PUBLIC_KEY_MESSAGE: &str = "The specified CloudFront public key does not exist.";
+const ID_FORMAT_INVALID_MESSAGE: &str = "Id format is invalid";
 const PUBLIC_KEY_IN_USE_MESSAGE: &str =
     "The Cloudfront public key is currently associated with either Key Group or a field level \
      encryption profile. Please disassociate the key before deleting.";
@@ -717,8 +718,10 @@ async fn a_key_a_stored_record_references_cannot_be_deleted() {
     }
 }
 
-/// An id the store holds no public key for is `NoSuchPublicKey` (HTTP 404), whatever shape the
-/// id takes — never a 204, which would claim something was removed.
+/// A well-formed public key id the store holds no key for is `NoSuchPublicKey` (HTTP 404)
+/// with the absent-key sentence, and an `Id` outside the shape a public key id takes is the
+/// same code with the unreadable-identifier sentence — never a 204, which would claim
+/// something was removed.
 #[tokio::test]
 async fn an_id_no_key_holds_is_refused() {
     let router = emulator();
@@ -728,24 +731,48 @@ async fn an_id_no_key_holds_is_refused() {
     let mut flipped: Vec<char> = known.chars().collect();
     let last = flipped.len() - 1;
     flipped[last] = if flipped[last] == 'A' { 'B' } else { 'A' };
-    let absent: [(&str, String); 5] = [
-        ("a public key id never minted", "K2NEVERMINTED1".to_string()),
+    // Each row: the case, the `Id` submitted, and the sentence it is refused with — the
+    // absent-key sentence for a value of the public key id shape, the unreadable-identifier
+    // sentence for one outside it.
+    let absent: [(&str, String, &str); 7] = [
+        (
+            "a public key id never minted",
+            "K2NEVERMINTED1".to_string(),
+            NO_SUCH_PUBLIC_KEY_MESSAGE,
+        ),
         (
             "the known id with one character changed",
             flipped.into_iter().collect(),
+            NO_SUCH_PUBLIC_KEY_MESSAGE,
         ),
-        ("the known id in lower case", known.to_lowercase()),
+        (
+            "the known id in lower case",
+            known.to_lowercase(),
+            ID_FORMAT_INVALID_MESSAGE,
+        ),
         (
             "a token that is no public key id",
             "not-a-public-key-id".to_string(),
+            ID_FORMAT_INVALID_MESSAGE,
         ),
         (
             "the caller reference rather than the id",
             present.caller_reference.clone(),
+            ID_FORMAT_INVALID_MESSAGE,
+        ),
+        (
+            "a well-formed distribution id",
+            "EDFDVBD6EXAMPLE".to_string(),
+            ID_FORMAT_INVALID_MESSAGE,
+        ),
+        (
+            "a well-formed key group id",
+            "4fbc5e5c-1ee4-4f3b-9e9f-4a2a3b3b7c11".to_string(),
+            ID_FORMAT_INVALID_MESSAGE,
         ),
     ];
 
-    for (case, candidate) in absent {
+    for (case, candidate, sentence) in absent {
         let answer = delete_key(&router, &candidate, Some(&etag)).await;
         assert_eq!(
             answer.status, 404,
@@ -760,8 +787,8 @@ async fn an_id_no_key_holds_is_refused() {
         );
         let message = answer.root().find_text("Message").unwrap_or_default();
         assert_eq!(
-            message, NO_SUCH_PUBLIC_KEY_MESSAGE,
-            "case {case:?}: expected the service's missing-key sentence, got {message:?}"
+            message, sentence,
+            "case {case:?}: expected {sentence:?} for {candidate:?}, got {message:?}"
         );
     }
 

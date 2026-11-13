@@ -949,22 +949,29 @@ async fn a_comparison_past_what_the_emulator_compares_is_refused() {
     let router = emulator();
 
     // The emulator compares at most 8,192 lines and 512 KB of ONE blob, and at most
-    // 16,777,216 line comparisons in one request (`MAX_COMPARED_LINES`,
-    // `MAX_COMPARED_BYTES`, `MAX_COMPARED_LINE_PRODUCT` — the same bounds the crate's
-    // three-way merge compares a file within). Each bound is driven at the bound,
-    // where the comparison is served, and past it, where the error the model declares
-    // for a file this operation cannot compare is returned. The rows differ along
-    // WHICH bound the pair is past: the line count of one side, its bytes with barely
-    // any lines at all, and the product of the two sides.
+    // 8,192 lines across BOTH sides of one request (`MAX_COMPARED_LINES`,
+    // `MAX_COMPARED_BYTES`, `MAX_COMPARED_LINES_COMBINED` — the per-side pair is the
+    // same bounds the crate's three-way merge compares a file within). Each bound is
+    // driven at the bound, where the comparison is served, and past it, where the error
+    // the model declares for a file this operation cannot compare is returned. The rows
+    // differ along WHICH bound the pair is past, and along how the lines are distributed
+    // between the two sides: one side carrying nearly all of them, its bytes with barely
+    // any lines at all, and the two sides sharing them evenly.
     let cases: Vec<(&str, String, String, bool)> = vec![
         (
-            "at the line bound",
+            "at the combined line bound, nearly all on one side",
             "line-1\n".to_string(),
-            numbered_lines(8 * 1024),
+            numbered_lines(8 * 1024 - 1),
             true,
         ),
         (
-            "one line past the line bound",
+            "one line past the combined bound, nearly all on one side",
+            "line-1\n".to_string(),
+            numbered_lines(8 * 1024),
+            false,
+        ),
+        (
+            "one side past the per-side line bound",
             "line-1\n".to_string(),
             numbered_lines(8 * 1024 + 1),
             false,
@@ -976,13 +983,13 @@ async fn a_comparison_past_what_the_emulator_compares_is_refused() {
             false,
         ),
         (
-            "a product at the budget",
+            "the lines shared evenly, at the combined bound",
             numbered_lines(4 * 1024),
             format!("changed\n{}", numbered_lines(4 * 1024 - 1)),
             true,
         ),
         (
-            "a product past the budget",
+            "the lines shared evenly, one past the combined bound",
             numbered_lines(4 * 1024 + 1),
             numbered_lines(4 * 1024),
             false,

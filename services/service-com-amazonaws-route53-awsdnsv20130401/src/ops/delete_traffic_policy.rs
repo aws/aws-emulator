@@ -71,7 +71,7 @@
 #[allow(unused_imports)]
 use super::types::*;
 
-use crate::state::no_such_traffic_policy;
+use crate::state::no_such_traffic_policy_without_message;
 
 /// The refusal text a delete of a traffic policy version that traffic policy
 /// instances were created from answers with (`TrafficPolicyInUse`, HTTP 400).
@@ -190,8 +190,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         // A traffic policy version is addressed by both halves of
         // `(Id, Version)`, so a policy the account does not hold and a version
-        // that policy does not hold are the same refusal, worded through the ONE
-        // place this service words a traffic policy it does not hold. A version
+        // that policy does not hold are the same refusal: this operation's own,
+        // which states the refusal's identity and no message. A version
         // an earlier delete already flagged is no longer one the account holds
         // either, so deleting it again is that same refusal rather than a second
         // success.
@@ -201,7 +201,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .and_then(|policy| policy.versions.get_mut(&input.version))
             .filter(|version| !version.deleted)
             .ok_or_else(|| {
-                DeleteTrafficPolicyErrorModeled::NoSuchTrafficPolicy(no_such_traffic_policy())
+                DeleteTrafficPolicyErrorModeled::NoSuchTrafficPolicy(
+                    no_such_traffic_policy_without_message(),
+                )
             })?;
 
         if in_use {

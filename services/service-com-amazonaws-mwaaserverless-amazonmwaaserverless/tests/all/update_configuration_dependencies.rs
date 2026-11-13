@@ -2,7 +2,9 @@
 
 //! The DEPENDENCIES an `UpdateWorkflow` configuration names, end to end over HTTP.
 //!
-//! RULE under test: before `UpdateWorkflow` freezes a new version, the two dependencies
+//! RULE under test: before `UpdateWorkflow` freezes a new version, the WORKFLOW the
+//! request addresses is resolved — a `WorkflowArn` that resolves to nothing is the lookup
+//! miss it is, whatever configuration the request carries — and then the two dependencies
 //! that version's configuration names are resolved against the services that OWN them,
 //! and a request whose dependency one of them answers is unmet is refused with nothing
 //! written — the workflow keeps the version history, and the latest version, it already
@@ -649,4 +651,97 @@ async fn an_update_is_not_refused_on_an_answer_no_owning_service_gave() {
         vec![(created_version, false), (appended, true)],
         "expected the version to be appended, got {versions:?}"
     );
+}
+
+/// RULE: the WORKFLOW an update addresses is resolved BEFORE the dependencies the
+/// configuration it carries names, so a `WorkflowArn` that resolves to nothing is the
+/// lookup miss it is — `ResourceNotFoundException`, the entity-level message and the
+/// `ResourceId`/`ResourceType` of the workflow class — whatever else the request names.
+///
+/// The rows differ along what the configuration would ALSO be refused for had it been
+/// judged first (a definition location Amazon S3 serves nothing at, a role IAM answers
+/// this service cannot assume, both at once, and a configuration with nothing wrong with
+/// it) and along the form of the ARN that resolves to nothing — every form
+/// [`crate::missing_resource_lookups::ghost_arns`] spans.
+#[tokio::test]
+async fn an_update_resolves_the_workflow_it_addresses_before_its_configuration() {
+    let router = emulator();
+    create_bucket(&router).await;
+    stage(&router, CREATED_KEY, DEFINITION.as_bytes()).await;
+    stage(&router, UPDATED_KEY, DEFINITION.as_bytes()).await;
+    let assumable = assumable_role(&router, "mwaa-serverless-precedence").await;
+    let unassumable = create_role(
+        &router,
+        "/",
+        "mwaa-serverless-precedence-other",
+        &trust(json!([statement(
+            "Allow",
+            json!(OTHER_PRINCIPAL),
+            "sts:AssumeRole"
+        )])),
+    )
+    .await;
+
+    // The configurations a row carries beside the unresolvable workflow.
+    let readable = json!({"Bucket": BUCKET, "ObjectKey": UPDATED_KEY});
+    let unreadable = json!({"Bucket": BUCKET, "ObjectKey": "dags/absent.yaml"});
+    let configurations: Vec<(&str, Value, &str)> = vec![
+        (
+            "a configuration with nothing wrong with it",
+            readable.clone(),
+            assumable.as_str(),
+        ),
+        (
+            "a definition location that serves no object",
+            unreadable.clone(),
+            assumable.as_str(),
+        ),
+        (
+            "a role this service cannot assume",
+            readable,
+            unassumable.as_str(),
+        ),
+        (
+            "both dependencies unmet at once",
+            unreadable,
+            unassumable.as_str(),
+        ),
+    ];
+
+    for arn in &crate::missing_resource_lookups::ghost_arns() {
+        for (configuration, location, role_arn) in &configurations {
+            let case = format!("{configuration} on {arn}");
+            let (status, body) = update(&router, arn, location, role_arn).await;
+            assert_eq!(
+                status,
+                crate::missing_resource_lookups::LOOKUP_MISS_STATUS,
+                "case {case:?}: expected the lookup miss at {}, got {status} {body:?}",
+                crate::missing_resource_lookups::LOOKUP_MISS_STATUS
+            );
+            assert!(
+                body["__type"]
+                    .as_str()
+                    .is_some_and(|kind| kind.contains("ResourceNotFoundException")),
+                "case {case:?}: expected a ResourceNotFoundException, got {:?}",
+                body["__type"]
+            );
+            assert_eq!(
+                body["Message"].as_str(),
+                Some(crate::missing_resource_lookups::WORKFLOW_MISSING),
+                "case {case:?}: expected the workflow's entity-level message, got {:?}",
+                body["Message"]
+            );
+            assert_eq!(
+                body["ResourceType"].as_str(),
+                Some("Workflow"),
+                "case {case:?}: expected the workflow resource type, got {:?}",
+                body["ResourceType"]
+            );
+            let reported = body["ResourceId"].as_str().unwrap_or_default();
+            assert!(
+                !reported.is_empty() && arn.ends_with(reported),
+                "case {case:?}: expected the workflow's own identifier, got {reported:?}"
+            );
+        }
+    }
 }

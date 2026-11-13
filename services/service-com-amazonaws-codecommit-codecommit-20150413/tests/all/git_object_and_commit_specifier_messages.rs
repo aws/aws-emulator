@@ -57,12 +57,17 @@ const ABSENT_OBJECT_ID: &str = "0123456789abcdef0123456789abcdef01234567";
 const PARENT_COMMIT_DOES_NOT_EXIST: &str =
     "The parent commit ID is not valid. The specified parent commit ID does not exist.";
 
-/// `BlobIdDoesNotExistException`'s text: a well-formed object name that no object
-/// carries names which blob could not be found — the counterpart of the form check,
-/// which names the value it rejected as malformed.
+/// `BlobIdDoesNotExistException`'s text on the single-object READ: a well-formed
+/// object name that no object carries names which blob could not be found — the
+/// counterpart of the form check, which names the value it rejected as malformed.
 fn blob_id_does_not_exist(blob_id: &str) -> String {
     format!("AWS CodeCommit could not find the blob {blob_id} in the repository.")
 }
+
+/// `BlobIdDoesNotExistException`'s text on the COMPARISON path, where CodeCommit
+/// states the condition alone and interpolates no value — spelled out here rather
+/// than read from the crate, for the reason the constants above are.
+const BLOB_NOT_IN_REPOSITORY: &str = "The specified blob does not exist in the repository.";
 
 /// `InvalidBlobIdException`'s text for a value that does not name a git object.
 fn invalid_blob_id(blob_id: &str) -> String {
@@ -211,9 +216,10 @@ async fn invalid_blob_id_message_names_the_rejected_id() {
 }
 
 /// A blob id that IS an object name but names no object this repository holds is a
-/// different refusal: the lookup's own code, worded with its own sentence, which names
-/// the object the request asked for and not the repository. Pinned beside the form check
-/// so the two cannot collapse into one.
+/// different refusal: the lookup's own code, worded as the OPERATION words it. The
+/// single-object read names the object the request asked for; the comparison states only
+/// the condition, interpolating nothing. Neither names the repository. Pinned beside the
+/// form check so the two cannot collapse into one.
 #[tokio::test]
 async fn an_object_name_the_repository_does_not_hold_is_a_different_refusal() {
     let router = emulator();
@@ -238,15 +244,18 @@ async fn an_object_name_the_repository_does_not_hold_is_a_different_refusal() {
     ];
     for (label, missing) in absent {
         // Each row is asked of every member that carries a blob id: `GetBlob`'s `blobId`,
-        // and both sides of `GetBlobDifferences`.
-        let requests: Vec<(&str, Value)> = vec![
+        // and both sides of `GetBlobDifferences` — each beside the sentence that operation
+        // words this code with.
+        let requests: Vec<(&str, Value, String)> = vec![
             (
                 "GetBlob",
                 json!({ "repositoryName": repository, "blobId": missing }),
+                blob_id_does_not_exist(&missing),
             ),
             (
                 "GetBlobDifferences",
                 json!({ "repositoryName": repository, "afterBlobId": missing }),
+                BLOB_NOT_IN_REPOSITORY.to_string(),
             ),
             (
                 "GetBlobDifferences",
@@ -255,9 +264,10 @@ async fn an_object_name_the_repository_does_not_hold_is_a_different_refusal() {
                     "beforeBlobId": missing,
                     "afterBlobId": held,
                 }),
+                BLOB_NOT_IN_REPOSITORY.to_string(),
             ),
         ];
-        for (operation, body) in requests {
+        for (operation, body, expected) in requests {
             let (code, message) =
                 error_with_message(&router, operation, &body, CLIENT_ERROR_STATUS).await;
             assert_eq!(
@@ -265,9 +275,6 @@ async fn an_object_name_the_repository_does_not_hold_is_a_different_refusal() {
                 "case ({operation}, {label}): expected code BlobIdDoesNotExistException, got \
                  {code:?}"
             );
-            // The refusal names the object as the request spelled it; an object name is
-            // hexadecimal, so its case does not change which object it names.
-            let expected = blob_id_does_not_exist(&missing);
             assert_eq!(
                 message, expected,
                 "case ({operation}, {label}): expected message {expected:?}, got {message:?}"

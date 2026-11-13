@@ -2,28 +2,45 @@
 
 //! `CheckDNSAvailability`, over the service's awsQuery HTTP surface.
 //!
-//! The rule under test: the CNAME a prefix forms is the address the environment
-//! holding it is SERVED at — the emulator's own endpoint with the environment's
-//! Region and that prefix in the path, because a client reads that address and
-//! dials it — it can be RESERVED by at most ONE live environment in its Region —
-//! the one that took it when it was created and still carries it — and it is
-//! available exactly when the prefix can be a host name label at all and no live
-//! environment holds that reservation. Checking a prefix is a REPORT: it reserves
-//! nothing and releases nothing. What a swap leaves of those reservations is
-//! `cname_reservation.rs`.
+//! The rules under test: the DNS name a prefix forms is
+//! `<prefix>.<region>.elasticbeanstalk.com`, which is what
+//! `FullyQualifiedCNAME` reports — the name the check is ABOUT — while the
+//! address the environment holding it is SERVED at is the emulator's own endpoint
+//! with the environment's Region and that prefix in the path, because a client
+//! reads THAT address and dials it. The name can be RESERVED by at most ONE live
+//! environment in its Region — the one that took it when it was created and still
+//! carries it — and it is available exactly when the prefix can be a host name
+//! label at all and no live environment holds that reservation. Checking a prefix
+//! is a REPORT: it reserves nothing and releases nothing. What a swap leaves of
+//! those reservations is `cname_reservation.rs`.
 //!
 //! The HTTP harness (the router, the form encoder and the XML element reader) is
 //! the one `lifecycle.rs` already owns in this same test binary, so this suite
 //! adds no second copy of it.
 
-use crate::lifecycle::{Emulator, PAST_DUE, SOLUTION_STACK, TEST_REGION};
+use crate::lifecycle::{Emulator, SOLUTION_STACK, TEST_REGION};
+
+/// How long a poll below waits for a transition the CLOCK owes to be completed before it
+/// gives up: generous, so a loaded host is not what decides the outcome. The transition
+/// itself is the service's own span, which is far shorter.
+const RELEASE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// How long a poll below waits between two looks.
+const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(50);
 
 /// The address `prefix` forms in `region`, as `state::environment_cname` builds
 /// it: the socket this emulator serves the environment plane on, then the plane
 /// path that prefix's environment is served at. Read off the emulator, because
 /// the port that socket answers on is the core's to choose.
-fn fully_qualified(emulator: &Emulator, prefix: &str, region: &str) -> String {
+fn served_at(emulator: &Emulator, prefix: &str, region: &str) -> String {
     emulator.environment_address(region, prefix)
+}
+
+/// The DNS name `prefix` forms in `region`, as `CheckDNSAvailability` reports it:
+/// `<prefix>.<region>.elasticbeanstalk.com`, spelled out here rather than read off
+/// the crate so the FORM is what this suite holds the report to.
+fn dns_name(prefix: &str, region: &str) -> String {
+    format!("{prefix}.{region}.elasticbeanstalk.com")
 }
 
 /// One `CheckDNSAvailability` call: its prefix, the region it is signed for, and
@@ -71,7 +88,7 @@ async fn availability_is_derived_from_the_prefix_and_the_live_environments() {
     );
     assert_eq!(
         held.expect("CNAME", "setup"),
-        fully_qualified(&emulator, "held-prefix", TEST_REGION),
+        served_at(&emulator, "held-prefix", TEST_REGION),
         "case \"setup\": the environment must hold the CNAME its prefix forms, got {}",
         held.body
     );
@@ -174,7 +191,7 @@ async fn availability_is_derived_from_the_prefix_and_the_live_environments() {
         );
         assert_eq!(
             answer.expect("FullyQualifiedCNAME", case.name),
-            fully_qualified(&emulator, case.prefix, case.region),
+            dns_name(case.prefix, case.region),
             "case {:?}: unexpected FullyQualifiedCNAME in {}",
             case.name,
             answer.body
@@ -289,7 +306,7 @@ async fn checking_a_prefix_neither_reserves_nor_releases_it() {
         .await;
     assert_eq!(
         described.values_at("Environments/member/CNAME"),
-        vec![fully_qualified(&emulator, prefix, TEST_REGION).as_str()],
+        vec![served_at(&emulator, prefix, TEST_REGION).as_str()],
         "case {case:?}: the checked name must still belong to its environment, got {}",
         described.body
     );
@@ -316,10 +333,19 @@ async fn checking_a_prefix_neither_reserves_nor_releases_it() {
         "case {case:?}: an environment still shutting down keeps its name, got {}",
         while_terminating.body
     );
-    tokio::time::sleep(PAST_DUE).await;
-    let after_termination = emulator
-        .call("CheckDNSAvailability", &[("CNAMEPrefix", prefix)])
-        .await;
+    // Completing the termination is a transition the CLOCK owes, so the name becomes
+    // available again on its own: look again until it is, or until a generous deadline
+    // passes — what is asserted is the CONDITION, never how fast this host reached it.
+    let deadline = std::time::Instant::now() + RELEASE_DEADLINE;
+    let after_termination = loop {
+        let answer = emulator
+            .call("CheckDNSAvailability", &[("CNAMEPrefix", prefix)])
+            .await;
+        if answer.expect("Available", case) == "true" || std::time::Instant::now() >= deadline {
+            break answer;
+        }
+        tokio::time::sleep(POLL_INTERVAL).await;
+    };
     assert_eq!(
         after_termination.expect("Available", case),
         "true",
@@ -420,7 +446,7 @@ async fn create_environment_holds_the_same_cname_rule() {
     );
     assert_eq!(
         elsewhere.expect("CNAME", "another region"),
-        fully_qualified(&emulator, "taken-prefix", "eu-central-1"),
+        served_at(&emulator, "taken-prefix", "eu-central-1"),
         "case \"another region\": unexpected CNAME in {}",
         elsewhere.body
     );

@@ -541,9 +541,8 @@ async fn a_refusal_of_what_the_request_carries_is_a_query_api_parameter_error() 
             code: INVALID_PARAMETER_VALUE,
             wording: Wording::Says("OptInType"),
         },
-        // Rule 2: the required identifier resolves to no resource. An ARN naming a resource
-        // KIND this front door owns is the modelled not-found fault; a value naming no such
-        // resource at all is refused on the MEMBER that carried it.
+        // Rule 2: the required identifier resolves to no resource, and every such value is
+        // refused on the MEMBER that carried it, whichever resource kind it names.
         Row {
             case: "ApplyPendingMaintenanceAction over an ARN of a resource never created",
             action: "ApplyPendingMaintenanceAction",
@@ -552,9 +551,12 @@ async fn a_refusal_of_what_the_request_carries_is_a_query_api_parameter_error() 
                 "ApplyAction" => "system-update",
                 "OptInType" => "immediate",
             ],
-            status: 404,
-            code: "ResourceNotFoundFault",
-            wording: Wording::Exact("Resource not found: emu-rcls-absent".to_string()),
+            status: 400,
+            code: INVALID_PARAMETER_VALUE,
+            wording: Wording::Exact(format!(
+                "Unknown resource: {}",
+                instance_arn("emu-rcls-absent")
+            )),
         },
         Row {
             case: "ApplyPendingMaintenanceAction over a value that is no ARN at all",

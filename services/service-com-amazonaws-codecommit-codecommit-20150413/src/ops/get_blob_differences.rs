@@ -159,11 +159,22 @@ const MAX_CHANGES_PER_HUNK: usize = 25_000;
 const MAX_COMPARED_BYTES: usize = crate::state::merge::MAX_MERGE_FILE_BYTES;
 const MAX_COMPARED_LINES: usize = crate::state::merge::MAX_MERGE_FILE_LINES;
 
-/// How many line comparisons one request may ask for: the PRODUCT the two per-side
-/// bounds leave open, since aligning two blobs costs on the order of the product of
-/// their line counts. The emulator's own bound, well above comparing two files of a
-/// few thousand lines each.
-const MAX_COMPARED_LINE_PRODUCT: usize = 16 * 1024 * 1024;
+/// How many lines one request may ask to be ALIGNED, counting both sides together.
+///
+/// The alignment is a Myers line diff, whose cost is on the order of `(N + M) · D` for
+/// line counts `N` and `M` and edit distance `D`. `D` is bounded by `N + M` and by
+/// nothing smaller — two blobs of equal length sharing no line have an edit distance of
+/// their whole content — so the quantity that bounds the work is the SUM of the two
+/// sides, which the per-side bounds alone leave open: a blob at [`MAX_COMPARED_LINES`]
+/// against a one-line blob is a small product and a large alignment. Charging the sum
+/// against this budget bounds the elementary steps the comparison can cost at
+/// `MAX_COMPARED_LINES_COMBINED` squared, which is what makes the `diffy` call one short
+/// synchronous unit.
+///
+/// The budget is the per-side line bound itself, so the two together admit a pair of
+/// files of a few thousand lines each and nothing larger, whichever way the lines are
+/// distributed between the two sides.
+const MAX_COMPARED_LINES_COMBINED: usize = MAX_COMPARED_LINES;
 
 /// How long one comparison may take before it is refused: the same figure, for the
 /// same reason, as the crate's other caller-driven CPU work
@@ -256,9 +267,11 @@ struct Aligned {
 /// [`hunks_of`], against the caller's `contextLines`, which is not a unified diff's
 /// context.
 ///
-/// `None` where the comparison ran out of time: the bounds the handler applies make
-/// the `diffy` call itself one short synchronous unit, and the deadline is what bounds
-/// the per-line walk after it on any machine.
+/// `None` where the comparison ran out of time: the handler charges the two sides'
+/// COMBINED line count against [`MAX_COMPARED_LINES_COMBINED`] before calling this,
+/// which bounds the `(N + M) · D` the alignment can cost and so makes the `diffy` call
+/// itself one short synchronous unit, and the deadline is what bounds the per-line walk
+/// after it on any machine.
 fn aligned_lines(
     before_lines: &[&str],
     after_lines: &[&str],
@@ -603,9 +616,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 })?;
             // A blob belongs to the repository that holds it: an object name this
             // repository has no object for does not exist here, whatever another
-            // repository holds under it. The refusal names the object as the REQUEST
-            // spelled it, since that is the value the caller asked about.
-            let blob = |blob_id: &str, requested: &str| {
+            // repository holds under it. The COMPARISON words that condition in its
+            // own fixed sentence, which names neither the object asked about nor the
+            // repository it was looked for in — unlike the single-object read.
+            let blob = |blob_id: &str| {
                 repository
                     .blob(blob_id)
                     .map(<[u8]>::to_vec)
@@ -613,18 +627,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                         GetBlobDifferencesErrorModeled::BlobIdDoesNotExistException(
                             BlobIdDoesNotExistException {
                                 message: Some(
-                                    crate::state::blob_id_does_not_exist_message(requested),
+                                    crate::state::BLOB_NOT_IN_REPOSITORY_MESSAGE.to_string(),
                                 ),
                             },
                         )
                     })
             };
-            let after = blob(&after_id, after_raw)?;
+            let after = blob(&after_id)?;
             // No `beforeBlobId` is an empty before-state, "equivalent to treating the
             // file as newly added", and its reported size is 0.
-            let before = match (&before_id, before_raw) {
-                (Some(blob_id), Some(requested)) => blob(blob_id, requested)?,
-                _ => Vec::new(),
+            let before = match &before_id {
+                Some(blob_id) => blob(blob_id)?,
+                None => Vec::new(),
             };
             (before, after)
         };
@@ -662,9 +676,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             if before_lines.len() > MAX_COMPARED_LINES || after_lines.len() > MAX_COMPARED_LINES {
                 return Err(too_large().into());
             }
-            // The cost is the PRODUCT of the two sides, which the per-side bounds
-            // leave open, so it is charged here before any comparison runs.
-            if before_lines.len().saturating_mul(after_lines.len()) > MAX_COMPARED_LINE_PRODUCT {
+            // The cost of the alignment is driven by the SUM of the two sides, which
+            // the per-side bounds leave open, so it is charged here before any
+            // comparison runs ([`MAX_COMPARED_LINES_COMBINED`]).
+            if before_lines
+                .len()
+                .saturating_add(after_lines.len())
+                > MAX_COMPARED_LINES_COMBINED
+            {
                 return Err(too_large().into());
             }
 

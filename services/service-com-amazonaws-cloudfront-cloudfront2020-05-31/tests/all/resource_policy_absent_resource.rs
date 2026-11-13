@@ -13,8 +13,9 @@
 //!   HTTP 400 `InvalidArgument` with [`MALFORMED_ARN_MESSAGE`];
 //! * an ARN this service holds no resource for is reported ABSENT — HTTP 404 `EntityNotFound`
 //!   with [`NO_SUCH_RESOURCE_MESSAGE`], the sentence CloudFront answers for that class —
-//!   whatever resource type the ARN names, since there is no resource to attach a policy to,
-//!   read one from or remove one from;
+//!   whatever resource type the ARN names, the type this surface attaches policies to
+//!   included, since there is no resource to attach a policy to, read one from or remove one
+//!   from;
 //! * an ARN naming a resource this service DOES hold, of a type that takes no resource
 //!   policy, is refused on that TYPE — HTTP 400 `InvalidArgument`, worded as each operation
 //!   words it (the two WRITES name the resource type they want,
@@ -32,10 +33,9 @@
 //! suites', reused rather than copied.
 
 use service_com_amazonaws_cloudfront_cloudfront2020_05_31::state::{
-    vpc_origin_arn, INVALID_RESOURCE_POLICY_ARN_MESSAGE,
-    INVALID_RESOURCE_POLICY_RESOURCE_TYPE_MESSAGE, MALFORMED_ARN_MESSAGE, MANAGED_CACHE_POLICIES,
-    NO_SUCH_RESOURCE_MESSAGE, RESOURCE_POLICY_NOT_FOUND_MESSAGE, RESOURCE_POLICY_RESOURCE_TYPE,
-    TAGGABLE_RESOURCE_TYPES,
+    INVALID_RESOURCE_POLICY_ARN_MESSAGE, INVALID_RESOURCE_POLICY_RESOURCE_TYPE_MESSAGE,
+    MALFORMED_ARN_MESSAGE, MANAGED_CACHE_POLICIES, NO_SUCH_RESOURCE_MESSAGE,
+    RESOURCE_POLICY_NOT_FOUND_MESSAGE, RESOURCE_POLICY_RESOURCE_TYPE, TAGGABLE_RESOURCE_TYPES,
 };
 use smithy_server_runtime::MultiServiceRouter;
 
@@ -44,8 +44,8 @@ use crate::function_lifecycle::create_key_value_store;
 use crate::public_key_lifecycle::{create_key, pem, Key};
 use crate::resource_policy_delete::delete_resource_policy;
 use crate::resource_policy_lifecycle::{
-    distribution_config, get_resource_policy, message, policy, put_resource_policy,
-    reported_document, OTHER_RESOURCE_TYPES,
+    created_vpc_origin_arn, distribution_config, get_resource_policy, message, policy,
+    put_resource_policy, reported_document, OTHER_RESOURCE_TYPES,
 };
 
 /// What the surface answers a row with: a status, an error code and, per operation, the
@@ -173,7 +173,7 @@ async fn the_resource_policy_surface_tells_an_absent_resource_from_a_type_it_ref
 
     // The policy every refusal below has to leave exactly as it is: the surface accepts this
     // ARN, so none of the rows may write under it or remove what it carries.
-    let kept_arn = vpc_origin_arn("vo-survives-the-gate");
+    let kept_arn = created_vpc_origin_arn(&router, "vo-survives-the-gate").await;
     let kept = policy("survivor");
     let written = put_resource_policy(&router, &kept_arn, &kept).await;
     assert_eq!(
@@ -188,15 +188,13 @@ async fn the_resource_policy_surface_tells_an_absent_resource_from_a_type_it_ref
         .map(|(case, arn)| (case.clone(), arn.clone(), Expected::WrongType))
         .collect();
 
-    // Every resource type this service mints an ARN for, OTHER than the one this surface
-    // attaches policies to, each naming a resource the store holds none of: the ANSWER is the
-    // absent one, whatever the type. The ACCEPTED type is answered by whether the ARN carries
-    // a policy rather than by whether the resource is there, which the rows below cover.
+    // Every resource type this service mints an ARN for, each naming a resource the store
+    // holds none of: the ANSWER is the absent one, whatever the type — the one this surface
+    // attaches policies to included, since a policy is attached TO a resource.
     rows.extend(
         TAGGABLE_RESOURCE_TYPES
             .iter()
             .chain(OTHER_RESOURCE_TYPES.iter())
-            .filter(|kind| **kind != RESOURCE_POLICY_RESOURCE_TYPE)
             .map(|kind| {
                 (
                     format!("an absent {kind}"),
@@ -320,22 +318,23 @@ async fn an_accepted_arn_carrying_no_policy_is_the_surfaces_own_existence_answer
 
     // An ARN the surface DOES accept carries its own existence answer — whether a policy is
     // attached to it — which is a different 404 from "this service holds no such resource":
-    // same code, the surface's own sentence. The rows differ along the ARN's partition,
-    // region and account segments and the form of the resource id.
-    let rows = [
-        ("the ARN this service mints", vpc_origin_arn("vo-no-policy")),
-        ("a one-character id", vpc_origin_arn("7")),
+    // same code, the surface's own sentence. The rows differ along the endpoint configuration
+    // the resource was created from.
+    let mut rows: Vec<(&str, String)> = Vec::new();
+    for (case, name) in [
+        ("the first resource created", "vo-no-policy".to_string()),
+        ("a one-character resource name", "7".to_string()),
         (
-            "an id in the other partition",
-            format!("arn:aws-cn:cloudfront::{ACCOUNT_ID}:{RESOURCE_POLICY_RESOURCE_TYPE}/vo-cn"),
+            "a resource name carrying separators",
+            "vo.no_policy-2".to_string(),
         ),
         (
-            "an ARN carrying a region segment and another account",
-            format!(
-                "arn:aws:cloudfront:us-east-1:111122223333:{RESOURCE_POLICY_RESOURCE_TYPE}/vo-x"
-            ),
+            "a resource name of sixty-four characters",
+            "p".repeat(64),
         ),
-    ];
+    ] {
+        rows.push((case, created_vpc_origin_arn(&router, &name).await));
+    }
 
     for (case, arn) in &rows {
         for (operation, answer) in [

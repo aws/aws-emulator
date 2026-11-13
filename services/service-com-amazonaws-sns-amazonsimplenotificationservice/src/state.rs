@@ -564,7 +564,7 @@ pub const MAX_MAXIMUM_MESSAGE_SIZE: u64 = 1_048_576;
 /// emulator gives no meaning to (`NotAction`, `NotPrincipal`, …) are kept in `other`
 /// so editing a caller's policy never drops part of it, and every member but `Effect`
 /// is optional: `Effect` is the one member a policy statement cannot be read without.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct TopicPolicyStatement {
     #[serde(rename = "Sid", skip_serializing_if = "Option::is_none", default)]
     pub sid: Option<String>,
@@ -734,9 +734,13 @@ pub const ACTION_OUT_OF_SCOPE_REFUSAL: &str =
     "Invalid parameter: Policy statement action out of service scope!";
 
 /// The sentence SNS refuses a grant under a `Label` the topic's policy already carries a
-/// statement for with: a label identifies ONE statement, so the grant it names is either
-/// added or already there. Recorded evidence: a second `AddPermission` of one label
-/// answers `400 InvalidParameter` with exactly this.
+/// DIFFERENT statement for with: a label identifies ONE statement, so a second grant under
+/// it would have to replace that statement, which this call does not do. Recorded evidence:
+/// a second `AddPermission` of one label answers `400 InvalidParameter` with exactly this.
+///
+/// A repeat that would add the statement the policy ALREADY carries, identically, asks for
+/// the state the topic is already in and is served instead
+/// ([`TopicPolicyDocument::position_of`] and the grant comparison in the handler).
 pub const STATEMENT_ALREADY_EXISTS_REFUSAL: &str = "Invalid parameter: Statement already exists";
 
 /// Whether `name` is an action Amazon SNS defines ([`ACTION_NAMES`]) — the question a

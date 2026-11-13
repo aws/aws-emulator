@@ -353,7 +353,7 @@ const INSTANCE_MEMBERS: [&str; 32] = [
     "virtualizationType",
 ];
 
-/// One reservation as a response reports it: the groups that apply to all of its instances,
+/// One reservation as a response reports it: the launch request's own (EC2-Classic) groups,
 /// and its instances.
 #[derive(Debug, Clone)]
 struct Reservation {

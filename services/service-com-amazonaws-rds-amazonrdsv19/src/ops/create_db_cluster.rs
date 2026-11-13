@@ -799,7 +799,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 crate::state::check_serverless_v2_scaling(
                     &input.engine,
                     input.engine_version.as_deref().unwrap_or("(default)"),
-                    resolved_version.and_then(|entry| entry.profile.serverless_v2_capacity),
+                    resolved_version.and_then(|entry| entry.profile.serverless_v2_scaling_range()),
                     asked.min_capacity,
                     asked.max_capacity,
                     asked.seconds_until_auto_pause,

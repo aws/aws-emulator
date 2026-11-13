@@ -4,11 +4,15 @@
 //! over the base table and over a secondary index.
 //!
 //! THE RULE: a resume token is read back through the schema being paged, and a token that is
-//! no key of that schema is refused as the invalid TOKEN it is — AWS's fixed sentence naming
-//! neither the attribute nor the schema — whether it names an attribute the schema declares
-//! no key for, carries one beside the key, or leaves a key attribute out. The ONE defect AWS
-//! diagnoses further is a key element carrying another TYPE than the schema declares for it:
-//! that sentence states the token invalid and then the key-schema reason after a colon.
+//! no key of that schema AT ALL is refused as the invalid TOKEN it is — AWS's fixed sentence
+//! naming neither the attribute nor the schema — whether it names an attribute the schema
+//! declares no key for, carries one beside the key, or carries no attribute at all. A token
+//! whose attributes ARE that schema's key attributes but which states one of them WRONGLY is
+//! diagnosed further: that sentence states the token invalid and then the key-schema reason
+//! after a colon. Two defects are stated that way on the BASE table — a key element carrying
+//! another TYPE than the schema declares for it, and a declared key element the token left
+//! out — while an INDEX cursor carries both schemas' key attributes, so one it does not
+//! carry in full is not that cursor at all.
 //!
 //! The rows differ along HOW the token fails to be that key, along the SCHEMA being paged
 //! (a single-attribute table, a composite one, a global secondary index and a local one),
@@ -26,8 +30,8 @@ use crate::emulator::{call, describe_when_active, emulator, error_code, message,
 /// AWS's sentence for a token that is no key of the schema being paged.
 const INVALID: &str = "The provided starting key is invalid";
 
-/// AWS's sentence for a token whose key element carries another type than that schema
-/// declares for it.
+/// AWS's sentence for a token whose attributes are that schema's key attributes but which
+/// states one of them wrongly — carrying another type than declared, or leaving it out.
 const TYPE_MISMATCH: &str =
     "The provided starting key is invalid: The provided key element does not match the schema";
 
@@ -177,7 +181,7 @@ fn rows() -> Vec<Row> {
             index: None,
             partition: one.clone(),
             token: json!({"pk": {"S": "one"}}),
-            stated: INVALID,
+            stated: TYPE_MISMATCH,
         },
         Row {
             case: "a composite table, a third attribute beside both keys",

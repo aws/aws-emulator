@@ -151,17 +151,26 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         store.materialize_due_transitions();
 
         // "The fully qualified CNAME to reserve when CreateEnvironment is called
-        // with the provided prefix" — the same derivation CreateEnvironment stores,
-        // so the two cannot disagree about which name a prefix names. It is
-        // reported for an unusable prefix too: the member says which name the
-        // prefix WOULD form, and `Available` is what says it cannot be had.
+        // with the provided prefix" — the DNS NAME the prefix forms in this
+        // Region ([`crate::state::fully_qualified_cname`]), which is what this
+        // report is about: the caller reads it beside `Available` and then
+        // creates an environment under that prefix. It is reported for an
+        // unusable prefix too: the member says which name the prefix WOULD form,
+        // and `Available` is what says it cannot be had.
+        //
+        // The RESERVATION is held against the address the environment holding
+        // that prefix is SERVED at, which is this emulator's own socket, so the
+        // lookup below is made with that address while the report carries the
+        // name.
         let fully_qualified_cname =
+            crate::state::fully_qualified_cname(&region, &input.cname_prefix);
+        let served_at =
             crate::state::environment_cname(&plane_authority, &region, &input.cname_prefix);
         // Available unless the name cannot exist at all, or a live environment
         // holds the RESERVATION for it. Nothing is written for the answer:
         // checking a prefix neither reserves a free one nor releases a held one.
         let available = crate::state::is_legal_cname_prefix(&input.cname_prefix)
-            && crate::state::environment_reserving_cname(&store, &fully_qualified_cname).is_none();
+            && crate::state::environment_reserving_cname(&store, &served_at).is_none();
 
         Ok(CheckDNSAvailabilityOutput {
             available: Some(available),

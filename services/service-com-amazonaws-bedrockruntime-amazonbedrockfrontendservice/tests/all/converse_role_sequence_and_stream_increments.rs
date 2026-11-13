@@ -4,11 +4,10 @@
 //! service will answer at all, and how a streamed turn's content reaches a
 //! client.
 //!
-//! * the ROLE SEQUENCE of a conversation is not a precondition of being served —
-//!   `Messages` is a plain list and `Message.role` a required `ConversationRole`
-//!   with no constraint on the order its values may appear in, so a conversation
-//!   that repeats a role or opens on one other than `user` is answered like any
-//!   other, and only a conversation with no turn to answer is refused;
+//! * the OPENING TURN of a conversation is a precondition of being served: a
+//!   conversation whose first `Message.role` is `user` is answered whatever
+//!   sequence the roles after it form, and one that opens on any other
+//!   `ConversationRole` value — or carries no turn at all — is refused;
 //! * a streamed content block arrives as the INCREMENTS a client appends: several
 //!   `contentBlockDelta` events, each carrying that block's own
 //!   `contentBlockIndex`, which reassemble to exactly what `Converse` answers
@@ -56,10 +55,11 @@ struct SequenceRow {
     messages: Value,
 }
 
-/// The role-sequence table: the rows differ along which role opens the
-/// conversation, how often a role repeats, how many turns there are and which
-/// `ConversationRole` value a turn carries — the enum's three values are `user`,
-/// `assistant` and `system`.
+/// The role-sequence table: every row opens on a `user` turn, as the opening-turn
+/// rule requires, and the rows differ along how often a role repeats after that
+/// opening turn, how many turns there are and which `ConversationRole` value a
+/// later turn carries — the enum's three values are `user`, `assistant` and
+/// `system`.
 fn sequence_rows() -> Vec<SequenceRow> {
     vec![
         SequenceRow {
@@ -97,9 +97,9 @@ fn sequence_rows() -> Vec<SequenceRow> {
             ]),
         },
         SequenceRow {
-            case: "a conversation that opens on the assistant",
+            case: "a single user turn and nothing else",
             model_id: "amazon.nova-pro-v1:0",
-            messages: json!([turn("assistant", "Shall I continue?"), turn("user", "Yes.")]),
+            messages: json!([turn("user", "Shall I continue?")]),
         },
         SequenceRow {
             case: "an assistant turn repeated",
@@ -111,24 +111,24 @@ fn sequence_rows() -> Vec<SequenceRow> {
             ]),
         },
         SequenceRow {
-            case: "a single assistant turn and nothing else",
+            case: "a conversation that ends on the assistant",
             model_id: "cohere.command-r-plus-v1:0",
-            messages: json!([turn("assistant", "hi")]),
+            messages: json!([turn("user", "hi"), turn("assistant", "hello")]),
         },
         SequenceRow {
             case: "a system-role turn inside the conversation",
             model_id: "amazon.nova-lite-v1:0",
             messages: json!([
-                turn("system", "Answer in one sentence."),
                 turn("user", "Why are cursors opaque?"),
+                turn("system", "Answer in one sentence."),
             ]),
         },
     ]
 }
 
-/// RULE: the ORDER of a conversation's roles is not a precondition of serving it
-/// — the service answers a conversation whatever sequence its `Message.role`
-/// values form, repeated roles and a non-`user` opening turn included — so what a
+/// RULE: once a conversation opens on a `user` turn, the ORDER of the roles that
+/// follow is not a precondition of serving it — the service answers whatever
+/// sequence those `Message.role` values form, repeated roles included — so what a
 /// turn reports is the assistant's own message, a modelled `stopReason` and the
 /// usage counted for the request.
 #[tokio::test]
@@ -213,11 +213,12 @@ async fn a_conversation_is_served_whatever_order_its_roles_appear_in() {
     }
 }
 
-/// RULE (the one sequence precondition that is left): a request with no
-/// conversation to answer is refused `400 ValidationException`, on both Converse
+/// RULE: a conversation that does not open on a `user` turn — one with no turn at
+/// all, or one whose leading `Message.role` is another `ConversationRole` value —
+/// is refused `400 ValidationException`, with the same sentence on both Converse
 /// surfaces.
 #[tokio::test]
-async fn a_request_with_no_turn_to_answer_is_refused() {
+async fn a_conversation_that_does_not_open_on_a_user_turn_is_refused() {
     let router = emulator();
     let model_id = "amazon.nova-lite-v1:0";
 
@@ -227,6 +228,24 @@ async fn a_request_with_no_turn_to_answer_is_refused() {
         (
             "an empty conversation beside an inference configuration",
             json!({ "messages": [], "inferenceConfig": {"maxTokens": 32} }),
+        ),
+        (
+            "a single assistant turn and nothing else",
+            json!({ "messages": [turn("assistant", "hi")] }),
+        ),
+        (
+            "a conversation that opens on the assistant",
+            json!({ "messages": [
+                turn("assistant", "Shall I continue?"),
+                turn("user", "Yes."),
+            ] }),
+        ),
+        (
+            "a conversation that opens on a system turn",
+            json!({ "messages": [
+                turn("system", "Answer in one sentence."),
+                turn("user", "Why are cursors opaque?"),
+            ] }),
         ),
     ] {
         for surface in ["converse", "converse-stream"] {
@@ -243,6 +262,12 @@ async fn a_request_with_no_turn_to_answer_is_refused() {
                 "ValidationException",
                 "case {case:?} on {surface}: expected ValidationException, got {:?}",
                 call.error_code()
+            );
+            assert_eq!(
+                call.json()["message"].as_str(),
+                Some(state::NO_OPENING_USER_TURN),
+                "case {case:?} on {surface}: expected the opening-turn refusal, got {}",
+                String::from_utf8_lossy(&call.body)
             );
         }
     }

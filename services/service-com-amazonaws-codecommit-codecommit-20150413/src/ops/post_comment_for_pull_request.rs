@@ -402,27 +402,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             crate::scaffolded::Scaffolded::validation("the repository store is unavailable")
         })?;
         let mut store = state.lock();
-        // The repository is resolved FIRST: it is the resource the request is scoped
-        // to, and a pull request is addressable only within one, so a name the
-        // account holds no repository for is reported as naming none whatever the
-        // pull request id holds.
-        if !store.repositories.contains_key(&input.repository_name) {
-            return Err(
-                PostCommentForPullRequestErrorModeled::RepositoryDoesNotExistException(
-                    RepositoryDoesNotExistException {
-                        message: Some(crate::state::repository_does_not_exist_message(
-                            &input.repository_name,
-                        )),
-                    },
-                )
-                .into(),
-            );
-        }
         // Whether the id names a pull request AT ALL is a question about the whole
-        // store, because a pull request id is unique per account; it is answered
-        // before the named repository's own pull requests are read, so an id naming
-        // no pull request anywhere is reported as naming none rather than as one
-        // this repository does not hold.
+        // store, because a pull request id is unique per account — and it is the
+        // question this write answers FIRST, exactly as the read of the same
+        // comments does, so an id naming no pull request anywhere is reported as
+        // naming none whatever the repository name holds.
         if store.pull_request(pull_request_id).is_none() {
             return Err(
                 PostCommentForPullRequestErrorModeled::PullRequestDoesNotExistException(
@@ -430,6 +414,21 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                         message: Some(
                             crate::state::PULL_REQUEST_DOES_NOT_EXIST_MESSAGE.to_string(),
                         ),
+                    },
+                )
+                .into(),
+            );
+        }
+        // The pull request resolved, so the repository the request names is resolved
+        // next: it is the resource the write is scoped to, and a name the account
+        // holds no repository for is reported as naming none.
+        if !store.repositories.contains_key(&input.repository_name) {
+            return Err(
+                PostCommentForPullRequestErrorModeled::RepositoryDoesNotExistException(
+                    RepositoryDoesNotExistException {
+                        message: Some(crate::state::repository_does_not_exist_message(
+                            &input.repository_name,
+                        )),
                     },
                 )
                 .into(),

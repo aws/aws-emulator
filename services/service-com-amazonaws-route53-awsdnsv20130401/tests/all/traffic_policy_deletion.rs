@@ -50,7 +50,9 @@ use crate::traffic_policies::{
 };
 use crate::traffic_policy_instance_deletion::delete_instance;
 use crate::traffic_policy_instances::create_instance;
-use crate::traffic_policy_not_found_envelope::assert_no_such_traffic_policy;
+use crate::traffic_policy_not_found_envelope::{
+    assert_identity_only, assert_no_such_traffic_policy,
+};
 use crate::traffic_policy_versions::create_version;
 
 /// The one sentence `TrafficPolicyInUse` reports, which names neither the
@@ -173,9 +175,15 @@ async fn listed_policies(router: &MultiServiceRouter, case: &str) -> Vec<(String
 }
 
 /// Assert that `(id, version)` is refused as a traffic policy version the
-/// account does not hold — the refusal Route 53 reports by its code alone.
+/// account does not hold, on an operation that STATES the refusal's sentence.
 fn assert_no_such_policy(case: &str, reply: &Reply) {
     assert_no_such_traffic_policy(reply, case);
+}
+
+/// Assert the same refusal as the DELETE words it: the refusal's identity alone, with no
+/// `Message` element on the wire.
+fn assert_delete_refused(case: &str, reply: &Reply) {
+    assert_identity_only(reply, case, "NoSuchTrafficPolicy");
 }
 
 // ---------------------------------------------------------------------------
@@ -393,7 +401,7 @@ async fn each_deleted_version_stops_being_one_the_account_holds() {
             // Deleting the same pair again has nothing left to delete, and
             // neither has an update of its comment.
             let again = delete_policy(&router, &id, &version.to_string()).await;
-            assert_no_such_policy(case, &again);
+            assert_delete_refused(case, &again);
             let updated = update_comment(&router, &id, &version.to_string(), "revived?").await;
             assert_no_such_policy(case, &updated);
             assert_reads_back(&router, case, &under_test[(version - 1) as usize]).await;
@@ -593,7 +601,7 @@ async fn an_id_or_version_the_account_does_not_hold_is_refused() {
 
     for (case, requested_id, version) in &rows {
         let reply = delete_policy(&case_router, requested_id, version).await;
-        assert_no_such_policy(case, &reply);
+        assert_delete_refused(case, &reply);
     }
 
     // Nothing the refusals touched: both versions still read back and both are

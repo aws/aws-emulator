@@ -2195,33 +2195,43 @@ pub fn content_block_tokens(block: &ContentBlock) -> u32 {
     })
 }
 
-/// The message-sequence rule both Converse APIs state: a conversation is a
-/// sequence of at least one turn, in whatever order the roles of those turns
-/// appear in.
+/// The opening-turn rule both Converse APIs state: a conversation is answered
+/// only when its FIRST turn is a `user` turn.
 ///
-/// The ORDER of the roles is not a precondition of being served. `Messages` is a
-/// plain list of `Message`, `Message.role` is a required `ConversationRole`
-/// (whose values are `user`, `assistant` and `system`), and neither shape
-/// constrains the sequence the roles may form — `Message`'s own documentation
-/// constrains only what content a role may carry (images and documents only on a
-/// `user` turn). A conversation that repeats a role, or opens on one other than
-/// `user`, is therefore served like any other: a client that appends two user
-/// turns before the assistant has answered, or re-appends a pending turn on a
-/// retry, is making a request this API takes.
+/// A turn is the model's answer to what a user asked, so the conversation the
+/// API takes has to open on the user: a request carrying no turn at all, or one
+/// whose leading `Message.role` is any other `ConversationRole` value
+/// (`assistant`, `system`), has nothing for the model to answer and is refused.
+/// What comes AFTER the opening turn is not constrained here: `Messages` is a
+/// plain list, so a conversation that repeats a role later on — two user turns
+/// appended before the assistant has answered, a pending turn re-appended by a
+/// retry — is served like any other.
 ///
-/// What is left is the one thing a turn cannot be served without: a conversation
-/// to answer. `Err` carries the refusal sentence, which the caller answers with
-/// the operation's own modelled `ValidationException` (400). `Converse` and
+/// `Err` carries the refusal sentence, which the caller answers with the
+/// operation's own modelled `ValidationException` (400). `Converse` and
 /// `ConverseStream` share this, so the same conversation is accepted or refused
 /// identically by both.
 pub fn validate_conversation(messages: Option<&Vec<Message>>) -> Result<&Vec<Message>, String> {
     match messages {
-        Some(messages) if !messages.is_empty() => Ok(messages),
-        _ => Err("A conversation must start with a user message. Try again with a \
-             conversation that starts with a user message."
-            .to_string()),
+        Some(messages)
+            if messages
+                .first()
+                .is_some_and(|first| first.role == CONVERSATION_ROLE_USER) =>
+        {
+            Ok(messages)
+        }
+        _ => Err(NO_OPENING_USER_TURN.to_string()),
     }
 }
+
+/// The `ConversationRole` value a conversation has to open on
+/// (smithy_query(query="shape", shape="ConversationRole")).
+pub const CONVERSATION_ROLE_USER: &str = "user";
+
+/// What both Converse surfaces answer a conversation that does not open on a
+/// `user` turn with.
+pub const NO_OPENING_USER_TURN: &str = "A conversation must start with a user message. Try again \
+                                        with a conversation that starts with a user message.";
 
 /// One served Converse-API turn: the assistant content this emulator answers
 /// with, the token accounting computed for it, and whether the generation cap

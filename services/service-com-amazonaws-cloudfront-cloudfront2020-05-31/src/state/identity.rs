@@ -381,15 +381,15 @@ pub fn associable_web_acl_arn(web_acl_arn: &str) -> bool {
 ///   one, so it is refused on its FORM;
 /// * [`ResourceArnRefusal::AbsentResource`] — an ARN naming no resource this service holds
 ///   ([`ComAmazonawsCloudfrontCloudfront20200531State::holds_resource`]) is reported ABSENT:
-///   there is no resource for a policy to be attached to, read from or removed from, which
-///   is a property of the store rather than of the parameter;
+///   there is no resource for a policy to be attached to, read from or removed from. A
+///   policy is attached TO a resource, so the resource has to exist first — an ARN of the
+///   accepted type that names nothing is this condition too, not an accepted call;
 /// * [`ResourceArnRefusal::WrongType`] — an ARN naming a resource this service DOES hold,
 ///   of a type other than [`RESOURCE_POLICY_RESOURCE_TYPE`], is refused on the resource TYPE
 ///   it names: that resource exists and takes no resource policy.
 ///
-/// The accepted type is not resolved against the store: a policy is keyed by the ARN it was
-/// attached to, and whether that key carries one is the surface's own existence answer
-/// ([`resource_policy_not_found`]).
+/// Whether the resource that exists carries a policy is a separate question, the surface's
+/// own existence answer for the POLICY ([`resource_policy_not_found`]).
 ///
 /// ONE rule for every operation of the surface, which all take the one `ResourceArn`, so no
 /// two of them can disagree about which values they accept. The SENTENCE each puts on the
@@ -403,14 +403,13 @@ pub fn resource_policy_arn_refusal(
     if !arn.starts_with(ARN_PREFIX) {
         return Some(ResourceArnRefusal::Malformed);
     }
+    if !store.holds_resource(arn) {
+        return Some(ResourceArnRefusal::AbsentResource);
+    }
     if resource_policy_resource(arn).is_some() {
         return None;
     }
-    Some(if store.holds_resource(arn) {
-        ResourceArnRefusal::WrongType
-    } else {
-        ResourceArnRefusal::AbsentResource
-    })
+    Some(ResourceArnRefusal::WrongType)
 }
 
 /// Why a `ResourceArn` names no resource the resource-policy surface attaches policies to.

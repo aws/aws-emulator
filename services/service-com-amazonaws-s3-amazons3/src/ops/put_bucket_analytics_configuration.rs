@@ -297,11 +297,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // ([`crate::state::bucket_arn_fault`]), the same one every export destination is
         // judged by.
         //
-        // "The account ID that owns the destination S3 bucket"
-        // (`AnalyticsS3BucketDestination$BucketAccountId`) is optional, but a value that is
-        // STATED and is not an account id owns nothing the export could be validated
-        // against — a document that "did not validate against our published schema", which
-        // is the fixed refusal [`crate::state::MALFORMED_XML_CODE`] carries.
+        // What the destination NAMES is not resolved here. "The account ID that owns the
+        // destination S3 bucket" (`AnalyticsS3BucketDestination$BucketAccountId`) is "a
+        // preventive measure to verify that the account that owns the destination bucket is
+        // the account you specify" — a check S3 makes when it WRITES an export, not when it
+        // records the configuration — so the value is stored as submitted and a later read
+        // reports it verbatim, whichever account it names and whether that account exists at
+        // all. The same holds of the destination bucket behind a well-formed ARN: this write
+        // records a reference, it does not claim the bucket is there.
         if let Some(export) = &input
             .analytics_configuration
             .storage_class_analysis
@@ -314,13 +317,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     crate::state::INVALID_DESTINATION_STATUS,
                     fault.message(),
                 ));
-            }
-            if destination
-                .bucket_account_id
-                .as_deref()
-                .is_some_and(|account| !crate::state::is_account_id(account))
-            {
-                return Err(malformed_analytics_configuration());
             }
         }
 

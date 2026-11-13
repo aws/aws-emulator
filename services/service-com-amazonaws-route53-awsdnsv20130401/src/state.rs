@@ -3012,14 +3012,29 @@ pub const NO_SUCH_TRAFFIC_POLICY_MESSAGE: &str = "The policy does not exist.";
 /// The modelled `NoSuchTrafficPolicy` (HTTP 404) for a request that names no
 /// traffic policy in this store.
 ///
-/// The ONE place this service words that refusal, so every operation addressed
-/// at a traffic policy answers a missing one identically — whichever half of
-/// `(Id, Version)` the store does not hold, and whether the request named a
-/// version at all — carrying [`NO_SUCH_TRAFFIC_POLICY_MESSAGE`].
+/// The ONE place this service words that refusal for the operations that READ or
+/// amend a traffic policy, so each of them answers a missing one identically —
+/// whichever half of `(Id, Version)` the store does not hold, and whether the
+/// request named a version at all — carrying [`NO_SUCH_TRAFFIC_POLICY_MESSAGE`].
+///
+/// The DELETE words the same code without any message
+/// ([`no_such_traffic_policy_without_message`]).
 pub fn no_such_traffic_policy() -> NoSuchTrafficPolicy {
     NoSuchTrafficPolicy {
         message: Some(NO_SUCH_TRAFFIC_POLICY_MESSAGE.to_string()),
     }
+}
+
+/// The modelled `NoSuchTrafficPolicy` (HTTP 404) the DELETE answers a traffic policy
+/// version this store does not hold with: the refusal's IDENTITY alone.
+///
+/// `ErrorMessage`'s own documentation on this shape is empty, so the wire body is the
+/// recorded contract per operation, and the delete's is `Type` and `Code` with no
+/// `Message` child — there is no fixed text and no variable part to fill. The readers of
+/// a traffic policy do send the sentence ([`no_such_traffic_policy`]), so the two are
+/// separate constructors rather than one.
+pub fn no_such_traffic_policy_without_message() -> NoSuchTrafficPolicy {
+    NoSuchTrafficPolicy { message: None }
 }
 
 /// The modelled `NoSuchTrafficPolicyInstance` (HTTP 404) for a request that

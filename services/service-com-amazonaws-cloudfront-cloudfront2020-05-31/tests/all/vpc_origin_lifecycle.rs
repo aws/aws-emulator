@@ -132,7 +132,10 @@ impl Endpoint {
 }
 
 /// The ARN of a load balancer in the caller's VPC, as a VPC origin endpoint names one.
-fn load_balancer_arn(name: &str) -> String {
+///
+/// `pub(crate)` so a sibling suite that needs a VPC origin names its endpoint the same way
+/// rather than writing a second ARN by hand.
+pub(crate) fn load_balancer_arn(name: &str) -> String {
     format!(
         "arn:aws:elasticloadbalancing:us-east-1:{ACCOUNT_ID}:loadbalancer/app/{name}/\
          0123456789abcdef"
@@ -207,7 +210,10 @@ fn create_table() -> Vec<Endpoint> {
 // ---------------------------------------------------------------------------
 
 /// `POST /2020-05-31/vpc-origin` with the request document `body`.
-async fn create_vpc_origin(router: &MultiServiceRouter, body: &str) -> Answer {
+///
+/// `pub(crate)` so a sibling suite that needs a VPC origin creates it over the SAME wire
+/// path rather than growing a second caller of this route.
+pub(crate) async fn create_vpc_origin(router: &MultiServiceRouter, body: &str) -> Answer {
     call(
         router,
         "POST",

@@ -927,6 +927,17 @@ pub fn blob_id_does_not_exist_message(blob_id: &str) -> String {
     format!("AWS CodeCommit could not find the blob {blob_id} in the repository.")
 }
 
+/// `BlobIdDoesNotExistException`'s message on the COMPARISON path — the sentence
+/// `GetBlobDifferences` words that code in, which is entirely fixed text.
+///
+/// The two operations that raise this code word it differently: the single-object
+/// READ names the object the caller asked about
+/// ([`blob_id_does_not_exist_message`]), while the comparison states only the
+/// condition — the blob is not in the repository — and interpolates nothing, so
+/// neither the rejected object name nor the repository reaches the wire.
+pub const BLOB_NOT_IN_REPOSITORY_MESSAGE: &str = "The specified blob does not exist in the \
+                                                  repository.";
+
 /// `BranchNameExistsException`'s message, built from the branch the request asked
 /// to create — the one place this crate words that code.
 ///

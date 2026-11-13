@@ -609,8 +609,9 @@ async fn a_comment_past_the_documented_bound_is_refused() {
     .await;
 }
 
-/// An id no stored key holds is `NoSuchPublicKey` (HTTP 404) whatever shape the id takes, and
-/// the refused update creates nothing under it.
+/// An id no stored key holds is `NoSuchPublicKey` (HTTP 404) — under the absent-key sentence
+/// for an id of a public key's own shape and the unreadable-identifier sentence for one
+/// outside it — and the refused update creates nothing under it.
 #[tokio::test]
 async fn an_id_no_key_holds_is_refused() {
     let router = emulator();
@@ -631,17 +632,30 @@ async fn an_id_no_key_holds_is_refused() {
     let mut flipped: Vec<char> = id.chars().collect();
     let last = flipped.len() - 1;
     flipped[last] = if flipped[last] == 'A' { 'B' } else { 'A' };
-    let rows: [(&str, String); 4] = [
-        ("an id never minted", "K2NEVERMINTED1".to_string()),
+    let rows: [(&str, String, &str); 4] = [
+        (
+            "an id never minted",
+            "K2NEVERMINTED1".to_string(),
+            NO_SUCH_PUBLIC_KEY_MESSAGE,
+        ),
         (
             "the existing id with one character changed",
             flipped.into_iter().collect(),
+            NO_SUCH_PUBLIC_KEY_MESSAGE,
         ),
-        ("the existing id in lower case", id.to_lowercase()),
-        ("a token of no public key id's shape", "not-a-key".to_string()),
+        (
+            "the existing id in lower case",
+            id.to_lowercase(),
+            "Id format is invalid",
+        ),
+        (
+            "a token of no public key id's shape",
+            "not-a-key".to_string(),
+            "Id format is invalid",
+        ),
     ];
 
-    for (case, candidate) in &rows {
+    for (case, candidate, sentence) in &rows {
         let answer = update_key(&router, candidate, &body, Some(&etag)).await;
         assert_eq!(
             answer.status, 404,
@@ -656,8 +670,8 @@ async fn an_id_no_key_holds_is_refused() {
         );
         assert_eq!(
             answer.root().find_text("Message").unwrap_or_default(),
-            NO_SUCH_PUBLIC_KEY_MESSAGE,
-            "case {case}: expected the modelled message, got {}",
+            *sentence,
+            "case {case}: expected {sentence:?}, got {}",
             answer.raw
         );
         assert_eq!(

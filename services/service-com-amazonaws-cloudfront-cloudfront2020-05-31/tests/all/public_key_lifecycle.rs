@@ -55,6 +55,10 @@ use smithy_server_runtime::MultiServiceRouter;
 /// crate's constant, so the WORDING is what these rows are held to.
 const NO_SUCH_PUBLIC_KEY: &str = "The specified CloudFront public key does not exist.";
 
+/// The sentence the same code carries for an `Id` outside the shape a public key id takes,
+/// spelled out here for the same reason.
+const PUBLIC_KEY_ID_FORMAT_INVALID: &str = "Id format is invalid";
+
 /// The sentence `PublicKeyAlreadyExists` carries when the NAME a create submits is one
 /// another key of the account already holds, spelled out here for the same reason.
 const NAME_ALREADY_EXISTS_MESSAGE: &str =
@@ -498,13 +502,17 @@ async fn create_persists_the_configuration_every_read_then_reports() {
         );
     }
 
-    // An id no public key holds: a well-shaped id of this namespace that was never minted,
-    // and values of no namespace of this service at all. BOTH readers of the one record
-    // answer the same way, under the fixed sentence this service states for that code — which
-    // names no part of the request, so the id asked about is no part of it. An id drawn from
-    // ANOTHER of this service's namespaces is a different condition (the identifier cannot be
-    // read as a public key id at all) and is asserted in `refusal_message_fidelity`.
-    for id in ["K1AAAAAAAAAAAA", "not-an-id", "0"] {
+    // An id no public key holds. The SENTENCE splits two conditions: a well-shaped id of this
+    // namespace that was never minted is the key reported ABSENT, while a value of no public
+    // key id shape at all is the identifier this service cannot read. BOTH readers of the one
+    // record answer the same way, under fixed text that names no part of the request, so the
+    // id asked about is no part of it. The wider table over this service's other namespaces is
+    // asserted in `refusal_message_fidelity`.
+    for (id, sentence) in [
+        ("K1AAAAAAAAAAAA", NO_SUCH_PUBLIC_KEY),
+        ("not-an-id", PUBLIC_KEY_ID_FORMAT_INVALID),
+        ("0", PUBLIC_KEY_ID_FORMAT_INVALID),
+    ] {
         for (reader, missing) in [
             ("GetPublicKey", get_key(&router, id).await),
             ("GetPublicKeyConfig", get_key_config(&router, id).await),
@@ -523,9 +531,8 @@ async fn create_persists_the_configuration_every_read_then_reports() {
             );
             let message = missing.root().find_text("Message").unwrap_or_default();
             assert_eq!(
-                message, NO_SUCH_PUBLIC_KEY,
-                "case {reader}/{id}: expected the sentence {NO_SUCH_PUBLIC_KEY:?}, got \
-                 {message:?}"
+                message, sentence,
+                "case {reader}/{id}: expected the sentence {sentence:?}, got {message:?}"
             );
             assert!(
                 !message.contains(id),

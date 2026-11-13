@@ -62,6 +62,10 @@ use crate::web_acl_association::create as create_distribution_returning_id;
 /// what these rows are held to.
 const NO_SUCH_PUBLIC_KEY: &str = "The specified CloudFront public key does not exist.";
 
+/// The sentence the same code carries for an `Id` outside the shape a public key id takes:
+/// the identifier the service cannot read, named by the member that carried it.
+const PUBLIC_KEY_ID_FORMAT_INVALID: &str = "Id format is invalid";
+
 /// The sentence an `IpCount` outside the documented value set is refused with: it names the
 /// parameter the quantity arrives under and the two counts a list may be allocated for.
 const INVALID_IP_COUNT: &str = "The parameter Quantity Invalid quantity provided. The quantity \
@@ -431,13 +435,13 @@ struct IdRow {
     message: &'static str,
 }
 
-/// Every operation that addresses a public key by `Id` reports an `Id` the store holds no key
-/// for as the key that is ABSENT — `NoSuchPublicKey` (404) under this service's one sentence
-/// for that condition — whatever shape the value takes: a minted id of another resource kind
-/// of this service, a value in the public key namespace that no minted id has the shape of,
-/// and an id CloudFront could have issued are one condition here, because the member carries
-/// no modelled constraint for a request to be refused on. No refusal touches the key the
-/// account really holds.
+/// Every operation that addresses a public key by `Id` answers `NoSuchPublicKey` (404) for an
+/// `Id` it cannot resolve, and the SENTENCE splits the two ways that happens: a value outside
+/// the shape CloudFront mints public key ids in — a minted id of another resource kind of this
+/// service, a value in the public key namespace of no minted id's width, a name, a caller
+/// reference, a word of no id shape at all — is the identifier the service cannot read, while
+/// an id of that shape the store holds no key for is the key that is ABSENT. No refusal
+/// touches the key the account really holds.
 #[tokio::test]
 async fn every_id_the_store_holds_no_public_key_for_is_reported_absent() {
     let router = emulator();
@@ -496,12 +500,12 @@ async fn every_id_the_store_holds_no_public_key_for_is_reported_absent() {
         IdRow {
             case: "a distribution id where a public key id belongs",
             id: distribution_id,
-            message: NO_SUCH_PUBLIC_KEY,
+            message: PUBLIC_KEY_ID_FORMAT_INVALID,
         },
         IdRow {
             case: "a key group id, which this service draws as a UUID",
             id: group_id,
-            message: NO_SUCH_PUBLIC_KEY,
+            message: PUBLIC_KEY_ID_FORMAT_INVALID,
         },
         IdRow {
             // The prefix is the one this service mints profile ids under
@@ -509,31 +513,31 @@ async fn every_id_the_store_holds_no_public_key_for_is_reported_absent() {
             // alphabet, as `P280MFCLSYOCVU` is.
             case: "a field-level encryption profile id",
             id: format!("{FIELD_LEVEL_ENCRYPTION_PROFILE_ID_PREFIX}2AAAAAAAAAAAA"),
-            message: NO_SUCH_PUBLIC_KEY,
+            message: PUBLIC_KEY_ID_FORMAT_INVALID,
         },
         IdRow {
             // The sibling field-level encryption CONFIG namespace
             // (`FIELD_LEVEL_ENCRYPTION_CONFIG_ID_PREFIX`).
             case: "a field-level encryption configuration id",
             id: format!("{FIELD_LEVEL_ENCRYPTION_CONFIG_ID_PREFIX}3AAAAAAAAAAAA"),
-            message: NO_SUCH_PUBLIC_KEY,
+            message: PUBLIC_KEY_ID_FORMAT_INVALID,
         },
         IdRow {
             // In the public key namespace (`PUBLIC_KEY_ID_PREFIX`) but not in the shape its
             // ids take: a body too short to be one.
             case: "the public key prefix with too short a body",
             id: format!("{PUBLIC_KEY_ID_PREFIX}2AAA"),
-            message: NO_SUCH_PUBLIC_KEY,
+            message: PUBLIC_KEY_ID_FORMAT_INVALID,
         },
         IdRow {
             case: "the public key prefix with too long a body",
             id: format!("{PUBLIC_KEY_ID_PREFIX}2AAAAAAAAAAAAAAAAAAA"),
-            message: NO_SUCH_PUBLIC_KEY,
+            message: PUBLIC_KEY_ID_FORMAT_INVALID,
         },
         IdRow {
             case: "the stored id with one character appended",
             id: format!("{known}9"),
-            message: NO_SUCH_PUBLIC_KEY,
+            message: PUBLIC_KEY_ID_FORMAT_INVALID,
         },
         IdRow {
             case: "a public key id of this namespace that was never minted",
@@ -553,22 +557,22 @@ async fn every_id_the_store_holds_no_public_key_for_is_reported_absent() {
         IdRow {
             case: "the stored id in lower case",
             id: known.to_lowercase(),
-            message: NO_SUCH_PUBLIC_KEY,
+            message: PUBLIC_KEY_ID_FORMAT_INVALID,
         },
         IdRow {
             case: "the caller reference rather than the id",
             id: present.caller_reference.clone(),
-            message: NO_SUCH_PUBLIC_KEY,
+            message: PUBLIC_KEY_ID_FORMAT_INVALID,
         },
         IdRow {
             case: "a bare digit",
             id: "0".to_string(),
-            message: NO_SUCH_PUBLIC_KEY,
+            message: PUBLIC_KEY_ID_FORMAT_INVALID,
         },
         IdRow {
             case: "a word of no CloudFront id shape at all",
             id: "not-a-public-key-id".to_string(),
-            message: NO_SUCH_PUBLIC_KEY,
+            message: PUBLIC_KEY_ID_FORMAT_INVALID,
         },
     ];
 

@@ -4,17 +4,18 @@
 //! end over the router.
 //!
 //! The rules under test: a traffic policy the account does not hold is reported HTTP 404
-//! with `<ErrorResponse><Error><Type>Sender</Type><Code>NoSuchTrafficPolicy</Code>`
-//! `<Message>The policy does not exist.</Message>` — one fixed sentence stating the rule
-//! and carrying nothing the request named — while a traffic policy INSTANCE the account
-//! does not hold is reported by its IDENTITY ALONE, with NO `Message` child. Each holds for
-//! every operation that binds the error, whichever half of `(Id, Version)` the store does
-//! not hold and whatever form the requested id takes. The error shapes' documentation states
-//! the RULE each refusal reports ("No traffic policy exists with the specified ID", "No
-//! traffic policy instance exists with the specified ID",
+//! with `<ErrorResponse><Error><Type>Sender</Type><Code>NoSuchTrafficPolicy</Code>` and the
+//! sentence `<Message>The policy does not exist.</Message>` — fixed text stating the rule
+//! and carrying nothing the request named — on every operation that READS or amends a
+//! traffic policy, while the DELETE reports the same code by its IDENTITY ALONE, as a
+//! traffic policy INSTANCE the account does not hold is reported on every operation that
+//! binds that error: with NO `Message` child. Each holds whichever half of `(Id, Version)`
+//! the store does not hold and whatever form the requested id takes. The error shapes'
+//! documentation states the RULE each refusal reports ("No traffic policy exists with the
+//! specified ID", "No traffic policy instance exists with the specified ID",
 //! smithy_query(query="shape",shape="NoSuchTrafficPolicy,NoSuchTrafficPolicyInstance"))
 //! rather than a sentence the service sends, and the `message` member both shapes carry is
-//! optional — so which of the two puts an element on the wire is the service's own
+//! optional — so which of them puts an element on the wire is the service's own
 //! behaviour, not the model's.
 //!
 //! The rules are about the SHAPE of the body, so each is asserted over a table of
@@ -134,6 +135,17 @@ impl PolicyOperation {
         )
     }
 
+    /// Assert the refusal this operation words for a traffic policy the account does not
+    /// hold: the DELETE reports the refusal's identity alone, every other operation states
+    /// the one sentence.
+    fn assert_refused(self, reply: &Reply, case: &str) {
+        if self == Self::DeleteTrafficPolicy {
+            assert_identity_only(reply, case, NO_SUCH_POLICY);
+        } else {
+            assert_no_such_traffic_policy(reply, case);
+        }
+    }
+
     /// Send this operation's request for `(id, version)`, with everything else
     /// about the request valid — so the traffic policy the account does not hold
     /// is the only thing wrong with it. `zone_id` is the hosted zone a traffic
@@ -229,7 +241,7 @@ async fn a_traffic_policy_the_account_does_not_hold_is_refused_with_one_sentence
             let reply = operation.send(&router, &zone, id, "1").await;
             // The sentence is fixed text: asserting it EQUALS the one sentence is what
             // proves no part of the request reached it.
-            assert_no_such_traffic_policy(&reply, &case);
+            operation.assert_refused(&reply, &case);
         }
     }
 
@@ -248,7 +260,7 @@ async fn a_traffic_policy_the_account_does_not_hold_is_refused_with_one_sentence
         {
             let case = format!("{operation:?} on {case}");
             let reply = operation.send(&router, &zone, &held, version).await;
-            assert_no_such_traffic_policy(&reply, &case);
+            operation.assert_refused(&reply, &case);
         }
     }
 
@@ -274,7 +286,7 @@ async fn a_traffic_policy_the_account_does_not_hold_is_refused_with_one_sentence
     {
         let case = format!("{operation:?} on a version a delete flagged");
         let reply = operation.send(&router, &zone, &deleted, "1").await;
-        assert_no_such_traffic_policy(&reply, &case);
+        operation.assert_refused(&reply, &case);
     }
 }
 

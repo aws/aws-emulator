@@ -1426,6 +1426,27 @@ pub fn environment_cname(authority: &str, region: &str, cname_prefix: &str) -> S
     format!("{authority}{}", environment_plane_path(region, cname_prefix))
 }
 
+/// The DNS zone an environment CNAME sits in, under its own Region:
+/// `<prefix>.<region>.elasticbeanstalk.com`.
+pub const CNAME_ZONE: &str = "elasticbeanstalk.com";
+
+/// The fully qualified DNS NAME a CNAME prefix forms in `region` — what
+/// `CheckDNSAvailability$FullyQualifiedCNAME` reports, "the fully qualified CNAME
+/// to reserve when CreateEnvironment is called with the provided prefix".
+///
+/// This is a NAME the report answers a question ABOUT, not an address the caller
+/// dials: what the caller does with it is read `Available` beside it and then
+/// create an environment under that prefix. The address an environment is
+/// actually REACHED at is a different member of a different operation, and it is
+/// this emulator's own socket ([`environment_cname`]) — a name in Elastic
+/// Beanstalk's zone resolves to nothing on the machine this emulator runs on.
+///
+/// The REGION is part of the name because the same prefix in two Regions is two
+/// names, which is why [`environment_plane_path`] carries the Region too.
+pub fn fully_qualified_cname(region: &str, cname_prefix: &str) -> String {
+    format!("{cname_prefix}.{region}.{CNAME_ZONE}")
+}
+
 /// The resource portion of `arn` when it is an ARN of THIS service, i.e.
 /// `arn:<partition>:elasticbeanstalk:<region>:<account>:<resource>` — the only
 /// ARNs `ResourceArn` accepts ("Must be the ARN of an Elastic Beanstalk

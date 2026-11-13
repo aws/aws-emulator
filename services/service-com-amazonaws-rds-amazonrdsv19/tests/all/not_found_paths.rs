@@ -480,8 +480,8 @@ async fn a_resource_is_addressable_only_in_the_region_it_was_created_in() {
     }
 
     // And the instance's own ARN resolves to no resource in the other region either: the
-    // maintenance-action front door answers the kind of resource the ARN names with its
-    // not-found fault there (see `all/maintenance_action_resource_guard.rs` for the rule),
+    // maintenance-action front door refuses an identifier that resolves to nothing on the
+    // MEMBER that carried it (see `all/maintenance_action_resource_guard.rs` for the rule),
     // which is still a statement about the REGION and not about the name.
     expect_error(
         "ApplyPendingMaintenanceAction from another region",
@@ -499,8 +499,8 @@ async fn a_resource_is_addressable_only_in_the_region_it_was_created_in() {
             ],
         )
         .await,
-        404,
-        "ResourceNotFoundFault",
+        400,
+        "InvalidParameterValue",
     );
 
     // In its own region the same name resolves, which is what makes the rows above a

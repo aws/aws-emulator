@@ -5,10 +5,11 @@
 //!
 //! The rules pinned here:
 //!
-//! 1. a token that is not a key of the schema being paged is refused as the invalid TOKEN
+//! 1. a token that is no key of the schema being paged AT ALL is refused as the invalid TOKEN
 //!    it is — the sentence states the starting key invalid, and names neither the attribute
-//!    nor the schema — whichever paged read carries it, while one whose key element carries
-//!    another TYPE than that schema declares states the key-schema reason after a colon;
+//!    nor the schema — whichever paged read carries it, while one whose attributes ARE that
+//!    schema's key attributes but which states one of them wrongly (another type than
+//!    declared, or left out) states the key-schema reason after a colon;
 //! 2. a `Query` token that IS a key of that schema but names a key the
 //!    `KeyConditionExpression` does not select is refused by the HALF of the condition it
 //!    falls outside, each with its own fixed sentence: a token in another partition is
@@ -31,8 +32,9 @@ use smithy_server_runtime::MultiServiceRouter;
 
 use crate::emulator::{call, describe_when_active, emulator, error_code, message, ok};
 
-/// AWS's fixed sentence for a starting key whose key element carries another type than the
-/// schema being paged declares for it: the invalid-token statement and the key-schema
+/// AWS's fixed sentence for a starting key whose attributes are the key attributes of the
+/// schema being paged but which states one of them wrongly — carrying another type than the
+/// schema declares for it, or leaving it out: the invalid-token statement and the key-schema
 /// reason after the colon.
 const START_KEY_TYPE_MISMATCH: &str =
     "The provided starting key is invalid: The provided key element does not match the schema";
@@ -338,9 +340,10 @@ async fn a_starting_key_that_is_no_key_of_the_schema_states_the_schema_reason() 
     seed(&router).await;
 
     // Each row: HOW the token fails to be a key of the table's schema, and the sentence
-    // that failure earns — the schema reason for a token whose key element carries another
-    // type than this schema declares for it, and the bare invalid-token sentence for every
-    // other way the map is not this schema's key.
+    // that failure earns — the schema reason for a token whose attributes are this schema's
+    // key attributes but which states one of them wrongly (another type than declared, or
+    // left out), and the bare invalid-token sentence for a map that is no key of the schema
+    // at all.
     let tokens: Vec<(&str, Value, &str)> = vec![
         (
             "an attribute the schema does not declare",
@@ -350,7 +353,7 @@ async fn a_starting_key_that_is_no_key_of_the_schema_states_the_schema_reason() 
         (
             "only the partition key of a composite schema",
             json!({"pk": {"S": "one"}}),
-            START_KEY_INVALID,
+            START_KEY_TYPE_MISMATCH,
         ),
         (
             "the sort key with the type the schema does not declare",

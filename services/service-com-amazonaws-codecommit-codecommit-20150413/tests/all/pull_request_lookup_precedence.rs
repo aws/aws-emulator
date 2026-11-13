@@ -1,34 +1,36 @@
 // SPDX-License-Identifier: CC0-1.0
 
-//! Which of two lookups decides the refusal, over the wire: an operation that
-//! takes BOTH a `pullRequestId` and a `repositoryName` resolves the REPOSITORY
-//! first, so a request naming a repository the account does not hold is told that —
-//! with `RepositoryDoesNotExistException` and the `<repositoryName> for <accountId>`
-//! text CodeCommit words that code with — even when the pull request id it carried
-//! names no pull request either.
+//! Which of two lookups decides the refusal, over the wire: an operation keyed by a
+//! `pullRequestId` resolves THAT pull request first, so a request carrying an id no
+//! pull request answers to is told that — with `PullRequestDoesNotExistException`
+//! and the fixed three-sentence text CodeCommit words that code with — even when the
+//! `repositoryName` beside it names no repository either.
 //!
-//! The rule under test is about precedence rather than about one request: a pull
-//! request lives IN a repository, so the repository the request is scoped to is the
-//! resource resolved before anything is looked up inside it. The table below
-//! therefore varies what the rule generalises over — the operation that takes both
-//! members, the shape of the repository name that names no repository, and the shape
-//! of the id that names no pull request — and asserts the same code and message on
-//! every row.
+//! The rule under test is about precedence rather than about one request: the pull
+//! request id is these operations' primary key (on `GetCommentsForPullRequest` the
+//! repository name is not even required), so it is the identifier resolved before
+//! the repository the request names. The table below therefore varies what the rule
+//! generalises over — the operation that takes both members, the shape of the
+//! repository name that names no repository, and the shape of the id that names no
+//! pull request — and asserts the same code and message on every row.
 //!
-//! The complementary halves are pinned next door: an id that names no pull request
-//! in a repository that DOES exist is `PullRequestDoesNotExistException`
-//! (`crate::pull_request_does_not_exist_message`, which mints a pull request so the
-//! repository is real), an id belonging to another repository is
-//! `RepositoryNotAssociatedWithPullRequestException` (`crate::pull_request_comments`),
-//! and `crate::client_error_messages` pins this code's template.
+//! The other half of the precedence is asserted here too: once the pull request
+//! DOES exist, a repository name the account holds no repository for is
+//! `RepositoryDoesNotExistException` with the `<repositoryName> for <accountId>`
+//! text CodeCommit words that code with.
+//!
+//! The complementary halves are pinned next door: an id belonging to another
+//! repository is `RepositoryNotAssociatedWithPullRequestException`
+//! (`crate::pull_request_comments`), and `crate::client_error_messages` pins the
+//! repository code's template.
 
 use serde_json::{json, Value};
 
 use crate::harness::error_with_message;
+use crate::pull_request_comments::pull_request_on;
 use crate::repository_lifecycle::emulator;
 
-/// The HTTP status `RepositoryDoesNotExistException` models (`errorKind: client`,
-/// `httpError: 400`).
+/// The HTTP status both codes model (`errorKind: client`, `httpError: 400`).
 const CLIENT_ERROR_STATUS: u16 = 400;
 
 /// A syntactically valid git object id (40 hex characters), so an operation taking
@@ -36,6 +38,13 @@ const CLIENT_ERROR_STATUS: u16 = 400;
 /// lookups under test.
 const AFTER_COMMIT_ID: &str = "0123456789abcdef0123456789abcdef01234567";
 const BEFORE_COMMIT_ID: &str = "76543210fedcba9876543210fedcba9876543210";
+
+/// `PullRequestDoesNotExistException`'s message: entirely fixed text, spelled out
+/// here rather than read off the crate so the WORDING is what these rows are held
+/// to.
+const PULL_REQUEST_DOES_NOT_EXIST: &str =
+    "The pull request ID does not exist. Verify that you provided a valid pull request ID, and \
+     then try your operation again. To get a list of pull request IDs, use ListPullRequests.";
 
 /// Repository names that are valid `RepositoryName`s (1..100 of `[\w\.-]+`:
 /// `smithy_query(query="shape",shape="RepositoryName")`) and name no repository on
@@ -112,7 +121,7 @@ fn requests_naming(repository: &str, pull_request_id: &str) -> Vec<(&'static str
 }
 
 #[tokio::test]
-async fn the_repository_lookup_comes_before_the_pull_request_lookup() {
+async fn the_pull_request_lookup_comes_before_the_repository_lookup() {
     let router = emulator();
 
     for repository in absent_repositories() {
@@ -121,18 +130,60 @@ async fn the_repository_lookup_comes_before_the_pull_request_lookup() {
                 let (code, message) =
                     error_with_message(&router, operation, &body, CLIENT_ERROR_STATUS).await;
                 assert_eq!(
-                    code, "RepositoryDoesNotExistException",
+                    code, "PullRequestDoesNotExistException",
                     "case ({operation}, repository {repository:?}, id {pull_request_id}): the \
-                     repository is resolved first, so expected code \
-                     RepositoryDoesNotExistException, got {code:?}"
+                     pull request is resolved first, so expected code \
+                     PullRequestDoesNotExistException, got {code:?}"
                 );
-                let expected = expected_message(&repository);
                 assert_eq!(
-                    message, expected,
+                    message, PULL_REQUEST_DOES_NOT_EXIST,
                     "case ({operation}, repository {repository:?}, id {pull_request_id}): \
-                     expected message {expected:?}, got {message:?}"
+                     expected message {PULL_REQUEST_DOES_NOT_EXIST:?}, got {message:?}"
+                );
+                assert!(
+                    !message.contains(repository.as_str()),
+                    "case ({operation}, repository {repository:?}, id {pull_request_id}): the \
+                     refusal must not name a member the request's repository carried, got \
+                     {message:?}"
                 );
             }
+        }
+    }
+}
+
+/// The other half of the precedence: once the `pullRequestId` DOES name a pull
+/// request, a `repositoryName` the account holds no repository for is the repository
+/// refusal, under the template CodeCommit words that code with.
+#[tokio::test]
+async fn a_repository_that_does_not_exist_is_still_reported_once_the_pull_request_resolves() {
+    let router = emulator();
+
+    // One real repository with a pull request between two branches, minted through the
+    // implemented write path by the fixture the comment suite already builds, so the id
+    // below names a pull request this account really holds.
+    let pr = pull_request_on(&router, "pull-request-precedence").await;
+    let pull_request_id = pr.pull_request_id.clone();
+    assert!(
+        !pull_request_id.is_empty(),
+        "the pull request must be minted for these rows to be about the repository"
+    );
+
+    for absent in absent_repositories() {
+        for (operation, body) in requests_naming(&absent, &pull_request_id) {
+            let (code, message) =
+                error_with_message(&router, operation, &body, CLIENT_ERROR_STATUS).await;
+            assert_eq!(
+                code, "RepositoryDoesNotExistException",
+                "case ({operation}, repository {absent:?}, id {pull_request_id}): the pull \
+                 request resolved, so expected code RepositoryDoesNotExistException, got \
+                 {code:?}"
+            );
+            let expected = expected_message(&absent);
+            assert_eq!(
+                message, expected,
+                "case ({operation}, repository {absent:?}, id {pull_request_id}): expected \
+                 message {expected:?}, got {message:?}"
+            );
         }
     }
 }

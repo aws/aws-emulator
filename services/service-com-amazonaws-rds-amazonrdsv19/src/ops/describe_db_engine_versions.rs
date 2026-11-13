@@ -464,6 +464,15 @@ pub(crate) struct VersionProfile {
     /// Units, for a version that runs Aurora Serverless v2; `None` for one that does not,
     /// which reports no Serverless v2 limits at all.
     pub(crate) serverless_v2_capacity: Option<(f64, f64)>,
+    /// The capacity range a CLUSTER of this version may be CONFIGURED in, where that range
+    /// differs from the one the version REPORTS above.
+    ///
+    /// The two are different facts: `ServerlessV2FeaturesSupport` publishes the Serverless
+    /// v2 limits of the engine VERSION, while a refusal of a `MinCapacity` or `MaxCapacity`
+    /// states "the valid scaling range for this cluster". `None` where they coincide, which
+    /// is every Aurora version — so a version that publishes a range it also validates
+    /// against states nothing twice ([`VersionProfile::serverless_v2_scaling_range`]).
+    pub(crate) serverless_v2_configured_capacity: Option<(f64, f64)>,
     /// `SupportsReadReplica`.
     pub(crate) supports_read_replica: bool,
     /// `SupportsGlobalDatabases` — an Aurora global database.
@@ -518,6 +527,7 @@ impl VersionProfile {
             engine_modes: PROVISIONED_ONLY,
             feature_names: &[],
             serverless_v2_capacity: None,
+            serverless_v2_configured_capacity: None,
             supports_read_replica: false,
             supports_global_databases: false,
             supports_parallel_query: false,
@@ -563,6 +573,22 @@ impl VersionProfile {
     const fn serverless_v2(mut self, min: f64, max: f64) -> Self {
         self.serverless_v2_capacity = Some((min, max));
         self
+    }
+
+    /// A cluster of this version may be CONFIGURED between `min` and `max` capacity units,
+    /// which is the range a refusal of a capacity value states — set only where it differs
+    /// from the range [`Self::serverless_v2`] publishes.
+    const fn serverless_v2_configured(mut self, min: f64, max: f64) -> Self {
+        self.serverless_v2_configured_capacity = Some((min, max));
+        self
+    }
+
+    /// The capacity range a cluster of this version is held to when a request configures
+    /// one: the configurable range where this version has its own, else the range it
+    /// publishes, and `None` for a version that runs no Serverless v2 capacity at all.
+    pub(crate) fn serverless_v2_scaling_range(&self) -> Option<(f64, f64)> {
+        self.serverless_v2_configured_capacity
+            .or(self.serverless_v2_capacity)
     }
 
     /// This version can join an Aurora global database.
@@ -775,10 +801,25 @@ const DOCDB: VersionProfile = VersionProfile::provisioned()
 /// the recording is what the API reports. The floor is NOT zero either way: a zero
 /// `ServerlessV2FeaturesSupport$MinCapacity` is the member's own way of reporting the
 /// automatic pause/resume feature, which this engine's serverless clusters do not have.
-const NEPTUNE: VersionProfile = NEPTUNE_BEFORE_SERVERLESS.serverless_v2(
-    SERVERLESS_V2_MIN_CAPACITY,
-    SERVERLESS_V2_EARLIER_MAX_CAPACITY,
-);
+/// The lower bound of the capacity range a NEPTUNE SERVERLESS cluster is configured in.
+///
+/// A capacity value this engine's control plane will not take is refused naming "the valid
+/// scaling range for this cluster", and the range that refusal states for a Neptune
+/// Serverless cluster is RECORDED as starting at zero capacity — which is a different fact
+/// from the floor the engine VERSION publishes in `ServerlessV2FeaturesSupport`
+/// ([`SERVERLESS_V2_MIN_CAPACITY`]), the member that reports the smallest capacity a
+/// cluster runs AT. Where the two differ, each is answered where it belongs.
+const NEPTUNE_SERVERLESS_CONFIGURED_MIN_CAPACITY: f64 = 0.0;
+
+const NEPTUNE: VersionProfile = NEPTUNE_BEFORE_SERVERLESS
+    .serverless_v2(
+        SERVERLESS_V2_MIN_CAPACITY,
+        SERVERLESS_V2_EARLIER_MAX_CAPACITY,
+    )
+    .serverless_v2_configured(
+        NEPTUNE_SERVERLESS_CONFIGURED_MIN_CAPACITY,
+        SERVERLESS_V2_EARLIER_MAX_CAPACITY,
+    );
 
 /// An Amazon Neptune version from before Neptune Serverless: the cluster engine's
 /// capabilities without a serverless capacity range.

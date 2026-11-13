@@ -7,13 +7,14 @@
 //!
 //! 1. a `LastEvaluatedKey` a page reported is a token the next request resumes from, and
 //!    the pages it drives partition the matching items with none lost and none repeated;
-//! 2. a starting key that is NOT a key of the schema being paged — an attribute the
-//!    schema does not declare, an extra attribute beside the key, a key attribute it
-//!    omits — is refused as the invalid TOKEN it is: 400 `ValidationException` stating
-//!    that the starting key is invalid, and not the bare mismatch AWS words for a `Key`
-//!    member, which addresses ONE item and is what `GetItem` and `DeleteItem` carry; a
-//!    token whose key element carries another TYPE than the schema declares states that
-//!    schema reason after a colon;
+//! 2. a starting key that is NO key of the schema being paged at all — an attribute the
+//!    schema does not declare, an extra attribute beside the key — is refused as the
+//!    invalid TOKEN it is: 400 `ValidationException` stating that the starting key is
+//!    invalid, and not the bare mismatch AWS words for a `Key` member, which addresses ONE
+//!    item and is what `GetItem` and `DeleteItem` carry; a token whose attributes ARE that
+//!    schema's key attributes but which states one of them wrongly — another TYPE than the
+//!    schema declares, or a declared key attribute left out — states that schema reason
+//!    after a colon;
 //! 3. the refusal is the same for both paged reads and for both key schemas a table can
 //!    declare, and a refused request pages nothing.
 //!
@@ -32,10 +33,11 @@ use crate::emulator::{call, emulator, error_code, message, ok};
 const START_KEY_INVALID: &str =
     service_com_amazonaws_dynamodb_dynamodb_20120810::state::START_KEY_INVALID_MESSAGE;
 
-/// The sentence AWS states for a starting key whose key element carries another TYPE than
-/// the schema declares for it, which is the one defect it diagnoses after the colon.
+/// The sentence AWS states for a starting key whose attributes are that schema's key
+/// attributes but which states one of them wrongly — another TYPE than the schema declares,
+/// or a declared key attribute left out — which is the defect it diagnoses after the colon.
 const START_KEY_TYPE_MISMATCH: &str =
-    service_com_amazonaws_dynamodb_dynamodb_20120810::state::START_KEY_TYPE_MISMATCH_MESSAGE;
+    service_com_amazonaws_dynamodb_dynamodb_20120810::state::START_KEY_SCHEMA_MISMATCH_MESSAGE;
 
 /// The sentence AWS states for a `Key` MEMBER that is not the table's primary key, which
 /// the paged reads must NOT borrow.
@@ -175,10 +177,10 @@ async fn a_starting_key_that_is_not_a_key_of_the_schema_is_an_invalid_token() {
 
     // Rows differ in HOW the token fails to name a key of the schema, and in the sentence
     // that failure earns: a key attribute carrying another TYPE than the schema declares is
-    // the one defect AWS diagnoses after the colon, while an attribute the schema does not
-    // declare, an extra attribute beside the key and a key attribute the token omits each
-    // leave the token invalid and nothing more. Each is refused the same way whichever of
-    // the two paged reads carries it and whichever key schema the table declares.
+    // the defects AWS diagnoses after the colon, while an attribute the schema does not
+    // declare, an extra attribute beside the key and a map carrying no attribute at all
+    // each leave the token invalid and nothing more. Each is refused the same way whichever
+    // of the two paged reads carries it and whichever key schema the table declares.
     let simple_tokens: Vec<(&str, Value, &str)> = vec![
         (
             "an attribute the schema does not declare",
@@ -216,12 +218,12 @@ async fn a_starting_key_that_is_not_a_key_of_the_schema_is_an_invalid_token() {
         (
             "only the partition key of a composite schema",
             json!({"Part": {"S": "one"}}),
-            START_KEY_INVALID,
+            START_KEY_TYPE_MISMATCH,
         ),
         (
             "only the sort key of a composite schema",
             json!({"Sort": {"N": "1"}}),
-            START_KEY_INVALID,
+            START_KEY_TYPE_MISMATCH,
         ),
     ];
 
