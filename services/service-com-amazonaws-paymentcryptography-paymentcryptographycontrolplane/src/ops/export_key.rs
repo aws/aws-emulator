@@ -1,15 +1,6 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op ExportKey
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `ExportKey`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
-//!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`ExportKey::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
 //!
 //! ## Shape of an operation
 //!
@@ -208,18 +199,130 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `ExportKey` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(ExportKeyErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("ExportKey"))
+        // Every modelled constraint on this input has already been refused by the
+        // centralized walk: `ExportKeyIdentifier`'s pattern and length, the key
+        // material union carrying exactly one mechanism, each mechanism's own required
+        // members, and every enum's value list. What is left for this body is what the
+        // model cannot say — which keys this store holds, whether they may be exported
+        // and whether they can wrap — and the wrapped key itself.
+        let state = crate::state::service_state(&*self.engine).ok_or_else(internal)?;
+        let now = crate::state::now();
+
+        let attributes = input.export_attributes.as_ref();
+        let export = crate::state::KeyExport {
+            export_key_identifier: &input.export_key_identifier,
+            dukpt_initial_key: attributes
+                .and_then(|attributes| attributes.export_dukpt_initial_key.as_ref()),
+            key_check_value_algorithm: attributes
+                .and_then(|attributes| attributes.key_check_value_algorithm.as_deref()),
+        };
+
+        let wrapped = match &input.key_material {
+            // "To export working keys or IPEK using TR-31 … you must use an initial key
+            // such as KEK to encrypt or wrap the key under export" (the operation's own
+            // documentation): both keys are records this store holds, so the key block
+            // is built from them and from nothing else.
+            ExportKeyMaterial::Tr31KeyBlock(request) => state
+                .lock()
+                .export_tr31_key_block(&export, request, now)
+                .map_err(refusal)?,
+            ExportKeyMaterial::As2805KeyCryptogram(request) => state
+                .lock()
+                .export_as2805_key_cryptogram(&export, request, now)
+                .map_err(refusal)?,
+            // The three ASYMMETRIC key exchange mechanisms. Each of them wraps the key
+            // under a certificate whose chain "must be signed by the root certificate
+            // (CertificateAuthorityPublicKeyIdentifier) imported into Amazon Web
+            // Services Payment Cryptography" (the operation's own documentation), so
+            // each is refused at that precondition while no such key is in the store:
+            // the only way one arrives is `ImportKey` for a `RootCertificatePublicKey`,
+            // which is still a scaffold. The 501 past it is the honest answer for the
+            // payload itself — the CMS envelope of a TR-34 key block, the RSA
+            // cryptogram, the ECDH derived wrapping key — which nothing here builds
+            // yet, and it is unreachable until that import exists.
+            ExportKeyMaterial::Tr34KeyBlock(request) => {
+                state
+                    .lock()
+                    .check_asymmetric_export(
+                        &export,
+                        &request.certificate_authority_public_key_identifier,
+                        now,
+                    )
+                    .map_err(refusal)?;
+                return Err(crate::scaffolded::Scaffolded::not_implemented(
+                    "ExportKey for a TR-34 key block",
+                ));
+            }
+            ExportKeyMaterial::KeyCryptogram(request) => {
+                state
+                    .lock()
+                    .check_asymmetric_export(
+                        &export,
+                        &request.certificate_authority_public_key_identifier,
+                        now,
+                    )
+                    .map_err(refusal)?;
+                return Err(crate::scaffolded::Scaffolded::not_implemented(
+                    "ExportKey for an RSA key cryptogram",
+                ));
+            }
+            ExportKeyMaterial::DiffieHellmanTr31KeyBlock(request) => {
+                state
+                    .lock()
+                    .check_asymmetric_export(
+                        &export,
+                        &request.certificate_authority_public_key_identifier,
+                        now,
+                    )
+                    .map_err(refusal)?;
+                return Err(crate::scaffolded::Scaffolded::not_implemented(
+                    "ExportKey for an ECDH derived TR-31 key block",
+                ));
+            }
+        };
+
+        // An export hands key material out of the service, so it leaves the same local
+        // audit trail a state change does — the operation, the wrapping key it was
+        // wrapped under and the principal who asked, and none of the material itself.
+        crate::state::record_mutation(ctx.parts(), Self::NAME, &wrapped.wrapping_key_arn);
+        // Answered from the two records the request named: the wrapping key's own ARN,
+        // and the check value of the very bytes the material carries, so a receiver can
+        // check what it unwrapped.
+        Ok(ExportKeyOutput {
+            wrapped_key: Some(WrappedKey {
+                wrapping_key_arn: wrapped.wrapping_key_arn,
+                wrapped_key_material_format: wrapped.wrapped_key_material_format.to_string(),
+                key_material: wrapped.key_material,
+                key_check_value: Some(wrapped.key_check_value),
+                key_check_value_algorithm: Some(wrapped.key_check_value_algorithm),
+            }),
+        })
     }
+}
+
+/// One refused export, as this operation's modelled error.
+///
+/// An identifier that names no key this store holds is the modelled
+/// `ResourceNotFoundException`, carrying the identifier the request asked for; anything
+/// else about the request is the modelled `ValidationException`.
+fn refusal(rejection: crate::state::ExportRejection) -> ExportKeyError {
+    match rejection {
+        crate::state::ExportRejection::NotFound(identifier) => {
+            ExportKeyErrorModeled::ResourceNotFoundException(ResourceNotFoundException {
+                resource_id: Some(identifier),
+            })
+        }
+        crate::state::ExportRejection::Invalid(why) => {
+            ExportKeyErrorModeled::ValidationException(ValidationException { message: Some(why) })
+        }
+    }
+    .into()
+}
+
+/// This service's own failure, which is the modelled `InternalServerException`.
+fn internal() -> ExportKeyError {
+    ExportKeyErrorModeled::InternalServerException(InternalServerException {
+        message: Some("the payment cryptography key store is unavailable".to_string()),
+    })
+    .into()
 }

@@ -40,6 +40,11 @@ hmac = "0.12"
 sha2 = { workspace = true }
 # and SHA-1 over the key material for the `SHA_1` KCV.
 sha1 = "0.10"
+# CBC, the mode an X9.143 (TR-31) key block encrypts its payload in, driven by the
+# `aes` and `des` ciphers above rather than by a chaining loop written here. 0.1 —
+# not 0.2 — because it is the release built on `cipher` 0.4, the generation `aes` 0.8
+# and `des` 0.8 above share.
+cbc = "0.1"
 # Renders a KCV as hex, and the opaque `NextToken` the list operations hand out.
 hex = { workspace = true }
 # The RSA-2048 key pair a TR-34 export token's signing key certificate names, and the

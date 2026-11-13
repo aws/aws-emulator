@@ -15,6 +15,8 @@
 mod alias_name_conflict_sentence;
 #[path = "all/export_and_replication_parameters.rs"]
 mod export_and_replication_parameters;
+#[path = "all/export_key.rs"]
+mod export_key;
 #[path = "all/key_lifecycle.rs"]
 mod key_lifecycle;
 #[path = "all/key_usage_and_replication.rs"]

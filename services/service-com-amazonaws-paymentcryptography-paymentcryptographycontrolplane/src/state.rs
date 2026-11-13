@@ -13,15 +13,16 @@
 //! for is drawn when the key is minted, kept here, never returned, and is what the
 //! key check value is computed from — so the KCV a caller reads back is derived from
 //! stored material by the named KCV algorithm rather than being a fabricated string.
+//!
+//! The material is read in this module and in its children alone, and only by the two
+//! computations that are defined in terms of it: the key check value here, and the
+//! wrapped key an export answers with ([`key_export`]), which leaves the service
+//! encrypted under another stored key rather than in the clear.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use aes::cipher::generic_array::GenericArray;
-use aes::cipher::{BlockEncrypt, KeyInit};
-use aes::{Aes128, Aes192, Aes256};
-use cmac::{Cmac, Mac};
-use des::TdesEde3;
+use cmac::Mac;
 use hmac::Hmac;
 use sha1::{Digest, Sha1};
 use sha2::{Sha224, Sha256, Sha384, Sha512};
@@ -40,6 +41,22 @@ use x509_cert::{Certificate, TbsCertificate, Version};
 use crate::ops::types::{
     Alias, Key, KeyAttributes, KeySummary, ReplicationStatusType, Tag,
     SYMMETRIC_KEY_ALGORITHM_VALUES,
+};
+
+/// The block cipher, CMAC and CBC primitives every computation over key material in
+/// this module and its children runs through.
+mod block_cipher;
+/// The initial DUKPT key an IPEK export derives from a base derivation key.
+mod dukpt;
+/// What `ExportKey` asks of this store, and the wrapped key it answers with.
+mod key_export;
+/// The ASC X9.143 (TR-31) key block an exported key is wrapped in.
+mod key_block;
+
+pub use key_export::{
+    ExportRejection, KeyExport, WrappedKeyMaterial, KEY_CLASS_PUBLIC_KEY,
+    KEY_USAGE_BASE_DERIVATION_KEY, KEY_USAGE_DIGITAL_SIGNATURE, WRAPPED_KEY_FORMAT_CRYPTOGRAM,
+    WRAPPED_KEY_FORMAT_TR31, WRAPPING_KEY_ALGORITHMS, WRAPPING_KEY_USAGES,
 };
 
 /// The ARN service namespace for this service (`arnNamespace` / sigv4 name
@@ -1736,35 +1753,16 @@ fn zero_block_cipher_check(key_algorithm: &str, material: &[u8]) -> Option<Vec<u
         return None;
     }
     let key = tdes_key(key_algorithm, material)?;
-    let cipher = <TdesEde3 as KeyInit>::new_from_slice(&key).ok()?;
-    let mut block = GenericArray::from([0u8; 8]);
-    cipher.encrypt_block(&mut block);
-    Some(block.to_vec())
+    block_cipher::tdes_encrypt_blocks(&key, &[0u8; block_cipher::TDES_BLOCK])
 }
 
 /// AES-CMAC over 16 zero bytes, the computation the documentation gives for AES
 /// keys.
 fn cmac_check(key_algorithm: &str, material: &[u8]) -> Option<Vec<u8>> {
-    let zeros = [0u8; 16];
-    let mac = match key_algorithm {
-        "AES_128" => {
-            let mut mac = <Cmac<Aes128> as Mac>::new_from_slice(material).ok()?;
-            mac.update(&zeros);
-            mac.finalize().into_bytes().to_vec()
-        }
-        "AES_192" => {
-            let mut mac = <Cmac<Aes192> as Mac>::new_from_slice(material).ok()?;
-            mac.update(&zeros);
-            mac.finalize().into_bytes().to_vec()
-        }
-        "AES_256" => {
-            let mut mac = <Cmac<Aes256> as Mac>::new_from_slice(material).ok()?;
-            mac.update(&zeros);
-            mac.finalize().into_bytes().to_vec()
-        }
-        _ => return None,
-    };
-    Some(mac)
+    if !matches!(key_algorithm, "AES_128" | "AES_192" | "AES_256") {
+        return None;
+    }
+    block_cipher::aes_cmac(material, &[0u8; block_cipher::AES_BLOCK])
 }
 
 /// The selected hash over a zero-length message, keyed by the key material — the
@@ -1801,16 +1799,12 @@ fn hmac_check(key_algorithm: &str, material: &[u8]) -> Option<Vec<u8>> {
 /// A two-key TDES key is the standard K1|K2|K1 bundle, so both variants drive the
 /// same EDE3 cipher.
 fn tdes_key(key_algorithm: &str, material: &[u8]) -> Option<[u8; 24]> {
-    let mut key = [0u8; 24];
-    match key_algorithm {
-        "TDES_2KEY" if material.len() >= 16 => {
-            key[..16].copy_from_slice(&material[..16]);
-            key[16..].copy_from_slice(&material[..8]);
-        }
-        "TDES_3KEY" if material.len() >= 24 => key.copy_from_slice(&material[..24]),
+    let len = match key_algorithm {
+        "TDES_2KEY" => 16,
+        "TDES_3KEY" => 24,
         _ => return None,
-    }
-    Some(key)
+    };
+    block_cipher::tdes_bundle(material.get(..len)?)
 }
 
 // ---------------------------------------------------------------------------
@@ -2063,6 +2057,8 @@ pub fn service_state<Eng: Send + Sync + 'static>(
 mod tests {
     use super::*;
     use crate::ops::types::KeyModesOfUse;
+    use aes::Aes128;
+    use cmac::Cmac;
 
     /// A `CreateKey` request for `key_algorithm`, with the class that algorithm is
     /// generated as and a key usage of the same class — a PIN encryption key for a
