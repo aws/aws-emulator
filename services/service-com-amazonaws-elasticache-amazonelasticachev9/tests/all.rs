@@ -317,3 +317,9 @@ mod cache_subnet_group_network_types;
 mod engine_catalog_descriptions;
 #[path = "all/parameter_refusal_classification.rs"]
 mod parameter_refusal_classification;
+
+// Appended for the same reason: the suite about the refusal a contradictory serverless
+// `CacheUsageLimits` envelope is owed at both operations that would store one, over the
+// network a client stands up through Amazon EC2 first.
+#[path = "all/serverless_usage_limit_envelope.rs"]
+mod serverless_usage_limit_envelope;
