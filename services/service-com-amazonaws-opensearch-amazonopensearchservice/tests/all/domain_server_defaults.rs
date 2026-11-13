@@ -104,7 +104,7 @@ fn server_defaults() -> Vec<(&'static str, Value)> {
             "OffPeakWindowOptions",
             json!({
                 "Enabled": true,
-                "OffPeakWindow": { "WindowStartTime": { "Hours": 0, "Minutes": 0 } },
+                "OffPeakWindow": { "WindowStartTime": { "Hours": 5, "Minutes": 0 } },
             }),
         ),
         ("SnapshotOptions", json!({ "AutomatedSnapshotStartHour": 0 })),
@@ -246,12 +246,16 @@ async fn a_created_domain_carries_the_whole_configuration_the_service_provisions
                 // `DomainStatus` reports the Auto-Tune settings through the OUTPUT
                 // shape, which names the state the domain is in (`State`), and
                 // `DomainConfig` through the configured one, which names the state it
-                // was asked for (`DesiredState`) — one value under the member name each
-                // shape declares.
+                // was asked for (`DesiredState`) and carries the two settings the
+                // service fills in for a domain that asked for neither — "specify
+                // `NO_ROLLBACK` to retain all prior Auto-Tune settings", and the empty
+                // list of maintenance schedules a domain with no schedule has.
                 let expected = match (reader, option) {
                     ("DescribeDomainConfig", "AutoTuneOptions") => json!({
                         "DesiredState": expected["State"].clone(),
                         "UseOffPeakWindow": expected["UseOffPeakWindow"].clone(),
+                        "MaintenanceSchedules": json!([]),
+                        "RollbackOnDisable": json!("NO_ROLLBACK"),
                     }),
                     _ => expected.clone(),
                 };

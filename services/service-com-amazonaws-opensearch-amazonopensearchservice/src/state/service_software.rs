@@ -236,11 +236,12 @@ pub struct ServiceSoftware {
 
 impl ServiceSoftware {
     /// The service software of a domain that has just been created: it runs the
-    /// current release, nothing is deploying, and there is no earlier release to roll
-    /// back to.
-    pub fn initial() -> Self {
+    /// current release of the software built for the engine version it was created on
+    /// ([`service_software_release`]), nothing is deploying, and there is no earlier
+    /// release to roll back to.
+    pub fn initial(engine_version: &str) -> Self {
         Self {
-            current_version: DEFAULT_SERVICE_SOFTWARE_VERSION.to_string(),
+            current_version: service_software_release(engine_version),
             available_version: None,
             deployment: None,
             pending_update: None,

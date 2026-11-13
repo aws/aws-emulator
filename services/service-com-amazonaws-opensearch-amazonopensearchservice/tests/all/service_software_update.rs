@@ -37,12 +37,13 @@ use std::time::{Duration, SystemTime};
 
 use serde_json::{json, Value};
 use service_com_amazonaws_opensearch_amazonopensearchservice::state::{
-    PendingUpdate, ServiceSoftware, SoftwareDeployment, DEFAULT_SERVICE_SOFTWARE_VERSION,
-    DOMAIN_NOT_AVAILABLE_FOR_UPDATE, ROLLBACK_WINDOW,
+    PendingUpdate, ServiceSoftware, SoftwareDeployment, DOMAIN_NOT_AVAILABLE_FOR_UPDATE,
+    ROLLBACK_WINDOW,
 };
 
 use super::domain_lifecycle::{
-    create_baseline, error_code, Answer, Emulator, PREFIX, RECORDED_NOT_FOUND_STATUS, SETTLE_WAIT,
+    create_baseline, error_code, Answer, Emulator, BASELINE_SERVICE_SOFTWARE, PREFIX,
+    RECORDED_NOT_FOUND_STATUS, SETTLE_WAIT,
 };
 
 /// `POST /2021-01-01/opensearch/serviceSoftwareUpdate/start`, with the schedule
@@ -546,7 +547,7 @@ async fn a_domain_with_nothing_to_deploy_is_refused_and_keeps_its_record() {
     assert_eq!(
         software_summary(&fresh),
         (
-            Some(DEFAULT_SERVICE_SOFTWARE_VERSION),
+            Some(BASELINE_SERVICE_SOFTWARE),
             Some(NO_NEW_VERSION),
             Some("COMPLETED"),
             Some(false)

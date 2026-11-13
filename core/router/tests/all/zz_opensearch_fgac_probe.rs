@@ -30,7 +30,7 @@
 //! reason `boot_serve.rs` does.
 
 use std::sync::Arc;
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use aws_credential_types::Credentials;
 use aws_emulator_router::{build_router, InMemoryEngine};
@@ -358,8 +358,36 @@ async fn describe_domain(router: &MultiServiceRouter) -> Answer {
     dispatch(router, request).await
 }
 
-/// How long the domain's provisioning takes to fall due, with room for a slow machine.
-const SETTLE_WAIT: Duration = Duration::from_millis(3_400);
+/// How long a poll waits for the domain's provisioning to fall due before it gives up:
+/// generous, because no case here tests how long that span is — the wait is for the
+/// CONDITION (the domain reporting nothing in flight) and this is only the point at which
+/// waiting is called a failure.
+const SETTLE_DEADLINE: Duration = Duration::from_secs(120);
+
+/// How long a poll waits between two looks at the domain.
+const POLL_INTERVAL: Duration = Duration::from_millis(50);
+
+/// Wait until the control plane reports the domain created with nothing in flight — the
+/// condition a client polls for — rather than for a fixed time, so the test is about what
+/// the service reports and not about how fast the host runs.
+async fn settled(router: &MultiServiceRouter) {
+    let deadline = Instant::now() + SETTLE_DEADLINE;
+    loop {
+        let answer = describe_domain(router).await;
+        let status = &answer.json()["DomainStatus"];
+        if status["Created"].as_bool() == Some(true)
+            && status["Processing"].as_bool() == Some(false)
+        {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "setup DescribeDomain: the domain never reported itself settled, last read {}",
+            answer.summary()
+        );
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
+}
 
 #[test]
 fn the_published_domain_host_serves_the_signed_requests_its_master_and_readers_make() {
@@ -390,7 +418,7 @@ fn the_published_domain_host_serves_the_signed_requests_its_master_and_readers_m
                     "setup CreateDomain: expected 200, got {}",
                     created.summary()
                 );
-                tokio::time::sleep(SETTLE_WAIT).await;
+                settled(&router).await;
 
                 // The published address is one a client DIALS as published: the endpoint
                 // this emulator answers on, with the reserved path naming this service's

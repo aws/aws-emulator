@@ -89,21 +89,81 @@ fn assert_guid(value: &str, case: &str) {
     );
 }
 
-/// The leaf option containers EVERY domain's configuration is made of, whatever the
-/// create named: the service provisions a domain with a whole configuration, filling
-/// in the blocks the request left out, so the change a create starts applies all of
-/// them. One entry per machine learning feature, because a container whose every
-/// member is itself a container is applied member by member.
-const PROVISIONED_PROPERTIES: [&str; 22] = [
+/// The option blocks a change applies PROPERTY BY PROPERTY, with the properties each is
+/// applied as — stated here independently of the implementation, so a change in which
+/// properties the service names is a change this suite sees.
+pub(crate) const LEAF_PROPERTY_BLOCKS: [(&str, &[&str]); 3] = [
+    (
+        "AIMLOptions",
+        &[
+            "NaturalLanguageQueryGenerationOptions",
+            "S3VectorsEngine",
+            "ServerlessVectorAcceleration",
+        ],
+    ),
+    (
+        "AdvancedSecurityOptions",
+        &[
+            "AnonymousAuthDisableDate",
+            "AnonymousAuthEnabled",
+            "IAMFederationOptions",
+            "InternalUserDatabaseEnabled",
+            "JWTOptions",
+            "MasterUserOptions",
+            "SAMLOptions",
+        ],
+    ),
+    (
+        "ClusterConfig",
+        &[
+            "ColdStorageOptions",
+            "DedicatedMasterCount",
+            "DedicatedMasterEnabled",
+            "DedicatedMasterType",
+            "InstanceCount",
+            "InstanceType",
+            "MultiAZWithStandbyEnabled",
+            "WarmCount",
+            "WarmEnabled",
+            "WarmStorage",
+            "WarmType",
+            "ZoneAwarenessEnabled",
+        ],
+    ),
+];
+
+/// The properties EVERY domain's configuration is made of, whatever the create named:
+/// the service provisions a domain with a whole configuration, filling in the blocks the
+/// request left out, so the change a create starts applies all of them — the blocks of
+/// [`LEAF_PROPERTY_BLOCKS`] property by property, every other option whole, and the tag
+/// set the create carried.
+const PROVISIONED_PROPERTIES: [&str; 40] = [
     "AIMLOptions.NaturalLanguageQueryGenerationOptions",
     "AIMLOptions.S3VectorsEngine",
     "AIMLOptions.ServerlessVectorAcceleration",
     "AccessPolicies",
     "AdvancedOptions",
-    "AdvancedSecurityOptions",
+    "AdvancedSecurityOptions.AnonymousAuthDisableDate",
+    "AdvancedSecurityOptions.AnonymousAuthEnabled",
+    "AdvancedSecurityOptions.IAMFederationOptions",
+    "AdvancedSecurityOptions.InternalUserDatabaseEnabled",
+    "AdvancedSecurityOptions.JWTOptions",
+    "AdvancedSecurityOptions.MasterUserOptions",
+    "AdvancedSecurityOptions.SAMLOptions",
     "AutoTuneOptions",
     "AutomatedSnapshotPauseOptions",
-    "ClusterConfig",
+    "ClusterConfig.ColdStorageOptions",
+    "ClusterConfig.DedicatedMasterCount",
+    "ClusterConfig.DedicatedMasterEnabled",
+    "ClusterConfig.DedicatedMasterType",
+    "ClusterConfig.InstanceCount",
+    "ClusterConfig.InstanceType",
+    "ClusterConfig.MultiAZWithStandbyEnabled",
+    "ClusterConfig.WarmCount",
+    "ClusterConfig.WarmEnabled",
+    "ClusterConfig.WarmStorage",
+    "ClusterConfig.WarmType",
+    "ClusterConfig.ZoneAwarenessEnabled",
     "CognitoOptions",
     "DeploymentStrategyOptions",
     "DomainEndpointOptions",
@@ -116,24 +176,26 @@ const PROVISIONED_PROPERTIES: [&str; 22] = [
     "OffPeakWindowOptions",
     "SnapshotOptions",
     "SoftwareUpdateOptions",
+    "TAGS",
     "UseCase",
 ];
 
-/// The leaf property names setting `value` on `option` amounts to: a container whose
-/// every member is itself a container is applied member by member (a log-publishing
-/// configuration is applied per log type), and anything else is applied whole.
-fn leaf_names(option: &str, value: &Value) -> Vec<String> {
-    match value.as_object() {
-        Some(members) if !members.is_empty() && members.values().all(Value::is_object) => {
-            let mut names: Vec<String> = members
-                .keys()
-                .map(|member| format!("{option}.{member}"))
-                .collect();
-            names.sort();
-            names
-        }
-        _ => vec![option.to_string()],
-    }
+/// The property names setting `option` amounts to: a block the service applies property
+/// by property ([`LEAF_PROPERTY_BLOCKS`]) names every one of its properties, and every
+/// other option is applied whole.
+fn leaf_names(option: &str, _value: &Value) -> Vec<String> {
+    let Some((_, properties)) = LEAF_PROPERTY_BLOCKS
+        .iter()
+        .find(|(block, _)| *block == option)
+    else {
+        return vec![option.to_string()];
+    };
+    let mut names: Vec<String> = properties
+        .iter()
+        .map(|property| format!("{option}.{property}"))
+        .collect();
+    names.sort();
+    names
 }
 
 /// The names of the properties a change reports, from the `<Member> : <value>` entries
@@ -154,10 +216,8 @@ fn property_names(properties: &[String]) -> Vec<String> {
 }
 
 /// Every property the configuration a `CreateDomain` body provisions is made of: the
-/// blocks the service fills in for every domain, plus the two whose presence follows
-/// from the request — the EBS volume, which a domain created without one does not have,
-/// and the log-publishing configuration, reported per log type it holds and whole while
-/// it is empty.
+/// blocks the service fills in for every domain, the log-publishing configuration every
+/// domain has, and the EBS volume, which a domain created without one does not have.
 fn provisioned_properties(body: &Value) -> Vec<String> {
     let mut names: Vec<String> = PROVISIONED_PROPERTIES
         .iter()
@@ -166,12 +226,7 @@ fn provisioned_properties(body: &Value) -> Vec<String> {
     if body.get("EBSOptions").is_some() {
         names.push("EBSOptions".to_string());
     }
-    match body.get("LogPublishingOptions").and_then(Value::as_object) {
-        Some(types) if !types.is_empty() => {
-            names.extend(types.keys().map(|log_type| format!("LogPublishingOptions.{log_type}")));
-        }
-        _ => names.push("LogPublishingOptions".to_string()),
-    }
+    names.push("LogPublishingOptions".to_string());
     names.sort();
     names
 }

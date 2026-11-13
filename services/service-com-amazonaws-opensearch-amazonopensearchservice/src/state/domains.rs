@@ -698,6 +698,11 @@ impl Domain {
         if let Some((target_version, advanced_options)) = landed {
             self.engine_version = target_version;
             self.advanced_options.extend(advanced_options);
+            // The nodes now run the service software built for the version they were
+            // upgraded onto, so the release the domain reports follows its engine
+            // ([`service_software_release`]) rather than naming the engine it left.
+            self.service_software.current_version =
+                service_software_release(&self.engine_version);
         }
         let Some(due) = self.processing_until else {
             return;
@@ -851,9 +856,21 @@ impl Domain {
     }
 
     /// The `OptionState` of one option: `Processing` while the domain is applying a
-    /// change this option was part of, `Active` otherwise.
-    pub(super) fn option_state(&self, revision: &OptionRevision) -> &'static str {
-        if self.processing && revision.updated_at == self.updated_at {
+    /// change to THIS option, `Active` otherwise.
+    ///
+    /// "Active" is the state of an option that is not being changed, so an option a
+    /// change in flight is not applying anything to is `Active` while the rest of the
+    /// configuration settles — which is what a caller polling every option's state
+    /// before it continues waits for. An option the domain holds no SETTING IN FORCE for
+    /// is one of those: there is nothing to apply to a cluster in a feature that is off
+    /// (its container is empty, or every setting in it is switched off), so such an
+    /// option is `Active` from the moment the domain is created
+    /// ([`crate::service::domain_configuration::option_setting_in_force`]).
+    pub(super) fn option_state(&self, option: &str, revision: &OptionRevision) -> &'static str {
+        let applying = self.processing
+            && revision.updated_at == self.updated_at
+            && crate::service::domain_configuration::option_setting_in_force(self, option);
+        if applying {
             OPTION_STATE_PROCESSING
         } else {
             OPTION_STATE_ACTIVE
@@ -868,7 +885,7 @@ impl Domain {
             creation_date: datetime(self.created_at),
             update_date: datetime(revision.updated_at),
             update_version: revision.version,
-            state: self.option_state(revision).to_string(),
+            state: self.option_state(option, revision).to_string(),
             pending_deletion: Some(self.deleted),
         })
     }
@@ -966,13 +983,14 @@ impl Domain {
         // "the domain-specific endpoint used to submit index, search, and data upload
         // requests", and `Endpoints`/`EndpointV2` are that same address for a domain reached
         // inside a VPC or over both address families — none of which exists before the
-        // cluster behind it does. A domain still being provisioned
-        // ([`Self::cluster_is_up`]) therefore publishes none of the three, so the standard
+        // cluster behind it does, or after it has been torn down
+        // ([`Self::cluster_exists`]). A domain still being provisioned, and one being
+        // deleted, therefore publishes none of the three, so the standard
         // readiness signal — a caller polling for the presence of an endpoint — is the
         // signal it looks like, rather than an address that answers nothing. They appear on
         // every later read, including while a configuration change is in flight: the running
         // cluster stays reachable through one.
-        let publishes_address = self.cluster_is_up();
+        let publishes_address = self.cluster_exists();
         DomainStatus {
             domain_id: self.domain_id.clone(),
             domain_name: self.domain_name.clone(),
@@ -1257,6 +1275,17 @@ impl Domain {
     /// in place, so a [`PROCESSING_STATUS_MODIFYING`] domain is up.
     pub fn cluster_is_up(&self) -> bool {
         self.created && self.processing_status != PROCESSING_STATUS_CREATING
+    }
+
+    /// Whether this domain HAS a cluster at all: one is up and the domain has not been
+    /// torn down.
+    ///
+    /// `DeleteDomain` releases the domain's nodes, so the record it answers with — and
+    /// every record carrying `DomainStatus$Deleted` — describes a domain with no cluster
+    /// behind it any more: no address answers for it and no node runs any service
+    /// software, exactly as before its cluster came up.
+    pub fn cluster_exists(&self) -> bool {
+        self.cluster_is_up() && !self.deleted
     }
 
     /// The instant this domain's cluster is up, or `None` when it already is — what a

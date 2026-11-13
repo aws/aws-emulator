@@ -594,6 +594,48 @@ pub(crate) fn baseline_create(name: &str) -> Value {
     body
 }
 
+/// How long [`settled_domain`] waits for a domain's provisioning to fall due before it
+/// gives up.
+///
+/// Generous on purpose: the span itself is the service's, and a case that waits for a
+/// settled domain is not testing how long that takes — it waits for the CONDITION, and
+/// this is only the point at which waiting is called a failure.
+pub(crate) const SETTLE_DEADLINE: Duration = Duration::from_secs(120);
+
+/// How long [`settled_domain`] waits between two looks at a domain.
+const POLL_INTERVAL: Duration = Duration::from_millis(50);
+
+/// Wait until `name` reports itself created with nothing in flight — the condition a
+/// client polls for — and answer the `DomainStatus` that read saw.
+///
+/// Polls the condition rather than sleeping for the provisioning span, so a case that
+/// needs a settled domain cannot depend on how fast the host runs.
+pub(crate) async fn settled_domain(emulator: &Emulator, name: &str) -> Value {
+    let deadline = std::time::Instant::now() + SETTLE_DEADLINE;
+    loop {
+        let answer = emulator.describe(name).await;
+        let status = answer.body["DomainStatus"].clone();
+        if status["Created"].as_bool() == Some(true)
+            && status["Processing"].as_bool() == Some(false)
+        {
+            return status;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "case DescribeDomain({name:?}): the domain never reported itself settled, last \
+             read {status:?}"
+        );
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
+}
+
+/// The service software release label every domain this harness creates runs.
+///
+/// A release of the service software is built FOR one engine version, so the label an
+/// OpenSearch domain reports names that version before the release it is a build of; the
+/// bodies above create every domain on `OpenSearch_2.11`.
+pub(crate) const BASELINE_SERVICE_SOFTWARE: &str = "OpenSearch_2_11_R20250101";
+
 /// `CreateDomain` with [`baseline_create`], asserting it was accepted.
 pub(crate) async fn create_baseline(emulator: &Emulator, name: &str) -> Value {
     let answer = emulator.create(baseline_create(name)).await;
@@ -1162,22 +1204,30 @@ async fn a_configuration_change_settles_from_processing_to_active_on_the_clock()
     create_baseline(&emulator, name).await;
 
     // Straight after the create the domain is still provisioning, and so is every
-    // option the create set.
+    // option the create set a setting in force for. The log-publishing configuration
+    // the baseline sends names a log type with publishing switched OFF, which is nothing
+    // for the service to apply to a cluster, so that option is `Active` from the start —
+    // the state of an option that is not being changed.
     let before = emulator.describe_config(name).await;
     let before = &before.body["DomainConfig"];
     for (option, _) in baseline_options() {
+        let expected = if option == "LogPublishingOptions" {
+            "Active"
+        } else {
+            "Processing"
+        };
         assert_eq!(
             option_state(before, option, "before settling"),
-            "Processing",
-            "case before settling({option}): expected Processing, got {:?}",
+            expected,
+            "case before settling({option}): expected {expected}, got {:?}",
             before[option]["Status"]
         );
     }
 
-    tokio::time::sleep(SETTLE_WAIT).await;
-
-    let after_status = emulator.describe(name).await;
-    let after_status = &after_status.body["DomainStatus"];
+    // Once the provisioning the clock owes the domain has fallen due — polled for, not
+    // waited out — the domain and every option of it are settled.
+    let after_status = settled_domain(&emulator, name).await;
+    let after_status = &after_status;
     assert_eq!(
         (
             after_status["Processing"].as_bool(),

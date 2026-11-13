@@ -281,8 +281,8 @@ async fn a_reschedule_moves_the_change_to_the_instant_the_request_names() {
 
     // One domain with a custom off-peak window start, one with none at all and one
     // whose legacy `Enabled` toggle is off, so `OFF_PEAK_WINDOW` is exercised against
-    // a configured window, against the start the model's `WindowStartTime` members
-    // default to, and against the toggle — which says nothing about a domain created
+    // a configured window, against the window the SERVICE assigns a domain that named
+    // no start time, and against the toggle — which says nothing about a domain created
     // now, since "all domains created after [February 16, 2023] have an off-peak
     // window by default".
     let windowed = WINDOWED;
@@ -424,7 +424,10 @@ async fn a_reschedule_moves_the_change_to_the_instant_the_request_names() {
                 let (hours, minutes) = match domain {
                     WINDOWED => (2, 30),
                     TOGGLED_OFF => (17, 0),
-                    _ => (0, 0),
+                    // The window the SERVICE assigns a domain that named no start
+                    // time, which is what the domain carries from the moment it is
+                    // created.
+                    _ => (5, 0),
                 };
                 // The handler reads its own clock, so the opening is computed from both
                 // readings around the call: a call that straddles the opening second

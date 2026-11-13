@@ -28,12 +28,12 @@ use std::time::{Duration, SystemTime};
 
 use serde_json::{json, Value};
 use service_com_amazonaws_opensearch_amazonopensearchservice::state::{
-    ServiceSoftware, DEFAULT_SERVICE_SOFTWARE_VERSION, NO_ROLLBACK_TARGET_DESCRIPTION,
-    ROLLBACK_WINDOW,
+    ServiceSoftware, NO_ROLLBACK_TARGET_DESCRIPTION, ROLLBACK_WINDOW,
 };
 
 use super::domain_lifecycle::{
-    create_baseline, error_code, Answer, Emulator, PREFIX, RECORDED_NOT_FOUND_STATUS, SETTLE_WAIT,
+    create_baseline, error_code, Answer, Emulator, BASELINE_SERVICE_SOFTWARE, PREFIX,
+    RECORDED_NOT_FOUND_STATUS, SETTLE_WAIT,
 };
 
 /// `POST /2021-01-01/opensearch/serviceSoftwareUpdate/rollback`.
@@ -249,7 +249,7 @@ async fn a_rollback_the_record_does_not_allow_is_declined_and_deploys_nothing() 
     // and the release it is left running.
     let rows: Vec<(&str, Option<ServiceSoftware>, &str)> = vec![
         // A domain no deployment has ever landed on: as `CreateDomain` left it.
-        ("never-deployed", None, DEFAULT_SERVICE_SOFTWARE_VERSION),
+        ("never-deployed", None, BASELINE_SERVICE_SOFTWARE),
         // A window that shuts at the instant it was set, so it is already closed when
         // the call arrives — the narrowest miss.
         (
@@ -336,7 +336,7 @@ async fn a_rollback_the_record_does_not_allow_is_declined_and_deploys_nothing() 
             fresh["Cancellable"].as_bool(),
         ),
         (
-            Some(DEFAULT_SERVICE_SOFTWARE_VERSION),
+            Some(BASELINE_SERVICE_SOFTWARE),
             Some("COMPLETED"),
             Some(false),
             Some(false),

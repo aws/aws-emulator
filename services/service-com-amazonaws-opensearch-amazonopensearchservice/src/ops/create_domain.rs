@@ -156,8 +156,8 @@ use crate::state::{
     OPT_EBS_OPTIONS, OPT_ENCRYPTION_AT_REST_OPTIONS, OPT_ENGINE_MODE, OPT_ENGINE_VERSION,
     OPT_IDENTITY_CENTER_OPTIONS, OPT_IP_ADDRESS_TYPE, OPT_LOG_PUBLISHING_OPTIONS,
     OPT_NODE_TO_NODE_ENCRYPTION_OPTIONS, OPT_OFF_PEAK_WINDOW_OPTIONS, OPT_SNAPSHOT_OPTIONS,
-    OPT_SOFTWARE_UPDATE_OPTIONS, OPT_USE_CASE, OPT_VPC_OPTIONS, PROCESSING_STATUS_CREATING,
-    TAG_QUOTA,
+    OPT_SOFTWARE_UPDATE_OPTIONS, OPT_TAGS, OPT_USE_CASE, OPT_VPC_OPTIONS,
+    PROCESSING_STATUS_CREATING, TAG_QUOTA,
 };
 
 /// How many revisions of each option a create leaves behind.
@@ -469,6 +469,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         let suffix = store.mint_endpoint_suffix();
 
+        // The software the new domain's nodes run: the current release of the service
+        // software built for the engine version it is being created on, read before the
+        // record takes ownership of that version.
+        let service_software = ServiceSoftware::initial(&engine_version);
+
         // The fine-grained-access-control master user the create named: WHO the cluster
         // grants everything to on a domain whose `AdvancedSecurityOptions$Enabled` is set
         // (`crate::state::fgac`). Read BEFORE the options are stored, because
@@ -563,10 +568,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             auto_tune_options: input.auto_tune_options.map(stored_auto_tune_options),
             off_peak_window_options: input.off_peak_window_options,
             software_update_options: input.software_update_options,
-            // A new domain runs the current service software with nothing deploying
-            // and no earlier release behind it; the service-software operations move
-            // this record from there.
-            service_software: ServiceSoftware::initial(),
+            // A new domain runs the current service software of the engine version it
+            // was created on, with nothing deploying and no earlier release behind it;
+            // the service-software operations move this record from there.
+            service_software,
             aiml_options: input.aiml_options.map(stored_aiml_options),
             deployment_strategy_options: input.deployment_strategy_options,
             automated_snapshot_pause_options: input
@@ -631,6 +636,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             OPT_USE_CASE,
             OPT_ENGINE_MODE,
             OPT_VPC_OPTIONS,
+            // The tag set is applied by the same provisioning: a domain created with
+            // `TagList` comes up carrying those tags, so they are one of the properties
+            // the change this create starts is applying (`crate::state::OPT_TAGS`).
+            OPT_TAGS,
         ];
         for (option, supplied) in [
             (OPT_EBS_OPTIONS, domain.ebs_options.is_some()),

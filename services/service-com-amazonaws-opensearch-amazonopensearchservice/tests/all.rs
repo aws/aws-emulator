@@ -107,6 +107,8 @@ mod domain_auto_tunes;
 mod domain_batch_describe;
 #[path = "all/domain_configuration_rules.rs"]
 mod domain_configuration_rules;
+#[path = "all/domain_descriptor_projection.rs"]
+mod domain_descriptor_projection;
 #[path = "all/domain_endpoint_publication.rs"]
 mod domain_endpoint_publication;
 #[path = "all/domain_health.rs"]

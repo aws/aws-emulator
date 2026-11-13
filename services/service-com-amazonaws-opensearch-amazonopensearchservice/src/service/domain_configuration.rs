@@ -25,15 +25,15 @@
 
 use crate::ops::types::*;
 use crate::state::{
-    datetime, ConfigChange, Domain, AUTO_TUNE_STATE_DISABLED, OPTION_STATE_ACTIVE,
+    datetime, ConfigChange, Domain, AUTO_TUNE_STATE_DISABLED,
     OPT_ACCESS_POLICIES, OPT_ADVANCED_OPTIONS, OPT_ADVANCED_SECURITY_OPTIONS, OPT_AIML_OPTIONS,
     OPT_AUTOMATED_SNAPSHOT_PAUSE_OPTIONS, OPT_AUTO_TUNE_OPTIONS, OPT_CLUSTER_CONFIG,
     OPT_COGNITO_OPTIONS, OPT_DEPLOYMENT_STRATEGY_OPTIONS, OPT_DOMAIN_ENDPOINT_OPTIONS,
     OPT_EBS_OPTIONS, OPT_ENCRYPTION_AT_REST_OPTIONS, OPT_ENGINE_MODE, OPT_ENGINE_VERSION,
     OPT_IDENTITY_CENTER_OPTIONS, OPT_IP_ADDRESS_TYPE, OPT_LOG_PUBLISHING_OPTIONS,
     OPT_NODE_TO_NODE_ENCRYPTION_OPTIONS, OPT_OFF_PEAK_WINDOW_OPTIONS, OPT_SNAPSHOT_OPTIONS,
-    OPT_SOFTWARE_UPDATE_OPTIONS, OPT_USE_CASE, OPT_VPC_OPTIONS, VOLUME_TYPE_GP2, VOLUME_TYPE_GP3,
-    VOLUME_TYPE_IO1,
+    OPT_SOFTWARE_UPDATE_OPTIONS, OPT_TAGS, OPT_USE_CASE, OPT_VPC_OPTIONS, VOLUME_TYPE_GP2,
+    VOLUME_TYPE_GP3, VOLUME_TYPE_IO1,
 };
 
 use ::serde_json::Value;
@@ -87,6 +87,12 @@ pub const NATURAL_LANGUAGE_QUERY_GENERATION_NOT_ENABLED: &str = "NOT_ENABLED";
 /// automated snapshot pause is in force on the domain.
 pub const PAUSE_STATE_DISABLED: &str = "Disabled";
 
+/// `RollbackOnDisable`'s `NO_ROLLBACK` (one of
+/// `crate::ops::types::ROLLBACK_ON_DISABLE_VALUES`): "specify `NO_ROLLBACK` to retain
+/// all prior Auto-Tune settings" — what disabling Auto-Tune on a domain nobody has
+/// asked a rollback of does.
+pub const ROLLBACK_ON_DISABLE_NO_ROLLBACK: &str = "NO_ROLLBACK";
+
 /// The advanced option that decides whether the domain reports the engine's own
 /// version in its root response, named as `AdvancedOptions` documents it. Off unless
 /// the caller asks for it.
@@ -107,15 +113,20 @@ const GP3_BASELINE_IOPS: i32 = 3_000;
 const GP3_BASELINE_THROUGHPUT_MIB: i32 = 125;
 
 /// The hour of the UTC day a domain's off-peak window opens when the create named no
-/// start time: the start of the day, which is the window
-/// `Domain::next_off_peak_window_start` reads for a domain that configured no custom
-/// start.
+/// start time — the window `Domain::next_off_peak_window_start` reads for a domain that
+/// configured no custom start.
 ///
 /// The service assigns every new domain "a custom 10-hour, low-traffic window during
-/// which OpenSearch Service can perform mandatory configuration changes", and WHICH
-/// hour it picks for one domain is the service's own choice rather than a published
-/// rule, so a caller reads the window the domain carries rather than predicting it.
-const DEFAULT_OFF_PEAK_WINDOW_HOUR: i64 = 0;
+/// which OpenSearch Service can perform mandatory configuration changes", and the start
+/// time it assigns is the SERVICE's, not the shape's: `WindowStartTime$Hours` carries a
+/// modelled default of zero, which is what an absent member decodes as, while a domain
+/// that named no window comes up with the window the service picked for it.
+///
+/// WHICH hour the real service picks is unpublished, so this is the emulator's OWN choice
+/// of one fixed hour — the hour observed on a domain created without a window — and not a
+/// documented value. What the caller can rely on is that the domain carries a window it
+/// did not ask for and that every read reports the same one.
+const DEFAULT_OFF_PEAK_WINDOW_HOUR: i64 = 5;
 
 /// The hour of the UTC day the daily automated snapshot is taken at when the create
 /// names none: `SnapshotOptions$AutomatedSnapshotStartHour` documents "Default is
@@ -281,8 +292,9 @@ pub fn apply_server_defaults(domain: &mut Domain) {
     );
 
     // "All domains created after [February 16, 2023] have an off-peak window by
-    // default", opening at the start of the UTC day when the create named no start
-    // time — the window `Domain::next_off_peak_window_start` reads.
+    // default", opening at the hour of the UTC day the service assigns one that named
+    // no start time ([`DEFAULT_OFF_PEAK_WINDOW_HOUR`]) — the window
+    // `Domain::next_off_peak_window_start` reads.
     let off_peak = container(&mut domain.off_peak_window_options);
     default_to(&mut off_peak.enabled, true);
     let window = container(&mut off_peak.off_peak_window);
@@ -398,20 +410,53 @@ pub fn reported_config(domain: &Domain) -> DomainConfig {
                 status,
             });
     }
-    // An option the domain holds no CONTENT for is not being applied to anything, so
-    // it is `Active` while the rest of the configuration a change in flight is
-    // applying reports `Processing`: the log-publishing configuration of a domain that
-    // publishes no log type is the one such option.
-    if domain.log_publishing_options.is_empty() {
-        if let Some(status) = config
-            .log_publishing_options
-            .as_mut()
-            .and_then(|container| container.status.as_mut())
-        {
-            status.state = OPTION_STATE_ACTIVE.to_string();
-        }
+    // The Auto-Tune settings the SERVICE fills in, reported with the configuration
+    // rather than stored on the domain: "specify `NO_ROLLBACK` to retain all prior
+    // Auto-Tune settings" is what a domain nobody has asked a rollback of is under, and
+    // `MaintenanceSchedules` is "a list of maintenance schedules" that a domain with no
+    // schedule has none of — an empty list rather than nothing, so a caller reading the
+    // Auto-Tune rollback and maintenance settings reads a value. The two are not part of
+    // the domain's own record, so what a caller SET stays what the stored record holds
+    // and what a configuration change reports it is applying.
+    if let Some(auto_tune) = config.auto_tune_options.as_mut() {
+        let options = container(&mut auto_tune.options);
+        default_to(&mut options.maintenance_schedules, Vec::new());
+        default_to(
+            &mut options.rollback_on_disable,
+            ROLLBACK_ON_DISABLE_NO_ROLLBACK.to_string(),
+        );
     }
     config
+}
+
+/// Whether `domain` holds a SETTING IN FORCE for the option `option` names: a value
+/// saying something is configured, rather than an option block that is empty or one
+/// whose every setting is switched off.
+///
+/// What an option holds decides whether a change in flight is applying anything TO it
+/// (`Domain::option_state`): a feature that is off, and a container the domain holds
+/// nothing in, has nothing for the service to apply to a cluster, so such an option is
+/// not reported as being modified — the log-publishing configuration of a domain that
+/// publishes no log type and the VPC configuration of a domain reached on a public
+/// endpoint are two of them. Read from the SAME projection of the stored record a
+/// change reports its properties from ([`option_value`]), so the two cannot disagree
+/// about what an option holds.
+pub fn option_setting_in_force(domain: &Domain, option: &str) -> bool {
+    option_value(domain, option).is_some_and(|value| setting_in_force(&value))
+}
+
+/// Whether `value` states a setting that is in force: a number, a non-empty text or a
+/// toggle that is ON, or a container or list holding at least one of those. An empty
+/// container, an empty text and a toggle that is off state that nothing is configured.
+fn setting_in_force(value: &Value) -> bool {
+    match value {
+        Value::Null => false,
+        Value::Bool(enabled) => *enabled,
+        Value::String(text) => !text.is_empty(),
+        Value::Number(_) => true,
+        Value::Array(elements) => elements.iter().any(setting_in_force),
+        Value::Object(members) => members.values().any(setting_in_force),
+    }
 }
 
 /// The `ChangeProgressStatusDetails` `DescribeDomainChangeProgress` answers with for
@@ -428,7 +473,12 @@ pub fn reported_change_progress(
     // "The specific stages that the domain is going through to perform the
     // configuration change": the service publishes none for a change it has not begun
     // applying, which is an empty list rather than no list at all — a caller walking
-    // the stages has a list to walk.
+    // the stages has a list to walk. "The total number of stages required for the
+    // configuration change" is the number of stages that list carries, so the
+    // denominator a caller renders progress against is the stages the change reports:
+    // this emulator applies a change in ONE step and publishes no stage, so the list is
+    // empty and the total is zero.
+    progress.total_number_of_stages = 0;
     progress.change_progress_stages = Some(Vec::new());
     // Both lists name the same properties the same way; which of the two a property
     // sits in is `ConfigChange`'s own answer.
@@ -483,11 +533,14 @@ fn reported_modifying_properties(domain: &Domain) -> Vec<ModifyingProperties> {
     };
     let mut modifying: Vec<ModifyingProperties> = change_leaf_values(domain, &change.properties)
         .into_iter()
-        .map(|(name, value)| ModifyingProperties {
-            name: Some(name),
-            active_value: Some(String::new()),
-            pending_value: Some(property_text(&value)),
-            value_type: Some(property_value_type(&value).to_string()),
+        .map(|(name, value)| {
+            let pending = property_text(&value);
+            ModifyingProperties {
+                name: Some(name),
+                active_value: Some(String::new()),
+                value_type: Some(property_value_type(&pending).to_string()),
+                pending_value: Some(pending),
+            }
         })
         .collect();
     modifying.sort_by(|left, right| left.name.cmp(&right.name));
@@ -499,16 +552,17 @@ fn reported_modifying_properties(domain: &Domain) -> Vec<ModifyingProperties> {
 /// record one of them moves and the record a later descriptor reports are one answer.
 ///
 /// "The current service software version present on the domain" is the software the
-/// domain's NODES run, and a domain still being provisioned has no node yet: the
-/// version is reported empty until its cluster is up, the same way the endpoint it
-/// serves traffic on is withheld until then. `NewVersion` is likewise the empty
+/// domain's NODES run, and a domain whose cluster is not there has no node to run any:
+/// the version is reported empty while the domain is still being provisioned and once it
+/// is being torn down ([`Domain::cluster_exists`]), the same way the endpoint it serves
+/// traffic on is withheld then. `NewVersion` is likewise the empty
 /// version rather than no member when no release is available to move onto, and the
 /// date past which the service would update the domain by itself is the epoch when no
 /// such update is scheduled — the two members a caller reads to decide whether an
 /// update is due.
 pub fn reported_service_software(domain: &Domain) -> ServiceSoftwareOptions {
     let mut options = domain.service_software.to_options();
-    if !domain.cluster_is_up() {
+    if !domain.cluster_exists() {
         options.current_version = Some(String::new());
     }
     default_to(&mut options.new_version, String::new());
@@ -569,44 +623,118 @@ fn change_leaf_values(domain: &Domain, options: &[String]) -> Vec<(String, Value
 }
 
 /// The text a property's value is reported as: a container or a list as the compact
-/// JSON document it is, and a direct value as itself.
+/// JSON document it is, a direct value as itself, and a property the domain holds no
+/// value for as the empty text — the same way `ActiveValue` reports a property that had
+/// no value before the change.
 fn property_text(value: &Value) -> String {
     match value {
+        Value::Null => String::new(),
         Value::String(text) => text.clone(),
         other => other.to_string(),
     }
 }
 
-/// Which `PropertyValueType` a property's value is: `STRINGIFIED_JSON` for one whose
-/// content is "in JSON format, such as {\"Enabled\":\"True\"}", and `PLAIN_TEXT` for a
-/// "direct value".
-fn property_value_type(value: &Value) -> &'static str {
-    match value {
-        Value::Object(_) | Value::Array(_) => PROPERTY_VALUE_TYPE_STRINGIFIED_JSON,
-        _ => PROPERTY_VALUE_TYPE_PLAIN_TEXT,
+/// Which `PropertyValueType` the property reported as `text` carries, decided from that
+/// text: `STRINGIFIED_JSON` where it is "content in JSON format, such as
+/// {\"Enabled\":\"True\"}", and `PLAIN_TEXT` where it is a "direct value such as \"1\",
+/// \"True\", or \"c5.large.search\"".
+///
+/// Decided from the text rather than from the member's modelled type, because the two
+/// kinds the enum names are about the text a caller has to parse: a container and a list
+/// render as a JSON document, and so does a DOCUMENT the caller submitted as a string —
+/// an access policy is JSON content whoever typed it. A direct value, and a property the
+/// domain holds no value for, is no JSON document and so plain text.
+fn property_value_type(text: &str) -> &'static str {
+    let json_content = ::serde_json::from_str::<Value>(text)
+        .is_ok_and(|document| document.is_object() || document.is_array());
+    if json_content {
+        PROPERTY_VALUE_TYPE_STRINGIFIED_JSON
+    } else {
+        PROPERTY_VALUE_TYPE_PLAIN_TEXT
     }
 }
 
-/// `value` split into the leaf properties the service names it by: a container whose
-/// every member is itself a container is reported member by member, since it is those
-/// members — not the container around them — that are being set; anything else is
-/// reported whole.
+/// The option blocks a change applies PROPERTY BY PROPERTY, each with the properties the
+/// service names it by.
+///
+/// A change reports what it is applying at the grain the service applies it: most option
+/// blocks are one property, set as a whole, while the blocks below are a GROUP of
+/// settings the service applies one at a time — so a caller watching a cluster resize
+/// finds `ClusterConfig.InstanceType` beside `ClusterConfig.InstanceCount` rather than
+/// one entry for the whole cluster configuration.
+///
+/// The property names are the blocks' own modelled members
+/// (`smithy_query(query="shape",shape="com.amazonaws.opensearch#ClusterConfig,com.amazonaws.opensearch#AdvancedSecurityOptions,com.amazonaws.opensearch#AIMLOptions")`),
+/// less the members the service does not apply on their own — a zone-awareness
+/// configuration and the per-node options travel with the cluster's topology, and
+/// whether fine-grained access control is on travels with the settings it governs —
+/// plus the cluster's warm-tier STORAGE and the block's master-user credentials, which
+/// are properties the service applies and this model declares no reportable member for.
+const LEAF_PROPERTY_BLOCKS: [(&str, &[&str]); 3] = [
+    (
+        OPT_AIML_OPTIONS,
+        &[
+            "NaturalLanguageQueryGenerationOptions",
+            "S3VectorsEngine",
+            "ServerlessVectorAcceleration",
+        ],
+    ),
+    (
+        OPT_ADVANCED_SECURITY_OPTIONS,
+        &[
+            "AnonymousAuthDisableDate",
+            "AnonymousAuthEnabled",
+            "IAMFederationOptions",
+            "InternalUserDatabaseEnabled",
+            "JWTOptions",
+            "MasterUserOptions",
+            "SAMLOptions",
+        ],
+    ),
+    (
+        OPT_CLUSTER_CONFIG,
+        &[
+            "ColdStorageOptions",
+            "DedicatedMasterCount",
+            "DedicatedMasterEnabled",
+            "DedicatedMasterType",
+            "InstanceCount",
+            "InstanceType",
+            "MultiAZWithStandbyEnabled",
+            "WarmCount",
+            "WarmEnabled",
+            "WarmStorage",
+            "WarmType",
+            "ZoneAwarenessEnabled",
+        ],
+    ),
+];
+
+/// `value` split into the leaf properties the service names it by: a block it applies
+/// property by property ([`LEAF_PROPERTY_BLOCKS`]) is reported property by property —
+/// every property of the block, each with the value the domain holds for it — and every
+/// other option is reported whole.
+///
+/// The service provisions a whole block, so every property of one HAS a value: a property
+/// the configuration does not use (the warm instance type of a cluster with no warm tier)
+/// is reported with the EMPTY value, carried here as JSON null and reported as the empty
+/// text by [`property_text`].
 fn leaf_values(option: &str, value: &Value) -> Vec<(String, Value)> {
-    let members = value
-        .as_object()
-        .filter(|members| !members.is_empty() && members.values().all(Value::is_object));
-    match members {
-        Some(members) => members
-            .iter()
-            .map(|(name, member)| {
-                (
-                    format!("{option}{PROPERTY_PATH_SEPARATOR}{name}"),
-                    member.clone(),
-                )
-            })
-            .collect(),
-        None => vec![(option.to_string(), value.clone())],
-    }
+    let Some((_, properties)) = LEAF_PROPERTY_BLOCKS
+        .iter()
+        .find(|(block, _)| *block == option)
+    else {
+        return vec![(option.to_string(), value.clone())];
+    };
+    properties
+        .iter()
+        .map(|property| {
+            (
+                format!("{option}{PROPERTY_PATH_SEPARATOR}{property}"),
+                value.get(property).cloned().unwrap_or(Value::Null),
+            )
+        })
+        .collect()
 }
 
 /// A JSON object of the members a container holds, leaving out every member it holds
@@ -1035,6 +1163,21 @@ fn option_value(domain: &Domain, option: &str) -> Option<Value> {
             ])
         }
         OPT_USE_CASE => Value::from(domain.use_case.clone()),
+        // The tag set is not an option container: the service applies it as the list of
+        // `Tag` the create carried, which is the document a caller reads back, so it is
+        // reported as that list — empty for a domain created with no tag.
+        OPT_TAGS => Value::Array(
+            domain
+                .tags
+                .iter()
+                .map(|(key, value)| {
+                    object(vec![
+                        ("Key", Some(Value::from(key.clone()))),
+                        ("Value", Some(Value::from(value.clone()))),
+                    ])
+                })
+                .collect(),
+        ),
         OPT_VPC_OPTIONS => {
             let options = domain.vpc_options.as_ref()?;
             object(vec![

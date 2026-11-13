@@ -662,6 +662,27 @@ pub const VPC_ENDPOINT_CHANGE: Duration = Duration::from_secs(3);
 /// supported set, is still a stub.
 pub const DEFAULT_SERVICE_SOFTWARE_VERSION: &str = "R20250101";
 
+/// The service software release label a domain running `engine_version` is on —
+/// "the current service software version present on the domain".
+///
+/// A release of the service software is built FOR one engine version, so the label an
+/// OpenSearch domain reports names that version before the release it is a build of:
+/// the version's own spelling with the separator an underscore
+/// (`OpenSearch_<major>_<minor>_R<release>`). A legacy Elasticsearch domain's label is
+/// the release alone, which is the only form that engine's releases are published
+/// under. Derived here rather than stored as one constant, so a domain reports the
+/// software of the engine it actually runs and two domains on different engines never
+/// report one label.
+pub fn service_software_release(engine_version: &str) -> String {
+    if engine_version.starts_with(ENGINE_TYPE_OPENSEARCH) {
+        return format!(
+            "{}_{DEFAULT_SERVICE_SOFTWARE_VERSION}",
+            engine_version.replace('.', "_")
+        );
+    }
+    DEFAULT_SERVICE_SOFTWARE_VERSION.to_string()
+}
+
 /// How long after a service software deployment lands the domain can still be rolled
 /// back onto the release it came off.
 ///
@@ -818,6 +839,14 @@ pub const OPT_AUTOMATED_SNAPSHOT_PAUSE_OPTIONS: &str = "AutomatedSnapshotPauseOp
 pub const OPT_USE_CASE: &str = "UseCase";
 /// `DomainConfig$EngineMode`.
 pub const OPT_ENGINE_MODE: &str = "EngineMode";
+/// The domain's TAG SET as a configuration property.
+///
+/// Not a `DomainConfig` member — the tags of a domain are read by `ListTags` — but the
+/// service applies them as part of provisioning a domain created with `TagList`, and
+/// reports them as one of the properties the change that creates the domain is applying.
+/// The name is the service's own for that property and carries no member path, which is
+/// why it is spelled unlike every option above.
+pub const OPT_TAGS: &str = "TAGS";
 
 /// One option's own revision history: the version it is at and when it last changed.
 ///
