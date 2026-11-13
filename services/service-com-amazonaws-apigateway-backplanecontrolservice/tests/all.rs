@@ -35,6 +35,12 @@ mod http_proxy_function_url;
 mod proxy_event_repeated_names;
 #[path = "all/test_invoke_method_lambda_permission.rs"]
 mod test_invoke_method_lambda_permission;
+// Declared here, at the head, for the reason the entry at the top of this file records: what
+// a simulated invocation of a method whose integration `uri` names a function, version or
+// alias that resolves to nothing is answered — and logged — with spans API Gateway, AWS
+// Lambda and Amazon CloudWatch Logs at once.
+#[path = "all/test_invoke_method_unresolvable_function.rs"]
+mod test_invoke_method_unresolvable_function;
 #[path = "all/stage_access_logging.rs"]
 mod stage_access_logging;
 #[path = "all/stage_proxy_run_logs.rs"]

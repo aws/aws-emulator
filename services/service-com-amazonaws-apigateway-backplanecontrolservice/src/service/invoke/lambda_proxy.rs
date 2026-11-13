@@ -60,9 +60,13 @@
 //!
 //! Nothing is refused on evidence this emulator does not have: a `uri` whose function Lambda
 //! does not answer about at all, and an emulator with no Lambda mounted, each leave the call
-//! to be made, for the reason [`super::super::resource_policy`]'s own reading gives. A
-//! function whose policy Lambda REPORTS as absent is an answer rather than a silence: it
-//! grants nothing, so the call is not made.
+//! to be made, for the reason [`super::super::resource_policy`]'s own reading gives. What
+//! Lambda REPORTS is an answer rather than a silence: a function it holds no record of — the
+//! record itself, or the version or alias the `uri` qualifies it by — has no policy for a
+//! grant to live in, and a function whose policy it reports as absent carries none, so
+//! neither is invoked and both earn the method the ONE configuration error API Gateway words
+//! a missing grant with ([`INVALID_PERMISSIONS_REASON`]) — an unresolvable qualifier is
+//! reported as a permissions error, not as a not-found one.
 //!
 //! # How an outcome becomes the method response
 //!
@@ -73,7 +77,8 @@
 //!   the required format, with the `{"message":"Internal server error"}` body it words such
 //!   a response with, and the reason is logged ([`BAD_GATEWAY_STATUS`]);
 //! * the invocation could not be MADE at all — no Lambda answered it, the `uri` names no
-//!   function Lambda holds, or the function's policy admits no call from this method: there
+//!   function (or no version or alias of one) Lambda holds, or the function's policy admits
+//!   no call from this method: there
 //!   is no function answer to pass through, so the call is answered the way every integration
 //!   this stage cannot perform is, through the api's own `API_CONFIGURATION_ERROR` gateway
 //!   response ([`super::API_CONFIGURATION_ERROR`], `500` with
@@ -651,8 +656,9 @@ pub(super) async fn resolved_function_arn(
 ///
 /// `true` also when nothing about the function could be shown, which refuses nothing: a
 /// `uri` whose function Lambda does not answer about at all, and an emulator with no Lambda
-/// mounted, are not evidence of a missing grant. A function whose policy Lambda REPORTS as
-/// absent is an answer rather than a silence: it grants nothing.
+/// mounted, are not evidence of a missing grant. A function Lambda REPORTS as absent — the
+/// record itself, or the version or alias the spelling qualifies it by — is an answer rather
+/// than a silence: there is no function for a grant to be attached to, so it grants nothing.
 ///
 /// `pub(super)` because an authorizer's function is admitted by the same grant, read the
 /// same way ([`super::custom_authorizer`]).
@@ -673,6 +679,20 @@ pub(super) async fn invocation_admitted(
     {
         Ok(reported) => reported.function_arn.unwrap_or_else(|| function.to_string()),
         Err(error) => {
+            // Lambda REPORTING that it holds no such function is an answer, not a silence:
+            // the spelling — with whatever version or alias it qualifies the function by —
+            // resolves to no record at all, so there is nothing for a resource policy to be
+            // attached to and no grant that could admit this invocation.
+            if error.as_service_error().is_some_and(
+                ::aws_sdk_lambda::operation::get_function_configuration::GetFunctionConfigurationError
+                    ::is_resource_not_found_exception,
+            ) {
+                ::tracing::warn!(
+                    "the invoked function resolves to no record Lambda holds, so no grant \
+                     admits the invocation"
+                );
+                return false;
+            }
             ::tracing::warn!(
                 error = %::aws_smithy_types::error::display::DisplayErrorContext(&error),
                 "the invoked function was not judged: nothing answered for its \
