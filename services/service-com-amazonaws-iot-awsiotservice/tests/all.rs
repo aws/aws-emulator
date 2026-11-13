@@ -107,5 +107,7 @@ mod topic_rule_kinesis_action;
 mod topic_rule_listing;
 #[path = "all/topic_rule_registry.rs"]
 mod topic_rule_registry;
+#[path = "all/topic_rule_replacement.rs"]
+mod topic_rule_replacement;
 #[path = "all/v2_logging_options.rs"]
 mod v2_logging_options;

@@ -1,15 +1,14 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op ReplaceTopicRule
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `ReplaceTopicRule`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`ReplaceTopicRule::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! REPLACES the payload of the rule the store holds under the requested name: the
+//! new `TopicRulePayload` is recorded whole, so every member the new payload omits
+//! is absent from the rule afterwards rather than kept from the rule it replaced,
+//! and the payload's optional members are resolved exactly as a create resolves
+//! them. The rule's identity — its name, its ARN and the instant it was created —
+//! and the tags it carries are not part of the payload, so they survive the
+//! replacement.
 //!
 //! ## Shape of an operation
 //!
@@ -170,18 +169,69 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `ReplaceTopicRule` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(ReplaceTopicRuleErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
+        // Every member this handler reads is in `input` or in the store, and the rule's
+        // ARN is the one the create minted, so no request metadata is consulted.
+        let _ = ctx;
+
+        let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
+            ReplaceTopicRuleErrorModeled::InternalException(InternalException {
+                message: Some("the IoT emulator has no state store attached".to_string()),
+            })
+        })?;
+
+        let mut store = state.lock();
+
+        // The rule's name is its identity, so the rule to replace is the record the
+        // store holds under that name. `ReplaceTopicRule` models no not-found error
+        // (`smithy_query(query="operation",operation="ReplaceTopicRule")` lists only
+        // `ConflictingResourceUpdateException`, `InternalException`,
+        // `InvalidRequestException`, `ServiceUnavailableException`,
+        // `SqlParseException` and `UnauthorizedException`), because AWS authorizes
+        // `iot:ReplaceTopicRule` against the rule's own ARN: a name that names no rule
+        // cannot be authorized, so the refusal is the modelled `UnauthorizedException`
+        // (HTTP 401) — never an empty 200, which would claim a rule was replaced when
+        // none exists, nor a create, which is `CreateTopicRule`'s job.
         //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("ReplaceTopicRule"))
+        // AWS words an IoT topic-rule access refusal as `Access to topic rule
+        // '<ruleName>' was denied`: the fixed text, the single quotes and the rule name
+        // the URI label carried, and nothing else — it names neither the action nor an
+        // ARN and does not state that the rule is absent, so a caller cannot use the
+        // reply to confirm that a rule exists.
+        let existing = store.topic_rules.get(&input.rule_name).ok_or_else(|| {
+            ReplaceTopicRuleErrorModeled::UnauthorizedException(UnauthorizedException {
+                message: Some(format!(
+                    "Access to topic rule '{}' was denied",
+                    input.rule_name
+                )),
+            })
+        })?;
+
+        // "Replaces the rule. You must specify all parameters for the new rule": the
+        // payload the request carries is the rule's WHOLE payload afterwards, so the
+        // record is rebuilt from it instead of having its members merged into the one
+        // the store held. Rebuilding it through the same constructor the create uses is
+        // what makes the two agree: a replaced rule resolves its optional members
+        // exactly as a created one does (an absent `ruleDisabled` is an enabled rule,
+        // an absent `awsIotSqlVersion` is the default version, an absent `description`
+        // or `errorAction` is absent), and its topic pattern is re-read from the new
+        // statement.
+        //
+        // What is NOT in the payload is not replaced: the rule's name and ARN are its
+        // identity, `createdAt` is "The date and time the rule was created" and this
+        // call creates no rule, and a rule's tags are managed by the tagging
+        // operations rather than by this one — so all four are carried over from the
+        // record being replaced.
+        let replaced = crate::state::RegisteredTopicRule::new(
+            existing.rule_name.clone(),
+            existing.rule_arn.clone(),
+            existing.created_at,
+            input.topic_rule_payload,
+            existing.tags.clone(),
+        );
+        store.topic_rules.insert(replaced.rule_name.clone(), replaced);
+
+        // `ReplaceTopicRule`'s output shape is `Unit`: a successful replace reports no
+        // members at all, and what it persisted is read back through `GetTopicRule`.
+        Ok(ReplaceTopicRuleOutput)
     }
 }
