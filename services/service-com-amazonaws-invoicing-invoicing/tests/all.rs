@@ -101,6 +101,8 @@ mod status_update_needs_an_enabled_plane;
 mod tag_write_quota_counts_distinct_keys;
 #[path = "all/the_requester_reads_its_own_account.rs"]
 mod the_requester_reads_its_own_account;
+#[path = "all/validation_code_is_unpredictable.rs"]
+mod validation_code_is_unpredictable;
 #[path = "all/validation_message_wording.rs"]
 mod validation_message_wording;
 #[path = "all/wire_envelope_and_error_detail.rs"]

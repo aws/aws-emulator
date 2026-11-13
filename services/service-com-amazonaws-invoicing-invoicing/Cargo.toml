@@ -34,6 +34,11 @@ chrono = { version = "0.4", default-features = false, features = ["std"] }
 # hands out and takes back under, which is what makes a document address `GetInvoicePDF`
 # minted one no caller could have assembled.
 service-common = { path = "../common" }
+# `crate::state::draw_portal_validation_code`: the uniform draw the procurement-portal
+# validation code a submission has to match comes from — the maintained generator crate's
+# own range draw over a cryptographically secure generator seeded from the operating
+# system, rather than sampling written here.
+rand = "0.9"
 # Writes the PDF invoice documents this service's document plane serves, so a document a
 # `GetInvoicePDF` URL leads to is produced by a PDF writer rather than hand-assembled
 # bytes.

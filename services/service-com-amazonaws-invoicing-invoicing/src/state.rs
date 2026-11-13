@@ -89,6 +89,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use ::aws_smithy_types::DateTime;
+use ::rand::Rng;
 
 use crate::ops::types::{
     AccessDeniedException, Contact, EinvoiceDeliveryPreference, FeatureConfigurations,
@@ -158,8 +159,15 @@ pub struct ComAmazonawsInvoicingInvoicingState {
     next_invoice_unit_id: u64,
     /// Source of procurement-portal-preference ids for ARN minting.
     next_procurement_portal_preference_id: u64,
-    /// Source of the validation codes `SendProcurementPortalValidation` issues.
-    next_portal_validation_code: u64,
+    /// The validation codes this store has already issued, most recent last, so a fresh
+    /// draw is not handed a code another validation of this run is still identified by
+    /// ([`Self::issue_portal_validation_code`]). Bounded by
+    /// [`MAX_REMEMBERED_PORTAL_VALIDATION_CODES`]: sends are caller-driven, so past that
+    /// many the code issued longest ago is forgotten and may be drawn again.
+    ///
+    /// It decides nothing a caller can observe about the NEXT code — the draw is the
+    /// system's randomness either way — and no reader reports it.
+    recent_portal_validation_codes: VecDeque<String>,
     /// The secret this store authenticates the DOCUMENT ADDRESSES it hands out under, so an
     /// address `GetInvoicePDF` minted is one no caller could have assembled and no other
     /// process can produce (see [`invoice_documents`] and [`Self::document_token`]). Drawn
@@ -234,6 +242,38 @@ const MAX_IDEMPOTENT_RECORDS: usize = 1024;
 /// configuration is dropped, and an `AsOf` older than the oldest retained one reads
 /// that oldest retained configuration.
 const MAX_RETAINED_VERSIONS: usize = 32;
+
+/// How many decimal digits a procurement-portal validation code carries: the six-digit
+/// form the portal-validation flow's `Code` is quoted in.
+pub const PORTAL_VALIDATION_CODE_DIGITS: usize = 6;
+
+/// How many codes [`PORTAL_VALIDATION_CODE_DIGITS`] digits span — the value space one
+/// code is drawn uniformly from.
+const PORTAL_VALIDATION_CODE_SPACE: u32 = 1_000_000;
+
+/// How many issued codes a store remembers for the sake of not drawing one of them again.
+/// Far below [`PORTAL_VALIDATION_CODE_SPACE`], so a draw is almost never discarded for
+/// repeating a remembered code and the codes left to draw stay all but the whole space.
+const MAX_REMEMBERED_PORTAL_VALIDATION_CODES: usize = 1024;
+
+/// How many times [`ComAmazonawsInvoicingInvoicingState::issue_portal_validation_code`]
+/// re-draws when the draw repeats a code it still remembers. A repeat has probability at
+/// most `MAX_REMEMBERED_PORTAL_VALIDATION_CODES / PORTAL_VALIDATION_CODE_SPACE`, so this
+/// many independent repeats cannot be reached in practice; the bound is here so the mint
+/// cannot spin on its own bookkeeping.
+const PORTAL_VALIDATION_CODE_DRAWS: usize = 8;
+
+/// One procurement-portal validation code, drawn uniformly from the whole
+/// [`PORTAL_VALIDATION_CODE_DIGITS`]-digit space, zero-padded to that width.
+///
+/// The draw is the maintained generator's own uniform range draw over a cryptographically
+/// secure generator seeded from the operating system's randomness, rather than sampling
+/// written here: a code the service issues out of band and then gates a verification on is
+/// only worth as much as the generator it came from.
+fn draw_portal_validation_code() -> String {
+    let code = ::rand::rng().random_range(0..PORTAL_VALIDATION_CODE_SPACE);
+    format!("{code:0width$}", width = PORTAL_VALIDATION_CODE_DIGITS)
+}
 
 impl ComAmazonawsInvoicingInvoicingState {
     /// Mint the ARN of a new invoice unit: `arn:aws:invoicing::<account>:invoice-unit/<id>`.
@@ -447,22 +487,42 @@ impl ComAmazonawsInvoicingInvoicingState {
     /// A procurement-portal validation code: six decimal digits, the form the
     /// portal-validation flow's `Code` is quoted in.
     ///
-    /// Minted from a monotonic counter mixed with the nanosecond clock, so two
-    /// validations issued in one run do not share a code. It is NOT a credential and is
-    /// never returned on the wire: the real service delivers it out of band, inside the
-    /// test e-invoice it posts to the configured portal, so the code it issued is kept
-    /// here (see [`IssuedPortalValidation`]) for `VerifyProcurementPortalValidation` to
-    /// check a submitted code against.
+    /// DRAWN, per issue, from a cryptographically secure random generator
+    /// ([`draw_portal_validation_code`]) — uniformly over the whole six-digit space, and
+    /// from nothing a caller supplied, nothing a reader is told and nothing this process
+    /// has already done. It is the code a submission has to MATCH before the validation of
+    /// a portal connection completes, and the real service delivers it out of band, inside
+    /// the test e-invoice it posts to the configured portal: a caller that never received
+    /// it cannot complete the validation, which is exactly what a code derived from a
+    /// counter, the clock or the request would hand it.
+    ///
+    /// The drawn code is not returned on the wire — the modelled response carries only the
+    /// preference's ARN — so the code the service issued is kept here (see
+    /// [`IssuedPortalValidation`]) for `VerifyProcurementPortalValidation` to check a
+    /// submitted code against.
+    ///
+    /// Two validations issued in one run do not share a code: a draw that repeats one of
+    /// the codes this store still remembers
+    /// ([`Self::recent_portal_validation_codes`]) is discarded and drawn again.
     ///
     /// `SendProcurementPortalValidation` is the operation that issues one: the model
     /// documents it as initiating the validation by issuing a validation code, so this is
     /// where the code it records against a preference comes from.
     pub fn issue_portal_validation_code(&mut self) -> String {
-        self.next_portal_validation_code = self.next_portal_validation_code.wrapping_add(1);
-        let mixed = u64::from(now().subsec_nanos())
-            .wrapping_mul(1_000_003)
-            .wrapping_add(self.next_portal_validation_code);
-        format!("{:06}", mixed % 1_000_000)
+        let mut code = draw_portal_validation_code();
+        for _ in 1..PORTAL_VALIDATION_CODE_DRAWS {
+            if !self.recent_portal_validation_codes.contains(&code) {
+                break;
+            }
+            code = draw_portal_validation_code();
+        }
+        self.recent_portal_validation_codes.push_back(code.clone());
+        // Bounded memory: sends are caller-driven, so only the most recently issued codes
+        // are remembered rather than every code this process ever drew.
+        while self.recent_portal_validation_codes.len() > MAX_REMEMBERED_PORTAL_VALIDATION_CODES {
+            self.recent_portal_validation_codes.pop_front();
+        }
+        code
     }
 
     /// The ARN an earlier call of `operation` already returned for this `target`,
@@ -2301,6 +2361,9 @@ pub fn invalid_next_token(message_key: MessageKey) -> ValidationException {
     }
 }
 
+/// The 500 a handler answers when the engine it was constructed with is not the shared
+/// in-memory engine, so this service has no store to read. Never construct an engine in
+/// a handler instead: that store is private to the request and dropped when it returns.
 /// The 500 a handler answers when the engine it was constructed with is not the shared
 /// in-memory engine, so this service has no store to read. Never construct an engine in
 /// a handler instead: that store is private to the request and dropped when it returns.

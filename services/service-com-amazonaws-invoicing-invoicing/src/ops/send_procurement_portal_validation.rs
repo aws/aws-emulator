@@ -356,7 +356,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // Issuing the code IS this operation's work, so this call writes the validation
         // state of the preference: the code it mints becomes the outstanding one and any
         // code an earlier send left is retired, which is what a client asking for a fresh
-        // code gets.
+        // code gets. The code is DRAWN, so neither this call's position in the service's
+        // issues nor anything of the request decides it.
         let code = store.issue_portal_validation_code();
         let issued_at = crate::state::now();
         // The same resolution as the one above, repeated only because the check in between
