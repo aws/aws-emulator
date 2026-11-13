@@ -30,7 +30,7 @@ use serde_json::{json, Value};
 use smithy_server_runtime::MultiServiceRouter;
 
 use crate::data_source_service_role::{
-    config_for, get_data_source, request_body, DATA_SOURCE_TYPES, ROLE_ARN,
+    config_for, get_data_source, reported_service_role, request_body, DATA_SOURCE_TYPES, ROLE_ARN,
 };
 use crate::error_contract::{call, create_api, router, Answer};
 use crate::graphql_api_lifecycle::REGION;
@@ -199,13 +199,15 @@ fn assert_projects(row: &Row, api_id: &str, name: &str, data_source: &Value, sou
         row.data_source_type,
         data_source["type"]
     );
-    match row.role {
+    match reported_service_role(row.data_source_type, row.role) {
         Some(role) => assert_eq!(
             data_source["serviceRoleArn"],
             json!(role),
             "case {row:?} ({source}): expected serviceRoleArn {role}, got {:?}",
             data_source["serviceRoleArn"]
         ),
+        // Either the request named no role, or it named one for a type AppSync
+        // reaches without assuming one, which keeps no service role.
         None => assert!(
             data_source["serviceRoleArn"].is_null(),
             "case {row:?} ({source}): expected no serviceRoleArn, got {:?}",

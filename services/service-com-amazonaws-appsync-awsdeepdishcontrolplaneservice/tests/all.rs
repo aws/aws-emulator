@@ -127,6 +127,8 @@ mod plane_dependency_refusals;
 mod resolvers;
 #[path = "all/resource_tags.rs"]
 mod resource_tags;
+#[path = "all/response_member_projections.rs"]
+mod response_member_projections;
 #[path = "all/schema_creation.rs"]
 mod schema_creation;
 #[path = "all/schema_creation_status_polling.rs"]

@@ -56,6 +56,29 @@ pub(crate) const DATA_SOURCE_TYPES: &[(&str, bool)] = &[
 /// A role ARN of the shape `serviceRoleArn` carries.
 pub(crate) const ROLE_ARN: &str = "arn:aws:iam::000000000000:role/service-role/appsync-datasource";
 
+/// Whether AppSync must assume a role to reach a data source of this `type`, as the
+/// catalog above records it.
+pub(crate) fn needs_service_role(data_source_type: &str) -> bool {
+    DATA_SOURCE_TYPES
+        .iter()
+        .find(|(name, _)| *name == data_source_type)
+        .map_or_else(
+            || panic!("case {data_source_type}: this catalog carries no such type"),
+            |(_, needs_role)| *needs_role,
+        )
+}
+
+/// The `serviceRoleArn` a data source of this `type` reports for the role `sent` names:
+/// the role itself where AppSync reaches the data source by assuming one, and none at
+/// all for a type it reaches without credentials of its own, which has no service role
+/// to report however the request names one.
+pub(crate) fn reported_service_role<'a>(
+    data_source_type: &str,
+    sent: Option<&'a str>,
+) -> Option<&'a str> {
+    sent.filter(|_| needs_service_role(data_source_type))
+}
+
 /// The refusal a data source of a role-requiring type with no role takes.
 const ROLE_REFUSAL: &str = "Service role arn not specified.";
 
@@ -248,7 +271,7 @@ async fn a_type_that_needs_a_service_role_is_refused_without_one() {
         }
 
         // The identical configuration WITH a role succeeds for every type, and the
-        // stored data source reports it.
+        // stored data source reports the role of a type that has one.
         let with = format!("with_role_{data_source_type}");
         let case = format!("a {data_source_type} data source with a serviceRoleArn");
         let created = call(
@@ -269,8 +292,8 @@ async fn a_type_that_needs_a_service_role_is_refused_without_one() {
         );
         assert_eq!(
             created.body["dataSource"]["serviceRoleArn"].as_str(),
-            Some(ROLE_ARN),
-            "case {case:?}: expected the stored role, got {created:?}"
+            reported_service_role(data_source_type, Some(ROLE_ARN)),
+            "case {case:?}: expected the role of a type that keeps one, got {created:?}"
         );
         let read = get_data_source(&router, &api_id, &with).await;
         assert_eq!(
@@ -606,8 +629,8 @@ async fn an_update_cannot_leave_a_data_source_without_the_role_its_type_needs() 
         );
         assert_eq!(
             read.body["dataSource"]["serviceRoleArn"].as_str(),
-            Some(ROLE_ARN),
-            "case {case:?}: expected the new role, got {read:?}"
+            reported_service_role(data_source_type, Some(ROLE_ARN)),
+            "case {case:?}: expected the role of a type that keeps one, got {read:?}"
         );
     }
 

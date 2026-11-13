@@ -275,9 +275,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // variables held under the API.
 
         // Answer from the STORED record, so this body is the one `GetGraphqlApi` and
-        // `ListGraphqlApis` answer with afterwards.
+        // `ListGraphqlApis` answer with afterwards — minus the API's `dns` records,
+        // which this reply does not carry (`crate::state::GraphqlApiRecord::to_updated_graphql_api`).
         Ok(UpdateGraphqlApiOutput {
-            graphql_api: Some(record.to_graphql_api()),
+            graphql_api: Some(record.to_updated_graphql_api()),
         })
     }
 }

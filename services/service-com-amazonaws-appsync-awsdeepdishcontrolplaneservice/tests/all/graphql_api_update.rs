@@ -295,7 +295,6 @@ async fn an_update_replaces_the_configuration_and_leaves_the_api_identity_untouc
         for member in [
             "apiId",
             "arn",
-            "dns",
             "uris",
             "owner",
             "apiType",
@@ -315,11 +314,31 @@ async fn an_update_replaces_the_configuration_and_leaves_the_api_identity_untouc
             status, 200,
             "case {case}: expected GetGraphqlApi 200, got {status} {fetched:?}"
         );
-        assert_eq!(
-            fetched["graphqlApi"], updated,
-            "case {case}: GetGraphqlApi must answer the updated record, got {fetched:?}"
-        );
+        assert_read_answers_the_update(&case, &updated, &fetched["graphqlApi"], &created);
     }
+}
+
+/// The read answers the record the update left behind, on the one difference between
+/// the two replies: the update reports the API's configuration WITHOUT its `dns`
+/// records, which it carries no member for and cannot change, while the read — where a
+/// caller learns the API's endpoints — reports them, unchanged from the create.
+fn assert_read_answers_the_update(case: &str, updated: &Value, read: &Value, created: &Value) {
+    assert!(
+        updated["dns"].is_null(),
+        "case {case}: expected the update's reply to carry no dns records, got {updated:?}"
+    );
+    assert_eq!(
+        read["dns"], created["dns"],
+        "case {case}: expected the read to report the API's dns records unchanged, got {read:?}"
+    );
+    let mut without_dns = read.clone();
+    if let Some(members) = without_dns.as_object_mut() {
+        members.remove("dns");
+    }
+    assert_eq!(
+        updated, &without_dns,
+        "case {case}: GetGraphqlApi must answer the updated record, got {read:?}"
+    );
 }
 
 /// A second update of the same API replaces the first one's configuration too, so the
@@ -382,10 +401,7 @@ async fn each_update_replaces_what_the_previous_one_left() {
             status, 200,
             "case {case}: expected GetGraphqlApi 200, got {status} {fetched:?}"
         );
-        assert_eq!(
-            fetched["graphqlApi"], updated,
-            "case {case}: GetGraphqlApi must answer the updated record, got {fetched:?}"
-        );
+        assert_read_answers_the_update(&case, &updated, &fetched["graphqlApi"], &created);
     }
 }
 

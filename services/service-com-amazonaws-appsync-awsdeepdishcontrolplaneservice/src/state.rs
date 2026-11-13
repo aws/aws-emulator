@@ -267,6 +267,22 @@ impl GraphqlApiRecord {
             enhanced_metrics_config: self.enhanced_metrics_config.clone(),
         }
     }
+
+    /// This record as the reply to an UPDATE of the API reports it: the projection
+    /// above WITHOUT the API's `dns` records.
+    ///
+    /// An update carries no member for the API's endpoints and cannot change them, so
+    /// the reply to one reports the configuration the update left behind and not "the
+    /// DNS records for the API" — which is what the recorded `UpdateGraphqlApi`
+    /// replies carry (no `dns` member), while the create and the reads, whose replies
+    /// are where a caller learns the endpoints, report them. The `uris` the endpoints
+    /// are addressed through are reported on every reply alike.
+    pub fn to_updated_graphql_api(&self) -> GraphqlApi {
+        GraphqlApi {
+            dns: None,
+            ..self.to_graphql_api()
+        }
+    }
 }
 
 /// One stored `ApiCache` of a `GraphqlApiRecord`.
@@ -880,17 +896,23 @@ impl ChannelNamespaceRecord {
     ///
     /// The single projection the create, the update and `GetChannelNamespace` answer
     /// with, so none of the three can disagree about one namespace.
+    ///
+    /// The namespace's COLLECTION members — its two authorization overrides and its
+    /// handler configuration — are reported whether or not the namespace configures
+    /// any of them, as the empty collection that says "nothing configured": a caller
+    /// reads `handlerConfigs.onPublish` or iterates `publishAuthModes` on every
+    /// namespace rather than having to tell an unconfigured member from one the reply
+    /// left out. That is what the recorded creates, updates and reads this projection
+    /// answers carry for a namespace with no handlers and no override (`{}` and `[]`),
+    /// and it is the same rule the tag map above already follows.
     pub fn to_channel_namespace(&self) -> ChannelNamespace {
         ChannelNamespace {
             api_id: Some(self.api_id.clone()),
             name: Some(self.name.clone()),
-            // An override is reported only where the namespace carries one: an empty
-            // list overrides nothing, which is what a namespace that leaves the
-            // `Api`'s default authorization configuration in place has.
-            subscribe_auth_modes: (!self.subscribe_auth_modes.is_empty())
-                .then(|| self.subscribe_auth_modes.clone()),
-            publish_auth_modes: (!self.publish_auth_modes.is_empty())
-                .then(|| self.publish_auth_modes.clone()),
+            // An empty list overrides nothing, which is what a namespace that leaves
+            // the `Api`'s default authorization configuration in place has.
+            subscribe_auth_modes: Some(self.subscribe_auth_modes.clone()),
+            publish_auth_modes: Some(self.publish_auth_modes.clone()),
             code_handlers: self.code_handlers.clone(),
             // Reported whether or not the namespace holds tags, the way
             // [`EventApiRecord::to_api`] reports an API's.
@@ -898,7 +920,10 @@ impl ChannelNamespaceRecord {
             channel_namespace_arn: Some(self.channel_namespace_arn.clone()),
             created: Some(::aws_smithy_types::DateTime::from(self.created)),
             last_modified: Some(::aws_smithy_types::DateTime::from(self.last_modified)),
-            handler_configs: self.handler_configs.clone(),
+            // An empty `HandlerConfigs` carries neither an `onPublish` nor an
+            // `onSubscribe` handler, which is what a namespace that configures no
+            // handler has.
+            handler_configs: Some(self.handler_configs.clone().unwrap_or_default()),
         }
     }
 
@@ -3024,6 +3049,26 @@ pub fn data_source_needs_service_role(data_source_type: &str, iam_authorized: bo
 /// needs a service role ([`data_source_needs_service_role`]) and whose request carried
 /// none: the absent member.
 pub const SERVICE_ROLE_NOT_SPECIFIED_MESSAGE: &str = "Service role arn not specified.";
+
+/// The service role a data source of this `type` KEEPS out of the `serviceRoleArn` a
+/// create or update request carried.
+///
+/// `serviceRoleArn` is the role "the system assumes [...] when ACCESSING the data
+/// source", so it is part of a data source only where AppSync reaches the data source
+/// by assuming a role ([`data_source_needs_service_role`]): a type AppSync reaches
+/// without credentials of its own — `NONE`, and an HTTP endpoint whose
+/// `authorizationConfig` does not select [`IAM_AUTHORIZATION_TYPE`] — has no service
+/// role, so a role such a request carries is not stored and no `serviceRoleArn` is
+/// reported for it. Shared by the create and the update, so the stored data source and
+/// every read of it agree.
+pub fn data_source_service_role(
+    data_source_type: &str,
+    iam_authorized: bool,
+    service_role_arn: Option<String>,
+) -> Option<String> {
+    service_role_arn
+        .filter(|_| data_source_needs_service_role(data_source_type, iam_authorized))
+}
 
 /// Whether `candidate` could identify an API at all: an API id ([`is_api_id`]) or a
 /// full resource ARN.

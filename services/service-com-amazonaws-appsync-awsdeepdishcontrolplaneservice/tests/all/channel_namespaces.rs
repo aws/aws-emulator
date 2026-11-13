@@ -64,7 +64,7 @@ const CODE_MAX_LEN: usize = 32_768;
 
 /// `AuthenticationType`'s whole value set, in the order the model declares it.
 /// Source: `smithy_query(query="shape", shape="AuthenticationType")`.
-const AUTHENTICATION_TYPES: &[&str] = &[
+pub(crate) const AUTHENTICATION_TYPES: &[&str] = &[
     "API_KEY",
     "AWS_IAM",
     "AMAZON_COGNITO_USER_POOLS",
@@ -101,13 +101,13 @@ fn provider(auth_type: &str) -> Value {
 }
 
 /// An auth-mode list naming every type in `auth_types`.
-fn modes(auth_types: &[&str]) -> Value {
+pub(crate) fn modes(auth_types: &[&str]) -> Value {
     Value::Array(auth_types.iter().map(|ty| json!({"authType": ty})).collect())
 }
 
 /// Create one Event API whose authorization providers set up `auth_types`, and return
 /// the `apiId` the service minted for it.
-async fn create_event_api(
+pub(crate) async fn create_event_api(
     router: &smithy_server_runtime::MultiServiceRouter,
     name: &str,
     auth_types: &[&str],
@@ -134,7 +134,7 @@ async fn create_event_api(
 }
 
 /// Create one channel namespace and return the answer.
-async fn create_namespace(
+pub(crate) async fn create_namespace(
     router: &smithy_server_runtime::MultiServiceRouter,
     api_id: &str,
     body: Value,
@@ -149,7 +149,7 @@ async fn create_namespace(
 }
 
 /// Read one channel namespace back.
-async fn get_namespace(
+pub(crate) async fn get_namespace(
     router: &smithy_server_runtime::MultiServiceRouter,
     api_id: &str,
     name: &str,
@@ -168,7 +168,7 @@ async fn get_namespace(
 /// optional `lambdaConfig.invokeType` (`REQUEST_RESPONSE` or `EVENT`).
 /// Source: `smithy_query(query="shape", shape="HandlerConfig,Integration,LambdaConfig,
 /// HandlerBehavior,InvokeType")`.
-fn handler_config(behavior: &str, data_source: &str, invoke_type: Option<&str>) -> Value {
+pub(crate) fn handler_config(behavior: &str, data_source: &str, invoke_type: Option<&str>) -> Value {
     let mut integration = json!({"dataSourceName": data_source});
     if let Some(invoke_type) = invoke_type {
         integration["lambdaConfig"] = json!({"invokeType": invoke_type});
@@ -212,18 +212,26 @@ impl CreateRow {
     }
 
     /// The `publishAuthModes` the stored namespace must report: the modes the request
-    /// carried, or no member at all for a request that overrode nothing.
+    /// carried, or the EMPTY list for a request that overrode nothing — the namespace
+    /// reports the member either way, because an empty list is what "overrides
+    /// nothing" looks like.
     fn expected_publish(&self) -> Value {
         self.publish
             .as_ref()
-            .map_or(Value::Null, |types| modes(types))
+            .map_or_else(|| json!([]), |types| modes(types))
     }
 
     /// The `subscribeAuthModes` the stored namespace must report.
     fn expected_subscribe(&self) -> Value {
         self.subscribe
             .as_ref()
-            .map_or(Value::Null, |types| modes(types))
+            .map_or_else(|| json!([]), |types| modes(types))
+    }
+
+    /// The `handlerConfigs` the stored namespace must report: the configuration the
+    /// request carried, or the EMPTY object for a request that configured no handler.
+    fn expected_handler_configs(&self) -> Value {
+        self.handler_configs.clone().unwrap_or_else(|| json!({}))
     }
 }
 
@@ -343,7 +351,7 @@ async fn a_created_channel_namespace_is_answered_from_the_record_the_reader_repo
         );
         assert_eq!(
             namespace["handlerConfigs"],
-            row.handler_configs.clone().unwrap_or(Value::Null),
+            row.expected_handler_configs(),
             "case {case:?}: expected the requested handlerConfigs back, got {namespace:?}"
         );
         assert_eq!(
@@ -788,15 +796,18 @@ async fn an_update_replaces_the_configuration_and_keeps_the_identity() {
     let stored = created.body["channelNamespace"].clone();
 
     // The rows differ along which members the update carries: each one alone, both
-    // overrides at once, and the empty update that clears every settable member.
+    // overrides at once, and the empty update that clears every settable member. A
+    // cleared override is reported as the EMPTY list and a cleared handler
+    // configuration as the EMPTY object, the way the namespace reports a member it
+    // was never given one for.
     let rows = vec![
         UpdateRow {
             label: "new code handlers only",
             body: json!({"codeHandlers": "export const replaced = 2"}),
-            publish: Value::Null,
-            subscribe: Value::Null,
+            publish: json!([]),
+            subscribe: json!([]),
             code_handlers: Some("export const replaced = 2"),
-            handler_configs: Value::Null,
+            handler_configs: json!({}),
         },
         UpdateRow {
             label: "both overrides, on other types",
@@ -807,7 +818,7 @@ async fn an_update_replaces_the_configuration_and_keeps_the_identity() {
             publish: modes(&["OPENID_CONNECT"]),
             subscribe: modes(&["AWS_LAMBDA", "AMAZON_COGNITO_USER_POOLS"]),
             code_handlers: None,
-            handler_configs: Value::Null,
+            handler_configs: json!({}),
         },
         UpdateRow {
             label: "handler configurations for both handlers",
@@ -817,8 +828,8 @@ async fn an_update_replaces_the_configuration_and_keeps_the_identity() {
                     "onSubscribe": handler_config("CODE", "audit_lambda", None),
                 },
             }),
-            publish: Value::Null,
-            subscribe: Value::Null,
+            publish: json!([]),
+            subscribe: json!([]),
             code_handlers: None,
             handler_configs: json!({
                 "onPublish": handler_config("DIRECT", "orders_table", Some("EVENT")),
@@ -828,10 +839,10 @@ async fn an_update_replaces_the_configuration_and_keeps_the_identity() {
         UpdateRow {
             label: "an update that carries nothing",
             body: json!({}),
-            publish: Value::Null,
-            subscribe: Value::Null,
+            publish: json!([]),
+            subscribe: json!([]),
             code_handlers: None,
-            handler_configs: Value::Null,
+            handler_configs: json!({}),
         },
     ];
 

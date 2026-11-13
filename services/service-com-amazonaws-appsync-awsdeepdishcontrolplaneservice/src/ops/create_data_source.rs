@@ -203,7 +203,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         // Every member the request carries is kept as it arrived, except
         // `description`: an empty description describes nothing, so the data source
-        // keeps none for it (see `crate::state::data_source_description`).
+        // keeps none for it (see `crate::state::data_source_description`); and
+        // `serviceRoleArn`, which is part of the data source only where AppSync
+        // reaches it by assuming a role (see
+        // `crate::state::data_source_service_role`).
+        let service_role_arn = crate::state::data_source_service_role(
+            &input.r#type,
+            crate::state::selects_iam_authorization(input.http_config.as_ref()),
+            input.service_role_arn,
+        );
         let record = crate::state::DataSourceRecord {
             arn: ::engine::emulator_arn(
                 crate::state::ARN_SERVICE,
@@ -213,7 +221,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             name: input.name,
             description: crate::state::data_source_description(input.description),
             r#type: input.r#type,
-            service_role_arn: input.service_role_arn,
+            service_role_arn,
             dynamodb_config: input.dynamodb_config,
             lambda_config: input.lambda_config,
             elasticsearch_config: input.elasticsearch_config,

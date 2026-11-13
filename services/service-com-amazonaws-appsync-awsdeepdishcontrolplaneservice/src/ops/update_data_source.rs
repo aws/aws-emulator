@@ -209,13 +209,20 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // request omits is gone from the data source. The name and the ARN identify
         // the record and are not settable, so the candidate keeps the stored ones —
         // and `description` takes the same projection as on the create, where an
-        // empty description describes nothing.
+        // empty description describes nothing, as does `serviceRoleArn`, which is part
+        // of the data source only where AppSync reaches it by assuming a role
+        // (`crate::state::data_source_service_role`).
+        let service_role_arn = crate::state::data_source_service_role(
+            &input.r#type,
+            crate::state::selects_iam_authorization(input.http_config.as_ref()),
+            input.service_role_arn,
+        );
         let updated = crate::state::DataSourceRecord {
             arn: stored.arn.clone(),
             name: stored.name.clone(),
             description: crate::state::data_source_description(input.description),
             r#type: input.r#type,
-            service_role_arn: input.service_role_arn,
+            service_role_arn,
             dynamodb_config: input.dynamodb_config,
             lambda_config: input.lambda_config,
             elasticsearch_config: input.elasticsearch_config,
