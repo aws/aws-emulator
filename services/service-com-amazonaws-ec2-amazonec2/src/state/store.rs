@@ -2827,6 +2827,17 @@ pub struct ComAmazonawsEc2Amazonec2State {
     /// are completed by the ONE entry [`Self::ipam_create_complete_at`] holds for that
     /// IPAM, which covers everything that create made at once.
     pub ipam_scope_create_complete_at: BTreeMap<String, Instant>,
+    /// When a `delete-in-progress` IPAM scope's REMOVAL falls due, by `IpamScopeId` — the
+    /// counterpart of [`Self::ipam_scope_create_complete_at`] for the other end of a scope's
+    /// life, on the same monotonic clock and the same [`TRANSITION_DELAY`], and applied by
+    /// the same [`Self::materialize_due_transitions`].
+    ///
+    /// The record is REMOVED rather than parked in a terminal state, for the reason
+    /// [`Self::begin_ipam_scope_deletion`] gives: a deleted scope is one `DescribeIpamScopes`
+    /// answers [`INVALID_IPAM_SCOPE_ID_NOT_FOUND`] for, so the row cannot stay in the store
+    /// for ever — the arrangement [`Self::ipam_delete_at`] holds for the IPAM that contains
+    /// it.
+    pub ipam_scope_delete_at: BTreeMap<String, Instant>,
     /// A `CreateIpamScope` `ClientToken` and the `IpamScopeId` that call minted, so a replay
     /// of the same request answers with that scope instead of creating a second one: "a
     /// unique, case-sensitive identifier that you provide to ensure the idempotency of the
@@ -3603,6 +3614,7 @@ impl Default for ComAmazonawsEc2Amazonec2State {
             ipam_policies: BTreeMap::new(),
             ipam_scopes: BTreeMap::new(),
             ipam_scope_create_complete_at: BTreeMap::new(),
+            ipam_scope_delete_at: BTreeMap::new(),
             ipam_scope_client_tokens: HashMap::new(),
             ipam_pool_create_complete_at: BTreeMap::new(),
             ipam_pool_delete_complete_at: BTreeMap::new(),

@@ -1,15 +1,22 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op DeleteIpamScope
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `DeleteIpamScope`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
+//! IMPLEMENTED: deletes one scope of an IPAM, so no later reader of the store reports a scope
+//! — or a pool created in it — the account no longer holds: `DescribeIpamScopes` for the id
+//! then answers `InvalidIpamScopeId.NotFound`.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`DeleteIpamScope::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! "You cannot delete the default scopes" (`DeleteIpamScope`), so a scope the IPAM came up
+//! with ([`crate::state::ipam_scope_is_default`]) is refused with `IncorrectState` and nothing
+//! is written; a scope that still holds pools is refused with `DependencyViolation`, because a
+//! pool is a resource within the scope and this operation takes no cascade; and a scope whose
+//! deletion has already been asked for is refused with `IncorrectState` too, naming the state
+//! it is in, rather than restarting the clock on it.
+//!
+//! The scope is answered in the transient `delete-in-progress` state the `IpamScopeState`
+//! catalog carries, with the clock owing its REMOVAL one [`crate::state::TRANSITION_DELAY`]
+//! later ([`crate::state::ComAmazonawsEc2Amazonec2State::begin_ipam_scope_deletion`]) —
+//! recorded rather than slept for, so a caller that reads straight back still sees the delete
+//! under way and a later one finds the scope gone.
 //!
 //! ## Shape of an operation
 //!
@@ -134,18 +141,97 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `DeleteIpamScope` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(DeleteIpamScopeErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("DeleteIpamScope"))
+        use crate::state;
+
+        // `ctx` carries request metadata only; this operation reads none of it — the scope is
+        // named in the request and reports its IPAM's own Region. The store is reached through
+        // the engine held on `self`.
+        let _ = ctx;
+
+        let scope_id = input.ipam_scope_id.as_str();
+        // The request's own FORM first, before anything is resolved and before the DryRun arm
+        // below: "not an IPAM scope id at all" is a malformed request rather than a scope that
+        // does not exist, which is the order every resource of this crate asks the two
+        // questions in (`crate::state::require_well_formed_id`).
+        state::require_well_formed_id(
+            state::IPAM_SCOPE_ID_PREFIX,
+            scope_id,
+            state::INVALID_IPAM_SCOPE_ID_MALFORMED,
+        )?;
+
+        // "A check for whether you have the required permissions for the action without
+        // actually making the request" (`DeleteIpamScopeRequest$DryRun`): a question about the
+        // CALLER, answered once the request's own form has been checked and before anything is
+        // resolved or written; every caller of this emulator is permitted.
+        if input.dry_run.unwrap_or(false) {
+            return Err(state::dry_run_operation());
+        }
+
+        let state_handle = state::require_service_state(&*self.engine)?;
+        let mut store = state_handle.lock();
+        // The clock first, the way every other state-touching handler in this crate starts: a
+        // scope whose `create-complete` move has fallen due is already in that state, and one
+        // whose own deletion has already settled is GONE, so every question below is asked of
+        // the state the store is ACTUALLY in. Those moves were owed at this instant whether or
+        // not anybody called.
+        store.materialize_due_transitions();
+
+        // "The ID of the scope to delete" (`DeleteIpamScopeRequest$IpamScopeId`): an id this
+        // account holds no scope for is `.NotFound`, in this resource's own wording.
+        let scope = store
+            .ipam_scopes
+            .get(scope_id)
+            .cloned()
+            .ok_or_else(|| state::invalid_ipam_scope_id_not_found(scope_id))?;
+
+        // A scope a delete has already been asked for has nothing left to delete, so a second
+        // delete is refused rather than restarting the clock on it — in EC2's own wording for a
+        // resource refused SOLELY for the state it is in. The state named is the one the guard
+        // above established, rather than whatever the record happens to carry.
+        if state::ipam_scope_is_deleting(&scope) {
+            return Err(state::incorrect_state_of(
+                "IPAM scope",
+                scope_id,
+                state::IPAM_SCOPE_STATE_DELETE_IN_PROGRESS,
+            ));
+        }
+
+        // "You cannot delete the default scopes" (`DeleteIpamScope`): the public and private
+        // scopes an IPAM comes up with exist for as long as the IPAM does, so a request naming
+        // one is refused with the code EC2 answers when the resource a request names is not one
+        // this action can be taken on — `IncorrectState`, as the recorded refusal of a default
+        // scope's deletion shows — and the sentence states that rule for the scope the REQUEST
+        // named.
+        if state::ipam_scope_is_default(&scope) {
+            return Err(state::incorrect_state(format!(
+                "The IPAM scope ({scope_id}) is a default scope and cannot be deleted."
+            )));
+        }
+
+        // A pool is a resource created WITHIN the scope ("a scope is the highest-level
+        // container within IPAM", `IpamScope`), and this operation models no cascade, so a
+        // scope that still holds one cannot be deleted: the caller takes the pools away first
+        // through `DeleteIpamPool`. EC2's own code for a delete the resource's dependencies
+        // forbid, worded the way the IPAM family words that refusal — the action, the resource
+        // it is not valid for, and what is still in it.
+        if !store.ipam_pool_ids_in_scope(scope_id).is_empty() {
+            return Err(state::dependency_violation(format!(
+                "The specified action is not valid for {scope_id}. There are one or more pools \
+                 in the scope."
+            )));
+        }
+
+        // "Information about the results of the deletion" (`DeleteIpamScopeResult$IpamScope`):
+        // the scope as it was STORED by the move this delete started, so the caller sees what a
+        // later reader of the scopes will see rather than a value built here.
+        let view = store.begin_ipam_scope_deletion(scope_id).ok_or_else(|| {
+            state::internal_error(format!(
+                "the IPAM scope '{scope_id}' resolved a moment ago is not in the store any more"
+            ))
+        })?;
+
+        Ok(DeleteIpamScopeOutput {
+            ipam_scope: Some(view),
+        })
     }
 }

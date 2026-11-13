@@ -15,6 +15,12 @@
 // exactly that. The lines above are the file header, which no landing edits.
 #[path = "all/prefix_lists.rs"]
 mod prefix_lists;
+// `DeleteIpamScope`: the scope a delete moves to `delete-in-progress` and the clock then
+// removes, the default scopes it refuses, the pools that block it, and the ids it turns down.
+// Declared beside `prefix_lists` for the reason the note above gives: the sorted neighbourhood
+// and the tail of this file are where every new ec2 suite inserts its lines.
+#[path = "all/ipam_scope_deletion.rs"]
+mod ipam_scope_deletion;
 // What `CreateClientVpnEndpoint` persists — the endpoint it stores from the request's members,
 // the certificates it resolves against Certificate Manager, and what it refuses. Declared
 // beside `prefix_lists` for the reason the note above gives: the sorted neighbourhood and the

@@ -1303,6 +1303,12 @@ impl ComAmazonawsEc2Amazonec2State {
         // [`Self::begin_ipam_deletion`] gives: a deleted IPAM is one `DescribeIpams` reports
         // as not existing.
         self.materialize_due_ipam_deletions(now);
+        // A scope `DeleteIpamScope` answered as `delete-in-progress` was GONE at the instant
+        // that call recorded for it, with the pools created in it — whether or not anybody
+        // called again. Removed rather than parked in a terminal state for the reason
+        // [`Self::begin_ipam_scope_deletion`] gives: a deleted scope is one
+        // `DescribeIpamScopes` reports as not existing.
+        self.materialize_due_ipam_scope_deletions(now);
         // The resources whose own record carries the move the clock owes it
         // ([`PendingStateMove`]): a transit gateway attachment an acceptance or a rejection
         // left transient, one subnet association of a multicast domain, a route table

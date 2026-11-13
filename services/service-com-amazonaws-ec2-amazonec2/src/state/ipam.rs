@@ -315,6 +315,11 @@ impl ComAmazonawsEc2Amazonec2State {
     /// [`Self::recount_ipam_scope_pools`] has for a scope's pool count. A scope names its
     /// IPAM by `IpamArn` (the modelled [`IpamScope`] carries no IPAM id at all), which is
     /// what the scopes of this IPAM are counted by.
+    ///
+    /// A scope whose deletion has been asked for ([`ipam_scope_is_deleting`]) is not one of
+    /// them: the record stays in the store until the clock removes it so its state can still
+    /// be reported, but the IPAM no longer HOLDS it — exactly the reading
+    /// [`Self::recount_ipam_scope_pools`] has for a pool a delete has acted on.
     pub(super) fn recount_ipam_scopes(&mut self, ipam_id: &str) {
         let Some(ipam_arn) = self.ipams.get(ipam_id).and_then(|ipam| ipam.ipam_arn.clone()) else {
             return;
@@ -322,7 +327,10 @@ impl ComAmazonawsEc2Amazonec2State {
         let scopes = self
             .ipam_scopes
             .values()
-            .filter(|scope| scope.ipam_arn.as_deref() == Some(ipam_arn.as_str()))
+            .filter(|scope| {
+                scope.ipam_arn.as_deref() == Some(ipam_arn.as_str())
+                    && !ipam_scope_is_deleting(scope)
+            })
             .count();
         if let Some(ipam) = self.ipams.get_mut(ipam_id) {
             ipam.scope_count = i32::try_from(scopes).ok();

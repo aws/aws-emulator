@@ -32,6 +32,28 @@ pub fn ipam_is_deleting(ipam: &Ipam) -> bool {
     ipam.state.as_deref() == Some(IPAM_STATE_DELETE_IN_PROGRESS)
 }
 
+/// An IPAM scope whose deletion has been asked for and has not settled yet: the
+/// `IpamScopeState` enum's `delete-in-progress` member
+/// (`smithy_query(query="shape",shape="IpamScopeState")`), which is what `DeleteIpamScope`
+/// answers with.
+pub const IPAM_SCOPE_STATE_DELETE_IN_PROGRESS: &str = "delete-in-progress";
+
+/// Whether the scope `scope` has had its deletion asked for already — the one definition of
+/// "this scope is on its way out", so no path restarts the clock on one and no reader counts
+/// it among what its IPAM still holds.
+pub fn ipam_scope_is_deleting(scope: &IpamScope) -> bool {
+    scope.state.as_deref() == Some(IPAM_SCOPE_STATE_DELETE_IN_PROGRESS)
+}
+
+/// Whether the scope `scope` is one of the two an IPAM comes up with: "defines if the scope
+/// is the default scope or not" (`IpamScope$IsDefault`).
+///
+/// The one definition of that question, so the delete that refuses a default scope and the
+/// create that marks one agree about which scopes are default.
+pub fn ipam_scope_is_default(scope: &IpamScope) -> bool {
+    scope.is_default.unwrap_or(false)
+}
+
 impl ComAmazonawsEc2Amazonec2State {
     /// The `IpamScopeId`s of the scopes of the IPAM `ipam_id` names.
     ///
@@ -207,6 +229,7 @@ impl ComAmazonawsEc2Amazonec2State {
             self.remove_ipam_pool(&pool_id);
         }
         self.ipam_scope_create_complete_at.remove(scope_id);
+        self.ipam_scope_delete_at.remove(scope_id);
         self.release_client_tokens_naming(TokenHolder::IpamScope, scope_id);
     }
 
@@ -276,6 +299,80 @@ impl ComAmazonawsEc2Amazonec2State {
         for ipam_id in due {
             self.ipam_delete_at.remove(&ipam_id);
             self.remove_ipam(&ipam_id);
+        }
+    }
+
+    /// The `IpamId` of the IPAM the scope `scope_id` belongs to, found by the `IpamArn` the
+    /// scope names it by — the modelled [`IpamScope`] carries no IPAM id at all, the same
+    /// reading [`Self::ipam_scope_id_of_pool`] has for a pool's scope.
+    pub fn ipam_id_of_scope(&self, scope_id: &str) -> Option<String> {
+        let ipam_arn = self.ipam_scopes.get(scope_id)?.ipam_arn.clone()?;
+        self.ipams
+            .iter()
+            .find(|(_, ipam)| ipam.ipam_arn.as_deref() == Some(ipam_arn.as_str()))
+            .map(|(ipam_id, _)| ipam_id.clone())
+    }
+
+    /// Start deleting the IPAM scope `scope_id` names, and answer it as the store then holds
+    /// it — `None` when the account holds no such scope.
+    ///
+    /// The scope is left in the TRANSIENT [`IPAM_SCOPE_STATE_DELETE_IN_PROGRESS`] state the
+    /// `IpamScopeState` catalog carries, with the clock owing its REMOVAL one
+    /// [`TRANSITION_DELAY`] later ([`Self::ipam_scope_delete_at`], applied by
+    /// [`Self::materialize_due_transitions`]) — the same arrangement, on the same clock, as
+    /// the `create-in-progress` the scope started in. The span is never zero, so a caller
+    /// acting straight after this call still sees the delete under way, and nothing is slept
+    /// for.
+    ///
+    /// The record is REMOVED when that instant falls due rather than parked in a terminal
+    /// state: a deleted scope is one `DescribeIpamScopes` answers
+    /// [`INVALID_IPAM_SCOPE_ID_NOT_FOUND`] for, which is why this follows
+    /// [`Self::begin_ipam_deletion`] rather than [`Self::begin_ipam_pool_deletion`]. The
+    /// pools created in it go with it ([`Self::remove_ipam_scope`]), and the IPAM no longer
+    /// HOLDS the scope, so its "number of scopes in the IPAM" is recounted exactly as a
+    /// create recounts it.
+    ///
+    /// Any move the clock still owed this scope is superseded: a scope on its way out is not
+    /// going to land in the state its creation was moving it to.
+    pub fn begin_ipam_scope_deletion(&mut self, scope_id: &str) -> Option<IpamScope> {
+        let ipam_id = self.ipam_id_of_scope(scope_id);
+        let scope = self.ipam_scopes.get_mut(scope_id)?;
+        scope.state = Some(IPAM_SCOPE_STATE_DELETE_IN_PROGRESS.to_string());
+        let view = scope.clone();
+        self.ipam_scope_create_complete_at.remove(scope_id);
+        self.ipam_scope_delete_at
+            .insert(scope_id.to_string(), Instant::now() + TRANSITION_DELAY);
+        if let Some(ipam_id) = ipam_id {
+            self.recount_ipam_scopes(&ipam_id);
+        }
+        Some(view)
+    }
+
+    /// Apply the removal the clock owes a deleted IPAM scope, as of `now`.
+    ///
+    /// A scope a `DeleteIpamScope` left `delete-in-progress` was GONE at the instant that
+    /// call recorded for it, whether or not anybody called again — so the removal is applied
+    /// from [`Self::materialize_due_transitions`], its one caller, before anything reads the
+    /// store, exactly as [`Self::materialize_due_ipam_deletions`] applies an IPAM's.
+    ///
+    /// The IPAM's scope count does not CHANGE here: [`Self::begin_ipam_scope_deletion`]
+    /// already recounted it without the scope on its way out. It is recounted again only so
+    /// the count follows from the scopes the store holds at every point, whatever order the
+    /// writers run in.
+    pub(super) fn materialize_due_ipam_scope_deletions(&mut self, now: Instant) {
+        let due: Vec<String> = self
+            .ipam_scope_delete_at
+            .iter()
+            .filter(|(_, due_at)| now >= **due_at)
+            .map(|(scope_id, _)| scope_id.clone())
+            .collect();
+        for scope_id in due {
+            self.ipam_scope_delete_at.remove(&scope_id);
+            let ipam_id = self.ipam_id_of_scope(&scope_id);
+            self.remove_ipam_scope(&scope_id);
+            if let Some(ipam_id) = ipam_id {
+                self.recount_ipam_scopes(&ipam_id);
+            }
         }
     }
 }

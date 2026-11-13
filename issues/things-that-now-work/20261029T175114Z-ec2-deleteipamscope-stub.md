@@ -28,6 +28,23 @@ The handler carries the scaffold marker `//! SCAFFOLDED, NOT IMPLEMENTED:` at th
     raise error_class(parsed_response, operation_name)
 botocore.exceptions.ClientError: An error occurred (NotImplemented) when calling the DeleteIpamScope operation: operation DeleteIpamScope is scaffolded but not implemented in this emulator
 
+## Resolution
+
+`DeleteIpamScope` is implemented: it resolves the scope in the service's state, refuses a
+default scope (`IncorrectState`), a scope that still holds pools (`DependencyViolation`), a
+repeated delete (`IncorrectState`), a malformed id (`InvalidIpamScopeId.Malformed`) and an
+unknown id (`InvalidIpamScopeId.NotFound`), and otherwise answers the scope in
+`delete-in-progress` with the clock owing its removal — after which `DescribeIpamScopes`
+reports the id as not existing. Covered end-to-end by
+`services/service-com-amazonaws-ec2-amazonec2/tests/all/ipam_scope_deletion.rs`.
+
+Residual divergence, left for a follow-up: the unit `ec2.ipam-default-scope-deletion-rejected`
+also asserts the exact MESSAGE of the default-scope refusal. Its HTTP status (400) and error
+code (`IncorrectState`) now match, but the recorded sentence is not visible to the replay
+(it reports only the emulator's own string), so the message this emulator answers states the
+documented rule in this resource's recorded wording family rather than the recorded sentence
+itself.
+
 ## Steps to Reproduce
 Boot the ec2 emulator
 Call DeleteIpamScope and observe HTTP 501 with no state persisted
