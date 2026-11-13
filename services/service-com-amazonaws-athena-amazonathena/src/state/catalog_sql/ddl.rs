@@ -323,6 +323,11 @@ pub fn show_databases(
 /// records the prefix itself rather than the separator that followed it — and the SerDe
 /// the statement named or the default one for delimited text.
 ///
+/// Everything a Hive registration materialises beyond what the statement declared is
+/// stored with it ([`glue_state::materialise_hive_registration`]), so the entry a catalog
+/// read reports carries the empty collections and the DDL time of a Hive table object
+/// rather than leaving them unknown.
+///
 /// `IF NOT EXISTS` over an entry that is already there changes NOTHING and succeeds;
 /// without it, an existing entry is the catalog's own already-exists refusal and the
 /// stored entry is left exactly as it was.
@@ -351,7 +356,10 @@ pub fn create_external_table(
             glue_state::MAX_TABLES_PER_DATABASE, table.target.table
         )));
     }
-    let input = external_table_input(table)?;
+    let mut input = external_table_input(table)?;
+    // The definition a Hive metastore client writes is a WHOLE Hive table object, so the
+    // members the statement declared nothing for are stored as that client stores them.
+    glue_state::materialise_hive_registration(&mut input, now);
     let database_name = database.name.clone();
     let entry = glue_state::TableEntry::from_input(
         &input,
@@ -364,8 +372,12 @@ pub fn create_external_table(
     Ok(StoredResultSet::default())
 }
 
-/// The catalog definition a `CREATE EXTERNAL TABLE` writes, or why the statement names a
+/// The catalog definition a `CREATE EXTERNAL TABLE` DECLARES, or why the statement names a
 /// storage format the catalog cannot record.
+///
+/// What the statement itself says, and nothing more: the members a Hive registration
+/// materialises beside them are filled in by the caller, so there is one place that decides
+/// each.
 fn external_table_input(table: &ExternalTable) -> Result<TableInput, Failure> {
     let mut parameters: HashMap<String, String> = table
         .table_properties

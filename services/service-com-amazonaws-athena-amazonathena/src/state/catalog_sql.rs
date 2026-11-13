@@ -85,9 +85,28 @@ pub const ERROR_TYPE_GENERIC_USER: i32 = 1000;
 /// on, such as a `LOCATION` that is not a folder.
 pub const ERROR_TYPE_TABLE_DEFINITION: i32 = 1100;
 
+/// The `AthenaError$ErrorType` Athena publishes for a `LOCATION` the object store does not
+/// hold at all: a `CREATE EXTERNAL TABLE` whose bucket does not exist, so there is nothing
+/// for the table to be registered over.
+///
+/// RECORDED behaviour, like the category and the wording that go with it
+/// ([`LOCATION_BUCKET_ABSENT`]): two wire fixtures submit such a statement — one naming the
+/// table in a bucket nothing created, one under `IF NOT EXISTS` over the bucket root — and
+/// each settles FAILED with this type beside [`ERROR_CATEGORY_USER`]. It is a type of its
+/// own rather than the table-definition one ([`ERROR_TYPE_TABLE_DEFINITION`]) because what
+/// the statement declares is a location that is NOT THERE, not a location of the wrong
+/// shape.
+pub const ERROR_TYPE_LOCATION_NOT_FOUND: i32 = 1306;
+
 /// Athena's message for a `CREATE EXTERNAL TABLE` whose `LOCATION` denotes a file: fixed
 /// text with no variable part — it names neither the statement's table nor its location.
 const LOCATION_ON_FILE: &str = "Cannot create table on file, please specify a directory";
+
+/// Athena's message for a `CREATE EXTERNAL TABLE` whose `LOCATION` names a bucket the
+/// object store does not hold: fixed text with no variable part — it names neither the
+/// bucket nor the statement's table. Recorded, with the classification beside it; see
+/// [`ERROR_TYPE_LOCATION_NOT_FOUND`].
+const LOCATION_BUCKET_ABSENT: &str = "The bucket specified in the ddl statement does not exist";
 
 /// Athena's message for a read of a table the catalog marks as an Iceberg table and holds
 /// no metadata location for: fixed text with no variable part — it names neither the
@@ -315,6 +334,16 @@ impl Failure {
         )
     }
 
+    /// A `CREATE EXTERNAL TABLE` declares a `LOCATION` whose BUCKET the object store does
+    /// not hold, so the statement names no storage the table could be registered over.
+    pub fn location_bucket_absent() -> Self {
+        Self::classified(
+            LOCATION_BUCKET_ABSENT.to_string(),
+            ERROR_CATEGORY_USER,
+            ERROR_TYPE_LOCATION_NOT_FOUND,
+        )
+    }
+
     /// A statement reads a table the catalog marks as an Iceberg table and holds no
     /// Iceberg metadata location for, so there is no table metadata to read it through.
     pub fn iceberg_without_metadata_location() -> Self {
@@ -451,11 +480,16 @@ fn perform<Eng: Send + Sync + 'static>(
         CatalogStatement::ShowRelations { schema, .. } => (schema.catalog.clone(), schema.at),
     };
     let catalog_id = catalog_id_of(engine, &catalog, at)?;
-    // An external table's LOCATION has to denote a FOLDER: the clause is validated here,
-    // before the catalog entry it would define is resolved, because what it declares is
-    // wrong whatever the catalog holds. The object store's guard is taken and released
-    // inside, so no two stores are ever held at once.
+    // An external table's LOCATION has to name storage the table can be registered over:
+    // a bucket the object store holds, and a FOLDER inside it. Both halves are validated
+    // here, before the catalog entry the statement would define is resolved, because what
+    // it declares is wrong whatever the catalog holds; the bucket first, since what sits at
+    // a key of a bucket that is not there is not a question. The object store's guard is
+    // taken and released inside, so no two stores are ever held at once.
     if let CatalogStatement::CreateExternalTable(table) = statement {
+        if location_bucket_is_absent(engine, table.location.as_deref()) {
+            return Err(Failure::location_bucket_absent());
+        }
         if location_denotes_an_object(engine, table.location.as_deref()) {
             return Err(Failure::location_on_file());
         }
@@ -562,6 +596,36 @@ const CATALOG_UNREACHABLE: &str =
 /// The message for an object store this engine does not carry.
 const OBJECT_STORE_UNREACHABLE: &str =
     "the object store is not reachable on this engine, so no table's data can be read";
+
+/// Whether `location` names a BUCKET the object store does not hold, so there is no
+/// storage for a table declared over it.
+///
+/// A location is resolved against the object store before the statement is committed: the
+/// bucket it names has to be one the account holds, because an external table is a
+/// definition OVER data that already exists. A location that is no object-store path at all
+/// names no bucket here, and so is not judged — the same reading
+/// [`location_denotes_an_object`] takes of one.
+fn location_bucket_is_absent<Eng: Send + Sync + 'static>(
+    engine: &Eng,
+    location: Option<&str>,
+) -> bool {
+    let Some(location) = location
+        .map(str::trim)
+        .filter(|location| !location.is_empty())
+    else {
+        return false;
+    };
+    let Some((bucket_name, _)) = data::parse_s3_uri(location) else {
+        return false;
+    };
+    let Some(state) = s3_state::service_state(engine) else {
+        // Without an object store there is nothing to resolve the location against, so the
+        // statement is not refused over what cannot be read.
+        return false;
+    };
+    let store = state.lock();
+    store.bucket(&bucket_name).is_none()
+}
 
 /// Whether `location` denotes a single OBJECT rather than the folder an external table's
 /// data lives under.
