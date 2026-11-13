@@ -13,6 +13,13 @@
 //! is, and declaring a key non-filterable takes its bytes out of the smaller budget and
 //! leaves them in the larger — which is what that declaration is for.
 //!
+//! The refusal's SENTENCE is part of the rule: it names the budget that was crossed as the
+//! sentence's subject and states that budget's PUBLISHED bound — "<budget> must have at
+//! most <n> bytes" — carried after the per-record prefix naming the record by the `key` the
+//! caller submitted it under, and never echoing the submitted size. That sentence is the
+//! only thing telling a client which budget to trim for, since every per-record defect of
+//! `PutVectors` shares `ValidationException` (400).
+//!
 //! The rows span what the rule generalises over: which budget is at stake, whether the key
 //! carrying the bytes is declared non-filterable, the size (far under, exactly at each
 //! published bound, one byte past it, and far over), how the bytes are spread (one key,
@@ -25,7 +32,20 @@ use service_com_amazonaws_s3vectors_s3vectors::state::metadata_budget::{
 };
 use smithy_server_runtime::MultiServiceRouter;
 
-use crate::vector_lifecycle::{call, error_code, ok, router};
+use crate::vector_lifecycle::{call, error_code, field_list, message_of, ok, router};
+
+/// The clause a vector over the FILTERABLE budget is refused with, and the one a vector
+/// over the TOTAL budget is refused with. LITERALS, down to the published bound in bytes,
+/// not the handler's own helper: a suite asserting that helper would agree with any
+/// wording the handler chose.
+const OVER_FILTERABLE: &str = "Filterable metadata must have at most 2048 bytes";
+const OVER_TOTAL: &str = "Metadata must have at most 40960 bytes";
+
+/// The sentence a refusal about ONE record of a batch carries: the record named by the
+/// `key` the caller submitted it under, then the defect's own clause.
+fn record_sentence(key: &str, clause: &str) -> String {
+    format!("Invalid record for key '{key}': {clause}")
+}
 
 /// The bucket both indexes live in.
 const BUCKET: &str = "metadata-budget-bucket";
@@ -109,12 +129,13 @@ async fn put(router: &MultiServiceRouter, index: &str, key: &str, metadata: &Val
     .await
 }
 
-/// One row: the index it is put into, the document, and whether the put must be refused.
+/// One row: the index it is put into, the document, and the clause the put must be refused
+/// with — `None` when the document fits both budgets and must be stored.
 struct BudgetCase {
     case: String,
     index: &'static str,
     metadata: Value,
-    refused: bool,
+    over: Option<&'static str>,
 }
 
 /// The rows.
@@ -130,43 +151,43 @@ fn budget_cases() -> Vec<BudgetCase> {
             case: "a small filterable value".to_string(),
             index: DECLARED_INDEX,
             metadata: json!({ FILTERABLE_KEY: "scifi" }),
-            refused: false,
+            over: None,
         },
         BudgetCase {
             case: "no metadata at all".to_string(),
             index: DECLARED_INDEX,
             metadata: json!({}),
-            refused: false,
+            over: None,
         },
         BudgetCase {
             case: format!("a filterable value exactly at the {at_filterable}-byte budget"),
             index: DECLARED_INDEX,
             metadata: metadata_of_size(FILTERABLE_KEY, at_filterable),
-            refused: false,
+            over: None,
         },
         BudgetCase {
             case: format!("a filterable value one byte past the {at_filterable}-byte budget"),
             index: DECLARED_INDEX,
             metadata: metadata_of_size(FILTERABLE_KEY, past_filterable),
-            refused: true,
+            over: Some(OVER_FILTERABLE),
         },
         BudgetCase {
             case: format!("a {far_over_filterable}-byte value under an UNDECLARED key"),
             index: DECLARED_INDEX,
             metadata: metadata_of_size(FILTERABLE_KEY, far_over_filterable),
-            refused: true,
+            over: Some(OVER_FILTERABLE),
         },
         BudgetCase {
             case: format!("the same {far_over_filterable} bytes under the DECLARED key"),
             index: DECLARED_INDEX,
             metadata: metadata_of_size(DECLARED_KEY, far_over_filterable),
-            refused: false,
+            over: None,
         },
         BudgetCase {
             case: "the declared key's name on an index that declares nothing".to_string(),
             index: PLAIN_INDEX,
             metadata: metadata_of_size(DECLARED_KEY, far_over_filterable),
-            refused: true,
+            over: Some(OVER_FILTERABLE),
         },
         BudgetCase {
             case: "the budget counted over the whole document, not per key".to_string(),
@@ -175,7 +196,7 @@ fn budget_cases() -> Vec<BudgetCase> {
                 "one": "y".repeat(MAX_FILTERABLE_METADATA_BYTES / 2),
                 "two": "z".repeat(MAX_FILTERABLE_METADATA_BYTES / 2),
             }),
-            refused: true,
+            over: Some(OVER_FILTERABLE),
         },
         BudgetCase {
             case: "the declared key's bytes left out of the sum".to_string(),
@@ -184,7 +205,7 @@ fn budget_cases() -> Vec<BudgetCase> {
                 FILTERABLE_KEY: "y".repeat(MAX_FILTERABLE_METADATA_BYTES / 2),
                 DECLARED_KEY: "z".repeat(MAX_FILTERABLE_METADATA_BYTES),
             }),
-            refused: false,
+            over: None,
         },
         BudgetCase {
             case: "a NESTED filterable document over the budget".to_string(),
@@ -192,7 +213,7 @@ fn budget_cases() -> Vec<BudgetCase> {
             metadata: json!({
                 FILTERABLE_KEY: { "inner": { "deeper": "y".repeat(MAX_FILTERABLE_METADATA_BYTES) } },
             }),
-            refused: true,
+            over: Some(OVER_FILTERABLE),
         },
         BudgetCase {
             case: "a filterable ARRAY over the budget".to_string(),
@@ -200,7 +221,7 @@ fn budget_cases() -> Vec<BudgetCase> {
             metadata: json!({
                 FILTERABLE_KEY: vec!["y".repeat(MAX_FILTERABLE_METADATA_BYTES / 4); 8],
             }),
-            refused: true,
+            over: Some(OVER_FILTERABLE),
         },
         BudgetCase {
             case: format!(
@@ -208,7 +229,7 @@ fn budget_cases() -> Vec<BudgetCase> {
             ),
             index: DECLARED_INDEX,
             metadata: metadata_of_size(DECLARED_KEY, MAX_TOTAL_METADATA_BYTES),
-            refused: false,
+            over: None,
         },
         BudgetCase {
             case: format!(
@@ -216,13 +237,13 @@ fn budget_cases() -> Vec<BudgetCase> {
             ),
             index: DECLARED_INDEX,
             metadata: metadata_of_size(DECLARED_KEY, MAX_TOTAL_METADATA_BYTES + 1),
-            refused: true,
+            over: Some(OVER_TOTAL),
         },
         BudgetCase {
             case: "a declared value far past the total budget".to_string(),
             index: DECLARED_INDEX,
             metadata: metadata_of_size(DECLARED_KEY, 2 * MAX_TOTAL_METADATA_BYTES),
-            refused: true,
+            over: Some(OVER_TOTAL),
         },
     ]
 }
@@ -237,24 +258,27 @@ async fn a_vectors_metadata_is_accepted_exactly_when_it_fits_both_budgets() {
             case,
             index,
             metadata,
-            refused,
+            over,
         } = row;
         let vector_key = format!("v{position}");
         let (status, body) = put(&router, index, &vector_key, &metadata).await;
-        if refused {
+        if let Some(clause) = over {
+            // The refusal says WHICH budget was crossed and what its PUBLISHED bound is,
+            // so a client can tell the two apart and knows what to trim for, after the
+            // prefix naming the record by its own key; the submitted size is not in it.
             assert_eq!(
-                (status, error_code(&body).as_str()),
-                (400, "ValidationException"),
-                "case {case:?}: must be refused, got {status} {body}"
-            );
-            // The refusal says WHICH budget was crossed and what its bound is, so a client
-            // can tell the two apart and knows what to trim for; the bound is the
-            // published one, and the record it is about is named by its own key.
-            let message = body["message"].as_str().unwrap_or_default();
-            assert!(
-                message.contains(&format!("'{vector_key}'"))
-                    && message.contains("size exceeds the maximum allowed size of"),
-                "case {case:?}: the refusal must name the record and the budget, got {body}"
+                (
+                    status,
+                    error_code(&body).as_str(),
+                    message_of(&body).as_str()
+                ),
+                (
+                    400,
+                    "ValidationException",
+                    record_sentence(&vector_key, clause).as_str()
+                ),
+                "case {case:?}: must be refused with the budget's own sentence, \
+                 got {status} {body}"
             );
         } else {
             assert_eq!(
@@ -309,18 +333,17 @@ async fn a_refused_put_stores_nothing_of_its_batch() {
         (400, "ValidationException"),
         "the batch must be refused, got {status} {body}"
     );
-    // The refusal names the element of `vectors` the over-budget record travelled in, and
+    // The refusal names the element of `vectors` the over-budget record travelled in and
+    // carries the budget's clause alone, while the top-level sentence names the record by
     // the key the caller submitted it under.
     assert_eq!(
-        body["fieldList"][0]["path"].as_str(),
-        Some("vectors[1]"),
-        "the refusal must name the record's element, got {body}"
+        field_list(&body),
+        vec![("vectors[1]".to_string(), OVER_FILTERABLE.to_string())],
+        "the refusal must name the record's element and carry the clause alone, got {body}"
     );
-    assert!(
-        body["message"]
-            .as_str()
-            .unwrap_or_default()
-            .contains("'over'"),
+    assert_eq!(
+        message_of(&body),
+        record_sentence("over", OVER_FILTERABLE),
         "the refusal must name the record's key, got {body}"
     );
 
@@ -334,5 +357,121 @@ async fn a_refused_put_stores_nothing_of_its_batch() {
         listed["vectors"],
         json!([]),
         "the refused batch must have stored nothing, got {listed}"
+    );
+}
+
+/// The clause is the budget's own sentence whatever the request looked like: it names the
+/// crossed budget and that budget's published bound, carries no value from the request
+/// besides the record's key in the prefix, and differs between the two budgets — which is
+/// what tells a client whether to trim the document or move a key under a non-filterable
+/// one. The rows vary the budget crossed, how far past it the document is, how its bytes
+/// are spread, the form of the record's key and the record's position in the batch.
+#[tokio::test]
+async fn the_over_budget_clause_names_the_crossed_budget_and_its_published_bound() {
+    // The literals above are the published bounds, which this suite's documents are built
+    // from, so a bound that moved would be caught here rather than in a stale sentence.
+    assert_eq!(
+        (MAX_FILTERABLE_METADATA_BYTES, MAX_TOTAL_METADATA_BYTES),
+        (2048, 40960),
+        "the clauses' literal bounds must be the published budgets"
+    );
+
+    // (case, the record's key, its position in the batch, the document, the clause)
+    let rows: Vec<(&str, &str, usize, Value, &str)> = vec![
+        (
+            "one filterable key just past the filterable budget",
+            "vec-big-filterable",
+            0,
+            metadata_of_size(FILTERABLE_KEY, MAX_FILTERABLE_METADATA_BYTES + 1),
+            OVER_FILTERABLE,
+        ),
+        (
+            "a filterable key far past the filterable budget",
+            "a.key-with.punctuation",
+            2,
+            metadata_of_size(FILTERABLE_KEY, 8 * 1024),
+            OVER_FILTERABLE,
+        ),
+        (
+            "several filterable keys summing past the filterable budget",
+            "9f41c2ab-7de0-4a11-8f3e-0b1d2c3e4f55",
+            1,
+            json!({
+                "one": "y".repeat(MAX_FILTERABLE_METADATA_BYTES),
+                "two": "z".repeat(MAX_FILTERABLE_METADATA_BYTES),
+            }),
+            OVER_FILTERABLE,
+        ),
+        (
+            "a declared key just past the total budget",
+            "k",
+            0,
+            metadata_of_size(DECLARED_KEY, MAX_TOTAL_METADATA_BYTES + 1),
+            OVER_TOTAL,
+        ),
+        (
+            "a declared key far past the total budget",
+            "vec-huge",
+            3,
+            metadata_of_size(DECLARED_KEY, 4 * MAX_TOTAL_METADATA_BYTES),
+            OVER_TOTAL,
+        ),
+    ];
+
+    let mut seen: Vec<String> = Vec::new();
+    for (case, key, position, metadata, clause) in rows {
+        let router = fixture().await;
+        // Well-formed records at every other position, so the refusal is about the one
+        // record and the key it names is the offending one rather than the batch's first.
+        let vectors: Vec<Value> = (0..=position)
+            .map(|nth| {
+                if nth == position {
+                    json!({ "key": key, "data": { "float32": [1.0, 0.0] }, "metadata": metadata })
+                } else {
+                    json!({ "key": format!("good-{nth}"), "data": { "float32": [0.0, 1.0] } })
+                }
+            })
+            .collect();
+        let (status, body) = call(
+            &router,
+            "PutVectors",
+            &json!({
+                "vectorBucketName": BUCKET,
+                "indexName": DECLARED_INDEX,
+                "vectors": vectors,
+            }),
+        )
+        .await;
+        let message = message_of(&body);
+        assert_eq!(
+            (status, error_code(&body).as_str(), message.as_str()),
+            (
+                400,
+                "ValidationException",
+                record_sentence(key, clause).as_str()
+            ),
+            "case {case:?}: must carry the crossed budget's own sentence, got {status} {body}"
+        );
+        assert_eq!(
+            field_list(&body),
+            vec![(format!("vectors[{position}]"), clause.to_string())],
+            "case {case:?}: fieldList must name the record's element and carry the clause \
+             alone, got {body}"
+        );
+        // The bound is the published one; the SUBMITTED size is not interpolated.
+        let submitted = ::serde_json::to_string(&metadata)
+            .expect("the row's document renders")
+            .len();
+        assert!(
+            !message.contains(&submitted.to_string()),
+            "case {case:?}: the sentence must not echo the submitted size {submitted}, \
+             got {message:?}"
+        );
+        seen.push(message);
+    }
+    assert_ne!(
+        seen[0], seen[3],
+        "the two budgets' refusals must be different sentences, got {:?} twice",
+        seen[0]
     );
 }

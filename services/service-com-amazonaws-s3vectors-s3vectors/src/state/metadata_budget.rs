@@ -39,28 +39,34 @@ pub const MAX_TOTAL_METADATA_BYTES: usize = 40 * 1024;
 /// the sentence says.
 ///
 /// Each sentence names the budget that was crossed and the bound it has, in the phrasing
-/// AWS states a size limit in, and carries no value from the request: which bytes they
+/// AWS states a size bound in, and carries no value from the request: which bytes they
 /// were is the caller's own document, and the two budgets are told apart by the sentence
 /// so a client can see which one it has to trim for.
 pub fn metadata_budget_defect(metadata: &Document, non_filterable: &[String]) -> Option<String> {
     if document_bytes(metadata) > MAX_TOTAL_METADATA_BYTES {
-        return Some(size_exceeded("metadata", MAX_TOTAL_METADATA_BYTES));
+        return Some(over_budget(TOTAL_BUDGET, MAX_TOTAL_METADATA_BYTES));
     }
     if filterable_bytes(metadata, non_filterable) > MAX_FILTERABLE_METADATA_BYTES {
-        return Some(size_exceeded(
-            "filterable metadata",
-            MAX_FILTERABLE_METADATA_BYTES,
-        ));
+        return Some(over_budget(FILTERABLE_BUDGET, MAX_FILTERABLE_METADATA_BYTES));
     }
     None
 }
 
-/// The sentence a metadata document over a budget is refused with: AWS's phrasing for a
-/// size limit, naming the budget that was crossed so a client can tell which one it has to
-/// trim for. Nothing in it comes from the request — `bytes` is the published bound — and
-/// WHICH record of a batch it is about is the path the refusal carries.
-fn size_exceeded(budget: &str, bytes: usize) -> String {
-    format!("{budget} size exceeds the maximum allowed size of {bytes} bytes")
+/// How a refusal names the budget for ALL of a vector's metadata: the subject of the
+/// sentence, so it is spelled as a sentence begins.
+pub const TOTAL_BUDGET: &str = "Metadata";
+
+/// How a refusal names the budget for the FILTERABLE part of a vector's metadata.
+pub const FILTERABLE_BUDGET: &str = "Filterable metadata";
+
+/// The sentence a metadata document over a budget is refused with: the budget that was
+/// crossed as the sentence's subject, and the bound it has, in the phrasing AWS states a
+/// size bound in — the budget "must have at most" so many bytes — so a client can tell
+/// which budget it has to trim for. Nothing in it comes from the request: `bytes` is the
+/// published bound and never the submitted size, and WHICH record of a batch it is about
+/// is carried by the refusal built around it.
+pub fn over_budget(budget: &str, bytes: usize) -> String {
+    format!("{budget} must have at most {bytes} bytes")
 }
 
 /// How many bytes the filterable part of `metadata` takes: the document restricted to the
