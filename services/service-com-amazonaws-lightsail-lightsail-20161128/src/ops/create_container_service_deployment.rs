@@ -214,20 +214,28 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // `GetContainerServiceDeployments` reports.
             service.record_deployment(deployment);
             service.next_deployment_version = version.saturating_add(1);
+            // Where the service settles once this deployment is applied is the
+            // one rule every writer of its state settles by, so it is asked of
+            // the record rather than assumed here: a service the account
+            // disabled stays `DISABLED` and launches nothing, and an enabled one
+            // reaches `RUNNING` as this deployment becomes active.
+            let settling = service
+                .settling_phase(now.saturating_add(crate::state::STATE_TRANSITION_MILLIS));
             // Launching a deployment is what puts a container service in
-            // `DEPLOYING`, and `RUNNING` is the phase it settles into once that
-            // deployment is active. That makes `RUNNING` the only phase still
-            // owed, so the ones outstanding are dropped: a deployment this call
-            // supersedes takes its phases with it, and so does the tail of a
-            // create's own walk (a service still `PENDING` deploys from here
-            // rather than settling into the `READY` it was heading for).
-            service.state = crate::state::CONTAINER_SERVICE_DEPLOYING;
+            // `DEPLOYING` — but only a service that launches one: a disabled
+            // service has "its active deployment and containers, if any, shut
+            // down", so it keeps the state it is in and the deployment just
+            // recorded waits for the service to be enabled again.
+            if !service.is_disabled {
+                service.state = crate::state::CONTAINER_SERVICE_DEPLOYING;
+            }
+            // That makes the phase above the only one still owed, so the ones
+            // outstanding are dropped: a deployment this call supersedes takes
+            // its phases with it, and so does the tail of a create's own walk (a
+            // service still `PENDING` deploys from here rather than settling
+            // into the `READY` it was heading for).
             service.owed.clear();
-            service.owed.push_back(crate::state::OwedPhase {
-                at_ms: now.saturating_add(crate::state::STATE_TRANSITION_MILLIS),
-                state: crate::state::CONTAINER_SERVICE_RUNNING,
-                activates_next_deployment: true,
-            });
+            service.owed.push_back(settling);
             let location = service.location.clone();
             let view = service.view(endpoint.as_deref());
             // Creating a deployment is a mutating call, so it appends an entry

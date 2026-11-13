@@ -300,42 +300,22 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
             let changed = capacity_or_domains_changed || disabled_changed;
             if changed {
-                // Where the service settles once the change is applied: a
-                // disabled one is `DISABLED` ("the container service is
-                // disabled, and its active deployment and containers, if any,
-                // are shut down"), and an enabled one is `RUNNING` when it has
-                // a deployment to serve — the one running, or the one still
-                // waiting — and `READY` when it has none.
+                // Where the service settles once the change is applied is the
+                // one rule every writer of its state settles by, so it is asked
+                // of the record rather than restated here: a disabled service is
+                // `DISABLED`, and an enabled one is `RUNNING` when it has a
+                // deployment to serve and `READY` when it has none.
                 //
-                // A deployment record is left exactly as it stands: the model
-                // carries no way to report a deployment whose containers are
-                // shut down, and re-enabling the service brings the same
-                // deployment back, so nothing here retires one.
-                let settles_into = if service.is_disabled {
-                    crate::state::CONTAINER_SERVICE_DISABLED
-                } else if service.current_deployment().is_some()
-                    || service.next_deployment().is_some()
-                {
-                    crate::state::CONTAINER_SERVICE_RUNNING
-                } else {
-                    crate::state::CONTAINER_SERVICE_READY
-                };
                 // Applying the change is the service's own work, so a read
                 // straight after this call still sees `UPDATING` and the clock
                 // is what settles it. That makes the phase this call owes the
                 // only one outstanding: whatever walk the service was on is
                 // superseded by this update's.
+                let settling = service
+                    .settling_phase(now.saturating_add(crate::state::STATE_TRANSITION_MILLIS));
                 service.state = crate::state::CONTAINER_SERVICE_UPDATING;
                 service.owed.clear();
-                service.owed.push_back(crate::state::OwedPhase {
-                    at_ms: now.saturating_add(crate::state::STATE_TRANSITION_MILLIS),
-                    state: settles_into,
-                    // A deployment that was still waiting becomes the active
-                    // one as the service starts serving again; a service being
-                    // disabled activates nothing.
-                    activates_next_deployment: !service.is_disabled
-                        && service.next_deployment().is_some(),
-                });
+                service.owed.push_back(settling);
             }
 
             // The instant the clock owes THIS call's work its terminal status: a

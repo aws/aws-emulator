@@ -1416,6 +1416,36 @@ impl StoredContainerService {
         })
     }
 
+    /// The phase the clock owes this service at `at_ms` once the work in flight
+    /// on it is applied: the state it settles into, and whether reaching it makes
+    /// the deployment that is waiting the running one.
+    ///
+    /// The ONE rule every writer of [`Self::state`] settles by, from the modelled
+    /// `ContainerService$state` documentation: a service the account disabled "is
+    /// disabled, and its active deployment and containers, if any, are shut
+    /// down", so being disabled outranks having a deployment and nothing is
+    /// launched on it; an enabled service is `RUNNING` when it has a deployment
+    /// to serve — the one running, or the one still waiting — and `READY` when it
+    /// "is running but it does not have an active container deployment".
+    ///
+    /// A deployment record is left exactly as it stands: the model carries no way
+    /// to report a deployment whose containers are shut down, and enabling the
+    /// service brings the waiting one up, so nothing here retires one.
+    pub fn settling_phase(&self, at_ms: i64) -> OwedPhase {
+        let state = if self.is_disabled {
+            CONTAINER_SERVICE_DISABLED
+        } else if self.current_deployment().is_some() || self.next_deployment().is_some() {
+            CONTAINER_SERVICE_RUNNING
+        } else {
+            CONTAINER_SERVICE_READY
+        };
+        OwedPhase {
+            at_ms,
+            state,
+            activates_next_deployment: !self.is_disabled && self.next_deployment().is_some(),
+        }
+    }
+
     /// Materialise every phase the clock had already made due at `now_ms`.
     ///
     /// Bounded by the number of phases a create enqueues, and the service drops
