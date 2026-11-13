@@ -19,6 +19,8 @@ mod application_mode_and_maintenance_window;
 mod application_version_reads;
 #[path = "all/body_timestamp_class.rs"]
 mod body_timestamp_class;
+#[path = "all/conditional_token_identity.rs"]
+mod conditional_token_identity;
 #[path = "all/error_envelope_wording.rs"]
 mod error_envelope_wording;
 #[path = "all/harness.rs"]
