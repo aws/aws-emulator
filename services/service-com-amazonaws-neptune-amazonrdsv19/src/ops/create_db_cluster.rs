@@ -370,6 +370,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 .map(|config| (config.min_capacity, config.max_capacity)),
             // No instance has joined yet.
             members: Vec::new(),
+            // No IAM role has been associated yet: `AddRoleToDBCluster` is what writes one.
+            associated_roles: Vec::new(),
             tags: input
                 .tags
                 .unwrap_or_default()

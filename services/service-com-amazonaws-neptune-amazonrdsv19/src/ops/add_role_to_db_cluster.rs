@@ -1,15 +1,8 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op AddRoleToDBCluster
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `AddRoleToDBCluster`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
-//!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`AddRoleToDBCluster::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! Implemented: associates an IAM role with the addressed DB cluster and persists the
+//! association on that cluster's record, so every later read of the cluster reports it.
 //!
 //! ## Shape of an operation
 //!
@@ -165,18 +158,98 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `AddRoleToDBCluster` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(AddRoleToDBClusterErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
+        use crate::scaffolded::Scaffolded;
+        use crate::state as st;
+
+        let _ = ctx;
+        let Some(state) = st::service_state(&*self.engine) else {
+            // No store means the association cannot be persisted, so the operation cannot be
+            // served at all — never an empty 200 for an association nothing recorded.
+            return Err(Scaffolded::not_implemented(Self::NAME));
+        };
+        let mut state = state.lock();
+        state.settle();
+
+        let not_found = || {
+            AddRoleToDBClusterErrorModeled::DBClusterNotFoundFault(DBClusterNotFoundFault {
+                message: Some(st::db_cluster_not_found_colon_message(
+                    &input.db_cluster_identifier,
+                )),
+            })
+        };
+        // "The name of the DB cluster to associate the IAM role with" — not case-sensitive,
+        // and every member naming a cluster also accepts its ARN, so the lookup folds the way
+        // the stored key does. The resource is resolved FIRST: a request naming a cluster
+        // that does not exist reports the modelled not-found fault.
+        let Some(key) = state.resolve_cluster_key(&input.db_cluster_identifier) else {
+            return Err(not_found().into());
+        };
+        let Some(cluster) = state.clusters.get_mut(&key) else {
+            return Err(not_found().into());
+        };
+
+        // An association changes the cluster's configuration, so the cluster has to be
+        // available for it: one the service is still provisioning, or one on its way out,
+        // cannot take one. The status the clock has yet to settle is real.
+        if cluster.status != st::STATUS_AVAILABLE {
+            return Err(AddRoleToDBClusterErrorModeled::InvalidDBClusterStateFault(
+                InvalidDBClusterStateFault {
+                    message: Some(st::cluster_not_available_for_modification_message(
+                        &cluster.status,
+                    )),
+                },
+            )
+            .into());
+        }
+        // "The specified IAM role Amazon Resource Name (ARN) is already associated with the
+        // specified DB cluster": a cluster's associations are keyed by the ROLE, so a role
+        // already associated with this cluster — for this feature or another — is the
+        // modelled already-exists fault rather than a second entry.
+        if st::holds_role(&cluster.associated_roles, &input.role_arn) {
+            return Err(
+                AddRoleToDBClusterErrorModeled::DBClusterRoleAlreadyExistsFault(
+                    DBClusterRoleAlreadyExistsFault {
+                        message: Some(st::cluster_role_already_associated_message(
+                            &input.role_arn,
+                            &input.db_cluster_identifier,
+                        )),
+                    },
+                )
+                .into(),
+            );
+        }
+        // "You have exceeded the maximum number of IAM roles that can be associated with the
+        // specified DB cluster": the published per-cluster quota, which is also what bounds
+        // the list this record stores.
+        if cluster.associated_roles.len() >= st::MAX_ASSOCIATED_ROLES {
+            return Err(
+                AddRoleToDBClusterErrorModeled::DBClusterRoleQuotaExceededFault(
+                    DBClusterRoleQuotaExceededFault {
+                        message: Some(st::cluster_role_quota_message(&cluster.identifier)),
+                    },
+                )
+                .into(),
+            );
+        }
+
+        // The association is not in force yet: `PENDING` is "the IAM role ARN is being
+        // associated with the DB cluster", and the clock owes it `ACTIVE`. Nothing sleeps for
+        // it — the due instant is stored and `State::settle` materialises the transition the
+        // next time any caller touches the state.
         //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("AddRoleToDBCluster"))
+        // `FeatureName` is stored as the request spelled it: the feature names a cluster's
+        // engine version publishes are `DBEngineVersion$SupportedFeatureNames`, which this
+        // service does not publish yet, so there is no catalogue a value can be checked
+        // against here.
+        let associated_at = ::std::time::SystemTime::now();
+        cluster.associated_roles.push(st::ClusterRole {
+            role_arn: input.role_arn,
+            feature_name: input.feature_name,
+            status: st::ROLE_STATUS_PENDING.to_string(),
+            active_at: Some(associated_at + st::ROLE_ASSOCIATION_SPAN),
+        });
+        // The modelled output is `Unit`: an empty 200 carrying the query-protocol response
+        // wrapper and no members.
+        Ok(AddRoleToDBClusterOutput)
     }
 }

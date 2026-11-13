@@ -33,6 +33,8 @@ emulator-core-build-support = { workspace = true }
 # `creating` -> `available` transition without blocking the runtime worker.
 tokio = { workspace = true, features = ["time"] }
 hex = { workspace = true }
+# Reads the awsQuery XML responses the integration tests assert on.
+roxmltree = "0.20"
 
 [lints]
 workspace = true

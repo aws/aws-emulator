@@ -15,7 +15,7 @@ use std::time::{Duration, SystemTime};
 use sha2::{Digest, Sha256};
 
 use crate::ops::types::{
-    DBCluster, DBClusterMember, DBInstance, DBParameterGroupStatus, Endpoint,
+    DBCluster, DBClusterMember, DBClusterRole, DBInstance, DBParameterGroupStatus, Endpoint,
     ServerlessV2ScalingConfigurationInfo, VpcSecurityGroupMembership,
 };
 
@@ -107,6 +107,42 @@ pub const MAX_STORED_INSTANCES: usize = 5_000;
 /// same and the message names the cluster and the limit.
 pub const MAX_MEMBERS_PER_CLUSTER: usize = 16;
 
+/// Status of an IAM role association the service is still putting in place.
+/// Source: `DBClusterRole$Status` — "PENDING - the IAM role ARN is being associated with the
+/// DB cluster."
+pub const ROLE_STATUS_PENDING: &str = "PENDING";
+
+/// Status of an IAM role association that holds.
+/// Source: `DBClusterRole$Status` — "ACTIVE - the IAM role ARN is associated with the DB
+/// cluster and can be used to access other Amazon services on your behalf."
+pub const ROLE_STATUS_ACTIVE: &str = "ACTIVE";
+
+/// How many IAM roles one DB cluster may have associated with it at once: the "IAM roles per
+/// DB cluster" quota AWS publishes for this engine family, which is what the modelled
+/// `DBClusterRoleQuotaExceededFault` reports having reached — and what bounds the
+/// associations one cluster's record carries.
+pub const MAX_ASSOCIATED_ROLES: usize = 5;
+
+/// How long after an association the clock owes the `PENDING` -> `ACTIVE` transition.
+///
+/// The association is not in force the instant the call returns — `PENDING` is "the IAM role
+/// ARN is being associated with the DB cluster" — so the span is never zero: a caller reading
+/// the cluster straight after the call still observes it. Nothing sleeps for it: the due
+/// instant is stored on the association and
+/// [`ComAmazonawsNeptuneAmazonrdsv19State::settle`] materialises the transition the next time
+/// any caller touches the state.
+pub const ROLE_ASSOCIATION_SPAN: Duration = Duration::from_secs(3);
+
+/// One IAM role associated with a DB cluster, as `DBCluster$AssociatedRoles` reports it.
+#[derive(Debug, Clone)]
+pub struct ClusterRole {
+    pub role_arn: String,
+    pub feature_name: Option<String>,
+    pub status: String,
+    /// When `status` is `PENDING`, the instant the clock owes `ACTIVE`.
+    pub active_at: Option<SystemTime>,
+}
+
 /// One instance's membership of a DB cluster, as `DBCluster$DBClusterMembers` reports it.
 #[derive(Debug, Clone)]
 pub struct ClusterMember {
@@ -150,6 +186,8 @@ pub struct DbClusterRecord {
     pub vpc_security_group_ids: Vec<String>,
     pub serverless_v2_scaling_configuration: Option<(Option<f64>, Option<f64>)>,
     pub members: Vec<ClusterMember>,
+    /// The IAM roles associated with this cluster, in the order they were associated.
+    pub associated_roles: Vec<ClusterRole>,
     pub tags: Vec<(String, String)>,
     pub cluster_create_time: SystemTime,
     pub allocated_storage: i32,
@@ -213,6 +251,14 @@ impl ComAmazonawsNeptuneAmazonrdsv19State {
             if cluster.available_at.is_some_and(|due| now >= due) {
                 cluster.status = STATUS_AVAILABLE.to_string();
                 cluster.available_at = None;
+            }
+            // An association the service was still putting in place was owed `ACTIVE` at its
+            // own due instant, whoever called next.
+            for role in &mut cluster.associated_roles {
+                if role.active_at.is_some_and(|due| now >= due) {
+                    role.status = ROLE_STATUS_ACTIVE.to_string();
+                    role.active_at = None;
+                }
             }
         }
         for instance in self.instances.values_mut() {
@@ -583,7 +629,17 @@ pub fn cluster_view(record: &DbClusterRecord, status: &str) -> DBCluster {
         kms_key_id: record.kms_key_id.clone(),
         db_cluster_resource_id: Some(record.resource_id.clone()),
         db_cluster_arn: Some(record.arn.clone()),
-        associated_roles: Some(Vec::new()),
+        associated_roles: Some(
+            record
+                .associated_roles
+                .iter()
+                .map(|role| DBClusterRole {
+                    role_arn: Some(role.role_arn.clone()),
+                    status: Some(role.status.clone()),
+                    feature_name: role.feature_name.clone(),
+                })
+                .collect(),
+        ),
         iam_database_authentication_enabled: Some(record.iam_database_authentication_enabled),
         clone_group_id: None,
         cluster_create_time: Some(::aws_smithy_types::DateTime::from(
@@ -736,6 +792,58 @@ pub fn filter_matches(
         // nothing rather than silently matching everything.
         _ => false,
     }
+}
+
+// ---------------------------------------------------------------------------
+// The wordings the IAM-role-association calls answer their modelled faults with.
+// ---------------------------------------------------------------------------
+
+/// Whether `roles` already carries an association of `role_arn`, for any feature or none.
+///
+/// A DB cluster's associations are keyed by the ROLE: the already-exists fault reports that
+/// the role ARN is already associated with the cluster and names no feature at all, so one
+/// role is associated with one cluster once.
+pub fn holds_role(roles: &[ClusterRole], role_arn: &str) -> bool {
+    roles.iter().any(|role| role.role_arn == role_arn)
+}
+
+/// The `DBClusterNotFoundFault` wording the calls that manage a cluster's IAM ROLE
+/// ASSOCIATIONS answer with: the `<resource type> not found: <named>` form, which is the one
+/// this API family uses for those calls rather than the sentence a call that REPORTS or
+/// DELETES the cluster answers with.
+///
+/// `named` is the value the REQUEST carried rather than the key the store folded it to, so a
+/// caller matching the sentence against what it sent finds it there.
+pub fn db_cluster_not_found_colon_message(named: &str) -> String {
+    format!("DBCluster not found: {named}")
+}
+
+/// The `InvalidDBClusterStateFault` wording a change to a cluster's configuration answers
+/// when the cluster is not in a state that change can be made in — a cluster still coming up,
+/// or one on its way out.
+///
+/// It names the STATUS the cluster is in, which is what tells the caller whether waiting will
+/// clear the refusal, and nothing else.
+pub fn cluster_not_available_for_modification_message(status: &str) -> String {
+    format!("DB cluster isn't available for modification with status {status}.")
+}
+
+/// The `DBClusterRoleAlreadyExistsFault` wording: it names the role ARN the request carried
+/// and the cluster it is already associated with, and tells the caller which value to look at.
+pub fn cluster_role_already_associated_message(role_arn: &str, named: &str) -> String {
+    format!(
+        "Role ARN {role_arn} is already associated with DB Cluster: {named}. Verify your role \
+         ARN and try again."
+    )
+}
+
+/// The `DBClusterRoleQuotaExceededFault` wording: the cluster already carries every IAM role
+/// it may.
+pub fn cluster_role_quota_message(identifier: &str) -> String {
+    format!(
+        "The DB cluster {identifier} already has {MAX_ASSOCIATED_ROLES} IAM roles associated \
+         with it, which is the maximum."
+    )
 }
 
 /// The refusal message for a `Describe*` filter name the API does not support.
