@@ -4,6 +4,9 @@
 //! Replaces the configuration of a stored identity pool with the one the request carries.
 //! The pool's tags are not that configuration — they are the facet this service's tagging
 //! operations own — so a request that carries no `IdentityPoolTags` leaves them alone.
+//! The pool's developer-provider domain is not part of it either, for the opposite reason:
+//! it is settable once and fixed from then on, so a request carrying another value is
+//! served and the stored domain survives it.
 //!
 //! ## Shape of an operation
 //!
@@ -286,6 +289,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> UpdateIdentityPoo
             None => stored.identity_pool_tags.clone(),
         };
 
+        // The pool's developer-provider domain is settable ONCE: "once you have set a
+        // developer provider name, you cannot change it" (this service's model, on the
+        // member that states it). Nothing about a request restating, changing or omitting it
+        // is invalid, so such a call is not refused — the submitted value simply does not
+        // reach the stored record once the pool holds one, and the domain the pool was set
+        // with is what this call answers with and what every later reader reports. A pool
+        // that holds none takes the value this request carries.
+        let developer_provider_name = stored
+            .developer_provider_name
+            .clone()
+            .or(input.developer_provider_name);
+
         // "If you don't provide a value for a parameter, Amazon Cognito sets it to its
         // default value" (this service's model), so the request REPLACES the pool's
         // configuration rather than merging into it: a member the request omits is left
@@ -301,7 +316,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> UpdateIdentityPoo
             supported_login_providers: input
                 .supported_login_providers
                 .map(|providers| providers.into_iter().collect()),
-            developer_provider_name: input.developer_provider_name,
+            developer_provider_name,
             open_id_connect_provider_arns: input.open_id_connect_provider_ar_ns,
             cognito_identity_providers: input.cognito_identity_providers,
             saml_provider_arns: input.saml_provider_ar_ns,

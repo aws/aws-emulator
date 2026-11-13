@@ -43,6 +43,8 @@ mod developer_identity_tokens;
 mod developer_link_conflict_refusals;
 #[path = "all/developer_login_linking.rs"]
 mod developer_login_linking;
+#[path = "all/developer_provider_name_immutability.rs"]
+mod developer_provider_name_immutability;
 #[path = "all/iam_oidc_federation.rs"]
 mod iam_oidc_federation;
 #[path = "all/identity_data_events.rs"]

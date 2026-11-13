@@ -14,6 +14,9 @@
 //!   they are the facet this service's tagging operations own, so an update that carries
 //!   no `IdentityPoolTags` leaves the tag set the pool holds, and one that carries the
 //!   member states the pool's whole tag set.
+//! * The pool's developer-provider domain is the other exception, for the opposite reason:
+//!   it is settable once and fixed from then on, which
+//!   `developer_provider_name_immutability` covers on its own.
 //! * An update naming a pool this service does not hold — one never created, or one
 //!   already deleted — is the modelled `ResourceNotFoundException`, and writes nothing:
 //!   every other pool keeps the configuration it had.
@@ -33,13 +36,14 @@ const OPERATION: &str = "UpdateIdentityPool";
 /// Every OPTIONAL CONFIGURATION member `UpdateIdentityPoolInput` declares, from
 /// `smithy_query(query="operation", operation="UpdateIdentityPool")`. A row that omits one
 /// must leave the stored pool without it, which is what makes this catalog the thing to
-/// check after each update. `IdentityPoolTags` is deliberately NOT here: a pool's tags are
-/// not configuration this call replaces, and `tags_outlive_an_update_that_omits_them`
-/// covers them.
-const OPTIONAL_MEMBERS: [&str; 6] = [
+/// check after each update. Two members the operation declares are deliberately NOT here,
+/// because neither is configuration this call replaces: `IdentityPoolTags`, which
+/// `an_update_replaces_the_tag_set_only_when_it_carries_one` covers, and
+/// `DeveloperProviderName`, which cannot be changed once set and which
+/// `developer_provider_name_immutability` covers.
+const OPTIONAL_MEMBERS: [&str; 5] = [
     "AllowClassicFlow",
     "SupportedLoginProviders",
-    "DeveloperProviderName",
     "OpenIdConnectProviderARNs",
     "CognitoIdentityProviders",
     "SamlProviderARNs",
@@ -64,7 +68,7 @@ fn update_request(identity_pool_id: &str, configuration: &Value) -> Value {
 fn configurations() -> Vec<(&'static str, Value)> {
     vec![
         (
-            "every member the model declares",
+            "every member this call replaces",
             json!({
                 "IdentityPoolName": "fully-configured",
                 "AllowUnauthenticatedIdentities": true,
@@ -73,7 +77,10 @@ fn configurations() -> Vec<(&'static str, Value)> {
                     "graph.facebook.com": "1234567890",
                     "accounts.google.com": "client.apps.googleusercontent.com",
                 },
-                "DeveloperProviderName": "my.dev_provider-1",
+                // The developer-provider domain is left out of every row of this table:
+                // it is settable once, so a row could neither set it after another row
+                // had nor have it dropped by the row after it
+                // (`developer_provider_name_immutability` is where it is asserted).
                 "OpenIdConnectProviderARNs": [
                     "arn:aws:iam::000000000000:oidc-provider/auth.example.com",
                 ],
@@ -116,14 +123,6 @@ fn configurations() -> Vec<(&'static str, Value)> {
                 "IdentityPoolName": "tagged",
                 "AllowUnauthenticatedIdentities": true,
                 "IdentityPoolTags": {"Env": "prod"},
-            }),
-        ),
-        (
-            "a developer provider name only",
-            json!({
-                "IdentityPoolName": "dev-provider",
-                "AllowUnauthenticatedIdentities": true,
-                "DeveloperProviderName": "another.dev_provider-2",
             }),
         ),
         (
