@@ -19,7 +19,8 @@
 //! of attempt (sign-in, refresh, registration), WHICH operation terminated it (the
 //! self-service and the administrative surface, and the refresh-token exchange operation),
 //! HOW the attempt ended (completed, refused on the credential, refused on a value the pool
-//! does not hold, refused by request validation before any credential is checked), HOW MANY
+//! does not hold, refused by request validation before any credential is checked — including
+//! the app client's own flow gate, before and after the client is reconfigured), HOW MANY
 //! attempts were made (none, one, several), and whether the pool evaluates risk.
 
 use bytes::Bytes;
@@ -292,8 +293,8 @@ async fn given_pool(
         .as_str()
         .expect("a minted pool id")
         .to_string();
-    let client_id = create_client(router, &user_pool_id, "used").await;
-    let unused_client_id = create_client(router, &user_pool_id, "never-used").await;
+    let client_id = create_client(router, &user_pool_id, "used", &FLOWS).await;
+    let unused_client_id = create_client(router, &user_pool_id, "never-used", &FLOWS).await;
     cognito_ok(
         router,
         "AdminCreateUser",
@@ -318,11 +319,13 @@ async fn given_pool(
     }
 }
 
-/// Create an app client named `client_name` in `user_pool_id` and return its minted id.
+/// Create an app client named `client_name` in `user_pool_id`, admitting exactly `flows`, and
+/// return its minted id.
 async fn create_client(
     router: &MultiServiceRouter,
     user_pool_id: &str,
     client_name: &str,
+    flows: &[&str],
 ) -> String {
     let created = cognito_ok(
         router,
@@ -331,7 +334,7 @@ async fn create_client(
             "UserPoolId": user_pool_id,
             "ClientName": client_name,
             "GenerateSecret": false,
-            "ExplicitAuthFlows": FLOWS,
+            "ExplicitAuthFlows": flows,
         }),
     )
     .await;
@@ -558,6 +561,22 @@ async fn refused(router: &MultiServiceRouter, case: &str, operation: &str, body:
         "case {case:?}: {operation} must be refused with a client error, got {status} with \
          {payload}"
     );
+}
+
+/// The `__type` of an error body, which is the wire error code.
+fn error_code(payload: &Value) -> &str {
+    payload
+        .get("__type")
+        .and_then(Value::as_str)
+        .unwrap_or("<no __type>")
+}
+
+/// The `message` member of an error body.
+fn error_message(payload: &Value) -> &str {
+    payload
+        .get("message")
+        .and_then(Value::as_str)
+        .unwrap_or("<no message>")
 }
 
 /// One row of the counter table.
@@ -1035,4 +1054,279 @@ async fn reading_the_series_leaves_it_as_it_was() {
         "a second read of the risk series must answer what the first did, got {again_risk:?} \
          after {first_risk:?}"
     );
+}
+
+/// Which app-client flow gate a row exercises: the `AuthFlow` the row asks for, the API it
+/// asks it through, and the `ExplicitAuthFlows` value that enables it
+/// (`CreateUserPoolClient.ExplicitAuthFlows`, "the authentication flows that you want your
+/// user pool client to support").
+#[derive(Clone, Copy, Debug)]
+enum Gate {
+    /// `InitiateAuth` `USER_PASSWORD_AUTH`, which `ALLOW_USER_PASSWORD_AUTH` enables.
+    UserPassword,
+    /// `AdminInitiateAuth` `ADMIN_USER_PASSWORD_AUTH`, which
+    /// `ALLOW_ADMIN_USER_PASSWORD_AUTH` enables: the administrative surface of the same
+    /// attempt, gated on its own value.
+    AdminPassword,
+    /// `InitiateAuth` `REFRESH_TOKEN_AUTH`, which `ALLOW_REFRESH_TOKEN_AUTH` enables — a
+    /// flow that presents a token a completed sign-in issued, so the row signs in first.
+    Refresh,
+}
+
+impl Gate {
+    /// The `ExplicitAuthFlows` the app client holds BEFORE it is repaired: everything the
+    /// row needs except the flow its gated attempt asks for.
+    fn blocked_flows(self) -> &'static [&'static str] {
+        match self {
+            Self::UserPassword => &["ALLOW_REFRESH_TOKEN_AUTH", "ALLOW_USER_SRP_AUTH"],
+            Self::AdminPassword | Self::Refresh => &["ALLOW_USER_PASSWORD_AUTH"],
+        }
+    }
+
+    /// The `ExplicitAuthFlows` the repair stores: the same list with the flow the gated
+    /// attempt asks for added, so the next attempt of that flow is served.
+    fn repaired_flows(self) -> &'static [&'static str] {
+        match self {
+            Self::UserPassword => &[
+                "ALLOW_REFRESH_TOKEN_AUTH",
+                "ALLOW_USER_SRP_AUTH",
+                "ALLOW_USER_PASSWORD_AUTH",
+            ],
+            Self::AdminPassword => &[
+                "ALLOW_USER_PASSWORD_AUTH",
+                "ALLOW_ADMIN_USER_PASSWORD_AUTH",
+            ],
+            Self::Refresh => &["ALLOW_USER_PASSWORD_AUTH", "ALLOW_REFRESH_TOKEN_AUTH"],
+        }
+    }
+
+    /// The counter the gated attempt is observed in: a token exchange is a refresh, and both
+    /// password surfaces sign a user in.
+    fn metric(self) -> &'static str {
+        match self {
+            Self::UserPassword | Self::AdminPassword => SIGN_IN_SUCCESSES,
+            Self::Refresh => TOKEN_REFRESH_SUCCESSES,
+        }
+    }
+
+    /// The sentence this gate refuses with — the wording the `auth_flow_not_enabled` suite
+    /// pins: the client-side APIs name the flow asked for, the administrative one words the
+    /// same condition in one fixed sentence.
+    fn refusal_message(self) -> &'static str {
+        match self {
+            Self::UserPassword => "USER_PASSWORD_AUTH flow not enabled for this client",
+            Self::AdminPassword => "Auth flow not enabled for this client",
+            Self::Refresh => "REFRESH_TOKEN_AUTH flow not enabled for this client",
+        }
+    }
+
+    /// Whether the row has to complete a sign-in before its gated attempt, to hold the
+    /// refresh token that attempt presents.
+    fn needs_a_sign_in_first(self) -> bool {
+        matches!(self, Self::Refresh)
+    }
+
+    /// The operation and request body of one attempt of this kind, presenting a credential
+    /// the pool really holds — so what ends the attempt is the app client's configuration and
+    /// nothing else.
+    fn request(self, fixture: &Fixture, refresh_token: &str) -> (&'static str, Value) {
+        match self {
+            Self::UserPassword => (
+                "InitiateAuth",
+                initiate_auth(
+                    &fixture.client_id,
+                    "USER_PASSWORD_AUTH",
+                    json!({ "USERNAME": USERNAME, "PASSWORD": GOOD_PASSWORD }),
+                ),
+            ),
+            Self::AdminPassword => (
+                "AdminInitiateAuth",
+                admin_initiate_auth(fixture, GOOD_PASSWORD),
+            ),
+            Self::Refresh => (
+                "InitiateAuth",
+                initiate_auth(
+                    &fixture.client_id,
+                    "REFRESH_TOKEN_AUTH",
+                    json!({ "REFRESH_TOKEN": refresh_token }),
+                ),
+            ),
+        }
+    }
+}
+
+/// One row of the flow-gate table: the gate, how many attempts it refuses before the app
+/// client is repaired, and how many are made after.
+struct GateRow {
+    case: &'static str,
+    gate: Gate,
+    refused: usize,
+    completed: usize,
+}
+
+/// RULE: a refusal the app client's own flow configuration raises — before any credential is
+/// checked — still TERMINATES the attempt, so it publishes its zero-valued sample like any
+/// other refusal; the series is keyed on the pool and the app client alone, so reconfiguring
+/// that client does not start a new one, and the catalogue names the series while every
+/// sample in it is still zero.
+#[tokio::test]
+async fn a_flow_the_app_client_does_not_enable_is_a_zero_valued_sample() {
+    for row in [
+        GateRow {
+            case: "one client-side password sign-in the client does not enable, then repaired",
+            gate: Gate::UserPassword,
+            refused: 1,
+            completed: 1,
+        },
+        GateRow {
+            case: "three gate-refused password sign-ins, then one repaired sign-in",
+            gate: Gate::UserPassword,
+            refused: 3,
+            completed: 1,
+        },
+        GateRow {
+            case: "gate-refused attempts and no attempt after the repair",
+            gate: Gate::UserPassword,
+            refused: 2,
+            completed: 0,
+        },
+        GateRow {
+            case: "the administrative surface, gate-refused twice and then completed twice",
+            gate: Gate::AdminPassword,
+            refused: 2,
+            completed: 2,
+        },
+        GateRow {
+            case: "a refresh-token exchange the client does not enable, then repaired",
+            gate: Gate::Refresh,
+            refused: 3,
+            completed: 1,
+        },
+    ] {
+        let router = emulator();
+        let opened = now_secs();
+        let base = given_pool(&router, None, None).await;
+        let client_id = create_client(
+            &router,
+            &base.user_pool_id,
+            "flow-gated",
+            row.gate.blocked_flows(),
+        )
+        .await;
+        let fixture = Fixture { client_id, ..base };
+        let keyed = [
+            (USER_POOL, fixture.user_pool_id.as_str()),
+            (USER_POOL_CLIENT, fixture.client_id.as_str()),
+        ];
+
+        // A refresh row holds the token a completed sign-in issued; that sign-in is itself
+        // one sample, in the sign-in counter.
+        let mut refresh_token = String::new();
+        if row.gate.needs_a_sign_in_first() {
+            let signed_in = cognito_ok(
+                &router,
+                "InitiateAuth",
+                &initiate_auth(
+                    &fixture.client_id,
+                    "USER_PASSWORD_AUTH",
+                    json!({ "USERNAME": USERNAME, "PASSWORD": GOOD_PASSWORD }),
+                ),
+            )
+            .await;
+            refresh_token = signed_in["AuthenticationResult"]["RefreshToken"]
+                .as_str()
+                .unwrap_or_else(|| {
+                    panic!(
+                        "case {:?}: a completed sign-in must issue a refresh token, got \
+                         {signed_in}",
+                        row.case
+                    )
+                })
+                .to_string();
+        }
+
+        for attempt in 0..row.refused {
+            let (operation, body) = row.gate.request(&fixture, &refresh_token);
+            let (status, payload) = cognito(&router, operation, &body).await;
+            assert_eq!(
+                (status, error_code(&payload)),
+                (400, "InvalidParameterException"),
+                "case {:?}: attempt {attempt} must be refused by the flow gate, got {status} \
+                 with {payload}",
+                row.case
+            );
+            let found = error_message(&payload);
+            assert_eq!(
+                found,
+                row.gate.refusal_message(),
+                "case {:?}: attempt {attempt} expected {:?}, got {found:?}",
+                row.case,
+                row.gate.refusal_message()
+            );
+        }
+
+        let gated = row.gate.metric();
+        let before = observed(&router, gated, &keyed, opened).await;
+        let expected_before = Some((0.0, row.refused as f64));
+        assert_eq!(
+            before, expected_before,
+            "case {:?}: expected {gated} to read back {expected_before:?} while every attempt \
+             was gate-refused, got {before:?}",
+            row.case
+        );
+        // A series every sample of which is zero still EXISTS, so a client discovering the
+        // namespace finds it under the dimension pair the counters are keyed on.
+        let catalogue = catalogued(&router, (USER_POOL, fixture.user_pool_id.as_str())).await;
+        let mut expected_names = vec![USER_POOL.to_string(), USER_POOL_CLIENT.to_string()];
+        expected_names.sort();
+        assert!(
+            catalogue.contains(&(gated.to_string(), expected_names.clone())),
+            "case {:?}: ListMetrics must catalogue {gated} keyed on {expected_names:?}, got \
+             {catalogue:?}",
+            row.case
+        );
+
+        // The repair changes the app client's configuration and attempts nothing, so it owes
+        // the series no sample of its own.
+        cognito_ok(
+            &router,
+            "UpdateUserPoolClient",
+            &json!({
+                "UserPoolId": fixture.user_pool_id,
+                "ClientId": fixture.client_id,
+                "ExplicitAuthFlows": row.gate.repaired_flows(),
+            }),
+        )
+        .await;
+        for attempt in 0..row.completed {
+            let (operation, body) = row.gate.request(&fixture, &refresh_token);
+            let answered = cognito_ok(&router, operation, &body).await;
+            assert!(
+                answered["AuthenticationResult"]["AccessToken"].is_string(),
+                "case {:?}: attempt {attempt} must complete once the client enables the flow, \
+                 got {answered}",
+                row.case
+            );
+        }
+
+        let expected_gated =
+            Some((row.completed as f64, (row.refused + row.completed) as f64));
+        for metric in [SIGN_IN_SUCCESSES, TOKEN_REFRESH_SUCCESSES, SIGN_UP_SUCCESSES] {
+            let expected = if metric == gated {
+                expected_gated
+            } else if metric == SIGN_IN_SUCCESSES && row.gate.needs_a_sign_in_first() {
+                // The sign-in that minted the refresh token, and nothing else.
+                Some((1.0, 1.0))
+            } else {
+                None
+            };
+            let found = observed(&router, metric, &keyed, opened).await;
+            assert_eq!(
+                found, expected,
+                "case {:?}: expected {metric} to read back {expected:?} across the repair, got \
+                 {found:?}",
+                row.case
+            );
+        }
+    }
 }
