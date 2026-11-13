@@ -161,50 +161,63 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         };
 
         let now = SystemTime::now();
-        let mut guard = store.lock();
-        guard.materialize_due_transitions(now);
+        // The lock is taken to remove the node group and released again: the capacity
+        // it ran on is released below over calls out to other services, which this
+        // store's guard is never held across.
+        let record = {
+            let mut guard = store.lock();
+            guard.materialize_due_transitions(now);
 
-        // A node group is addressed through its cluster, and a cluster name identifies
-        // a cluster only within one region, so this deletes the node group of the
-        // cluster in the region the request is signed for. A cluster `RegisterCluster`
-        // connected has no Amazon EKS-managed node group at all, so the lookup below is
-        // what reports that, with the same 404 any other missing node group earns.
-        let cluster_key = (region.clone(), input.cluster_name.clone());
-        let Some(cluster) = guard.clusters.get(&cluster_key) else {
-            return Err(not_found());
+            // A node group is addressed through its cluster, and a cluster name identifies
+            // a cluster only within one region, so this deletes the node group of the
+            // cluster in the region the request is signed for. A cluster `RegisterCluster`
+            // connected has no Amazon EKS-managed node group at all, so the lookup below is
+            // what reports that, with the same 404 any other missing node group earns.
+            let cluster_key = (region.clone(), input.cluster_name.clone());
+            let Some(cluster) = guard.clusters.get(&cluster_key) else {
+                return Err(not_found());
+            };
+
+            // "The specified resource is in use": a node group taking an update is still
+            // owed the change that update carries, so it cannot be removed from under it.
+            if let Some(in_flight) = cluster
+                .in_flight_update_in_scope(&UpdateScope::Nodegroup(input.nodegroup_name.clone()))
+            {
+                return Err(DeleteNodegroupErrorModeled::ResourceInUseException(
+                    state::update_in_progress(
+                        &in_flight.r#type.clone(),
+                        &input.cluster_name,
+                        in_flight,
+                    ),
+                )
+                .into());
+            }
+
+            let nodegroup_key = (
+                region.clone(),
+                input.cluster_name.clone(),
+                input.nodegroup_name.clone(),
+            );
+            let Some(mut record) = guard.nodegroups.remove(&nodegroup_key) else {
+                return Err(not_found());
+            };
+
+            // The answer reports the node group on its way out, which is the status a
+            // delete leaves it in; the record is already gone from the store, so nothing
+            // the clock owed it is owed to anybody any more.
+            record.status = STATUS_DELETING.to_string();
+            record.active_at = None;
+            record.pending_config = None;
+            record.modified_at = now;
+            record
         };
 
-        // "The specified resource is in use": a node group taking an update is still
-        // owed the change that update carries, so it cannot be removed from under it.
-        if let Some(in_flight) = cluster
-            .in_flight_update_in_scope(&UpdateScope::Nodegroup(input.nodegroup_name.clone()))
-        {
-            return Err(DeleteNodegroupErrorModeled::ResourceInUseException(
-                state::update_in_progress(
-                    &in_flight.r#type.clone(),
-                    &input.cluster_name,
-                    in_flight,
-                ),
-            )
-            .into());
-        }
-
-        let nodegroup_key = (
-            region,
-            input.cluster_name.clone(),
-            input.nodegroup_name.clone(),
-        );
-        let Some(mut record) = guard.nodegroups.remove(&nodegroup_key) else {
-            return Err(not_found());
-        };
-
-        // The answer reports the node group on its way out, which is the status a
-        // delete leaves it in; the record is already gone from the store, so nothing
-        // the clock owed it is owed to anybody any more.
-        record.status = STATUS_DELETING.to_string();
-        record.active_at = None;
-        record.pending_config = None;
-        record.modified_at = now;
+        // The capacity the node group ran on goes with it: the Auto Scaling group, the
+        // launch template it launched from and the remote-access security group exist
+        // only for this node group, so nothing holds them once it is gone
+        // ([`state::release_nodegroup_capacity`]). The node group has already left this
+        // service's state, so the answer does not depend on what those services say.
+        state::release_nodegroup_capacity(ctx, &region, &record.capacity).await;
 
         Ok(DeleteNodegroupOutput {
             nodegroup: Some(record.to_nodegroup()),

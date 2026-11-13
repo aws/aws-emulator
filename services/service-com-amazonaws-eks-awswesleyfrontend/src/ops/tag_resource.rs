@@ -3,13 +3,15 @@
 //! @op TagResource
 //! IMPLEMENTED. PARSES `resourceArn` first — a value that is not a resource ARN of
 //! this service is a `BadRequestException` (400), before any lookup — and then
-//! resolves it through the store's ARN index and MERGES the supplied tags into that
-//! resource's own tag map, so a key already present is overwritten and every other
-//! key is kept. `ListTagsForResource` then reports the merged map. A well-formed ARN
-//! no resource in the store owns is a `NotFoundException` (404).
+//! resolves it to the resource that carries that ARN and MERGES the supplied tags
+//! into that resource's own tag map, so a key already present is overwritten and
+//! every other key is kept. `ListTagsForResource` then reports the merged map. A
+//! well-formed ARN no resource in the store owns is a `NotFoundException` (404).
 //!
-//! The cluster is the only taggable resource this slice holds; nodegroups, add-ons,
-//! Fargate profiles and the rest reach the same index as their own slices land.
+//! Every resource this service mints an ARN for is addressable here, through the one
+//! resolution the whole tag plane shares
+//! ([`crate::state::tagged_resource_for_arn`]): the tags land on that resource's own
+//! record, so they are the tags its own read reports.
 //!
 //! Shared types live in `super::types`; the error channel in `crate::scaffolded`.
 //!
@@ -163,12 +165,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         };
 
         let mut guard = store.lock();
-        // The ARN itself names the region, so the index resolves a cluster in any
-        // region without the request's own credential scope.
-        let Some(key) = guard.cluster_key_for_arn(&input.resource_arn) else {
+        // The ARN itself names the region and the resource, so the resolution
+        // addresses any resource this service minted that ARN for — in any region,
+        // without the request's own credential scope
+        // ([`crate::state::tagged_resource_for_arn`]).
+        let Some(resource) = guard.tagged_resource_for_arn(&input.resource_arn) else {
             return Err(not_found());
         };
-        let Some(record) = guard.clusters.get_mut(&key) else {
+        let Some(tags) = guard.tags_for_mut(&resource) else {
             return Err(not_found());
         };
 
@@ -179,8 +183,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // instead of growing the record without bound. Nothing is written on the
         // refusal path, and the refusal is the SAME sentence the modelled bound
         // earns: one ceiling, one wording, and it echoes nothing the request carried.
-        let merged_size = record
-            .tags
+        let merged_size = tags
             .keys()
             .chain(input.tags.keys())
             .collect::<std::collections::BTreeSet<_>>()
@@ -197,7 +200,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // MERGE, not replace: a key the caller supplies wins, every other stored key
         // survives.
         for (key, value) in input.tags {
-            record.tags.insert(key, value);
+            tags.insert(key, value);
         }
 
         Ok(TagResourceOutput {})

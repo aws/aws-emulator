@@ -48,7 +48,7 @@ use service_com_amazonaws_eks_awswesleyfrontend::state::{
 };
 use smithy_server_runtime::MultiServiceRouter;
 
-use crate::cluster_lifecycle::{describe, minimal_request, REGION};
+use crate::cluster_lifecycle::{access_entry_cluster_request, describe, REGION};
 use crate::wire::{call, emulator, encode_label, Answer};
 
 /// The sub-resource identity members a not-found payload never carries: the request's own
@@ -200,13 +200,17 @@ async fn send(router: &MultiServiceRouter, region: &str, cluster: &str, row: &Ro
 }
 
 /// Create `name` and move it past the span the clock owes it, so it is `ACTIVE`.
+///
+/// The body is the one whose `authenticationMode` serves the access-entry API, since
+/// one of the rows below is a `CreateAccessEntry`: a cluster that serves no access
+/// entries refuses that call for its mode instead of judging the body.
 async fn active_cluster(router: &MultiServiceRouter, name: &str) {
     let created = call(
         router,
         REGION,
         "POST",
         "/clusters",
-        &minimal_request(name).to_string(),
+        &access_entry_cluster_request(name).to_string(),
     )
     .await;
     assert_eq!(

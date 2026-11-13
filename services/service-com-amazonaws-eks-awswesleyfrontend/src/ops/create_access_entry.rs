@@ -245,6 +245,23 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .into());
         }
 
+        // And the access-entry API is served only by a cluster whose
+        // `authenticationMode` includes it: a cluster still authenticating through
+        // the `aws-auth` ConfigMap alone has no access-entry plane for this call to
+        // write into ([`state::serves_access_entries`]). The gate is a fact about the
+        // CLUSTER too, so it is answered before anything in the body is judged
+        // against it.
+        if !cluster.serves_access_entries() {
+            return Err(CreateAccessEntryErrorModeled::InvalidRequestException(
+                InvalidRequestException {
+                    cluster_name: Some(input.cluster_name.clone()),
+                    message: Some(state::access_entry_authentication_mode_refusal()),
+                    ..Default::default()
+                },
+            )
+            .into());
+        }
+
         // "If you don't specify a value, Amazon EKS sets the value to `STANDARD`", and the
         // set of values the member documents is the set this accepts — `type` is a
         // plain string member, so nothing refused it before this handler ran.
@@ -289,6 +306,20 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                  {entry_type}."
             )));
         }
+
+        // What the entry REPORTS as its groups: the caller's own for a `STANDARD`
+        // entry, and for an entry whose type Amazon EKS admits a node through, the
+        // groups EKS derives for that type — the node-authorization grant the type
+        // exists to confer, which the request does not carry
+        // ([`state::server_managed_kubernetes_groups`]).
+        let kubernetes_groups = if kubernetes_groups.is_empty() {
+            state::server_managed_kubernetes_groups(&entry_type)
+                .iter()
+                .map(|group| (*group).to_string())
+                .collect()
+        } else {
+            kubernetes_groups
+        };
 
         // And the username is Amazon EKS's to specify for every type but `STANDARD`
         // ([`state::username_refusal`]): those entries stand for a node or a pod EKS

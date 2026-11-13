@@ -13,8 +13,12 @@
 // points it into `tests/all/`.
 #[path = "all/access_entries.rs"]
 mod access_entries;
+#[path = "all/access_entry_authentication_mode.rs"]
+mod access_entry_authentication_mode;
 #[path = "all/access_entry_listing.rs"]
 mod access_entry_listing;
+#[path = "all/access_entry_node_groups.rs"]
+mod access_entry_node_groups;
 #[path = "all/access_entry_updates.rs"]
 mod access_entry_updates;
 #[path = "all/access_policy_catalog.rs"]
@@ -157,6 +161,8 @@ mod refusal_contract;
 mod refusal_message_wording;
 #[path = "all/refusal_selection.rs"]
 mod refusal_selection;
+#[path = "all/resource_tagging.rs"]
+mod resource_tagging;
 #[path = "all/state_roundtrip.rs"]
 mod state_roundtrip;
 #[path = "all/tag_contract.rs"]

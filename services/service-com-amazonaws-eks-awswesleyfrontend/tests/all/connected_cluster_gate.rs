@@ -27,7 +27,9 @@ use service_com_amazonaws_eks_awswesleyfrontend::state::{
 };
 use smithy_server_runtime::MultiServiceRouter;
 
-use crate::cluster_lifecycle::{create, describe, list, minimal_request, names_of, REGION};
+use crate::cluster_lifecycle::{
+    access_entry_cluster_request, create, describe, list, minimal_request, names_of, REGION,
+};
 use crate::wire::{call, emulator, encode_label, error_code, Answer};
 
 /// The emulator's own canonical account id, which every ARN it mints carries.
@@ -980,7 +982,9 @@ async fn delete_entry(router: &MultiServiceRouter, cluster: &str, principal: &st
 async fn deleting_an_access_entry_removes_it_and_lets_it_be_created_again() {
     let router = emulator();
     let cluster = "delete-entry-cluster";
-    let created = create(&router, &minimal_request(cluster)).await;
+    // The access-entry API is served only by a cluster whose `authenticationMode`
+    // includes it (`cluster_lifecycle::access_entry_cluster_request`).
+    let created = create(&router, &access_entry_cluster_request(cluster)).await;
     assert_eq!(
         created.status, 200,
         "setup: creating {cluster:?} must succeed, got {created:?}"
@@ -1089,8 +1093,10 @@ async fn deleting_one_entry_takes_its_policies_and_leaves_the_others() {
     // (`accessConfig.bootstrapClusterCreatorAdminPermissions`, covered by
     // `cluster_creator_access_entry.rs`).
     let mut request = minimal_request(cluster);
-    request["accessConfig"] =
-        serde_json::json!({ "bootstrapClusterCreatorAdminPermissions": false });
+    request["accessConfig"] = serde_json::json!({
+        "authenticationMode": "API_AND_CONFIG_MAP",
+        "bootstrapClusterCreatorAdminPermissions": false,
+    });
     let created = create(&router, &request).await;
     assert_eq!(
         created.status, 200,

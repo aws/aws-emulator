@@ -188,6 +188,9 @@ async fn a_discovered_policy_of_every_family_can_be_associated() {
             "name": cluster,
             "roleArn": "arn:aws:iam::000000000000:role/eksClusterRole",
             "resourcesVpcConfig": { "subnetIds": ["subnet-aaaa1111", "subnet-bbbb2222"] },
+            // The access-entry API is served only by a cluster whose
+            // `authenticationMode` includes it.
+            "accessConfig": { "authenticationMode": "API_AND_CONFIG_MAP" },
         })
         .to_string(),
     )

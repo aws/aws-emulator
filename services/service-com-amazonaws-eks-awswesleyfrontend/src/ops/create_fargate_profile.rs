@@ -131,7 +131,7 @@ use crate::state::{
     FARGATE_PROFILE_STATUS_CREATING, MAX_FARGATE_PROFILES_PER_CLUSTER,
     MAX_SELECTORS_PER_FARGATE_PROFILE, MAX_STORED_FARGATE_PROFILES,
 };
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::SystemTime;
 
 // `#[operation_error]` below expands to an invocation of the LOCAL declarative
@@ -499,6 +499,31 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // call out to another service.
         let subnets = input.subnets.clone().unwrap_or_default();
         if let Some(why) = state::unresolved_subnet_refusal(ctx, &region, &subnets).await {
+            return Err(invalid_parameter(cluster_name, profile_name, why));
+        }
+
+        // And those subnets have to be PRIVATE ones: a Fargate Pod gets no public
+        // address of its own, so "the subnets must be private subnets"
+        // (`CreateFargateProfileRequest$subnets`) — a fact about the network, which
+        // EC2 owns and answers ([`state::public_subnet_refusal`]). It follows the
+        // resolution above, so a subnet that does not exist is reported as the
+        // missing subnet rather than as a public one, and runs with no lock held for
+        // the same reason.
+        //
+        // The cross-service reads it causes are BOUNDED HERE, before the call and so
+        // before any work proportional to the request is done: a repeated id is the
+        // same question and is asked once, and at most
+        // [`state::MAX_SUBNETS_RESOLVED_INDIVIDUALLY`] distinct ids are asked about at
+        // all — the ceiling every per-subnet reading of this service is held to —
+        // however long a list the request carries.
+        let mut asked: BTreeSet<&str> = BTreeSet::new();
+        let probed: Vec<String> = subnets
+            .iter()
+            .filter(|subnet_id| asked.insert(subnet_id.as_str()))
+            .take(state::MAX_SUBNETS_RESOLVED_INDIVIDUALLY)
+            .cloned()
+            .collect();
+        if let Some(why) = state::public_subnet_refusal(ctx, &region, &probed).await {
             return Err(invalid_parameter(cluster_name, profile_name, why));
         }
 

@@ -53,20 +53,71 @@ pub async fn service_principal_trust_violation(
     role_arn: &str,
     principals: &[&str],
 ) -> Option<String> {
-    // Not an in-account role at all: `pass_role_refusal` is what reports that,
-    // and it has already run by the time a handler asks this.
-    let role_name = iam_role_name(role_arn)?;
-    let answer = callback_client!(aws_sdk_iam, ctx, peer_endpoint("iam", region)?, region)
-    .get_role()
-    .role_name(role_name)
-    .send()
-    .await;
+    match role_trust(ctx, region, role_arn, principals).await {
+        RoleTrust::Withholds | RoleTrust::NoSuchRole => {
+            Some(trust_policy_refusal(role_arn, principals))
+        }
+        RoleTrust::Admits | RoleTrust::Unanswered => None,
+    }
+}
+
+/// What IAM answered about the role a request names and the principals that
+/// would assume it.
+///
+/// The two cases a refusal can be grounded in are kept APART here, because the
+/// operations that ask differ in which of them they refuse: a role Amazon EKS is
+/// to assume itself is refused for either ([`service_principal_trust_violation`]
+/// reports them in one sentence, since a caller cannot tell them apart without a
+/// role it may not be allowed to read), while a refusal whose sentence is about
+/// the TRUST POLICY is grounded in a trust policy IAM holds and nothing else
+/// ([`pod_identity_role_trust_refusal`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RoleTrust {
+    /// IAM holds the role and its trust policy lets at least one of the
+    /// principals assume it.
+    Admits,
+    /// IAM holds the role and its trust policy lets none of them assume it.
+    Withholds,
+    /// IAM holds no role of that ARN, so there is no trust policy at all.
+    NoSuchRole,
+    /// Nothing was answered that anything may be grounded in: the value is not an
+    /// in-account role ARN (the case [`pass_role_refusal`] reports, which has
+    /// already run by the time a handler asks this), or this emulator has no IAM
+    /// to ask.
+    Unanswered,
+}
+
+/// Ask IAM about the role `role_arn` names and the principals that would assume
+/// it — the ONE reading of a role's trust relationship in this service, so two
+/// operations asked about the same document cannot answer differently.
+///
+/// `principals` is every service principal AWS publishes for the purpose the role
+/// is named for, because one documented purpose can have more than one: admitting
+/// any of them makes the role usable, so a caller that followed any of AWS's own
+/// trust policies for that role is not refused.
+pub async fn role_trust(
+    ctx: &smithy_server_runtime::OperationContext<'_>,
+    region: &str,
+    role_arn: &str,
+    principals: &[&str],
+) -> RoleTrust {
+    let Some(role_name) = iam_role_name(role_arn) else {
+        return RoleTrust::Unanswered;
+    };
+    let Some(endpoint) = peer_endpoint("iam", region) else {
+        return RoleTrust::Unanswered;
+    };
+    let answer = callback_client!(aws_sdk_iam, ctx, endpoint, region)
+        .get_role()
+        .role_name(role_name)
+        .send()
+        .await;
     match answer {
         Ok(output) => {
             let document = output
                 .role()
                 .and_then(::aws_sdk_iam::types::Role::assume_role_policy_document);
-            let trusted = document.is_some_and(|document| {
+            let admitted = document.is_some_and(|document| {
                 principals.iter().any(|principal| {
                     ::service_common::iam_trust_policy::admits_service_principal(
                         document, principal,
@@ -74,14 +125,16 @@ pub async fn service_principal_trust_violation(
                     .unwrap_or(false)
                 })
             });
-            (!trusted).then(|| trust_policy_refusal(role_arn, principals))
+            if admitted {
+                RoleTrust::Admits
+            } else {
+                RoleTrust::Withholds
+            }
         }
-        // IAM says this account holds no such role: the refusal is grounded.
-        Err(error) if iam_role_is_absent(&error) => {
-            Some(trust_policy_refusal(role_arn, principals))
-        }
+        // IAM says this account holds no such role: an answer, and a grounded one.
+        Err(error) if iam_role_is_absent(&error) => RoleTrust::NoSuchRole,
         // Any other answer is this emulator failing to ask, not IAM reporting a
-        // bad role, so it refuses nothing — and it is worth a warning, because a
+        // bad role, so it grounds nothing — and it is worth a warning, because a
         // deployment with no IAM to ask is one where this gate does not run.
         Err(error) => {
             ::tracing::warn!(
@@ -89,8 +142,36 @@ pub async fn service_principal_trust_violation(
                 error = %::aws_smithy_types::error::display::DisplayErrorContext(&error),
                 "the role could not be verified against IAM"
             );
-            None
+            RoleTrust::Unanswered
         }
+    }
+}
+
+/// Why the `roleArn` an EKS Pod Identity association binds to a service account
+/// is not a role EKS Pod Identity can assume for that account's Pods, or `None`
+/// when nothing about its trust policy says so.
+///
+/// EKS Pod Identity "manages credentials to assume this role for applications in
+/// the containers in the Pods that use this service account"
+/// (`CreatePodIdentityAssociationRequest$roleArn`), and the agent that assumes it
+/// speaks as [`POD_IDENTITY_SERVICE_PRINCIPAL`], so a role whose trust policy does
+/// not let that principal assume it is a role no association could ever issue
+/// credentials from. The reading is the service's one reading ([`role_trust`]);
+/// only the sentence differs, and it is the fixed one Amazon EKS answers this
+/// class with.
+///
+/// The refusal is grounded in a TRUST POLICY IAM HOLDS and in nothing else, which
+/// is what the sentence is about: a role IAM does not hold has no trust policy to
+/// have read, and neither has an IAM this emulator could not ask — so, as
+/// everywhere else in this module, silence refuses nothing.
+pub async fn pod_identity_role_trust_refusal(
+    ctx: &smithy_server_runtime::OperationContext<'_>,
+    region: &str,
+    role_arn: &str,
+) -> Option<&'static str> {
+    match role_trust(ctx, region, role_arn, POD_IDENTITY_ROLE_PRINCIPALS).await {
+        RoleTrust::Withholds => Some(POD_IDENTITY_TRUST_POLICY_REFUSAL),
+        RoleTrust::Admits | RoleTrust::NoSuchRole | RoleTrust::Unanswered => None,
     }
 }
 
@@ -266,7 +347,8 @@ pub struct ResolvedSubnets {
 }
 
 /// How many of a request's subnet ids this service resolves INDIVIDUALLY when the
-/// read over the whole list is refused — the cap on the narrowing walk below.
+/// read over the whole list is refused — the cap on the narrowing walk below, and the
+/// same ceiling every other per-subnet reading of this service is held to.
 ///
 /// The subnets one Amazon EKS resource is placed in all sit in a single VPC
 /// ([`resolve_subnets`] reports a VPC only when the ids agree on one), and Amazon VPC
@@ -274,7 +356,7 @@ pub struct ResolvedSubnets {
 /// naming more distinct ids than this names more subnets than one VPC can hold. The
 /// walk therefore does bounded work whatever length of list a request carries, and a
 /// list past the cap is answered with what EC2 said about the list as a whole.
-pub(super) const MAX_SUBNETS_RESOLVED_INDIVIDUALLY: usize = 200;
+pub const MAX_SUBNETS_RESOLVED_INDIVIDUALLY: usize = 200;
 
 /// Resolve `subnet_ids` against EC2: the one reading of a request's subnets, which
 /// [`unresolved_subnet_refusal`] is the refusal half of.

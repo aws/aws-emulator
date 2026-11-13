@@ -179,7 +179,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // The cluster leaves this service's state under ONE lock; the group it owned in
         // EC2 is released after that lock is given up, because releasing it is a call
         // out to another service.
-        let (cluster, owned_group) = {
+        let (cluster, owned_group, released_capacity) = {
             let mut guard = store.lock();
             let now = SystemTime::now();
             guard.materialize_due_transitions(now);
@@ -252,8 +252,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // name in the same Region must not inherit the deleted cluster's
             // associations.
             guard.remove_pod_identity_associations_for_cluster(&key.0, &key.1);
-            // And so is a managed node group, for the same reason.
-            guard.remove_nodegroups_for_cluster(&key.0, &key.1);
+            // And so is a managed node group, for the same reason — and the capacity
+            // each of them ran on is released below, because nothing holds it once the
+            // node group is gone.
+            let released_capacity = guard.remove_nodegroups_for_cluster(&key.0, &key.1);
             // And so is a Fargate profile, for the same reason.
             guard.remove_fargate_profiles_for_cluster(&key.0, &key.1);
             record.status = STATUS_DELETING.to_string();
@@ -268,7 +270,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 .resources_vpc_config
                 .as_ref()
                 .and_then(|vpc_config| vpc_config.cluster_security_group_id.clone());
-            (record.to_deleted_cluster(), owned_group)
+            (record.to_deleted_cluster(), owned_group, released_capacity)
         };
 
         // The cluster has already left this service's state, so the answer does not
@@ -278,6 +280,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // finds a deletion running rather than nothing.
         if let Some(group_id) = owned_group {
             crate::state::release_cluster_security_group(ctx, &key.0, &group_id).await;
+        }
+        // The same for the capacity the cluster's node groups ran on: those node
+        // groups went with the cluster, so the Auto Scaling groups, launch templates
+        // and remote-access security groups behind them are held by nothing
+        // ([`crate::state::release_nodegroup_capacity`]).
+        for capacity in &released_capacity {
+            crate::state::release_nodegroup_capacity(ctx, &key.0, capacity).await;
         }
         store.lock().finish_cluster_deletion(&key);
 

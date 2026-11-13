@@ -205,6 +205,21 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             )
             .into());
         }
+        // And the access-entry API is served only by a cluster whose
+        // `authenticationMode` includes it: one still authenticating through the
+        // `aws-auth` ConfigMap alone keeps no access entries for this call to change
+        // ([`crate::state::serves_access_entries`]). The gate is a fact about the
+        // CLUSTER too, so it precedes resolving the entry.
+        if !cluster.serves_access_entries() {
+            return Err(UpdateAccessEntryErrorModeled::InvalidRequestException(
+                InvalidRequestException {
+                    cluster_name: Some(input.cluster_name.clone()),
+                    message: Some(crate::state::access_entry_authentication_mode_refusal()),
+                    ..Default::default()
+                },
+            )
+            .into());
+        }
 
         let Some(entry) = cluster.access_entries.get_mut(&input.principal_arn) else {
             return Err(not_found());
@@ -261,7 +276,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // A member the request carries replaces the stored one; a member it omits
         // names no new value, so the stored one stands.
         if let Some(groups) = input.kubernetes_groups.clone() {
-            entry.kubernetes_groups = groups;
+            // An EMPTY list asks for no group at all, which on an entry whose groups
+            // Amazon EKS derives for its type would drop the node-authorization grant
+            // that type exists to confer: those groups are the server's, so they
+            // stand ([`crate::state::server_managed_kubernetes_groups`]).
+            let derived = crate::state::server_managed_kubernetes_groups(&entry.entry_type);
+            if !groups.is_empty() || derived.is_empty() {
+                entry.kubernetes_groups = groups;
+            }
         }
         if let Some(username) = input.username.clone() {
             entry.username = if username.trim().is_empty() {

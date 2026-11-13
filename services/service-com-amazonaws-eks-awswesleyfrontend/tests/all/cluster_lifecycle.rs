@@ -73,6 +73,22 @@ pub(crate) fn minimal_request(name: &str) -> serde_json::Value {
     })
 }
 
+/// A `CreateCluster` body for a cluster that SERVES the access-entry API: the
+/// smallest request plus an `authenticationMode` that includes the API.
+///
+/// A cluster created through this API defaults to `CONFIG_MAP` ("if you create a
+/// cluster by using the EKS API... the default is `CONFIG_MAP`",
+/// `CreateAccessConfigRequest$authenticationMode`), and a cluster in that mode
+/// authenticates only through the `aws-auth` ConfigMap, so its access-entry API is
+/// refused. Every suite that exercises access entries therefore asks for a cluster
+/// whose mode serves them, and does it through this one body rather than spelling
+/// the mode out per suite.
+pub(crate) fn access_entry_cluster_request(name: &str) -> serde_json::Value {
+    let mut body = minimal_request(name);
+    body["accessConfig"] = serde_json::json!({ "authenticationMode": "API_AND_CONFIG_MAP" });
+    body
+}
+
 /// One Kubernetes version Amazon EKS offers a control plane for, read out of the
 /// catalog a caller picks one from (`DescribeClusterVersions`) — the newest row it
 /// publishes.

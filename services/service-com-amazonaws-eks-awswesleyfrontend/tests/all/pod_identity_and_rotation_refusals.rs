@@ -696,11 +696,17 @@ async fn create_authorizes_the_pass_role_before_the_body_and_the_cluster() {
 // ---------------------------------------------------------------------------
 
 /// The rows span the members that carry such a value and are reported this way
-/// (`UpdatePodIdentityAssociation`'s `roleArn` and `targetRoleArn`, and
+/// (`UpdatePodIdentityAssociation`'s `targetRoleArn` and
 /// `CreatePodIdentityAssociation`'s `targetRoleArn`) and the ways a value leaves
 /// the form (not an ARN, an IAM ARN naming something other than a role, an IAM
 /// ARN carrying a Region, another vendor's ARN, an account that is not 12
 /// digits).
+///
+/// `roleArn` is on NEITHER operation's list: that member is passed to Amazon EKS,
+/// so a value outside the form names no role of this account and is answered by
+/// the pass-role authorization (403), which the row below pins for the update the
+/// way `create_authorizes_the_pass_role_before_the_body_and_the_cluster` pins it
+/// for the create.
 #[tokio::test]
 async fn a_member_that_is_not_an_iam_role_arn_earns_the_operations_own_sentence() {
     let router = cluster_fixture(REGION, CLUSTER).await;
@@ -722,8 +728,8 @@ async fn a_member_that_is_not_an_iam_role_arn_earns_the_operations_own_sentence(
     ];
 
     for value in malformed {
-        // The update reports both of its role members this way.
-        for member in ["roleArn", "targetRoleArn"] {
+        // The update reports its target role this way.
+        for member in ["targetRoleArn"] {
             let case = ("update", member, value);
             let refused = update_association(
                 &router,
@@ -744,6 +750,24 @@ async fn a_member_that_is_not_an_iam_role_arn_earns_the_operations_own_sentence(
                 "case {case:?}: expected the operation's own sentence, got {refused:?}"
             );
         }
+
+        // The same value as the update's `roleArn` is the PASS-ROLE answer
+        // instead: a value outside the form names no role of this account, and
+        // passing a role is what an update does with that member too.
+        let case = ("update", "roleArn", value);
+        let refused = update_association(
+            &router,
+            REGION,
+            CLUSTER,
+            &association_id,
+            &serde_json::json!({ "roleArn": value }),
+        )
+        .await;
+        assert_eq!(
+            (refused.status, error_code(&refused).as_str()),
+            (403, "AccessDeniedException"),
+            "case {case:?}: expected the pass-role refusal, got {refused:?}"
+        );
 
         // The create reports `targetRoleArn` the same way. Its `roleArn` is NOT
         // here: that one is passed to Amazon EKS, so it is answered by the

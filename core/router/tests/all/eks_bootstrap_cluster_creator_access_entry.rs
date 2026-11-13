@@ -277,13 +277,18 @@ async fn assume_role(router: &MultiServiceRouter, role_arn: &str) -> String {
         .unwrap_or_else(|| panic!("setup: no <AccessKeyId> in {body}"))
 }
 
-/// A `CreateCluster` body carrying nothing beyond the required members, so
-/// `bootstrapClusterCreatorAdminPermissions` takes its documented default of `true`.
+/// A `CreateCluster` body carrying nothing beyond the required members and the
+/// `authenticationMode` that serves the access-entry API, so
+/// `bootstrapClusterCreatorAdminPermissions` takes its documented default of `true`
+/// while the entry it writes can be read back: a cluster created through this API
+/// defaults to `CONFIG_MAP`, which authenticates through the `aws-auth` ConfigMap
+/// alone and serves no access-entry call.
 fn cluster_body(name: &str) -> Value {
     json!({
         "name": name,
         "roleArn": format!("arn:aws:iam::{}:role/eksClusterRole", engine::emulator_account_id()),
         "resourcesVpcConfig": { "subnetIds": ["subnet-aaaa1111", "subnet-bbbb2222"] },
+        "accessConfig": { "authenticationMode": "API_AND_CONFIG_MAP" },
     })
 }
 

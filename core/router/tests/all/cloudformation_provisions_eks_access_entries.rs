@@ -422,7 +422,10 @@ const ROWS: &[Row] = &[
             })
         },
         expected_type: "EC2_LINUX",
-        expected_groups: &[],
+        // Amazon EKS derives this type's groups itself — the node-authorization group —
+        // even though the declaration names none, which is why a node type refuses a
+        // `KubernetesGroups` of the caller's at all.
+        expected_groups: &["system:nodes"],
         expected_username: None,
         expected_policies: &[],
         expected_declared_tags: &[],

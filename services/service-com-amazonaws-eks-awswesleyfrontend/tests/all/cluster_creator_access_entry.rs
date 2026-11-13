@@ -28,7 +28,8 @@
 //! body comes from `cluster_lifecycle`: no suite grows its own client.
 
 use service_com_amazonaws_eks_awswesleyfrontend::state::{
-    access_policy_arn, ACCESS_ENTRY_TYPE_STANDARD, ACCESS_SCOPE_TYPE_CLUSTER,
+    access_entry_authentication_mode_refusal, access_policy_arn,
+    ACCESS_ENTRY_AUTHENTICATION_MODES, ACCESS_ENTRY_TYPE_STANDARD, ACCESS_SCOPE_TYPE_CLUSTER,
     CLUSTER_ADMIN_ACCESS_POLICY_NAME,
 };
 use smithy_server_runtime::MultiServiceRouter;
@@ -245,6 +246,32 @@ async fn assert_no_bootstrap_entry(router: &MultiServiceRouter, case: &str, clus
     );
 }
 
+/// Assert the access-entry API of `cluster` is refused for the cluster's
+/// authentication mode.
+///
+/// A cluster whose `authenticationMode` does not include the API authenticates
+/// only through the `aws-auth` ConfigMap, so its access-entry API is refused
+/// whatever the bootstrap flag wrote: what the create DECIDED is then read off the
+/// create's own answer, which is where the rows below read it.
+async fn assert_access_entry_api_refused(
+    router: &MultiServiceRouter,
+    case: &str,
+    cluster: &str,
+) {
+    let listed = list_entries(router, cluster, "").await;
+    assert_eq!(
+        (listed.status, error_code(&listed).as_str()),
+        (400, "InvalidRequestException"),
+        "case {case:?}: a cluster authenticating through the ConfigMap alone serves no \
+         access-entry API, got {listed:?}"
+    );
+    assert_eq!(
+        listed.body["message"].as_str(),
+        Some(access_entry_authentication_mode_refusal().as_str()),
+        "case {case:?}: expected the mode refusal, got {listed:?}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // RULE: the effective `bootstrapClusterCreatorAdminPermissions` — the value the
 // request gave, or `true` when it gave none — decides whether the create
@@ -326,6 +353,18 @@ async fn the_bootstrap_flag_decides_whether_the_creator_gets_an_access_entry() {
             "case {case:?}: the create must report the effective flag, got {created:?}"
         );
 
+        // What the access-entry API can be ASKED about that decision depends on the
+        // cluster's own authentication mode: a cluster that serves no access-entry
+        // API refuses every call of it, so for those rows the create's answer above
+        // is the whole observation.
+        let mode = created.cluster()["accessConfig"]["authenticationMode"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        if !ACCESS_ENTRY_AUTHENTICATION_MODES.contains(&mode.as_str()) {
+            assert_access_entry_api_refused(&router, case, &cluster).await;
+            continue;
+        }
         if *expected {
             assert_bootstrap_entry(&router, case, &cluster).await;
         } else {
@@ -347,7 +386,14 @@ async fn the_bootstrap_entry_is_an_access_entry_like_any_other() {
     let router = emulator();
     let cluster = "bootstrap-lifecycle";
     let principal = caller_arn();
-    let created = create_cluster(&router, cluster, None).await;
+    // The flag defaults to true, so the creator's entry is written; the mode beside
+    // it is the one that serves the access-entry API, which every call below uses.
+    let created = create_cluster(
+        &router,
+        cluster,
+        Some(serde_json::json!({ "authenticationMode": "API_AND_CONFIG_MAP" })),
+    )
+    .await;
     assert_eq!(
         created.status, 200,
         "setup: creating the cluster must succeed, got {created:?}"

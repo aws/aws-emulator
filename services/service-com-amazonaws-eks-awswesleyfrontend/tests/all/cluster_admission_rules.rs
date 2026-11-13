@@ -804,7 +804,11 @@ async fn update_entry(
 #[tokio::test]
 async fn a_username_is_refused_on_every_access_entry_type_eks_specifies_it_for() {
     let router = emulator();
-    let created = create_cluster(&router, &minimal_request("entry-usernames")).await;
+    let created = create_cluster(
+        &router,
+        &crate::cluster_lifecycle::access_entry_cluster_request("entry-usernames"),
+    )
+    .await;
     assert_eq!(created.status, 200, "setup: {created:?}");
 
     for (index, entry_type) in ACCESS_ENTRY_TYPES.iter().enumerate() {

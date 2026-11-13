@@ -232,6 +232,22 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             )
             .into());
         }
+        // And the access-entry API is served only by a cluster whose
+        // `authenticationMode` includes it: one still authenticating through the
+        // `aws-auth` ConfigMap alone keeps no access entries for this call to
+        // enumerate ([`state::serves_access_entries`]) — which is a refusal rather
+        // than an empty listing, for the same reason the gate above is: the listing
+        // itself is not something EKS keeps for that cluster.
+        if !cluster.serves_access_entries() {
+            return Err(ListAccessEntriesErrorModeled::InvalidRequestException(
+                InvalidRequestException {
+                    cluster_name: Some(input.cluster_name.clone()),
+                    message: Some(state::access_entry_authentication_mode_refusal()),
+                    ..Default::default()
+                },
+            )
+            .into());
+        }
 
         let associated_policy_arn = input.associated_policy_arn.as_deref();
         // The entries hang off the cluster record, keyed by principal ARN, so this

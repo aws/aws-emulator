@@ -23,13 +23,13 @@
 use std::collections::BTreeSet;
 
 use service_com_amazonaws_eks_awswesleyfrontend::state::{
-    cluster_not_found_message, default_username, ACCESS_ENTRY_TYPES,
-    ACCESS_ENTRY_TYPE_EC2_LINUX, ACCESS_ENTRY_TYPE_EC2_WINDOWS, ACCESS_ENTRY_TYPE_STANDARD,
-    RESOURCE_NOT_FOUND_MESSAGE,
+    cluster_not_found_message, default_username, server_managed_kubernetes_groups,
+    ACCESS_ENTRY_TYPES, ACCESS_ENTRY_TYPE_EC2_LINUX, ACCESS_ENTRY_TYPE_EC2_WINDOWS,
+    ACCESS_ENTRY_TYPE_STANDARD, RESOURCE_NOT_FOUND_MESSAGE,
 };
 use smithy_server_runtime::MultiServiceRouter;
 
-use crate::cluster_lifecycle::{minimal_request, REGION};
+use crate::cluster_lifecycle::{access_entry_cluster_request, REGION};
 use crate::wire::{call, emulator, encode_label, error_code, Answer};
 
 /// The emulator's own canonical account id, which every ARN it mints carries.
@@ -55,7 +55,7 @@ async fn create_cluster(router: &MultiServiceRouter, name: &str) -> Answer {
         REGION,
         "POST",
         "/clusters",
-        &minimal_request(name).to_string(),
+        &access_entry_cluster_request(name).to_string(),
     )
     .await
 }
@@ -421,11 +421,15 @@ async fn a_self_managed_node_entry_takes_no_kubernetes_groups_on_update() {
                 "InvalidParameterException",
                 "case {entry_type:?}: expected InvalidParameterException, got {answer:?}"
             );
-            // Nothing is stored by a refused update.
+            // Nothing is stored by a refused update: the entry keeps the groups it
+            // had, which for this type are the ones Amazon EKS derived for it.
             let read_back = describe_entry(&router, &cluster, &principal).await;
             assert_eq!(
                 groups(&read_back),
-                Vec::<String>::new(),
+                server_managed_kubernetes_groups(entry_type)
+                    .iter()
+                    .map(|group| (*group).to_string())
+                    .collect::<Vec<String>>(),
                 "case {entry_type:?}: a refused update must store nothing, got {read_back:?}"
             );
         } else {
@@ -658,7 +662,7 @@ async fn an_update_reaches_only_the_region_it_is_signed_for() {
             region,
             "POST",
             "/clusters",
-            &minimal_request(cluster).to_string(),
+            &access_entry_cluster_request(cluster).to_string(),
         )
         .await;
         assert_eq!(

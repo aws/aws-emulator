@@ -27,6 +27,9 @@ const EC2_API_VERSION: &str = "2016-11-15";
 /// The IAM API version a client sends in an awsQuery body.
 const IAM_API_VERSION: &str = "2010-05-08";
 
+/// The Auto Scaling API version a client sends in an awsQuery body.
+const AUTOSCALING_API_VERSION: &str = "2011-01-01";
+
 /// The error code EC2 answers for a subnet id no subnet of the account carries, which is
 /// what an Amazon EKS refusal carries through.
 pub(crate) const EC2_NOT_FOUND_CODE: &str = "InvalidSubnetID.NotFound";
@@ -166,6 +169,25 @@ pub(crate) fn iam(
         "/",
         "application/x-www-form-urlencoded",
         form_body(action, IAM_API_VERSION, params),
+    )
+}
+
+/// Drive one awsQuery Auto Scaling action — the service a managed node group's
+/// capacity lives in.
+pub(crate) fn autoscaling(
+    router: &MultiServiceRouter,
+    runtime: &tokio::runtime::Runtime,
+    action: &str,
+    params: &[(&str, &str)],
+) -> Answer {
+    send(
+        router,
+        runtime,
+        "autoscaling",
+        "POST",
+        "/",
+        "application/x-www-form-urlencoded",
+        form_body(action, AUTOSCALING_API_VERSION, params),
     )
 }
 

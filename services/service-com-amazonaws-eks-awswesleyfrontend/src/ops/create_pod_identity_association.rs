@@ -12,7 +12,10 @@
 //! the request carries is checked for its documented FORM before any resource is
 //! resolved: the cluster name, the target IAM role ARN and the Kubernetes names, so
 //! a request that cannot name anything is an `InvalidParameterException` rather than
-//! a not-found.
+//! a not-found. With the forms sound, the role's TRUST RELATIONSHIP is resolved
+//! against IAM: an association is only written for a role the EKS Pod Identity
+//! principal may assume ([`crate::state::pod_identity_role_trust_refusal`]),
+//! because one bound to any other role could never issue credentials to a Pod.
 //!
 //! Shared types live in `super::types`; the error channel in `crate::scaffolded`.
 //!
@@ -314,6 +317,20 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         }
 
         let region = state::request_region(ctx.parts());
+
+        // THE ROLE'S TRUST RELATIONSHIP, once the request's own forms are sound:
+        // the role is one Amazon EKS assumes FOR THIS ASSOCIATION, so an
+        // association bound to a role that does not let the EKS Pod Identity
+        // principal assume it could never issue credentials to a Pod and is
+        // refused rather than stored
+        // ([`state::pod_identity_role_trust_refusal`]). It runs with no lock held:
+        // it is a call out to another service.
+        if let Some(why) =
+            state::pod_identity_role_trust_refusal(ctx, &region, &input.role_arn).await
+        {
+            return Err(invalid_parameter(why.to_string()));
+        }
+
         let now = SystemTime::now();
         let mut guard = store.lock();
         guard.materialize_due_transitions(now);

@@ -37,9 +37,9 @@ pub struct ComAmazonawsEksAwswesleyfrontendState {
     /// [`MAX_STORED_NODEGROUPS`], which `CreateNodegroup` enforces.
     ///
     /// Node group ARNs are deliberately NOT added to [`Self::arn_index`]: that
-    /// index answers "which CLUSTER does this ARN name" for the tag operations,
-    /// and tagging a node group through `TagResource` belongs to the tag slice's
-    /// own gap issue.
+    /// index answers "which CLUSTER does this ARN name", while the tag plane
+    /// addresses a node group by the ARN stored on its own record
+    /// ([`Self::tagged_resource_for_arn`]).
     pub nodegroups: BTreeMap<(String, String, String), NodegroupRecord>,
     /// Fargate profiles by `(region, cluster name, Fargate profile name)`.
     ///
@@ -63,8 +63,8 @@ pub struct ComAmazonawsEksAwswesleyfrontendState {
     /// times the [`MAX_STORED_CLUSTERS`] clusters the store holds.
     ///
     /// Add-on ARNs are deliberately NOT in [`Self::arn_index`]: that index is
-    /// what the tag operations resolve a CLUSTER from, and tagging an add-on
-    /// through its own ARN is the tag slice's own gap, not this one's.
+    /// what a CLUSTER is resolved from, while the tag plane addresses an add-on by
+    /// the ARN stored on its own record ([`Self::tagged_resource_for_arn`]).
     pub addons: BTreeMap<(String, String, String), AddonRecord>,
     /// Managed capabilities by `(region, cluster name, capability name)`.
     ///
@@ -1552,17 +1552,31 @@ impl ComAmazonawsEksAwswesleyfrontendState {
             });
     }
 
-    /// Drop every managed node group of one cluster.
+    /// Drop every managed node group of one cluster, and answer the capacity those
+    /// node groups ran on.
     ///
     /// A node group is a child of its cluster — it is addressed as
     /// `/clusters/{clusterName}/node-groups/{nodegroupName}` — so once the
     /// cluster is gone its node groups are gone with it, and a cluster later
-    /// created with the same name in the same Region does not inherit them.
-    pub fn remove_nodegroups_for_cluster(&mut self, region: &str, cluster_name: &str) {
+    /// created with the same name in the same Region does not inherit them. The
+    /// capacity each of them ran on is reported back because nothing holds it any
+    /// more either, and it lives in other services for the caller of this to
+    /// release ([`release_nodegroup_capacity`]).
+    pub fn remove_nodegroups_for_cluster(
+        &mut self,
+        region: &str,
+        cluster_name: &str,
+    ) -> Vec<NodegroupCapacity> {
+        let mut released = Vec::new();
         self.nodegroups
-            .retain(|(key_region, key_cluster, _), _| {
-                key_region != region || key_cluster != cluster_name
+            .retain(|(key_region, key_cluster, _), nodegroup| {
+                if key_region == region && key_cluster == cluster_name {
+                    released.push(nodegroup.capacity.clone());
+                    return false;
+                }
+                true
             });
+        released
     }
 
     /// The Fargate profiles this store holds in `cluster_name` in `region`, in

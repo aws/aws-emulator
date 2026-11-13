@@ -1353,6 +1353,36 @@ pub fn default_username(entry_type: &str, principal_arn: &str) -> String {
     }
 }
 
+/// The Kubernetes group a node authenticates through: the group Kubernetes's own
+/// node authorizer and the `system:node` RBAC bindings are bound to, so an access
+/// entry that stands for a node carries it.
+pub const NODE_AUTHORIZATION_GROUP: &str = "system:nodes";
+
+/// The Kubernetes groups Amazon EKS derives itself for an access entry of this
+/// `type`, which the caller does not supply.
+///
+/// A node type's entry stands for a node (or a Fargate Pod) that Amazon EKS
+/// admits to the cluster rather than for a principal the caller maps itself, so
+/// EKS specifies what it authenticates as: the `system:node:` username
+/// ([`default_username`]) and the group the node authorizer binds —
+/// [`NODE_AUTHORIZATION_GROUP`]. That is why the self-managed Amazon EC2 types
+/// refuse a `kubernetesGroups` of the caller's at all ("If you set the value to
+/// `EC2_LINUX` or `EC2_WINDOWS`, you can't specify values for
+/// `kubernetesGroups`", `CreateAccessEntryRequest$type`): the grant is the
+/// server's to confer, so an entry of such a type reports it even though the
+/// request sent none.
+///
+/// Empty for `STANDARD`, the one type whose entry authenticates as the IAM
+/// principal itself: its groups are entirely the caller's
+/// (`CreateAccessEntryRequest$kubernetesGroups`).
+pub fn server_managed_kubernetes_groups(entry_type: &str) -> &'static [&'static str] {
+    if is_node_access_entry_type(entry_type) {
+        &[NODE_AUTHORIZATION_GROUP]
+    } else {
+        &[]
+    }
+}
+
 /// The name of the EKS-managed access policy `arn` identifies, or `None` when
 /// `arn` is not the ARN of a policy this service publishes.
 ///
@@ -4599,6 +4629,7 @@ macro_rules! callback_client {
 
 #[cfg(test)]
 mod tests;
+mod access_entry_modes;
 mod addon_catalog;
 mod certificate_authority;
 mod certificate_material;
@@ -4609,11 +4640,15 @@ mod cluster_validation;
 mod control_plane_logs;
 mod derived_identifiers;
 mod eks_anywhere_subscriptions;
+mod fargate_networking;
+mod nodegroup_capacity;
 mod nodegroups;
 mod pass_role;
 mod peers;
 mod store;
+mod taggable_resources;
 pub use addon_catalog::*;
+pub use access_entry_modes::*;
 pub use certificate_authority::*;
 pub use certificate_material::*;
 pub use cluster_creator_access::*;
@@ -4623,7 +4658,10 @@ pub use cluster_validation::*;
 pub use control_plane_logs::*;
 pub use derived_identifiers::*;
 pub use eks_anywhere_subscriptions::*;
+pub use fargate_networking::*;
+pub use nodegroup_capacity::*;
 pub use nodegroups::*;
 pub use pass_role::*;
 pub use peers::*;
 pub use store::*;
+pub use taggable_resources::*;

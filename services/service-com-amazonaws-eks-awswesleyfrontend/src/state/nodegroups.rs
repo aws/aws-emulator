@@ -50,6 +50,12 @@ pub struct NodegroupRecord {
     pub node_repair_config: Option<NodeRepairConfig>,
     pub launch_template: Option<LaunchTemplateSpecification>,
     pub tags: BTreeMap<String, String>,
+    /// The capacity this node group runs on, as the services that own it created
+    /// it: the Auto Scaling group that backs the node group, the launch template
+    /// it launches from, and the remote-access security group when the node group
+    /// asked for that access ([`NodegroupCapacity`]). Written once by the create
+    /// and reported as `Nodegroup$resources`.
+    pub capacity: NodegroupCapacity,
     pub warm_pool_config: Option<WarmPoolConfig>,
     pub client_request_token: Option<String>,
     /// The change the asynchronous update this node group is taking puts on it
@@ -229,10 +235,11 @@ impl NodegroupRecord {
             ),
             warm_pool_config: self.warm_pool_config.clone(),
             // `resources` names the Auto Scaling groups and the remote-access
-            // security group EKS creates for the node group. This emulator
-            // creates neither, so it reports none rather than inventing ids
-            // for resources no EC2 store holds.
-            resources: None,
+            // security group Amazon EKS creates for the node group. They are the
+            // resources the create really made in Auto Scaling and EC2, read off
+            // the record rather than recomputed — and `None` when neither service
+            // created any, so nothing is reported that would resolve to nothing.
+            resources: self.capacity.to_nodegroup_resources(),
         }
     }
 }

@@ -25,14 +25,14 @@
 //! request, and every assertion names its case and prints the actual value.
 //!
 //! The wire harness is the crate's one copy in `tests/all/wire.rs` and the cluster
-//! body is `cluster_lifecycle`'s `minimal_request`: no suite grows its own client.
+//! body is `cluster_lifecycle`'s `access_entry_cluster_request`: no suite grows its own client.
 
 use service_com_amazonaws_eks_awswesleyfrontend::state::{
     access_policy_arn, CONNECTED_CLUSTER_REFUSAL_MESSAGE, RESOURCE_NOT_FOUND_MESSAGE,
 };
 use smithy_server_runtime::MultiServiceRouter;
 
-use crate::cluster_lifecycle::{minimal_request, REGION};
+use crate::cluster_lifecycle::{access_entry_cluster_request, REGION};
 use crate::wire::{call, emulator, encode_label, error_code, Answer};
 
 /// The emulator's own canonical account id, which every ARN it mints carries.
@@ -69,7 +69,7 @@ async fn create_cluster(router: &MultiServiceRouter, name: &str) -> Answer {
         REGION,
         "POST",
         "/clusters",
-        &minimal_request(name).to_string(),
+        &access_entry_cluster_request(name).to_string(),
     )
     .await
 }

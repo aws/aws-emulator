@@ -54,6 +54,26 @@ Issue-Commit: a57dea262f41459244daf18c6d5b4cdf00e6a648
 
 > _Note: this issue was identified against the code base at commit `a57dea262f41459244daf18c6d5b4cdf00e6a648`. If you are an issue fixer working on this, the code base you are currently working in can have drifted, so you might need to trace the issue back to the current code base._
 
+## Resolution
+
+Causes 1-7 are implemented (pod-identity role trust and the cross-account pass-role on
+create and update, the private-subnet rule for a Fargate profile, the authentication-mode
+gate on all eight access-entry operations, the tag plane over every resource this service
+mints an ARN for, a managed node group's real Auto Scaling group and launch template, and
+the server-derived Kubernetes groups of a node access entry). Causes 8 and 10 were already
+resolved before this fix: a cluster issues a real X.509 certificate authority, and a
+capability role is accepted when its trust policy names any principal Amazon EKS publishes
+for one.
+
+CAUSE 9 is NOT resolved here and is not this issue's to close: every check of it — and
+every check that was filed under cause 8 — now stops before any Kubernetes request is
+made, because the endpoint a cluster PUBLISHES is an `*.eks.amazonaws.com` host rather
+than an address of this emulator, so no client can reach anything served behind it. That
+defect is owned by `20261110T195824Z-eks-auth-cluster-endpoint-is-published-as-a.md`,
+`20261109T141609Z-ecr-eks-logs-a-cluster-s-published-api.md` and
+`20261112T072951Z-eks-2-net-new-root-causes-cluster-endpoint.md`; the Kubernetes API
+surface this cause asks for can only be observed once one of them lands.
+
 ## Operation
 CreatePodIdentityAssociation
 

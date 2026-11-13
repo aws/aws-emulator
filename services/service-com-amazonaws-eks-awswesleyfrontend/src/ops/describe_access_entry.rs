@@ -164,6 +164,21 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             )
             .into());
         }
+        // And the access-entry API is served only by a cluster whose
+        // `authenticationMode` includes it: one still authenticating through the
+        // `aws-auth` ConfigMap alone keeps no access entries for this call to act on
+        // ([`crate::state::serves_access_entries`]). The gate is a fact about the
+        // CLUSTER too, so it precedes resolving the entry.
+        if !cluster.serves_access_entries() {
+            return Err(DescribeAccessEntryErrorModeled::InvalidRequestException(
+                InvalidRequestException {
+                    cluster_name: Some(input.cluster_name.clone()),
+                    message: Some(crate::state::access_entry_authentication_mode_refusal()),
+                    ..Default::default()
+                },
+            )
+            .into());
+        }
         match cluster.access_entries.get(&input.principal_arn) {
             Some(record) => Ok(DescribeAccessEntryOutput {
                 access_entry: Some(record.to_access_entry()),

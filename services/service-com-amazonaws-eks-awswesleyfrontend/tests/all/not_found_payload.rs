@@ -30,7 +30,7 @@ use service_com_amazonaws_eks_awswesleyfrontend::state::{
 };
 use smithy_server_runtime::MultiServiceRouter;
 
-use crate::cluster_lifecycle::{minimal_request, REGION};
+use crate::cluster_lifecycle::{access_entry_cluster_request, REGION};
 use crate::wire::{call, emulator, encode_label, Answer};
 
 /// Every resource-identity member `ResourceNotFoundException` declares beside
@@ -249,13 +249,17 @@ fn assert_not_found(case: &str, answer: &Answer) {
 
 /// Create `name` and wait out the span the clock owes it, so it is `ACTIVE`: a real
 /// cluster, so a not-found below is about the CHILD rather than about an empty store.
+///
+/// The body is the one whose `authenticationMode` serves the access-entry API, since
+/// the pairs below include an access entry: a cluster that serves no access entries
+/// refuses those calls for its mode instead of reporting the missing child.
 async fn active_cluster(router: &MultiServiceRouter, name: &str) {
     let created = call(
         router,
         REGION,
         "POST",
         "/clusters",
-        &minimal_request(name).to_string(),
+        &access_entry_cluster_request(name).to_string(),
     )
     .await;
     assert_eq!(

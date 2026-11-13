@@ -411,10 +411,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // The cluster resolved, so the resources the body names can be resolved too: the
         // node group's Auto Scaling group launches its nodes into the subnets the request
         // names, so those subnets have to exist — resolved against EC2, which owns them,
-        // exactly as `CreateCluster` resolves its own
-        // ([`state::unresolved_subnet_refusal`]). It runs with no lock held: it is a call
-        // out to another service.
-        if let Some(why) = state::unresolved_subnet_refusal(ctx, &region, &input.subnets).await {
+        // exactly as `CreateCluster` resolves its own ([`state::resolve_subnets`]), which
+        // also reports the VPC they sit in: the network the capacity below is created in.
+        // It runs with no lock held: it is a call out to another service.
+        let resolved_subnets = state::resolve_subnets(ctx, &region, &input.subnets).await;
+        if let Some(why) = resolved_subnets.refusal {
             return Err(invalid_parameter(
                 &input.cluster_name,
                 &input.nodegroup_name,
@@ -422,35 +423,44 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             ));
         }
 
-        let mut guard = store.lock();
-        guard.materialize_due_transitions(now);
+        // The lock is taken to resolve the cluster and read the version a node group
+        // of it is created at, and is RELEASED again: every rule below is decided from
+        // the request, the store is locked again where it is read and written, and the
+        // calls that create the node group's capacity are `await`s this store's guard
+        // is never held across.
+        let cluster_version = {
+            let mut guard = store.lock();
+            guard.materialize_due_transitions(now);
 
-        // The lock was released for that call, so the cluster is resolved AGAIN here:
-        // everything below is decided and written against the cluster as it is now, and a
-        // delete that landed in between is reported the same way as before.
-        let Some(cluster) = guard.clusters.get(&cluster_key) else {
-            return Err(cluster_not_found(&input.cluster_name));
-        };
-        // "You can only create a node group for your cluster that is equal to
-        // the current Kubernetes version for the cluster", so the cluster's own
-        // version is what a node group is created at. Every Amazon EKS cluster
-        // reports one — the gate above already turned away the only kind of
-        // cluster that reports none — and a record without one has no version to
-        // create a node group at, which is what `InvalidRequestException`
-        // reports: "The request is invalid given the state of the cluster."
-        let Some(cluster_version) = cluster.version.clone() else {
-            return Err(CreateNodegroupErrorModeled::InvalidRequestException(
-                InvalidRequestException {
-                    cluster_name: Some(input.cluster_name.clone()),
-                    nodegroup_name: Some(input.nodegroup_name.clone()),
-                    message: Some(format!(
-                        "Cluster {} reports no Kubernetes version to create a node group at",
-                        input.cluster_name
-                    )),
-                    ..Default::default()
-                },
-            )
-            .into());
+            // The lock was released for that call, so the cluster is resolved AGAIN
+            // here: everything below is decided and written against the cluster as it
+            // is now, and a delete that landed in between is reported the same way as
+            // before.
+            let Some(cluster) = guard.clusters.get(&cluster_key) else {
+                return Err(cluster_not_found(&input.cluster_name));
+            };
+            // "You can only create a node group for your cluster that is equal to
+            // the current Kubernetes version for the cluster", so the cluster's own
+            // version is what a node group is created at. Every Amazon EKS cluster
+            // reports one — the gate above already turned away the only kind of
+            // cluster that reports none — and a record without one has no version to
+            // create a node group at, which is what `InvalidRequestException`
+            // reports: "The request is invalid given the state of the cluster."
+            let Some(cluster_version) = cluster.version.clone() else {
+                return Err(CreateNodegroupErrorModeled::InvalidRequestException(
+                    InvalidRequestException {
+                        cluster_name: Some(input.cluster_name.clone()),
+                        nodegroup_name: Some(input.nodegroup_name.clone()),
+                        message: Some(format!(
+                            "Cluster {} reports no Kubernetes version to create a node group at",
+                            input.cluster_name
+                        )),
+                        ..Default::default()
+                    },
+                )
+                .into());
+            };
+            cluster_version
         };
 
         let cluster_name = input.cluster_name.as_str();
@@ -653,80 +663,89 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             input.nodegroup_name.clone(),
         );
 
-        // "The unique name to give your node group"
-        // (`CreateNodegroupRequest$nodegroupName`) — unique within the cluster,
-        // which is what the key above spells, so the same name in another
-        // cluster or another region is a different node group.
-        if let Some(existing) = guard.nodegroups.get(&nodegroup_key) {
-            // `clientRequestToken` is `@idempotencyToken`: an SDK generates it
-            // once per call and RESENDS the same value when it retries, so a
-            // retry of the call that created this node group must be absorbed
-            // and answered with that node group rather than with a conflict. A
-            // blank token identifies nothing, so it never matches. As in
-            // `CreateCluster`, the comparison is on the token alone.
-            let replayed_token = input
-                .client_request_token
-                .as_deref()
-                .filter(|token| !token.trim().is_empty());
-            if let Some(token) = replayed_token {
-                if existing.client_request_token.as_deref() == Some(token) {
-                    return Ok(CreateNodegroupOutput {
-                        nodegroup: Some(existing.to_nodegroup()),
-                    });
-                }
-            }
-            return Err(CreateNodegroupErrorModeled::ResourceInUseException(
-                ResourceInUseException {
-                    cluster_name: Some(input.cluster_name.clone()),
-                    nodegroup_name: Some(input.nodegroup_name.clone()),
-                    message: Some(format!(
-                        "NodeGroup already exists with name: {} and cluster name: {}",
-                        input.nodegroup_name, input.cluster_name
-                    )),
-                    ..Default::default()
-                },
-            )
-            .into());
-        }
-
-        // The EKS "Managed node groups per cluster" service quota. Exceeding a
-        // service limit is what `ResourceLimitExceededException` reports.
-        if guard
-            .nodegroup_names_in(&region, &input.cluster_name)
-            .count()
-            >= MAX_NODEGROUPS_PER_CLUSTER
+        // What the STORE decides: the name must be free within the cluster, and both
+        // ceilings must have room. The lock is taken for that decision alone and
+        // released again, because the capacity this create provisions below is created
+        // over calls out to other services.
         {
-            return Err(CreateNodegroupErrorModeled::ResourceLimitExceededException(
-                ResourceLimitExceededException {
-                    cluster_name: Some(input.cluster_name.clone()),
-                    nodegroup_name: Some(input.nodegroup_name.clone()),
-                    message: Some(format!(
-                        "You have reached the limit of {MAX_NODEGROUPS_PER_CLUSTER} managed node \
-                         groups for this cluster"
-                    )),
-                    ..Default::default()
-                },
-            )
-            .into());
-        }
+            let mut guard = store.lock();
+            guard.materialize_due_transitions(now);
 
-        // What BOUNDS THE STORE is this ceiling, not the per-cluster quota
-        // above: the caller decides how many clusters and regions exist, so the
-        // per-cluster quota alone would let repeated creates retain an
-        // unbounded number of records.
-        if guard.nodegroups.len() >= MAX_STORED_NODEGROUPS {
-            return Err(CreateNodegroupErrorModeled::ResourceLimitExceededException(
-                ResourceLimitExceededException {
-                    cluster_name: Some(input.cluster_name.clone()),
-                    nodegroup_name: Some(input.nodegroup_name.clone()),
-                    message: Some(format!(
-                        "You have reached the limit of {MAX_STORED_NODEGROUPS} managed node \
-                         groups for this account"
-                    )),
-                    ..Default::default()
-                },
-            )
-            .into());
+            // "The unique name to give your node group"
+            // (`CreateNodegroupRequest$nodegroupName`) — unique within the cluster,
+            // which is what the key above spells, so the same name in another
+            // cluster or another region is a different node group.
+            if let Some(existing) = guard.nodegroups.get(&nodegroup_key) {
+                // `clientRequestToken` is `@idempotencyToken`: an SDK generates it
+                // once per call and RESENDS the same value when it retries, so a
+                // retry of the call that created this node group must be absorbed
+                // and answered with that node group rather than with a conflict. A
+                // blank token identifies nothing, so it never matches. As in
+                // `CreateCluster`, the comparison is on the token alone.
+                let replayed_token = input
+                    .client_request_token
+                    .as_deref()
+                    .filter(|token| !token.trim().is_empty());
+                if let Some(token) = replayed_token {
+                    if existing.client_request_token.as_deref() == Some(token) {
+                        return Ok(CreateNodegroupOutput {
+                            nodegroup: Some(existing.to_nodegroup()),
+                        });
+                    }
+                }
+                return Err(CreateNodegroupErrorModeled::ResourceInUseException(
+                    ResourceInUseException {
+                        cluster_name: Some(input.cluster_name.clone()),
+                        nodegroup_name: Some(input.nodegroup_name.clone()),
+                        message: Some(format!(
+                            "NodeGroup already exists with name: {} and cluster name: {}",
+                            input.nodegroup_name, input.cluster_name
+                        )),
+                        ..Default::default()
+                    },
+                )
+                .into());
+            }
+
+            // The EKS "Managed node groups per cluster" service quota. Exceeding a
+            // service limit is what `ResourceLimitExceededException` reports.
+            if guard
+                .nodegroup_names_in(&region, &input.cluster_name)
+                .count()
+                >= MAX_NODEGROUPS_PER_CLUSTER
+            {
+                return Err(CreateNodegroupErrorModeled::ResourceLimitExceededException(
+                    ResourceLimitExceededException {
+                        cluster_name: Some(input.cluster_name.clone()),
+                        nodegroup_name: Some(input.nodegroup_name.clone()),
+                        message: Some(format!(
+                            "You have reached the limit of {MAX_NODEGROUPS_PER_CLUSTER} managed \
+                             node groups for this cluster"
+                        )),
+                        ..Default::default()
+                    },
+                )
+                .into());
+            }
+
+            // What BOUNDS THE STORE is this ceiling, not the per-cluster quota
+            // above: the caller decides how many clusters and regions exist, so the
+            // per-cluster quota alone would let repeated creates retain an
+            // unbounded number of records.
+            if guard.nodegroups.len() >= MAX_STORED_NODEGROUPS {
+                return Err(CreateNodegroupErrorModeled::ResourceLimitExceededException(
+                    ResourceLimitExceededException {
+                        cluster_name: Some(input.cluster_name.clone()),
+                        nodegroup_name: Some(input.nodegroup_name.clone()),
+                        message: Some(format!(
+                            "You have reached the limit of {MAX_STORED_NODEGROUPS} managed node \
+                             groups for this account"
+                        )),
+                        ..Default::default()
+                    },
+                )
+                .into());
+            }
         }
 
         // "If the node group was deployed using a launch template with a custom
@@ -773,6 +792,17 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             &format!("nodegroup/{cluster_name}/{nodegroup_name}/{nodegroup_id}"),
         );
 
+        // The instance type the node group's own nodes launch as: the first of its
+        // effective `instanceTypes`, which is what the launch template created below
+        // carries. Read before the list is moved onto the record.
+        let launch_instance_type: Option<String> = instance_types
+            .as_ref()
+            .and_then(|types| types.first().cloned());
+        let ec2_ssh_key: Option<String> = input
+            .remote_access
+            .as_ref()
+            .and_then(|remote_access| remote_access.ec2_ssh_key.clone());
+
         let record = NodegroupRecord {
             nodegroup_name: input.nodegroup_name.clone(),
             cluster_name: input.cluster_name.clone(),
@@ -817,13 +847,70 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // A node group takes no configuration update until
             // `UpdateNodegroupConfig` starts one.
             pending_config: None,
+            // Filled in below, once the services that own the capacity have created
+            // it: a node group reports only resources that really exist.
+            capacity: state::NodegroupCapacity::default(),
         };
 
-        let nodegroup = record.to_nodegroup();
-        guard.nodegroups.insert(nodegroup_key, record);
+        // The node group as it stands before its capacity is created, which is what
+        // the answer falls back to if the node group is deleted while that capacity is
+        // being created.
+        let without_capacity = record.to_nodegroup();
+        {
+            let mut guard = store.lock();
+            guard.materialize_due_transitions(now);
+            guard.nodegroups.insert(nodegroup_key.clone(), record);
+        }
 
-        Ok(CreateNodegroupOutput {
-            nodegroup: Some(nodegroup),
-        })
+        // THE CAPACITY, with no lock held: a managed node group runs on an Auto
+        // Scaling group that launches from a launch template, and those are resources
+        // of other services, so this service creates them THERE and records what was
+        // created ([`state::provision_nodegroup_capacity`]). The node group exists
+        // either way — it is already in the store — and reports only the resources
+        // those services really hold.
+        let capacity = state::provision_nodegroup_capacity(
+            ctx,
+            &region,
+            state::NodegroupCapacitySpec {
+                cluster_name: input.cluster_name.as_str(),
+                nodegroup_name: input.nodegroup_name.as_str(),
+                nodegroup_id: &nodegroup_id,
+                subnets: &input.subnets,
+                vpc_id: resolved_subnets.vpc_id.as_deref(),
+                min_size,
+                max_size,
+                desired_size,
+                instance_type: launch_instance_type.as_deref(),
+                ec2_ssh_key: ec2_ssh_key.as_deref(),
+            },
+        )
+        .await;
+
+        // The capacity is written onto the stored node group under a fresh lock, held
+        // only for that write.
+        let with_capacity = {
+            let mut writer = store.lock();
+            writer
+                .nodegroups
+                .get_mut(&nodegroup_key)
+                .map(|stored| {
+                    stored.capacity = capacity.clone();
+                    stored.to_nodegroup()
+                })
+        };
+        match with_capacity {
+            Some(nodegroup) => Ok(CreateNodegroupOutput {
+                nodegroup: Some(nodegroup),
+            }),
+            // A delete landed while the capacity was being created, so nothing holds
+            // that capacity any more: it is released the way the delete would have
+            // released it, and the create still answers with the node group it made.
+            None => {
+                state::release_nodegroup_capacity(ctx, &region, &capacity).await;
+                Ok(CreateNodegroupOutput {
+                    nodegroup: Some(without_capacity),
+                })
+            }
+        }
     }
 }

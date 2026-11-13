@@ -122,6 +122,33 @@ pub const EKS_SERVICE_PRINCIPAL: &str = "eks.amazonaws.com";
 /// principal under the Amazon EKS domain.
 pub const CAPABILITY_SERVICE_PRINCIPAL: &str = "capabilities.eks.amazonaws.com";
 
+/// The service principal that assumes the role an EKS Pod Identity association
+/// binds to a Kubernetes service account.
+///
+/// EKS Pod Identity hands the Pods of that service account credentials for the
+/// role, and the agent that mints them speaks for the Pod plane rather than for
+/// the control plane, so it is its own service principal under the Amazon EKS
+/// domain: the one AWS publishes for a Pod Identity trust policy (Amazon EKS
+/// User Guide, "Configure a role for EKS Pod Identity" — `pods.eks.amazonaws.com`
+/// with `sts:AssumeRole` and `sts:TagSession`).
+pub const POD_IDENTITY_SERVICE_PRINCIPAL: &str = "pods.eks.amazonaws.com";
+
+/// The service principals a role an association names may let assume it.
+///
+/// One principal, stated as a list so the question is asked the one way every
+/// other role of this service asks it ([`CAPABILITY_ROLE_PRINCIPALS`]).
+pub const POD_IDENTITY_ROLE_PRINCIPALS: &[&str] = &[POD_IDENTITY_SERVICE_PRINCIPAL];
+
+/// The refusal a pod-identity `roleArn` whose trust policy does not let the EKS
+/// Pod Identity principal assume it earns.
+///
+/// Fixed text with no variable part — the whole sentence is what the recorded
+/// service answers for this class, and it points the caller at the trust policy
+/// AWS publishes rather than restating it.
+pub const POD_IDENTITY_TRUST_POLICY_REFUSAL: &str =
+    "Trust policy of the role provided is invalid. Follow the official documentation to \
+     resolve the issue.";
+
 /// The service principals a role named for a managed capability may let assume
 /// it: the capability plane's own principal, and the Amazon EKS control plane's.
 ///

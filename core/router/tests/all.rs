@@ -1599,6 +1599,16 @@ mod logs_subscription_filter_role_trust;
 // can see both ends of it.
 #[path = "all/logs_subscription_filter_to_lambda.rs"]
 mod logs_subscription_filter_to_lambda;
+// Declared in the appended tail, which is where every new suite inserts its lines: the role
+// an EKS Pod Identity association binds to a service account is resolved against IAM, so
+// EKS and IAM have to be on one engine for the rule to be observable at all.
+#[path = "all/eks_pod_identity_role_trust.rs"]
+mod eks_pod_identity_role_trust;
+// Declared in the same tail: a managed node group's capacity is an Auto Scaling group and a
+// launch template, and whether a Fargate profile's subnets are private is a fact about the
+// EC2 network — EKS, Auto Scaling and EC2 at once.
+#[path = "all/eks_nodegroup_capacity.rs"]
+mod eks_nodegroup_capacity;
 // Declared in the appended tail, which is where every new suite inserts its lines: which
 // QUALIFIER of a function a `lambda`-protocol SNS subscription invokes, and whose grant admits
 // it, spans SNS, AWS Lambda, Amazon SQS, IAM and CloudFormation at once, so no single service

@@ -44,9 +44,12 @@ async fn create_cluster_in(router: &MultiServiceRouter, region: &str, name: &str
     // (`accessConfig.bootstrapClusterCreatorAdminPermissions`, which otherwise
     // defaults to true and files one for the calling principal — see
     // `cluster_creator_access_entry.rs`): what this lists is then exactly what it
-    // created.
-    body["accessConfig"] =
-        serde_json::json!({ "bootstrapClusterCreatorAdminPermissions": false });
+    // created. The `authenticationMode` beside it is the one that serves the
+    // access-entry API at all (see `access_entry_cluster_request`).
+    body["accessConfig"] = serde_json::json!({
+        "authenticationMode": "API_AND_CONFIG_MAP",
+        "bootstrapClusterCreatorAdminPermissions": false,
+    });
     call(router, region, "POST", "/clusters", &body.to_string()).await
 }
 

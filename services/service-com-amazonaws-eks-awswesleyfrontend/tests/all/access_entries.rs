@@ -18,12 +18,13 @@
 use std::collections::BTreeSet;
 
 use service_com_amazonaws_eks_awswesleyfrontend::state::{
-    access_policy_arn, encode_page_token, ACCESS_ENTRY_TYPE_STANDARD, ACCESS_POLICY_NAMES,
-    DEFAULT_USERNAME_EC2_NODE, DEFAULT_USERNAME_FARGATE, RESOURCE_NOT_FOUND_MESSAGE,
+    access_policy_arn, encode_page_token, server_managed_kubernetes_groups,
+    ACCESS_ENTRY_TYPE_STANDARD, ACCESS_POLICY_NAMES, DEFAULT_USERNAME_EC2_NODE,
+    DEFAULT_USERNAME_FARGATE, RESOURCE_NOT_FOUND_MESSAGE,
 };
 use smithy_server_runtime::MultiServiceRouter;
 
-use crate::cluster_lifecycle::{minimal_request, REGION};
+use crate::cluster_lifecycle::{access_entry_cluster_request, REGION};
 use crate::wire::{call, emulator, encode_label, Answer};
 
 /// An EKS-managed access policy ARN: no region, `aws` as the account. Two of the
@@ -46,7 +47,7 @@ async fn create_cluster(router: &MultiServiceRouter, name: &str) -> Answer {
         REGION,
         "POST",
         "/clusters",
-        &minimal_request(name).to_string(),
+        &access_entry_cluster_request(name).to_string(),
     )
     .await
 }
@@ -821,13 +822,20 @@ async fn a_created_access_entry_reads_back_exactly_as_stored() {
             Some(expected_username.as_str()),
             "case {case:?}: expected username {expected_username:?}, got {answer:?}"
         );
+        // The groups a created entry reports: the request's own when it sent any,
+        // and otherwise the ones Amazon EKS derives for the entry's TYPE — the node
+        // types get the node-authorization group even though the request sends none
+        // (`server_managed_kubernetes_groups`).
+        let expected_groups = request
+            .get("kubernetesGroups")
+            .filter(|groups| groups.as_array().is_some_and(|groups| !groups.is_empty()))
+            .cloned()
+            .unwrap_or_else(|| {
+                serde_json::json!(server_managed_kubernetes_groups(expected_type))
+            });
         assert_eq!(
-            &entry["kubernetesGroups"],
-            &request
-                .get("kubernetesGroups")
-                .cloned()
-                .unwrap_or(serde_json::json!([])),
-            "case {case:?}: expected the request's groups, got {answer:?}"
+            &entry["kubernetesGroups"], &expected_groups,
+            "case {case:?}: expected {expected_groups:?}, got {answer:?}"
         );
         assert_eq!(
             &entry["tags"],

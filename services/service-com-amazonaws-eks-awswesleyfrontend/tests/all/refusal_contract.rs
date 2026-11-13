@@ -49,7 +49,9 @@ use service_com_amazonaws_eks_awswesleyfrontend::state::{
 };
 use smithy_server_runtime::MultiServiceRouter;
 
-use crate::cluster_lifecycle::{create, delete, describe, minimal_request, REGION};
+use crate::cluster_lifecycle::{
+    access_entry_cluster_request, create, delete, describe, minimal_request, REGION,
+};
 use crate::wire::{call, emulator, encode_label, error_code, Answer};
 
 /// How long a clock-owed cluster move is given before the suite calls it a failure.
@@ -149,8 +151,11 @@ where
 
 /// A created cluster, read back once the clock has carried it to `ACTIVE` — the
 /// precondition an update or an access entry needs.
+///
+/// The body is the one whose `authenticationMode` serves the access-entry API, since
+/// that is one of the preconditions this provides.
 async fn active_cluster(router: &MultiServiceRouter, case: &str, cluster: &str) {
-    let created = create(router, &minimal_request(cluster)).await;
+    let created = create(router, &access_entry_cluster_request(cluster)).await;
     assert_eq!(
         created.status, 200,
         "case {case:?}: setup CreateCluster expected 200, got {created:?}"

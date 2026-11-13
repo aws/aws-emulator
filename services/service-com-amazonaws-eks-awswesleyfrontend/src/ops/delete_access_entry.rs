@@ -176,6 +176,21 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             )
             .into());
         }
+        // And the access-entry API is served only by a cluster whose
+        // `authenticationMode` includes it: one still authenticating through the
+        // `aws-auth` ConfigMap alone keeps no access entries for this call to remove
+        // ([`crate::state::serves_access_entries`]). The gate is a fact about the
+        // CLUSTER too, so it precedes resolving the entry.
+        if !cluster.serves_access_entries() {
+            return Err(DeleteAccessEntryErrorModeled::InvalidRequestException(
+                InvalidRequestException {
+                    cluster_name: Some(input.cluster_name.clone()),
+                    message: Some(crate::state::access_entry_authentication_mode_refusal()),
+                    ..Default::default()
+                },
+            )
+            .into());
+        }
 
         // Removing the entry takes its associated access policies with it, because they
         // are held on the entry itself.

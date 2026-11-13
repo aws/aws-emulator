@@ -8,6 +8,13 @@
 //! everything else — the ids, the ARN, `createdAt`, the namespace and service
 //! account the association can never be moved between — is left as stored.
 //!
+//! The `roleArn` an update asks Amazon EKS to pass is authorized FIRST — before the
+//! body's forms and before the association is resolved — and then, once the forms
+//! are sound, that role's trust relationship is resolved against IAM: an update may
+//! only point the association at a role the EKS Pod Identity principal may assume
+//! ([`crate::state::pod_identity_role_trust_refusal`]), the same rule the create
+//! applies to the role it stores.
+//!
 //! The identifiers the request carries are checked for their documented FORM
 //! before any resource is resolved, so a value that names nothing earns an
 //! `InvalidParameterException` (400) rather than a not-found — a role ARN outside
@@ -89,6 +96,8 @@
 //!
 //! ## Errors
 //!
+//! * `AccessDeniedException` (HTTP 403) — widened in through `extra_errors` (see below):
+//!   the class the pass-role authorization of `roleArn` answers with.
 //! * `InvalidParameterException` (HTTP 400) — The specified parameter is invalid. Review the
 //!   available parameters for the API request.
 //! * `InvalidRequestException` (HTTP 400) — The request is invalid given the state of the
@@ -116,16 +125,22 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-eks-awswesleyfrontend.j
 // generates an UNINHABITED enum here, which is correct and expected: there is nothing
 // to construct until the model says otherwise.
 //
-// `ClientException` is widened in through `extra_errors`: this SERVICE models that
-// shape and many of its operations declare it, but this one does not list it — and it
-// is the class every operation of the Amazon EKS-managed plane refuses a cluster this
-// service does not manage with ([`crate::state::connected_cluster_refusal`]).
+// Two classes are widened in through `extra_errors`: this SERVICE models both shapes
+// and many of its operations declare them, but this one lists neither.
+// `ClientException` is the class every operation of the Amazon EKS-managed plane
+// refuses a cluster this service does not manage with
+// ([`crate::state::connected_cluster_refusal`]), and `AccessDeniedException` — 403 —
+// is the class the pass-role authorization of `roleArn` answers with, the same one
+// `CreatePodIdentityAssociation` widens in for the same question
+// ([`crate::state::pass_role_refusal`]): an update hands Amazon EKS a role exactly as
+// a create does.
 #[smithy_macros::operation_error(
     "com.amazonaws.eks#UpdatePodIdentityAssociation",
-    extra_errors = ["ClientException"]
+    extra_errors = ["ClientException", "AccessDeniedException"]
 )]
 #[derive(Debug)]
 pub enum UpdatePodIdentityAssociationErrorModeled {
+    AccessDeniedException(AccessDeniedException),
     ClientException(ClientException),
     InvalidParameterException(InvalidParameterException),
     InvalidRequestException(InvalidRequestException),
@@ -206,6 +221,25 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             )
         };
 
+        // AUTHORIZATION FIRST, before the body's forms and before the association is
+        // resolved: a `roleArn` an update names is a role the caller is passing to
+        // Amazon EKS exactly as a create's is, so the same pass-role rule decides
+        // whether this caller may hand it over, and a value that names no role of this
+        // account is a PERMISSION failure whatever else the request carries
+        // ([`state::pass_role_refusal`]). `targetRoleArn` is not passed here, for the
+        // reason `CreatePodIdentityAssociation` gives: the association's own role
+        // assumes it, not the caller.
+        if let Some(role_arn) = input.role_arn.as_deref() {
+            if let Some(why) = state::pass_role_refusal(role_arn) {
+                return Err(
+                    UpdatePodIdentityAssociationErrorModeled::AccessDeniedException(
+                        AccessDeniedException { message: Some(why) },
+                    )
+                    .into(),
+                );
+            }
+        }
+
         // FORM FIRST, for the same reason as every other operation that takes
         // these labels: a value outside its documented form names nothing.
         if !state::is_cluster_name(&input.cluster_name) {
@@ -247,6 +281,21 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         }
 
         let region = state::request_region(ctx.parts());
+
+        // THE ROLE'S TRUST RELATIONSHIP, once the request's own forms are sound: an
+        // update may only point the association at a role EKS Pod Identity can
+        // assume for its Pods, which is the same rule the create applies to the role
+        // it stores ([`state::pod_identity_role_trust_refusal`]) — an association
+        // whose role stopped trusting the Pod Identity principal would issue no
+        // credentials. It runs with no lock held: it is a call out to another service.
+        if let Some(role_arn) = input.role_arn.as_deref() {
+            if let Some(why) =
+                state::pod_identity_role_trust_refusal(ctx, &region, role_arn).await
+            {
+                return Err(invalid_parameter(why.to_string()));
+            }
+        }
+
         let now = SystemTime::now();
         let mut guard = store.lock();
         guard.materialize_due_transitions(now);

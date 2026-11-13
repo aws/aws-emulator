@@ -35,6 +35,12 @@ aws-sdk-iam = { version = "1", default-features = false }
 # `CreateNodegroup` resolve the subnets they are given with `DescribeSubnets`
 # before they provision anything, because the account's subnets are EC2's.
 aws-sdk-ec2 = { version = "1", default-features = false }
+# The AWS SDK for Auto Scaling, over the same callback: a managed node group's
+# capacity IS an Amazon EC2 Auto Scaling group — "the resources associated with
+# the node group, such as Auto Scaling groups" (`Nodegroup$resources`) — so
+# `CreateNodegroup` creates that group in Auto Scaling and `DeleteNodegroup`
+# releases it (`src/state/nodegroup_capacity.rs`).
+aws-sdk-autoscaling = { version = "1", default-features = false }
 # The AWS SDK for CloudWatch Logs, over the same callback: a cluster whose
 # `logging` enables a control plane log type exports that type's logs to the
 # cluster's own log group, which is CloudWatch Logs' resource to create and write

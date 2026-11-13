@@ -7,6 +7,10 @@
 //! `TagResource` merge — never an echo of the request. A well-formed ARN no resource
 //! in the store owns is a `NotFoundException` (404).
 //!
+//! Every resource this service mints an ARN for is addressable here, through the one
+//! resolution the whole tag plane shares
+//! ([`crate::state::tagged_resource_for_arn`]).
+//!
 //! Shared types live in `super::types`; the error channel in `crate::scaffolded`.
 //!
 //! ---
@@ -155,20 +159,20 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         };
 
         let guard = store.lock();
-        // The ARN itself names the region, so the index resolves a cluster in any
-        // region without the request's own credential scope.
-        let Some(key) = guard.cluster_key_for_arn(&input.resource_arn) else {
+        // The ARN itself names the region and the resource, so the resolution
+        // addresses any resource this service minted that ARN for — in any region,
+        // without the request's own credential scope
+        // ([`crate::state::tagged_resource_for_arn`]).
+        let Some(resource) = guard.tagged_resource_for_arn(&input.resource_arn) else {
             return Err(not_found());
         };
-        let Some(record) = guard.clusters.get(&key) else {
+        let Some(tags) = guard.tags_for(&resource) else {
             return Err(not_found());
         };
 
         Ok(ListTagsForResourceOutput {
             tags: Some(
-                record
-                    .tags
-                    .iter()
+                tags.iter()
                     .map(|(key, value)| (key.clone(), value.clone()))
                     .collect(),
             ),
