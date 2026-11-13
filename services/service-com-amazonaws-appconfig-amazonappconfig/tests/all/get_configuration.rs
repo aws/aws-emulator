@@ -12,8 +12,9 @@
 //! from every client — reporting that hosted version's number as `ConfigurationVersion`, its
 //! MIME type as `ContentType`, and as `Content` whatever the profile's `Type` makes of
 //! the version's stored bytes; it addresses each of the three levels by name or by id,
-//! refuses with the modelled `ResourceNotFoundException` the first level it cannot
-//! resolve and a triple with no configuration in force, and sends no content when the
+//! refuses every triple it has nothing to serve for — an unresolvable level as much as a
+//! triple with no configuration in force — with the modelled `BadRequestException`, and
+//! sends no content when the
 //! caller's `ClientConfigurationVersion` is already the version in force
 //! (`smithy_query(query="operation",operation="GetConfiguration")` for the members and
 //! their bindings; the operation is documented as retrieving "the latest deployed
@@ -34,17 +35,29 @@
 //! a withdrawn version, a version addressed by its label), each `ClientConfigurationVersion`
 //! a client can send, and each level of the triple that can fail to resolve.
 
+use std::time::{Duration, Instant};
+
 use serde_json::{json, Value};
 use smithy_server_runtime::MultiServiceRouter;
 
 use service_com_amazonaws_appconfig_amazonappconfig::state::{
-    FEATURE_FLAGS_PROFILE_TYPE, FREEFORM_PROFILE_TYPE, STAGE_DURATION,
+    FEATURE_FLAGS_PROFILE_TYPE, FREEFORM_PROFILE_TYPE,
 };
 
 use crate::appconfig_workflow::{
     account, create_application, create_environment, create_profile_from, json_call, router, send,
     Answer, RETRIEVAL_ROLE,
 };
+
+/// How long a rollout under way is given to reach its targets before the suite fails.
+///
+/// A ceiling on the WAIT rather than a statement about the span a growth interval takes: a
+/// rollout that has reached nobody by here is one nothing is advancing, which is the defect
+/// this suite would be pinning.
+const REACHED_BY: Duration = Duration::from_secs(120);
+
+/// How often the read under observation is repeated while waiting for that condition.
+const POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 /// The predefined deployment strategy that reaches every target at once: its rollout
 /// window is empty, so a deployment it paces is already monitoring its bake time when
@@ -278,27 +291,33 @@ fn assert_served(
 }
 
 /// One modelled refusal: the status and error code on the wire where an SDK classifies
-/// it from, and a message naming every value the request or the record supplied.
-fn assert_not_found(case: &str, answer: &Answer, must_name: &[&str]) {
+/// it from, and the ONE message this deprecated read states for every triple it has nothing
+/// to serve for — built from the application and configuration the REQUEST named, and the
+/// account the lookup was scoped to.
+fn assert_nothing_to_serve(case: &str, answer: &Answer, application: &str, configuration: &str) {
     assert_eq!(
         answer.status,
-        404,
-        "case {case:?}: expected the modelled ResourceNotFoundException's HTTP 404, got {} / {}",
+        400,
+        "case {case:?}: expected the modelled BadRequestException's HTTP 400, got {} / {}",
         answer.status,
         String::from_utf8_lossy(&answer.body)
     );
     assert!(
-        answer.error_code().contains("ResourceNotFoundException"),
-        "case {case:?}: expected ResourceNotFoundException, got {:?}",
+        answer.error_code().contains("BadRequestException"),
+        "case {case:?}: expected BadRequestException, got {:?}",
         answer.error_code()
     );
-    let message = answer.string("Message").unwrap_or_default();
-    for named in must_name {
-        assert!(
-            message.contains(named),
-            "case {case:?}: the refusal must name {named:?}, got {message:?}"
-        );
-    }
+    let expected = format!(
+        "Configuration Profile with Application Id {application} and Configuration Profile Id \
+         {configuration} could not be found for account {}.",
+        account()
+    );
+    assert_eq!(
+        answer.string("Message").unwrap_or_default(),
+        expected,
+        "case {case:?}: expected the refusal {expected:?}, got {:?}",
+        answer.string("Message")
+    );
 }
 
 /// One kind of content a configuration profile can hold.
@@ -530,10 +549,11 @@ async fn the_newest_deployment_still_in_force_decides_what_is_served() {
     .await;
 
     // Nothing deployed yet: the triple resolves and no configuration is in force.
-    assert_not_found(
+    assert_nothing_to_serve(
         "nothing deployed",
         &get_configuration(&router, &application, &environment, &profile, None).await,
-        &[&application, &environment, &profile],
+        &application,
+        &profile,
     );
 
     // The first deployment puts version 1 in service.
@@ -667,11 +687,13 @@ async fn client_configuration_version_decides_whether_the_content_is_sent() {
     }
 }
 
-/// RULE: the first level of the triple that does not resolve is the modelled 404, a
-/// triple with no configuration in force is a 404 of its own, and so is a deployed
-/// version AppConfig's hosted store does not hold.
+/// RULE: every triple this deprecated read has nothing to serve for — an unresolvable
+/// level, a triple with no configuration in force, and a deployed version AppConfig's
+/// hosted store does not hold — is ONE refusal: the modelled `BadRequestException`
+/// (HTTP 400) naming the configuration profile it could not serve under the application, as
+/// the request spelled the two of them, and the account the lookup was scoped to.
 #[tokio::test]
-async fn an_unresolvable_level_or_an_undeployed_configuration_is_the_modelled_404() {
+async fn every_unservable_triple_is_the_one_modelled_bad_request() {
     let router = router();
     let application = create_application(&router, "refusals").await;
     let environment = create_environment(&router, &application, "production").await;
@@ -697,30 +719,34 @@ async fn an_unresolvable_level_or_an_undeployed_configuration_is_the_modelled_40
     )
     .await;
 
-    // Each level of the triple, addressed as something the store does not hold: the
-    // refusal names the level that failed to resolve and the account the lookup was
-    // scoped to, and the levels are resolved outermost first.
-    for (case, named_application, named_environment, named_configuration, must_name) in [
+    // Each level of the triple, addressed as something the store does not hold: whichever
+    // level failed, the refusal reports the configuration profile it could not serve under
+    // the application, so a caller cannot tell from it which level was the unresolvable
+    // one.
+    for (case, named_application, named_environment, named_configuration) in [
         (
             "an application the account does not hold",
             "nosuchapp",
             environment.as_str(),
             profile.as_str(),
-            vec!["Application", "nosuchapp", account()],
         ),
         (
             "an environment the application does not hold",
             application.as_str(),
             "nosuchenv",
             profile.as_str(),
-            vec!["Environment", "nosuchenv", account()],
         ),
         (
             "a configuration profile the application does not hold",
             application.as_str(),
             environment.as_str(),
             "nosuchprofile",
-            vec!["Configuration Profile", "nosuchprofile", account()],
+        ),
+        (
+            "neither the environment nor the configuration profile",
+            application.as_str(),
+            "nosuchenv",
+            "nosuchprofile",
         ),
     ] {
         let answer = get_configuration(
@@ -731,16 +757,18 @@ async fn an_unresolvable_level_or_an_undeployed_configuration_is_the_modelled_40
             None,
         )
         .await;
-        assert_not_found(case, &answer, &must_name);
+        assert_nothing_to_serve(case, &answer, named_application, named_configuration);
     }
 
-    // A profile that resolves under an environment nothing was deployed into: the
-    // configuration, not any level of the triple, is what could not be found.
+    // A profile that resolves under an environment nothing was deployed into: the same
+    // refusal, so an unknown environment and a real one with nothing deployed are one
+    // answer.
     let other_environment = create_environment(&router, &application, "staging").await;
-    assert_not_found(
+    assert_nothing_to_serve(
         "an environment with nothing deployed into it",
         &get_configuration(&router, &application, &other_environment, &profile, None).await,
-        &[&application, &other_environment, &profile],
+        &application,
+        &profile,
     );
 
     // A profile stored outside AppConfig's hosted configuration store: the control plane
@@ -768,10 +796,11 @@ async fn an_unresolvable_level_or_an_undeployed_configuration_is_the_modelled_40
         "a configuration stored outside the hosted store",
     )
     .await;
-    assert_not_found(
+    assert_nothing_to_serve(
         "a configuration stored outside the hosted store",
         &get_configuration(&router, &application, &other_environment, &elsewhere, None).await,
-        &[&elsewhere, "1"],
+        &application,
+        &elsewhere,
     );
 }
 
@@ -829,18 +858,36 @@ async fn a_rolling_out_configuration_is_in_force_and_a_stop_withdraws_it() {
     .await;
     // The rollout has reached nobody yet, and nothing preceded it here, so there is no
     // configuration in force for this caller.
-    assert_not_found(
+    assert_nothing_to_serve(
         "a rollout that has reached nobody",
         &get_configuration(&router, &application, &environment, &profile, None).await,
-        &[&application, &environment, &profile],
+        &application,
+        &profile,
     );
 
     // Once the rollout window has passed every target is reached, while the deployment
     // is still in flight (it is baking): the configuration is in force for every client.
-    tokio::time::sleep(STAGE_DURATION + std::time::Duration::from_millis(300)).await;
+    // The CONDITION is what is waited for — the read serving the deployed bytes — rather
+    // than a fixed span, so the suite does not depend on how fast the host runs.
+    let deadline = Instant::now() + REACHED_BY;
+    let served = loop {
+        let answer = get_configuration(&router, &application, &environment, &profile, None).await;
+        if answer.status == 200 {
+            break answer;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "case \"a rollout that reached every target\": the rollout reached no target \
+             within {}s; the read still answers {} / {}",
+            REACHED_BY.as_secs(),
+            answer.status,
+            String::from_utf8_lossy(&answer.body)
+        );
+        tokio::time::sleep(POLL_INTERVAL).await;
+    };
     assert_served(
         "a rollout that reached every target",
-        &get_configuration(&router, &application, &environment, &profile, None).await,
+        &served,
         b"gradual",
         "1",
         "text/plain",
@@ -857,9 +904,10 @@ async fn a_rolling_out_configuration_is_in_force_and_a_stop_withdraws_it() {
         "a stopped rollout",
     )
     .await;
-    assert_not_found(
+    assert_nothing_to_serve(
         "a stopped rollout",
         &get_configuration(&router, &application, &environment, &profile, None).await,
-        &[&application, &environment, &profile],
+        &application,
+        &profile,
     );
 }

@@ -496,10 +496,10 @@ async fn a_not_found_message_is_the_template_of_the_kind_that_was_looked_up() {
         (
             "a version an extension does not hold",
             format!("/extensions/{extension}?version_number=99"),
-            format!(
-                "Extension with Id {extension} and Version Number 99 could not be found for \
-                 account {account}."
-            ),
+            // AppConfig's SINGLE extension-not-found message: a version-level miss is
+            // reported with the same deliberately unspecific sentence an unresolvable
+            // identifier is, so the refusal does not disclose which half resolved.
+            format!("Extension could not be found for account {account}."),
         ),
         (
             "a resource ARN that addresses nothing",

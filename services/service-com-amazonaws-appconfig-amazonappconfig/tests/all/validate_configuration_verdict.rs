@@ -378,13 +378,19 @@ async fn validate_configuration_reports_the_validators_verdict_on_the_named_vers
             }),
         },
         Row {
+            // Content that is not a JSON document is handed to the schema as the JSON
+            // string its text is, so the embedded diagnostic is the evaluator's own type
+            // report rather than a sentence about the document being unreadable.
             case: "content that is not a JSON document at all",
             validators: &[ENABLED_SCHEMA],
             content: b"enabled = maybe",
             refusal: Some(Refusal {
                 validator: 0,
                 node: ROOT_NODE,
-                finding: Some("the configuration is not a JSON document"),
+                finding: Some(
+                    "instance type (string) does not match any allowed primitive type \
+                     (allowed: [\\\"object\\\"])",
+                ),
             }),
         },
         Row {

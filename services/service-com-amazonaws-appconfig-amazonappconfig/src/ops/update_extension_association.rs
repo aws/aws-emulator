@@ -159,10 +159,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 return Err(not_found(crate::state::extension_not_found()));
             };
             let Some(version) = extension.versions.get(&extension_version_number) else {
-                return Err(not_found(crate::state::extension_version_not_found(
-                    &extension_id,
-                    extension_version_number,
-                )));
+                return Err(not_found(crate::state::extension_not_found()));
             };
             // The refusal names the extension by the id this association stores, which is
             // the identifier AppConfig puts in the sentence.

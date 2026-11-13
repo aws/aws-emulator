@@ -496,6 +496,12 @@ struct Lock {
 /// The table spans the class: a name nobody has created (current version zero) and names
 /// already at one, two and three versions, each against a claim that is omitted, correct,
 /// stale, ahead, and negative.
+///
+/// The two ways the lock can fail are two different refusals: a lock the request did not
+/// SUPPLY for a name that already exists is HTTP 400 `BadRequestException` — the caller has
+/// to name the version it means to add to — while a lock it did supply and that is not the
+/// name's current version is HTTP 409 `ConflictException`, the conditional write losing.
+/// Each states the version numbers in play and nothing else about the extension.
 #[tokio::test]
 async fn latest_version_number_locks_the_name_to_its_current_version() {
     let table = [
@@ -528,11 +534,18 @@ async fn latest_version_number_locks_the_name_to_its_current_version() {
             expected_latest: 0,
         },
         Lock {
-            case: "a name already at 1, naming no version, is the duplicate-name conflict",
+            case: "a name already at 1, naming no version, is the missing-lock bad request",
             existing_versions: 1,
             claimed: None,
-            expected_status: 409,
+            expected_status: 400,
             expected_latest: 1,
+        },
+        Lock {
+            case: "a name already at 3, naming no version, is the same bad request",
+            existing_versions: 3,
+            claimed: None,
+            expected_status: 400,
+            expected_latest: 3,
         },
         Lock {
             case: "a name already at 1, claiming 1, appends version 2",
@@ -613,12 +626,36 @@ async fn latest_version_number_locks_the_name_to_its_current_version() {
             answer.status,
             String::from_utf8_lossy(&answer.body)
         );
-        if row.expected_status == 409 {
+        if row.expected_status != 201 {
+            // Which class, and which sentence, follows from WHICH way the lock failed.
+            let (code, message) = match row.claimed {
+                None => (
+                    "BadRequestException",
+                    format!(
+                        "LatestVersionNumber not populated and an extension with name {name} \
+                         already exists."
+                    ),
+                ),
+                Some(claimed) => (
+                    "ConflictException",
+                    format!(
+                        "LatestVersionNumber supplied in request {claimed} does not match latest \
+                         version {}.",
+                        row.existing_versions
+                    ),
+                ),
+            };
             assert_eq!(
                 answer.error_code().split('#').next_back().unwrap_or_default(),
-                "ConflictException",
-                "case {case:?}: expected ConflictException, got {}",
+                code,
+                "case {case:?}: expected {code}, got {}",
                 answer.error_code()
+            );
+            assert_eq!(
+                answer.string("Message").as_deref(),
+                Some(message.as_str()),
+                "case {case:?}: expected the message {message:?}, got {:?}",
+                answer.string("Message")
             );
         }
 

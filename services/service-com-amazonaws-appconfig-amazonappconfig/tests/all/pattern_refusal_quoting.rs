@@ -4,11 +4,11 @@
 //!
 //! The rule under test, one level more general than any single request: a constraint
 //! violation is the modelled `BadRequestException` (HTTP 400) whose message states the
-//! member and the expression the value had to satisfy — and the expression is the model's
-//! `@pattern` WITHOUT its end anchor, the trailing `$` a model writes to demand a match
-//! over the whole value. Everything else in the expression is quoted as modelled: a
-//! leading `^`, the anchors a branch of the expression carries of its own, and an
-//! expression that carries no end anchor at all.
+//! member and the expression the value had to satisfy — and the expression is the one the
+//! WHOLE value must match: an end the model anchors keeps the model's text there except the
+//! trailing `$`, which goes, and an end the model leaves OPEN is spelled with the
+//! unconstrained run `.*` it admits. Everything else in the expression is quoted as
+//! modelled: a leading `^`, and the anchors a branch of the expression carries of its own.
 //!
 //! Only the RENDERING drops that anchor. The CHECK still runs the model's pattern as
 //! written, which the table pins with a value that satisfies the QUOTED expression over a
@@ -44,7 +44,7 @@ struct Quoted {
     /// when a row fails, so a failure names the expression the clause was derived from;
     /// the expectation itself is `quoted`, written out per row.
     modelled: &'static str,
-    /// The expression the clause must quote: `modelled` without its end anchor.
+    /// The expression the clause must quote: the whole-value form of `modelled`.
     quoted: &'static str,
 }
 
@@ -70,10 +70,10 @@ fn experiment_body(environment: &str, profile: &str, name: &str, flag_key: &str)
     })
 }
 
-/// Every `@pattern` refusal quotes the model's expression without its end anchor, whatever
+/// Every `@pattern` refusal quotes the expression the whole value must satisfy, whatever
 /// the expression's shape, wherever the member is bound and whichever operation was called.
 #[tokio::test]
-async fn a_pattern_refusal_quotes_the_expression_without_its_end_anchor() {
+async fn a_pattern_refusal_quotes_the_whole_value_expression() {
     let router = router();
     let application = create_application(&router, "pattern-quoting").await;
     let environment = create_environment(&router, &application, "prod").await;
@@ -87,8 +87,10 @@ async fn a_pattern_refusal_quotes_the_expression_without_its_end_anchor() {
     const STRATEGY_ID: &str = r"^(^[a-z0-9]{4,7}$|^AppConfig\.[A-Za-z0-9]{9,40}$)$";
     const STRATEGY_ID_QUOTED: &str = r"^(^[a-z0-9]{4,7}$|^AppConfig\.[A-Za-z0-9]{9,40}$)";
     // `smithy_query(query="shape", shape="VersionLabel")` — no anchor at either end, so
-    // there is nothing to drop.
+    // the expression is a "contains" demand and both ends are spelled with the run they
+    // admit.
     const VERSION_LABEL: &str = r"[^0-9]";
+    const VERSION_LABEL_QUOTED: &str = r".*[^0-9].*";
     // `smithy_query(query="operation", operation="CreateConfigurationProfile")`.
     const ROLE_ARN: &str =
         r"^((arn):(aws|aws-cn|aws-iso|aws-iso-[a-z]{1}|aws-us-gov|aws-eusc):(iam)::\d{12}:role[/].*)$";
@@ -165,9 +167,9 @@ async fn a_pattern_refusal_quotes_the_expression_without_its_end_anchor() {
             headers: vec![("VersionLabel", "12345".to_string())],
             member: "versionLabel",
             value: "12345".to_string(),
-            // Nothing is dropped: this expression carries no end anchor.
+            // Open at both ends: each is spelled with the run it admits.
             modelled: VERSION_LABEL,
-            quoted: VERSION_LABEL,
+            quoted: VERSION_LABEL_QUOTED,
         },
         Quoted {
             case: "CreateConfigurationProfile on a retrieval role that is not a role"

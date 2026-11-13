@@ -240,41 +240,45 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // `LatestVersionNumber` is an optimistic lock on the extension this name
         // addresses: "When you create a new version, specify the most recent current
         // version number." A name nobody has created is at version 0, so one uniform
-        // comparison covers both the first create and every later version — and a
-        // second create under a name that already exists without naming its current
-        // version is the duplicate-name conflict, since 0 is not that version.
+        // comparison covers both the first create and every later version.
+        //
+        // The two ways that comparison can fail are different failures, and AppConfig
+        // answers them in different classes: a lock the request did not SUPPLY at all for
+        // a name that already exists is a bad request — the caller has to name the version
+        // it means to add to — while a lock it did supply and that is not the extension's
+        // current version is the conditional write losing, a conflict. Collapsing both onto
+        // one class would leave a client unable to tell "you forgot the lock" from "your
+        // lock is stale".
         let existing = store
             .extension_named(&input.name)
             .map(|extension| (extension.id.clone(), extension.latest_version_number()));
         let current_version = existing.as_ref().map_or(0, |(_, latest)| *latest);
         let extension_id = existing.map(|(id, _)| id);
-        let claimed_version = input.latest_version_number.unwrap_or(0);
-        if claimed_version != current_version {
-            return Err(CreateExtensionErrorModeled::ConflictException(
-                ConflictException {
-                    message: Some(if current_version == 0 {
-                        format!(
-                            "No extension named {} exists, so its latest version number is 0, \
-                             not {claimed_version}.",
-                            input.name
-                        )
-                    } else if input.latest_version_number.is_none() {
-                        format!(
-                            "An extension named {} already exists at version \
-                             {current_version}; to create another version, pass that number \
-                             as LatestVersionNumber.",
-                            input.name
-                        )
-                    } else {
-                        format!(
-                            "Extension {} is at version {current_version}, not \
-                             {claimed_version}.",
-                            input.name
-                        )
-                    }),
-                },
-            )
-            .into());
+        match input.latest_version_number {
+            // No lock supplied, and the name is already taken (a name nobody has created
+            // is at version 0, which an absent lock matches, so this is the duplicate name
+            // and nothing else).
+            None if current_version != 0 => {
+                return Err(bad_request(format!(
+                    "LatestVersionNumber not populated and an extension with name {} already \
+                     exists.",
+                    input.name
+                )));
+            }
+            // A lock that is not the version the extension is at — including a lock
+            // supplied for a name nobody has created, whose latest version is 0.
+            Some(claimed) if claimed != current_version => {
+                return Err(CreateExtensionErrorModeled::ConflictException(
+                    ConflictException {
+                        message: Some(format!(
+                            "LatestVersionNumber supplied in request {claimed} does not match \
+                             latest version {current_version}."
+                        )),
+                    },
+                )
+                .into());
+            }
+            _ => {}
         }
 
         let version_number = current_version + 1;

@@ -3407,11 +3407,15 @@ pub fn deployment_strategy_not_found(deployment_strategy_id: &str) -> String {
     )
 }
 
-/// `Message` for an extension no `ExtensionIdentifier` resolves to.
+/// `Message` for an extension no `ExtensionIdentifier` resolves to, or whose version the
+/// request named does not exist.
 ///
 /// The extension's recorded refusal echoes NO identifier — `Extension could not be found
-/// for account <account id>.` — so the caller-supplied `ExtensionIdentifier` is not
-/// reflected back into it.
+/// for account <account id>.` — so neither the caller-supplied `ExtensionIdentifier` nor
+/// the version number is reflected back into it. It is AppConfig's SINGLE
+/// extension-not-found message: the identical wording is recorded for a `VersionNumber`
+/// that never existed and for an extension that was deleted, so a caller learns that the
+/// extension version it addressed is not there and not which half of the address resolved.
 pub fn extension_not_found() -> String {
     not_found_message("Extension", &[], AccountClause::Reported, NOT_FOUND_FULL_STOP)
 }
@@ -3447,26 +3451,6 @@ pub fn extension_association_not_found() -> String {
     not_found_message(
         "ExtensionAssociation",
         &[],
-        AccountClause::Reported,
-        NOT_FOUND_FULL_STOP,
-    )
-}
-
-/// `Message` for a version an extension does not hold.
-///
-/// A version-level miss is a DIFFERENT refusal from [`extension_not_found`] and has no
-/// recorded instance, so it keeps naming the extension and the version the request asked
-/// for: AppConfig's templates demonstrably differ per lookup (the strategy's omits the
-/// account, the extension's omits the identifier), and carrying one kind's wording over
-/// to a lookup it was not recorded for is exactly what this message had to be corrected
-/// for.
-pub fn extension_version_not_found(extension_identifier: &str, version_number: i32) -> String {
-    not_found_message(
-        "Extension",
-        &[
-            ("Id", extension_identifier),
-            ("Version Number", &version_number.to_string()),
-        ],
         AccountClause::Reported,
         NOT_FOUND_FULL_STOP,
     )
@@ -3605,26 +3589,65 @@ pub fn experiment_definition_name_taken(name: &str, application_id: &str) -> Str
 // `BadRequestException` messages
 // =============================================================================
 
-/// `Message` for a stop refused because the deployment is not in a state a stop applies
+/// Which of the two stops `StopDeployment` was asked for, which is the only part of a
+/// [`deployment_cannot_be_stopped`] refusal that moves with the request.
+///
+/// `AllowRevert` (bound to the `Allow-Revert` header) is what asks for the second: a stop
+/// that carries it is asking AppConfig "to rollback a `COMPLETE` deployment to the previous
+/// configuration" (the operation's own documentation), which is a revert rather than a stop
+/// — so the refusal states the verb the caller used, and a client cannot tell the two
+/// requests apart from one answer otherwise.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StopVerb {
+    /// A stop that carried no `AllowRevert`.
+    Stopped,
+    /// A stop that carried `AllowRevert`.
+    Reverted,
+}
+
+impl StopVerb {
+    /// The verb a request with this `AllowRevert` asks for.
+    #[must_use]
+    pub fn of(allow_revert: bool) -> Self {
+        if allow_revert {
+            Self::Reverted
+        } else {
+            Self::Stopped
+        }
+    }
+
+    /// The past participle AppConfig puts in the refusal.
+    fn text(self) -> &'static str {
+        match self {
+            Self::Stopped => "stopped",
+            Self::Reverted => "reverted",
+        }
+    }
+}
+
+/// `Message` for a stop refused because the deployment is not in a state the stop applies
 /// to, as the recorded refusal words it:
 ///
 /// ```text
 /// Deployment <number> for App <application id> and Environment <environment id> cannot \
-///     be stopped, it has a status of <state>.
+///     be <stopped|reverted>, it has a status of <state>.
 /// ```
 ///
 /// DERIVED from the request and the record it addressed — the deployment the caller named,
-/// the application and environment it scoped the lookup to, and the state that deployment
-/// is actually in — so nothing of any one request is stored here.
+/// the application and environment it scoped the lookup to, the verb it asked for
+/// ([`StopVerb`]) and the state that deployment is actually in — so nothing of any one
+/// request is stored here.
 pub fn deployment_cannot_be_stopped(
     application_id: &str,
     environment_id: &str,
     deployment_number: i32,
+    verb: StopVerb,
     state: &str,
 ) -> String {
     format!(
         "Deployment {deployment_number} for App {application_id} and Environment \
-         {environment_id} cannot be stopped, it has a status of {state}."
+         {environment_id} cannot be {}, it has a status of {state}.",
+        verb.text()
     )
 }
 
@@ -4354,23 +4377,27 @@ impl ComAmazonawsAppconfigAmazonappconfigState {
         applied.into_values().collect()
     }
 
-    /// Whether any association binds the `version_number` version of the extension
+    /// How many associations bind the `version_number` version of the extension
     /// `extension_id` names.
     ///
     /// "You must delete all associations to an extension before you delete the extension"
     /// (`smithy_query(query="operation",operation="DeleteExtension")`), which this is what
     /// `DeleteExtension` checks before removing a version: an association names ONE
-    /// version, so the association that blocks a delete is one bound to the version the
-    /// delete would take away.
-    pub fn extension_version_is_associated(
+    /// version, so the associations that block a delete are the ones bound to the version
+    /// the delete would take away. The COUNT is what the refusal reports, so it is counted
+    /// here rather than being answered as a yes-or-no and counted again by the caller.
+    pub fn extension_version_association_count(
         &self,
         extension_id: &str,
         version_number: i32,
-    ) -> bool {
-        self.extension_associations.values().any(|association| {
-            association.extension_id == extension_id
-                && association.extension_version_number == version_number
-        })
+    ) -> usize {
+        self.extension_associations
+            .values()
+            .filter(|association| {
+                association.extension_id == extension_id
+                    && association.extension_version_number == version_number
+            })
+            .count()
     }
 
     /// Materialise the extension association AppConfig itself makes for a configuration

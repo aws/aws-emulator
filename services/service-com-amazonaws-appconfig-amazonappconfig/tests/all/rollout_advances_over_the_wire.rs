@@ -62,6 +62,11 @@ const SETTLE_BY: Duration = Duration::from_secs(120);
 /// How often a rollout under observation is re-read.
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
 
+/// How long a WITHDRAWN rollout is watched for to show it stays where the stop left it:
+/// past the growth interval that would have advanced it had the stop not withdrawn it.
+const WITHDRAWN_STAYS_PUT_FOR: Duration =
+    state::STAGE_DURATION.saturating_add(Duration::from_millis(500));
+
 /// The `DeploymentState` values a deployment stops at, after which no reader sees it move.
 const TERMINAL_STATES: &[&str] = &["COMPLETE", "ROLLED_BACK", "REVERTED"];
 
@@ -596,28 +601,43 @@ async fn a_stop_part_way_through_a_rollout_withdraws_it_terminally() {
             again.string("Message").unwrap_or_default(),
             format!(
                 "Deployment {number} for App {application} and Environment {environment} cannot \
-                 be stopped, it has a status of ROLLED_BACK."
+                 be {}, it has a status of ROLLED_BACK.",
+                // The verb the refusal states is the one the request asked for: a stop
+                // carrying `AllowRevert` asked for a revert.
+                if row.allow_revert.unwrap_or(false) {
+                    "reverted"
+                } else {
+                    "stopped"
+                }
             ),
             "case {case:?}: the refusal must name the deployment, its application, its \
-             environment and the state it refused"
+             environment, the verb it was asked for and the state it refused"
         );
 
-        // The clock does not resume a rollout a caller withdrew: a further growth interval
-        // passes and the record stays exactly where the stop left it.
-        tokio::time::sleep(state::STAGE_DURATION + Duration::from_millis(500)).await;
-        let later = get_deployment(&router, &application, &environment, number).await;
-        let later_body = later.json();
-        assert_eq!(
-            deployment_state(case, &later_body),
-            "ROLLED_BACK",
-            "case {case:?}: a withdrawn rollout stays withdrawn as the clock runs on, got \
-             {later_body}"
-        );
-        assert_eq!(
-            percentage(case, &later_body),
-            0.0,
-            "case {case:?}: a withdrawn rollout reaches no further target, got {later_body}"
-        );
+        // The clock does not resume a rollout a caller withdrew: the record is re-read
+        // across a further growth interval and stays exactly where the stop left it at
+        // EVERY look. That is an invariant rather than a condition to wait for, so it is
+        // asserted on each re-read instead of once after a fixed wait.
+        let hold_until = Instant::now() + WITHDRAWN_STAYS_PUT_FOR;
+        loop {
+            let later = get_deployment(&router, &application, &environment, number).await;
+            let later_body = later.json();
+            assert_eq!(
+                deployment_state(case, &later_body),
+                "ROLLED_BACK",
+                "case {case:?}: a withdrawn rollout stays withdrawn as the clock runs on, got \
+                 {later_body}"
+            );
+            assert_eq!(
+                percentage(case, &later_body),
+                0.0,
+                "case {case:?}: a withdrawn rollout reaches no further target, got {later_body}"
+            );
+            if Instant::now() >= hold_until {
+                break;
+            }
+            tokio::time::sleep(POLL_INTERVAL).await;
+        }
     }
 }
 

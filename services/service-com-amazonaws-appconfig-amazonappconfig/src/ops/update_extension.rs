@@ -236,10 +236,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // holds exactly the versions it held before. Concurrent callers therefore all
         // land, and the extension ends carrying whichever of them wrote last.
         let Some(version) = store.extension_version_mut(&extension_id, version_number) else {
-            return Err(not_found(crate::state::extension_version_not_found(
-                &input.extension_identifier,
-                version_number,
-            )));
+            return Err(not_found(crate::state::extension_not_found()));
         };
         // An update carries only the members the caller means to change, so a member the
         // request omits keeps the value the version already holds. Supplying `Actions` or

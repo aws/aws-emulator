@@ -50,7 +50,8 @@ use smithy_server_runtime::{
     http, BoxFuture, ErasedOperation, Operation, OperationContext, OperationRoutingTable, Refusal,
     Refused, Service,
 };
-use std::sync::Arc;
+use std::collections::BTreeSet;
+use std::sync::{Arc, OnceLock};
 
 /// The body member every error shape in this service's model reports its detail text in
 /// (`smithy_query(query="shape",
@@ -83,64 +84,188 @@ const MODELLED_ERROR_SHAPES: [&str; 6] = [
     "ServiceQuotaExceededException",
 ];
 
-/// A `@pattern` requirement as this service quotes it: a WHOLE-VALUE expression without
-/// its end anchor.
+/// The unconstrained run a quoted `@pattern` spells for an end the model leaves OPEN.
+const ANY_RUN: &str = ".*";
+
+/// A `@pattern` requirement as this service quotes it: the expression the WHOLE value has
+/// to satisfy.
 ///
-/// The requirement a constraint refusal states is the expression a value has to satisfy,
-/// and AppConfig states it without the trailing `$` a model writes to demand a match over
-/// the whole value — satisfying the expression IS the whole-value demand, so the end
-/// anchor is not part of what the refusal advertises. Everything else in the expression is
-/// quoted verbatim: the leading `^`, an anchor a branch of the expression carries of its
-/// own (`DeploymentStrategyId` is modelled
-/// `^(^[a-z0-9]{4,7}$|^AppConfig\.[A-Za-z0-9]{9,40}$)$`), and an expression that is not a
-/// whole-value one at all (`VersionLabel` is modelled `[^0-9]`), which is quoted as
-/// modelled because no anchor pair wraps it.
+/// A Smithy `@pattern` is a FIND — the expression has to match SOMEWHERE in the value — so
+/// the expression a member declares and the expression its whole value must satisfy are two
+/// different things, and AppConfig's refusals state the second. The two ends are decided
+/// independently, because a model may anchor one and leave the other open:
 ///
-/// The drop therefore needs BOTH ends: a `^` at the start and a `$` at the end, the pair a
-/// model writes around the expression it means to match in full. An expression anchored at
-/// one end only is a different expression, and nothing records how this service would
-/// quote one, so it is quoted as modelled. A trailing `$` preceded by an ODD number of
-/// backslashes is an escaped literal dollar rather than the anchor, so nothing is dropped
-/// there either.
+/// * an end the model ANCHORS keeps the model's own text at that end, except the trailing
+///   `$`, which goes: demanding the expression over the whole value IS what that anchor
+///   said, so it is not part of what the refusal advertises (`FlagKey` is modelled
+///   `^[a-z][a-zA-Z0-9_-]{1,64}$` and quoted `^[a-z][a-zA-Z0-9_-]{1,64}`; an anchor a
+///   BRANCH of the expression carries of its own is quoted as modelled, which is how
+///   `DeploymentStrategyId`'s `^(^[a-z0-9]{4,7}$|^AppConfig\.[A-Za-z0-9]{9,40}$)$` keeps
+///   its interior anchors);
+/// * an end the model leaves OPEN admits any run of characters there, which is spelled as
+///   [`ANY_RUN`] unless the expression already leaves that end open with one — so
+///   `VersionLabel`, modelled `[^0-9]` and anchored at neither end, is quoted
+///   `.*[^0-9].*`: "must contain a non-digit", which is what that `@pattern` demands,
+///   rather than the bare expression, which reads as "must be one non-digit character".
 ///
-/// Only the RENDERING drops it. The CHECK runs the model's pattern as written, so a value
-/// that satisfies the quoted expression over a PREFIX of itself is still refused.
+/// A trailing `$` preceded by an ODD number of backslashes is an escaped literal dollar
+/// rather than the anchor, so that end is an open one.
 ///
-/// This is NOT the fleet rule `service_common::validation::unanchored` states (which drops
-/// the whole `^`/`$` PAIR, the rendering those services' own recordings show): AppConfig's
-/// refusals keep the leading `^`, so quoting a pattern is part of this service's
-/// validation-message dialect and is stated here, for every operation at once.
-fn quoted_pattern(pattern: &str) -> &str {
-    if !pattern.starts_with('^') {
-        return pattern;
+/// Only the RENDERING decides the ends. The CHECK runs the model's pattern as written, so a
+/// value that satisfies the quoted expression over a PREFIX of itself is still refused.
+///
+/// This is NOT the fleet rule `service_common::validation::whole_value_expression` states
+/// (which drops the anchor at BOTH ends, the rendering those services' own recordings
+/// show): AppConfig's refusals keep the leading `^`, so quoting a pattern is part of this
+/// service's validation-message dialect and is stated here, for every operation at once.
+fn quoted_pattern(pattern: &str) -> String {
+    let (body, anchored_at_start, anchored_at_end) = split_outer_anchors(pattern);
+    let mut quoted = String::with_capacity(pattern.len() + 2 * ANY_RUN.len());
+    if anchored_at_start {
+        quoted.push('^');
+    } else if !body.starts_with(ANY_RUN) {
+        quoted.push_str(ANY_RUN);
     }
-    without_end_anchor(pattern).unwrap_or(pattern)
+    quoted.push_str(body);
+    if !anchored_at_end && !body.ends_with(ANY_RUN) {
+        quoted.push_str(ANY_RUN);
+    }
+    quoted
 }
 
-/// `pattern` without its end anchor, or `None` when it carries none.
+/// `pattern` without the anchors at its two ends, and whether each end carried one.
 ///
-/// The same three-line primitive is inlined in several service crates beside
-/// `service_common::validation::unanchored`'s pair-dropping rule; what is AppConfig's own
-/// is [`quoted_pattern`]'s choice to drop ONLY this anchor.
-fn without_end_anchor(pattern: &str) -> Option<&str> {
-    let body = pattern.strip_suffix('$')?;
-    let backslashes = body.len() - body.trim_end_matches('\\').len();
-    (backslashes % 2 == 0).then_some(body)
+/// The ends are read independently, and a `$` preceded by an odd number of backslashes is
+/// an escaped literal dollar rather than the anchor.
+fn split_outer_anchors(pattern: &str) -> (&str, bool, bool) {
+    let (body, anchored_at_start) = match pattern.strip_prefix('^') {
+        Some(rest) => (rest, true),
+        None => (pattern, false),
+    };
+    match body.strip_suffix('$') {
+        Some(inner) if !ends_with_escape(inner) => (inner, anchored_at_start, true),
+        _ => (body, anchored_at_start, false),
+    }
 }
 
-/// The same violation with a `@pattern` quoted the way this service quotes one. Every
-/// other requirement class — a null member, a length, a numeric bound, an enum value set,
-/// a uniqueness demand — is handed back untouched, so its wording, the member path and the
-/// echoed value stay the framework's and cannot drift per operation.
+/// Whether `body` ends in a backslash that escapes whatever followed it.
+fn ends_with_escape(body: &str) -> bool {
+    (body.len() - body.trim_end_matches('\\').len()) % 2 == 1
+}
+
+/// The path segment a collection step is spelled with in [`floating_point_member_paths`]:
+/// the framework reports a list element under its 1-based POSITION
+/// (`treatments.1.member.weight`), while which members are floating point is a property of
+/// the model rather than of one request's element count, so one entry stands for every
+/// position.
+const ANY_POSITION: &str = "*";
+
+/// The member paths of this service's FLOATING-POINT members, as a constraint clause names
+/// them, with every collection step spelled [`ANY_POSITION`].
+///
+/// Read off the MODEL rather than named by hand:
+/// `service_common::validation_message::floating_point_member_paths` collects the members
+/// each shape's own compiled schema types as `float` or `double`. A member schema carries
+/// no members of its own, so a NESTED shape is passed as its own schema under the path that
+/// binds it — `TreatmentInput` under the two members of an experiment-definition request
+/// that target it. The shapes listed are the ones whose float members declare a `@range`
+/// (`smithy_query(query="shape",
+/// shape="GrowthFactor,Weight,NullablePercentage,TreatmentInput")`: `GrowthFactor` 1.0-100.0
+/// on the two deployment-strategy requests, `Weight` min 0.0 on `TreatmentInput`,
+/// `NullablePercentage` 0.0-100.0 on the two experiment-run requests), since a float member
+/// under no constraint can never be the subject of a clause;
+/// `every_floating_point_member_under_a_range_is_covered` pins that against the model.
+fn floating_point_member_paths() -> &'static BTreeSet<String> {
+    /// The member of an experiment-definition request that targets `TreatmentInput`
+    /// directly …
+    const CONTROL: &str = "control";
+    /// … and the one that targets a LIST of it, whose elements the walk reports one
+    /// collection step deeper.
+    const TREATMENTS: &str = "treatments";
+
+    static PATHS: OnceLock<BTreeSet<String>> = OnceLock::new();
+    PATHS.get_or_init(|| {
+        let element = format!("{TREATMENTS}.{ANY_POSITION}.member");
+        service_common::validation_message::floating_point_member_paths(&[
+            (
+                "",
+                crate::ops::types::CREATE_DEPLOYMENT_STRATEGY_INPUT_SCHEMA,
+            ),
+            (
+                "",
+                crate::ops::types::UPDATE_DEPLOYMENT_STRATEGY_INPUT_SCHEMA,
+            ),
+            ("", crate::ops::types::START_EXPERIMENT_RUN_INPUT_SCHEMA),
+            ("", crate::ops::types::UPDATE_EXPERIMENT_RUN_INPUT_SCHEMA),
+            (CONTROL, crate::ops::types::TREATMENT_INPUT_SCHEMA),
+            (&element, crate::ops::types::TREATMENT_INPUT_SCHEMA),
+        ])
+    })
+}
+
+/// Whether the member a clause names at `path` is a floating-point one.
+fn is_floating_point_member(path: &str) -> bool {
+    floating_point_member_paths().contains(&at_any_position(path))
+}
+
+/// `path` with every collection position replaced by [`ANY_POSITION`].
+fn at_any_position(path: &str) -> String {
+    path.split('.')
+        .map(|segment| {
+            if segment.parse::<usize>().is_ok() {
+                ANY_POSITION
+            } else {
+                segment
+            }
+        })
+        .collect::<Vec<&str>>()
+        .join(".")
+}
+
+/// A `@range` bound as a FLOATING-POINT member's clause states it: the decimal text a
+/// floating-point value is written with.
+///
+/// The framework renders an integral bound without a fractional part (`100`, not `100.0`),
+/// which is what an INTEGRAL member's bound reads as; a float member's bound is a
+/// floating-point value and is written as one, through the one function that writes a
+/// floating-point value into a clause
+/// (`service_common::validation_message::float_value_text`, which this service also quotes
+/// the submitted VALUE through). A bound that is not a number at all is left as the
+/// framework rendered it.
+fn decimal_bound(bound: &str) -> String {
+    match bound.parse::<f64>() {
+        Ok(value) => service_common::validation_message::float_value_text(value),
+        Err(_) => bound.to_string(),
+    }
+}
+
+/// The same violation with the two things this service words differently restated: how a
+/// `@pattern` requirement is quoted ([`quoted_pattern`]), and how a FLOATING-POINT member's
+/// value and `@range` bound are written ([`decimal_bound`]).
+///
+/// Every other requirement class — a null member, a length, an enum value set, a uniqueness
+/// demand — and every INTEGRAL member's bound is handed back untouched, so its wording, the
+/// member path and the echoed value stay the framework's and cannot drift per operation.
 pub(crate) fn as_stated(violation: &Violation) -> Violation {
-    match &violation.kind {
-        ViolationKind::Pattern(pattern) => Violation {
-            path: violation.path.clone(),
-            kind: ViolationKind::Pattern(quoted_pattern(pattern).to_string()),
-            value: violation.value.clone(),
-            sensitive: violation.sensitive,
-        },
-        _ => violation.clone(),
+    // The VALUE half first, since a float member's value is written as a decimal whichever
+    // requirement that value broke.
+    let stated = service_common::validation_message::in_float_value_rendering(
+        violation,
+        is_floating_point_member,
+    );
+    let restated = match &stated.kind {
+        ViolationKind::Pattern(pattern) => Some(ViolationKind::Pattern(quoted_pattern(pattern))),
+        ViolationKind::MinValue(bound) if is_floating_point_member(&stated.path) => {
+            Some(ViolationKind::MinValue(decimal_bound(bound)))
+        }
+        ViolationKind::MaxValue(bound) if is_floating_point_member(&stated.path) => {
+            Some(ViolationKind::MaxValue(decimal_bound(bound)))
+        }
+        _ => None,
+    };
+    match restated {
+        Some(kind) => Violation { kind, ..stated },
+        None => stated,
     }
 }
 
@@ -580,13 +705,16 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
 
 #[cfg(test)]
 mod tests {
-    use super::{as_stated, quoted_pattern, with_detail_member, EmulatedService};
+    use super::{
+        as_stated, floating_point_member_paths, quoted_pattern, with_detail_member, EmulatedService,
+    };
     use aws_smithy_schema_server::{Violation, ViolationKind};
     use std::sync::Arc;
 
-    /// RULE: a `@pattern` is quoted as the model's expression without its END anchor —
-    /// the trailing `$` — whenever the model wrapped it as a whole-value expression, and
-    /// nothing else about the expression is touched.
+    /// RULE: a `@pattern` is quoted as the expression the WHOLE value must satisfy — an
+    /// end the model anchors keeps the model's text there except the trailing `$`, which
+    /// goes, and an end the model leaves open is spelled with the unconstrained run `.*`.
+    /// Nothing else about the expression is touched.
     ///
     /// The rows are every distinct SHAPE of `@pattern` this service's model carries
     /// (`smithy_query(query="shape", shape="FlagKey,Id,DeploymentStrategyId,VersionLabel,Arn")`
@@ -594,7 +722,7 @@ mod tests {
     /// role-ARN and type members), plus the regex constructs that can hide an anchor: an
     /// escaped dollar, a dollar inside the expression, and each half-anchored form.
     #[test]
-    fn a_pattern_is_quoted_without_its_end_anchor() {
+    fn a_pattern_is_quoted_as_the_whole_value_expression() {
         // (case, the modelled expression, the expression a clause quotes)
         let rows: [(&str, &str, &str); 12] = [
             (
@@ -610,7 +738,7 @@ mod tests {
                 r"^(^[a-z0-9]{4,7}$|^AppConfig\.[A-Za-z0-9]{9,40}$)$",
                 r"^(^[a-z0-9]{4,7}$|^AppConfig\.[A-Za-z0-9]{9,40}$)",
             ),
-            ("a version label", r"[^0-9]", r"[^0-9]"),
+            ("a version label", r"[^0-9]", r".*[^0-9].*"),
             (
                 "a resource ARN",
                 r"^arn:(aws[a-zA-Z-]*)?:[a-z]+:(\d{12})?:[a-zA-Z0-9-_/:.]+$",
@@ -621,18 +749,19 @@ mod tests {
                 r"^[a-zA-Z0-9\.\-]+$",
                 r"^[a-zA-Z0-9\.\-]+",
             ),
-            // An escaped trailing dollar is a literal dollar sign, not the anchor.
-            ("an escaped trailing dollar", r"^costs\$", r"^costs\$"),
+            // An escaped trailing dollar is a literal dollar sign, not the anchor, so the
+            // expression leaves that end open and the open-end run is spelled there.
+            ("an escaped trailing dollar", r"^costs\$", r"^costs\$.*"),
             // An escaped backslash before the `$` leaves the `$` an anchor.
             ("an escaped backslash then the anchor", r"^[a-z]\\$", r"^[a-z]\\"),
             // A dollar that is not at the end is not the end anchor either.
             ("a dollar inside the expression", r"^a$b$", r"^a$b"),
+            // Already open at the end with a run of its own: nothing is added to it.
             ("anchored at the start only", r"^arn:aws.*", r"^arn:aws.*"),
-            // Anchored at the END only: not the whole-value form a model wraps, and no
-            // recording says how this service would quote one, so it is quoted as
-            // modelled.
-            ("anchored at the end only", r"[0-9]{12}$", r"[0-9]{12}$"),
-            ("no anchor at all", r"\d{3}", r"\d{3}"),
+            // Anchored at the END only: that anchor goes with the end it anchored, and
+            // the open start is spelled with the run it admits.
+            ("anchored at the end only", r"[0-9]{12}$", r".*[0-9]{12}"),
+            ("no anchor at all", r"\d{3}", r".*\d{3}.*"),
         ];
         for (case, modelled, expected) in rows {
             let actual = quoted_pattern(modelled);
@@ -644,10 +773,11 @@ mod tests {
         }
     }
 
-    /// RULE: only a `@pattern` requirement is restated — every other class keeps the
-    /// framework's own wording, member path and echoed value.
+    /// RULE: a `@pattern` requirement and a FLOATING-POINT member's value and `@range`
+    /// bound are restated — every other class, and every integral member's bound, keeps
+    /// the framework's own wording, member path and echoed value.
     #[test]
-    fn only_a_pattern_requirement_is_restated() {
+    fn only_a_pattern_and_a_float_members_bound_are_restated() {
         let pattern = Violation {
             path: "flagKey".to_string(),
             kind: ViolationKind::Pattern(r"^[a-z][a-zA-Z0-9_-]{1,64}$".to_string()),
@@ -668,6 +798,83 @@ mod tests {
             (stated.path.as_str(), stated.value.as_deref())
         );
 
+        // Every float member of this service that declares a `@range`, each with the bound
+        // the framework rendered as an integral one and the decimal text its clause states.
+        // (case, the member path a clause names, the framework's violation, the bound and
+        // value the clause must state)
+        let floats: [(&str, &str, ViolationKind, &str, &str); 4] = [
+            (
+                "a deployment strategy's growth factor over its maximum",
+                "growthFactor",
+                ViolationKind::MaxValue("100".to_string()),
+                "100.0",
+                "150.0",
+            ),
+            (
+                "an experiment run's exposure over its maximum",
+                "exposurePercentage",
+                ViolationKind::MaxValue("100".to_string()),
+                "100.0",
+                "150.0",
+            ),
+            (
+                "a treatment list element's weight under its minimum",
+                "treatments.1.member.weight",
+                ViolationKind::MinValue("0".to_string()),
+                "0.0",
+                "150.0",
+            ),
+            (
+                "the control treatment's weight under its minimum",
+                "control.weight",
+                ViolationKind::MinValue("0".to_string()),
+                "0.0",
+                "150.0",
+            ),
+        ];
+        for (case, path, kind, bound, value) in floats {
+            let violation = Violation {
+                path: path.to_string(),
+                kind,
+                value: Some("150".to_string()),
+                sensitive: false,
+            };
+            let stated = as_stated(&violation);
+            let requirement = stated.message();
+            assert!(
+                requirement.ends_with(bound),
+                "case {case:?}: expected the bound stated as {bound:?}, got {requirement:?}"
+            );
+            assert_eq!(
+                stated.value.as_deref(),
+                Some(value),
+                "case {case:?}: expected the value quoted as {value:?}, got {:?}",
+                stated.value
+            );
+        }
+
+        // An INTEGRAL member's bound and value are the framework's: `protectionPeriodInMinutes`
+        // and `deploymentDurationInMinutes` are integers, so nothing is requoted for them.
+        for (case, path) in [
+            ("an account setting's protection period", "protectionPeriodInMinutes"),
+            (
+                "a deployment strategy's duration",
+                "deploymentDurationInMinutes",
+            ),
+        ] {
+            let violation = Violation {
+                path: path.to_string(),
+                kind: ViolationKind::MaxValue("1440".to_string()),
+                value: Some("1441".to_string()),
+                sensitive: false,
+            };
+            let stated = as_stated(&violation);
+            assert_eq!(
+                stated, violation,
+                "case {case:?}: expected the framework's own violation, got {stated:?}"
+            );
+        }
+
         for other in [
             ViolationKind::MissingRequiredMember,
             ViolationKind::MinLength(1),
@@ -687,6 +894,102 @@ mod tests {
             assert_eq!(
                 stated, violation,
                 "case {other:?}: expected the framework's own violation, got {stated:?}"
+            );
+        }
+    }
+
+    /// RULE applied to the whole surface: every FLOATING-POINT member a constraint clause
+    /// can be stated about — one reachable from an operation's input and declaring a
+    /// `@range` — is covered by [`floating_point_member_paths`], so its value and its bound
+    /// are written as decimals.
+    ///
+    /// The members come from the MODEL rather than from a second hand-written list: a float
+    /// member added to an input shape (or a `@range` put on one that had none) fails here
+    /// instead of quietly having its clause state an integer.
+    #[test]
+    fn every_floating_point_member_under_a_range_is_covered() {
+        let model = std::fs::read_to_string(MODEL_PATH)
+            .expect("the model that generated this crate ships beside it");
+        let model: serde_json::Value =
+            serde_json::from_str(&model).expect("the model that generated this crate is JSON");
+        let shapes = model["shapes"]
+            .as_object()
+            .expect("a Smithy model declares shapes");
+
+        // Walk out from every operation's INPUT, since a clause names a member of a
+        // request. A member's own traits or its target shape's may carry the `@range`.
+        let mut pending: Vec<&str> = shapes
+            .iter()
+            .filter(|(_, shape)| shape["type"] == "operation")
+            .filter_map(|(_, shape)| shape["input"]["target"].as_str())
+            .collect();
+        let mut visited: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+        let mut bounded_floats: Vec<String> = Vec::new();
+        while let Some(id) = pending.pop() {
+            if !visited.insert(id) {
+                continue;
+            }
+            let Some(shape) = shapes.get(id) else {
+                continue;
+            };
+            match shape["type"].as_str() {
+                Some("structure" | "union") => {
+                    let Some(members) = shape["members"].as_object() else {
+                        continue;
+                    };
+                    for (name, member) in members {
+                        let Some(target) = member["target"].as_str() else {
+                            continue;
+                        };
+                        pending.push(target);
+                        let Some(targeted) = shapes.get(target) else {
+                            continue;
+                        };
+                        let is_float = matches!(targeted["type"].as_str(), Some("float" | "double"));
+                        let ranged = !member["traits"]["smithy.api#range"].is_null()
+                            || !targeted["traits"]["smithy.api#range"].is_null();
+                        if is_float && ranged {
+                            // The casing of a path segment is the framework's; a member
+                            // names itself in lowerCamel.
+                            let mut segment = name.chars();
+                            let segment: String = match segment.next() {
+                                Some(first) => first.to_lowercase().chain(segment).collect(),
+                                None => continue,
+                            };
+                            bounded_floats.push(segment);
+                        }
+                    }
+                }
+                Some("list" | "set") => {
+                    if let Some(target) = shape["member"]["target"].as_str() {
+                        pending.push(target);
+                    }
+                }
+                Some("map") => {
+                    for slot in ["key", "value"] {
+                        if let Some(target) = shape[slot]["target"].as_str() {
+                            pending.push(target);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        assert!(
+            !bounded_floats.is_empty(),
+            "case the model's surface: this service's inputs declare at least one float \
+             member under a @range, so finding none means this walk reads the model wrongly"
+        );
+        let covered = floating_point_member_paths();
+        for member in &bounded_floats {
+            assert!(
+                covered
+                    .iter()
+                    .any(|path| path == member || path.ends_with(&format!(".{member}"))),
+                "case {member:?}: the model declares this float member under a @range, so a \
+                 clause about it must state its value and bound as decimals; no path in \
+                 {covered:?} names it"
             );
         }
     }

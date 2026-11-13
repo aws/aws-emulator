@@ -5,6 +5,11 @@
 //! environment, configuration profile) triple, read out of the deployments the control
 //! plane holds for that environment.
 //!
+//! This deprecated retrieval path refuses every triple it has nothing to serve for with
+//! ONE modelled `BadRequestException` ([`nothing_to_serve`]) rather than reporting which
+//! level of the triple it could not reach, which is why the `ResourceNotFoundException`
+//! its model also declares is never the answer here.
+//!
 //! ## Shape of an operation
 //!
 //! Each operation is a struct that owns the shared engine and implements
@@ -126,12 +131,32 @@ impl From<GetConfigurationErrorModeled> for GetConfigurationError {
     }
 }
 
-/// A `ResourceNotFoundException` (HTTP 404) naming the resource that could not be
-/// resolved.
-fn not_found(message: String, resource_name: String) -> GetConfigurationError {
-    GetConfigurationErrorModeled::ResourceNotFoundException(ResourceNotFoundException {
-        message: Some(message),
-        resource_name: Some(resource_name),
+/// The `BadRequestException` (HTTP 400) this operation answers a triple it has nothing to
+/// serve for.
+///
+/// ONE refusal for every such condition — an application, an environment or a
+/// configuration profile no identifier resolves, a triple nothing was ever deployed into,
+/// and a deployed version AppConfig's hosted store does not hold — stating the
+/// configuration profile it could not serve under the application, as the request spelled
+/// the two of them, and the account the lookup was scoped to. The deprecated retrieval path
+/// resolves the (Application, Configuration) pair and the deployment that serves it, and
+/// reports whichever of them it could not reach as that profile not being there: a caller
+/// learns that nothing is deployed for the profile it addressed, and not which level of the
+/// triple failed, so an unknown environment and a real environment with nothing deployed
+/// are the same answer.
+///
+/// The template is the one every operation that ADDRESSES a configuration profile states
+/// (`crate::state::configuration_profile_not_found`), called rather than restated so the
+/// two cannot drift; what is this operation's own is the CLASS, which its model lists
+/// beside `ResourceNotFoundException` and which AppConfig answers here.
+fn nothing_to_serve(input: &GetConfigurationInput) -> GetConfigurationError {
+    GetConfigurationErrorModeled::BadRequestException(BadRequestException {
+        message: Some(crate::state::configuration_profile_not_found(
+            &input.application,
+            &input.configuration,
+        )),
+        reason: None,
+        details: None,
     })
     .into()
 }
@@ -201,41 +226,28 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let target = crate::state::RolloutBucket::of_key(&input.client_id);
 
         // Each of the three path members is documented as "the <level> name or the
-        // <level> ID", so each resolves either way, and the levels are resolved
-        // outermost first: an environment and a configuration profile are children of
-        // the application, so a request naming an application that does not exist is
-        // refused on the application rather than on its children.
+        // <level> ID", so each resolves either way, and the (Application, Configuration)
+        // pair is resolved FIRST — before the environment — because that pair is what this
+        // deprecated path reports on when it has nothing to serve ([`nothing_to_serve`]).
         let Some(application_id) = store.resolve_application_id(&input.application) else {
-            return Err(not_found(
-                crate::state::application_not_found(&input.application),
-                input.application,
-            ));
+            return Err(nothing_to_serve(&input));
         };
         let Some(application) = store.application_mut(&application_id) else {
             return Err(internal(
                 "The application could not be re-read while reading its configuration",
             ));
         };
-        let Some(environment_id) = application
-            .resolve_environment(&input.environment)
-            .map(|environment| environment.id.clone())
-        else {
-            return Err(not_found(
-                crate::state::environment_not_found(&application_id, &input.environment),
-                input.environment,
-            ));
-        };
         let Some(profile_id) = application
             .resolve_profile(&input.configuration)
             .map(|profile| profile.id.clone())
         else {
-            return Err(not_found(
-                crate::state::configuration_profile_not_found(
-                    &application_id,
-                    &input.configuration,
-                ),
-                input.configuration,
-            ));
+            return Err(nothing_to_serve(&input));
+        };
+        let Some(environment_id) = application
+            .resolve_environment(&input.environment)
+            .map(|environment| environment.id.clone())
+        else {
+            return Err(nothing_to_serve(&input));
         };
 
         // The environment is brought up to the state the CLOCK already owes it before
@@ -254,14 +266,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .in_force_deployment(&profile_id, target)
             .map(|deployment| deployment.configuration_version.clone());
         let Some(deployed_version) = in_force else {
-            return Err(not_found(
-                crate::state::no_deployed_configuration(
-                    &input.application,
-                    &input.environment,
-                    &input.configuration,
-                ),
-                input.configuration,
-            ));
+            return Err(nothing_to_serve(&input));
         };
 
         let Some(profile) = application.profiles.get(&profile_id) else {
@@ -274,13 +279,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // hosted version number or that version's label — so it is resolved through the
         // profile's own lookup, the one every reader of a deployed configuration uses.
         let Some(version) = profile.resolve_hosted_version(&deployed_version) else {
-            return Err(not_found(
-                crate::state::configuration_version_not_hosted(
-                    &input.configuration,
-                    &deployed_version,
-                ),
-                input.configuration,
-            ));
+            return Err(nothing_to_serve(&input));
         };
         // `ConfigurationVersion` identifies the version this answer carries, and
         // `ClientConfigurationVersion` is "the configuration version returned in the most

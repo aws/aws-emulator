@@ -214,7 +214,8 @@ fn document(deployment: &crate::state::Deployment) -> StopDeploymentOutput {
 }
 
 /// The `BadRequestException` a refused stop answers: the request's own identifiers, the
-/// state the stop was judged against, and the reason the record refused it.
+/// verb it asked for, the state the stop was judged against, and the reason the record
+/// refused it.
 fn refused(
     input: &StopDeploymentInput,
     state_before: &str,
@@ -225,6 +226,7 @@ fn refused(
             &input.application_id,
             &input.environment_id,
             input.deployment_number,
+            crate::state::StopVerb::of(input.allow_revert.unwrap_or(false)),
             state_before,
         ),
         crate::state::StopRefusal::RevertWindowElapsed => {

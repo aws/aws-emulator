@@ -51,6 +51,10 @@ const ANY_SCHEMA: &str = "{}";
 /// A schema requiring the document to be an array.
 const ARRAY_SCHEMA: &str = r#"{"type":"array"}"#;
 
+/// A schema requiring the document to be a string, which is what content that is not a
+/// JSON document is handed to the schema as.
+const STRING_SCHEMA: &str = r#"{"type":"string"}"#;
+
 /// A schema that states its constraint through a `$ref` into its own `$defs`, which is how
 /// an operator reuses a definition — the shape the reference bound below is about.
 const REFERENCED_SCHEMA: &str = r##"{"$schema":"http://json-schema.org/draft-07/schema#","$defs":{"count":{"type":"integer"}},"type":"object","properties":{"replicas":{"$ref":"#/$defs/count"}}}"##;
@@ -480,13 +484,35 @@ async fn a_json_schema_validator_decides_a_deployment_on_the_candidate_content()
             expect: Expect::Admitted,
         },
         Row {
+            // Content that is not a JSON document is handed to the schema as the JSON
+            // string its text is, so the finding is the evaluator's own type report:
+            // a string where this schema requires an object.
             case: "content that is not a JSON document at all",
-            schema: ANY_SCHEMA,
+            schema: REPLICAS_SCHEMA,
             content: b"allow_caching = true",
             expect: Expect::Refused {
                 node: ROOT_NODE,
-                finding: Some("the configuration is not a JSON document"),
+                finding: Some(
+                    "instance type (string) does not match any allowed primitive type \
+                     (allowed: [\\\"object\\\"])",
+                ),
             },
+        },
+        Row {
+            // The same content against a schema that constrains nothing: a JSON string
+            // satisfies it, so there is no verdict to refuse the call with.
+            case: "content that is not a JSON document, for a schema that constrains nothing",
+            schema: ANY_SCHEMA,
+            content: b"allow_caching = true",
+            expect: Expect::Admitted,
+        },
+        Row {
+            // Text the schema's own type admits: the string is the instance, so a
+            // string-typed schema takes it.
+            case: "content that is not a JSON document, for a schema requiring a string",
+            schema: STRING_SCHEMA,
+            content: b"allow_caching = true",
+            expect: Expect::Admitted,
         },
     ];
 

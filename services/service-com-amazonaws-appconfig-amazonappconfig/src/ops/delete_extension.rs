@@ -214,14 +214,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         // "You must delete all associations to an extension before you delete the
         // extension": an association names one version, so the delete is refused while an
-        // association still binds the version it would take away.
-        if store.extension_version_is_associated(&extension_id, version_number) {
+        // association still binds the version it would take away. The refusal reports what
+        // the caller has to clear — the extension and version being deleted, the account
+        // they belong to, and how many associations of that version are still there.
+        let associations = store.extension_version_association_count(&extension_id, version_number);
+        if associations > 0 {
             return Err(DeleteExtensionErrorModeled::BadRequestException(
                 BadRequestException {
                     message: Some(format!(
-                        "Extension {} version {version_number} still has extension \
-                         associations; delete them before deleting the extension.",
-                        input.extension_identifier
+                        "Cannot delete extension {extension_id}, version {version_number}, for \
+                         account {}, as there are {associations} associations of the extension \
+                         still existing.",
+                        ::engine::emulator_account_id()
                     )),
                     reason: None,
                     details: None,
@@ -238,10 +242,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .remove_extension_version(&extension_id, version_number)
             .is_none()
         {
-            return Err(not_found(crate::state::extension_version_not_found(
-                &input.extension_identifier,
-                version_number,
-            )));
+            return Err(not_found(crate::state::extension_not_found()));
         }
 
         Ok(DeleteExtensionOutput)

@@ -279,9 +279,9 @@ fn rejection_message(candidate: &Candidate<'_>, validator_type: &str, detail: &s
 ///
 /// `None` — no verdict — when the `Content` is not a JSON Schema this evaluator can compile
 /// at all: nothing is then known about the candidate configuration, and a refusal reported
-/// for it would be a verdict no validator gave. A candidate that is not a JSON document
-/// satisfies no JSON Schema, so it is reported non-compliant exactly as a structurally wrong
-/// document is.
+/// for it would be a verdict no validator gave. A candidate that is not a JSON document is
+/// handed to the schema as the JSON string its text is, so the verdict on it — and the
+/// diagnostic a refusal of it carries — is the schema's own.
 ///
 /// Every bound this check runs under is applied here, in the order that puts the cheapest
 /// first: the schema's own shape ([`MAX_SCHEMA_DEPTH`], [`MAX_SCHEMA_NODES`]), then the
@@ -309,12 +309,25 @@ async fn json_schema_rejection(
         return Some(rejection_message(candidate, JSON_SCHEMA, UNEVALUABLE_SCHEMA));
     }
 
-    let Ok(instance) = ::serde_json::from_slice::<Value>(candidate.content) else {
-        return Some(schema_violation_message(
-            schema_document,
-            NOT_A_JSON_DOCUMENT,
-            ROOT_NODE,
-        ));
+    let instance = match ::serde_json::from_slice::<Value>(candidate.content) {
+        Ok(document) => document,
+        // Content that is not a JSON document is still HANDED to the schema, as the text it
+        // is: the diagnostic a refusal carries is the schema library's own, so what a
+        // caller is told is which instance type was seen and which the schema allows,
+        // rather than a sentence this emulator wrote about the document being unreadable.
+        // A JSON string is the one value such content is, so that is the instance the
+        // schema is applied to — and bytes that are not text at all have no such value, so
+        // they keep the finding below.
+        Err(_) => match ::std::str::from_utf8(candidate.content) {
+            Ok(text) => Value::String(text.to_string()),
+            Err(_) => {
+                return Some(schema_violation_message(
+                    schema_document,
+                    NOT_A_JSON_DOCUMENT,
+                    ROOT_NODE,
+                ))
+            }
+        },
     };
     let instance_nodes = measured(&instance).nodes;
     // A reference lets one subschema be reached by several paths, so the schema's node count
@@ -497,9 +510,10 @@ const VALIDATOR_SCHEMA_DRAFT: ::boon::Draft = ::boon::Draft::V4;
 /// root JSON pointer.
 const ROOT_NODE: &str = "/";
 
-/// The finding a candidate that is not a JSON document at all earns: there is no schema
-/// keyword to report, because the document the schema would be applied to could not be read
-/// as JSON.
+/// The finding a candidate that is no TEXT at all earns: there is no schema keyword to
+/// report, because the bytes the schema would be applied to are not a JSON document and not
+/// a JSON string either. Content that IS text is handed to the schema as that string, so
+/// the finding reported for it is the schema library's own.
 const NOT_A_JSON_DOCUMENT: &str = "the configuration is not a JSON document";
 
 /// The URL the validator's schema document is compiled as a resource under: the profile

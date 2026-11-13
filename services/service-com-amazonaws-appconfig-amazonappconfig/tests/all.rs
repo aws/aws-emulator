@@ -125,6 +125,8 @@ mod list_hosted_configuration_versions;
 mod listing_item_instant_wire_form;
 #[path = "all/pattern_refusal_quoting.rs"]
 mod pattern_refusal_quoting;
+#[path = "all/refusal_class_and_rendering_rules.rs"]
+mod refusal_class_and_rendering_rules;
 #[path = "all/refusal_message_templates.rs"]
 mod refusal_message_templates;
 #[path = "all/request_derived_refusal_templates.rs"]

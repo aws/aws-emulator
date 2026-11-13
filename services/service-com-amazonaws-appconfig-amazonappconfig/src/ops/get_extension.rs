@@ -173,12 +173,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // "The extension version number. If no version number was defined, AppConfig
         // uses the highest version."
         let version = match input.version_number.or(pinned_version) {
-            Some(number) => extension.versions.get(&number).ok_or_else(|| {
-                not_found(crate::state::extension_version_not_found(
-                    &input.extension_identifier,
-                    number,
-                ))
-            })?,
+            Some(number) => extension
+                .versions
+                .get(&number)
+                .ok_or_else(|| not_found(crate::state::extension_not_found()))?,
             None => extension
                 .latest_version()
                 .ok_or_else(|| not_found(crate::state::extension_not_found()))?,

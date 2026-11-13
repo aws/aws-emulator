@@ -398,8 +398,18 @@ async fn an_edit_leaves_the_version_set_the_lock_and_the_delete_alone() {
             String::from_utf8_lossy(&edited.body)
         );
 
-        // The lock is still on version 2: the edit neither advanced nor reset it.
-        for (lock, locked) in [("omitted", None), ("a number behind the latest", Some(1))] {
+        // The lock is still on version 2: the edit neither advanced nor reset it. An
+        // omitted lock on a name that exists is the missing-lock bad request; a lock behind
+        // the latest version is the stale-lock conflict.
+        for (lock, locked, status, code) in [
+            ("omitted", None, 400, "BadRequestException"),
+            (
+                "a number behind the latest",
+                Some(1),
+                409,
+                "ConflictException",
+            ),
+        ] {
             let refused = create_extension(
                 &router,
                 &json!({
@@ -410,16 +420,15 @@ async fn an_edit_leaves_the_version_set_the_lock_and_the_delete_alone() {
             )
             .await;
             assert_eq!(
-                refused.status,
-                409,
-                "case {case:?}: CreateExtension with {lock} expected HTTP 409, got {} / {}",
+                refused.status, status,
+                "case {case:?}: CreateExtension with {lock} expected HTTP {status}, got {} / {}",
                 refused.status,
                 String::from_utf8_lossy(&refused.body)
             );
             assert_eq!(
                 refused.error_code(),
-                "ConflictException",
-                "case {case:?}: CreateExtension with {lock} expected a ConflictException, got {}",
+                code,
+                "case {case:?}: CreateExtension with {lock} expected a {code}, got {}",
                 String::from_utf8_lossy(&refused.body)
             );
             let appended = get_extension(&router, &id, Some(3)).await;
