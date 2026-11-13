@@ -231,6 +231,17 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             failed = errors.len(),
             "submitted stops for Glue job runs"
         );
+        // The guard is released before the clock pump is kicked: a stopped run comes to rest
+        // one span later, which is a state change this service publishes
+        // ([`crate::state::job_run_events`]), and a client watching the run through
+        // EventBridge makes no further Glue call for it to be published by.
+        drop(store);
+        crate::state::record_and_publish_job_run_state_changes(
+            ctx.callback(),
+            &state,
+            &region,
+            ::std::slice::from_ref(&input.job_name),
+        );
 
         // Both lists are reported whether or not either is empty: an empty `Errors` is
         // the positive statement that a stop was submitted for every run named, which is

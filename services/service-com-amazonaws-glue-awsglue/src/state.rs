@@ -274,6 +274,7 @@ mod data_catalog_export;
 mod hive_types;
 mod identity_center;
 mod integrations;
+mod job_run_events;
 mod job_script;
 mod jobs;
 mod lookups;
@@ -302,6 +303,7 @@ pub use data_catalog_export::*;
 pub use hive_types::*;
 pub use identity_center::*;
 pub use integrations::*;
+pub use job_run_events::*;
 pub use job_script::*;
 pub use jobs::*;
 pub use lookups::*;
@@ -316,7 +318,7 @@ pub use workflow_runs::*;
 pub use workflows::*;
 
 use std::collections::hash_map::DefaultHasher;
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime};
@@ -1299,6 +1301,24 @@ pub struct ComAmazonawsGlueAwsglueState {
     /// one is stored is therefore a duplicate rather than an overwrite, and a read or a
     /// delete while none is stored is a miss.
     pub identity_center_configuration: Option<IdentityCenterConfigurationEntry>,
+    /// The job-run state changes this store has observed and not published yet, oldest
+    /// first ([`job_run_events`]).
+    ///
+    /// A run that has COME TO REST is an event this service publishes onto the account's
+    /// default EventBridge bus, and the queue is what carries it from the critical section
+    /// that observed it to the publication, which is made with no guard held. It is bounded
+    /// ([`MAX_PENDING_EVENTS`], oldest dropped first) because every run that comes to rest
+    /// appends to it, and each entry names the Region whose bus it belongs on.
+    pub pending_job_run_events: VecDeque<JobRunStateChange>,
+    /// Whether a job-run CLOCK PUMP is running against this store
+    /// ([`drive_job_run_clock`]), so at most one does.
+    pub job_run_clock_pump_running: bool,
+    /// Which claim on that pump is the live one: a pump releases its own claim and never a
+    /// later pump's.
+    pub job_run_clock_pump_generation: u64,
+    /// The running pump's task handle, kept so the pump it replaces is aborted rather than
+    /// merely forgotten.
+    pub job_run_clock_pump: Option<::tokio::task::JoinHandle<()>>,
 }
 
 impl ComAmazonawsGlueAwsglueState {

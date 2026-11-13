@@ -31,10 +31,42 @@ use smithy_server_runtime::EmbeddedEmulator;
 /// `Authorization` header is never forwarded.
 #[must_use]
 pub fn s3_client(callback: &EmbeddedEmulator, region: &str) -> ::aws_sdk_s3::Client {
+    client_signing_with(callback, region, callback.aws_credentials_provider())
+}
+
+/// The same client, signing every call it makes as `credentials` rather than with the
+/// emulator's own.
+///
+/// What a service uses when the read or write it makes is one ANOTHER principal makes
+/// through it — a job run fetching its script as the job's execution role, say — so the
+/// object store authorizes it against the policies in force on that principal and against
+/// the bucket's own policy, exactly as it authorizes any other signed request. The
+/// credentials are a session an emulated service minted through the token service; nothing
+/// here constructs an access key id or a secret.
+#[must_use]
+pub fn s3_client_signed_as(
+    callback: &EmbeddedEmulator,
+    region: &str,
+    credentials: ::aws_sdk_s3::config::Credentials,
+) -> ::aws_sdk_s3::Client {
+    client_signing_with(
+        callback,
+        region,
+        ::aws_sdk_s3::config::SharedCredentialsProvider::new(credentials),
+    )
+}
+
+/// The ONE builder both constructions above share, so the hop is configured one way whoever
+/// the call is signed as.
+fn client_signing_with(
+    callback: &EmbeddedEmulator,
+    region: &str,
+    credentials: impl ::aws_sdk_s3::config::ProvideCredentials + 'static,
+) -> ::aws_sdk_s3::Client {
     let config = ::aws_sdk_s3::Config::builder()
         .behavior_version(::aws_sdk_s3::config::BehaviorVersion::latest())
         .http_client(callback.http_client())
-        .credentials_provider(callback.aws_credentials_provider())
+        .credentials_provider(credentials)
         .region(::aws_sdk_s3::config::Region::new(region.to_string()))
         .endpoint_url(format!("https://s3.{region}.amazonaws.com"))
         .force_path_style(true)

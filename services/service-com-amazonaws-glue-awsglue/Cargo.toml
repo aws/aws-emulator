@@ -16,7 +16,7 @@ emulator-server = { workspace = true }
 emulator-telemetry = { workspace = true }
 aws-smithy-runtime-api = { workspace = true }
 aws-smithy-types = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["time", "rt", "sync"] }
 bytes = { workspace = true }
 http = { workspace = true }
 serde_json = { workspace = true }
@@ -63,6 +63,12 @@ aws-sdk-kms = { version = "1", default-features = false, features = ["rt-tokio",
 # emulator (no network client feature is enabled: the transport is the emulator's own, so
 # no socket is opened and no host is resolved).
 aws-sdk-s3 = { version = "1", default-features = false, features = ["rt-tokio", "behavior-version-latest"] }
+# The AWS SDK for EventBridge, driven over the in-process callback into this same emulator:
+# a Glue job run that comes to rest is published onto the account's default event bus as a
+# `Glue Job State Change` event (`state::job_run_events`), through the ONE in-process
+# EventBridge client `service_common::eventbridge_client` builds. Only the generated client
+# is needed — the emulator supplies the transport, so no network client feature is enabled.
+aws-sdk-eventbridge = { version = "1", default-features = false, features = ["rt-tokio", "behavior-version-latest"] }
 # The Lake Formation client the Data Catalog's read paths consult the permissions held on
 # a database through, over the in-process callback into this same emulator: Lake Formation
 # owns those grants, so they are read from it rather than kept a second time here (no
@@ -110,6 +116,12 @@ emulator-core-build-support = { workspace = true }
 # The catalog-encryption suite mounts the KMS service beside Glue on one engine, because a
 # catalog write and a catalog read of an SSE-KMS catalog each call it.
 service-com-amazonaws-kms-trentservice = { workspace = true }
+# EventBridge and SQS are mounted beside Glue on one engine in the job-run event suite,
+# because a job run that comes to rest is published onto the default event bus and a rule
+# on that bus delivers it to an SQS queue: without them mounted there is nothing for the
+# publication to reach.
+service-com-amazonaws-eventbridge-awsevents = { workspace = true }
+service-com-amazonaws-sqs-amazonsqs = { workspace = true }
 # Amazon S3, mounted beside Glue on one engine, so a column statistics task run aggregates
 # the objects a test staged with `PutObject` at the covered table's location.
 service-com-amazonaws-s3-amazons3 = { workspace = true }

@@ -1077,6 +1077,16 @@ pub struct JobRunEntry {
     /// run nothing has performed yet is found by [`JobEntry::claim_run_awaiting_script`]
     /// rather than reported as having come to any outcome.
     pub awaiting_script: bool,
+    /// Whether the terminal state this run came to rest in has already been queued for
+    /// publication as a `Glue Job State Change` event ([`super::job_run_events`]).
+    ///
+    /// A run begins having published nothing — it has come to rest at nothing — and the one
+    /// place that turns a terminal state into an event
+    /// ([`ComAmazonawsGlueAwsglueState::record_job_run_state_changes`]) sets this when it
+    /// queues the run's change, so a run is published exactly once however it was brought
+    /// to rest. It is bookkeeping about the publication and no part of what any read of the
+    /// run reports.
+    pub state_change_published: bool,
     /// The job's `DefaultArguments` with this run's `Arguments` applied over them, then
     /// the job's `NonOverridableArguments`: "For this job run, they replace the default
     /// arguments set in the job definition itself" (`StartJobRun$Arguments`), except for
@@ -1181,6 +1191,8 @@ impl JobRunEntry {
             settles_to: JOB_RUN_STATE_RUNNING.to_string(),
             settles_error: None,
             awaiting_script: true,
+            // Nothing has come to rest, so nothing has been published about this run.
+            state_change_published: false,
             arguments,
             // Nothing has failed yet: a run carries an error message only once it has.
             error_message: None,
@@ -1298,6 +1310,9 @@ impl JobRunEntry {
             settles_to: JOB_RUN_STATE_RUNNING.to_string(),
             settles_error: None,
             awaiting_script: true,
+            // A fresh attempt has come to rest at nothing, whatever was published about the
+            // attempt it retries.
+            state_change_published: false,
             error_message: None,
             ..self.clone()
         }

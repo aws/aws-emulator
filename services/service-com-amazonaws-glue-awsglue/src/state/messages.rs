@@ -92,13 +92,29 @@ pub fn ml_transform_role_not_assumable(role_arn: &str) -> String {
 /// acting as that role, which is the component the clause names.
 pub fn session_role_not_assumable(role_arn: &str) -> String {
     with_diagnostic(
-        &format!(
-            "Role {role_arn} should be given assume role permissions for Glue Service.\n"
-        ),
+        &format!("{}\n", assume_role_permissions_sentence(role_arn)),
         DIAGNOSTIC_SERVICE_JOB_EXECUTOR,
         DIAGNOSTIC_STATUS_VALIDATION,
         DIAGNOSTIC_CODE_INVALID_INPUT,
     )
+}
+
+/// `JobRun$ErrorMessage` of a run whose job's `Role` Glue cannot assume
+/// ([`super::glue_role_is_unassumable`]), which is a run that was never dispatched.
+///
+/// RECORDED template: the SAME sentence the session surface states the requirement with —
+/// both are the job executor resolving the role the work would be performed as — carrying
+/// the ARN that addresses the role the job names ([`super::glue_role_reference`]). It is the
+/// whole message: `JobRun$ErrorMessage` is the reason the run carries, not a refusal an
+/// operation answered, so no diagnostic clause is appended to it.
+pub fn job_run_role_not_assumable(role_arn: &str) -> String {
+    assume_role_permissions_sentence(role_arn)
+}
+
+/// The sentence this service states the assume-role requirement with, naming the role it is
+/// about: shared by every surface that reports it, so one requirement is worded once.
+fn assume_role_permissions_sentence(role_arn: &str) -> String {
+    format!("Role {role_arn} should be given assume role permissions for Glue Service.")
 }
 
 /// A ruleset write (`CreateDataQualityRuleset`, and the `UpdateDataQualityRuleset` that

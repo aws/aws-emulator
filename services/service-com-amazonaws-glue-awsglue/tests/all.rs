@@ -229,6 +229,8 @@ mod job_listing;
 mod job_not_found_message;
 #[path = "all/job_regions.rs"]
 mod job_regions;
+#[path = "all/job_run_execution_role.rs"]
+mod job_run_execution_role;
 #[path = "all/job_run_listing.rs"]
 mod job_run_listing;
 #[path = "all/job_run_miss_message.rs"]
@@ -237,6 +239,8 @@ mod job_run_miss_message;
 mod job_run_rest;
 #[path = "all/job_run_retries.rs"]
 mod job_run_retries;
+#[path = "all/job_run_state_change_events.rs"]
+mod job_run_state_change_events;
 #[path = "all/job_runs.rs"]
 mod job_runs;
 #[path = "all/job_script_execution.rs"]

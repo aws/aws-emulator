@@ -66,6 +66,8 @@ use ::std::collections::BTreeMap;
 use ::std::time::{Duration, SystemTime};
 
 use ::aws_smithy_types::error::metadata::ProvideErrorMetadata;
+use ::service_com_amazonaws_lambda_awsgirapiservice::state::execution::aws_api::CallerIdentity;
+use ::service_com_amazonaws_lambda_awsgirapiservice::state::execution::execution_role_session::execution_role_identity;
 use ::service_com_amazonaws_lambda_awsgirapiservice::state::execution::package::PackageModule;
 use ::service_com_amazonaws_lambda_awsgirapiservice::state::execution::python;
 use ::service_com_amazonaws_lambda_awsgirapiservice::state::execution::{
@@ -228,6 +230,32 @@ pub const JOB_RUN_SCRIPT_UNREADABLE_LEAD: &str = "Unable to download the job scr
 pub fn job_run_script_unreadable(location: &str, detail: &str) -> String {
     format!("{JOB_RUN_SCRIPT_UNREADABLE_LEAD} {location}: {detail}")
 }
+
+/// The fixed text [`job_run_script_not_accessible`] states, before the script it is about.
+///
+/// RECORDED: the service's own words for a job run whose script it could not fetch.
+pub const JOB_RUN_SCRIPT_NOT_ACCESSIBLE_LEAD: &str = "Script file doesn't exist";
+
+/// `JobRun$ErrorMessage` of a run whose execution role may not READ the object the job's
+/// `JobCommand$ScriptLocation` names.
+///
+/// RECORDED template: the fixed text plus ONE variable part, the script the stored job
+/// definition points at — so the message names the object the run could not fetch and
+/// nothing of one run's values.
+#[must_use]
+pub fn job_run_script_not_accessible(location: &str) -> String {
+    format!("{JOB_RUN_SCRIPT_NOT_ACCESSIBLE_LEAD}: {location}")
+}
+
+/// The name the session a job run's calls are signed with is reported under, for a client of
+/// the credential store that asks where a credential came from. It names the service and the
+/// kind of session, never a value of one run.
+///
+/// Whether the policies in force on that role admit the script read is NOT decided in this
+/// crate: the script is fetched AS the role ([`read_script`]), and the object store answers
+/// that question the way it answers it for every other signed request — against the role's
+/// own policies and the bucket's.
+const JOB_RUN_CREDENTIAL_SOURCE: &str = "glue-job-run-execution-role";
 
 /// `JobRun$ErrorMessage` of a run whose script is in a language no engine of this emulator
 /// runs.
@@ -504,6 +532,22 @@ pub async fn perform_owed_job_runs<Eng: ::std::marker::Send + ::std::marker::Syn
             );
         }
     }
+
+    // A run that has COME TO REST is an event this service publishes: the state changes the
+    // clock materialised above are recorded and put on the account's default EventBridge bus
+    // here, with the store's guard released, so the call that brings a run to rest is the
+    // call that publishes it ([`super::job_run_events`]).
+    // A run that has COME TO REST is an event this service publishes: the state changes the
+    // clock materialised above are recorded here, with the store's guard released, and the
+    // publication — and every state the clock still owes these runs — is handed to the clock
+    // pump, so no request waits on another service for it ([`super::job_run_events`]).
+    record_and_publish_job_run_state_changes(
+        ctx.callback(),
+        &state,
+        region,
+        // The jobs this call performed owed work for, bounded the same way that work is.
+        &job_names[..job_names.len().min(MAX_JOBS_PER_SCRIPT_CALL)],
+    );
 }
 
 /// Run ONE job script and answer what it came to, or `None` when nothing ran it.
@@ -523,6 +567,24 @@ async fn perform_job_script<Eng: ::std::marker::Send + ::std::marker::Sync + 'st
     plan: &JobScriptPlan,
     left_of_the_call: Duration,
 ) -> Option<JobRunOutcome> {
+    // A job run is performed BY Glue acting as the job's `Role` ("the name or Amazon
+    // Resource Name (ARN) of the IAM role associated with this job", `Job$Role`), so the
+    // run is admitted only once this emulator's own IAM has been asked whether Glue can
+    // assume that role at all: a role whose trust policy does not admit the Glue service
+    // principal backs no run, and the run fails before anything of the job is fetched or
+    // executed. Only what IAM ANSWERED fails the run (see
+    // [`super::glue_role_is_unassumable`]), so a role nothing can be shown about — including
+    // an emulator with no IAM to ask — is admitted. Awaited with no store guard held.
+    if glue_role_is_unassumable(ctx, region, &plan.role_arn).await {
+        ::tracing::debug!(
+            job = %plan.job_name,
+            run = %plan.run_id,
+            "a Glue job run's execution role cannot be assumed by Glue, so nothing was run"
+        );
+        return Some(JobRunOutcome::Failed(messages::job_run_role_not_assumable(
+            &plan.role_arn,
+        )));
+    }
     let language = plan.job_language();
     if language != PYTHON_JOB_LANGUAGE {
         return Some(JobRunOutcome::Failed(job_run_language_not_runnable(
@@ -551,9 +613,38 @@ async fn perform_job_script<Eng: ::std::marker::Send + ::std::marker::Sync + 'st
             "the location does not name an Amazon S3 object",
         )));
     }
-    let source = match read_script(ctx, region, &bucket, &key).await {
+    // The script is FETCHED by Glue acting as that same role, so the read is made with a
+    // SESSION of it ([`execution_role_identity`], the one mint this workspace has for an
+    // execution role's session) — the very credential the script's own calls are then signed
+    // with. The object store authorizes it against the policies in force on the role and
+    // against the bucket's own policy, exactly as it authorizes any other signed request, so
+    // a run whose role may not read its script never reaches the interpreter and reports the
+    // script access it was refused rather than something the script went on to be refused.
+    // `None` where no session could be minted — nothing is known about the role — in which
+    // case the read is made with the credential the framework hands this emulator's handlers,
+    // as every other in-process read between two emulated services is.
+    let identity = execution_role_identity(
+        engine,
+        ctx.credential_store(),
+        &plan.role_arn,
+        &plan.job_name,
+        SystemTime::now(),
+    );
+    let source = match read_script(ctx.callback(), region, &bucket, &key, identity.clone()).await {
         Ok(source) => source,
-        Err(detail) => {
+        Err(ScriptNotRead::Denied) => {
+            ::tracing::debug!(
+                job = %plan.job_name,
+                run = %plan.run_id,
+                location = ?location,
+                "the object store refused a Glue job run's script to the role the job runs \
+                 as, so nothing was run"
+            );
+            return Some(JobRunOutcome::Failed(job_run_script_not_accessible(
+                location,
+            )));
+        }
+        Err(ScriptNotRead::Unreadable(detail)) => {
             ::tracing::debug!(
                 job = %plan.job_name,
                 run = %plan.run_id,
@@ -593,23 +684,55 @@ async fn perform_job_script<Eng: ::std::marker::Send + ::std::marker::Sync + 'st
         }
     };
     // The calls the script itself makes are made as the role the job runs as, over the same
-    // in-process callback, and the script never sees the credential.
+    // in-process callback, and the script never sees the credential. It is the SAME session
+    // the script was fetched with: the mint holds one per role and run environment, so the
+    // fetch and the run speak for one identity.
     let access = function_sdk_access(engine, ctx, region, &plan.role_arn, &plan.job_name);
     Some(run_script(plan, &source, &key, access, permit).await)
 }
 
-/// The script's own source, read from the object the job's `ScriptLocation` names.
+/// Why a job's script was not read: the two answers that are told apart, because the service
+/// words them differently ([`job_run_script_not_accessible`] and
+/// [`job_run_script_unreadable`]).
+#[derive(Debug, Clone)]
+enum ScriptNotRead {
+    /// The object store answered that the read is NOT PERMITTED to the role the job runs as.
+    Denied,
+    /// Anything else the read established: the store holds no such object, the object is
+    /// past the bound, it is not text, or the store answered something else about it.
+    Unreadable(String),
+}
+
+/// The script's own source, read from the object the job's `ScriptLocation` names, as
+/// `identity` — the session of the job's execution role, or the emulator's own credential
+/// where there is none.
 ///
 /// The read is RANGED, so at most [`MAX_JOB_SCRIPT_BYTES`] plus the one byte that shows the
 /// object is past the bound is ever buffered, and a script that is not text is one no
-/// interpreter can compile.
+/// interpreter can compile. What the store ANSWERED decides which refusal the run reports,
+/// through the tree's one reading of an object store's answer
+/// ([`::service_common::s3_object_read::OBJECT_DENIED_CODES`]).
 async fn read_script(
-    ctx: &smithy_server_runtime::OperationContext<'_>,
+    callback: &smithy_server_runtime::EmbeddedEmulator,
     region: &str,
     bucket: &str,
     key: &str,
-) -> Result<String, String> {
-    let client = ::service_common::s3_client::s3_client(ctx.callback(), region);
+    identity: Option<CallerIdentity>,
+) -> Result<String, ScriptNotRead> {
+    let client = match identity {
+        Some(identity) => ::service_common::s3_client::s3_client_signed_as(
+            callback,
+            region,
+            ::aws_sdk_s3::config::Credentials::new(
+                identity.access_key_id,
+                identity.secret_access_key,
+                Some(identity.session_token),
+                None,
+                JOB_RUN_CREDENTIAL_SOURCE,
+            ),
+        ),
+        None => ::service_common::s3_client::s3_client(callback, region),
+    };
     let object = client
         .get_object()
         .bucket(bucket)
@@ -618,24 +741,31 @@ async fn read_script(
         .send()
         .await
         .map_err(|error| {
-            format!(
+            let code = error.code().unwrap_or_default().to_string();
+            if ::service_common::s3_object_read::OBJECT_DENIED_CODES.contains(&code.as_str()) {
+                return ScriptNotRead::Denied;
+            }
+            ScriptNotRead::Unreadable(format!(
                 "the object store answered {:?}: {}",
                 error.code(),
                 ::aws_smithy_types::error::display::DisplayErrorContext(&error)
-            )
+            ))
         })?;
     let body = object
         .body
         .collect()
         .await
-        .map_err(|error| format!("the script did not arrive in full: {error}"))?
+        .map_err(|error| {
+            ScriptNotRead::Unreadable(format!("the script did not arrive in full: {error}"))
+        })?
         .into_bytes();
     if body.len() > MAX_JOB_SCRIPT_BYTES {
-        return Err(format!(
+        return Err(ScriptNotRead::Unreadable(format!(
             "the script is past the {MAX_JOB_SCRIPT_BYTES} bytes one job script may hold"
-        ));
+        )));
     }
-    String::from_utf8(body.to_vec()).map_err(|_| "the script is not text".to_string())
+    String::from_utf8(body.to_vec())
+        .map_err(|_| ScriptNotRead::Unreadable("the script is not text".to_string()))
 }
 
 /// Run `source` as the job's script, on a thread of its own, and answer what it came to.
