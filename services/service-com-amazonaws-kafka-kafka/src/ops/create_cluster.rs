@@ -16,7 +16,10 @@
 //! so they are resolved against the account's EC2 inventory
 //! ([`crate::state::network::placement_subnet_refusal`]) before any ARN is minted:
 //! a subnet the account does not have is a `BadRequestException` and no cluster
-//! record is written.
+//! record is written. That resolution is this handler's LAST refusal, though: every
+//! decision this service takes from the request and from its own registry — the
+//! name conflict included — is taken first, so a create MSK refuses on its own
+//! terms is never answered out of what another service reports.
 //!
 //! `KafkaVersion` names the broker software the cluster runs, which is one of the
 //! versions this service's own catalog publishes
@@ -250,6 +253,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             return Err(bad_request("tags", reason));
         }
 
+        // A cluster name identifies a cluster within an account and region, so a
+        // name already in use IN THIS REGION is a conflict — this service's own
+        // decision, taken from its own registry, and therefore taken BEFORE the
+        // placement below is resolved against another service's inventory: the
+        // answer to a create whose name is taken is the conflict, whatever the
+        // subnets it names. The registry lock is held for that decision alone and
+        // released again, because the resolution below calls out over the
+        // in-process callback and no mutex may be held across it.
+        if state.lock().arn_for_name(&region, &input.cluster_name).is_some() {
+            return Err(name_conflict());
+        }
+
         // "The list of subnets to connect to in the client virtual private cloud
         // (VPC). AWS creates elastic network interfaces inside these subnets"
         // (`BrokerNodeGroupInfo$ClientSubnets`): the brokers are PLACED in those
@@ -273,16 +288,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         let mut state = state.lock();
 
-        // A cluster name identifies a cluster within an account and region, so a
-        // name already in use IN THIS REGION is a conflict; the same name in
-        // another region is a different cluster. The refusal is the service's one
-        // fixed sentence for a taken name, which discloses neither the name nor
-        // the cluster already holding it.
+        // Asked again, under the lock the cluster is registered with: a name
+        // identifies one cluster of a region, and another request may have taken
+        // this one while the placement was resolved, so the uniqueness the
+        // decision above reported is the uniqueness that holds at the instant the
+        // cluster is registered.
         if state.arn_for_name(&region, &input.cluster_name).is_some() {
-            return Err(CreateClusterErrorModeled::ConflictException(
-                crate::state::name_already_exists("clusterName"),
-            )
-            .into());
+            return Err(name_conflict());
         }
 
         // The monotonic counter is what makes each cluster's ARN and endpoints
@@ -350,6 +362,17 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         }
         Ok(output)
     }
+}
+
+/// The refusal a create under a cluster name this region already holds earns: the
+/// modeled `ConflictException` (HTTP 409) in the service's one fixed sentence for a
+/// name already taken, which discloses neither the name nor the cluster holding it.
+///
+/// The same name in another region is a different cluster, so the decision is
+/// always taken within the request's own region.
+fn name_conflict() -> CreateClusterError {
+    CreateClusterErrorModeled::ConflictException(crate::state::name_already_exists("clusterName"))
+        .into()
 }
 
 /// Refuse the request with the modeled `BadRequestException`, naming the member at

@@ -29,7 +29,11 @@
 //! ([`crate::state::network::placement_subnet_refusal`]) before any ARN is minted —
 //! a subnet the account does not have is a `BadRequestException` and no replicator
 //! record is written. Those interfaces are only ever created for a setup whose
-//! clusters resolve, so that gate runs only when the clusters did.
+//! clusters resolve, so that gate runs only when the clusters did — and it runs
+//! LAST among this handler's refusals, after every decision taken from the request
+//! and from this service's own registry, the name conflict included, so a create
+//! MSK refuses on its own terms is never answered out of what another service
+//! reports.
 //!
 //! Authentication is NOT this handler's business: the emulator verifies every
 //! request signature centrally (see `AGENTS.md`), so the modelled
@@ -162,6 +166,20 @@ impl From<CreateReplicatorErrorModeled> for CreateReplicatorError {
     fn from(modeled: CreateReplicatorErrorModeled) -> Self {
         crate::scaffolded::Scaffolded::Modeled(modeled)
     }
+}
+
+/// The refusal a create under a replicator name this region already holds earns:
+/// the modeled `ConflictException` (HTTP 409) in the service's one fixed sentence
+/// for a name already taken, which discloses neither the name nor the replicator
+/// holding it.
+///
+/// The same name in another region is a different replicator, so the decision is
+/// always taken within the request's own region.
+fn name_conflict() -> CreateReplicatorError {
+    CreateReplicatorErrorModeled::ConflictException(crate::state::name_already_exists(
+        "replicatorName",
+    ))
+    .into()
 }
 
 /// The refusal a `ReplicationInfoList` entry that does not name one end of its
@@ -417,6 +435,22 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             }
         }
 
+        // A replicator name identifies a replicator within an account and region,
+        // so a name already in use IN THIS REGION is a conflict: this service's
+        // own decision, taken from its own registry, and therefore taken BEFORE
+        // the placement below is resolved against another service's inventory —
+        // the answer to a create whose name is taken is the conflict, whatever the
+        // subnets it names. The registry lock is held for that decision alone and
+        // released again, because the resolution below calls out over the
+        // in-process callback and no mutex may be held across it.
+        if state
+            .lock()
+            .replicator_arn_for_name(&region, &input.replicator_name)
+            .is_some()
+        {
+            return Err(name_conflict());
+        }
+
         // Each `KafkaClusters` entry names the subnets the replicator's own client
         // interfaces to that cluster are created in
         // (`KafkaClusterClientVpcConfig$SubnetIds`), and the account's subnets are
@@ -460,19 +494,16 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         let mut state = state.lock();
 
-        // A replicator name identifies a replicator within an account and region,
-        // so a name already in use IN THIS REGION is a conflict; the same name in
-        // another region is a different replicator. The refusal is the service's
-        // one fixed sentence for a taken name, which discloses neither the name
-        // nor the replicator already holding it.
+        // Asked again, under the lock the replicator is registered with: a name
+        // identifies one replicator of a region, and another request may have
+        // taken this one while the placement was resolved, so the uniqueness the
+        // decision above reported is the uniqueness that holds at the instant the
+        // replicator is registered.
         if state
             .replicator_arn_for_name(&region, &input.replicator_name)
             .is_some()
         {
-            return Err(CreateReplicatorErrorModeled::ConflictException(
-                crate::state::name_already_exists("replicatorName"),
-            )
-            .into());
+            return Err(name_conflict());
         }
 
         // The monotonic counter is what makes each replicator's ARN distinct; it

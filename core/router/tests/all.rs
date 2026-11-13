@@ -580,11 +580,6 @@ mod cloudfront_api_call_events;
 mod cloudfront_apigateway_origin_edge;
 #[path = "all/cloudfront_edge_cache_refresh.rs"]
 mod cloudfront_edge_cache_refresh;
-// Declared HERE, in the sorted list beside the other CloudFront suites, rather than appended
-// at the end of this file: the tail is where every suite landing in the same window appends,
-// so a line added there conflicts with all of them.
-#[path = "all/cloudfront_edge_generated_headers.rs"]
-mod cloudfront_edge_generated_headers;
 #[path = "all/cloudfront_key_value_store_handshake.rs"]
 mod cloudfront_key_value_store_handshake;
 // Declared HERE, in the sorted list beside the other CloudFront suite, rather than appended
@@ -979,11 +974,6 @@ mod rds_management_events;
 // refused alike — is in CloudTrail event history.
 #[path = "all/cloudformation_management_events.rs"]
 mod cloudformation_management_events;
-// Declared beside those two, in the same quiet span and for the same reason. This one pins
-// that a REFUSED Amazon EC2 call is in CloudTrail event history, with the fault class, the
-// code and the message its caller saw and no response elements.
-#[path = "all/ec2_management_events.rs"]
-mod ec2_management_events;
 #[path = "all/rds_query_front_door.rs"]
 mod rds_query_front_door;
 #[path = "all/rds_shared_query_front_door_routing.rs"]
@@ -1788,6 +1778,24 @@ mod cloudformation_domain_endpoint_outputs;
 // target can deploy it.
 #[path = "all/cloudformation_rest_api_token_authorizer_credentials.rs"]
 mod cloudformation_rest_api_token_authorizer_credentials;
+// Declared in the appended tail, which is where every new suite inserts its lines: whether
+// Amazon MSK answers its OWN refusal (a name the Region holds, a role of another account, a
+// value it does not accept) before it resolves a create's placement spans Amazon EC2 — which
+// owns the subnets — and Amazon MSK at once, so no single service crate's test target can
+// see both ends of it.
+#[path = "all/kafka_msk_own_refusals_precede_the_subnet_lookup.rs"]
+mod kafka_msk_own_refusals_precede_the_subnet_lookup;
+#[path = "all/cloudformation_monitored_alb_search_estate.rs"]
+mod cloudformation_monitored_alb_search_estate;
+#[path = "all/cloudformation_domain_endpoint_outputs.rs"]
+mod cloudformation_domain_endpoint_outputs;
+#[path = "all/cloudfront_edge_generated_headers.rs"]
+mod cloudfront_edge_generated_headers;
+// Declared beside those two, in the same quiet span and for the same reason. This one pins
+// that a REFUSED Amazon EC2 call is in CloudTrail event history, with the fault class, the
+// code and the message its caller saw and no response elements.
+#[path = "all/ec2_management_events.rs"]
+mod ec2_management_events;
 // deployed REST stage whose method integrates an Amazon DynamoDB ACTION answers, and what the
 // stage's response cache then holds for it, spans IAM, DynamoDB and API Gateway at once, so
 // no single crate's test target can make the call and then read the item it wrote.
