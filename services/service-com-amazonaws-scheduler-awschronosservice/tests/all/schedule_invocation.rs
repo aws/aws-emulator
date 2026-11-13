@@ -297,6 +297,16 @@ pub(crate) async fn peek(router: &MultiServiceRouter, url: &str) -> Vec<Value> {
     received["Messages"].as_array().cloned().unwrap_or_default()
 }
 
+/// The BODIES of the messages the queue at `url` holds, left on it: a suite that
+/// waits for a further delivery must still see the ones before it.
+pub(crate) async fn bodies(router: &MultiServiceRouter, url: &str) -> Vec<String> {
+    peek(router, url)
+        .await
+        .iter()
+        .map(|message| message["Body"].as_str().unwrap_or_default().to_string())
+        .collect()
+}
+
 /// The bodies of the messages the queue at `url` holds once it holds at least
 /// `wanted`, or whatever it holds after `patience`.
 async fn bodies_once(
@@ -307,16 +317,74 @@ async fn bodies_once(
 ) -> Vec<String> {
     let began = Instant::now();
     loop {
-        let held: Vec<String> = peek(router, url)
-            .await
-            .iter()
-            .map(|message| message["Body"].as_str().unwrap_or_default().to_string())
-            .collect();
+        let held = bodies(router, url).await;
         if held.len() >= wanted || began.elapsed() >= patience {
             return held;
         }
         tokio::time::sleep(POLL_INTERVAL).await;
     }
+}
+
+/// Every message the queue at `url` holds, REMOVED from it, so a later read reports
+/// only what arrived after this one.
+pub(crate) async fn drain(router: &MultiServiceRouter, url: &str) -> Vec<Value> {
+    let held = peek(router, url).await;
+    for message in &held {
+        if let Some(receipt) = message["ReceiptHandle"].as_str() {
+            let (status, deleted) = sqs(
+                router,
+                "DeleteMessage",
+                &json!({ "QueueUrl": url, "ReceiptHandle": receipt }),
+            )
+            .await;
+            assert_eq!(
+                status, 200,
+                "draining {url}: DeleteMessage answered {status} {deleted}"
+            );
+        }
+    }
+    held
+}
+
+/// The `FlexibleTimeWindow` a case states: `MaximumWindowInMinutes` under
+/// `Mode=FLEXIBLE`, or `Mode=OFF` for a schedule asking for no window at all.
+pub(crate) fn flexible_time_window(window_minutes: Option<i64>) -> Value {
+    match window_minutes {
+        Some(minutes) => json!({ "Mode": "FLEXIBLE", "MaximumWindowInMinutes": minutes }),
+        None => json!({ "Mode": "OFF" }),
+    }
+}
+
+/// `CreateSchedule` for one case, answering what the service reported.
+pub(crate) async fn given_schedule(
+    router: &MultiServiceRouter,
+    case: &str,
+    name: &str,
+    body: Value,
+) -> Value {
+    let (status, created) =
+        scheduler(router, "POST", &format!("/schedules/{name}"), Some(body)).await;
+    assert_eq!(
+        status, 200,
+        "case {case:?}: CreateSchedule answered {status} {created}"
+    );
+    created
+}
+
+/// `GetSchedule` for one schedule of `group`: whether it resolves, and the refusal it
+/// answers when it does not.
+pub(crate) async fn schedule_read(
+    router: &MultiServiceRouter,
+    group: &str,
+    name: &str,
+) -> (u16, Value) {
+    scheduler(
+        router,
+        "GET",
+        &format!("/schedules/{name}?groupName={group}"),
+        None,
+    )
+    .await
 }
 
 /// `at` as an `at(...)` expression's body states it: a local date and time with no

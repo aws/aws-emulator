@@ -37,6 +37,8 @@ mod schedule_group_read;
 mod schedule_invocation;
 #[path = "all/schedule_lifecycle.rs"]
 mod schedule_lifecycle;
+#[path = "all/server_paced_dispatch.rs"]
+mod server_paced_dispatch;
 #[path = "all/state_roundtrip.rs"]
 mod state_roundtrip;
 #[path = "all/tagging_refusal_messages.rs"]

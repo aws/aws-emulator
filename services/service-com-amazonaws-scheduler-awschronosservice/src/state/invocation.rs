@@ -1478,6 +1478,17 @@ pub fn scheduled_time_text(at: SystemTime) -> String {
         .to_string()
 }
 
+/// The instant one scheduled-time attribute states, or `None` for text stating none in
+/// the published form: the reverse of [`scheduled_time_text`], over the same format, so
+/// a reader of a delivered occurrence's instant does not re-state that format.
+#[must_use]
+pub fn scheduled_time_of(text: &str) -> Option<SystemTime> {
+    use ::chrono::TimeZone;
+
+    let naive = ::chrono::NaiveDateTime::parse_from_str(text, SCHEDULED_TIME_FORMAT).ok()?;
+    Some(SystemTime::from(::chrono::Utc.from_utc_datetime(&naive)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

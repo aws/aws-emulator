@@ -43,7 +43,8 @@ use smithy_server_runtime::MultiServiceRouter;
 // The emulator, the SQS/IAM setup and the queue reader this crate's invocation
 // suites share (`tests/all/schedule_invocation.rs`), so this one spells none again.
 use crate::schedule_invocation::{
-    at_expression_body, emulator, epoch_seconds, given_execution_role, given_queue, peek, scheduler,
+    at_expression_body, drain, emulator, epoch_seconds, flexible_time_window,
+    given_execution_role, given_queue, given_schedule, peek, schedule_read, scheduler,
     seconds_from_now, POLL_INTERVAL,
 };
 use crate::wire_harness::{error_code, error_message};
@@ -157,14 +158,6 @@ const TIMING_ROWS: &[TimingRow] = &[
     },
 ];
 
-/// The `FlexibleTimeWindow` a row states.
-fn flexible_time_window(window_minutes: Option<i64>) -> Value {
-    match window_minutes {
-        Some(minutes) => json!({ "Mode": "FLEXIBLE", "MaximumWindowInMinutes": minutes }),
-        None => json!({ "Mode": "OFF" }),
-    }
-}
-
 /// The body of the first message the queue at `url` holds, with the instant the test
 /// first SAW it — or `None` when nothing arrived inside `patience`.
 ///
@@ -189,44 +182,6 @@ async fn awaited_delivery(
         }
         tokio::time::sleep(POLL_INTERVAL).await;
     }
-}
-
-/// Every message the queue at `url` holds, removed from it, so a later poll reports
-/// only what arrived after this one.
-async fn drain(router: &MultiServiceRouter, url: &str) -> Vec<Value> {
-    let held = peek(router, url).await;
-    for message in &held {
-        if let Some(receipt) = message["ReceiptHandle"].as_str() {
-            let (status, deleted) = crate::schedule_invocation::sqs(
-                router,
-                "DeleteMessage",
-                &json!({ "QueueUrl": url, "ReceiptHandle": receipt }),
-            )
-            .await;
-            assert_eq!(
-                status, 200,
-                "draining {url}: DeleteMessage answered {status} {deleted}"
-            );
-        }
-    }
-    held
-}
-
-/// `CreateSchedule` for one row, with a `Target.Input` carrying the row's marker and
-/// the occurrence's own scheduled time.
-async fn given_schedule(
-    router: &MultiServiceRouter,
-    case: &str,
-    name: &str,
-    body: Value,
-) -> Value {
-    let (status, created) =
-        scheduler(router, "POST", &format!("/schedules/{name}"), Some(body)).await;
-    assert_eq!(
-        status, 200,
-        "case {case:?}: CreateSchedule answered {status} {created}"
-    );
-    created
 }
 
 /// Every row: the occurrence reaches the target at the instant the expression names
@@ -394,18 +349,6 @@ const COMPLETION_ROWS: &[CompletionRow] = &[
         resolves_after: true,
     },
 ];
-
-/// Whether `GetSchedule` resolves `name`, and the refusal it answers when it does
-/// not.
-async fn schedule_read(router: &MultiServiceRouter, group: &str, name: &str) -> (u16, Value) {
-    scheduler(
-        router,
-        "GET",
-        &format!("/schedules/{name}?groupName={group}"),
-        None,
-    )
-    .await
-}
 
 /// Every row: the action the schedule states is applied once it has completed
 /// invoking its target — `DELETE` removes it, so the read is refused exactly as a
