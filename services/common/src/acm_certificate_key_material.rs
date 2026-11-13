@@ -95,13 +95,22 @@ impl CertificateKeyMaterial {
     pub fn covers(&self, server_name: &str) -> bool {
         self.domain_names
             .iter()
-            .any(|name| name_matches(name, server_name))
+            .any(|name| name_covers(name, server_name))
     }
 }
 
-/// Whether the certificate name `name` matches the host `asked_for`, by the rule
-/// [`CertificateKeyMaterial::covers`] documents.
-fn name_matches(name: &str, asked_for: &str) -> bool {
+/// Whether the certificate name `name` covers the host `asked_for`: the ONE statement of
+/// that match, so every service that decides whether a certificate serves a hostname —
+/// the one running the handshake ([`CertificateKeyMaterial::covers`]) and one judging a
+/// configuration that names a certificate for a host before any connection is made —
+/// decides alike.
+///
+/// The match is the one a TLS client applies to a certificate's names (RFC 6125): a name is
+/// matched case-insensitively, a trailing root dot on either side names the same host, and
+/// a name whose LEFTMOST label is `*` matches any single label in that position, so
+/// `*.example.com` covers `a.example.com` and neither `example.com` nor `a.b.example.com`.
+#[must_use]
+pub fn name_covers(name: &str, asked_for: &str) -> bool {
     let name = name.trim().trim_end_matches('.');
     let asked_for = asked_for.trim().trim_end_matches('.');
     if name.is_empty() || asked_for.is_empty() {

@@ -107,11 +107,15 @@ fn refusal(answer: &Answer, case: &str) -> String {
 }
 
 /// A `DomainEndpointOptions` container naming `endpoint` as the domain's custom endpoint.
+///
+/// The container does not ENABLE the custom endpoint: an enabled one is served by a
+/// certificate of this account that covers the host, which is a rule of its own (the
+/// `custom_endpoint_certificate` suite) rather than the member syntax this table is about,
+/// and the syntax is applied to the value whenever a request supplies it.
 fn endpoint_options(endpoint: &str) -> Value {
     json!({
         "DomainEndpointOptions": {
             "EnforceHTTPS": true,
-            "CustomEndpointEnabled": true,
             "CustomEndpoint": endpoint,
         }
     })

@@ -67,6 +67,8 @@ mod cross_cluster_connections;
 mod cross_cluster_search;
 #[path = "all/current_generation_instance_types.rs"]
 mod current_generation_instance_types;
+#[path = "all/custom_endpoint_certificate.rs"]
+mod custom_endpoint_certificate;
 #[path = "all/data_plane_iam_authorization.rs"]
 mod data_plane_iam_authorization;
 #[path = "all/data_plane_identity_evidence.rs"]

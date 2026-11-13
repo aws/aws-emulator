@@ -376,6 +376,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             crate::state::custom_endpoint::custom_endpoint_refusal(
                 input.domain_endpoint_options.as_ref(),
             ),
+            // And a custom endpoint the service could not serve is refused BEFORE any
+            // domain is created: an endpoint turned on without both of the members it is
+            // served by, a certificate the account holds none of, and a certificate that
+            // does not cover the requested host all describe an HTTPS endpoint no client
+            // could reach under the name it asked for
+            // ([`crate::state::custom_endpoint::custom_endpoint_certificate_refusal`]), by
+            // the same rule the update path applies.
+            crate::state::custom_endpoint::custom_endpoint_certificate_refusal(
+                &*self.engine,
+                &region,
+                input.domain_endpoint_options.as_ref(),
+            ),
             crate::state::log_publishing_refusal(input.log_publishing_options.iter().flatten()),
             // And the group that ARN names has to be one CloudWatch Logs holds: a
             // create that enables publishing to a group nobody created configures a

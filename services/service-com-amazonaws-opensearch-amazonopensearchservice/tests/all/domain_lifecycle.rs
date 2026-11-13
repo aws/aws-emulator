@@ -126,6 +126,21 @@ impl Emulator {
         emulator
     }
 
+    /// The same emulator with the Certificate Manager service mounted on the SAME shared
+    /// engine, so a suite can bring the certificate a domain's custom endpoint is served
+    /// under into that service through its own `ImportCertificate` — the store this service
+    /// resolves a `DomainEndpointOptions$CustomEndpointCertificateArn` in — rather than by
+    /// hand-building a certificate record.
+    pub(crate) fn with_certificates() -> Self {
+        let mut emulator = Self::new();
+        emulator.router.register_service(
+            service_com_amazonaws_acm_certificatemanager::EmulatedService::new(
+                std::sync::Arc::clone(&emulator.engine),
+            ),
+        );
+        emulator
+    }
+
     /// This emulator's store, reached exactly as a handler reaches it. A suite uses it
     /// to put the record into a state no implemented operation can reach yet — the
     /// service software a landed deployment leaves behind, say, whose deploying
@@ -358,6 +373,31 @@ impl Emulator {
             "case {operation}({region:?}): expected 200, got {} with {:?}",
             answer.status, answer.body
         );
+    }
+
+    /// Call `operation` of the Certificate Manager service mounted on the same router
+    /// ([`Emulator::with_certificates`]) in `region`, the way an SDK drives it: `POST /`
+    /// with `X-Amz-Target: CertificateManager.<Op>`, signed for that service in that
+    /// Region — a certificate is a regional resource, so the Region a call is signed for is
+    /// the Region its certificate lives in.
+    pub(crate) async fn acm_call(&self, region: &str, operation: &str, body: Value) -> Answer {
+        let request = http::Request::builder()
+            .method("POST")
+            .uri("/")
+            .header("host", format!("acm.{region}.amazonaws.com"))
+            .header("content-type", "application/x-amz-json-1.1")
+            .header("x-amz-target", format!("CertificateManager.{operation}"))
+            .header(
+                "authorization",
+                format!(
+                    "AWS4-HMAC-SHA256 \
+                     Credential={DEFAULT_ACCESS_KEY_ID}/20260101/{region}/acm/aws4_request, \
+                     SignedHeaders=host;x-amz-target, Signature=0"
+                ),
+            )
+            .body(Bytes::from(body.to_string()))
+            .expect("the test request is well formed");
+        self.dispatch(request).await
     }
 }
 

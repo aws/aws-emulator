@@ -62,6 +62,12 @@ service-com-amazonaws-cloudwatchlogs-logs-20140328 = { workspace = true }
 # Region, and for the key state KMS serves it in — in the store `kms:CreateKey` and
 # `kms:DisableKey` write (`state::encryption_at_rest`), the way the stores above are read.
 service-com-amazonaws-kms-trentservice = { workspace = true }
+# The Certificate Manager certificate store, which holds the certificates a domain's
+# custom endpoint can be served under: a `DomainEndpointOptions$CustomEndpointCertificateArn`
+# is resolved — and asked whether it covers the requested hostname — in the store
+# `acm:ImportCertificate` and `acm:RequestCertificate` write
+# (`state::custom_endpoint`), the way the stores above are read.
+service-com-amazonaws-acm-certificatemanager = { workspace = true }
 # UAX#29 word segmentation: the word boundaries the engine's standard tokenizer splits
 # text on (`state::analysis`), rather than a hand-written scanner here.
 unicode-segmentation = "1"
@@ -90,6 +96,10 @@ emulator-core-build-support = { workspace = true }
 [dev-dependencies]
 sha2 = { workspace = true }
 hex = { workspace = true }
+# Generates the real certificates and key pairs a test brings into Certificate Manager
+# through its own `ImportCertificate`, so the names a domain's custom endpoint is judged
+# against are read out of a real X.509 body rather than written into the test. TEST-ONLY.
+rcgen = "0.13"
 
 [lints]
 workspace = true

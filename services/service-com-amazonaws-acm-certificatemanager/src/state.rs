@@ -1079,6 +1079,28 @@ impl Certificate {
         self.cert_type == TYPE_IMPORTED
     }
 
+    /// Whether this certificate covers the host `server_name`.
+    ///
+    /// The names a certificate covers are its subject name and its subject alternative
+    /// names, which is what [`Self::subject_alternative_names`] holds
+    /// ([`Self::domain_name`] first, then the rest) — so WHICH hosts a certificate serves
+    /// is answered from the record this service stores rather than re-read from X.509 by
+    /// whoever asks. Asked by the services that hold a resource configured to serve a
+    /// hostname under one of this account's certificates, which is a fact about the
+    /// CERTIFICATE and so is decided here.
+    ///
+    /// One name covers one host by the match a TLS client applies to a certificate's
+    /// names, including a leading wildcard label
+    /// ([`::service_common::acm_certificate_key_material::name_covers`]), so a certificate
+    /// covers a host for this answer exactly when it would serve that host's handshake.
+    pub fn covers(&self, server_name: &str) -> bool {
+        std::iter::once(&self.domain_name)
+            .chain(self.subject_alternative_names.iter())
+            .any(|name| {
+                ::service_common::acm_certificate_key_material::name_covers(name, server_name)
+            })
+    }
+
     /// Apply everything the clock already owes this certificate at `now`: the initial
     /// domain-validation email, then the validation outcome.
     ///

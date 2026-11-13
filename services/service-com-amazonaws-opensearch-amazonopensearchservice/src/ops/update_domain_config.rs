@@ -621,6 +621,25 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             return Err(UpdateDomainConfigErrorModeled::ValidationException(refusal).into());
         }
 
+        // A custom endpoint the service could not serve is refused whichever call asks for
+        // it, and by the same rule the create path applies: an endpoint turned on without
+        // both of the members it is served by, a certificate the account holds none of, and
+        // a certificate that does not cover the requested host each describe an HTTPS
+        // endpoint no client could reach under the name it asked for
+        // ([`crate::state::custom_endpoint::custom_endpoint_certificate_refusal`]). It is
+        // checked on the REQUEST's container, which REPLACES the stored one whole: the
+        // container the request carries IS the endpoint this change would leave the domain
+        // answering on, and a request carrying none changes nothing about it. A dry run is
+        // refused too — it reports what applying the change would do, and this change
+        // cannot be applied.
+        if let Some(refusal) = crate::state::custom_endpoint::custom_endpoint_certificate_refusal(
+            &*self.engine,
+            &crate::state::request_region(ctx.parts()),
+            input.domain_endpoint_options.as_ref(),
+        ) {
+            return Err(UpdateDomainConfigErrorModeled::ValidationException(refusal).into());
+        }
+
         let touched = merge(&mut merged, input, &placements, now);
         // A block the update INTRODUCES is completed the same way the create completes
         // one: a volume switched to `gp3` gets the baseline performance the service
