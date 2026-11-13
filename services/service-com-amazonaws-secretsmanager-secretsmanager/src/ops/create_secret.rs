@@ -7,8 +7,9 @@
 //! of the stored secret.
 //!
 //! That initial value is stored under the KMS key the request names, so storing it
-//! means encrypting it under that key ([`crate::state::envelope`]): a key KMS will
-//! not encrypt with makes this create `EncryptionFailure`, and stores no secret.
+//! means encrypting it under that key ([`crate::state::envelope`]): a key that cannot
+//! seal the value refuses this create and stores no secret, under the class the kind of
+//! key failure calls for (see [`encryption_failure`]).
 //!
 //! ## Shape of an operation
 //!
@@ -529,8 +530,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         }
 
         // The initial value is stored under the key this secret names, so storing
-        // it means encrypting it under that key: a key KMS will not encrypt with is
-        // the `EncryptionFailure` this create answers, and no secret is stored.
+        // it means encrypting it under that key: a key that cannot seal it refuses
+        // this create, under the class the kind of key failure calls for (see
+        // `encryption_failure`), and no secret is stored.
         let sealed = match &value {
             Some(value) => Some(
                 crate::state::envelope::seal(
@@ -713,39 +715,51 @@ fn already_exists(name: &str) -> CreateSecretError {
     .into()
 }
 
-/// How a create is refused when the customer managed key it names will not encrypt
-/// the initial value.
+/// How a create is refused when the customer managed key it names cannot seal the
+/// initial value, which follows from WHY that key could not be used
+/// ([`crate::state::envelope::KmsRefusal::kind`]) — each kind of key failure is a
+/// different thing for the caller to put right, so each is a different modelled class:
 ///
-/// A create names the key the secret is to be held under, and the account prepares that
-/// key before the secret exists: a key KMS will not perform a cryptographic operation
-/// with — whatever it states about it, its state or the authority on it — is a
-/// prerequisite of this create that was not completed, which is the modelled
-/// `PreconditionNotMetException`: "The request failed because you did not complete all
-/// the prerequisite steps." (this service's Smithy model). The sentence carries the KMS
-/// refusal that says WHICH step, so a caller learns what to change about the key.
-///
-/// A failure KMS said nothing about is not a judgement of the key, so it is the
-/// modelled `EncryptionFailure` for a value this service could not encrypt.
+/// * a `KmsKeyId` that resolves to NO key is a fault of the value the request carried,
+///   which is the modelled `InvalidParameterException` — "The parameter name or value
+///   is invalid." (this service's Smithy model) — carrying this service's clause for an
+///   invalid KMS key and the KMS refusal that says what is wrong with the identifier;
+/// * a key that EXISTS and will not perform the operation is a prerequisite of this
+///   create the account did not complete — a create names the key the secret is to be
+///   held under, and the account prepares that key before the secret exists — which is
+///   the modelled `PreconditionNotMetException`: "The request failed because you did
+///   not complete all the prerequisite steps.";
+/// * authority that does not reach `kms:GenerateDataKey` on the key is a refusal of the
+///   ACCESS this create needed rather than a failure to encrypt: the common
+///   `AccessDeniedException` carrying this service's own sentence for it
+///   (`crate::state::envelope::KMS_ACCESS_DENIED_MESSAGE`);
+/// * and a failure KMS said nothing about is no judgement of the key at all, so it is
+///   the modelled `EncryptionFailure` for a value this service could not encrypt.
 fn encryption_failure(refusal: crate::state::envelope::KmsRefusal) -> CreateSecretError {
-    // A caller whose authority does not reach `kms:GenerateDataKey` on the key is NOT
-    // AUTHORIZED, which is a refusal of the ACCESS this create needed rather than a
-    // failure to encrypt: the common `AccessDeniedException` carrying this service's own
-    // sentence for it (`crate::state::envelope::KMS_ACCESS_DENIED_MESSAGE`).
-    if let Some(denied) = refusal.denied_message() {
-        return crate::scaffolded::AccessDeniedException::new(denied).into();
-    }
-    if refusal.stated_by_kms() {
-        return CreateSecretErrorModeled::PreconditionNotMetException(
+    use crate::state::envelope::RefusalKind;
+
+    match refusal.kind() {
+        RefusalKind::Denied => crate::scaffolded::AccessDeniedException::new(
+            crate::state::envelope::KMS_ACCESS_DENIED_MESSAGE,
+        )
+        .into(),
+        RefusalKind::NoSuchKey => CreateSecretErrorModeled::InvalidParameterException(
+            InvalidParameterException {
+                message: Some(refusal.invalid_key_message()),
+            },
+        )
+        .into(),
+        RefusalKind::Unusable => CreateSecretErrorModeled::PreconditionNotMetException(
             PreconditionNotMetException {
                 message: Some(refusal.encryption_failure_message()),
             },
         )
-        .into();
+        .into(),
+        RefusalKind::Unstated => CreateSecretErrorModeled::EncryptionFailure(EncryptionFailure {
+            message: Some(refusal.encryption_failure_message()),
+        })
+        .into(),
     }
-    CreateSecretErrorModeled::EncryptionFailure(EncryptionFailure {
-        message: Some(refusal.encryption_failure_message()),
-    })
-    .into()
 }
 
 /// The modelled server error for a request that cannot reach this service's

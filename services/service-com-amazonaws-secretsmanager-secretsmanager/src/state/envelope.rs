@@ -18,9 +18,16 @@
 //!
 //! That is why the key's own state decides both paths: a key KMS will not perform a
 //! cryptographic operation with cannot produce a data key and cannot unwrap one, so
-//! the write fails with `EncryptionFailure` and the read with `DecryptionFailure`,
-//! each relaying the KMS refusal it met. Nothing here inspects the key's state
-//! itself: KMS owns that judgement, and this module asks it.
+//! the call that needed it fails, relaying the KMS refusal it met. Nothing here
+//! inspects the key's state itself: KMS owns that judgement, and this module asks it.
+//!
+//! WHICH failure the operation answers follows from WHY the key could not be used,
+//! which KMS states as the error code of its refusal ([`KmsRefusal::kind`]): an
+//! identifier that resolves to no key is a fault of the value the request carried, a
+//! key that exists but will not perform the operation is a key the account has to
+//! prepare, and authority the caller does not hold is an access decision. Each
+//! operation answers those kinds with the error classes it models, so this module
+//! states the kind and never the class.
 //!
 //! A key's PERMISSIONS decide both paths for the same reason. Each call is one this
 //! service makes on the CALLER's behalf and through its own service path, so it is
@@ -129,6 +136,27 @@ const DECRYPT_OPERATION: &str = "Decrypt";
 /// The error code KMS answers a cryptographic operation no authority in force reaches
 /// for, which is the code the relayed clause of such a refusal states.
 const ACCESS_DENIED_CODE: &str = "AccessDeniedException";
+
+/// The error code KMS answers a request whose key identifier resolves to no key with —
+/// "The request was rejected because the specified entity or resource could not be
+/// found" (`NotFoundException`, the KMS model), which every cryptographic operation of
+/// KMS models. It is the one refusal that is about the identifier the request carried
+/// rather than about a key, which is why it is the code [`KmsRefusal::kind`] separates
+/// first.
+const KEY_NOT_FOUND_CODE: &str = "NotFoundException";
+
+/// How the `Message` of `InvalidParameterException` introduces the KMS refusal of a key
+/// a request NAMED but that is not one: "The operation failed because of an invalid KMS
+/// key: &lt;the KMS refusal&gt;".
+///
+/// It is this service's own clause, the counterpart of [`ENCRYPTION_RELAY_PREFIX`] for a
+/// key that could not be resolved at all: what the caller has to change is the value it
+/// sent, not the key.
+const INVALID_KMS_KEY_PREFIX: &str = "The operation failed because of an invalid KMS key:";
+
+/// The `Message` of `InvalidParameterException` when there is no KMS answer to relay:
+/// "The parameter name or value is invalid." (this service's Smithy model).
+pub const INVALID_PARAMETER_MESSAGE: &str = "The parameter name or value is invalid.";
 
 /// The entry of the encryption context naming the secret the value belongs to.
 const CONTEXT_SECRET_ARN: &str = "SecretARN";
@@ -349,6 +377,27 @@ impl ValueContext {
     }
 }
 
+/// Why the key a call needed could not be used, which is what decides WHICH class an
+/// operation naming that key is refused under: KMS answers each kind of key failure
+/// under its own error code, and the code says whether the caller named the wrong key,
+/// has to prepare the key it named, or lacks the authority to use it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RefusalKind {
+    /// No authority in force reaches the cryptographic operation on the key for this
+    /// caller ([`ACCESS_DENIED_CODE`]).
+    Denied,
+    /// The identifier resolves to NO key at the endpoint it was asked of
+    /// ([`KEY_NOT_FOUND_CODE`]), so what is wrong is the key the request named rather
+    /// than anything about a key.
+    NoSuchKey,
+    /// A key that EXISTS refused the cryptographic operation — its state, its usage or
+    /// its material — so the key has to be brought into a state that performs it.
+    Unusable,
+    /// KMS stated nothing: the call reached no answer, so nothing is known about the
+    /// key.
+    Unstated,
+}
+
 /// A KMS call the envelope needed did not produce a result, so the value could not
 /// be sealed or opened.
 #[derive(Debug, Clone)]
@@ -356,11 +405,10 @@ pub struct KmsRefusal {
     /// The KMS refusal to relay, when KMS answered with one; `None` when KMS did not
     /// answer at all, which is nothing to report about the key.
     relayed: Option<String>,
-    /// Whether the refusal was an AUTHORIZATION decision about the key — no authority in
-    /// force reaches the cryptographic operation for this caller — which this service
-    /// answers as the common `AccessDeniedException`, rather than as a failure to encrypt
-    /// or decrypt.
-    denied: bool,
+    /// The error code KMS stated the refusal under, which is what [`Self::kind`] reads
+    /// the kind of key failure off; `None` when KMS did not answer, or answered without
+    /// one.
+    code: Option<String>,
 }
 
 impl KmsRefusal {
@@ -368,7 +416,18 @@ impl KmsRefusal {
     fn unrelayed() -> Self {
         Self {
             relayed: None,
-            denied: false,
+            code: None,
+        }
+    }
+
+    /// Which kind of key failure this refusal is, read off the code KMS stated it
+    /// under.
+    pub fn kind(&self) -> RefusalKind {
+        match self.code.as_deref() {
+            Some(ACCESS_DENIED_CODE) => RefusalKind::Denied,
+            Some(KEY_NOT_FOUND_CODE) => RefusalKind::NoSuchKey,
+            _ if self.relayed.is_some() => RefusalKind::Unusable,
+            _ => RefusalKind::Unstated,
         }
     }
 
@@ -382,6 +441,14 @@ impl KmsRefusal {
         self.worded(ENCRYPTION_RELAY_PREFIX, ENCRYPTION_FAILURE_MESSAGE)
     }
 
+    /// The `InvalidParameterException` message for a refusal of the key a request
+    /// NAMED: this service's clause for a `KmsKeyId` that is not a usable key
+    /// ([`INVALID_KMS_KEY_PREFIX`]), then the KMS refusal that says what is wrong with
+    /// it, so the caller sees which identifier to correct.
+    pub fn invalid_key_message(&self) -> String {
+        self.worded(INVALID_KMS_KEY_PREFIX, INVALID_PARAMETER_MESSAGE)
+    }
+
     /// The sentence to answer an AUTHORIZATION refusal of the key with, or `None` when
     /// the call failed for a reason that is not one.
     ///
@@ -392,7 +459,7 @@ impl KmsRefusal {
     /// class ([`KMS_ACCESS_DENIED_MESSAGE`]), the same one whichever action the key
     /// withheld and whichever operation needed it.
     pub fn denied_message(&self) -> Option<&'static str> {
-        self.denied.then_some(KMS_ACCESS_DENIED_MESSAGE)
+        matches!(self.kind(), RefusalKind::Denied).then_some(KMS_ACCESS_DENIED_MESSAGE)
     }
 
     /// Whether KMS STATED this refusal, so what it says about the key is the key's own
@@ -412,7 +479,7 @@ impl KmsRefusal {
     /// class.
     fn denied(message: &str) -> Self {
         Self {
-            denied: true,
+            code: Some(ACCESS_DENIED_CODE.to_string()),
             relayed: Some(format!(
                 "{message} {}",
                 relay_clause(ACCESS_DENIED_CODE, KMS_CLIENT_STATUS, None)
@@ -599,8 +666,7 @@ pub async fn key_refusal(
             // there is nothing to report: the modelled sentence for the failure
             // class stands for a refused write, not for a judgement of the key.
             CallFailure::Failed(refusal) => refusal
-                .relayed
-                .is_some()
+                .stated_by_kms()
                 .then(|| refusal.encryption_failure_message()),
         },
     }
@@ -737,9 +803,10 @@ fn call_failure<E: ProvideErrorMetadata + ::std::error::Error + 'static>(
     };
     CallFailure::Failed(KmsRefusal {
         relayed: Some(wrapped),
-        // A refusal KMS stated under its access-denied code is an AUTHORIZATION decision
-        // about the key, whoever the call was made for, so it is answered as one.
-        denied: code == Some(ACCESS_DENIED_CODE),
+        // The code KMS stated the refusal under is what the kind of key failure is read
+        // off ([`KmsRefusal::kind`]), so it is kept beside the relay rather than
+        // collapsed into the relay's text.
+        code: code.map(str::to_string),
     })
 }
 

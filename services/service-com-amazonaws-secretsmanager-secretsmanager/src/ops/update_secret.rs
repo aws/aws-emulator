@@ -352,9 +352,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         };
 
         // The new value is stored under that key, so storing it means encrypting it
-        // under that key: a key KMS will not encrypt with is the
-        // `EncryptionFailure` this update answers, and nothing about the secret
-        // changes.
+        // under that key: a key that cannot seal it refuses this update, under the
+        // class the kind of key failure calls for (see `encryption_failure`), and
+        // nothing about the secret changes.
         let sealed = match value.as_ref().filter(|_| !target.replay) {
             Some(value) => Some(
                 crate::state::envelope::seal(
@@ -670,12 +670,23 @@ fn decryption_failure(refusal: crate::state::envelope::KmsRefusal) -> UpdateSecr
 }
 
 /// How a write the secret's KMS key refused is answered, which is the mirror of
-/// [`decryption_failure`]: the common `AccessDeniedException`, carrying the same sentence,
-/// for a caller whose authority does not reach `kms:GenerateDataKey` on the key, and
-/// `EncryptionFailure` otherwise.
+/// [`decryption_failure`] for the operation the key could not perform, with the class
+/// following from WHY the key could not be used
+/// ([`crate::state::envelope::KmsRefusal::kind`]): the common `AccessDeniedException`,
+/// carrying the same sentence, for a caller whose authority does not reach
+/// `kms:GenerateDataKey` on the key; the modelled `InvalidParameterException` for a
+/// `KmsKeyId` that resolves to NO key, which is a fault of the value the request
+/// carried rather than of a key; and `EncryptionFailure` for a key that exists and
+/// would not encrypt under it, or a failure KMS said nothing about.
 fn encryption_failure(refusal: crate::state::envelope::KmsRefusal) -> UpdateSecretError {
     if let Some(denied) = refusal.denied_message() {
         return crate::scaffolded::AccessDeniedException::new(denied).into();
+    }
+    if refusal.kind() == crate::state::envelope::RefusalKind::NoSuchKey {
+        return UpdateSecretErrorModeled::InvalidParameterException(InvalidParameterException {
+            message: Some(refusal.invalid_key_message()),
+        })
+        .into();
     }
     UpdateSecretErrorModeled::EncryptionFailure(EncryptionFailure {
         message: Some(refusal.encryption_failure_message()),

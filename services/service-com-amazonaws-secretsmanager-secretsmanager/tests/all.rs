@@ -39,6 +39,8 @@ mod secret_denial_resource_clause;
 mod secret_error_responses;
 #[path = "all/secret_kms_access_denied.rs"]
 mod secret_kms_access_denied;
+#[path = "all/secret_kms_key_refusal_classes.rs"]
+mod secret_kms_key_refusal_classes;
 #[path = "all/secret_kms_key_state.rs"]
 mod secret_kms_key_state;
 #[path = "all/secret_lifecycle.rs"]
