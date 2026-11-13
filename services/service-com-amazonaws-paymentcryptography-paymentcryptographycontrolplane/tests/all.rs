@@ -27,3 +27,5 @@ mod resource_tags;
 mod state_roundtrip;
 #[path = "all/stop_key_usage.rs"]
 mod stop_key_usage;
+#[path = "all/validation_refusal_message.rs"]
+mod validation_refusal_message;
