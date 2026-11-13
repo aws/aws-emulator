@@ -21,7 +21,7 @@ emulator-server = { workspace = true }
 emulator-telemetry = { workspace = true }
 aws-smithy-runtime-api = { workspace = true }
 aws-smithy-types = { workspace = true }
-tokio = { workspace = true, features = ["time"] }
+tokio = { workspace = true, features = ["sync", "time"] }
 bytes = { workspace = true }
 http = { workspace = true }
 serde_json = { workspace = true }
@@ -42,6 +42,10 @@ image = { version = "0.25", default-features = false, features = [
     "png",
     "jpeg",
 ] }
+# Parses the PDF document an input asset holds — its page tree, fonts and per-page content
+# streams — so the text a finished job writes into its standard output is text really
+# extracted from the asset rather than assembled by hand (`state::asset_extraction`).
+pdf-extract = "0.12"
 # Digests the store's own mint count and the submission instant into the 16 bytes behind
 # the UUID an invocation id is (`state::mint_invocation_id`); the UUID layout itself is
 # `service_common::uuid_from_random_bytes`.
@@ -57,6 +61,13 @@ emulator-core-build-support = { workspace = true }
 
 [dev-dependencies]
 hex = { workspace = true }
+# Writes the PDF documents the standard-output suite stages as a job's input asset, so the
+# asset a job really parses is a document a PDF reader opens rather than bytes shaped like
+# one.
+pdf-writer = "0.13"
+# Encodes the PNG the same suite stages as an image asset, so the image modality's row is a
+# real image rather than hand-assembled bytes.
+image = { version = "0.25", default-features = false, features = ["png"] }
 # Percent-encoding for the ARN the build-time service binds in an `@httpLabel` path
 # segment, which the reference-resolution suite creates and releases its fixtures
 # through: the encoding is the crate's, as the sibling apigateway/medialive suites do it,

@@ -349,34 +349,22 @@ pub fn settle_when_due<Eng: Send + Sync + 'static>(
     });
 }
 
-/// Materialise the terminal transition the clock owes the job `invocation_arn` names, if
-/// it is still owed, settling it on what this emulator's object store says about the
-/// asset — the same question a status read asks, asked here on the job's own behalf.
+/// Materialise the transitions the clock owes the job `invocation_arn` names — through the
+/// ONE settle path a status read uses ([`super::job_output::settle_due_transitions`]), so the
+/// job's output is delivered and its outcome settled exactly as a read of the same instant
+/// would have done it.
 async fn settle_now<Eng: Send + Sync + 'static>(
     engine: &Eng,
     callback: &EmbeddedEmulator,
     invocation_arn: &str,
     region: &str,
 ) {
-    let Some(state) = super::service_state(engine) else {
-        return;
-    };
-    let now = SystemTime::now();
-    // The guard is released before the asset is resolved, so this service's store and
-    // another service's are never held at once.
-    let pending_asset = {
-        let store = state.lock();
-        match store.invocation(invocation_arn) {
-            // A job this store no longer retains has nothing left to settle.
-            None => None,
-            Some(invocation) => invocation
-                .terminal_transition_due(now)
-                .then(|| invocation.input_s3_uri.clone()),
-        }
-    };
-    let Some(input_s3_uri) = pending_asset else {
-        return;
-    };
-    let asset = super::resolve_input_asset(callback, region, &input_s3_uri).await;
-    state.lock().settle_invocation(invocation_arn, now, asset);
+    super::job_output::settle_due_transitions(
+        engine,
+        callback,
+        region,
+        invocation_arn,
+        SystemTime::now(),
+    )
+    .await;
 }

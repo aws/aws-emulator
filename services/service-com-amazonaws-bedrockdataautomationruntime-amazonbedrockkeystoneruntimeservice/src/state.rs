@@ -18,14 +18,20 @@
 //! The ASSET a submission points at is not owned here either: it is an object of Amazon
 //! S3, which this emulator also serves, so the job's work — which begins by reading that
 //! asset — resolves it through the framework's in-process callback
-//! ([`resolve_input_asset`]), and the job's terminal outcome is settled on what that
-//! resolution established.
+//! ([`resolve_input_asset`]), the job's terminal outcome is settled on what that
+//! resolution established, and what the job extracted from the asset is written back into
+//! the output location the submission named ([`job_output`]) before that outcome is
+//! reported.
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::LazyLock;
 use std::time::{Duration, SystemTime};
 
 use service_com_amazonaws_bedrockdataautomation_amazonbedrockkeystonebuildtimeservice::state as build_time;
+
+/// What reading an asset's bytes establishes about it, and the text extracted from it —
+/// which is what a finished job's output is written from.
+pub mod asset_extraction;
 
 /// Whether the bytes of an asset are an image this service can process, which is what a
 /// job pointed at an image settles its outcome on.
@@ -34,6 +40,10 @@ pub mod input_image;
 /// The EventBridge events a job's lifecycle publishes for a submission that asked for
 /// them.
 pub mod job_events;
+
+/// What a finished job writes into the output location its submission named, and the
+/// settle that delivers it before the job reports itself finished.
+pub mod job_output;
 
 use crate::ops::types::{
     AssetProcessingConfiguration, Blueprint, DataAutomationConfiguration, EncryptionConfiguration,
@@ -669,9 +679,22 @@ where
 /// `None` for a value that addresses no object of the store: no bucket, or no key under
 /// it.
 fn s3_object_address(uri: &str) -> Option<(&str, &str)> {
+    let (bucket, key) = s3_bucket_and_tail(uri)?;
+    (!key.is_empty()).then_some((bucket, key))
+}
+
+/// The bucket an `s3://` URI names and everything after it, which may be empty.
+///
+/// The ONE place this tree's `s3://` form is split, so the two things a submission
+/// addresses with it cannot drift apart: the caller decides what an empty tail means — no
+/// asset for [`s3_object_address`], the bucket root for
+/// [`job_output::output_location`] — and the splitting itself is stated once.
+///
+/// `None` for a value that is not an `s3://` URI, or that names no bucket.
+fn s3_bucket_and_tail(uri: &str) -> Option<(&str, &str)> {
     let rest = uri.trim().strip_prefix("s3://")?;
-    let (bucket, key) = rest.split_once('/')?;
-    (!bucket.is_empty() && !key.is_empty()).then_some((bucket, key))
+    let (bucket, tail) = rest.split_once('/').unwrap_or((rest, ""));
+    (!bucket.is_empty()).then_some((bucket, tail))
 }
 
 /// An Amazon S3 client over the in-process callback into this same emulator.
@@ -747,19 +770,19 @@ pub const MAX_CLASSIFIED_ASSET_BYTES: i64 = 8 * 1024 * 1024;
 ///
 /// TWO reads: a `HeadObject` establishes that the asset IS there and how large the store
 /// says it is, and then — only for an object inside [`MAX_CLASSIFIED_ASSET_BYTES`] — a
-/// `GetObject` reads it so the job can establish whether what it was pointed at is
-/// something it can process at all ([`input_image::image_verdict`]). Nothing here
-/// extracts anything FROM the asset: the bytes are used to read the asset's own header
-/// and are dropped with this call.
+/// `GetObject` reads it, so the job can establish whether what it was pointed at is
+/// something it can process at all ([`input_image::image_verdict`]) and what it holds
+/// ([`asset_extraction::read_asset`], the extraction a successful job's output is written
+/// from). The bytes themselves are dropped with this call: what travels on is the reading.
 pub async fn resolve_input_asset(
     callback: &::smithy_server_runtime::EmbeddedEmulator,
     region: &str,
     s3_uri: &str,
-) -> InputAsset {
+) -> ResolvedAsset {
     use ::aws_sdk_s3::error::ProvideErrorMetadata;
 
     let Some((bucket, key)) = s3_object_address(s3_uri) else {
-        return InputAsset::Absent;
+        return ResolvedAsset::of(InputAsset::Absent);
     };
     let client = s3_client(callback, region);
     let declared = match client.head_object().bucket(bucket).key(key).send().await {
@@ -767,7 +790,7 @@ pub async fn resolve_input_asset(
         Ok(answer) => answer.content_length().unwrap_or_default(),
         Err(error) => {
             if object_is_absent(&error) {
-                return InputAsset::Absent;
+                return ResolvedAsset::of(InputAsset::Absent);
             }
             // Any other answer is not S3 reporting an absent object, so it fails no job —
             // and it is worth a warning, because a deployment with no object store to ask
@@ -781,13 +804,13 @@ pub async fn resolve_input_asset(
                 error = %::aws_smithy_types::error::display::DisplayErrorContext(&error),
                 "the input asset could not be resolved against this emulator's Amazon S3"
             );
-            return InputAsset::Available;
+            return ResolvedAsset::of(InputAsset::Available);
         }
     };
     // Past this emulator's read ceiling nothing is established about the asset, so the
-    // job is not failed on it.
+    // job is not failed on it — and nothing is extracted from it either.
     if declared > MAX_CLASSIFIED_ASSET_BYTES {
-        return InputAsset::Available;
+        return ResolvedAsset::of(InputAsset::Available);
     }
     let read = match client.get_object().bucket(bucket).key(key).send().await {
         Ok(read) => read,
@@ -801,7 +824,7 @@ pub async fn resolve_input_asset(
                 error = %::aws_smithy_types::error::display::DisplayErrorContext(&error),
                 "the input asset's bytes could not be read from this emulator's Amazon S3"
             );
-            return InputAsset::Available;
+            return ResolvedAsset::of(InputAsset::Available);
         }
     };
     let Ok(body) = read.body.collect().await else {
@@ -810,9 +833,10 @@ pub async fn resolve_input_asset(
             key = ?key,
             "the input asset's bytes did not arrive from this emulator's Amazon S3"
         );
-        return InputAsset::Available;
+        return ResolvedAsset::of(InputAsset::Available);
     };
-    match input_image::image_verdict(&body.into_bytes()) {
+    let bytes = body.into_bytes();
+    let verdict = match input_image::image_verdict(&bytes) {
         // Either the asset is an image this service processes, or it is not an image at
         // all — nothing an image rule can establish about a document, a video or an audio
         // asset, so neither fails the job.
@@ -820,6 +844,36 @@ pub async fn resolve_input_asset(
             InputAsset::Available
         }
         input_image::ImageVerdict::Invalid => InputAsset::InvalidImage,
+    };
+    ResolvedAsset {
+        verdict,
+        reading: asset_extraction::read_asset(&bytes).await,
+    }
+}
+
+/// Everything one resolution of a job's input asset established: the FACT the job's
+/// terminal outcome is settled on, and what reading the asset's bytes found in it.
+///
+/// The two travel together because they come from the one read: the outcome rests on the
+/// verdict alone, and the output a successful job writes is written from the reading
+/// ([`job_output`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedAsset {
+    /// What the object store established about the asset.
+    pub verdict: InputAsset,
+    /// What the asset's own bytes hold, when they were read and something recognised them.
+    pub reading: Option<asset_extraction::AssetReading>,
+}
+
+impl ResolvedAsset {
+    /// A resolution that established only `verdict` — nothing was read out of the asset, so
+    /// nothing about its content is claimed.
+    #[must_use]
+    pub fn of(verdict: InputAsset) -> Self {
+        Self {
+            verdict,
+            reading: None,
+        }
     }
 }
 
@@ -978,12 +1032,14 @@ impl Invocation {
     /// completes.
     ///
     /// What `Success` CLAIMS here: the invocation RECORD reached its terminal state, with
-    /// the asset it was pointed at in place. It does not claim that result objects exist
-    /// at [`Invocation::output_metadata_s3_uri`]: the document that location names indexes
-    /// per-asset extraction results, which are the output of a model nothing in this
-    /// process runs, so nothing here writes them or synthesises analysis output (the
-    /// synchronous `InvokeDataAutomation`, which would have to RETURN such output, stays
-    /// a 501 for exactly that reason).
+    /// the asset it was pointed at in place AND what the job extracted from that asset
+    /// written into the submitted output location ([`job_output`]) — the standard output of
+    /// the asset's segment and the job-metadata document that indexes it, both already in the
+    /// object store by the time this transition is materialised, so a client that polls to
+    /// `Success` and then reads the reported location finds the objects there. What is
+    /// extracted is what this process can really read out of the asset
+    /// ([`asset_extraction`]): nothing is synthesised, so a modality it extracts nothing from
+    /// has its metadata written and no representation.
     pub fn advance_to(&mut self, now: SystemTime, asset: InputAsset) {
         if self.status == AutomationJobStatus::Created
             && now >= self.job_submission_time + CREATED_FOR
@@ -1080,11 +1136,22 @@ impl Invocation {
     /// Derived on every read and never stored: it is a function of two values the record
     /// already holds.
     pub fn output_metadata_s3_uri(&self) -> String {
-        format!(
-            "{}/{}/{JOB_METADATA_OBJECT}",
-            self.output_s3_uri.trim_end_matches('/'),
-            self.invocation_id
-        )
+        match job_output::output_location(&self.output_s3_uri) {
+            // The one layout the job's own output is written under, so the location reported
+            // and the location written cannot drift apart ([`job_output`]).
+            Some((bucket, prefix)) => format!(
+                "s3://{bucket}/{}",
+                job_output::job_metadata_key(prefix, &self.invocation_id)
+            ),
+            // A submitted value that addresses no bucket names no location to write into —
+            // the modelled `S3Uri` pattern does not admit one — so the two values the record
+            // holds are joined as they stand and the reported location still names this job.
+            None => format!(
+                "{}/{}/{JOB_METADATA_OBJECT}",
+                self.output_s3_uri.trim_end_matches('/'),
+                self.invocation_id
+            ),
+        }
     }
 
     /// `jobDurationInSeconds`: whole seconds between the two stored timestamps, and

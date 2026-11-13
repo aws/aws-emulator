@@ -27,6 +27,8 @@ mod job_completion_events;
 mod job_event_region_scope;
 #[path = "all/job_output_location_and_outcome.rs"]
 mod job_output_location_and_outcome;
+#[path = "all/job_standard_output_objects.rs"]
+mod job_standard_output_objects;
 #[path = "all/minted_arn_region_segment.rs"]
 mod minted_arn_region_segment;
 #[path = "all/minted_invocation_id_form.rs"]

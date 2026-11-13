@@ -15,11 +15,11 @@
 //!
 //! The output location reported is the job's OWN metadata document under the submitted
 //! prefix ([`crate::state::Invocation::output_metadata_s3_uri`]), which is what a client
-//! reads a finished job's results through. A reported `Success` says the invocation RECORD
-//! reached its terminal state with its asset in place; it does not claim that the per-asset
-//! extraction results that document indexes exist, because they are the output of a model
-//! nothing in this process runs. Nothing here writes those objects or synthesises analysis
-//! output.
+//! reads a finished job's results through. A read that finds the terminal transition due
+//! therefore writes what the job extracted into that location BEFORE it reports the job
+//! finished ([`crate::state::job_output`]), so a client that polls to `Success` and then
+//! reads the reported location finds the objects there. Nothing is synthesised: what is
+//! written is what this process could really read out of the asset.
 //!
 //! ## Authorization
 //!
@@ -187,59 +187,45 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let now = ::std::time::SystemTime::now();
         // The modelled `@pattern` and `@length` on `invocationArn` are refused before
         // this handler runs, so an ARN that reaches here is well formed; one naming no
-        // stored invocation is simply absent.
-        //
-        // Which asset this job has to be able to read, and only while its terminal
-        // transition is still owed: a job that has not got there yet, and one that already
-        // settled, need no answer about the asset, so neither costs a read of the object
-        // store. The guard is released before that read, so this service's store and
-        // another service's are never held at once.
-        let pending_asset = {
+        // stored invocation is simply absent. What an ARN naming nothing answers — shape,
+        // message and status — is this service's one rule, so it is resolved through the
+        // store's own resolve-or-refuse step (`crate::state::unknown_invocation_refusal`)
+        // rather than restated here, and it is answered BEFORE anything is settled.
+        {
             let store = state.lock();
-            // What an ARN naming nothing answers — shape, message and status — is this
-            // service's one rule, so it is resolved through the store's own
-            // resolve-or-refuse step (`crate::state::unknown_invocation_refusal`) rather
-            // than restated here.
-            let invocation = store.resolve_invocation(
+            store.resolve_invocation(
                 &input.invocation_arn,
                 GetDataAutomationStatusErrorModeled::ResourceNotFoundException,
             )?;
-            invocation
-                .terminal_transition_due(now)
-                .then(|| invocation.input_s3_uri.clone())
-        };
-        let asset = match pending_asset {
-            Some(input_s3_uri) => {
-                crate::state::resolve_input_asset(
-                    ctx.callback(),
-                    &crate::state::request_region(ctx.parts()),
-                    &input_s3_uri,
-                )
-                .await
-            }
-            // Nothing is owed that an answer about the asset could settle, so nothing is
-            // asked and nothing is assumed.
-            None => crate::state::InputAsset::Available,
-        };
+        }
+
+        // Materialising the transitions the clock owes goes through the store's one settle
+        // path: it reads the job's asset when the terminal transition is the one owed, writes
+        // what the job extracted into the output location its submission named, settles the
+        // outcome on what the object store established about that asset, and queues the event
+        // a job whose submission asked to be notified earns for it — so a transition is
+        // reported exactly once, by whichever call materialised it, and a job this read
+        // reports as finished has its output in place. The non-terminal advance the clock owes
+        // is materialised there too, and a job already terminal costs nothing. No lock is held
+        // across it: it calls another emulated service.
+        crate::state::job_output::settle_due_transitions(
+            &*self.engine,
+            ctx.callback(),
+            &crate::state::request_region(ctx.parts()),
+            &input.invocation_arn,
+            now,
+        )
+        .await;
 
         // The answer is computed inside ONE critical section, which ends before anything
         // leaves this process: publishing calls another emulated service, and this
         // service's store is never held across such a call.
         let answer = {
-            let mut store = state.lock();
-            // Materialising the transition the clock owes goes through the store's one
-            // settle path, which also queues the event a job whose submission asked to be
-            // notified earns for it — so a transition is reported exactly once, by
-            // whichever call materialised it. What an ARN naming nothing answers — shape,
-            // message and status — stays this service's one rule
-            // (`crate::state::unknown_invocation_refusal`).
-            let invocation = store
-                .settle_invocation(&input.invocation_arn, now, asset)
-                .ok_or_else(|| {
-                    crate::state::unknown_invocation_refusal(
-                        GetDataAutomationStatusErrorModeled::ResourceNotFoundException,
-                    )
-                })?;
+            let store = state.lock();
+            let invocation = store.resolve_invocation(
+                &input.invocation_arn,
+                GetDataAutomationStatusErrorModeled::ResourceNotFoundException,
+            )?;
 
             GetDataAutomationStatusOutput {
                 status: Some(invocation.status.as_wire().to_string()),
