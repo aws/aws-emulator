@@ -293,20 +293,11 @@ fn operation_rows(absent_version: &str) -> Vec<Row> {
             key: HELD_KEY.to_string(),
             version_id: Some(absent_version.to_string()),
         },
-        // The version-scoped DELETE answers the same way, and it is the one operation of the
-        // set that resolves the bucket's replication role before it refuses — so its refusal
-        // names its own object rather than reading the request-scoped note.
-        Row {
-            case: "DeleteObject naming a version that is not there",
-            method: "DELETE",
-            suffix: format!("{HELD_KEY}{versioned}"),
-            headers: Vec::new(),
-            body: "",
-            code: NO_SUCH_VERSION_CODE,
-            key: HELD_KEY.to_string(),
-            version_id: Some(absent_version.to_string()),
-        },
     ];
+    // The version-scoped DELETE is NOT among them: `DeleteObject` models no error at all, so
+    // a version the bucket holds no entry for is its own no-op success rather than an
+    // object-scoped refusal (asserted below, and spanned by
+    // [`super::idempotent_object_deletes`]).
     // A key a request addresses under a version-less not-found, named a second way: the key
     // that is merely a PREFIX of the held one is still a key the bucket holds nothing at.
     rows.push(Row {
@@ -343,6 +334,30 @@ async fn every_object_scoped_refusal_names_the_object_it_is_about() {
             row.version_id.as_deref(),
         );
     }
+
+    // The version-scoped DELETE of the same absent version writes no envelope at all: it is
+    // the operation of this set that models no error, so there is nothing for it to name.
+    let deleted = send(
+        &router,
+        "DELETE",
+        &format!("/{name}/{HELD_KEY}?versionId={absent_version}"),
+        &[],
+        "",
+    )
+    .await;
+    assert_eq!(
+        deleted.status, 204,
+        "case \"DeleteObject naming a version that is not there\": expected the delete's own \
+         204, got {} with body {:?}",
+        deleted.status,
+        text(&deleted)
+    );
+    assert!(
+        deleted.body.is_empty(),
+        "case \"DeleteObject naming a version that is not there\": that success carries no \
+         envelope, got {:?}",
+        text(&deleted)
+    );
 
     // The held object still reads back, so every row above was refused about the address it
     // named rather than because the bucket lost its object.

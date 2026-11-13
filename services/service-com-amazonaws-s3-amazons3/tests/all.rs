@@ -179,6 +179,8 @@ mod global_condition_keys;
 mod head_object_read_back;
 #[path = "all/identity_authorization.rs"]
 mod identity_authorization;
+#[path = "all/idempotent_object_deletes.rs"]
+mod idempotent_object_deletes;
 #[path = "all/inline_tagging_header_grammar.rs"]
 mod inline_tagging_header_grammar;
 #[path = "all/json_payload_media_type.rs"]
@@ -425,6 +427,8 @@ mod website_endpoint;
 mod write_checksum_header_count;
 #[path = "all/write_response_identity.rs"]
 mod write_response_identity;
+#[path = "all/write_storage_class_allowance.rs"]
+mod write_storage_class_allowance;
 #[path = "all/zz_host_style_probe.rs"]
 mod zz_host_style_probe;
 #[path = "all/zz_probe.rs"]

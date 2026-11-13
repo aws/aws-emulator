@@ -868,7 +868,9 @@ async fn deleting_a_version_takes_away_only_that_version() {
         }
     }
 
-    // Deleting the same version again is `NoSuchVersion`, not a second success.
+    // Deleting the same version again answers the same 204: this operation models no error
+    // for an address that holds nothing, so a repeated delete is a no-op success rather than
+    // a refusal — and it still takes nothing else away (asserted below).
     let again = delete_object(
         &router,
         name,
@@ -877,9 +879,16 @@ async fn deleting_a_version_takes_away_only_that_version() {
     )
     .await;
     assert_eq!(
-        again.status, 404,
-        "case \"delete the middle version twice\": expected HTTP 404, got {}",
-        again.status
+        again.status, 204,
+        "case \"delete the middle version twice\": expected HTTP 204, got {} with body {:?}",
+        again.status,
+        text(&again)
+    );
+    assert!(
+        again.header("x-amz-version-id").is_none(),
+        "case \"delete the middle version twice\": a delete that removed no version reports \
+         none, got {:?}",
+        again.header("x-amz-version-id")
     );
 
     // Deleting the CURRENT version promotes the newest version left: a read naming no

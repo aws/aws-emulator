@@ -14,13 +14,17 @@
 //! `state::MAX_VERSION_ID_CHARS` characters, each an ASCII alphanumeric or one of `-`, `_`,
 //! `.`.
 //!
-//! The same classification is asserted on the single-object path (`GetObject`,
-//! `HeadObject`, `DeleteObject`), which is where the ARGUMENT is judged. The `DeleteObjects`
-//! batch is held to the other half of the rule: "DeleteObjects itself has no modeled
-//! top-level errors; each result entry carries Key, VersionId, Code, Message", and what an
-//! entry reports is what the batch could not do with that pair — a version id it cannot
-//! resolve names no version of the key, so the entry is the absent-version failure whatever
-//! the token's shape.
+//! The same classification is asserted on the single-object READS (`GetObject`,
+//! `HeadObject`), which is where both halves of it are visible. `DeleteObject` is held to
+//! the ARGUMENT half alone: it models no error at all, so an address holding nothing is no
+//! failure for it and the absent-version row is its modelled success (HTTP 204, empty body),
+//! while a token that is not shaped like a version id is still the refused argument — the
+//! classification that separates "fix the request" from "that version is gone" survives in
+//! the one operation whose absent case is a no-op. The `DeleteObjects` batch is held to the
+//! other half of the rule: "DeleteObjects itself has no modeled top-level errors; each result
+//! entry carries Key, VersionId, Code, Message", and what an entry reports is what the batch
+//! could not do with that pair — a version id it cannot resolve names no version of the key,
+//! so the entry is the absent-version failure whatever the token's shape.
 
 use service_com_amazonaws_s3_amazons3::state::{MAX_VERSION_ID_CHARS, VERSION_ID_CHARS};
 use smithy_server_runtime::MultiServiceRouter;
@@ -56,6 +60,12 @@ const ABSENT: Expected = Expected {
     code: "NoSuchVersion",
     message: "The specified version does not exist.",
 };
+
+/// What `DeleteObject` answers that same absent version with instead: its modelled success,
+/// HTTP 204 with no body at all, because the operation models no error for an address holding
+/// nothing (`smithy_query(query="operation",operation="DeleteObject")` reports `errors: []`
+/// and `code: 204`).
+const DELETED: u16 = 204;
 
 /// `POST /<bucket>?delete` — `DeleteObjects`, naming each `(key, versionId)` pair.
 async fn delete_objects(
@@ -198,7 +208,50 @@ async fn a_version_id_is_classified_the_same_way_wherever_it_arrives() {
             "case {case:?}: no row may name the id the store actually minted"
         );
 
-        // The single-object path: three operations that each take a `versionId`.
+        // `DeleteObject` takes the same `versionId`, and the ARGUMENT half of the rule is
+        // its too: a malformed token is the same 400, while the well-formed token naming
+        // nothing is the delete's own no-op success.
+        let deleted = delete_object(&router, name, KEY, &format!("?versionId={version_id}")).await;
+        if expected == ABSENT {
+            assert_eq!(
+                deleted.status, DELETED,
+                "case {case:?}/DeleteObject: a well-formed id naming no version is deleted \
+                 rather than refused, got {} with body {:?}",
+                deleted.status,
+                text(&deleted)
+            );
+            assert!(
+                deleted.body.is_empty(),
+                "case {case:?}/DeleteObject: that success carries no body, got {:?}",
+                text(&deleted)
+            );
+        } else {
+            assert_eq!(
+                deleted.status, expected.status,
+                "case {case:?}/DeleteObject: expected HTTP {} for {version_id:?}, got {} with \
+                 body {:?}",
+                expected.status,
+                deleted.status,
+                text(&deleted)
+            );
+            assert_eq!(
+                deleted.error_code(),
+                expected.code,
+                "case {case:?}/DeleteObject: expected {:?}, got {:?}",
+                expected.code,
+                deleted.error_code()
+            );
+            assert_eq!(
+                deleted.error_message(),
+                expected.message,
+                "case {case:?}/DeleteObject: expected the message {:?}, got {:?}",
+                expected.message,
+                deleted.error_message()
+            );
+        }
+
+        // The single-object READS: both halves of the classification, on each operation that
+        // takes a `versionId`.
         for (operation, answer) in [
             (
                 "GetObject",
@@ -207,10 +260,6 @@ async fn a_version_id_is_classified_the_same_way_wherever_it_arrives() {
             (
                 "HeadObject",
                 head_object(&router, name, KEY, &format!("?versionId={version_id}")).await,
-            ),
-            (
-                "DeleteObject",
-                delete_object(&router, name, KEY, &format!("?versionId={version_id}")).await,
             ),
         ] {
             assert_eq!(

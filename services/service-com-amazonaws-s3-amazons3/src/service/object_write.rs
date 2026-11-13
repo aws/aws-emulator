@@ -47,6 +47,10 @@ pub const INVALID_STORAGE_CLASS_STATUS: u16 = 400;
 /// and "Amazon S3 on Outposts only uses the OUTPOSTS Storage Class". So a general purpose
 /// bucket hosts every published class but those two — `EXPRESS_ONEZONE`, which is a directory
 /// bucket's, and `OUTPOSTS`, which is an S3 on Outposts bucket's.
+///
+/// HOSTING a class is not permission to WRITE one: a general purpose bucket holds objects in
+/// every class here, including the ones only another AWS service places there
+/// ([`SERVICE_PLACED_STORAGE_CLASSES`]), which a write may not name.
 pub const GENERAL_PURPOSE_STORAGE_CLASSES: &[&str] = &[
     "STANDARD",
     "REDUCED_REDUNDANCY",
@@ -77,17 +81,70 @@ pub fn hosted_storage_classes(bucket: &Bucket) -> &'static [&'static str] {
     }
 }
 
-/// Why a write naming `storage_class` into `bucket` is refused, or `None` for a class that
-/// bucket hosts (and for a write that names none, which is stored in the bucket's own
-/// default).
+/// The header a write names the class it asks for in, as `PutObjectRequest$StorageClass`,
+/// `CopyObjectRequest$StorageClass` and `CreateMultipartUploadRequest$StorageClass` are each
+/// bound (`smithy_query(query="operation",operation="PutObject")` reports
+/// `httpHeader: "x-amz-storage-class"`) — the argument a refusal over its value names.
+pub const STORAGE_CLASS_HEADER: &str = "x-amz-storage-class";
+
+/// The `StorageClass` values a bucket HOLDS objects in but no client write may NAME: the
+/// class is the one the AWS service that owns those objects stores them under, and nothing
+/// else puts an object there.
 ///
-/// The class a write names has to be one the bucket it addresses can hold: the object would
-/// otherwise be stored under a class the bucket cannot host, which every later read, lifecycle
-/// transition and restore of it would then report. The value is not valid for the request,
-/// which is what `InvalidStorageClass` reports, and it is judged before anything is written.
-pub fn storage_class_refusal(bucket: &Bucket, storage_class: Option<&str>) -> Option<&'static str> {
+/// Each is a published `StorageClass` value (`smithy_query(query="shape",shape="StorageClass")`)
+/// whose own storage class description names the service that places it: `SNOW` is the class
+/// of objects on a Snow Family device, `FSX_OPENZFS` and `FSX_ONTAP` of objects an Amazon FSx
+/// file system holds, and the two `AWS_BACKUP_*` classes of objects AWS Backup wrote into a
+/// vault. Membership in the enum is what the output of a read reports, not permission to ask
+/// a write for it: S3 refuses a write naming one of these, whatever bucket it addresses, with
+/// the argument refusal [`storage_class_refusal`] words.
+pub const SERVICE_PLACED_STORAGE_CLASSES: &[&str] = &[
+    "SNOW",
+    "FSX_OPENZFS",
+    "FSX_ONTAP",
+    "AWS_BACKUP_WARM",
+    "AWS_BACKUP_LOW_COST_WARM",
+];
+
+/// The fixed part of the sentence S3 answers a class a write may not name with: the class the
+/// request named, then this text (recorded behaviour; the class is the request's own value).
+pub const STORAGE_CLASS_NOT_ALLOWED: &str = " is not allowed.";
+
+/// The refusal a write naming `storage_class` into `bucket` is answered with, or `None` for a
+/// class that write may ask for (and for a write that names none, which is stored in the
+/// bucket's own default).
+///
+/// Two separate rules, both judged before anything is written, so a refused write leaves
+/// whatever the key held exactly as it was:
+///
+/// * a class no client write may name at all ([`SERVICE_PLACED_STORAGE_CLASSES`]) is a bad
+///   ARGUMENT: HTTP 400 `InvalidArgument` whose message is that class followed by
+///   [`STORAGE_CLASS_NOT_ALLOWED`], naming the header it arrived in and echoing the value, so
+///   a caller reads which class it must stop asking for;
+/// * a class that belongs to another KIND of bucket than the one addressed — `EXPRESS_ONEZONE`
+///   and `OUTPOSTS` against a general purpose bucket, and everything but a directory bucket's
+///   two against one of those — would store the object under a class the bucket cannot host,
+///   which every later read, lifecycle transition and restore of it would then report. That
+///   value is not valid for the request, which is what `InvalidStorageClass` reports.
+pub fn storage_class_refusal<E>(
+    bucket: &Bucket,
+    storage_class: Option<&str>,
+) -> Option<crate::scaffolded::Scaffolded<E>> {
     let named = storage_class?;
-    (!hosted_storage_classes(bucket).contains(&named)).then_some(INVALID_STORAGE_CLASS_MESSAGE)
+    if SERVICE_PLACED_STORAGE_CLASSES.contains(&named) {
+        return Some(crate::scaffolded::Scaffolded::invalid_argument(
+            STORAGE_CLASS_HEADER,
+            Some(named),
+            format!("{named}{STORAGE_CLASS_NOT_ALLOWED}"),
+        ));
+    }
+    (!hosted_storage_classes(bucket).contains(&named)).then(|| {
+        crate::scaffolded::Scaffolded::unmodeled(
+            INVALID_STORAGE_CLASS_CODE,
+            INVALID_STORAGE_CLASS_STATUS,
+            INVALID_STORAGE_CLASS_MESSAGE,
+        )
+    })
 }
 
 /// Why the object key `key` is refused, as `(code, message)`, or `None` for a key S3 stores.
@@ -221,6 +278,48 @@ fn encryption_type_name(algorithm: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The catalogs this module divides the model's enum into, so neither can drift from it:
+    /// every class a general purpose bucket hosts and every class no write may name is a
+    /// published `StorageClass` value, the service-placed ones are a strict subset of the
+    /// hosted ones (a bucket HOLDS them, a write just cannot ask for them), and the two
+    /// bucket-kind catalogs leave no published value unclassified.
+    #[test]
+    fn every_classified_storage_class_is_one_the_model_publishes() {
+        let published = crate::ops::types::STORAGE_CLASS_VALUES;
+        for class in GENERAL_PURPOSE_STORAGE_CLASSES
+            .iter()
+            .chain(DIRECTORY_BUCKET_STORAGE_CLASSES)
+            .chain(SERVICE_PLACED_STORAGE_CLASSES)
+        {
+            assert!(
+                published.contains(class),
+                "case {class:?}: every classified class must be a published StorageClass \
+                 value, which {published:?} does not hold"
+            );
+        }
+        for class in SERVICE_PLACED_STORAGE_CLASSES {
+            assert!(
+                GENERAL_PURPOSE_STORAGE_CLASSES.contains(class),
+                "case {class:?}: a service-placed class is still one a general purpose bucket \
+                 HOLDS objects in, got {GENERAL_PURPOSE_STORAGE_CLASSES:?}"
+            );
+        }
+        assert!(
+            GENERAL_PURPOSE_STORAGE_CLASSES.len() > SERVICE_PLACED_STORAGE_CLASSES.len(),
+            "a write must be left some class it may name, got {SERVICE_PLACED_STORAGE_CLASSES:?} \
+             of {GENERAL_PURPOSE_STORAGE_CLASSES:?}"
+        );
+        for class in published {
+            assert!(
+                GENERAL_PURPOSE_STORAGE_CLASSES.contains(class)
+                    || DIRECTORY_BUCKET_STORAGE_CLASSES.contains(class)
+                    || *class == "OUTPOSTS",
+                "case {class:?}: every published class belongs to a kind of bucket — the \
+                 Outposts one is served by no bucket this emulator holds"
+            );
+        }
+    }
 
     /// The key rules, at the ceiling and one byte past it, and over a key carrying the one
     /// byte no URI conveys.

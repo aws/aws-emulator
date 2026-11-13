@@ -4,11 +4,16 @@
 //! IMPLEMENTED: removes the version a `versionId` names, or lays a delete marker over the
 //! key when the bucket carries a versioning state, idempotently.
 //!
-//! S3's delete is idempotent: deleting a key that is not there is the same 204 success
-//! as deleting one that is, so a caller retrying a delete sees one outcome. On a bucket
-//! with a versioning state the delete takes nothing away — "the operation inserts a delete
-//! marker, which becomes the current version of the object", and "to permanently delete an
-//! object in a versioned bucket, you must include the object's versionId in the request".
+//! S3's delete is idempotent: this operation models NO error at all, so an address holding
+//! nothing is no failure. Deleting a key that is not there, and deleting a `versionId` the
+//! bucket holds no version for, are the same 204 success as deleting one that is stored, so
+//! a caller retrying a delete, or emptying a bucket it cannot be sure of, sees one outcome;
+//! what the 204 REPORTS is only what the call actually did (a marker it created, a version
+//! it removed). On a bucket with a versioning state the delete takes nothing away — "the
+//! operation inserts a delete marker, which becomes the current version of the object", and
+//! "to permanently delete an object in a versioned bucket, you must include the object's
+//! versionId in the request". A `versionId` that is not shaped like one is a malformed
+//! ARGUMENT, judged before any address is resolved, and still refused 400 `InvalidArgument`.
 //!
 //! A delete carrying `If-Match`, `x-amz-if-match-last-modified-time` or
 //! `x-amz-if-match-size` is CONDITIONAL on the version it addresses still being the one
@@ -495,14 +500,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> DeleteObject<Eng>
         // "To permanently delete an object in a versioned bucket, you must include the
         // object's versionId in the request" — so a delete that names one removes exactly
         // that stored version, and the newest version left becomes the key's current one.
-        // A `versionId` the bucket holds no version for is `NoSuchVersion` (HTTP 404), a
-        // code this model carries no shape for, so it goes out through the unmodelled
-        // channel rather than as a success that deleted nothing.
+        // A `versionId` the bucket holds no version for leaves nothing to remove, which is
+        // the state the delete asks for: it answers the modelled success status, because
+        // this operation models no failure for an address that holds nothing (see the
+        // `Some(false)` arm below).
         if let Some(version_id) = input.version_id.as_deref() {
             // A `versionId` that is not SHAPED like one cannot name a version of anything,
-            // so it is a malformed argument rather than an absent version:
-            // `InvalidArgument` with HTTP 400, which leaves `NoSuchVersion` for a
-            // well-formed id the bucket holds no version for.
+            // so it is a malformed ARGUMENT rather than an address holding nothing:
+            // `InvalidArgument` with HTTP 400, judged before the address is resolved, the
+            // way every other operation of this service judges the same parameter.
             if !crate::state::version_id_is_well_formed(version_id) {
                 return Err(crate::scaffolded::Scaffolded::invalid_version_id(version_id));
             }
@@ -544,18 +550,23 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> DeleteObject<Eng>
             let outcome = store.remove_object_version(&input.bucket, &input.key, version_id);
             return match outcome {
                 None => Err(DeleteObjectErrorModeled::NoSuchBucket(NoSuchBucket {}).into()),
-                // The version the request named is not one this bucket holds. The document
-                // names the object it is about — the key, and the version that was not there
-                // — and names it HERE rather than leaving it to the request-scoped note this
-                // service writes an object-scoped envelope from
-                // ([`crate::state::addressed_bucket`]): this handler AWAITS before it
-                // refuses, so it may answer on a worker thread that never read the note.
-                Some(false) => Err(crate::scaffolded::Scaffolded::unmodeled(
-                    crate::state::NO_SUCH_VERSION_CODE,
-                    404,
-                    crate::state::NO_SUCH_VERSION_MESSAGE,
-                )
-                .naming_object(&input.key, Some(version_id))),
+                // The version the request named is not one this bucket holds, so this
+                // delete took nothing away — and that is a SUCCESS: a delete is over the
+                // state it leaves behind, not over what was there to remove, and
+                // `DeleteObject` models no error at all (`errors: []`), so there is no
+                // failure for an address holding nothing to be reported as. The delete of a
+                // key that is not there answers the same 204 below, and this is the same
+                // answer for the finer address a `versionId` names: a teardown or a retry
+                // that deletes a version it cannot be sure is still stored sees one
+                // outcome.
+                //
+                // Nothing was removed and no marker was laid, so neither of the headers
+                // this output binds describes anything: `DeleteMarker` reports "whether the
+                // specified object version that was permanently deleted was … a delete
+                // marker" and `VersionId` "the version ID of the delete marker created as a
+                // result of the DELETE operation", and this call deleted no version and
+                // created no marker.
+                Some(false) => Ok(DeleteObjectNoContent::default()),
                 // "Returns the version ID of the delete marker created as a result of the
                 // DELETE operation" (`DeleteObjectOutput$VersionId`): for a delete that
                 // named a version, the version it removed.

@@ -708,17 +708,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> CopyObject<Eng> {
             ));
         }
 
-        // The CLASS this copy asks the destination object to be stored in has to be one the
-        // destination bucket can host, the same division a `PutObject` into it is judged by.
-        if let Some(message) = crate::service::object_write::storage_class_refusal(
+        // The CLASS this copy asks the destination object to be stored in has to be one a
+        // write may name, and one the destination bucket can host — the same two rules a
+        // `PutObject` into it is judged by.
+        if let Some(refusal) = crate::service::object_write::storage_class_refusal(
             destination,
             input.storage_class.as_deref(),
         ) {
-            return Err(crate::scaffolded::Scaffolded::unmodeled(
-                crate::service::object_write::INVALID_STORAGE_CLASS_CODE,
-                crate::service::object_write::INVALID_STORAGE_CLASS_STATUS,
-                message,
-            ));
+            return Err(refusal);
         }
 
         // The SOURCE object, copied out of the store so the write below can borrow it

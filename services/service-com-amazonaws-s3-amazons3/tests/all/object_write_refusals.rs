@@ -40,6 +40,7 @@
 use service_com_amazonaws_s3_amazons3::ops::types::{STORAGE_CLASS_VALUES, TIER_VALUES};
 use service_com_amazonaws_s3_amazons3::service::object_write::{
     DIRECTORY_BUCKET_STORAGE_CLASSES, GENERAL_PURPOSE_STORAGE_CLASSES,
+    SERVICE_PLACED_STORAGE_CLASSES,
 };
 use service_com_amazonaws_s3_amazons3::state::{
     ARCHIVED_STORAGE_CLASSES, DEFAULT_STORAGE_CLASS, MAX_OBJECT_KEY_BYTES,
@@ -120,6 +121,38 @@ async fn a_write_is_refused_a_storage_class_the_bucket_cannot_host() {
                 &[("x-amz-storage-class", storage_class)],
             )
             .await;
+            // A class only another AWS service places objects in is one no client write may
+            // NAME, whichever kind of bucket it addresses: that is a bad ARGUMENT rather than
+            // a class the bucket cannot host, and it is judged before the hosting below
+            // ([`SERVICE_PLACED_STORAGE_CLASSES`]).
+            if SERVICE_PLACED_STORAGE_CLASSES.contains(storage_class) {
+                assert_eq!(
+                    written.status, 400,
+                    "case {case:?}: a class no write may name must be refused 400, got {} with \
+                     body {:?}",
+                    written.status,
+                    text(&written)
+                );
+                assert_eq!(
+                    written.error_code(),
+                    "InvalidArgument",
+                    "case {case:?}: expected the InvalidArgument code, got {:?}",
+                    written.error_code()
+                );
+                assert_eq!(
+                    written.error_message(),
+                    format!("{storage_class} is not allowed."),
+                    "case {case:?}: expected the class then the fixed text, got {:?}",
+                    written.error_message()
+                );
+                let head = head_object(&router, name, &key, "").await;
+                assert_eq!(
+                    head.status, 404,
+                    "case {case:?}: a refused write must store nothing, got {} from a HEAD",
+                    head.status
+                );
+                continue;
+            }
             if hosted {
                 assert_eq!(
                     written.status, 200,

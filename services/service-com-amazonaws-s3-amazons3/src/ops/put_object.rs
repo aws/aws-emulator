@@ -855,19 +855,16 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> PutObject<Eng> {
             ));
         }
 
-        // The CLASS this write asks for has to be one the addressed bucket can host: a
-        // class belonging to another kind of bucket is refused `InvalidStorageClass` and
-        // nothing is written ([`crate::service::object_write::storage_class_refusal`] holds
-        // the published division).
-        if let Some(message) = crate::service::object_write::storage_class_refusal(
+        // The CLASS this write asks for has to be one a write may name, and one the addressed
+        // bucket can host: a class only another AWS service places objects in is refused
+        // `InvalidArgument` and a class belonging to another kind of bucket
+        // `InvalidStorageClass`, and nothing is written either way
+        // ([`crate::service::object_write::storage_class_refusal`] holds both rules).
+        if let Some(refusal) = crate::service::object_write::storage_class_refusal(
             bucket_record,
             input.storage_class.as_deref(),
         ) {
-            return Err(crate::scaffolded::Scaffolded::unmodeled(
-                crate::service::object_write::INVALID_STORAGE_CLASS_CODE,
-                crate::service::object_write::INVALID_STORAGE_CLASS_STATUS,
-                message,
-            ));
+            return Err(refusal);
         }
 
         // A retention and a legal hold are the two halves of S3 Object Lock, which a bucket

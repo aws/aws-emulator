@@ -611,12 +611,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             requested.clone()
         };
 
-        // The CLASS the finished object will be stored in has to be one the addressed bucket
-        // can host, the same division a one-shot write into it is judged by: "when you
-        // initiate a multipart upload, you specify the options you want on the finished
-        // object", so a class the bucket cannot hold is refused here rather than at the
-        // completion. A bucket this emulator does not hold is answered by the initiation
-        // below instead.
+        // The CLASS the finished object will be stored in has to be one a write may name, and
+        // one the addressed bucket can host — the same two rules a one-shot write into it is
+        // judged by: "when you initiate a multipart upload, you specify the options you want
+        // on the finished object", so a class the bucket cannot hold, or one no write may ask
+        // for, is refused here rather than at the completion. A bucket this emulator does not
+        // hold is answered by the initiation below instead.
         //
         // And, for a DIRECTORY bucket, the ENCRYPTION the initiation names has to be the one
         // its session was established with: "in the Zonal endpoint API calls (except
@@ -629,17 +629,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // cannot be stored with.
         {
             let store = state.lock();
-            if let Some(message) = store.bucket(&input.bucket).and_then(|bucket| {
+            if let Some(refusal) = store.bucket(&input.bucket).and_then(|bucket| {
                 crate::service::object_write::storage_class_refusal(
                     bucket,
                     input.storage_class.as_deref(),
                 )
             }) {
-                return Err(crate::scaffolded::Scaffolded::unmodeled(
-                    crate::service::object_write::INVALID_STORAGE_CLASS_CODE,
-                    crate::service::object_write::INVALID_STORAGE_CLASS_STATUS,
-                    message,
-                ));
+                return Err(refusal);
             }
             if store
                 .bucket(&input.bucket)

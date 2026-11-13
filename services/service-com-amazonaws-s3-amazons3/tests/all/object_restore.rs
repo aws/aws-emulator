@@ -16,7 +16,8 @@
 //!   storage class is refused with HTTP 403 `InvalidObjectState` and the message S3 words
 //!   for that cause, and nothing is recorded. The archive classes are
 //!   [`ARCHIVED_STORAGE_CLASSES`]; the refusal table spans every OTHER class a general
-//!   purpose bucket can host ([`GENERAL_PURPOSE_STORAGE_CLASSES`]).
+//!   purpose bucket can host and a client write may name ([`GENERAL_PURPOSE_STORAGE_CLASSES`]
+//!   less [`SERVICE_PLACED_STORAGE_CLASSES`]).
 //! * A retrieval `Tier` the object's own class does not OFFER is refused the same way: S3
 //!   Glacier Flexible Retrieval offers Expedited, Standard and Bulk, S3 Glacier Deep Archive
 //!   offers Standard and Bulk alone (Amazon S3 User Guide, *Archive retrieval options*), so
@@ -48,7 +49,9 @@ use std::time::{Duration, SystemTime};
 use aws_smithy_types::date_time::Format;
 use aws_smithy_types::DateTime;
 use service_com_amazonaws_s3_amazons3::ops::types::TIER_VALUES;
-use service_com_amazonaws_s3_amazons3::service::object_write::GENERAL_PURPOSE_STORAGE_CLASSES;
+use service_com_amazonaws_s3_amazons3::service::object_write::{
+    GENERAL_PURPOSE_STORAGE_CLASSES, SERVICE_PLACED_STORAGE_CLASSES,
+};
 use service_com_amazonaws_s3_amazons3::state::{
     ARCHIVED_STORAGE_CLASSES, DEFAULT_STORAGE_CLASS, MALFORMED_XML_MESSAGE,
     RESTORE_ALREADY_IN_PROGRESS_MESSAGE, RESTORE_COMPLETION_DELAY, RESTORE_NOT_ALLOWED_MESSAGE,
@@ -379,19 +382,26 @@ async fn restoring_an_object_that_is_not_archived_is_refused_for_its_storage_cla
     let router = router();
     bucket(&router, "restore-not-allowed").await;
 
-    // Every storage class a general purpose bucket can host that is NOT an archive one, plus
-    // the class a write that named none is stored in — the whole catalog the rule divides. A
-    // class belonging to another kind of bucket never reaches a restore at all: the write
+    // Every storage class a general purpose bucket can host that a client write may NAME and
+    // that is NOT an archive one, plus the class a write that named none is stored in — the
+    // whole catalog the rule divides. A class belonging to another kind of bucket, and one
+    // only another AWS service places objects in, never reaches a restore at all: the write
     // naming it is itself refused.
     let not_archived: Vec<&str> = GENERAL_PURPOSE_STORAGE_CLASSES
         .iter()
         .copied()
-        .filter(|class| !ARCHIVED_STORAGE_CLASSES.contains(class))
+        .filter(|class| {
+            !ARCHIVED_STORAGE_CLASSES.contains(class)
+                && !SERVICE_PLACED_STORAGE_CLASSES.contains(class)
+        })
         .collect();
     assert_eq!(
         not_archived.len(),
-        GENERAL_PURPOSE_STORAGE_CLASSES.len() - ARCHIVED_STORAGE_CLASSES.len(),
-        "the catalog must divide into archive and non-archive classes, got {not_archived:?}"
+        GENERAL_PURPOSE_STORAGE_CLASSES.len()
+            - ARCHIVED_STORAGE_CLASSES.len()
+            - SERVICE_PLACED_STORAGE_CLASSES.len(),
+        "the catalog must divide into archive, service-placed and plain classes, got \
+         {not_archived:?}"
     );
     assert!(
         not_archived.contains(&DEFAULT_STORAGE_CLASS),
