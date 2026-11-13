@@ -360,12 +360,16 @@ pub struct Bot {
     pub idle_session_ttl_in_seconds: i32,
     pub bot_status: String,
     pub bot_type: Option<String>,
-    pub bot_members: Vec<BotMember>,
+    /// The members of the bot network, as the request that last wrote this bot supplied
+    /// them — `None` where it supplied none, which is not the same as an empty list.
+    pub bot_members: Option<Vec<BotMember>>,
     pub error_log_settings: Option<ErrorLogSettings>,
     pub creation_date_time: SystemTime,
     pub last_updated_date_time: SystemTime,
-    pub bot_tags: HashMap<String, String>,
-    pub test_bot_alias_tags: HashMap<String, String>,
+    /// The tags the create supplied, held exactly as supplied: see [`Bot::bot_members`].
+    pub bot_tags: Option<HashMap<String, String>>,
+    /// The test-alias tags the create supplied, held exactly as supplied.
+    pub test_bot_alias_tags: Option<HashMap<String, String>>,
     /// How many versions of this bot have been created. AWS documents what the count
     /// means for the number a version is created under: "The version number will always
     /// represent the total number of versions created of the bot, not the current number
@@ -410,20 +414,13 @@ impl Bot {
         }
     }
 
-    /// The stored `botMembers`, as the wire shape renders them: absent rather than an
-    /// empty list when the bot is in no network.
-    pub fn wire_bot_members(&self) -> Option<Vec<BotMember>> {
-        (!self.bot_members.is_empty()).then(|| self.bot_members.clone())
-    }
-
-    /// The stored `botTags`, absent rather than empty when the bot carries none.
-    pub fn wire_bot_tags(&self) -> Option<HashMap<String, String>> {
-        (!self.bot_tags.is_empty()).then(|| self.bot_tags.clone())
-    }
-
-    /// The stored `testBotAliasTags`, absent rather than empty when there are none.
-    pub fn wire_test_bot_alias_tags(&self) -> Option<HashMap<String, String>> {
-        (!self.test_bot_alias_tags.is_empty()).then(|| self.test_bot_alias_tags.clone())
+    /// Does this bot's network include the bot `bot_id` names? A bot the store holds no
+    /// members for has no network to include anything.
+    pub fn has_network_member(&self, bot_id: &str) -> bool {
+        self.bot_members
+            .iter()
+            .flatten()
+            .any(|member| member.bot_member_id == bot_id)
     }
 }
 
@@ -563,7 +560,9 @@ pub struct BotVersion {
     pub data_privacy: DataPrivacy,
     pub idle_session_ttl_in_seconds: i32,
     pub bot_type: Option<String>,
-    pub bot_members: Vec<BotMember>,
+    /// The bot's network members as they stood when the version was created, held the
+    /// way the bot holds them: see [`Bot::bot_members`].
+    pub bot_members: Option<Vec<BotMember>>,
     pub bot_status: String,
     pub creation_date_time: SystemTime,
     /// The version each locale of this version was copied from, keyed by locale id —
@@ -584,12 +583,6 @@ impl BotVersion {
     /// Schedule `status` to become this version's status once `after` has elapsed.
     pub fn schedule_status(&mut self, status: &str, after: Duration) {
         self.pending_status = Some((status.to_string(), Instant::now() + after));
-    }
-
-    /// The members of the bot network this version holds, as the wire shape renders
-    /// them: absent rather than an empty list when the version is of a plain bot.
-    pub fn wire_bot_members(&self) -> Option<Vec<BotMember>> {
-        (!self.bot_members.is_empty()).then(|| self.bot_members.clone())
     }
 }
 
@@ -820,12 +813,10 @@ impl BotLocale {
 /// An intent of one locale of one bot version, as `CreateIntent` stored it and
 /// `DescribeIntent` reads it back.
 ///
-/// An intent HAS a list of sample utterances, of input contexts and of output contexts,
-/// each empty until the intent is given some, so the three are held as the lists they are
-/// rather than as "set or not": what a read reports is the list the record holds.
-///
-/// `slotPriorities` is held the same way: it is ordered over the slots of the intent by
-/// `UpdateIntent`, and is empty for an intent nobody has ordered.
+/// Its optional collections — the sample utterances, the slot priorities, the input and
+/// the output contexts — are held as the modelled optional lists they are rather than as
+/// lists that are merely empty: a write that supplied none of a kind leaves that member
+/// with NO value, and what a read reports is exactly what the record holds.
 #[derive(Debug, Clone)]
 pub struct Intent {
     pub intent_id: String,
@@ -836,14 +827,14 @@ pub struct Intent {
     pub intent_display_name: Option<String>,
     pub description: Option<String>,
     pub parent_intent_signature: Option<String>,
-    pub sample_utterances: Vec<SampleUtterance>,
-    pub slot_priorities: Vec<SlotPriority>,
+    pub sample_utterances: Option<Vec<SampleUtterance>>,
+    pub slot_priorities: Option<Vec<SlotPriority>>,
     pub dialog_code_hook: Option<DialogCodeHookSettings>,
     pub fulfillment_code_hook: Option<FulfillmentCodeHookSettings>,
     pub intent_confirmation_setting: Option<IntentConfirmationSetting>,
     pub intent_closing_setting: Option<IntentClosingSetting>,
-    pub input_contexts: Vec<InputContext>,
-    pub output_contexts: Vec<OutputContext>,
+    pub input_contexts: Option<Vec<InputContext>>,
+    pub output_contexts: Option<Vec<OutputContext>>,
     pub kendra_configuration: Option<KendraConfiguration>,
     pub initial_response_setting: Option<InitialResponseSetting>,
     pub qn_a_intent_configuration: Option<QnAIntentConfiguration>,
@@ -868,17 +859,13 @@ impl Intent {
     }
 
     /// Does this intent carry at least one VALID sample utterance? An utterance with no
-    /// text in it is not one Amazon Lex can recognise, so it does not count.
+    /// text in it is not one Amazon Lex can recognise, so it does not count, and neither
+    /// does an intent that carries no utterances at all.
     pub fn has_valid_utterance(&self) -> bool {
         self.sample_utterances
             .iter()
+            .flatten()
             .any(|sample| !sample.utterance.trim().is_empty())
-    }
-
-    /// The stored `slotPriorities`, as the wire shape renders them: absent rather than an
-    /// empty list when nothing has ordered the intent's slots.
-    pub fn wire_slot_priorities(&self) -> Option<Vec<SlotPriority>> {
-        (!self.slot_priorities.is_empty()).then(|| self.slot_priorities.clone())
     }
 
     /// Does an entry of this intent's `slotPriorities` order the slot that id names?
@@ -889,6 +876,7 @@ impl Intent {
     pub fn orders_slot(&self, slot_id: &str) -> bool {
         self.slot_priorities
             .iter()
+            .flatten()
             .any(|priority| priority.slot_id == slot_id)
     }
 }
@@ -916,7 +904,10 @@ pub struct SlotType {
     pub bot_version: String,
     pub locale_id: String,
     pub description: Option<String>,
-    pub slot_type_values: Vec<SlotTypeValue>,
+    /// The values the slot type enumerates, as the request that wrote it supplied them.
+    /// The modelled `SlotTypeValues` list has a minimum length of 1, so a slot type
+    /// either carries values or carries the member not at all.
+    pub slot_type_values: Option<Vec<SlotTypeValue>>,
     pub value_selection_setting: Option<SlotValueSelectionSetting>,
     pub parent_slot_type_signature: Option<String>,
     pub external_source_setting: Option<ExternalSourceSetting>,
@@ -931,12 +922,6 @@ impl SlotType {
     /// operation's URI carries.
     pub fn is_in_locale(&self, bot_id: &str, bot_version: &str, locale_id: &str) -> bool {
         self.bot_id == bot_id && self.bot_version == bot_version && self.locale_id == locale_id
-    }
-
-    /// The stored values, as the wire shape renders them: absent rather than an empty
-    /// list, since the modelled `SlotTypeValues` list has a minimum length of 1.
-    pub fn wire_slot_type_values(&self) -> Option<Vec<SlotTypeValue>> {
-        (!self.slot_type_values.is_empty()).then(|| self.slot_type_values.clone())
     }
 
     /// Which member of the modelled `SlotTypeCategory` enum this slot type falls in,
@@ -1463,14 +1448,14 @@ impl ComAmazonawsLexmodelsv2Lexmodelbuildingservicev2State {
             intent_display_name: None,
             description: None,
             parent_intent_signature: Some(FALLBACK_INTENT_SIGNATURE.to_string()),
-            sample_utterances: Vec::new(),
-            slot_priorities: Vec::new(),
+            sample_utterances: None,
+            slot_priorities: None,
             dialog_code_hook: None,
             fulfillment_code_hook: None,
             intent_confirmation_setting: None,
             intent_closing_setting: None,
-            input_contexts: Vec::new(),
-            output_contexts: Vec::new(),
+            input_contexts: None,
+            output_contexts: None,
             kendra_configuration: None,
             initial_response_setting: None,
             qn_a_intent_configuration: None,

@@ -208,7 +208,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // nothing in this slice does, so this version belongs to no network.
             parent_bot_networks: None,
             bot_type: version.bot_type.clone(),
-            bot_members: version.wire_bot_members(),
+            bot_members: version.bot_members.clone(),
         })
     }
 }

@@ -247,7 +247,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         bot.data_privacy = input.data_privacy;
         bot.idle_session_ttl_in_seconds = input.idle_session_ttl_in_seconds;
         bot.bot_type = input.bot_type;
-        bot.bot_members = input.bot_members.unwrap_or_default();
+        bot.bot_members = input.bot_members;
         bot.error_log_settings = input.error_log_settings;
         bot.last_updated_date_time = ::std::time::SystemTime::now();
 
@@ -262,7 +262,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             creation_date_time: Some(crate::state::to_date_time(bot.creation_date_time)),
             last_updated_date_time: Some(crate::state::to_date_time(bot.last_updated_date_time)),
             bot_type: bot.bot_type.clone(),
-            bot_members: bot.wire_bot_members(),
+            bot_members: bot.bot_members.clone(),
             error_log_settings: bot.error_log_settings.clone(),
         })
     }

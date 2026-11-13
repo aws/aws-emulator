@@ -116,15 +116,12 @@ async fn order_slots(
         status, 200,
         "expected UpdateIntent to answer 200, got {status} {updated:?}"
     );
-    let expected = if slot_ids.is_empty() {
-        Value::Null
-    } else {
-        priorities
-    };
+    // The priorities the request supplied are the priorities the intent holds, the empty
+    // list this helper sends when it is asked to order nothing included.
     assert_eq!(
         member(&updated, "slotPriorities"),
-        expected,
-        "UpdateIntent must report the priorities it stored, expected {expected:?}, got \
+        priorities,
+        "UpdateIntent must report the priorities it stored, expected {priorities:?}, got \
          {updated:?}"
     );
 }

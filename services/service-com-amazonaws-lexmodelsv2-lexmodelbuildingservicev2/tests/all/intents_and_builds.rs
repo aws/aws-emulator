@@ -35,8 +35,8 @@ use crate::bot_lifecycle::{call, emulator, error_code, member, seconds, text};
 use crate::bot_locale::{host_bot, locale_body, locale_uri, locales_uri};
 
 /// The members `CreateIntent` accepts that both it and `DescribeIntent` report back
-/// unchanged. The three LIST members are compared through [`expected_list`] instead,
-/// because an intent HOLDS a list of each and reports it empty when it holds none.
+/// unchanged, the optional collections of the intent included: a member the request named
+/// is reported as it was given, and one it did not name is reported not at all.
 const ECHOED_BY_DESCRIBE: [&str; 8] = [
     "intentName",
     "intentDisplayName",
@@ -48,17 +48,9 @@ const ECHOED_BY_DESCRIBE: [&str; 8] = [
     "intentClosingSetting",
 ];
 
-/// The list members an intent holds, which both a create and a describe report.
+/// The list members of an intent, which both a create and a describe echo back exactly as
+/// the request supplied them.
 const HELD_LISTS: [&str; 3] = ["sampleUtterances", "inputContexts", "outputContexts"];
-
-/// The list a response must report for `name`: the one the request named, or the empty
-/// list when it named none.
-fn expected_list(request: &Value, name: &str) -> Value {
-    match member(request, name) {
-        Value::Null => json!([]),
-        named => named,
-    }
-}
 
 /// `CreateIntent`'s URI:
 /// `PUT /bots/{botId}/botversions/{botVersion}/botlocales/{localeId}/intents`.
@@ -302,8 +294,8 @@ async fn a_created_intent_is_stored_and_read_back_through_its_own_triple() {
         for name in HELD_LISTS {
             assert_eq!(
                 member(&answered, name),
-                expected_list(&request, name),
-                "case {case:?}: CreateIntent must report the {name} the intent holds, got \
+                member(&request, name),
+                "case {case:?}: CreateIntent must report the {name} it was given, got \
                  {answered:?}"
             );
         }
@@ -330,8 +322,8 @@ async fn a_created_intent_is_stored_and_read_back_through_its_own_triple() {
         for name in HELD_LISTS {
             assert_eq!(
                 member(&described, name),
-                expected_list(&request, name),
-                "case {case:?}: DescribeIntent must report the {name} the intent holds, got \
+                member(&request, name),
+                "case {case:?}: DescribeIntent must report the stored {name}, got \
                  {described:?}"
             );
         }

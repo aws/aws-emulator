@@ -31,6 +31,8 @@ mod locale_build_slot_priorities;
 mod locale_deletion;
 #[path = "all/name_already_exists.rs"]
 mod name_already_exists;
+#[path = "all/optional_collections.rs"]
+mod optional_collections;
 #[path = "all/refusal_wording.rs"]
 mod refusal_wording;
 #[path = "all/response_media_type.rs"]

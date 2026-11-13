@@ -350,17 +350,17 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             intent_display_name: input.intent_display_name,
             description: input.description,
             parent_intent_signature: input.parent_intent_signature,
-            sample_utterances: input.sample_utterances.unwrap_or_default(),
+            sample_utterances: input.sample_utterances,
             // Slot priorities are ordered over the slots of an intent, and a create adds
-            // an intent with no slot in it: the modelled `CreateSlotRequest` carries no
+            // an intent with no slot in it: the modelled `CreateIntentRequest` carries no
             // `slotPriorities` member for it to order.
-            slot_priorities: Vec::new(),
+            slot_priorities: None,
             dialog_code_hook: input.dialog_code_hook,
             fulfillment_code_hook: input.fulfillment_code_hook,
             intent_confirmation_setting,
             intent_closing_setting: input.intent_closing_setting,
-            input_contexts: input.input_contexts.unwrap_or_default(),
-            output_contexts: input.output_contexts.unwrap_or_default(),
+            input_contexts: input.input_contexts,
+            output_contexts: input.output_contexts,
             kendra_configuration: input.kendra_configuration,
             initial_response_setting: input.initial_response_setting,
             qn_a_intent_configuration: input.qn_a_intent_configuration,
@@ -379,16 +379,16 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             intent_display_name: stored.intent_display_name.clone(),
             description: stored.description.clone(),
             parent_intent_signature: stored.parent_intent_signature.clone(),
-            // An intent has a list of sample utterances, of input contexts and of output
-            // contexts, each empty until it is given some, so each list is reported
-            // whether or not the create named one.
-            sample_utterances: Some(stored.sample_utterances.clone()),
+            // The optional collections of the intent are reported exactly as the create
+            // supplied them: a member the request did not name has no value, so the
+            // response document does not carry it at all.
+            sample_utterances: stored.sample_utterances.clone(),
             dialog_code_hook: stored.dialog_code_hook.clone(),
             fulfillment_code_hook: stored.fulfillment_code_hook.clone(),
             intent_confirmation_setting: stored.intent_confirmation_setting.clone(),
             intent_closing_setting: stored.intent_closing_setting.clone(),
-            input_contexts: Some(stored.input_contexts.clone()),
-            output_contexts: Some(stored.output_contexts.clone()),
+            input_contexts: stored.input_contexts.clone(),
+            output_contexts: stored.output_contexts.clone(),
             kendra_configuration: stored.kendra_configuration.clone(),
             bot_id: Some(stored.bot_id.clone()),
             bot_version: Some(stored.bot_version.clone()),

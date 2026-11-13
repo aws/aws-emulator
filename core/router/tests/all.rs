@@ -1802,6 +1802,10 @@ mod cloudformation_rest_api_token_authorizer_credentials;
 // see both ends of it.
 #[path = "all/kafka_msk_own_refusals_precede_the_subnet_lookup.rs"]
 mod kafka_msk_own_refusals_precede_the_subnet_lookup;
+#[path = "all/cloudformation_monitored_alb_search_estate.rs"]
+mod cloudformation_monitored_alb_search_estate;
+#[path = "all/cloudformation_domain_endpoint_outputs.rs"]
+mod cloudformation_domain_endpoint_outputs;
 #[path = "all/cloudfront_edge_generated_headers.rs"]
 mod cloudfront_edge_generated_headers;
 // Declared beside those two, in the same quiet span and for the same reason. This one pins

@@ -301,8 +301,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         intent.intent_display_name = input.intent_display_name;
         intent.description = input.description;
         intent.parent_intent_signature = input.parent_intent_signature;
-        intent.sample_utterances = input.sample_utterances.unwrap_or_default();
-        intent.slot_priorities = input.slot_priorities.unwrap_or_default();
+        intent.sample_utterances = input.sample_utterances;
+        intent.slot_priorities = input.slot_priorities;
         intent.dialog_code_hook = input.dialog_code_hook;
         intent.fulfillment_code_hook = input.fulfillment_code_hook;
         intent.intent_confirmation_setting = input.intent_confirmation_setting;
@@ -312,8 +312,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             crate::state::normalize_intent_confirmation_setting(setting);
         }
         intent.intent_closing_setting = input.intent_closing_setting;
-        intent.input_contexts = input.input_contexts.unwrap_or_default();
-        intent.output_contexts = input.output_contexts.unwrap_or_default();
+        intent.input_contexts = input.input_contexts;
+        intent.output_contexts = input.output_contexts;
         intent.kendra_configuration = input.kendra_configuration;
         intent.initial_response_setting = input.initial_response_setting;
         intent.qn_a_intent_configuration = input.qn_a_intent_configuration;
@@ -328,16 +328,17 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             intent_display_name: intent.intent_display_name.clone(),
             description: intent.description.clone(),
             parent_intent_signature: intent.parent_intent_signature.clone(),
-            // An intent HAS a list of sample utterances, of input contexts and of output
-            // contexts, each reported whether or not the update named one.
-            sample_utterances: Some(intent.sample_utterances.clone()),
+            // The optional collections of the intent are reported exactly as the update
+            // left them: a member the request did not name has no value, so the response
+            // document does not carry it at all.
+            sample_utterances: intent.sample_utterances.clone(),
             dialog_code_hook: intent.dialog_code_hook.clone(),
             fulfillment_code_hook: intent.fulfillment_code_hook.clone(),
-            slot_priorities: intent.wire_slot_priorities(),
+            slot_priorities: intent.slot_priorities.clone(),
             intent_confirmation_setting: intent.intent_confirmation_setting.clone(),
             intent_closing_setting: intent.intent_closing_setting.clone(),
-            input_contexts: Some(intent.input_contexts.clone()),
-            output_contexts: Some(intent.output_contexts.clone()),
+            input_contexts: intent.input_contexts.clone(),
+            output_contexts: intent.output_contexts.clone(),
             kendra_configuration: intent.kendra_configuration.clone(),
             bot_id: Some(intent.bot_id.clone()),
             bot_version: Some(intent.bot_version.clone()),

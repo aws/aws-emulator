@@ -193,13 +193,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             let used_by: Vec<&str> = store
                 .bots
                 .values()
-                .filter(|bot| {
-                    bot.bot_id != input.bot_id
-                        && bot
-                            .bot_members
-                            .iter()
-                            .any(|member| member.bot_member_id == input.bot_id)
-                })
+                .filter(|bot| bot.bot_id != input.bot_id && bot.has_network_member(&input.bot_id))
                 .map(|bot| bot.bot_id.as_str())
                 .collect();
             if !used_by.is_empty() {

@@ -204,7 +204,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             slot_type_id: Some(slot_type.slot_type_id.clone()),
             slot_type_name: Some(slot_type.slot_type_name.clone()),
             description: slot_type.description.clone(),
-            slot_type_values: slot_type.wire_slot_type_values(),
+            slot_type_values: slot_type.slot_type_values.clone(),
             value_selection_setting: slot_type.value_selection_setting.clone(),
             parent_slot_type_signature: slot_type.parent_slot_type_signature.clone(),
             bot_id: Some(slot_type.bot_id.clone()),

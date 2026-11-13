@@ -253,12 +253,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             idle_session_ttl_in_seconds: input.idle_session_ttl_in_seconds,
             bot_status: crate::state::BOT_STATUS_CREATING.to_string(),
             bot_type: input.bot_type,
-            bot_members: input.bot_members.unwrap_or_default(),
+            bot_members: input.bot_members,
             error_log_settings: input.error_log_settings,
             creation_date_time: now,
             last_updated_date_time: now,
-            bot_tags: input.bot_tags.unwrap_or_default(),
-            test_bot_alias_tags: input.test_bot_alias_tags.unwrap_or_default(),
+            bot_tags: input.bot_tags,
+            test_bot_alias_tags: input.test_bot_alias_tags,
             // A bot is created with its `DRAFT` version only: no numbered version has
             // been created of it yet.
             versions_created: 0,
@@ -281,10 +281,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             idle_session_ttl_in_seconds: Some(stored.idle_session_ttl_in_seconds),
             bot_status: Some(stored.bot_status.clone()),
             creation_date_time: Some(crate::state::to_date_time(stored.creation_date_time)),
-            bot_tags: stored.wire_bot_tags(),
-            test_bot_alias_tags: stored.wire_test_bot_alias_tags(),
+            bot_tags: stored.bot_tags.clone(),
+            test_bot_alias_tags: stored.test_bot_alias_tags.clone(),
             bot_type: stored.bot_type.clone(),
-            bot_members: stored.wire_bot_members(),
+            bot_members: stored.bot_members.clone(),
             error_log_settings: stored.error_log_settings.clone(),
         };
 

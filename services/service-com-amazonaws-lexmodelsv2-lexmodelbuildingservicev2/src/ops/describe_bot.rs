@@ -197,7 +197,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             creation_date_time: Some(crate::state::to_date_time(bot.creation_date_time)),
             last_updated_date_time: Some(crate::state::to_date_time(bot.last_updated_date_time)),
             bot_type: bot.bot_type.clone(),
-            bot_members: bot.wire_bot_members(),
+            bot_members: bot.bot_members.clone(),
             // Only a bot in `Failed` carries failure reasons, and nothing in this slice
             // puts a bot there.
             failure_reasons: None,

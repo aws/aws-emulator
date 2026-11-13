@@ -334,6 +334,7 @@ pub fn built_locale<Eng: Send + Sync + 'static>(
             sample_utterances: intent
                 .sample_utterances
                 .iter()
+                .flatten()
                 .map(|sample| sample.utterance.clone())
                 .collect(),
             slots: elicitation_order(&control_plane, intent, bot_id, &bot_version, locale_id),
@@ -388,6 +389,7 @@ fn elicitation_order(
         intent
             .slot_priorities
             .iter()
+            .flatten()
             .find(|entry| entry.slot_id == slot.slot_id)
             .map(|entry| entry.priority)
     };
@@ -437,6 +439,7 @@ fn slot_type_model(slot_type: &lexmodels::state::SlotType) -> ModelSlotType {
         values: slot_type
             .slot_type_values
             .iter()
+            .flatten()
             .filter_map(|value| {
                 let canonical = value.sample_value.as_ref()?.value.clone();
                 Some(ModelSlotTypeValue {

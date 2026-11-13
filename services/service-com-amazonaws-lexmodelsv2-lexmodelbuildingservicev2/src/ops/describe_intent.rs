@@ -223,19 +223,20 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             intent_display_name: intent.intent_display_name.clone(),
             description: intent.description.clone(),
             parent_intent_signature: intent.parent_intent_signature.clone(),
-            // A describe reports the record in full: the lists the intent holds, each
-            // empty when it holds none of that kind.
-            sample_utterances: Some(intent.sample_utterances.clone()),
+            // A describe reports the record in full: each optional collection of the
+            // intent exactly as the write that stored it supplied it, so a member no
+            // write named is not in the response document at all.
+            sample_utterances: intent.sample_utterances.clone(),
             dialog_code_hook: intent.dialog_code_hook.clone(),
             fulfillment_code_hook: intent.fulfillment_code_hook.clone(),
             // Slot priorities are ordered over the slots of an intent, so a describe
             // reports the order the intent holds and nothing for an intent nobody has
             // ordered.
-            slot_priorities: intent.wire_slot_priorities(),
+            slot_priorities: intent.slot_priorities.clone(),
             intent_confirmation_setting: intent.intent_confirmation_setting.clone(),
             intent_closing_setting: intent.intent_closing_setting.clone(),
-            input_contexts: Some(intent.input_contexts.clone()),
-            output_contexts: Some(intent.output_contexts.clone()),
+            input_contexts: intent.input_contexts.clone(),
+            output_contexts: intent.output_contexts.clone(),
             kendra_configuration: intent.kendra_configuration.clone(),
             bot_id: Some(intent.bot_id.clone()),
             bot_version: Some(intent.bot_version.clone()),

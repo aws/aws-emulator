@@ -299,7 +299,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             bot_version: input.bot_version,
             locale_id: input.locale_id,
             description: input.description,
-            slot_type_values: input.slot_type_values.unwrap_or_default(),
+            slot_type_values: input.slot_type_values,
             // A create that names no selection setting resolves values under the
             // documented default strategy, and that is the setting a read reports.
             value_selection_setting: Some(input.value_selection_setting.unwrap_or_else(|| {
@@ -324,7 +324,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             slot_type_id: Some(stored.slot_type_id.clone()),
             slot_type_name: Some(stored.slot_type_name.clone()),
             description: stored.description.clone(),
-            slot_type_values: stored.wire_slot_type_values(),
+            slot_type_values: stored.slot_type_values.clone(),
             value_selection_setting: stored.value_selection_setting.clone(),
             parent_slot_type_signature: stored.parent_slot_type_signature.clone(),
             bot_id: Some(stored.bot_id.clone()),

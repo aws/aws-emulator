@@ -326,8 +326,8 @@ async fn a_rebuild_reports_the_outcome_of_the_content_it_was_given() {
     );
     assert_eq!(
         member(&cleared, "sampleUtterances"),
-        json!([]),
-        "an update that names no utterance leaves the intent none, got {cleared:?}"
+        Value::Null,
+        "an update that names no utterance leaves the intent none at all, got {cleared:?}"
     );
 
     submit_build(&router, &bot_id, "en_US").await;
