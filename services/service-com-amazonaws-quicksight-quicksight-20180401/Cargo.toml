@@ -32,6 +32,8 @@ sha2 = { workspace = true }
 hex = { workspace = true }
 # Percent-encodes a group name into the URI path label a group read addresses.
 percent-encoding = "2.3"
+# Generates the seeded addresses a property-based refusal case is driven with.
+rand = "0.9"
 
 [lints]
 workspace = true

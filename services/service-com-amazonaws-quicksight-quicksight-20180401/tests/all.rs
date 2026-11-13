@@ -15,6 +15,8 @@ mod account_subscription;
 mod data_set_permissions;
 #[path = "all/data_source_data_set_lifecycle.rs"]
 mod data_source_data_set_lifecycle;
+#[path = "all/data_source_not_found_arn.rs"]
+mod data_source_not_found_arn;
 #[path = "all/data_source_update.rs"]
 mod data_source_update;
 #[path = "all/delete_namespace.rs"]
