@@ -537,6 +537,8 @@ fn searched(
         published: ::std::cell::RefCell::new(Vec::new()),
         notifications: ::std::cell::RefCell::new(Vec::new()),
         pending_run: ::std::cell::RefCell::new(None),
+        // Nor any repository work: a search plans none.
+        pending_snapshot: ::std::cell::RefCell::new(None),
         // A search owes no notification, so whether one could be handed over says nothing
         // about it; the run that drove it carries that.
         can_notify: request.can_notify,

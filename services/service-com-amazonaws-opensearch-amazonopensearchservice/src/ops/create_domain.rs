@@ -579,6 +579,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // write them.
             alerting: crate::state::alerting::Alerting::default(),
             notification_configs: BTreeMap::new(),
+            // Nor any snapshot repository: the cluster's own snapshot API is what registers
+            // one.
+            snapshot_repositories: BTreeMap::new(),
             identity_center_options: input
                 .identity_center_options
                 .map(stored_identity_center_options),

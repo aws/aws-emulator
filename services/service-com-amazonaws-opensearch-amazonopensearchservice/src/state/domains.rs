@@ -121,6 +121,12 @@ pub struct Domain {
     /// `destination_id` names one of these, which is what says WHERE the notification goes.
     /// See [`notifications::NotificationConfig`].
     pub notification_configs: BTreeMap<String, notifications::NotificationConfig>,
+    /// The SNAPSHOT REPOSITORIES this domain's cluster has registered, keyed by their name —
+    /// unique on the cluster, so the name IS the key. The registration is cluster metadata,
+    /// which is why it lives here beside the indexes a snapshot copies; the snapshot DATA is
+    /// the repository's own and lives in the Amazon S3 bucket its settings name. See
+    /// [`SnapshotRepository`], and bounded by [`REPOSITORY_QUOTA`].
+    pub snapshot_repositories: BTreeMap<String, SnapshotRepository>,
     pub identity_center_options: Option<IdentityCenterOptions>,
     /// Stored in the `DomainConfig` form; `DomainStatus` reports the
     /// `AutoTuneOptionsOutput` projection of it.

@@ -192,6 +192,28 @@ pub const ACTION_GET_TEMPLATE: &str = "indices:admin/index_template/get";
 /// master user holds, which is why the security API is reachable by nobody else.
 pub const ACTION_SECURITY_CONFIG: &str = "cluster:admin/security/config/update";
 
+/// The action registering a snapshot REPOSITORY asks for, as the snapshot plugin's own
+/// action names spell it.
+pub const ACTION_PUT_REPOSITORY: &str = "cluster:admin/repository/put";
+
+/// The action reading a registered repository asks for.
+pub const ACTION_GET_REPOSITORY: &str = "cluster:admin/repository/get";
+
+/// The action unregistering one asks for.
+pub const ACTION_DELETE_REPOSITORY: &str = "cluster:admin/repository/delete";
+
+/// The action taking a SNAPSHOT into a repository asks for.
+pub const ACTION_CREATE_SNAPSHOT: &str = "cluster:admin/snapshot/create";
+
+/// The action reading a snapshot of one asks for.
+pub const ACTION_GET_SNAPSHOT: &str = "cluster:admin/snapshot/get";
+
+/// The action deleting a snapshot asks for.
+pub const ACTION_DELETE_SNAPSHOT: &str = "cluster:admin/snapshot/delete";
+
+/// The action restoring the indexes of a snapshot asks for.
+pub const ACTION_RESTORE_SNAPSHOT: &str = "cluster:admin/snapshot/restore";
+
 /// The role the cluster grants every permission, from the security plugin's predefined
 /// roles: `all_access`. It is the role the control plane binds a domain's MASTER USER to,
 /// which is why the master is reported holding it.

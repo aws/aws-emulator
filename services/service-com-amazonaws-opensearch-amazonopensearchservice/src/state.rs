@@ -142,6 +142,9 @@ mod analyzers;
 pub mod analysis;
 /// An index of a domain, the schema it carries and the settings around it.
 mod indexes;
+/// The snapshot repositories a domain's cluster has registered, and the snapshots it has
+/// taken into one.
+mod snapshots;
 /// A package of this account and its association with a domain.
 mod packages;
 
@@ -169,6 +172,7 @@ pub use projections::*;
 pub use refusals::*;
 pub use reserved_instance_offerings::*;
 pub use reserved_instances::*;
+pub use snapshots::*;
 pub use store::*;
 pub use vpc_endpoints::*;
 

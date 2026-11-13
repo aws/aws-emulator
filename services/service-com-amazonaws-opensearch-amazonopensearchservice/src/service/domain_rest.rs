@@ -84,7 +84,9 @@
 //! that names one), the index-management plugin's policy API, the security plugin's
 //! role and role-mapping API, the ALERTING plugin's monitors, the runs of one and the alerts
 //! they leave ([`alerting`], [`monitor_run`]), and the NOTIFICATIONS plugin's channel
-//! configurations a monitor's action sends through ([`notifications`]).
+//! configurations a monitor's action sends through ([`notifications`]), and the SNAPSHOT API:
+//! the repositories a cluster registers, the snapshots it takes into the Amazon S3 bucket one
+//! names, and the restore of one ([`snapshot`]).
 //!
 //! A path outside it is answered the way the engine answers a path no handler is registered
 //! for, rather than with an invented body — including a RESERVED path ([`reserved`]), which
@@ -161,6 +163,10 @@ mod notifications;
 /// The PATTERNS an index template applies to: the names a write may carry, and whether two
 /// templates of the same priority can match one index name.
 mod template_patterns;
+
+/// The SNAPSHOT API: the repositories a cluster registers, the snapshots it takes into one,
+/// and the restore of one — served against the Amazon S3 bucket the repository names.
+mod snapshot;
 
 /// The most bytes one data-plane request body is read as JSON.
 ///
@@ -628,6 +634,7 @@ pub fn served<Eng: Send + Sync + 'static>(
         published: ::std::cell::RefCell::new(Vec::new()),
         notifications: ::std::cell::RefCell::new(Vec::new()),
         pending_run: ::std::cell::RefCell::new(None),
+        pending_snapshot: ::std::cell::RefCell::new(None),
         can_notify: ctx.is_some(),
     };
     let Some(state) = service_state(engine) else {
@@ -676,6 +683,15 @@ pub fn served<Eng: Send + Sync + 'static>(
             let evaluated = monitor_run::off_the_async_worker(|| pending.evaluate());
             finished_run(engine, &resolved.domain_name, &request, &evaluated, now)
         }
+        None => answer,
+    };
+    // REPOSITORY work is planned under that guard and performed here for the same reason: the
+    // blobs a snapshot writes, reads or removes live in the object store of ANOTHER service,
+    // and no call holds two service stores at once. The answer it comes to REPLACES the
+    // placeholder the planning route returned ([`snapshot`]); every other request has planned
+    // none.
+    let answer = match request.pending_snapshot.borrow_mut().take() {
+        Some(planned) => snapshot::performed(engine, &resolved.domain_name, planned, now),
         None => answer,
     };
     state::log_publishing::deliver(engine, &request.published.into_inner());
@@ -978,6 +994,12 @@ struct Request<'a> {
     /// worker, and the report it answers replaces the placeholder the planning route
     /// returned ([`monitor_run`]). `None` for every request but an alerting execute.
     pending_run: ::std::cell::RefCell<Option<monitor_run::PendingRun>>,
+    /// The repository work this request PLANNED, for the step that performs it against the
+    /// object store: it is performed once this service's store is released, because no call
+    /// holds two service stores at once, and what it comes to REPLACES the placeholder the
+    /// planning route returned ([`snapshot`]). `None` for every request but a snapshot
+    /// repository's own write.
+    pending_snapshot: ::std::cell::RefCell<Option<snapshot::PendingWork>>,
     /// Whether a notification the work this request does owes can be handed to its channel
     /// at all: the in-process route to another service is the operation context's, which a
     /// request carrying no AWS credential has none of. An action of such a request reports
@@ -1124,6 +1146,17 @@ fn serve_resolved(
             _ => wrong_method(request, "GET"),
         },
         ["_cluster", "settings"] => cluster_settings_request(domain, request),
+        // The SNAPSHOT API: the repositories this cluster has registered, the snapshots it
+        // has taken into one, and the restore of one. The reserved first segment names it
+        // before any index-level arm below could read it as an index name.
+        ["_snapshot"] => snapshot::repositories_request(domain, request),
+        ["_snapshot", repository] => snapshot::repository_request(domain, request, repository),
+        ["_snapshot", repository, named] => {
+            snapshot::snapshots_request(domain, request, repository, named, now)
+        }
+        ["_snapshot", repository, named, "_restore"] => {
+            snapshot::restore_request(domain, request, repository, named)
+        }
         // The BULK API, and its index-scoped form: the reserved segment names it before
         // any arm below could read it as an index name.
         ["_bulk"] => bulk::bulk_request(domain, request, None, now),

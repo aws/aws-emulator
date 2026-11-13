@@ -261,6 +261,8 @@ mod shared_es_signing_name_claim;
 mod single_package_association;
 #[path = "all/single_package_dissociation.rs"]
 mod single_package_dissociation;
+#[path = "all/snapshot_repositories.rs"]
+mod snapshot_repositories;
 #[path = "all/state_roundtrip.rs"]
 mod state_roundtrip;
 #[path = "all/successive_domain_transitions.rs"]
