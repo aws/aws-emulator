@@ -87,6 +87,8 @@ mod expression_rules_and_write_admission;
 mod global_secondary_indexes;
 #[path = "all/global_tables.rs"]
 mod global_tables;
+#[path = "all/import_item_validation_outcomes.rs"]
+mod import_item_validation_outcomes;
 #[path = "all/index_and_projection_reads.rs"]
 mod index_and_projection_reads;
 #[path = "all/index_capacity_and_item_collections.rs"]
@@ -161,6 +163,8 @@ mod partiql_transaction_responses;
 mod partiql_transactions;
 #[path = "all/partiql_unsupported_operations.rs"]
 mod partiql_unsupported_operations;
+#[path = "all/point_in_time_item_history.rs"]
+mod point_in_time_item_history;
 #[path = "all/probe.rs"]
 mod probe;
 #[path = "all/provisioned_read_capacity.rs"]
@@ -257,6 +261,8 @@ mod table_replicas;
 mod table_scan;
 #[path = "all/table_streams.rs"]
 mod table_streams;
+#[path = "all/transact_write_expression_parse_defects.rs"]
+mod transact_write_expression_parse_defects;
 #[path = "all/table_throughput_mode_and_warm_capacity.rs"]
 mod table_throughput_mode_and_warm_capacity;
 #[path = "all/tag_read_propagation.rs"]

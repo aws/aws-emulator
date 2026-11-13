@@ -41,6 +41,143 @@ pub const RESTORE_WINDOW_LAG: Duration = Duration::from_secs(5 * 60);
 /// One day, the unit `RecoveryPeriodInDays` counts the recovery window in.
 pub(super) const DAY: Duration = Duration::from_secs(24 * 60 * 60);
 
+/// This emulator's own ceiling on how many item versions ONE table's recovery journal
+/// keeps, and how many bytes of them.
+///
+/// Not an AWS quota: DynamoDB states none, because its continuous backups are not held in
+/// memory. A journal entry is a copy of one item as it stood before a write, so without a
+/// ceiling the versions of one hot key would grow with the writes a caller makes. Reaching
+/// either one drops the OLDEST versions and moves the journal's horizon up with them
+/// ([`RecoveryJournal::horizon`]), so the window a restore is offered never reaches
+/// further back than the versions still held.
+///
+/// These bound ONE table. What bounds the PROCESS is that the bytes every journal retains
+/// are part of the store-wide figure admission control measures against
+/// ([`ComAmazonawsDynamodbDynamodb20120810State::stored_bytes`], against
+/// [`MAX_STORE_SIZE_BYTES`]): a journal holds item data, so it is counted with the item
+/// data it is a copy of rather than beside it, and a caller cannot grow the two together
+/// past that one ceiling however many tables have continuous backups turned on.
+pub const MAX_RECOVERED_ITEM_VERSIONS: usize = 20_000;
+pub const MAX_RECOVERED_ITEM_BYTES: i64 = 64 * 1024 * 1024;
+
+/// What ONE retained version costs beyond the item it holds: the PRIMARY KEY it is
+/// addressed by, which a version carries whether it holds an item or not.
+///
+/// Charged as the documented maximum a key may carry ([`MAX_PARTITION_KEY_BYTES`] plus
+/// [`MAX_SORT_KEY_BYTES`]) rather than measured per key: that is the upper bound on every
+/// key this store admits, so counting it keeps the ceilings above an upper bound on what a
+/// journal really holds — the versions whose `before` is `None` included, which retain a
+/// key and no item.
+pub const RECOVERED_VERSION_OVERHEAD_BYTES: i64 = MAX_PARTITION_KEY_BYTES + MAX_SORT_KEY_BYTES;
+
+/// One item as it stood BEFORE one write landed on it, and when that write landed.
+///
+/// `before` is `None` for a write that created the item, which is what undoing it removes.
+#[derive(Debug, Clone)]
+struct ItemVersion {
+    at: SystemTime,
+    key: ItemKey,
+    before: Option<Item>,
+}
+
+/// What a table's continuous backups HOLD, so a restore to a point in time can hand back
+/// the table as it stood then: every item version a write replaced since recovery was
+/// turned on, in the order the writes landed.
+///
+/// An UNDO log rather than a snapshot per instant: the table's current items are the one
+/// copy of the data, and the state at an instant is reached by putting back every version
+/// a later write replaced ([`Self::items_at`]). So the data a restore materialises is the
+/// table's own, and a table nobody wrote to since recovery was turned on costs nothing.
+#[derive(Debug, Clone, Default)]
+pub struct RecoveryJournal {
+    /// The versions, oldest first — the order the writes that replaced them landed in,
+    /// which is the order [`Self::items_at`] walks back through.
+    versions: VecDeque<ItemVersion>,
+    /// The bytes of item data and retained keys the versions above carry, against
+    /// [`MAX_RECOVERED_ITEM_BYTES`] and, together with the table's own items, against the
+    /// store-wide ceiling.
+    bytes: i64,
+    /// The oldest instant this journal can still reproduce the table at: `None` while it
+    /// holds every version since recovery was turned on, and the instant of the oldest
+    /// version it had to DROP once it dropped one. A restorable window is held at or after
+    /// this instant, so no restore is offered a point whose data is no longer here.
+    horizon: Option<SystemTime>,
+}
+
+impl RecoveryJournal {
+    /// What one version costs this journal: the item it holds, plus the key it is addressed
+    /// by ([`RECOVERED_VERSION_OVERHEAD_BYTES`]).
+    fn cost(before: Option<&Item>) -> i64 {
+        RECOVERED_VERSION_OVERHEAD_BYTES.saturating_add(before.map_or(0, item_size))
+    }
+
+    /// The bytes this journal retains, which are part of the store's own total.
+    fn retained_bytes(&self) -> i64 {
+        self.bytes
+    }
+
+    /// Keep the version `at` replaced, and drop what is no longer reachable.
+    fn record(&mut self, at: SystemTime, key: &ItemKey, before: Option<Item>, earliest: SystemTime) {
+        self.bytes = self.bytes.saturating_add(Self::cost(before.as_ref()));
+        self.versions.push_back(ItemVersion {
+            at,
+            key: key.clone(),
+            before,
+        });
+        // A version replaced at or before the oldest restorable point is never put back
+        // again — every point a restore may name is at or after it — so it is dropped
+        // without moving the horizon: nothing became unreachable.
+        while self
+            .versions
+            .front()
+            .is_some_and(|version| version.at <= earliest)
+        {
+            self.drop_oldest();
+        }
+        // This emulator's own ceilings, which DO make the versions below them unreachable:
+        // the horizon moves up to the oldest version still held.
+        while self.versions.len() > MAX_RECOVERED_ITEM_VERSIONS
+            || (self.bytes > MAX_RECOVERED_ITEM_BYTES && self.versions.len() > 1)
+        {
+            let dropped = self.drop_oldest();
+            self.horizon = dropped.max(self.horizon);
+        }
+    }
+
+    /// Drop the oldest version held, giving its bytes back to the budget.
+    fn drop_oldest(&mut self) -> Option<SystemTime> {
+        let dropped = self.versions.pop_front()?;
+        self.bytes = self
+            .bytes
+            .saturating_sub(Self::cost(dropped.before.as_ref()));
+        Some(dropped.at)
+    }
+
+    /// The oldest instant this journal can reproduce a table at, where it cannot reach
+    /// back to the instant recovery was turned on.
+    fn horizon(&self) -> Option<SystemTime> {
+        self.horizon
+    }
+
+    /// `current` as it stood at `point`: every version a write landed AFTER that instant
+    /// replaced, put back in reverse order, so the newest write is undone first and an
+    /// item written several times lands on the version it held at `point`.
+    fn items_at(
+        &self,
+        current: &BTreeMap<ItemKey, Item>,
+        point: SystemTime,
+    ) -> BTreeMap<ItemKey, Item> {
+        let mut items = current.clone();
+        for version in self.versions.iter().rev().filter(|held| held.at > point) {
+            match &version.before {
+                Some(before) => items.insert(version.key.clone(), before.clone()),
+                None => items.remove(&version.key),
+            };
+        }
+        items
+    }
+}
+
 /// A table's point-in-time recovery settings: what `UpdateContinuousBackups` writes and
 /// what both it and `DescribeContinuousBackups` report.
 ///
@@ -49,6 +186,10 @@ pub(super) const DAY: Duration = Duration::from_secs(24 * 60 * 60);
 /// one [`RESTORE_WINDOW_LAG`] behind now and its oldest the configured period behind
 /// that, bounded below by the instant recovery started — before which there is nothing
 /// to restore from.
+///
+/// What a point inside that window ANSWERS WITH is the journal beside the settings
+/// ([`RecoveryJournal`]): recovery being on is what makes an item version worth keeping,
+/// so the versions live with the setting that asked for them and a disable drops them.
 #[derive(Debug, Clone, Default)]
 pub struct PointInTimeRecovery {
     /// When point-in-time recovery was last turned on, or `None` while it is off (which
@@ -57,6 +198,9 @@ pub struct PointInTimeRecovery {
     pub(super) enabled_at: Option<SystemTime>,
     /// The recovery period in force while recovery is on, in days.
     pub(super) recovery_period_in_days: i32,
+    /// Every item version a write has replaced since recovery was turned on, which is
+    /// what a restore to a point inside the window is materialised from.
+    journal: RecoveryJournal,
 }
 
 impl PointInTimeRecovery {
@@ -74,6 +218,10 @@ impl PointInTimeRecovery {
         } else {
             self.enabled_at = None;
             self.recovery_period_in_days = 0;
+            // Turning recovery off forgets where the window started, so the versions that
+            // window was answered from are no longer anything's data: a later enable
+            // starts a new window, and nothing can be restored to a point before it.
+            self.journal = RecoveryJournal::default();
         }
     }
 
@@ -106,12 +254,58 @@ impl PointInTimeRecovery {
             .checked_sub(DAY * period)
             .unwrap_or(now)
             .clamp(enabled_at, latest);
+        // A window is only offered over the item versions the journal still holds: where
+        // it had to drop the oldest of them, its horizon is the oldest point the table can
+        // still be reproduced at, so that is where the window starts.
+        let earliest = match self.journal.horizon() {
+            Some(horizon) if horizon > earliest => horizon.min(latest),
+            _ => earliest,
+        };
         // Reported at the precision a timestamp carries on the wire, so each bound a
         // client reads back is exactly the instant it can send in again.
         Some((
             at_timestamp_precision(earliest),
             at_timestamp_precision(latest),
         ))
+    }
+
+    /// Keep the version of one item a write landed at `now` replaced, where recovery is on
+    /// — what a restore to a point inside the window then hands back
+    /// ([`Self::items_at`]).
+    ///
+    /// A table whose recovery is OFF has no restorable window at all, so nothing it holds
+    /// could be read as of a past instant and no version is kept for it: `before` is
+    /// borrowed and copied only where it is kept, so a write to such a table pays nothing.
+    pub fn record_item_version(&mut self, now: SystemTime, key: &ItemKey, before: Option<&Item>) {
+        if self.enabled_at.is_none() {
+            return;
+        }
+        // The oldest point a restore may name, which is what makes an older version
+        // unreachable — read before this version is added, since it does not move it.
+        let Some((earliest, _)) = self.restorable_window(now) else {
+            return;
+        };
+        self.journal.record(now, key, before.cloned(), earliest);
+    }
+
+    /// The bytes the versions this recovery kept retain, which the store counts with the
+    /// item data they are copies of ([`RecoveryJournal`]), so one ceiling bounds both.
+    pub fn retained_bytes(&self) -> i64 {
+        self.journal.retained_bytes()
+    }
+
+    /// The items of a table that HOLDS `current`, as that table stood at `point`: what a
+    /// restore to that point in time materialises, and what an export taken at it renders.
+    ///
+    /// Computed from the versions this recovery kept ([`RecoveryJournal::items_at`]), so an
+    /// item written after `point` is absent from it and one written before it carries the
+    /// value it held then — rather than the live table being handed over as a copy.
+    pub fn items_at(
+        &self,
+        current: &BTreeMap<ItemKey, Item>,
+        point: SystemTime,
+    ) -> BTreeMap<ItemKey, Item> {
+        self.journal.items_at(current, point)
     }
 
     /// The continuous-backups settings as the two continuous-backups operations report

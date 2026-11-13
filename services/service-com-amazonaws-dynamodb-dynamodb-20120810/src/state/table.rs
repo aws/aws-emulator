@@ -1019,10 +1019,32 @@ impl Table {
         for key in due {
             if let Some(item) = self.items.remove(&key) {
                 self.stored_bytes = self.stored_bytes.saturating_sub(item_size(&item));
+                // A TTL deletion is an item-level change like any other, so the version it
+                // removed is what a restore to a point before it hands back
+                // ([`Self::record_item_version`]).
+                self.record_item_version(now, &key, Some(&item));
                 removed.push(item);
             }
         }
         removed
+    }
+
+    /// Keep the version of the item at `key` that a change landing at `now` replaced, for
+    /// the table's continuous backups ([`PointInTimeRecovery::record_item_version`]).
+    ///
+    /// Called from every site that changes what a key holds — a write, a delete, a TTL
+    /// expiration, a replicated change — so one table's history is the history of its
+    /// items whichever call moved them. A table whose recovery is off keeps nothing, and a
+    /// call that found the key empty and left it empty changed nothing, so neither copies
+    /// the item: the version is borrowed here and cloned only where it is kept.
+    pub fn record_item_version(&mut self, now: SystemTime, key: &ItemKey, before: Option<&Item>) {
+        if !self.point_in_time_recovery.enabled()
+            || (before.is_none() && !self.items.contains_key(key))
+        {
+            return;
+        }
+        self.point_in_time_recovery
+            .record_item_version(now, key, before);
     }
 
     /// Meter this table's figures and every index's, at `now`, whatever the schedule.

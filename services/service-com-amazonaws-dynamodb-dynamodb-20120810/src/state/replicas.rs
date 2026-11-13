@@ -1237,6 +1237,9 @@ impl ComAmazonawsDynamodbDynamodb20120810State {
                 .stored_bytes
                 .saturating_sub(replaced.as_ref().map_or(0, super::item_size))
                 .saturating_add(item.map_or(0, super::item_size));
+            // A replicated change is an item-level change of the replica, so the version
+            // it replaced is kept for that table's own continuous backups.
+            table.record_item_version(now, key, replaced.as_ref());
         }
     }
 }

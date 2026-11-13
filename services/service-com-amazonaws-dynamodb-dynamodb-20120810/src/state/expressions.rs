@@ -4,10 +4,12 @@
 //! share: how an expression member is tokenized and parsed, the document paths it
 //! addresses, the conditions it evaluates and the updates it applies.
 //!
-//! One rule here is this change's: a reserved word written out as an attribute name is
-//! refused only once the expression has PARSED
-//! ([`ExprParser::check_no_reserved_name`]), because an expression the grammar cannot
-//! complete is the syntax error it is.
+//! Two rules here are after the parse rather than inside it: a reserved word written out
+//! as an attribute name ([`ExprParser::check_no_reserved_name`]) and a pair of
+//! parentheses that groups what is already grouped
+//! ([`ExprParser::check_no_redundant_parentheses`]) are each refused only once the
+//! expression has PARSED, because an expression the grammar cannot complete is the syntax
+//! error it is.
 
 use super::*;
 mod operands;
@@ -290,6 +292,13 @@ fn reserved_attribute_name(member: &str, word: &str) -> RequestError {
         member,
         &format!("Attribute name is a reserved keyword; reserved keyword: {word}"),
     )
+}
+
+/// The refusal for a pair of parentheses that groups what is already grouped: fixed text
+/// with no variable part — the sentence names neither the position of the pair nor the
+/// expression, because the whole expression is the mistake.
+fn redundant_parentheses(member: &str) -> RequestError {
+    invalid_expression_member(member, "The expression has redundant parentheses;")
 }
 
 /// The refusal for a function name the expression languages do not have.
@@ -1765,6 +1774,7 @@ impl ParsedCondition {
             return Err(parser.syntax());
         }
         parser.check_no_reserved_name()?;
+        parser.check_no_redundant_parentheses()?;
         Ok(Self { node })
     }
 
@@ -2500,6 +2510,49 @@ impl<'a> ExprParser<'a> {
             Some(word) => Err(reserved_attribute_name(self.member, word)),
             None => Ok(()),
         }
+    }
+
+    /// The refusal a REDUNDANT pair of parentheses earns, raised once the expression has
+    /// parsed.
+    ///
+    /// A pair that wraps nothing but another pair groups what is already grouped, so it
+    /// states nothing about how the expression is read — and DynamoDB refuses it rather
+    /// than reading past it. Asked after the parse, like the reserved-word check above:
+    /// parentheses the grammar could not complete are the syntax error the parse stopped
+    /// at, and only an expression that parsed has groups to call redundant.
+    ///
+    /// Grouping is what parentheses do in the CONDITION grammar, so this is asked where
+    /// that grammar is parsed ([`ParsedCondition::parse`]) — the parentheses of a function
+    /// call carry its arguments and are never redundant, which is why a group around a
+    /// whole call (`(attribute_exists(a))`) is not one.
+    pub(crate) fn check_no_redundant_parentheses(&self) -> Result<(), RequestError> {
+        // The index of the `(` each `)` closes, filled in as the walk closes each group,
+        // so the group that ends just before a `)` is known when that `)` is reached.
+        let mut opened_by: Vec<Option<usize>> = vec![None; self.tokens.len()];
+        let mut open_groups: Vec<usize> = Vec::new();
+        for (at, token) in self.tokens.iter().enumerate() {
+            match token {
+                ExprToken::Open => open_groups.push(at),
+                ExprToken::Close => {
+                    // A `)` closing nothing is unbalanced, which the grammar states on its
+                    // own: there is no group here to call redundant.
+                    let Some(open) = open_groups.pop() else {
+                        return Ok(());
+                    };
+                    opened_by[at] = Some(open);
+                    // This group's content is exactly one group of its own: it begins where
+                    // that group begins and ends where it ends.
+                    if at > 0
+                        && matches!(self.tokens.get(at - 1), Some(ExprToken::Close))
+                        && opened_by[at - 1] == Some(open + 1)
+                    {
+                        return Err(redundant_parentheses(self.member));
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(())
     }
 
     pub(crate) fn syntax(&self) -> RequestError {

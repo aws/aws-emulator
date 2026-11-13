@@ -317,8 +317,16 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let attribute_definitions = source.attribute_definitions.clone();
         let table_class = source.table_class.clone();
         let source_arn = source.arn.clone();
-        let items = source.items.clone();
-        let item_bytes = source.stored_bytes;
+        // "Restores the specified table to the specified point in time": the restored
+        // table's data is the source table's AS IT STOOD at that instant, materialised
+        // from the versions the source's continuous backups kept
+        // ([`crate::state::PointInTimeRecovery::items_at`]) — an item written after the
+        // point is absent from it, and one written before it carries the value it held
+        // then. The bytes are the restored data's own, not the live table's.
+        let items = source.point_in_time_recovery.items_at(&source.items, point);
+        let item_bytes = items.values().fold(0_i64, |total, item| {
+            total.saturating_add(crate::state::item_size(item))
+        });
 
         // The target name must be free. A table that is still being created, or already
         // being deleted, is "a target table with the specified name [that] is either

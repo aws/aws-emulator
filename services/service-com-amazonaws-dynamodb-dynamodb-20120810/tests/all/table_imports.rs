@@ -10,7 +10,8 @@
 //!    the `InputFormat` and `InputCompressionType` the request names — so the items the
 //!    new table serves are the source's own, an object outside the named key prefix is not
 //!    read, and a record the source carries in a form the table cannot hold is counted as
-//!    an error instead of stored;
+//!    an error instead of stored, which leaves the import FAILED over the items that did
+//!    pass;
 //! 2. the import is RECORDED, and every member of the description is read from that
 //!    record: it reports `IN_PROGRESS` with no end instant and no counters for the
 //!    transition span and the status the task settled into afterwards, together with the
@@ -475,13 +476,19 @@ async fn an_import_creates_the_declared_table_and_writes_what_the_source_carried
             );
         }
 
-        // And the record reports what the task made of the source.
+        // And the record reports what the task made of the source: an import that could
+        // not write every item it read ends FAILED with the validation those items failed,
+        // while the items that passed are in the table either way.
         let arn = import_arn(&started);
         let reported = described(&ok(&router, "DescribeImport", json!({"ImportArn": arn})).await);
+        let failed = source.errors > 0;
         assert_eq!(
             reported["ImportStatus"],
-            json!("COMPLETED"),
-            "case {case:?}: a finished import reports COMPLETED, got {reported}"
+            json!(if failed { "FAILED" } else { "COMPLETED" }),
+            "case {case:?}: an import of {} items with {} errors must report that status, got \
+             {reported}",
+            source.imported,
+            source.errors
         );
         assert_eq!(
             counter(&reported, "ProcessedItemCount"),
@@ -508,8 +515,13 @@ async fn an_import_creates_the_declared_table_and_writes_what_the_source_carried
         );
         assert_eq!(
             reported["FailureCode"],
-            Value::Null,
-            "case {case:?}: an import that read its source reports no failure, got {reported}"
+            if failed {
+                json!("ItemValidationError")
+            } else {
+                Value::Null
+            },
+            "case {case:?}: the failure reported follows whether every item could be \
+             written, got {reported}"
         );
     }
 }
@@ -1026,7 +1038,7 @@ async fn a_reader_answers_only_for_an_import_this_endpoint_holds() {
     );
     assert_eq!(
         message(&answered),
-        format!("Import not found: {absent}"),
+        format!("Import not found: Import with arn: {absent} doesn't exist"),
         "case an import never started: the refusal echoes the ARN addressed, got {answered}"
     );
 

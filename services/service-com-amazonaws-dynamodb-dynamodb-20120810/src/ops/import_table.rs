@@ -18,8 +18,10 @@
 //! has finished.
 //!
 //! What the TASK runs into is reported on the record rather than answered to the caller:
-//! a source bucket the object store holds none of, and a target name that is already a
-//! table's, each leave the import `FAILED` with the reason. The one conflict answered to
+//! a source bucket the object store holds none of, a target name that is already a
+//! table's, and a source carrying an item the table could not hold, each leave the import
+//! `FAILED` with the reason — the last of them after the items that DID pass validation
+//! were written, which is what `ErrorCount` counts. The one conflict answered to
 //! the caller is a target an import is still filling, which is the resource already being
 //! written that `ResourceInUseException` states.
 //!
@@ -565,6 +567,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 &input.s3_bucket_source.s3_bucket,
             )));
         }
+        // What the task counted: every record it read, the items it wrote, and the ones it
+        // could not — a record the format does not carry an item in, a value outside the
+        // domain a stored one may take, an item the table's key schema cannot key, one
+        // past the documented item size.
+        let error_count = read.error_count.saturating_add(keyed.error_count);
         let import = recorded_import(
             &input,
             &region,
@@ -575,11 +582,22 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 table_id: Some(table.id.clone()),
                 processed_item_count: read.processed_item_count,
                 imported_item_count: keyed.imported_item_count,
-                error_count: read.error_count.saturating_add(keyed.error_count),
+                error_count,
                 // A source that could not be read processed nothing, so there are no
-                // bytes to report for it.
+                // bytes to report for it. An import that READ its source processed its
+                // bytes whether every item it carried could be written or not.
                 processed_size_bytes: failure.is_none().then_some(read.processed_size_bytes),
-                failure,
+                // An import that could not write every item it read did not import the
+                // source it was given, so its task ends FAILED with the validation its
+                // items failed — the items that passed are in the table either way. A
+                // source that could not be read at all keeps that reason: it is why
+                // nothing was validated in the first place.
+                failure: failure.or_else(|| {
+                    (error_count > 0).then(|| crate::state::ImportFailure {
+                        code: crate::state::IMPORT_FAILURE_ITEM_VALIDATION.to_string(),
+                        message: crate::state::IMPORT_FAILURE_ITEM_VALIDATION_MESSAGE.to_string(),
+                    })
+                }),
             },
         );
         let description = import.describe(now);

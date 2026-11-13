@@ -284,9 +284,17 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             }
             // Everything this export reports of the table is read off it HERE, at the
             // instant of the request, so the record stands on its own once the table moves
-            // on.
+            // on. The DATA is the table as it stood at the point in time the export is
+            // taken at, materialised from the versions the table's continuous backups kept
+            // ([`crate::state::PointInTimeRecovery::items_at`]): an item written after that
+            // instant is no part of this export, and the figures the record reports are
+            // this data's own.
+            let exported = table
+                .point_in_time_recovery
+                .items_at(&table.items, export_time);
             let export = crate::state::Export::started(
                 table,
+                &exported,
                 request,
                 export_time,
                 input.client_token.clone(),
@@ -308,8 +316,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 .into());
             }
             // The items this export reads, copied out HERE so the rendering below runs with
-            // no lock held: an export reports the table as it stood at this instant.
-            let items: Vec<crate::state::Item> = table.items.values().cloned().collect();
+            // no lock held: the table as it stood at the point in time above.
+            let items: Vec<crate::state::Item> = exported.into_values().collect();
             let description = export.describe(now);
             let export_arn = export.arn.clone();
             let export_status = export.status(now).to_string();

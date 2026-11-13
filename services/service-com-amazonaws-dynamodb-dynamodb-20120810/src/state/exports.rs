@@ -211,13 +211,17 @@ pub struct Export {
 }
 
 impl Export {
-    /// The export an `ExportTableToPointInTime` at `now` starts from `table`.
+    /// The export an `ExportTableToPointInTime` at `now` starts from `table`, over
+    /// `exported` — the items that table held AT `export_time`
+    /// ([`PointInTimeRecovery::items_at`]), which are the items this export writes.
     ///
     /// Everything the record reports of the TABLE is read off it here, at the instant of
-    /// the request — the items it held and their size, and its own id — so the record
-    /// stands on its own once the table moves on.
+    /// the request — its own id, and the items and item data of the point in time it is
+    /// taken at — so the record stands on its own once the table moves on, and the figures
+    /// it reports are the figures of the data it wrote.
     pub fn started(
         table: &Table,
+        exported: &BTreeMap<ItemKey, Item>,
         request: ExportRequest,
         export_time: SystemTime,
         client_token: Option<String>,
@@ -237,8 +241,10 @@ impl Export {
             export_time,
             started_at,
             completes_at: started_at + STATUS_TRANSITION,
-            item_count: i64::try_from(table.items.len()).unwrap_or(i64::MAX),
-            billed_size_bytes: table.stored_bytes,
+            item_count: i64::try_from(exported.len()).unwrap_or(i64::MAX),
+            billed_size_bytes: exported
+                .values()
+                .fold(0_i64, |total, item| total.saturating_add(item_size(item))),
             // Nothing has been written yet, so nothing has failed yet: the caller records
             // the reason here if the write does not land.
             failure: None,

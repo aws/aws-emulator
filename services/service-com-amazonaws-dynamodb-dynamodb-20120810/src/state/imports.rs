@@ -120,6 +120,20 @@ pub const IMPORT_FAILURE_NO_SUCH_BUCKET_MESSAGE: &str = EXPORT_FAILURE_NO_SUCH_B
 /// taken, so this is reported on the record rather than answered to the caller.
 pub const IMPORT_FAILURE_TABLE_ALREADY_EXISTS: &str = "TableAlreadyExists";
 
+/// The `FailureCode` of an import whose source carried an item the table could not hold:
+/// "Status code for the failed import" (`ImportTableDescription$FailureCode`). The source
+/// was read and the items it carried were validated one by one, so the code names the
+/// validation the items failed rather than anything about the source as a whole.
+pub const IMPORT_FAILURE_ITEM_VALIDATION: &str = "ItemValidationError";
+
+/// The sentence an import that could not write every item it read reports: fixed text with
+/// no variable part — it states that some items failed validation and sends the caller to
+/// the error log for which ones, and names neither an item nor a count (the count is the
+/// `ErrorCount` member beside it).
+pub const IMPORT_FAILURE_ITEM_VALIDATION_MESSAGE: &str =
+    "Some of the items failed validation checks and were not imported. Please check \
+     CloudWatch error logs for more details.";
+
 /// The sentence an import whose target name is already a table's reports: the one this
 /// service states for a name that is already taken, built from the name the request
 /// asked the new table to be created under.
@@ -365,10 +379,14 @@ pub fn import_request_signature(
 }
 
 /// The `ImportNotFoundException` message an import-addressed operation answers an ARN it
-/// holds no import for with: built from the request — the ARN the caller addressed — and
-/// nothing about what the catalogue does hold.
+/// holds no import for with: "The specified import was not found"
+/// (`ImportNotFoundException`), in the sentence DynamoDB states for that class — fixed
+/// text around the ONE variable part, the `ImportArn` the caller addressed, and nothing
+/// about what the catalogue does hold.
 pub fn import_not_found(import_arn: &str) -> RequestError {
-    RequestError::NotFound(format!("Import not found: {import_arn}"))
+    RequestError::NotFound(format!(
+        "Import not found: Import with arn: {import_arn} doesn't exist"
+    ))
 }
 
 /// Hold an ARN-addressed IMPORT operation's `ImportArn` to the form such an ARN takes in
