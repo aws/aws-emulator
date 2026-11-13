@@ -47,15 +47,15 @@ const HOST: &str = "127.0.0.1:9297";
 const BUCKET: &str = "firehose-http-lambda-backup";
 
 /// `BucketARN` of [`BUCKET`], in the form that member's pattern requires.
-const BUCKET_ARN: &str = "arn:aws:s3:::firehose-http-lambda-backup";
+pub(crate) const BUCKET_ARN: &str = "arn:aws:s3:::firehose-http-lambda-backup";
 
 /// The `firehose:error-output-type` the records an HTTP endpoint destination did not place
 /// are written under.
-const FAILED_OUTPUT_TYPE: &str = "http-endpoint-failed";
+pub(crate) const FAILED_OUTPUT_TYPE: &str = "http-endpoint-failed";
 
 /// The `errorCode` the error output names for a buffer the endpoint ANSWERED without a
 /// success status.
-const DESTINATION_EXCEPTION: &str = "HttpEndpoint.DestinationException";
+pub(crate) const DESTINATION_EXCEPTION: &str = "HttpEndpoint.DestinationException";
 
 /// The `errorCode` the error output names for a buffer the endpoint answered with a success
 /// status that is no acknowledgment.
@@ -78,15 +78,15 @@ const FUNCTION_TIMEOUT: u64 = 20;
 /// `RetryOptions$DurationInSeconds` every refused row configures: long enough that the buffer
 /// is attempted again before it is parked, and short enough that a row does not wait on a
 /// window it is not about.
-const RETRY_SECONDS: i64 = 2;
+pub(crate) const RETRY_SECONDS: i64 = 2;
 
 /// How long an outcome is waited for before a row fails: far longer than the retry window
 /// above and the emulator's own delivery span, so a loaded machine does not fail a row the
 /// clock would have served.
-const DEADLINE: Duration = Duration::from_secs(60);
+pub(crate) const DEADLINE: Duration = Duration::from_secs(60);
 
 /// How often an outcome is polled for while waiting.
-const POLL_INTERVAL: Duration = Duration::from_millis(50);
+pub(crate) const POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 /// The handler behind the function URL: it answers the status the delivery's own access key
 /// names, with the acknowledgment envelope the delivery protocol asks for — the request's own
@@ -274,13 +274,13 @@ impl Row {
 /// IAM is deliberately not mounted, as in this crate's other delivery suites: a destination
 /// role nothing can be asked about withholds nothing, so what a row observes is the delivery
 /// itself.
-struct Emulator {
+pub(crate) struct Emulator {
     router: MultiServiceRouter,
     engine: Arc<engine::InMemoryEngine>,
 }
 
 impl Emulator {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let engine: Arc<engine::InMemoryEngine> = Arc::new(engine::InMemoryEngine::new());
         let mut router = MultiServiceRouter::new();
         router.set_request_authentication(false);
@@ -326,7 +326,7 @@ impl Emulator {
     }
 
     /// One Firehose `awsJson1_1` operation that must succeed.
-    async fn firehose_ok(&self, case: &str, operation: &str, body: Value) -> Value {
+    pub(crate) async fn firehose_ok(&self, case: &str, operation: &str, body: Value) -> Value {
         let (status, answered) = self
             .send(
                 "firehose",
@@ -370,7 +370,7 @@ impl Emulator {
     /// The create names its `LocationConstraint`: a create that names none can only mean
     /// us-east-1, the Region the unspecified constraint stands for, so S3 refuses one sent to
     /// any other Region's endpoint and this harness signs for [`REGION`].
-    async fn create_bucket(&self) {
+    pub(crate) async fn create_bucket(&self) {
         let (status, body) = self
             .send(
                 "s3",
@@ -395,7 +395,7 @@ impl Emulator {
     }
 
     /// Every key the backup bucket holds under `prefix`, read through `ListObjectsV2`.
-    async fn keys_under(&self, case: &str, prefix: &str) -> Vec<String> {
+    pub(crate) async fn keys_under(&self, case: &str, prefix: &str) -> Vec<String> {
         let (status, body) = self
             .send(
                 "s3",
@@ -416,7 +416,7 @@ impl Emulator {
     }
 
     /// The bytes the backup bucket holds at `key`, read through `GetObject`.
-    async fn object(&self, case: &str, key: &str) -> Vec<u8> {
+    pub(crate) async fn object(&self, case: &str, key: &str) -> Vec<u8> {
         let (status, body) = self
             .send("s3", "GET", &format!("/{BUCKET}/{key}"), &[], Vec::new())
             .await;
@@ -537,7 +537,7 @@ fn package(source: &str) -> Vec<u8> {
 
 /// Create the function behind every row's endpoint, wait until Lambda reports it `Active`,
 /// publish a public function URL for it and answer that URL.
-async fn given_endpoint(emulator: &Emulator) -> String {
+pub(crate) async fn given_endpoint(emulator: &Emulator) -> String {
     let (status, created) = emulator
         .lambda(
             "POST",
@@ -620,7 +620,7 @@ async fn given_endpoint(emulator: &Emulator) -> String {
 
 /// Wait until Firehose reports `stream` `ACTIVE`, which is when it takes a put: the create
 /// leaves it `CREATING` and the clock settles it.
-async fn await_active(emulator: &Emulator, stream: &str) {
+pub(crate) async fn await_active(emulator: &Emulator, stream: &str) {
     let deadline = Instant::now() + DEADLINE;
     loop {
         let described = emulator
