@@ -123,6 +123,10 @@ service-com-amazonaws-s3-amazons3 = { workspace = true }
 # about creating one mounts CloudTrail beside this service on the same engine and creates,
 # and deletes, the source through it.
 service-com-amazonaws-cloudtrail-cloudtrail-20131101 = { workspace = true }
+# A subscription filter's LAMBDA destination is authorised by the function's own resource
+# policy, so the suite about that gate mounts AWS Lambda beside this service on the same engine
+# and writes the permission through Lambda's OWN `AddPermission`.
+service-com-amazonaws-lambda-awsgirapiservice = { workspace = true }
 # The VPC endpoint a syslog configuration ingests through is one Amazon EC2 holds, so the
 # suite about that gate mounts EC2 beside this service on the same engine and creates every
 # endpoint a case names through EC2's OWN API rather than writing one into a store by hand.

@@ -37,7 +37,7 @@ const GET_LOG_OBJECT: &str = "GetLogObject";
 const INVALID_PARAMETER: &str = "InvalidParameterException";
 
 /// The sentence a pointer this service did not issue is refused with.
-const POINTER_NOT_ISSUED: &str = "The specified logObjectPointer is not valid.";
+const POINTER_NOT_ISSUED: &str = "Invalid log object pointer format.";
 
 /// The `@length` maximum the model declares on `LogObjectPointer` (1..512). Source:
 /// `smithy_query(query="operation",operation="GetLogObject")` —

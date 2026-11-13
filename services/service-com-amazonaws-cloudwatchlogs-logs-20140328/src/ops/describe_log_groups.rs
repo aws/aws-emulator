@@ -279,6 +279,22 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             )));
         }
 
+        // "Use this array [logGroupIdentifiers] to filter the list of log groups returned. If
+        // you specify this parameter, the only other filter that you can choose to specify is
+        // includeLinkedAccounts." So naming the groups to report excludes every OTHER filter
+        // of this listing, and the refusal states that rule IN THE MODEL'S OWN WORDS
+        // ([`crate::state::LOG_GROUP_IDENTIFIERS_EXCLUDE_FILTERS_MESSAGE`]) rather than in a
+        // sentence of this service's own: fixed text, carrying nothing of the request.
+        if input.log_group_identifiers.is_some()
+            && (input.log_group_name_prefix.is_some()
+                || input.log_group_name_pattern.is_some()
+                || input.log_group_class.is_some())
+        {
+            return Err(invalid(
+                crate::state::LOG_GROUP_IDENTIFIERS_EXCLUDE_FILTERS_MESSAGE,
+            ));
+        }
+
         // "When includeLinkedAccounts is set to true, use this parameter [
         // accountIdentifiers] to specify the list of accounts to search"; otherwise the
         // search is the caller's own account. This emulator serves exactly one account,

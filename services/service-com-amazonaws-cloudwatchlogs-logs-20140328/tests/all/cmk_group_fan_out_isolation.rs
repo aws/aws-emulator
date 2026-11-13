@@ -76,9 +76,11 @@ fn cmk_key_arn() -> String {
     engine::emulator_arn("kms", REGION, "key/2f04b1c6-8f1a-4a1d-9c3e-9b0f5a7d1e22")
 }
 
-/// A KMS ALIAS ARN, the other identifier form the same member takes.
-fn cmk_alias_arn() -> String {
-    engine::emulator_arn("kms", REGION, "alias/cloudwatch-logs-fan-out")
+/// A SECOND customer managed key ARN, so the table spans more than one key: `kmsKeyId` takes
+/// the ARN of a KMS KEY and no other identifier form (an alias ARN, a bare key id), which
+/// `tests/all/kms_key_resolution.rs` pins as the refusal it is.
+fn other_cmk_key_arn() -> String {
+    engine::emulator_arn("kms", REGION, "key/9d7c3b51-4e62-4a0b-8f17-6c2ad3f0e415")
 }
 
 /// One row of the encryption table.
@@ -99,8 +101,9 @@ struct Row {
     messages: &'static [&'static str],
 }
 
-/// The table: one row per form of the rule, spanning the group's key (absent, a key ARN, an
-/// alias ARN), the destination stream's own encryption and how the destination is addressed.
+/// The table: one row per form of the rule, spanning the group's key (absent, a key ARN,
+/// another key ARN), the destination stream's own encryption and how the destination is
+/// addressed.
 fn rows() -> Vec<Row> {
     vec![
         Row {
@@ -120,11 +123,11 @@ fn rows() -> Vec<Row> {
             messages: &["cmk-marker beta", "cmk-marker gamma"],
         },
         Row {
-            case: "an alias ARN on the group, plaintext destination stream",
-            group_key: Some(cmk_alias_arn()),
+            case: "another key ARN on the group, plaintext destination stream",
+            group_key: Some(other_cmk_key_arn()),
             destination_encrypted: false,
             through_logical_destination: false,
-            messages: &["alias-marker delta"],
+            messages: &["other-key-marker delta"],
         },
         Row {
             case: "a key ARN on the group, encrypted destination stream",

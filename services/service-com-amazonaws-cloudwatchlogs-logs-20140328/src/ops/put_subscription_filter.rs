@@ -11,6 +11,9 @@
 //! `roleArn` it names and test-delivering a message to the destination
 //! ([`crate::state::delivery_role`]) — so a role IAM reports CloudWatch Logs cannot assume is
 //! refused with `InvalidParameterException` and no filter is stored.
+//! A LAMBDA destination carries no role, so it is validated against its own resource policy
+//! instead ([`crate::state::lambda_destination`]): a function that does not let CloudWatch Logs
+//! invoke it for this log group is refused the same way.
 //! A put also RE-VALIDATES the filter's destination: a filter whose destination refused its
 //! last delivery ([`crate::state::subscription_delivery`]) is attempted again from the next
 //! ingested batch on, with no replay of the batches it missed. The put WRITES to the
@@ -254,11 +257,25 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             }
             None => None,
         };
+        // A LAMBDA destination carries no role: a function is invoked rather than written to
+        // under one, so what admits the delivery is the function's own resource-based policy,
+        // scoped to the log group this filter subscribes. That document lives in Lambda, so it
+        // too is read before the store's guard is taken
+        // ([`crate::state::lambda_destination`]), and what the answer decides is applied inside
+        // the configuration step — after everything about the request itself, and before
+        // anything is stored.
+        let unpermitted_destination = crate::state::lambda_destination::refusal_for(
+            ctx,
+            &region,
+            &input.destination_arn,
+            &crate::state::log_group_arn(&region, &input.log_group_name, false),
+        )
+        .await;
         // Configuring the filter holds the store's guard, so it is done in a SYNCHRONOUS
         // step ([`PutSubscriptionFilter::configure`]) and the guard is gone by the time the
         // health check it resolved is handed over below: a lock guard must not be held
         // across an in-process call into another service.
-        let health_check = self.configure(input, unassumable_role)?;
+        let health_check = self.configure(input, unassumable_role, unpermitted_destination)?;
         // The put VALIDATES the destination: CloudWatch Logs writes one health-check record
         // to it, before any log event of this filter exists
         // ([`crate::state::subscription_delivery::health_check`]).
@@ -286,6 +303,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> PutSubscriptionFi
         &self,
         input: PutSubscriptionFilterInput,
         unassumable_role: Option<String>,
+        unpermitted_destination: Option<String>,
     ) -> Result<Option<crate::state::subscription_delivery::Delivery>, PutSubscriptionFilterError>
     {
         let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
@@ -439,6 +457,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> PutSubscriptionFi
         // as the invalid parameter it is and nothing of the filter is stored — neither a
         // creation nor an update of one ([`crate::state::delivery_role`]).
         if let Some(message) = unassumable_role {
+            return Err(invalid(message));
+        }
+
+        // The same validation for the one destination kind that carries no role: a Lambda
+        // function whose own resource policy does not let CloudWatch Logs invoke it for this
+        // log group could never receive an event of it, so the filter is not stored
+        // ([`crate::state::lambda_destination`]).
+        if let Some(message) = unpermitted_destination {
             return Err(invalid(message));
         }
 

@@ -66,6 +66,21 @@ pub const LOGS_NAMESPACE: &str = "AWS/Logs";
 /// [`LOGS_NAMESPACE`].
 pub const EMF_DISABLED_ERRORS_METRIC: &str = "EMFDisabledErrors";
 
+/// The metric counting the ingested log events that were an Embedded Metric Format document
+/// this service could not READ as one, so no metric could be created from them. See
+/// [`LOGS_NAMESPACE`]; this is the signal that tells a client its EMF producer is emitting
+/// documents the service rejects from one that is emitting none.
+pub const EMF_PARSING_ERRORS_METRIC: &str = "EMFParsingErrors";
+
+/// The metric counting the log events a log group took in, published for every ingestion
+/// whatever the events carry: "the number of log events uploaded to CloudWatch Logs". See
+/// [`LOGS_NAMESPACE`].
+pub const INCOMING_LOG_EVENTS_METRIC: &str = "IncomingLogEvents";
+
+/// The metric measuring what those events WEIGHED: "the volume of log events in uncompressed
+/// bytes uploaded to CloudWatch Logs". See [`LOGS_NAMESPACE`].
+pub const INCOMING_BYTES_METRIC: &str = "IncomingBytes";
+
 /// The dimension [`EMF_DISABLED_ERRORS_METRIC`] is published under: the log group whose
 /// documents were skipped, which is the granularity a metric extraction policy selects at.
 pub const LOG_GROUP_NAME_DIMENSION: &str = "LogGroupName";
@@ -73,6 +88,14 @@ pub const LOG_GROUP_NAME_DIMENSION: &str = "LogGroupName";
 /// The unit of a count of documents, from the `StandardUnit` enumeration CloudWatch metric
 /// data is published with.
 const COUNT_UNIT: &str = "Count";
+
+/// The unit of a VOLUME of log data, from the same enumeration.
+const BYTES_UNIT: &str = "Bytes";
+
+/// The `StandardUnit` value for a measurement in no unit, which is what a count of log events
+/// uploaded carries in the `AWS/Logs` metric table.
+const NO_UNIT: &str =
+    ::service_com_amazonaws_cloudwatch_graniteserviceversion20100801::state::UNIT_NONE;
 
 /// How many datapoints one ingested event may publish, whatever its document or the log
 /// group's metric filters declare: the ceiling that keeps one `PutLogEvents` batch from
@@ -264,6 +287,135 @@ pub fn suppressed_datapoints(
         unit: Some(COUNT_UNIT.to_string()),
         storage_resolution: DEFAULT_STORAGE_RESOLUTION,
     }]
+}
+
+/// One datapoint of this service's own metric for the log group `log_group_name`, in
+/// [`LOGS_NAMESPACE`] and under [`LOG_GROUP_NAME_DIMENSION`] — the dimension the `AWS/Logs`
+/// metrics of an ingestion are published under, since the ingestion belongs to a log group
+/// rather than to any one message.
+fn service_datapoint(
+    metric_name: &str,
+    log_group_name: &str,
+    timestamp_ms: i64,
+    value: f64,
+    unit: &str,
+) -> ExtractedDatapoint {
+    ExtractedDatapoint {
+        namespace: LOGS_NAMESPACE.to_string(),
+        metric_name: metric_name.to_string(),
+        dimensions: BTreeMap::from([(
+            LOG_GROUP_NAME_DIMENSION.to_string(),
+            log_group_name.to_string(),
+        )]),
+        timestamp_ms,
+        value,
+        unit: Some(unit.to_string()),
+        storage_resolution: DEFAULT_STORAGE_RESOLUTION,
+    }
+}
+
+/// The `AWS/Logs` datapoints an ingestion into `log_group_name` publishes for the log events it
+/// STORED: how many they were ([`INCOMING_LOG_EVENTS_METRIC`]) and what they weighed
+/// ([`INCOMING_BYTES_METRIC`], the messages' own uncompressed bytes).
+///
+/// Both carry the instant the batch was ingested, which is when the volume was observed, and
+/// an ingestion that stored nothing publishes neither: there was no incoming log event to
+/// count. This is a property of every ingestion rather than of what a message carries, so it
+/// is independent of the Embedded Metric Format path above.
+#[must_use]
+pub fn ingestion_datapoints(
+    log_group_name: &str,
+    stored_messages: &[(i64, String)],
+    ingestion_time_ms: i64,
+) -> Vec<ExtractedDatapoint> {
+    if stored_messages.is_empty() {
+        return Vec::new();
+    }
+    let events = stored_messages.len() as f64;
+    let bytes: usize = stored_messages
+        .iter()
+        .map(|(_timestamp, message)| message.len())
+        .sum();
+    vec![
+        service_datapoint(
+            INCOMING_LOG_EVENTS_METRIC,
+            log_group_name,
+            ingestion_time_ms,
+            events,
+            NO_UNIT,
+        ),
+        service_datapoint(
+            INCOMING_BYTES_METRIC,
+            log_group_name,
+            ingestion_time_ms,
+            bytes as f64,
+            BYTES_UNIT,
+        ),
+    ]
+}
+
+/// The datapoint an ingested log event publishes when it WAS an Embedded Metric Format
+/// document and this service could not read it as one: one count of
+/// [`EMF_PARSING_ERRORS_METRIC`] for the log group it landed in, and nothing for a message that
+/// is not such a document ([`unreadable_emf_document`]).
+#[must_use]
+pub fn parsing_error_datapoints(
+    message: &str,
+    event_timestamp_ms: i64,
+    log_group_name: &str,
+) -> Vec<ExtractedDatapoint> {
+    if !unreadable_emf_document(message) {
+        return Vec::new();
+    }
+    vec![service_datapoint(
+        EMF_PARSING_ERRORS_METRIC,
+        log_group_name,
+        event_timestamp_ms,
+        1.0,
+        NO_UNIT,
+    )]
+}
+
+/// Whether `message` declares itself an Embedded Metric Format document — it carries the
+/// format's own [`AWS_MEMBER`] — and the metadata that member holds cannot be READ as the
+/// format defines it: a metadata member that is not an object, one that declares no
+/// `CloudWatchMetrics` list, an empty list, or a directive that names no namespace or no
+/// metrics list.
+///
+/// A message that is not JSON at all, and a JSON document carrying no such member, is an
+/// ordinary log event rather than a failed document, so neither counts. A document whose
+/// directives READ but whose declared values the document does not supply is a different thing
+/// again: it was understood, and it simply published nothing.
+fn unreadable_emf_document(message: &str) -> bool {
+    let Ok(document) = ::serde_json::from_str::<::serde_json::Value>(message) else {
+        return false;
+    };
+    let Some(declared) = document.get(AWS_MEMBER) else {
+        return false;
+    };
+    let Some(metadata) = declared.as_object() else {
+        return true;
+    };
+    let Some(directives) = metadata
+        .get(CLOUDWATCH_METRICS_MEMBER)
+        .and_then(::serde_json::Value::as_array)
+    else {
+        return true;
+    };
+    directives.is_empty() || !directives.iter().all(readable_directive)
+}
+
+/// Whether one `CloudWatchMetrics` directive carries what the format requires of it: the
+/// namespace it publishes into and the list of metrics it declares.
+fn readable_directive(directive: &::serde_json::Value) -> bool {
+    directive
+        .get(NAMESPACE_MEMBER)
+        .and_then(::serde_json::Value::as_str)
+        .is_some_and(|namespace| !namespace.is_empty())
+        && directive
+            .get(METRICS_MEMBER)
+            .and_then(::serde_json::Value::as_array)
+            .is_some()
 }
 
 /// The dimension sets one directive publishes under, each resolved from the document's own

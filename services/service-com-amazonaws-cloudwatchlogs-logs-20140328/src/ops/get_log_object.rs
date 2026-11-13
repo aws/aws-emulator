@@ -45,6 +45,18 @@
 //! pointer against before framing the `fields` event; nothing is synthesised in the
 //! meantime, because a log object nothing ingested does not exist.
 //!
+//! # Why the identity decision does not come first
+//!
+//! The resource this call addresses is named by nothing in the request except the pointer:
+//! the request carries no log group and no log stream, so WHICH resource is reached is
+//! whatever the pointer decodes to. A pointer the service did not issue decodes to no
+//! resource, so there is nothing for an identity decision to be about, and the request is
+//! refused for what is wrong with IT. That is why the authorization gate in front of every
+//! operation of this service defers to this one
+//! (`crate::service::identity_authorization::DECIDED_BY_THE_OPERATION`): a caller holding no
+//! permissions presenting a pointer this service did not issue is answered the same
+//! `InvalidParameterException` as any other caller presenting it.
+//!
 //! Nothing here mutates the store: resolving a pointer reports an object, so a request
 //! leaves every log group, stream and event exactly as a later reader finds them.
 //!
@@ -99,11 +111,10 @@ pub enum GetLogObjectErrorModeled {
 /// it holds — a pointer a client built itself, one past its validity, or one that addresses
 /// something other than a large log object.
 ///
-/// Fixed text for the class: it names the member whose value was rejected and carries
-/// NOTHING of the value itself, like every other refusal this service words for a
-/// caller-supplied token, so a pointer a client may have logged is not reflected back into
-/// a 400 body.
-const POINTER_NOT_ISSUED_MESSAGE: &str = "The specified logObjectPointer is not valid.";
+/// Fixed text for the class: it states what was wrong with the value and carries NOTHING of
+/// the value itself, like every other refusal this service words for a caller-supplied token,
+/// so a pointer a client may have logged is not reflected back into a 400 body.
+const POINTER_NOT_ISSUED_MESSAGE: &str = "Invalid log object pointer format.";
 
 /// The `GetLogObject` operation.
 ///

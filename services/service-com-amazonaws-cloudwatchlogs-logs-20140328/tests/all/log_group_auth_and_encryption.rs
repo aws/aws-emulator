@@ -49,14 +49,15 @@ const DEFAULT_PROJECTION: [&str; 9] = [
     "storedBytes",
 ];
 
-/// KMS key identifiers spanning the forms `kmsKeyId` ("The Amazon Resource Name (ARN) of
-/// the KMS key to use when encrypting log data") takes: a key ARN and an alias ARN, in
-/// the ARN shape `engine::emulator_arn` builds for this emulator's account.
+/// KMS key identifiers spanning several KEY ARNs — the form `kmsKeyId` takes ("The Amazon
+/// Resource Name (ARN) of the KMS key to use when encrypting log data"), in the ARN shape
+/// `engine::emulator_arn` builds for this emulator's account. No other identifier form names a
+/// key here, which `tests/all/kms_key_resolution.rs` pins as the refusal it is.
 fn kms_key_ids() -> [String; 3] {
     [
         engine::emulator_arn("kms", REGION, "key/1234abcd-12ab-34cd-56ef-1234567890ab"),
         engine::emulator_arn("kms", REGION, "key/fedcba98-76fe-54dc-32ba-0987654321fe"),
-        engine::emulator_arn("kms", REGION, "alias/logs-encryption"),
+        engine::emulator_arn("kms", REGION, "key/0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0"),
     ]
 }
 

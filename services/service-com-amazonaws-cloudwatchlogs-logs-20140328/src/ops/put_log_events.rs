@@ -15,6 +15,8 @@
 //! service's own `AWS/Logs` metric data — and is evaluated against the Contributor
 //! Insights rules collecting from the log group
 //! (`service_com_amazonaws_cloudwatch_graniteserviceversion20100801::state::insight_rules`).
+//! Each accepted batch also publishes what the log group took IN — the count of the stored
+//! events and their uncompressed bytes — as the service's own `AWS/Logs` metric data.
 //! This is the ONLY file to touch for this operation.
 //!
 //! THE INGESTION WINDOW is per event, not per batch: an event more than
@@ -673,7 +675,24 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> PutLogEvents<Eng>
                 .saturating_sub(declared.len());
             extracted.extend(declared);
             extracted.extend(metric_filters.datapoints(message, *timestamp, remaining));
+            // An event that WAS such a document and could not be read as one publishes no
+            // metric of its own, so the count of the failure is the only trace it leaves —
+            // which is what tells a client its producer is emitting documents the service
+            // rejects from one emitting none.
+            extracted.extend(crate::state::emf::parsing_error_datapoints(
+                message,
+                *timestamp,
+                &input.log_group_name,
+            ));
         }
+        // Every ingestion also publishes what the LOG GROUP took in, whatever its events
+        // carried: the count of the stored events and their uncompressed bytes, the two
+        // `AWS/Logs` metrics of an ingestion.
+        extracted.extend(crate::state::emf::ingestion_datapoints(
+            &input.log_group_name,
+            &stored_messages,
+            ingestion_time,
+        ));
         crate::state::emf::publish(&*self.engine, &extracted);
 
         // The same stored events are what the ENABLED Contributor Insights rules collecting

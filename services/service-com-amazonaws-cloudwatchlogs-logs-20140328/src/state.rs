@@ -208,6 +208,14 @@ pub mod query_worker;
 /// is what the key's own key policy decides.
 pub mod kms_key_grant;
 
+/// Whether the KMS key a request names is a key at all: the form of the identifier, and
+/// whether KMS holds a key under it that log data can be encrypted with.
+pub mod kms_key_reference;
+
+/// Whether the Lambda function a subscription filter delivers to lets CloudWatch Logs invoke
+/// it for that log group, which is what the function's own resource policy decides.
+pub mod lambda_destination;
+
 /// Whether the VPC endpoint a syslog configuration ingests through is one the account has,
 /// which is what Amazon EC2 — the service that owns VPC endpoints — answers.
 pub mod syslog_vpc_endpoint;
@@ -2661,6 +2669,22 @@ pub fn log_stream_arn(region: &str, group_name: &str, stream_name: &str) -> Stri
     )
 }
 
+/// The service principal CloudWatch Logs calls ANOTHER service as, in the global spelling a
+/// grant for this service is normally written for.
+///
+/// One pair of spellings for the whole crate: a resource policy of another service may name
+/// either form and both gates that read one — a KMS key's policy
+/// ([`kms_key_grant`]) and a Lambda function's ([`lambda_destination`]) — offer both to the
+/// shared evaluation, so the spellings cannot drift apart between them.
+pub const SERVICE_PRINCIPAL: &str = "logs.amazonaws.com";
+
+/// The same principal in the Regional spelling (`logs.<region>.amazonaws.com`), which a policy
+/// written for one Region's resources names. See [`SERVICE_PRINCIPAL`].
+#[must_use]
+pub fn regional_service_principal(region: &str) -> String {
+    format!("logs.{region}.amazonaws.com")
+}
+
 /// The service and resource segments of an ARN
 /// (`arn:<partition>:<service>:<region>:<account>:<resource>`), or `None` for anything
 /// that is not an ARN. The resource segment is whatever follows the account, colons and
@@ -3143,6 +3167,17 @@ pub enum KmsKeyTarget {
 /// carrying nothing of the request.
 pub const RESOURCE_IDENTIFIER_EXCLUSIVE_MESSAGE: &str =
     "resourceIdentifier should not be specified with any other log group attributes";
+
+/// The refusal a `DescribeLogGroups` request that names the log groups to report BESIDE another
+/// filter of the same listing is answered with: the rule IN THE MODEL'S OWN WORDS — "use this
+/// array to filter the list of log groups returned. If you specify this parameter, the only
+/// other filter that you can choose to specify is includeLinkedAccounts"
+/// (`smithy_query(query="doc",shape="DescribeLogGroupsRequest",member="logGroupIdentifiers")`),
+/// stated as the refusal of the request it is. Fixed text for the class: it names the member
+/// the rule is about and the one member it admits beside it, and carries nothing of the request.
+pub const LOG_GROUP_IDENTIFIERS_EXCLUDE_FILTERS_MESSAGE: &str =
+    "If you specify logGroupIdentifiers, the only other filter that you can choose to specify \
+     is includeLinkedAccounts";
 
 /// The refusal an `AssociateKmsKey` / `DisassociateKmsKey` request whose two target members
 /// cannot hold together is refused with, or `None` when exactly one of them names a target.

@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op AssociateKmsKey
-//! Implemented: records the KMS key on the target the request names — one log group, or
-//! the account's query results — once the KEY's own key policy is read from KMS and lets
-//! CloudWatch Logs encrypt that resource's data with it
-//! ([`crate::state::kms_key_grant`]); an association the key policy does not cover is
-//! refused and nothing is recorded. The association lives in the shared store, where
-//! `DescribeLogGroups` projects a log group's as `LogGroup$kmsKeyId`. This is the ONLY
-//! file to touch for this operation.
+//! Implemented: records the KMS key on the target the request names — one log group, or the
+//! account's query results — once the key itself is resolved in KMS
+//! ([`crate::state::kms_key_reference`]) and the KEY's own key policy lets CloudWatch Logs
+//! encrypt that resource's data with it ([`crate::state::kms_key_grant`]); an identifier that
+//! is not a key's ARN, a key KMS reports no usable key for, and an association the key policy
+//! does not cover are each refused and nothing is recorded. The association lives in the
+//! shared store, where `DescribeLogGroups` projects a log group's as `LogGroup$kmsKeyId`. This
+//! is the ONLY file to touch for this operation.
 //!
 //! A 501 from this operation means "nobody has written it yet", never "the emulator is
 //! broken". Replace the `Err(..)` in [`AssociateKmsKey::handle`] with real behaviour and
@@ -224,12 +225,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         };
 
         // "The Amazon Resource Name (ARN) of the KMS key to use when encrypting log
-        // data." A value that names no key cannot be associated with anything.
-        if !crate::state::is_kms_key_id(&input.kms_key_id) {
-            return Err(invalid(format!(
-                "kmsKeyId must be the ARN of a KMS key, got '{}'",
-                input.kms_key_id
-            )));
+        // data": an identifier that names no key KMS can find, and a key KMS reports in a
+        // state it cannot be used in, are each refused before anything is recorded
+        // ([`crate::state::kms_key_reference`]). Asked of KMS with no lock held.
+        if let Some(message) =
+            crate::state::kms_key_reference::refusal_for(ctx, &region, &input.kms_key_id).await
+        {
+            return Err(invalid(message));
         }
 
         // "you specify either the logGroupName parameter or the resourceIdentifier

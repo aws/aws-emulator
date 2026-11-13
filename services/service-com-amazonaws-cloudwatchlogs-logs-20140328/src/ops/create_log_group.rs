@@ -2,8 +2,9 @@
 
 //! @op CreateLogGroup
 //! Implemented: inserts a log group into the shared store, or refuses a name that
-//! already exists, a name the guidelines reserve, an account at its log-group quota, or a
-//! `kmsKeyId` whose KEY POLICY does not let CloudWatch Logs encrypt this group's data
+//! already exists, a name the guidelines reserve, an account at its log-group quota, a
+//! `kmsKeyId` KMS reports no usable key for ([`crate::state::kms_key_reference`]) or one whose
+//! KEY POLICY does not let CloudWatch Logs encrypt this group's data
 //! ([`crate::state::kms_key_grant`]) — a refused create stores nothing. This is the ONLY
 //! file to touch for this operation.
 //!
@@ -260,11 +261,25 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         }
 
         // "If you associate an KMS key with the log group, ingested data is encrypted using
-        // the KMS key": whether this key MAY encrypt this group's data is decided by the
-        // KEY's own policy, which lives in KMS, so it is read where KMS holds it and with no
-        // lock held ([`crate::state::kms_key_grant`]). A key whose policy does not cover the
-        // group being created could never encrypt it, so the group is not created at all.
+        // the KMS key": the key is RESOLVED in KMS first — "if you attempt to associate a KMS
+        // key with the log group but the KMS key does not exist or the KMS key is disabled,
+        // you receive an InvalidParameterException error" — and only a key KMS reports as one
+        // log data can be encrypted with has a policy to judge. Whether this key MAY encrypt
+        // this group's data is then decided by the KEY's own policy, which lives in KMS, so it
+        // too is read where KMS holds it and with no lock held
+        // ([`crate::state::kms_key_reference`], [`crate::state::kms_key_grant`]). A key that
+        // could never encrypt the group being created means the group is not created at all.
         if let Some(kms_key_id) = input.kms_key_id.as_deref() {
+            if let Some(message) =
+                crate::state::kms_key_reference::refusal_for(ctx, &region, kms_key_id).await
+            {
+                return Err(CreateLogGroupErrorModeled::InvalidParameterException(
+                    InvalidParameterException {
+                        message: Some(message),
+                    },
+                )
+                .into());
+            }
             let group_arn = crate::state::log_group_arn(&region, &input.log_group_name, false);
             if let Some(message) =
                 crate::state::kms_key_grant::refusal_for(ctx, &region, kms_key_id, &group_arn).await

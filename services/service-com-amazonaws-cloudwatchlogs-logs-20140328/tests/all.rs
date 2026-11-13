@@ -83,6 +83,8 @@ mod destination_access_authorization;
 mod destination_policies;
 #[path = "all/destination_removal.rs"]
 mod destination_removal;
+#[path = "all/describe_log_groups_filters.rs"]
+mod describe_log_groups_filters;
 #[path = "all/destinations.rs"]
 mod destinations;
 #[path = "all/enum_value_set_order.rs"]
@@ -117,12 +119,16 @@ mod filter_log_events;
 mod filter_log_events_search_reporting;
 #[path = "all/fixed_text_refusals.rs"]
 mod fixed_text_refusals;
+#[path = "all/get_log_object_authorization.rs"]
+mod get_log_object_authorization;
 #[path = "all/harness.rs"]
 mod harness;
 #[path = "all/identity_policy_authorization.rs"]
 mod identity_policy_authorization;
 #[path = "all/import_task_creation.rs"]
 mod import_task_creation;
+#[path = "all/ingestion_metrics.rs"]
+mod ingestion_metrics;
 #[path = "all/import_tasks.rs"]
 mod import_tasks;
 #[path = "all/index_policies.rs"]
@@ -141,6 +147,8 @@ mod integrations;
 mod json_filter_pattern_element_selectors;
 #[path = "all/json_filter_pattern_value_types.rs"]
 mod json_filter_pattern_value_types;
+#[path = "all/kms_key_resolution.rs"]
+mod kms_key_resolution;
 #[path = "all/list_anomalies.rs"]
 mod list_anomalies;
 #[path = "all/live_tail_sessions.rs"]
@@ -283,6 +291,8 @@ mod subscription_fan_out;
 mod subscription_filter_delivery;
 #[path = "all/subscription_filter_independence.rs"]
 mod subscription_filter_independence;
+#[path = "all/subscription_filter_lambda_permission.rs"]
+mod subscription_filter_lambda_permission;
 #[path = "all/subscription_filters.rs"]
 mod subscription_filters;
 #[path = "all/syslog_configurations.rs"]

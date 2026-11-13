@@ -32,15 +32,15 @@ use ::service_common::iam_authorization::{self as iam, Decision};
 
 use super::callback_client::callback_client;
 
-/// The service principal CloudWatch Logs calls KMS as, in the Regional spelling a key policy
-/// written for one Region's log data names (`logs.<region>.amazonaws.com`).
-fn regional_service_principal(region: &str) -> String {
-    format!("logs.{region}.amazonaws.com")
+/// The service principal CloudWatch Logs calls KMS as, in both spellings a key policy may be
+/// written for ([`super::SERVICE_PRINCIPAL`]): a policy granting either names this service, so
+/// both are offered to the evaluation.
+fn service_principals(region: &str) -> [String; 2] {
+    [
+        super::SERVICE_PRINCIPAL.to_string(),
+        super::regional_service_principal(region),
+    ]
 }
-
-/// The service principal CloudWatch Logs calls KMS as, in the global spelling; a key policy
-/// may grant either form, so both are offered to the evaluation.
-const SERVICE_PRINCIPAL: &str = "logs.amazonaws.com";
 
 /// The encryption-context key CloudWatch Logs passes the encrypted resource's ARN in, which
 /// is what a key policy scopes a grant to one log group with.
@@ -110,16 +110,16 @@ pub async fn refusal_for(
 /// element is `*`, which means this KMS key" (KMS Developer Guide, *Key policies*) — so the
 /// key's own identifier is what the request names as its resource.
 fn policy_permits(policy: &str, region: &str, kms_key_id: &str, resource_arn: &str) -> bool {
-    let principals = [
-        SERVICE_PRINCIPAL.to_string(),
-        regional_service_principal(region),
-    ];
+    let principals = service_principals(region);
     let context = [
         (
             LOG_RESOURCE_ENCRYPTION_CONTEXT_KEY.to_string(),
             resource_arn.to_string(),
         ),
-        (VIA_SERVICE_KEY.to_string(), regional_service_principal(region)),
+        (
+            VIA_SERVICE_KEY.to_string(),
+            super::regional_service_principal(region),
+        ),
         (
             CALLER_ACCOUNT_KEY.to_string(),
             ::engine::emulator_account_id().to_string(),

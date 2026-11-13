@@ -74,13 +74,16 @@
 //!
 //! ## The operations that take the decision themselves
 //!
-//! [`DECIDED_BY_THE_OPERATION`] names the operations whose own handler asks
-//! [`crate::state::identity_authorization::refusal`] — because the call acts on SEVERAL
-//! resources, or on one that is not a member of the request, so the handler is the only
-//! place that knows which ARNs the decision is about. This gate defers to them rather than
-//! judging the same call twice against a resource their handler would not use; the refusal
-//! they answer is the same sentence, from the same evaluator, through their own modelled
-//! `AccessDeniedException`.
+//! [`DECIDED_BY_THE_OPERATION`] names the operations this gate does not judge — because the
+//! call acts on SEVERAL resources, or on one that is not a member of the request, so the
+//! handler is the only place that knows which ARNs the decision is about. This gate defers to
+//! them rather than judging the same call twice against a resource their handler would not
+//! use. Where such a handler can name the resource, it asks
+//! [`crate::state::identity_authorization::refusal`] itself and answers the same sentence,
+//! from the same evaluator, through its own modelled `AccessDeniedException`; where the
+//! request carries no resolvable resource at all, there is nothing to decide and the handler
+//! refuses the request for what IS wrong with it — the order AWS answers in, since a call
+//! whose target cannot be resolved is not a call on any resource.
 
 use ::std::sync::Arc;
 
@@ -104,17 +107,25 @@ const LOG_STREAM_NAME_MEMBER: &str = "logStreamName";
 /// (`AmazonResourceName`) — what a tagging call of this service is addressed by.
 const RESOURCE_ARN_MEMBER: &str = "resourceArn";
 
-/// The operations whose own handler takes the identity decision, so this gate defers to it
-/// (see the module docs).
+/// The operations this gate does not judge, because the resource the call addresses is not a
+/// member of the request (see the module docs).
 ///
 /// SOURCE, for adding an entry: a handler that asks
-/// [`crate::state::identity_authorization::refusal`] itself. Sorted, which
+/// [`crate::state::identity_authorization::refusal`] itself, or one whose request names no
+/// resolvable resource for a decision to be about. Sorted, which
 /// [`decided_by_the_operation`] relies on for `binary_search`.
 pub const DECIDED_BY_THE_OPERATION: &[&str] = &[
     // "Creates a delivery … by pairing exactly one delivery source and one delivery
     // destination": the call acts on BOTH, so its handler decides it against each of them
     // in the order the request names them.
     "CreateDelivery",
+    // The resource this call addresses is named by NOTHING in the request except the
+    // `logObjectPointer` it carries: the pointer is the service's own handle on one large
+    // log object, so which resource the call reaches is whatever the pointer decodes to. A
+    // pointer this service did not issue decodes to no resource at all, so there is nothing
+    // to decide the call against and the operation refuses it as the bad parameter it is,
+    // reading and writing nothing of the store on the way.
+    "GetLogObject",
     // The call addresses the DELIVERY its `id` names, whose ARN its handler builds from
     // that id.
     "UpdateDeliveryConfiguration",
