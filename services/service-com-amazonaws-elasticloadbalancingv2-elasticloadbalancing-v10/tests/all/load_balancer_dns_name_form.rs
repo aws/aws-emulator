@@ -5,15 +5,19 @@
 //! One rule: the value is the address a client that honours it reaches the load balancer
 //! AT, and the FAMILY decides what that is:
 //!
-//! * an Application Load Balancer — the family whose listeners this emulator serves traffic
-//!   for — publishes the `host:port` of the socket the emulator opened for it, an address a
-//!   client on this machine can dial;
-//! * a Network or Gateway Load Balancer has no traffic served here, so it keeps the host
+//! * an Application Load Balancer — the family a client on this machine dials DIRECTLY,
+//!   because its listeners answer the client's own request — publishes the `host:port` of
+//!   the socket the emulator opened for it, an address that client can dial;
+//! * a Network or Gateway Load Balancer gets no socket of its own, so it keeps the host
 //!   Elastic Load Balancing's own zone gives it:
 //!   `<name>-<hexadecimal id>.elb.<region>.amazonaws.com`
 //!   (`my-network-load-balancer-1234567890abcdef.elb.us-west-2.amazonaws.com`), whose id
-//!   is the very one its ARN carries, and whose host states its scheme nowhere — a port
-//!   that answered nothing would be worse than a name.
+//!   is the very one its ARN carries, and whose host states its scheme nowhere. A Network
+//!   Load Balancer's traffic IS served on that name — a listener of its hands the connection
+//!   to what its target group names (`network_load_balancer_pass_on.rs`) — and the client of
+//!   an internal one sits inside this emulator (an API Gateway private integration, for
+//!   one), which is where that name resolves; a port published for a client that cannot be
+//!   its client would be worse than a name.
 //!
 //! The rows span what the rule generalises over: every family the model's
 //! `LoadBalancerTypeEnum` names, both schemes its `LoadBalancerSchemeEnum` names, names of
@@ -132,8 +136,8 @@ impl Published {
     /// The published value for `row` in `region`.
     fn of(row: &Row, region: &str) -> Self {
         match row.lb_type {
-            // The family whose traffic this emulator serves answers on a socket of its own,
-            // and publishes that socket's address.
+            // The family a client on this machine dials directly answers on a socket of its
+            // own, and publishes that socket's address.
             "application" => Self::Dialable,
             // A Network or Gateway Load Balancer's host states its scheme nowhere, whatever
             // the scheme is.

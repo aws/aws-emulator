@@ -135,3 +135,10 @@ mod weighted_forward_and_target_group_stickiness;
 mod wire;
 #[path = "all/zonal_shift_registration.rs"]
 mod zonal_shift_registration;
+// Declared after the sorted list on purpose: a line inserted inside it collides with every
+// other suite landing in the same window. Fold it into the list whenever the list is next
+// touched for another reason. The suite itself is an ordinary `tests/all/<name>.rs` file:
+// what a NETWORK Load Balancer's own traffic is answered by, which is the load balancer its
+// `alb` target group names.
+#[path = "all/network_load_balancer_pass_on.rs"]
+mod network_load_balancer_pass_on;

@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: CC0-1.0
 
-//! The Application Load Balancer DATA plane: how a request a client addresses to a load
-//! balancer's own name is recognised, and how it is answered out of the listener
-//! configuration this service holds.
+//! The load balancer DATA plane: how a request a client addresses to a load balancer's own
+//! name is recognised, and how it is answered out of the listener configuration this service
+//! holds.
 //!
 //! A load balancer this service creates publishes the name a client sends traffic to —
 //! `LoadBalancer$DNSName`, "the public DNS name of the load balancer" — and that name is
@@ -17,8 +17,12 @@
 //! priority order, from the lowest value to the highest value ... When the conditions for
 //! a rule are met, its actions are performed. If the conditions for no rules are met, the
 //! actions for the default rule are performed" (`CreateRule`), and a default rule's
-//! actions ARE its listener's `DefaultActions`. So this module is the second half of
-//! [`crate::service::EmulatedService`]: the claim ([`claims_parts`], read by
+//! actions ARE its listener's `DefaultActions`. A Network Load Balancer's listener carries no
+//! rules and reads no request out of the connection: it HANDS THE CONNECTION ON to whatever
+//! its target group selects, so what answers a request addressed to such a load balancer is
+//! the target — and where that target is an Application Load Balancer of this very store (an
+//! `alb` target group), that load balancer's own listener. So this module is the second half
+//! of [`crate::service::EmulatedService`]: the claim ([`claims_parts`], read by
 //! `Service::can_handle`) and the serving ([`serve`], reached from
 //! `Service::override_routing_error`, which the router reaches BEFORE authentication —
 //! which is what lets a load balancer's own traffic, carrying no AWS credential, be
@@ -48,12 +52,13 @@
 //!   emulator's own endpoint), so a first segment that happens to equal a load balancer's
 //!   name never takes a request away from the service its host names;
 //! * ENDPOINT-ONLY, for a client that carries the request path alone: on a host that names
-//!   no service, a store holding exactly ONE load balancer that serves HTTP has no other
-//!   load balancer the request could be meant for — and the path has to be one that load
-//!   balancer has a RULE written for, so a path it does not mention is left to whatever the
-//!   request was really addressed to rather than taken from another plane that reads a
-//!   host-independent addressing of its own. With more than one load balancer, or a path no
-//!   rule matches, the request must say which — by host, by prefix or by first segment.
+//!   no service, a store holding exactly ONE load balancer that answers from rules of its own
+//!   has no other load balancer the request could be meant for — and the path has to be one
+//!   that load balancer has a RULE written for, so a path it does not mention is left to
+//!   whatever the request was really addressed to rather than taken from another plane that
+//!   reads a host-independent addressing of its own. With more than one such load balancer, or
+//!   a path no rule matches, the request must say which — by host, by prefix or by first
+//!   segment.
 //!
 //! The last two are read only for a request that presents none of what an AWS API call
 //! presents ([`AWS_API_CALL_HEADERS`], [`AWS_API_CALL_QUERY_PARAMETERS`]): a signed or
@@ -70,6 +75,14 @@
 //! in process and the client is answered from what the run returned, or with the load
 //! balancer's own `502` when that answer breaks the response contract
 //! ([`super::lambda_target`]).
+//!
+//! A `forward` to an `alb` target group IS performed too: "alb - Register a single
+//! Application Load Balancer as a target" names a load balancer of this very store, so the
+//! request is passed on to it and answered by ITS listener — the rules, the actions and the
+//! web ACL of the load balancer the connection ended at, which is what a Network Load
+//! Balancer in front of an Application one really serves. A chain that leads back to a load
+//! balancer already in it is answered as a target that cannot be connected to, and the walk
+//! is capped by [`MAX_PASSED_ON_HOPS`] either way.
 //!
 //! A `forward` to any other target group names targets this emulator has no server behind: a
 //! registered target is an instance id or an address, and nothing in this emulator listens
@@ -126,6 +139,25 @@ pub fn data_plane_path(named: &str) -> String {
 /// two `ProtocolEnum` values an Application Load Balancer's listeners carry.
 const HTTP_PROTOCOLS: &[&str] = &["HTTP", "HTTPS"];
 
+/// The protocols whose listeners PASS A CONNECTION ON rather than reading a request out of
+/// it — the `ProtocolEnum` values a Network Load Balancer's listeners carry that carry a TCP
+/// stream, and so the request this plane is serving. `UDP`'s datagrams, and the `GENEVE` a
+/// Gateway Load Balancer's listeners carry, carry no request of this kind at all.
+const TCP_PROTOCOLS: &[&str] = &["TCP", "TCP_UDP", "TLS"];
+
+/// The listener protocols of one FAMILY that carry the request this plane serves: an
+/// Application Load Balancer's HTTP listeners, whose rules decide the answer, and a Network
+/// Load Balancer's TCP ones, which hand the connection to whatever the listener's target
+/// group selects. A Gateway Load Balancer's `GENEVE` listeners carry none, so its load
+/// balancers serve nothing here.
+fn served_protocols(family: LoadBalancerFamily) -> &'static [&'static str] {
+    match family {
+        LoadBalancerFamily::Application => HTTP_PROTOCOLS,
+        LoadBalancerFamily::Network => TCP_PROTOCOLS,
+        LoadBalancerFamily::Gateway => &[],
+    }
+}
+
 /// The `RuleCondition$Field` values this plane matches on, from that member's own list.
 const PATH_PATTERN_FIELD: &str = "path-pattern";
 const HOST_HEADER_FIELD: &str = "host-header";
@@ -162,6 +194,21 @@ pub const TARGET_UNREACHABLE_STATUS: u16 = 502;
 /// has to reach the identity provider it names, and this emulator makes no outbound
 /// connection.
 pub const ACTION_NOT_PERFORMED_STATUS: u16 = 500;
+
+/// How many times one request may be passed from a load balancer on to a load balancer of
+/// its own — a `forward` to an `alb` target group is one such hop
+/// ([`Performed::PassedOn`]) — past which this plane stops following the chain: a request
+/// that has already been passed on this many times is answered rather than passed on again.
+///
+/// A chain is followed because each hop is a real registration: what answers at the end of
+/// it is the last load balancer's own listener. What ends the walk is a load balancer
+/// ALREADY in the chain — a configuration that leads back to one answers nothing, so the
+/// request is answered as a target that cannot be connected to the moment it is revisited —
+/// and this bound beside it caps the walk itself however long a chain of distinct load
+/// balancers a caller configures. Both sit where the next hop is TAKEN rather than where it
+/// is configured, because a registration naming a load balancer is not a loop until it is
+/// walked.
+const MAX_PASSED_ON_HOPS: usize = 4;
 
 /// The `TargetHealthStateEnum` value a target that can be sent requests reports.
 const HEALTHY_TARGET_STATE: &str = "healthy";
@@ -359,9 +406,9 @@ pub fn claims_request<Eng: Send + Sync + 'static>(engine: &Eng, req: &RtRequest)
 /// when this data plane serves the request not at all.
 ///
 /// The four addressings are the module documentation's, in that order. Each one resolves
-/// only to a load balancer that SERVES HTTP ([`serves_http`]) — a Network or Gateway Load
-/// Balancer has no rules to evaluate and no response to render — so the claim and the
-/// answer cannot disagree about which requests this plane can answer.
+/// only to a load balancer that SERVES TRAFFIC OF THIS KIND ([`serves_traffic`]) — a Gateway
+/// Load Balancer's listeners carry no request of it — so the claim and the answer cannot
+/// disagree about which requests this plane can answer.
 fn resolve<Eng: Send + Sync + 'static>(engine: &Eng, addressed: &Addressed<'_>) -> Option<Resolved> {
     let state = service_state(engine)?;
     let store = state.lock();
@@ -407,16 +454,16 @@ fn resolve<Eng: Send + Sync + 'static>(engine: &Eng, addressed: &Addressed<'_>) 
     }
 
     // ENDPOINT-ONLY: the request path alone, for a client that carries nothing else. It is
-    // read only when the store holds exactly ONE load balancer that serves HTTP, and only
-    // for a path that load balancer has a RULE written for: the other planes that read a
-    // host-independent addressing require the path to name something they own (a deployed
-    // stage, for one), and a path no rule of the only load balancer mentions is left to
-    // whatever the request was really addressed to rather than claimed here — two
+    // read only when the store holds exactly ONE load balancer that answers from rules of
+    // its own, and only for a path that load balancer has a RULE written for: the other
+    // planes that read a host-independent addressing require the path to name something they
+    // own (a deployed stage, for one), and a path no rule of the only load balancer mentions
+    // is left to whatever the request was really addressed to rather than claimed here — two
     // claimants is what the router answers `500 AmbiguousService`.
     let mut serving = store
         .load_balancers
         .values()
-        .filter(|record| serves_http(&store, record));
+        .filter(|record| answers_from_rules(&store, record));
     let only = serving.next()?;
     if serving.next().is_some() {
         return None;
@@ -461,19 +508,37 @@ fn a_rule_is_written_for(store: &ElbState, record: &LoadBalancerRecord, path: &s
     })
 }
 
-/// One resolution, for a load balancer that serves HTTP; `None` for one that does not, so
-/// no addressing can claim a request this plane cannot answer.
+/// One resolution, for a load balancer that serves traffic of this kind; `None` for one that
+/// does not, so no addressing can claim a request this plane cannot answer.
 fn resolved(store: &ElbState, record: &LoadBalancerRecord, path: &str) -> Option<Resolved> {
-    serves_http(store, record).then(|| Resolved {
+    serves_traffic(store, record).then(|| Resolved {
         load_balancer_arn: record.arn.clone(),
         request_path: path.to_string(),
     })
 }
 
-/// Whether this load balancer has traffic of this kind to serve: an Application Load
-/// Balancer — the family whose listeners carry rules and whose actions render a response —
-/// with at least one listener on an HTTP protocol to answer with.
-fn serves_http(store: &ElbState, record: &LoadBalancerRecord) -> bool {
+/// Whether this load balancer has traffic of this kind to serve: a listener on a protocol
+/// that carries the request ([`served_protocols`]) — an Application Load Balancer's HTTP
+/// listener, whose rules and actions render the answer, or a Network Load Balancer's TCP
+/// one, which hands the connection to whatever its target group selects.
+///
+/// A Network Load Balancer is reached on the name it publishes exactly as an Application one
+/// is: a client sends traffic to `LoadBalancer$DNSName` and the listener on the port it
+/// reached decides what happens to it. What differs is what the listener does with the
+/// connection — it passes it on rather than answering from rules of its own — which is
+/// [`forward`]'s business, not the claim's.
+fn serves_traffic(store: &ElbState, record: &LoadBalancerRecord) -> bool {
+    listener_addressed(store, record, None).is_some()
+}
+
+/// Whether this load balancer answers from RULES of its own: an Application Load Balancer —
+/// the family whose listeners carry rules and whose actions render a response — with at
+/// least one listener on an HTTP protocol to answer with.
+///
+/// This is the narrower question the ENDPOINT-ONLY addressing asks, because that addressing
+/// is read only for a path one load balancer has a rule written for, and only an HTTP
+/// listener carries rules at all.
+fn answers_from_rules(store: &ElbState, record: &LoadBalancerRecord) -> bool {
     record.family() == LoadBalancerFamily::Application
         && listener_addressed(store, record, None).is_some()
 }
@@ -678,6 +743,13 @@ impl Served {
 /// `ctx` is what a `forward` to a `lambda` target group needs: the in-process transport the
 /// function is invoked over ([`super::lambda_target`]). The store's guard is released before
 /// that invocation, so one client's handler cannot stall another client's request.
+///
+/// A listener that HANDS THE CONNECTION ON — a `forward` to an `alb` target group — is
+/// served by going round again on the load balancer it was handed to: the same request,
+/// decided by that load balancer's own web ACL and answered by its own listener, which is
+/// what the client would have been answered had it addressed that load balancer directly. A
+/// chain that leads back to a load balancer already in it is answered as a target that
+/// cannot be connected to, and the walk is capped by [`MAX_PASSED_ON_HOPS`] either way.
 pub async fn serve<Eng: Send + Sync + 'static>(
     engine: &Eng,
     req: &RtRequest,
@@ -692,83 +764,117 @@ pub async fn serve<Eng: Send + Sync + 'static>(
         return rendered(&Served::status(PROVISIONING_STATUS));
     };
     let now = SystemTime::now();
-    // What this service holds about the addressed load balancer and the listener the
-    // request reached, under a lock that is RELEASED before anything else is asked.
-    //
-    // A load balancer the clock still owes its move out of `provisioning` is not serving
-    // traffic on the name it published yet. Read, never written: this plane moves no
-    // status.
-    let (load_balancer_arn, listener_arn, published_name) = {
-        let store = state.lock();
-        let Some(record) = store.load_balancers.get(&resolved.load_balancer_arn) else {
-            return rendered(&Served::status(PROVISIONING_STATUS));
-        };
-        if now < record.active_at {
-            return rendered(&Served::status(PROVISIONING_STATUS));
-        }
-        let Some(listener) = listener_addressed(&store, record, request.port) else {
-            return rendered(&Served::status(PROVISIONING_STATUS));
-        };
-        (
-            record.arn.clone(),
-            listener.arn.clone(),
-            record.dns_name.clone(),
-        )
-    };
-    // The host the CLIENT addressed, for a request this plane did not receive from the
-    // client directly ([`DataPlaneRequest::addressed_the_published_name`]).
-    request.addressed_the_published_name(&published_name);
-
-    // The web ACL `AssociateWebACL` bound to this load balancer, which decides the request
-    // BEFORE the listener's own action — the load balancer's ARN is the one the binding was
-    // written under.
-    let (decided, logged) = super::web_acl::decision(
-        engine,
-        &load_balancer_arn,
-        req,
-        &request.path,
-        &request.query,
-    );
-    // What that web ACL LOGS about the request it has just decided, delivered to the
-    // destination its own `LoggingConfiguration` names: WAF records the request it
-    // inspected, so the record is delivered for a request it refused at the edge as much
-    // as for one it let through to the listener.
-    if let Some(logged) = logged.as_ref() {
-        ::service_com_amazonaws_wafv2_awswaf_20190729::service::logs::deliver(ctx, logged).await;
-    }
-    let served = match decided {
-        super::web_acl::Decision::Refused(answer) => Served::at_the_edge(answer),
-        decided => {
-            if let super::web_acl::Decision::Allowed(inserted) = decided {
-                request.insert_headers(inserted);
+    // The load balancer serving the request, and the port it was addressed on: the one the
+    // client dialled to begin with and, for a request one load balancer passed on to a load
+    // balancer of its own, the next one's ([`Performed::PassedOn`]).
+    let mut load_balancer_arn = resolved.load_balancer_arn.clone();
+    let mut addressed_port = request.port;
+    // The listener that took the request, for the record this plane leaves of what answered:
+    // set by every iteration before anything reads it.
+    let mut listener_arn;
+    // Every load balancer this request has already been served against, so a chain that
+    // leads back to one of them is answered rather than walked again.
+    let mut walked: Vec<String> = Vec::new();
+    let served = loop {
+        // What this service holds about the addressed load balancer and the listener the
+        // request reached, under a lock that is RELEASED before anything else is asked.
+        //
+        // A load balancer the clock still owes its move out of `provisioning` is not serving
+        // traffic on the name it published yet. Read, never written: this plane moves no
+        // status.
+        let published_name = {
+            let store = state.lock();
+            let Some(record) = store.load_balancers.get(&load_balancer_arn) else {
+                return rendered(&Served::status(PROVISIONING_STATUS));
+            };
+            if now < record.active_at {
+                return rendered(&Served::status(PROVISIONING_STATUS));
             }
-            let performed = {
+            let Some(listener) = listener_addressed(&store, record, addressed_port) else {
+                return rendered(&Served::status(PROVISIONING_STATUS));
+            };
+            listener_arn = listener.arn.clone();
+            record.dns_name.clone()
+        };
+        // The host the CLIENT addressed, for a request this plane did not receive from the
+        // client directly ([`DataPlaneRequest::addressed_the_published_name`]).
+        request.addressed_the_published_name(&published_name);
+
+        // The web ACL `AssociateWebACL` bound to this load balancer, which decides the
+        // request BEFORE the listener's own action — the load balancer's ARN is the one the
+        // binding was written under, so each load balancer in a chain is decided by the one
+        // bound to IT.
+        let (decided, logged) = super::web_acl::decision(
+            engine,
+            &load_balancer_arn,
+            req,
+            &request.path,
+            &request.query,
+        );
+        // What that web ACL LOGS about the request it has just decided, delivered to the
+        // destination its own `LoggingConfiguration` names: WAF records the request it
+        // inspected, so the record is delivered for a request it refused at the edge as much
+        // as for one it let through to the listener — and once per load balancer the request
+        // was decided by, each by the ACL bound to that one.
+        if let Some(logged) = logged.as_ref() {
+            ::service_com_amazonaws_wafv2_awswaf_20190729::service::logs::deliver(ctx, logged)
+                .await;
+        }
+        let performed = match decided {
+            super::web_acl::Decision::Refused(answer) => break Served::at_the_edge(answer),
+            decided => {
+                if let super::web_acl::Decision::Allowed(inserted) = decided {
+                    request.insert_headers(inserted);
+                }
                 let store = state.lock();
                 let Some(listener) = store.listeners.get(&listener_arn) else {
                     return rendered(&Served::status(PROVISIONING_STATUS));
                 };
                 answered(&store, listener, &request, now)
-            };
-            match performed {
-                Performed::Answered(served) => served,
-                // The store's guard is released above, so the function RUNS with no lock of
-                // this service's held.
-                Performed::Invoke(forwarded) => {
-                    // The request's own bytes, which the event the function is invoked with
-                    // carries. A body this plane cannot read is not a body it may invent an
-                    // empty one for, so the request reaches no function at all.
-                    let Some(body) = req.body().bytes() else {
-                        tracing::warn!(
-                            load_balancer = %load_balancer_arn,
-                            "the request carries a body this emulator cannot read, so the \
-                             Lambda target was not invoked"
-                        );
-                        return rendered(&Served::status(
-                            super::lambda_target::BAD_GATEWAY_STATUS,
-                        ));
-                    };
-                    super::lambda_target::served(ctx, &forwarded, &request, body).await
+            }
+        };
+        match performed {
+            Performed::Answered(served) => break served,
+            // The store's guard is released above, so the function RUNS with no lock of
+            // this service's held.
+            Performed::Invoke(forwarded) => {
+                // The request's own bytes, which the event the function is invoked with
+                // carries. A body this plane cannot read is not a body it may invent an
+                // empty one for, so the request reaches no function at all.
+                let Some(body) = req.body().bytes() else {
+                    tracing::warn!(
+                        load_balancer = %load_balancer_arn,
+                        "the request carries a body this emulator cannot read, so the \
+                         Lambda target was not invoked"
+                    );
+                    return rendered(&Served::status(super::lambda_target::BAD_GATEWAY_STATUS));
+                };
+                break super::lambda_target::served(ctx, &forwarded, &request, body).await;
+            }
+            // The listener handed the connection to a load balancer of its own, which is
+            // what answers it: the same request is served against that load balancer's
+            // listeners, on the port its registration receives traffic on.
+            Performed::PassedOn(passed) => {
+                walked.push(load_balancer_arn.clone());
+                if walked.contains(&passed.load_balancer_arn) {
+                    tracing::warn!(
+                        load_balancer = %load_balancer_arn,
+                        "the load balancer this one passes the request on to has already \
+                         served it, so the chain leads nowhere and is not followed further"
+                    );
+                    break Served::status(TARGET_UNREACHABLE_STATUS);
                 }
+                if walked.len() >= MAX_PASSED_ON_HOPS {
+                    tracing::warn!(
+                        load_balancer = %load_balancer_arn,
+                        "the request has been passed from one load balancer to another \
+                         {MAX_PASSED_ON_HOPS} times and this one passes it on again, so the \
+                         chain is not followed further"
+                    );
+                    break Served::status(TARGET_UNREACHABLE_STATUS);
+                }
+                load_balancer_arn = passed.load_balancer_arn;
+                addressed_port = passed.port;
             }
         }
     };
@@ -840,11 +946,16 @@ impl<Eng: Send + Sync + 'static> ErasedOperation for DataPlane<Eng> {
 /// and, where that port names none of them — a client reaching the emulator's own endpoint
 /// addresses the EMULATOR's port, not the load balancer's — the lowest-numbered one, which
 /// is the port a load balancer's first listener is given.
+///
+/// Only a listener on a protocol that carries the request is considered
+/// ([`served_protocols`]), so a load balancer whose listeners carry none of it has none
+/// here — which is what makes the claim and the answer agree.
 fn listener_addressed<'s>(
     store: &'s ElbState,
     record: &LoadBalancerRecord,
     port: Option<i32>,
 ) -> Option<&'s ListenerRecord> {
+    let protocols = served_protocols(record.family());
     let mut listeners: Vec<&ListenerRecord> = record
         .listener_arns
         .iter()
@@ -853,7 +964,7 @@ fn listener_addressed<'s>(
             listener
                 .protocol
                 .as_deref()
-                .is_some_and(|protocol| HTTP_PROTOCOLS.contains(&protocol))
+                .is_some_and(|protocol| protocols.contains(&protocol))
         })
         .collect();
     listeners.sort_by(|left, right| left.port.cmp(&right.port).then_with(|| left.arn.cmp(&right.arn)));
@@ -1114,6 +1225,18 @@ enum Performed {
     /// The action forwards to a `lambda` target group, so the client is answered from an
     /// INVOCATION of the function registered with it ([`super::lambda_target`]).
     Invoke(Box<super::lambda_target::Forwarded>),
+    /// The action forwards to an `alb` target group, so the request is PASSED ON to the
+    /// Application Load Balancer registered with it and answered by that load balancer's own
+    /// listener ([`PassedOn`]).
+    PassedOn(Box<PassedOn>),
+}
+
+/// The load balancer a request was passed on to, and the port the registration says it
+/// receives traffic on — which is what selects the listener of ITS that answers.
+#[derive(Debug)]
+struct PassedOn {
+    load_balancer_arn: String,
+    port: Option<i32>,
 }
 
 /// Perform the matched action list: the terminating action answers the client, and an
@@ -1341,10 +1464,11 @@ fn default_port(protocol: &str) -> Option<&'static str> {
 /// What a `forward` answers. The target groups it names are this store's own, the DRAW over
 /// the weights it distributes them at decides which of them this request reaches
 /// ([`super::target_group_selection`]), and the registration that group holds decides what
-/// happens next: a `lambda` target group's function is INVOKED ([`super::lambda_target`]),
-/// and a target of any other group is a registration this emulator has no server behind, so
-/// the answer is the status a load balancer gives for the condition that holds — no target to
-/// choose, or a target chosen whose connection cannot be made.
+/// happens next: a `lambda` target group's function is INVOKED ([`super::lambda_target`]), an
+/// `alb` target group's load balancer is the one the request is PASSED ON to, and a target of
+/// any other group is a registration this emulator has no server behind, so the answer is the
+/// status a load balancer gives for the condition that holds — no target to choose, or a
+/// target chosen whose connection cannot be made.
 fn forward(
     store: &ElbState,
     listener: &ListenerRecord,
@@ -1415,6 +1539,26 @@ fn forward(
                 )
             }),
         }));
+    }
+    if group.is_load_balancer_target() {
+        // "alb - Register a single Application Load Balancer as a target", whose
+        // registration holds that load balancer's ARN (`TargetDescription$Id`: "if the target
+        // type is alb, specify the ARN of the Application Load Balancer target") — a load
+        // balancer of this very store, which the request is handed to so that what answers is
+        // ITS own listener rather than anything invented here. The port is the one the
+        // registration says the target receives traffic on, which is the listener of its that
+        // takes the connection.
+        if store.load_balancers.contains_key(&target.id) {
+            return Performed::PassedOn(Box::new(PassedOn {
+                load_balancer_arn: target.id.clone(),
+                port: target.port.or(group.port),
+            }));
+        }
+        tracing::warn!(
+            "the target group's healthy target names a load balancer this service no longer \
+             holds, so the connection to it cannot be made"
+        );
+        return Performed::Answered(Served::status(TARGET_UNREACHABLE_STATUS));
     }
     tracing::warn!(
         "the target group's healthy target is a registration with no server of this \

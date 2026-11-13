@@ -932,8 +932,6 @@ mod payment_cryptography_signing_name_routing;
 // either collides with all of them.
 #[path = "all/pinpoint_sms_voice_signing_name_routing.rs"]
 mod pinpoint_sms_voice_signing_name_routing;
-// Declared HERE, in this same quiet span of the sorted list, for the reason the entries
-// around it record: the appended tail at the end of this file and the HEAD of the list are
 // both regions every concurrently landing router suite puts its line in. This one pins the
 // FORM each service names a request by, which only an assembled router can show.
 #[path = "all/per_service_response_request_id_form.rs"]
@@ -1738,3 +1736,14 @@ mod s3_access_point_vpc_network_origin;
 // at once, so no single service crate's test target can deploy it.
 #[path = "all/cfn_deployed_backup_pipeline_delivers_job_events.rs"]
 mod cfn_deployed_backup_pipeline_delivers_job_events;
+// Declared in the appended tail, which is where every new suite inserts its lines: a custom
+// domain and the BASE-PATH MAPPING of it that a stack provisions, read back through the API
+// Gateway control plane that owns them — CloudFormation makes the calls and API Gateway
+// serves them, so no single service crate's test target can see both ends of it.
+#[path = "all/cloudformation_apigateway_base_path_mappings.rs"]
+mod cloudformation_apigateway_base_path_mappings;
+// Declared in the appended tail, for the same reason: a PRIVATE integration estate — the
+// Network Load Balancer a VPC link reaches, the Application Load Balancer behind it and the
+// REST API stage in front of them — spans Elastic Load Balancing v2 and API Gateway at once.
+#[path = "all/apigateway_vpc_link_private_integration.rs"]
+mod apigateway_vpc_link_private_integration;

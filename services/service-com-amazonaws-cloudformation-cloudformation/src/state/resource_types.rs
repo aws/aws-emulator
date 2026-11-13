@@ -80,7 +80,8 @@
 
 use super::template::{
     DeclaredResource, Template, ACMPCA_CERTIFICATE, ACMPCA_CERTIFICATE_AUTHORITY,
-    ACMPCA_CERTIFICATE_AUTHORITY_ACTIVATION, APIGATEWAY_DOMAIN_NAME, BRAKET_SPENDING_LIMIT,
+    ACMPCA_CERTIFICATE_AUTHORITY_ACTIVATION, APIGATEWAY_BASE_PATH_MAPPING,
+    APIGATEWAY_DOMAIN_NAME, BRAKET_SPENDING_LIMIT,
     MWAA_ENVIRONMENT,
 };
 
@@ -178,7 +179,7 @@ pub const AWS_RESOURCE_TYPES: &[&str] = &[
     "AWS::ApiGateway::Account",
     "AWS::ApiGateway::ApiKey",
     "AWS::ApiGateway::Authorizer",
-    "AWS::ApiGateway::BasePathMapping",
+    APIGATEWAY_BASE_PATH_MAPPING,
     "AWS::ApiGateway::ClientCertificate",
     "AWS::ApiGateway::Deployment",
     "AWS::ApiGateway::DocumentationPart",

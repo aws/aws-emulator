@@ -12,11 +12,13 @@
 //! the port range), and reports the `host:port` that socket answers on as its DNS name. A
 //! client dials exactly what it was told.
 //!
-//! Only an APPLICATION Load Balancer gets one: that is the family whose listeners carry
-//! rules and whose actions render a response ([`super::LoadBalancerFamily`]), so it is the
-//! only family this emulator has traffic to serve. A Network or Gateway Load Balancer keeps
-//! the name Elastic Load Balancing's own zone would give it, because a port that answered
-//! nothing would be worse than a name.
+//! Only an APPLICATION Load Balancer gets one: that is the family a client ON THIS MACHINE
+//! dials directly, because its listeners answer the client's own request. A Network or
+//! Gateway Load Balancer keeps the name Elastic Load Balancing's own zone would give it. A
+//! Network Load Balancer's traffic is served all the same — a listener of its hands the
+//! connection to what its target group names ([`crate::service::data_plane`]) — and the
+//! client of an internal one sits inside this emulator, which is where that name resolves:
+//! a port published for a client that cannot be its client would be worse than a name.
 //!
 //! The socket is the ADDRESS, not the data plane: everything a request is answered BY — the
 //! listener it reached, the rules, the web ACL in front of the load balancer and the target

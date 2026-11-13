@@ -485,11 +485,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         };
 
         // The ADDRESS this load balancer answers on, opened BEFORE the store is locked
-        // because opening a socket is asynchronous. A family whose traffic this emulator
-        // serves gets one and publishes it; any other keeps the name Elastic Load
-        // Balancing's own zone would carry, because a port that answered nothing would be
-        // worse than a name. A create this request goes on to refuse drops the handle,
-        // which closes the port again.
+        // because opening a socket is asynchronous. The family a client ON THIS MACHINE
+        // dials directly gets one and publishes it; any other keeps the name Elastic Load
+        // Balancing's own zone would carry, which is the name its own traffic is served on
+        // in process ([`crate::service::data_plane`]) — a port published for a client that
+        // cannot be its client would be worse than a name. A create this request goes on to
+        // refuse drops the handle, which closes the port again.
         let endpoint = match family {
             crate::state::LoadBalancerFamily::Application => {
                 crate::state::open_load_balancer_endpoint(&*self.engine, ctx.callback().clone())

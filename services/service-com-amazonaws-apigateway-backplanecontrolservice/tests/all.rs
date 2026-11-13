@@ -577,6 +577,11 @@ mod throttle_and_tag_contract_sentences;
 // Object's `content` map.
 #[path = "all/stage_export_oas30_containers.rs"]
 mod stage_export_oas30_containers;
+// Appended for the reason the note above gives: the KEY a per-method throttle override of a
+// usage plan's API stage association is held under, and the pointer spellings that address
+// that one entry.
+#[path = "all/usage_plan_method_throttle_keys.rs"]
+mod usage_plan_method_throttle_keys;
 // Appended for the reason the note above gives: what a `CUSTOM`-authorized method answers,
 // whether its BACKEND runs, and the access-log record the stage leaves — the three halves of
 // one request, across API Gateway, AWS Lambda and CloudWatch Logs on one engine.

@@ -3324,6 +3324,14 @@ impl TargetGroupRecord {
         self.target_type == "lambda"
     }
 
+    /// Whether this target group's target is a LOAD BALANCER of this very store: "alb -
+    /// Register a single Application Load Balancer as a target" (`TargetTypeEnum`), whose
+    /// registration holds that load balancer's ARN. A `forward` to such a group hands the
+    /// request to that load balancer, which answers it from its own listener.
+    pub fn is_load_balancer_target(&self) -> bool {
+        self.target_type == "alb"
+    }
+
     /// Which load balancer family this target group serves — see
     /// [`LoadBalancerFamily`].
     pub fn family(&self) -> LoadBalancerFamily {

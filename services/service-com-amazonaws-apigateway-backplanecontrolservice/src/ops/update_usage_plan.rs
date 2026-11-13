@@ -291,13 +291,38 @@ fn apply_quota_patch(entry: &mut UsagePlanEntry, patch: &Patch) -> Result<(), Pa
     Ok(())
 }
 
-/// Apply one patch that names the per-method `throttle` map of ONE `apiStages` entry:
-/// `/apiStages/{apiId}:{stage}/throttle/{method}` and
-/// `/apiStages/{apiId}:{stage}/throttle/{method}/{limit}`.
+/// The key ONE entry of an `ApiStage.throttle` map is held under: the method's own
+/// reference, which is the resource's path — absolute, so it opens with `/` — followed by
+/// the HTTP method, as in `/{resourcePath}/{httpMethod}`. The ROOT resource's path is `/`
+/// itself, so a method of it is referenced `//{httpMethod}`.
 ///
-/// The method is what the path carries between `throttle` and the limit it names, joined
-/// back into the one reference the map is keyed by — the same key the create stores, so a
-/// map entry written by either operation is read by both.
+/// A patch pointer spells that reference as its own reference tokens, and the resource
+/// path's leading `/` is either the pointer's own separator — the caller gave the first
+/// segment bare (`.../throttle/items/GET/rateLimit`) — or escaped into the first token
+/// (`.../throttle/~1items/GET/rateLimit`). Which of the two it is, is what the first token
+/// says: one that already opens with `/` carries the leading separator itself, and one that
+/// does not had it eaten by the pointer, so exactly one is put back. Both spellings
+/// therefore read as the SAME reference, which is also the key `CreateUsagePlan` is handed
+/// for that method — so an entry written by either operation is read back by both.
+fn method_reference(segments: &[String]) -> Option<String> {
+    // A pointer that names no segment at all, and one whose segments are all empty, name no
+    // method: there is no reference to address an entry by.
+    if segments.is_empty() || segments.iter().all(String::is_empty) {
+        return None;
+    }
+    let joined = segments.join("/");
+    Some(match segments.first().is_some_and(|first| first.starts_with('/')) {
+        true => joined,
+        false => format!("/{joined}"),
+    })
+}
+
+/// Apply one patch that names the per-method `throttle` map of ONE `apiStages` entry:
+/// `/apiStages/{apiId}:{stage}/throttle/{resourcePath}/{httpMethod}` and
+/// `/apiStages/{apiId}:{stage}/throttle/{resourcePath}/{httpMethod}/{limit}`.
+///
+/// The method reference is what the path carries between `throttle` and the limit it
+/// names, read back into the key the map holds it under by [`method_reference`].
 fn apply_api_stage_throttle_patch(
     entry: &mut UsagePlanEntry,
     patch: &Patch,
@@ -323,14 +348,13 @@ fn apply_api_stage_throttle_patch(
         // The tail names one limit of one method, so everything between the map and the
         // tail is the method.
         "burstLimit" | "rateLimit" => {
-            let method = patch
+            let segments = patch
                 .tokens
                 .get(3..patch.tokens.len().saturating_sub(1))
-                .unwrap_or_default()
-                .join("/");
-            if method.is_empty() {
+                .unwrap_or_default();
+            let Some(method) = method_reference(segments) else {
                 return Err(patch.unsupported_path());
-            }
+            };
             crate::state::bound_chars(&patch.path, &method, MAX_STRING_CHARS)
                 .map_err(PatchFailure::BadRequest)?;
             let mut limits = throttle.get(&method).cloned().unwrap_or_default();
@@ -354,7 +378,11 @@ fn apply_api_stage_throttle_patch(
         // `remove` addresses: there is no single value both its limits could take.
         _ => match patch.op {
             PatchOpKind::Remove => {
-                throttle.remove(&patch.tokens.get(3..).unwrap_or_default().join("/"));
+                let Some(method) = method_reference(patch.tokens.get(3..).unwrap_or_default())
+                else {
+                    return Err(patch.unsupported_path());
+                };
+                throttle.remove(&method);
             }
             _ => return Err(patch.unsupported_path()),
         },

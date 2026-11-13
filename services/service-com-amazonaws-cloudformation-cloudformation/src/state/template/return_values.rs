@@ -3880,6 +3880,19 @@ pub const APIGATEWAY_VPC_LINK: &str = "AWS::ApiGateway::VpcLink";
 /// than computed by the naming rules ([`return_values`] carries no arm for this type).
 pub const APIGATEWAY_DOMAIN_NAME: &str = "AWS::ApiGateway::DomainName";
 
+/// `AWS::ApiGateway::BasePathMapping`: the base path of such a custom domain name that one
+/// stage of a REST API answers on, which a stack creates in API Gateway itself
+/// ([`super::provisioner`]).
+///
+/// The mapping is addressed by the domain name that holds it and its own base path — the two
+/// `@httpLabel`s of every operation on one — and both are properties the declaration states,
+/// so every call the provider makes is built from the declaration rather than from an
+/// identifier only API Gateway can assign. It gets no arm here either: with none, `Ref` of
+/// the resource is the stand-in [`physical_name`] computes for a type that declares no name
+/// property, which nothing reads — no call of this type's provider takes it, and the type
+/// publishes no `Fn::GetAtt` attribute at all.
+pub const APIGATEWAY_BASE_PATH_MAPPING: &str = "AWS::ApiGateway::BasePathMapping";
+
 /// The Amazon API Gateway v2 resource types a stack creates in that service.
 ///
 /// `AWS::ApiGatewayV2::Api`: "Ref returns the API ID", and `Fn::GetAtt` reads

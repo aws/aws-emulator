@@ -934,6 +934,168 @@ pub(crate) fn apigateway_domain_name_uri(domain_name: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// Amazon API Gateway (REST): AWS::ApiGateway::BasePathMapping
+// ---------------------------------------------------------------------------
+
+/// The segment the base-path mappings of ONE custom domain name live under, as every
+/// operation on them binds it: `POST /domainnames/{domainName}/basepathmappings` creates one
+/// and `GET|DELETE /domainnames/{domainName}/basepathmappings/{basePath}` reads and deletes
+/// it.
+pub(crate) const APIGATEWAY_BASE_PATH_MAPPINGS_SEGMENT: &str = "basepathmappings";
+
+/// The property naming the custom domain name the mapping belongs to, which addresses the
+/// call rather than travelling in its body (`CreateBasePathMapping$domainName` is that
+/// operation's `@httpLabel`).
+pub(crate) const APIGATEWAY_MAPPING_DOMAIN_NAME: &str = "DomainName";
+
+/// The property naming WHICH record of that domain name the mapping belongs to, which
+/// travels as the call's own `@httpQuery` parameter rather than in its body
+/// (`CreateBasePathMapping$domainNameId`).
+pub(crate) const APIGATEWAY_MAPPING_DOMAIN_NAME_ID: &str = "DomainNameId";
+
+/// The property carrying the base path a caller reaches the mapped API under.
+pub(crate) const APIGATEWAY_MAPPING_BASE_PATH: &str = "BasePath";
+
+/// The base path of the mapping reached by naming the domain name and nothing after it:
+/// "leave this blank if you do not want callers to specify a base path name after the domain
+/// name" is the declaration of that mapping, and API Gateway addresses it by this spelling
+/// (`GetBasePathMapping$basePath`: "specify '(none)' if you do not want callers to specify
+/// any base path name after the domain name"). So a declaration stating no base path is the
+/// one the mapping is read and deleted under.
+pub(crate) const APIGATEWAY_BASE_PATH_NONE: &str = "(none)";
+
+/// The properties of this type API Gateway's own read reports, as `(property, member)`
+/// pairs, which is what drift is judged on: the whole `BasePathMapping` record — the base
+/// path it answers on, the API it maps to and that API's stage.
+pub(crate) const APIGATEWAY_BASE_PATH_MAPPING_REPORTED: &[(&str, &str)] = &[
+    ("BasePath", "basePath"),
+    ("RestApiId", "restApiId"),
+    ("Stage", "stage"),
+];
+
+/// Create the base-path mapping an `AWS::ApiGateway::BasePathMapping` declares, so a client
+/// that deployed the stack and then calls `apigateway GetBasePathMapping` for the declared
+/// domain name and base path reads the mapping back — with the API and stage the template
+/// named — rather than a `NotFoundException` for a mapping nothing created.
+///
+/// The type's properties ARE `CreateBasePathMapping`'s own members under the same names with
+/// a lower-cased initial (`BasePath`, `RestApiId`, `Stage`), so the declaration is the
+/// request once re-cased ([`api_gateway_request`]), less the two that address the call. The
+/// type is not taggable, so CloudFormation propagates no tag to a mapping and that create
+/// takes none.
+///
+/// The mapping is addressed by the PAIR API Gateway keys one by — the domain name and the
+/// base path — and both come off this resource's own declaration
+/// ([`apigateway_base_path_mapping_uri`]), so nothing it reports is an identifier this
+/// emulator invented.
+pub(crate) async fn create_apigateway_base_path_mapping(
+    ctx: &smithy_server_runtime::OperationContext<'_>,
+    region: &str,
+    resource: &StoredResource,
+) -> Result<Created, Refusal> {
+    let mut request = api_gateway_request(resource, &[], &[], &[])?;
+    if let Some(members) = request.as_object_mut() {
+        for property in [
+            APIGATEWAY_MAPPING_DOMAIN_NAME,
+            APIGATEWAY_MAPPING_DOMAIN_NAME_ID,
+        ] {
+            members.remove(&lower_initial(property));
+        }
+    }
+    let _answered = call_rest_json(
+        ctx,
+        API_GATEWAY_SIGNING_NAME,
+        region,
+        "POST",
+        &apigateway_base_path_mappings_uri(resource)?,
+        Some(&request),
+    )
+    .await?;
+    // The type publishes no attribute of its own: everything a client reads a mapping back
+    // by is what the declaration already states.
+    Ok(Created::attributes(BTreeMap::new()))
+}
+
+/// Delete the base-path mapping a stack created, addressed by the same pair its own read is.
+/// One API Gateway no longer holds (`NotFoundException`, judged on the CODE), including one a
+/// deleted domain name took with it, is already in the state the delete asks for.
+pub(crate) async fn delete_apigateway_base_path_mapping(
+    ctx: &smithy_server_runtime::OperationContext<'_>,
+    region: &str,
+    resource: &StoredResource,
+) -> Result<(), Refusal> {
+    let uri = apigateway_base_path_mapping_uri(resource)?;
+    api_gateway_deleted(ctx, region, &uri).await
+}
+
+/// The mapping's configuration as API Gateway reports it, for drift detection:
+/// `GetBasePathMapping`'s own record, under this type's property names. One that service no
+/// longer holds (`NotFoundException`) was deleted.
+pub(crate) async fn describe_apigateway_base_path_mapping(
+    ctx: &smithy_server_runtime::OperationContext<'_>,
+    region: &str,
+    resource: &StoredResource,
+) -> Result<Option<Value>, Refusal> {
+    let uri = apigateway_base_path_mapping_uri(resource)?;
+    match call_rest_json(ctx, API_GATEWAY_SIGNING_NAME, region, "GET", &uri, None).await {
+        Ok(answer) => Ok(Some(reported_as_properties(
+            &answer,
+            APIGATEWAY_BASE_PATH_MAPPING_REPORTED,
+        ))),
+        Err(refusal) if refusal.code == API_GATEWAY_NOT_FOUND => Ok(None),
+        Err(refusal) => Err(refusal),
+    }
+}
+
+/// The URI of the base-path-mapping collection of ONE custom domain name, with the record of
+/// that domain name the declaration names carried as the call's own query parameter where it
+/// names one.
+pub(crate) fn apigateway_base_path_mappings_uri(
+    resource: &StoredResource,
+) -> Result<String, Refusal> {
+    let domain_name = required_property(resource, APIGATEWAY_MAPPING_DOMAIN_NAME)?;
+    let mut uri = format!(
+        "{}/{APIGATEWAY_BASE_PATH_MAPPINGS_SEGMENT}",
+        apigateway_domain_name_uri(&domain_name)
+    );
+    if let Some(domain_name_id) = property(resource, APIGATEWAY_MAPPING_DOMAIN_NAME_ID) {
+        uri.push_str(&format!(
+            "?domainNameId={}",
+            percent_encoded(&domain_name_id)
+        ));
+    }
+    Ok(uri)
+}
+
+/// The URI that addresses ONE base-path mapping: the two `@httpLabel`s every operation on
+/// one binds, the domain name and the base path, both from the resource's own declaration.
+///
+/// A declaration that states no base path, and one that states it BLANK ("leave this blank
+/// if you do not want callers to specify a base path name after the domain name"), both
+/// declare the mapping API Gateway holds under [`APIGATEWAY_BASE_PATH_NONE`] — that create
+/// reads an absent and an empty `basePath` alike — and [`property`] reads a blank
+/// declaration as one stating nothing, so both are addressed under that spelling.
+pub(crate) fn apigateway_base_path_mapping_uri(
+    resource: &StoredResource,
+) -> Result<String, Refusal> {
+    let domain_name = required_property(resource, APIGATEWAY_MAPPING_DOMAIN_NAME)?;
+    let base_path = property(resource, APIGATEWAY_MAPPING_BASE_PATH)
+        .unwrap_or_else(|| APIGATEWAY_BASE_PATH_NONE.to_string());
+    let mut uri = format!(
+        "{}/{APIGATEWAY_BASE_PATH_MAPPINGS_SEGMENT}/{}",
+        apigateway_domain_name_uri(&domain_name),
+        percent_encoded(&base_path)
+    );
+    if let Some(domain_name_id) = property(resource, APIGATEWAY_MAPPING_DOMAIN_NAME_ID) {
+        uri.push_str(&format!(
+            "?domainNameId={}",
+            percent_encoded(&domain_name_id)
+        ));
+    }
+    Ok(uri)
+}
+
+// ---------------------------------------------------------------------------
 // Amazon API Gateway v2: AWS::ApiGatewayV2::Api / ::DomainName / ::ApiMapping
 // ---------------------------------------------------------------------------
 

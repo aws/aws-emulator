@@ -473,7 +473,7 @@ use super::provisioning::{
 use super::template::{
     ACMPCA_CERTIFICATE, ACMPCA_CERTIFICATE_AUTHORITY, ACMPCA_CERTIFICATE_AUTHORITY_ACTIVATION,
     ACM_ACME_ENDPOINT, ACM_CERTIFICATE, AOSS_COLLECTION,
-    AOSS_SECURITY_POLICY, APIGATEWAY_DOMAIN_NAME, APIGATEWAYV2_API,
+    AOSS_SECURITY_POLICY, APIGATEWAY_BASE_PATH_MAPPING, APIGATEWAY_DOMAIN_NAME, APIGATEWAYV2_API,
     APIGATEWAYV2_API_MAPPING, APIGATEWAYV2_AUTHORIZER, APIGATEWAYV2_DEPLOYMENT,
     APIGATEWAYV2_DOMAIN_NAME, APIGATEWAYV2_INTEGRATION, APIGATEWAYV2_ROUTE,
     APIGATEWAYV2_STAGE, BACKUP_PLAN, BACKUP_SELECTION, BACKUP_VAULT, BATCH_COMPUTE_ENVIRONMENT,
@@ -891,6 +891,10 @@ pub(super) enum Provisioner {
     /// `CreateDomainName` creates under the name the template states and
     /// `DeleteDomainName` removes.
     ApiGatewayDomainName,
+    /// `AWS::ApiGateway::BasePathMapping`: the base path of a custom domain name that a
+    /// stage of a REST API answers on, which `CreateBasePathMapping` creates under that
+    /// domain name and `DeleteBasePathMapping` removes.
+    ApiGatewayBasePathMapping,
     ApiGatewayV2Api,
     ApiGatewayV2DomainName,
     ApiGatewayV2ApiMapping,
@@ -1093,6 +1097,7 @@ pub(super) fn provisioner_for(resource_type: &str) -> Option<Provisioner> {
         EKS_CLUSTER => Some(Provisioner::EksCluster),
         EKS_POD_IDENTITY_ASSOCIATION => Some(Provisioner::EksPodIdentityAssociation),
         APIGATEWAY_DOMAIN_NAME => Some(Provisioner::ApiGatewayDomainName),
+        APIGATEWAY_BASE_PATH_MAPPING => Some(Provisioner::ApiGatewayBasePathMapping),
         APIGATEWAYV2_API => Some(Provisioner::ApiGatewayV2Api),
         APIGATEWAYV2_DOMAIN_NAME => Some(Provisioner::ApiGatewayV2DomainName),
         APIGATEWAYV2_API_MAPPING => Some(Provisioner::ApiGatewayV2ApiMapping),
@@ -1521,6 +1526,12 @@ impl Provisioner {
             }
             Self::ApiGatewayDomainName => {
                 create_apigateway_domain_name(ctx, region, resource, propagated).await
+            }
+            // `AWS::ApiGateway::BasePathMapping` publishes `BasePath`, `DomainName`,
+            // `DomainNameId`, `RestApiId` and `Stage` and no `Tags`: the type is not
+            // taggable, so no tags are propagated to a mapping.
+            Self::ApiGatewayBasePathMapping => {
+                create_apigateway_base_path_mapping(ctx, region, resource).await
             }
             Self::ApiGatewayV2Api => {
                 create_apigatewayv2_api(ctx, region, resource, propagated).await
@@ -2873,6 +2884,12 @@ impl Provisioner {
             Self::ApiGatewayDomainName => {
                 delete_apigateway_domain_name(ctx, region, physical_resource_id).await
             }
+            // The delete addresses the mapping by the PAIR API Gateway keys one by — the
+            // domain name and the base path — both of which are on the resource's own
+            // declaration.
+            Self::ApiGatewayBasePathMapping => {
+                delete_apigateway_base_path_mapping(ctx, region, resource).await
+            }
             Self::ApiGatewayV2Api => {
                 delete_apigatewayv2_api(ctx, region, physical_resource_id).await
             }
@@ -3333,6 +3350,10 @@ impl Provisioner {
             }
             Self::ApiGatewayDomainName => {
                 describe_apigateway_domain_name(ctx, region, physical_resource_id).await
+            }
+            // Read back by the same domain-and-base-path pair the delete uses.
+            Self::ApiGatewayBasePathMapping => {
+                describe_apigateway_base_path_mapping(ctx, region, resource).await
             }
             Self::ApiGatewayV2Api => {
                 describe_apigatewayv2_api(ctx, region, physical_resource_id).await
