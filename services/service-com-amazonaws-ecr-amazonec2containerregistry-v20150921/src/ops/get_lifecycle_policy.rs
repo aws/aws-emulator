@@ -208,9 +208,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // policy was evaluated when it was set, so the stored record carries that
             // instant and this read reports it; the read itself moves nothing, so a later
             // caller sees the same instant.
-            last_evaluated_at: Some(::aws_smithy_types::DateTime::from(
-                policy.last_evaluated_at,
-            )),
+            last_evaluated_at: Some(crate::state::reported_instant(policy.last_evaluated_at)),
         })
     }
 }

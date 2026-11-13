@@ -208,9 +208,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // The policy that was just removed carries the instant it was last evaluated
             // (see `PutLifecyclePolicy`), and this farewell response is the last place a
             // caller can read it.
-            last_evaluated_at: Some(::aws_smithy_types::DateTime::from(
-                removed.last_evaluated_at,
-            )),
+            last_evaluated_at: Some(crate::state::reported_instant(removed.last_evaluated_at)),
         })
     }
 }

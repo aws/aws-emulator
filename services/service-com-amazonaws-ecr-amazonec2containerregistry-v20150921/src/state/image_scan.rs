@@ -339,7 +339,7 @@ impl ImageScan {
             return None;
         }
         self.completed_at(now).map(|completed_at| ImageScanFindings {
-            image_scan_completed_at: Some(::aws_smithy_types::DateTime::from(completed_at)),
+            image_scan_completed_at: Some(super::reported_instant(completed_at)),
             vulnerability_source_updated_at: None,
             finding_severity_counts: Some(self.finding_severity_counts()),
             findings: Some(page),

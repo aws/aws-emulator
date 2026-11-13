@@ -771,19 +771,31 @@ impl ImageRecord {
                 Some(self.tags.iter().cloned().collect())
             },
             image_size_in_bytes: self.size_in_bytes,
-            image_pushed_at: Some(::aws_smithy_types::DateTime::from(self.pushed_at)),
+            image_pushed_at: Some(reported_instant(self.pushed_at)),
             image_manifest_media_type: self.manifest_media_type.clone(),
             artifact_media_type: self.artifact_media_type.clone(),
             image_status: Some(self.status.clone()),
-            last_archived_at: self.last_archived_at.map(::aws_smithy_types::DateTime::from),
-            last_activated_at: self
-                .last_activated_at
-                .map(::aws_smithy_types::DateTime::from),
-            last_recorded_pull_time: self
-                .last_recorded_pull_time
-                .map(::aws_smithy_types::DateTime::from),
+            last_archived_at: self.last_archived_at.map(reported_instant),
+            last_activated_at: self.last_activated_at.map(reported_instant),
+            last_recorded_pull_time: self.last_recorded_pull_time.map(reported_instant),
             ..ImageDetail::default()
         }
+    }
+
+    /// This image's place in the order a paginated read of a repository's images reports
+    /// them in: ascending push instant, and the digest where two images were pushed in
+    /// the same instant, so the order is total and the same on every call.
+    ///
+    /// Rendered as a key [`paginate`] can compare: the push instant as a fixed-width
+    /// count of nanoseconds since the epoch, so comparing the rendered keys as text
+    /// orders them the same way comparing the instants does, followed by the digest.
+    pub fn push_order_key(&self) -> String {
+        let since_epoch = self
+            .pushed_at
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        format!("{since_epoch:039}\u{1}{}", self.digest)
     }
 
     /// The byte length of the stored manifest document — `imageManifestSize`, the size of
@@ -1280,7 +1292,7 @@ impl PreviewedImage {
                 Some(self.tags.iter().cloned().collect())
             },
             image_digest: Some(self.digest.clone()),
-            image_pushed_at: Some(::aws_smithy_types::DateTime::from(self.pushed_at)),
+            image_pushed_at: Some(reported_instant(self.pushed_at)),
             action: Some(LifecyclePolicyRuleAction {
                 r#type: Some(self.action_type.clone()),
                 target_storage_class: self.target_storage_class.clone(),
@@ -1438,6 +1450,24 @@ pub fn normalize_lifecycle_policy(text: &str) -> String {
     service_common::json_document::minified(text)
 }
 
+/// The instant this service REPORTS for a stored `SystemTime`: the same instant, truncated
+/// to a whole millisecond.
+///
+/// ECR states the instants it reports to a resolution of one millisecond — "the date and
+/// time, expressed in standard JavaScript date format" (`ImageDetail$imagePushedAt`),
+/// whose resolution is the millisecond, and "the Unix time in seconds and milliseconds"
+/// (`AuthorizationData$expiresAt`). A `SystemTime` read from the host clock carries
+/// nanoseconds, so the sub-millisecond part is dropped here, in the ONE place a stored
+/// instant becomes a reported one — every member of every response this service serves
+/// goes through it, so no answer states an instant more precisely than ECR does.
+pub fn reported_instant(at: SystemTime) -> ::aws_smithy_types::DateTime {
+    let since_epoch = at
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    ::aws_smithy_types::DateTime::from_millis(i64::try_from(since_epoch).unwrap_or(i64::MAX))
+}
+
 /// ECR's refusal of a parameter it will not accept, worded to the template it states
 /// every such refusal with: `Invalid parameter at '<Parameter>' failed to satisfy
 /// constraint: '<constraint>'`.
@@ -1485,6 +1515,54 @@ pub const NEXT_TOKEN_PARAMETER: &str = "NextToken";
 /// the class — a token is opaque, so a caller learns only that the one it sent is not a
 /// token of this listing, never how this service reads it or what it contained.
 pub const NEXT_TOKEN_CONSTRAINT: &str = "Invalid next token provided";
+
+/// The API-documented label of the `maxResults` parameter, as a pagination refusal names
+/// it.
+pub const MAX_RESULTS_PARAMETER: &str = "MaxResults";
+
+/// The API-documented label of the `repositoryNames` parameter, as a refusal naming the
+/// repositories a read was scoped to names it.
+pub const REPOSITORY_NAMES_PARAMETER: &str = "RepositoryNames";
+
+/// The API-documented label of the `imageIds` parameter, as a refusal naming the images a
+/// read was scoped to names it.
+pub const IMAGE_IDS_PARAMETER: &str = "ImageIds";
+
+/// Refuse a read that asks for a PAGE of a set it has already enumerated.
+///
+/// A read whose request carries the identifiers to report (`identified`) reports exactly
+/// those, so paging it means nothing: of `maxResults` and `nextToken`, "This option cannot
+/// be used when you specify ..." (`DescribeRepositoriesRequest$maxResults`,
+/// `DescribeImagesRequest$maxResults`, `GetLifecyclePolicyPreviewRequest$maxResults`, and
+/// each of those requests' `nextToken`). The combination is refused as an invalid
+/// parameter, in the template ECR states a refused parameter in
+/// ([`invalid_parameter_at`]), naming the pagination parameter the request may not carry
+/// and the identifier parameter that excludes it — `identifiers` being the API-documented
+/// label of that list ([`REPOSITORY_NAMES_PARAMETER`], [`IMAGE_IDS_PARAMETER`]). Nothing
+/// of the request's values is echoed: the clause is the same for every such refusal.
+///
+/// `maxResults` is reported ahead of `nextToken` for a request carrying both, so one
+/// request is refused for one parameter.
+pub fn check_pagination_excluded(
+    identifiers: &str,
+    identified: bool,
+    max_results: Option<i32>,
+    next_token: Option<&String>,
+) -> Result<(), Fault> {
+    if !identified {
+        return Ok(());
+    }
+    let excluded = max_results
+        .map(|_| MAX_RESULTS_PARAMETER)
+        .or_else(|| next_token.map(|_| NEXT_TOKEN_PARAMETER));
+    match excluded {
+        Some(parameter) => Err(invalid_parameter_at(
+            parameter,
+            &format!("Cannot provide {parameter} if providing {identifiers}"),
+        )),
+        None => Ok(()),
+    }
+}
 
 /// The constraint a lifecycle document that cannot be MAPPED onto the lifecycle policy
 /// shape fails: JSON that does not parse, or a member whose JSON type the shape cannot
@@ -2033,7 +2111,7 @@ impl Repo {
             registry_id: Some(self.registry_id.clone()),
             repository_name: Some(self.name.clone()),
             repository_uri: Some(repository_uri(registry_endpoint, &self.name)),
-            created_at: Some(::aws_smithy_types::DateTime::from(self.created_at)),
+            created_at: Some(reported_instant(self.created_at)),
             image_tag_mutability: Some(self.image_tag_mutability.clone()),
             image_tag_mutability_exclusion_filters: if self
                 .image_tag_mutability_exclusion_filters
@@ -2529,8 +2607,8 @@ impl CreationTemplate {
             lifecycle_policy: self.lifecycle_policy.clone(),
             applied_for: Some(self.applied_for.clone()),
             custom_role_arn: self.custom_role_arn.clone(),
-            created_at: Some(::aws_smithy_types::DateTime::from(self.created_at)),
-            updated_at: Some(::aws_smithy_types::DateTime::from(self.updated_at)),
+            created_at: Some(reported_instant(self.created_at)),
+            updated_at: Some(reported_instant(self.updated_at)),
         }
     }
 }
@@ -4165,6 +4243,10 @@ pub fn decode_token(token: &str) -> Result<String, Fault> {
 /// One page of `items`, which must be ordered by their keys: everything after the key
 /// `next_token` names, capped at `max_results` and never at more than
 /// [`DEFAULT_PAGE_SIZE`], plus the token for the page after it.
+///
+/// The token names the last entry the page carried, so the page after it resumes strictly
+/// after that entry: paging a stable listing visits every entry exactly once, in the one
+/// order its keys put them in.
 pub fn paginate<T>(
     items: Vec<(String, T)>,
     next_token: Option<&String>,

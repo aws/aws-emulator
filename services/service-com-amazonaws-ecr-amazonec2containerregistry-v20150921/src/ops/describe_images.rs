@@ -228,6 +228,17 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         crate::state::check_registry(input.registry_id.as_ref()).map_err(fault_error)?;
 
+        // A read scoped to named images reports exactly those, so it may not also be
+        // paged: the combination is refused before anything is read.
+        let requested = input.image_ids.unwrap_or_default();
+        crate::state::check_pagination_excluded(
+            crate::state::IMAGE_IDS_PARAMETER,
+            !requested.is_empty(),
+            input.max_results,
+            input.next_token.as_ref(),
+        )
+        .map_err(fault_error)?;
+
         let filter = input.filter.unwrap_or_default();
         // A value outside `TagStatus` / `ImageStatusFilter` was already refused at the
         // boundary, so what arrives here is one of the modelled values.
@@ -254,13 +265,16 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // Each requested identifier must name a stored image; the whole call is refused
         // when one does not. The resolution lives on `Repo`, so every operation that
         // takes an `imageId` refuses the same identifier the same way.
-        let requested = input.image_ids.unwrap_or_default();
         let mut wanted = ::std::collections::BTreeSet::new();
         for id in &requested {
             wanted.insert(repo.resolve_image(id).map_err(fault_error)?.digest.clone());
         }
 
-        let candidates: Vec<(String, ImageDetail)> = repo
+        // Keyed — and so ordered and paged — by ascending push instant
+        // ([`crate::state::ImageRecord::push_order_key`]): the image pushed first is
+        // reported first, and a page boundary is a point in that one total order the next
+        // call resolves against the live store.
+        let mut candidates: Vec<(String, ImageDetail)> = repo
             .images
             .values()
             .filter(|image| wanted.is_empty() || wanted.contains(&image.digest))
@@ -274,11 +288,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             })
             .map(|image| {
                 (
-                    image.digest.clone(),
+                    image.push_order_key(),
                     image.to_detail(&repo.registry_id, &repo.name),
                 )
             })
             .collect();
+        candidates.sort_by(|(left, _), (right, _)| left.cmp(right));
 
         let (image_details, next_token) =
             crate::state::paginate(candidates, input.next_token.as_ref(), input.max_results)

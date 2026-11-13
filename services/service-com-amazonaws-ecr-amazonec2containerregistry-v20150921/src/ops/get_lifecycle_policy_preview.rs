@@ -221,18 +221,17 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         crate::state::check_registry(input.registry_id.as_ref()).map_err(fault_error)?;
 
-        // Of `maxResults` and `nextToken`: "This option cannot be used when you specify
-        // images with imageIds."
+        // A read scoped to named images reports exactly those, so it may not also be
+        // paged: the combination is refused before anything is read.
         let requested = input.image_ids.unwrap_or_default();
         let restrict = !requested.is_empty();
-        if restrict && (input.max_results.is_some() || input.next_token.is_some()) {
-            return Err(fault_error(crate::state::Fault::InvalidParameter(
-                "maxResults and nextToken cannot be used when imageIds names the images \
-                 to include"
-                    .to_string(),
-            ))
-            .into());
-        }
+        crate::state::check_pagination_excluded(
+            crate::state::IMAGE_IDS_PARAMETER,
+            restrict,
+            input.max_results,
+            input.next_token.as_ref(),
+        )
+        .map_err(fault_error)?;
         // An identifier naming nothing names no image, so the request is refused rather
         // than read as "every image".
         if requested

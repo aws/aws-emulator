@@ -187,11 +187,21 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         crate::state::check_registry(input.registry_id.as_ref()).map_err(fault_error)?;
 
+        // A read scoped to named repositories reports exactly those, so it may not also
+        // be paged: the combination is refused before anything is read.
+        let wanted = input.repository_names.unwrap_or_default();
+        crate::state::check_pagination_excluded(
+            crate::state::REPOSITORY_NAMES_PARAMETER,
+            !wanted.is_empty(),
+            input.max_results,
+            input.next_token.as_ref(),
+        )
+        .map_err(fault_error)?;
+
         let store = state.lock();
 
         // Every requested name must name a repository: ECR refuses the whole call
         // rather than reporting the ones it could find.
-        let wanted = input.repository_names.unwrap_or_default();
         for name in &wanted {
             store.repository(name).map_err(fault_error)?;
         }

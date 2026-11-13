@@ -244,7 +244,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         if let Some(custom_role_arn) = input.custom_role_arn {
             rule.custom_role_arn = Some(custom_role_arn);
         }
-        rule.updated_at = Some(::aws_smithy_types::DateTime::from(now));
+        rule.updated_at = Some(crate::state::reported_instant(now));
 
         // Everything reported back is read off the stored rule, so the answer is what a
         // later read of the same rule reports.

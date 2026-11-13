@@ -65,6 +65,8 @@ mod lifecycle_policy_preview;
 mod lifecycle_policy_validator_report;
 #[path = "all/manifest_media_type_negotiation.rs"]
 mod manifest_media_type_negotiation;
+#[path = "all/paginated_read_scoping.rs"]
+mod paginated_read_scoping;
 #[path = "all/parameter_constraint_clauses.rs"]
 mod parameter_constraint_clauses;
 #[path = "all/policy_document_canonical_form.rs"]

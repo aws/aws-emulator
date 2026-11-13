@@ -246,7 +246,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // could describe.
             authorization_data: Some(vec![AuthorizationData {
                 authorization_token: Some(token),
-                expires_at: Some(::aws_smithy_types::DateTime::from(expires_at)),
+                expires_at: Some(crate::state::reported_instant(expires_at)),
                 proxy_endpoint: Some(proxy_endpoint),
             }]),
         })

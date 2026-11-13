@@ -218,7 +218,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         Ok(RegisterPullTimeUpdateExclusionOutput {
             principal_arn: Some(principal_arn),
-            created_at: Some(::aws_smithy_types::DateTime::from(created_at)),
+            created_at: Some(crate::state::reported_instant(created_at)),
         })
     }
 }

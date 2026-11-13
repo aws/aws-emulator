@@ -303,7 +303,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // which is the one record `UpdatePullThroughCacheRule`,
         // `ValidatePullThroughCacheRule`, `DeletePullThroughCacheRule` and
         // `DescribePullThroughCacheRules` all read.
-        let now = ::aws_smithy_types::DateTime::from(now);
+        let now = crate::state::reported_instant(now);
         let rule = PullThroughCacheRule {
             ecr_repository_prefix: Some(prefix),
             upstream_registry_url: Some(input.upstream_registry_url),
