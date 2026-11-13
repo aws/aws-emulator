@@ -3583,14 +3583,39 @@ pub fn emulated_completion_text(model_id: &str, messages: u32, input_tokens: u32
 /// can be read off it.
 ///
 /// "You must provide the body in JSON format" is all the operation's own documentation says
-/// about such a body, and this is the sentence Amazon Bedrock states the refusal in — the
-/// recorded one for this class, for an unparseable document as for a parsed non-object. The
-/// fault is the DOCUMENT rather than any one member of it, so the message names no member
-/// and carries no value of the request; a body that IS the family's request object but omits
-/// a member it requires is reported naming that member instead
-/// ([`invoke_body_violation`]).
+/// about such a body, and this is the sentence Amazon Bedrock states the refusal in for a
+/// model whose provider publishes its own native request envelope — the recorded one for
+/// that class, for an unparseable document as for a parsed non-object. The fault is the
+/// DOCUMENT rather than any one member of it, so the message names no member and carries no
+/// value of the request; a body that IS the family's request object but omits a member it
+/// requires is reported naming that member instead ([`invoke_body_violation`]).
+///
+/// It is not one constant for the whole catalogue: the body is the PROVIDER's format, so the
+/// validator that refuses it — and the sentence it refuses it in — is the provider's. The
+/// wording per family is [`malformed_body_message`].
 pub const MALFORMED_BODY_MESSAGE: &str =
     "Malformed input request, please reformat your input and try again.";
+
+/// The sentence a body that is no request object of `family` at all is refused in.
+///
+/// Amazon Bedrock hands `InvokeModel$body` to the provider of the invoked model in that
+/// provider's own format, so the parse failure is reported by the provider's request
+/// validator and the wording follows the FAMILY the model id resolves to, not the
+/// operation: a provider served on the OpenAI-compatible chat-completions envelope answers
+/// its own sentence ([`openai_chat::MALFORMED_BODY_MESSAGE`], recorded for a model of that
+/// envelope), and a provider with its own native envelope answers
+/// [`MALFORMED_BODY_MESSAGE`]. Both are entirely fixed text.
+pub fn malformed_body_message(family: ModelFamily) -> &'static str {
+    match family {
+        ModelFamily::OpenAiChat => openai_chat::MALFORMED_BODY_MESSAGE,
+        ModelFamily::AnthropicMessages
+        | ModelFamily::TitanText
+        | ModelFamily::Nova
+        | ModelFamily::Llama
+        | ModelFamily::Mistral
+        | ModelFamily::CohereCommand => MALFORMED_BODY_MESSAGE,
+    }
+}
 
 /// The members a family's `InvokeModel` request body must bind.
 ///
@@ -3626,12 +3651,13 @@ fn required_body_slots(family: ModelFamily) -> &'static [&'static [&'static str]
 /// checked, and it can fail in two ways the service words differently: a body that is no
 /// request of the family at all — bytes whose JSON cannot be parsed, or a document that
 /// parses to something other than an object — is refused as the malformed input request it
-/// is ([`MALFORMED_BODY_MESSAGE`]); one that IS the family's request object but omits a
-/// member the family requires is reported naming that member, as a schema violation is.
+/// is, in the words that family's provider states that class in
+/// ([`malformed_body_message`]); one that IS the family's request object but omits a member
+/// the family requires is reported naming that member, as a schema violation is.
 pub fn invoke_body_violation(family: ModelFamily, body: &[u8]) -> Option<String> {
     let members = match serde_json::from_slice::<serde_json::Value>(body) {
         Ok(serde_json::Value::Object(members)) => members,
-        Ok(_) | Err(_) => return Some(MALFORMED_BODY_MESSAGE.to_string()),
+        Ok(_) | Err(_) => return Some(malformed_body_message(family).to_string()),
     };
     for slot in required_body_slots(family) {
         if slot.iter().any(|name| members.contains_key(*name)) {

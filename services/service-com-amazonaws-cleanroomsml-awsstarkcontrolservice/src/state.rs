@@ -1401,15 +1401,28 @@ pub const KIND_MEMBERSHIP: &str = "Membership";
 /// persisted resource of `kind`.
 ///
 /// `ResourceNotFoundException` models `message` and nothing else, so the message
-/// is where both go: Clean Rooms ML words this refusal as the KIND of resource
-/// that was looked for, then the identifier the request carried for it, then
-/// `does not exist.` — one wording for the whole class, each refusal naming its
-/// own kind and the value the caller sent.
+/// is where both go: every refusal of this class names the KIND of resource that
+/// was looked for and the identifier the request carried for it. The SENTENCE the
+/// two are stated in belongs to the kind rather than to the service — Clean Rooms ML
+/// grew a resource type at a time, and each type's own control plane words its
+/// not-found refusal ([`KINDS_WORDED_AS_NOT_FOUND`]) — so a new kind brings the
+/// wording recorded for it rather than inheriting one.
 pub fn resource_not_found(kind: &str, identifier: &str) -> ResourceNotFoundException {
-    ResourceNotFoundException {
-        message: format!("{kind} {identifier} does not exist."),
-    }
+    let message = if KINDS_WORDED_AS_NOT_FOUND.contains(&kind) {
+        format!("{kind}: {identifier} not found.")
+    } else {
+        format!("{kind} {identifier} does not exist.")
+    };
+    ResourceNotFoundException { message }
 }
+
+/// The kinds whose not-found refusal is worded `<kind>: <identifier> not found.` rather
+/// than `<kind> <identifier> does not exist.`
+///
+/// Recorded behavior, kind by kind: the configured-model-algorithm resource answers the
+/// first wording — wherever one is resolved, both on a read of the algorithm itself and on
+/// a create that references one — and the kinds left out of this list answer the second.
+const KINDS_WORDED_AS_NOT_FOUND: [&str; 1] = [KIND_CONFIGURED_MODEL_ALGORITHM];
 
 /// The message the TAGGING path's not-found refusal carries.
 ///

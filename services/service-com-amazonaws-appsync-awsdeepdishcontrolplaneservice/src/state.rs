@@ -143,10 +143,10 @@ pub struct GraphqlApiRecord {
     /// than because nothing ever filled it. The two are distinguishable to a caller — a
     /// call that finds a cache that was torn down is answered differently from one that
     /// finds an API that never had a cache — so the distinction is kept here rather than
-    /// recomputed from anything the request carries. It reports what the LAST teardown
-    /// of this API removed, so it is cleared both by a create that fills the slot again
-    /// and by a teardown that found nothing to remove, neither of which leaves a
-    /// deletion behind.
+    /// recomputed from anything the request carries. It reports whether a teardown of this
+    /// API has removed a cache, so it is set by the teardown that removes one and cleared
+    /// only by a create that fills the slot again; a repeated teardown removes nothing and
+    /// leaves it alone.
     pub api_cache_deleted: bool,
     /// The data sources created under this API, keyed by their caller-supplied
     /// name — the name is what every data-source operation addresses one by, so it
@@ -202,16 +202,21 @@ impl GraphqlApiRecord {
         self.api_cache_deleted = false;
     }
 
-    /// Tear down this API's cache, recording what THIS teardown removed.
+    /// Tear down this API's cache, recording whether a cache of this API HAS been torn
+    /// down.
     ///
-    /// The slot is emptied either way, and the deletion marker says whether this call is
-    /// what emptied it: a teardown that found the slot already empty removed no instance,
-    /// so it leaves no deletion behind for a later reader to report.
+    /// The slot is emptied either way. A teardown that found the slot already empty removed
+    /// nothing, so it leaves the marker exactly as it was: a call that removes no instance
+    /// changes nothing a later reader sees, and an API whose cache WAS deleted stays one
+    /// whose cache was deleted however many times the teardown is repeated. Only a create
+    /// that fills the slot again clears it ([`Self::put_api_cache`]).
     pub fn take_api_cache(&mut self) {
-        self.api_cache_deleted = self.api_cache.take().is_some();
+        if self.api_cache.take().is_some() {
+            self.api_cache_deleted = true;
+        }
     }
 
-    /// Whether this API's cache slot is empty BECAUSE the last teardown of it removed an
+    /// Whether this API's cache slot is empty BECAUSE a teardown of it removed an
     /// instance — the one case a call reports as a torn-down cache rather than as one
     /// that was never configured.
     pub fn api_cache_was_deleted(&self) -> bool {

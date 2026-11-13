@@ -345,9 +345,8 @@ async fn deleting_an_available_cache_removes_it_and_answers_without_members() {
 
         // Repeating the teardown is served exactly as the first one was: the delete asks
         // for the absence it now finds, so each repetition answers the modelled empty
-        // 200 — and it removed no instance, so from then on every reader of the absent
-        // cache reports an API that holds no cache rather than one whose cache was torn
-        // down.
+        // 200 — and it removed no instance, so it changes nothing a reader sees: the cache
+        // of this API was torn down, and every repetition leaves it torn down.
         for attempt in 2..=4 {
             let again = delete_cache(&router, &api_id).await;
             assert_eq!(
@@ -359,13 +358,13 @@ async fn deleting_an_available_cache_removes_it_and_answers_without_members() {
                 "case {case:?} delete {attempt}: expected a response with no members, \
                  got {again:?}"
             );
-            let expected = state::cache_not_found_message(state::CacheCall::Get);
+            let expected = state::cache_deleted_message(state::CacheCall::Get);
             let read = get_cache(&router, &api_id).await;
             assert_eq!(
                 (read.status, read.error_type.as_str(), read.message.as_str()),
                 (404, "NotFoundException", expected.as_str()),
-                "case {case:?} delete {attempt}: expected the reader to report an API that \
-                 holds no cache, got {read:?}"
+                "case {case:?} delete {attempt}: expected the reader to report an API whose \
+                 cache was torn down, got {read:?}"
             );
         }
 
@@ -569,9 +568,9 @@ enum Absence {
 /// The teardown is idempotent with respect to the absence of the cache: however many
 /// times it is repeated on an API that holds none, each call answers the modelled empty
 /// 200, and a create still fills the slot again afterwards. A teardown that found no
-/// instance removed none, so from then on a reader of the absent cache reports an API
-/// that holds no cache rather than one whose cache was torn down, and further
-/// repetitions change nothing.
+/// instance removed none, so it changes nothing a reader of the absent cache sees — an API
+/// whose cache was torn down keeps reporting the teardown, and one that never had a cache
+/// keeps reporting that — however often the call is repeated.
 ///
 /// The rows differ along what the rule generalises over: why the API holds no cache, how
 /// many redundant deletes are issued, and the settings the deleted row's cache was
@@ -647,15 +646,14 @@ async fn the_teardown_is_idempotent_however_often_it_is_repeated() {
                  members, got {again:?}"
             );
 
-            // It removed no instance, so there is no teardown for a reader to report:
-            // from here on the absence is the one an API that holds no cache has, and it
-            // stays that way however often the call is repeated.
+            // It removed no instance, so it changed nothing a reader sees: the absence
+            // stays the one this row built, however often the call is repeated.
             let read = get_cache(&router, &api_id).await;
             assert_eq!(
                 (read.status, read.error_type.as_str(), read.message.as_str()),
-                (404, "NotFoundException", never_configured.as_str()),
-                "case {case:?} redundant delete {attempt}: expected the reader to report an \
-                 API that holds no cache, got {read:?}"
+                (404, "NotFoundException", expected_before.as_str()),
+                "case {case:?} redundant delete {attempt}: expected the reader to report \
+                 this row's absence, got {read:?}"
             );
         }
 

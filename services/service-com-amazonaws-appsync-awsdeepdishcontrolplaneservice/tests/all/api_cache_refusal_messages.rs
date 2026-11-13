@@ -123,9 +123,8 @@ const CACHE_OPS: &[CacheOp] = &[
 const DELETED_MESSAGE: &str =
     "Unable to get the cache as it has been deleted, please re-create the cache.";
 
-/// AWS's sentence for a read of an API that holds no cache the last teardown of it
-/// removed — one that never had one, and one whose teardown has since been re-issued and
-/// found nothing to remove.
+/// AWS's sentence for a read of an API no teardown of which has ever removed a cache —
+/// one that never had one at all.
 const NEVER_CONFIGURED_MESSAGE: &str =
     "Unable to get the cache as it doesn't exist, please create the cache first.";
 
@@ -344,8 +343,8 @@ async fn an_absent_caches_refusal_names_the_call_that_met_it() {
 
         // The teardown meets the same absence and is SERVED: it asked for exactly what
         // it found, so it answers the modelled empty response rather than a refusal. It
-        // removed no instance, so from then on a reader reports an API that holds no
-        // cache rather than one whose cache was torn down.
+        // removed no instance, so it changes nothing a later reader sees: the API reports
+        // the same absence afterwards as before.
         let no_op = delete_cache(&router, &api_id).await;
         assert_eq!(
             no_op.status, 200,
@@ -361,10 +360,14 @@ async fn an_absent_caches_refusal_names_the_call_that_met_it() {
             after_no_op.status, 404,
             "case {case:?}: expected the cache to still be absent, got {after_no_op:?}"
         );
+        let after_expected = match absence {
+            Absence::NeverConfigured => NEVER_CONFIGURED_MESSAGE,
+            Absence::Deleted => DELETED_MESSAGE,
+        };
         assert_eq!(
-            after_no_op.message, NEVER_CONFIGURED_MESSAGE,
-            "case {case:?}: expected {NEVER_CONFIGURED_MESSAGE:?} once the last teardown \
-             removed nothing, got {after_no_op:?}"
+            after_no_op.message, after_expected,
+            "case {case:?}: expected {after_expected:?} after a teardown that removed \
+             nothing, got {after_no_op:?}"
         );
 
         // None of those refusals wrote anything: a create is still accepted, and once
@@ -646,16 +649,16 @@ async fn two_racing_deletes_remove_the_cache_once_and_both_are_served() {
         }
 
         // The cache is gone for every later caller, whichever racer removed it — and the
-        // racer that arrived second removed nothing, so the absence a reader meets is the
-        // one an API that holds no cache has.
+        // racer that arrived second removed nothing, so the absence a reader meets is
+        // still the one a torn-down cache leaves behind.
         let gone = get_cache(&router, &api_id).await;
         assert_eq!(
             gone.status, 404,
             "case {case:?}: expected the cache to be gone, got {gone:?}"
         );
         assert_eq!(
-            gone.message, NEVER_CONFIGURED_MESSAGE,
-            "case {case:?}: expected {NEVER_CONFIGURED_MESSAGE:?}, got {gone:?}"
+            gone.message, DELETED_MESSAGE,
+            "case {case:?}: expected {DELETED_MESSAGE:?}, got {gone:?}"
         );
     }
 }

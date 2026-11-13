@@ -790,7 +790,9 @@ async fn a_create_naming_a_resource_this_endpoint_does_not_hold_is_refused() {
     );
 
     // Each row: the case, the region the create is signed for, the membership and the
-    // algorithm ARN it names, and the message the refusal must carry.
+    // algorithm ARN it names, and the message the refusal must carry. The sentence is the
+    // KIND's: a membership that was not found is reported `<kind> <id> does not exist.`,
+    // and a configured model algorithm `<kind>: <arn> not found.`
     let cases: Vec<(&str, &str, String, String, String)> = vec![
         (
             "a membership no Clean Rooms membership exists for",
@@ -811,21 +813,21 @@ async fn a_create_naming_a_resource_this_endpoint_does_not_hold_is_refused() {
             REGION,
             membership.clone(),
             unknown_algorithm.clone(),
-            format!("Configured Model Algorithm {unknown_algorithm} does not exist."),
+            format!("Configured Model Algorithm: {unknown_algorithm} not found."),
         ),
         (
             "an algorithm created in another region",
             REGION,
             membership.clone(),
             other_region_algorithm.clone(),
-            format!("Configured Model Algorithm {other_region_algorithm} does not exist."),
+            format!("Configured Model Algorithm: {other_region_algorithm} not found."),
         ),
         (
             "this region's algorithm, through the other region's endpoint",
             OTHER_REGION,
             other_region_membership.clone(),
             algorithm.clone(),
-            format!("Configured Model Algorithm {algorithm} does not exist."),
+            format!("Configured Model Algorithm: {algorithm} not found."),
         ),
     ];
 

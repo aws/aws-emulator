@@ -394,10 +394,13 @@ async fn an_arn_naming_no_persisted_algorithm_is_not_found() {
             answer.body
         );
         let message = answer.at("message").as_str().unwrap_or_default().to_string();
-        assert!(
-            message.contains(arn.as_str()),
-            "case {case:?}: the refusal must name the ARN it was asked about, got \
-             {message:?}"
+        // The sentence belongs to the KIND of resource that was not found: the
+        // configured-model-algorithm kind is reported `<kind>: <arn> not found.`, with the
+        // ARN the request carried as its only variable part.
+        let expected = format!("Configured Model Algorithm: {arn} not found.");
+        assert_eq!(
+            message, expected,
+            "case {case:?}: expected the refusal to say {expected:?}, got {message:?}"
         );
     }
 

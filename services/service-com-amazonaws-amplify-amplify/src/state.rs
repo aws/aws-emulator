@@ -45,9 +45,7 @@ pub use custom_headers::{
     ingest_custom_headers, matched_headers, CustomHeaderRule, IngestedCustomHeaders,
     MAX_CUSTOM_HEADER_RULES_PER_APP,
 };
-pub use hosting_address::{
-    amplify_zone_default_domain, announced_default_domain, hosted_branch_host, hosted_site_host,
-};
+pub use hosting_address::{amplify_zone_default_domain, hosted_branch_host, hosted_site_host};
 
 /// One Amplify app as this service persists it: the modelled record it hands back,
 /// plus the branches, domain associations, webhooks and backend environments created

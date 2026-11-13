@@ -42,6 +42,18 @@ pub const FINISH_REASON_LENGTH: &str = "length";
 /// it.
 pub const REQUIRED_SLOTS: &[&[&str]] = &[&["messages", "prompt"]];
 
+/// The refusal text a body whose JSON this envelope cannot read is answered with.
+///
+/// Amazon Bedrock's `InvokeModel` body is the PROVIDER's own format, so the sentence a
+/// body that is no JSON object at all is refused in is the provider's validator's wording
+/// and not one constant for the whole catalogue: the providers served on this envelope
+/// answer it in the words below, where a provider with its own native envelope answers
+/// [`super::MALFORMED_BODY_MESSAGE`]. Entirely fixed text — it names no member, value,
+/// offset or model id, so nothing of the request reaches it.
+pub const MALFORMED_BODY_MESSAGE: &str =
+    "The JSON object in the request body is malformed. Fix the syntax errors and retry your \
+     request.";
+
 /// The JSON Pointer this envelope binds the generation cap to.
 pub const MAX_TOKENS_POINTER: &str = "/max_tokens";
 
