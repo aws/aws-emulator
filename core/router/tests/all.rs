@@ -932,6 +932,12 @@ mod payment_cryptography_signing_name_routing;
 // either collides with all of them.
 #[path = "all/pinpoint_sms_voice_signing_name_routing.rs"]
 mod pinpoint_sms_voice_signing_name_routing;
+// Declared HERE, in this same quiet span of the sorted list, for the reason the entries
+// around it record: the appended tail at the end of this file and the HEAD of the list are
+// both regions every concurrently landing router suite puts its line in. This one pins the
+// FORM each service names a request by, which only an assembled router can show.
+#[path = "all/per_service_response_request_id_form.rs"]
+mod per_service_response_request_id_form;
 // this file or beside the other `cloudformation_provisions_*` suites in the `c` span: both
 // of those are where every concurrently landing suite puts its line, so a declaration there
 // conflicts with all of them.
