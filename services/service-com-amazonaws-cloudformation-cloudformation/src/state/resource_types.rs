@@ -80,9 +80,8 @@
 
 use super::template::{
     DeclaredResource, Template, ACMPCA_CERTIFICATE, ACMPCA_CERTIFICATE_AUTHORITY,
-    ACMPCA_CERTIFICATE_AUTHORITY_ACTIVATION, APIGATEWAY_BASE_PATH_MAPPING,
-    APIGATEWAY_DOMAIN_NAME, BRAKET_SPENDING_LIMIT,
-    MWAA_ENVIRONMENT,
+    ACMPCA_CERTIFICATE_AUTHORITY_ACTIVATION, APIGATEWAY_ACCOUNT, APIGATEWAY_BASE_PATH_MAPPING,
+    APIGATEWAY_DOMAIN_NAME, BRAKET_SPENDING_LIMIT, MWAA_ENVIRONMENT,
 };
 
 /// The namespace Amazon Web Services' own resource types live under: a type spelled with
@@ -176,7 +175,7 @@ pub const AWS_RESOURCE_TYPES: &[&str] = &[
     "AWS::Amplify::Branch",
     "AWS::Amplify::Domain",
     // Amazon API Gateway
-    "AWS::ApiGateway::Account",
+    APIGATEWAY_ACCOUNT,
     "AWS::ApiGateway::ApiKey",
     "AWS::ApiGateway::Authorizer",
     APIGATEWAY_BASE_PATH_MAPPING,

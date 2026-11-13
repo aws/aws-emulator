@@ -92,6 +92,10 @@ fn identifying_return_value(resource_type: &str) -> Option<&'static str> {
         APIGATEWAY_API_KEY => "APIKeyId",
         APIGATEWAY_AUTHORIZER => "AuthorizerId",
         APIGATEWAY_USAGE_PLAN | APIGATEWAY_USAGE_PLAN_KEY => "Id",
+        // The account settings of the REST control plane, identified by the id the resource
+        // publishes as `Id`: the settings are a singleton, so the type declares no name a
+        // client could name one by.
+        APIGATEWAY_ACCOUNT => "Id",
         APIGATEWAYV2_API => "ApiId",
         APIGATEWAYV2_API_MAPPING => "ApiMappingId",
         // The AWS Transfer Family types, each identified by the ARN its create answers.

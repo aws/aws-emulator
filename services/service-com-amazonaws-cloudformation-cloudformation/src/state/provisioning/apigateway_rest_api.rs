@@ -75,7 +75,8 @@ use crate::state::provisioner::{
     tags_of, API_GATEWAY_NOT_FOUND, API_GATEWAY_SIGNING_NAME,
 };
 use crate::state::template::{
-    APIGATEWAY_DEPLOYMENT, APIGATEWAY_RESOURCE, APIGATEWAY_REST_API, APIGATEWAY_VPC_LINK,
+    APIGATEWAY_ACCOUNT, APIGATEWAY_DEPLOYMENT, APIGATEWAY_RESOURCE, APIGATEWAY_REST_API,
+    APIGATEWAY_VPC_LINK,
 };
 use crate::state::StoredResource;
 
@@ -88,6 +89,12 @@ mod access_control;
 /// same reason: it is the one type here whose create leaves the resource still coming up, so
 /// its arms are the only ones that read a status back. Reached through the same [`Kind`].
 mod vpc_link;
+
+/// The ACCOUNT-level settings of this control plane, in a module of its own for the same
+/// reason: they are the one record here that is a SINGLETON rather than a resource either side
+/// names, so its arms are the only ones whose calls carry no identifier at all. Reached
+/// through the same [`Kind`].
+mod account;
 
 /// The two resource types this module provisions that the template module does not name: it
 /// names the three whose `Ref` and `Fn::GetAtt` return an identifier API Gateway assigns
@@ -133,6 +140,9 @@ pub(in crate::state) enum Kind {
     Stage,
     /// `AWS::ApiGateway::VpcLink`, whose arms are [`vpc_link`]'s.
     VpcLink,
+    /// `AWS::ApiGateway::Account`, whose arms are [`account`]'s: the account-level settings
+    /// of this control plane rather than a resource of it.
+    Account,
     /// One of the four types that govern ACCESS to a REST API, whose arms are
     /// [`access_control`]'s. Which of them it is travels with the kind, as the kind itself
     /// travels with [`super::Owner`].
@@ -148,6 +158,7 @@ pub(super) fn kind_of(resource_type: &str) -> Option<Kind> {
         APIGATEWAY_DEPLOYMENT => Kind::Deployment,
         APIGATEWAY_STAGE => Kind::Stage,
         APIGATEWAY_VPC_LINK => Kind::VpcLink,
+        APIGATEWAY_ACCOUNT => Kind::Account,
         _ => return access_control::kind_of(resource_type).map(Kind::AccessControl),
     };
     Some(kind)
@@ -174,6 +185,10 @@ pub(super) async fn create(
         Kind::Deployment => create_deployment(ctx, region, resource).await,
         Kind::Stage => create_stage(ctx, region, resource, propagated).await,
         Kind::VpcLink => vpc_link::create(ctx, region, resource, propagated).await,
+        // The account settings carry no tags: API Gateway's tagging calls address a resource
+        // ARN, and the account is no resource of that service, so there is no call that could
+        // carry one.
+        Kind::Account => account::create(ctx, region, resource).await,
         Kind::AccessControl(kind) => {
             access_control::create(ctx, region, kind, resource, propagated).await
         }
@@ -201,7 +216,37 @@ pub(super) async fn readiness(
         | Kind::Method
         | Kind::Deployment
         | Kind::Stage
+        | Kind::Account
         | Kind::AccessControl(_) => Ok(Readiness::Ready),
+    }
+}
+
+/// Apply a changed declaration to one of these records that already exists — see
+/// [`super::Owner::update`].
+///
+/// A changed declaration of an api, a resource, a method, a deployment, a stage or one of the
+/// four types that govern access to a stage is applied by no arm here yet: API Gateway changes
+/// those through its own PATCH calls, which this module makes only for the settings a create
+/// could not carry — so such a change is reported as NOT applied (`Ok(None)`) rather than as a
+/// success that dropped the caller's change. The ACCOUNT settings are the one record here
+/// whose only call IS that patch, so a changed declaration of them is applied
+/// ([`account::update`]).
+pub(super) async fn update(
+    ctx: &smithy_server_runtime::OperationContext<'_>,
+    region: &str,
+    kind: Kind,
+    resource: &StoredResource,
+    declared: &Value,
+) -> Result<Option<Created>, Refusal> {
+    match kind {
+        Kind::Account => account::update(ctx, region, resource, declared).await,
+        Kind::RestApi
+        | Kind::Resource
+        | Kind::Method
+        | Kind::Deployment
+        | Kind::Stage
+        | Kind::VpcLink
+        | Kind::AccessControl(_) => Ok(None),
     }
 }
 
@@ -236,6 +281,10 @@ pub(super) async fn delete(
             &resource.physical_resource_id,
         ),
         Kind::VpcLink => vpc_link::vpc_link_uri(own_id(resource)?),
+        // The account settings are taken away by no DELETE at all: that service publishes
+        // none for a singleton, so the setting this resource put there is CLEARED through the
+        // one call it has ([`account::delete`]).
+        Kind::Account => return account::delete(ctx, region, resource).await,
         Kind::AccessControl(kind) => {
             return access_control::delete(ctx, region, kind, resource).await
         }
@@ -302,6 +351,9 @@ pub(super) async fn actual_configuration(
             vpc_link::vpc_link_uri(own_id(resource)?),
             vpc_link::VPC_LINK_REPORTED,
         ),
+        // The account settings are read by a call carrying no identifier, so that arm reads
+        // them itself rather than through the address a resource of this control plane has.
+        Kind::Account => return account::actual_configuration(ctx, region).await,
         Kind::AccessControl(kind) => {
             return access_control::actual_configuration(ctx, region, kind, resource).await
         }
@@ -1572,7 +1624,17 @@ fn text_list(value: Option<&Value>) -> Vec<String> {
 /// was: a resource reported created with less than its declaration asked for would be a
 /// success that dropped the caller's configuration.
 fn refuse_unpublished(resource: &StoredResource, published: &[&str]) -> Result<(), Refusal> {
-    let Value::Object(properties) = &resource.properties else {
+    refuse_unpublished_properties(&resource.resource_type, &resource.properties, published)
+}
+
+/// [`refuse_unpublished`] over a declaration's properties alone, for the arm that judges the
+/// document a stack UPDATE states rather than the one the record was created with.
+fn refuse_unpublished_properties(
+    resource_type: &str,
+    properties: &Value,
+    published: &[&str],
+) -> Result<(), Refusal> {
+    let Value::Object(properties) = properties else {
         return Ok(());
     };
     for property in properties.keys() {
@@ -1582,8 +1644,7 @@ fn refuse_unpublished(resource: &StoredResource, published: &[&str]) -> Result<(
         return Err(Refusal {
             code: NOT_IMPLEMENTED.to_string(),
             message: format!(
-                "this emulator does not apply the {property} property of {}",
-                resource.resource_type
+                "this emulator does not apply the {property} property of {resource_type}"
             ),
         });
     }

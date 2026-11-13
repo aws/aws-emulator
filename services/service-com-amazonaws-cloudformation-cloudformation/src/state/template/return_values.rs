@@ -427,6 +427,16 @@ pub(super) fn return_values(
             attributes.insert("AuthorizerId".to_string(), id.clone());
             (id, attributes)
         }
+        // "Ref returns the ID for the account"; Fn::GetAtt: Id. The account settings are a
+        // SINGLETON of the account and Region — `UpdateAccount` takes no identifier and
+        // answers none — so the id a stack publishes for the resource is CloudFormation's
+        // own, of the shape API Gateway writes an identifier in, and
+        // [`identity_is_service_assigned`] does NOT name this type.
+        APIGATEWAY_ACCOUNT => {
+            let id = api_gateway_assigned_id(APIGATEWAY_ACCOUNT_ID_SALT, name);
+            attributes.insert("Id".to_string(), id.clone());
+            (id, attributes)
+        }
         // "Ref returns the usage plan ID"; Fn::GetAtt: Id. The same service-assigned shape,
         // replaced by the id `CreateUsagePlan` mints.
         APIGATEWAY_USAGE_PLAN => {
@@ -2071,7 +2081,7 @@ pub fn published_attribute_names(resource_type: &str) -> &'static [&'static str]
         APIGATEWAY_DEPLOYMENT => &["DeploymentId"],
         APIGATEWAY_API_KEY => &["APIKeyId"],
         APIGATEWAY_AUTHORIZER => &["AuthorizerId"],
-        APIGATEWAY_USAGE_PLAN | APIGATEWAY_USAGE_PLAN_KEY => &["Id"],
+        APIGATEWAY_ACCOUNT | APIGATEWAY_USAGE_PLAN | APIGATEWAY_USAGE_PLAN_KEY => &["Id"],
         APIGATEWAYV2_API => &["ApiEndpoint"],
         APIGATEWAYV2_API_MAPPING => &["ApiMappingId"],
         APIGATEWAYV2_DOMAIN_NAME => &["DomainNameArn", "RegionalDomainName"],
@@ -3869,6 +3879,17 @@ pub const APIGATEWAY_USAGE_PLAN_KEY: &str = "AWS::ApiGateway::UsagePlanKey";
 /// service minted ([`crate::state::provisioning::apigateway_rest_api`]).
 pub const APIGATEWAY_VPC_LINK: &str = "AWS::ApiGateway::VpcLink";
 
+/// `AWS::ApiGateway::Account`: the account-level settings of the REST control plane — the
+/// CloudWatch Logs role API Gateway writes an account's logs under — which a stack really
+/// sets in that service ([`crate::state::provisioning::apigateway_rest_api`]).
+///
+/// "Ref returns the ID for the account", and `Fn::GetAtt` reads the same value as `Id`. The
+/// settings are a SINGLETON of the account and Region, so there is no identifier for a
+/// caller to state and none for API Gateway to assign — `UpdateAccount` (`PATCH /account`)
+/// takes and answers neither — which is why [`identity_is_service_assigned`] does not name
+/// this type: the id CloudFormation minted for the resource is the one in force.
+pub const APIGATEWAY_ACCOUNT: &str = "AWS::ApiGateway::Account";
+
 /// `AWS::ApiGateway::DomainName`: a custom domain name of the REST control plane, which a
 /// stack creates in API Gateway itself ([`super::provisioner`]).
 ///
@@ -3964,6 +3985,7 @@ pub(super) const APIGATEWAY_AUTHORIZER_ID_SALT: &str = "apigateway/authorizer-id
 pub(super) const APIGATEWAY_USAGE_PLAN_ID_SALT: &str = "apigateway/usage-plan-id";
 pub(super) const APIGATEWAY_USAGE_PLAN_KEY_ID_SALT: &str = "apigateway/usage-plan-key-id";
 pub(super) const APIGATEWAY_VPC_LINK_ID_SALT: &str = "apigateway/vpc-link-id";
+pub(super) const APIGATEWAY_ACCOUNT_ID_SALT: &str = "apigateway/account-id";
 pub(super) const APIGATEWAYV2_API_ID_SALT: &str = "apigatewayv2/api-id";
 pub(super) const APIGATEWAYV2_API_MAPPING_ID_SALT: &str = "apigatewayv2/api-mapping-id";
 pub(super) const APIGATEWAYV2_DOMAIN_LABEL_SALT: &str = "apigatewayv2/regional-domain-label";

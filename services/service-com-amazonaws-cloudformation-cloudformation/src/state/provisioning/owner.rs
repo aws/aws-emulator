@@ -573,11 +573,14 @@ impl Owner {
                     .await
             }
             // A CHANGED declaration of one of these is applied by no arm here yet: API Gateway
-            // changes an api, a method and a stage through its own PATCH calls, which this
+            // changes an api, a method and a stage through its own PATCH calls, which that
             // module makes only for the settings a create could not carry — so a changed
             // declaration is reported as NOT applied rather than as a success that dropped the
-            // caller's change.
-            Self::ApiGatewayRestApi(_) => Ok(None),
+            // caller's change. The ACCOUNT settings are the exception, whose only call IS that
+            // patch ([`apigateway_rest_api::update`]).
+            Self::ApiGatewayRestApi(kind) => {
+                apigateway_rest_api::update(ctx, region, kind, resource, declared).await
+            }
             Self::ApplicationAutoScaling(kind) => {
                 application_auto_scaling::update(ctx, region, kind, resource, declared).await
             }
