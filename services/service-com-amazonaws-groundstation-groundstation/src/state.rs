@@ -2012,6 +2012,14 @@ pub fn wrong_config_type_message(admissible: &[&str]) -> String {
 /// and the update so both answer one parameter name.
 pub const DATAFLOW_EDGES_PARAMETER: &str = "dataflowEdges";
 
+/// The member a refusal of a config's endpoint selection names: the part of the
+/// `configData` a write of a config carries the selection in
+/// (`smithy_query(query="shape", shape="ConfigTypeData,DataflowEndpointConfig")`), named
+/// the way a refusal of the other `configData` member that carries a cross-resource
+/// reference is ([`UPLINK_ECHO_REFERENCE_PARAMETER`]).
+pub const DATAFLOW_ENDPOINT_NAME_PARAMETER: &str =
+    "configData.dataflowEndpointConfig.dataflowEndpointName";
+
 /// `names` as the sentence fragment a refusal lists them in, each quoted the way this
 /// service already quotes an endpoint name: `"alpha" and "beta"`, or `"alpha", "beta" and
 /// "gamma"`.
@@ -4119,10 +4127,32 @@ impl ComAmazonawsGroundstationGroundstationState {
         &self,
         edges: &[Vec<String>],
     ) -> Option<InvalidParameterException> {
+        self.endpoint_group_fault_over(
+            DATAFLOW_EDGES_PARAMETER,
+            &self.dataflow_endpoint_names_wired_by(edges),
+        )
+    }
+
+    /// Why the endpoint selections `names`, in the order the graph that selects them names
+    /// them, cannot all be served by ONE dataflow endpoint group, as the modelled
+    /// `InvalidParameterException` (HTTP 431) naming `parameter` to answer with; `None`
+    /// when one group can serve them.
+    ///
+    /// The whole of the group rule, asked of a SELECTION SET rather than of one graph, so
+    /// every write judged by it — a graph a mission profile write carries
+    /// ([`Self::dataflow_endpoint_group_fault`]) and the graphs a config write would leave
+    /// the profiles that reference that config holding
+    /// ([`Self::config_data_change_group_fault`]) — reaches the same verdict and the same
+    /// sentence, and only the member each refusal names differs.
+    fn endpoint_group_fault_over(
+        &self,
+        parameter: &str,
+        names: &[&str],
+    ) -> Option<InvalidParameterException> {
         // The groups that hold every selection judged so far, and those selections.
         let mut candidates: Vec<&str> = Vec::new();
         let mut constrained: Vec<&str> = Vec::new();
-        for name in self.dataflow_endpoint_names_wired_by(edges) {
+        for name in names.iter().copied() {
             let holders = self.dataflow_endpoint_group_ids_holding(name);
             if holders.is_empty() {
                 continue;
@@ -4140,12 +4170,55 @@ impl ComAmazonawsGroundstationGroundstationState {
             if shared.is_empty() {
                 constrained.push(name);
                 return Some(invalid_parameter(
-                    DATAFLOW_EDGES_PARAMETER,
+                    parameter,
                     dataflow_endpoints_of_different_groups_message(&constrained),
                 ));
             }
             candidates = shared;
             constrained.push(name);
+        }
+        None
+    }
+
+    /// Why the config `config_arn` names cannot be re-parameterised to `replacement`, as
+    /// the modelled `InvalidParameterException` (HTTP 431) to answer with; `None` when it
+    /// can.
+    ///
+    /// A `dataflowEndpointConfig`'s `dataflowEndpointName` is what a mission profile's
+    /// graph selects its endpoints THROUGH ([`Self::dataflow_endpoint_names_wired_by`]), so
+    /// replacing a stored config's parameters re-aims every graph that already ends at that
+    /// config. The group rule is a property of the graph a profile HOLDS, not of the call
+    /// that stored it ([`Self::dataflow_endpoint_group_fault`]): a write that would leave a
+    /// stored profile holding a graph no one dataflow endpoint group can serve is refused
+    /// just as the write of that graph would have been, so no sequence of accepted calls
+    /// reaches a state the service would not have let a caller build directly. This is the
+    /// same reason a config a profile still references is not DELETED out from under it
+    /// ([`Self::mission_profiles_referencing`]).
+    ///
+    /// Every profile that references the config is judged, in ARN order, and each with the
+    /// replacement standing in for that config wherever its graph reaches it — by the
+    /// config's own ARN or by one of its NODES ([`addresses_config`]) — so the verdict is
+    /// the one the profiles would be read with once the write landed.
+    pub fn config_data_change_group_fault(
+        &self,
+        config_arn: &str,
+        replacement: &ConfigTypeData,
+    ) -> Option<InvalidParameterException> {
+        for profile_arn in self.mission_profiles_referencing(config_arn) {
+            let Some(profile) = self.mission_profile_by_arn(&profile_arn) else {
+                continue;
+            };
+            let names = endpoint_names_selected_by(&profile.dataflow_edges, |arn| {
+                match self.config_by_arn(arn) {
+                    Some(config) if config.config_arn == config_arn => Some(replacement),
+                    resolved => resolved.map(|config| &config.config_data),
+                }
+            });
+            if let Some(refusal) =
+                self.endpoint_group_fault_over(DATAFLOW_ENDPOINT_NAME_PARAMETER, &names)
+            {
+                return Some(refusal);
+            }
         }
         None
     }

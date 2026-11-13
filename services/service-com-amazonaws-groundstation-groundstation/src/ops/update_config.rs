@@ -166,14 +166,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 )),
             })
         };
-        // All three gates below are judged from this service's OWN store, under one short
+        // All the gates below are judged from this service's OWN store, under one short
         // lock, before the cross-service bucket resolution further down, and IN THIS
         // ORDER: the config the URI addresses has to be there first, and only then is the
-        // body judged against it — the capability the `configData` selects, and what the
+        // body judged against it — the capability the `configData` selects, what the
         // service and this account may use in it (the ranges the model documents for its
         // numeric members and the uplink frequencies this account is authorised to
         // transmit on), which holds of the parameters an update stores exactly as of the
-        // ones a create stores. So a local fault is never reported behind a cross-service
+        // ones a create stores, and finally what the resources already holding this config
+        // would be left holding. So a local fault is never reported behind a cross-service
         // call, and a refused update leaves the stored config as it was.
         {
             let guard = state.lock();
@@ -208,6 +209,24 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             guard
                 .validate_config_data(&input.config_data)
                 .map_err(UpdateConfigErrorModeled::InvalidParameterException)?;
+
+            // And the parameters an update stores are judged against what already holds
+            // this config, not only against the body: a `dataflowEndpointConfig`'s
+            // `dataflowEndpointName` is the member every mission profile's dataflow graph
+            // selects its endpoints through, so replacing it re-aims every stored graph
+            // that ends at this config. The dataflows of a profile are flown as one
+            // contact, which draws its dataflow endpoints from ONE dataflow endpoint
+            // group, so a replacement that would leave a profile this account holds
+            // holding a graph no single group can serve is refused here exactly as the
+            // write of that graph would have been (see
+            // `state::config_data_change_group_fault`) — the mirror of the inbound-holder
+            // rule the DELETE of a referenced config answers. Nothing is written on this
+            // path, so the config and every profile are left as they were.
+            if let Some(refusal) =
+                guard.config_data_change_group_fault(&stored.config_arn, &input.config_data)
+            {
+                return Err(UpdateConfigErrorModeled::InvalidParameterException(refusal).into());
+            }
         }
 
         // An `s3RecordingConfig` an update stores has to name a bucket this account

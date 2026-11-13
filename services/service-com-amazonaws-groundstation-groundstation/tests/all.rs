@@ -37,6 +37,8 @@ mod config_defaults_and_references;
 mod config_listing;
 #[path = "all/config_reference_integrity.rs"]
 mod config_reference_integrity;
+#[path = "all/config_update_endpoint_group_agreement.rs"]
+mod config_update_endpoint_group_agreement;
 #[path = "all/config_update_reach.rs"]
 mod config_update_reach;
 #[path = "all/config_update_refusal_precedence.rs"]

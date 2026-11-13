@@ -29,7 +29,10 @@ use crate::scheduling_loop::{
 };
 
 /// `PUT /config/{configType}/{configId}` — `UpdateConfig`.
-async fn update_config(
+///
+/// `pub(crate)` so a sibling suite asserting another rule about the same write posts it
+/// through one helper rather than a second copy of this body.
+pub(crate) async fn update_config(
     router: &MultiServiceRouter,
     config_type: &str,
     config_id: &str,
@@ -47,7 +50,9 @@ async fn update_config(
 
 /// `GET /config/{configType}/{configId}` — `GetConfig`, the reader this suite proves an
 /// accepted update through and a refused one against.
-async fn get_config(router: &MultiServiceRouter, config_type: &str, config_id: &str) -> Reply {
+///
+/// `pub(crate)` for the same reason [`update_config`] is.
+pub(crate) async fn get_config(router: &MultiServiceRouter, config_type: &str, config_id: &str) -> Reply {
     send(
         router,
         "GET",

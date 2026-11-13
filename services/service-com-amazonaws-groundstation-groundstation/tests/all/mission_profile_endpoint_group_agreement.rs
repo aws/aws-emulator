@@ -160,7 +160,11 @@ fn rows() -> Vec<Row> {
 ///
 /// Spelled out here rather than taken from the service's own renderer: an expectation built
 /// by calling the code under test would hold whatever that code said.
-fn expected_refusal(names: &[&str]) -> String {
+///
+/// `pub(crate)` so the sibling suite that carries this rule onto `UpdateConfig`
+/// (`crate::config_update_endpoint_group_agreement`) asserts the SAME sentence rather than a
+/// second copy of it.
+pub(crate) fn expected_refusal(names: &[&str]) -> String {
     let quoted: Vec<String> = names.iter().map(|name| format!("{name:?}")).collect();
     let listed = match quoted.split_last() {
         None => String::new(),
@@ -210,7 +214,9 @@ fn assert_group_disagreement_refused(case: &str, reply: &Reply, named: &[&str]) 
 /// `case` and `role` joined into a name the modelled `SafeName` admits (len 1..256, pattern
 /// `^[ a-zA-Z0-9_:-]{1,256}$` — `smithy_query(query="shape", shape="SafeName")`), so a row
 /// whose prose carries punctuation still names the resources it creates after itself.
-fn safe_name(case: &str, role: &str) -> String {
+///
+/// `pub(crate)` so a sibling suite whose rows are prose names its resources the same way.
+pub(crate) fn safe_name(case: &str, role: &str) -> String {
     let described: String = format!("{case} {role}")
         .chars()
         .map(|character| {
