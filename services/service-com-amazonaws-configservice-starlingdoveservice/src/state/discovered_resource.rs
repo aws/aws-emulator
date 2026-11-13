@@ -207,13 +207,10 @@ impl DiscoveredResourceEntry {
             configuration_item_status: base.configuration_item_status,
             configuration_state_id: base.configuration_state_id,
             // "Unique MD5 hash that represents the configuration item's state", which a
-            // caller uses "to compare the states of two or more configuration items".
-            // This store holds no digest of a recorded configuration item — nothing that
-            // writes one computes or persists it — so none is reported rather than one
-            // being synthesised here; the member is optional, and
-            // `configurationStateId` is the value this API reports for ordering and
-            // comparing a resource's items.
-            configuration_item_md5_hash: None,
+            // caller uses "to compare the states of two or more configuration items" of
+            // one resource — so it is the digest of the state this item records
+            // ([`Self::configuration_item_md5_hash`]).
+            configuration_item_md5_hash: Some(self.configuration_item_md5_hash()),
             arn: base.arn,
             resource_type: base.resource_type,
             resource_id: base.resource_id,
@@ -257,6 +254,46 @@ impl DiscoveredResourceEntry {
         } else {
             CONFIGURATION_ITEM_STATUS_OK
         }
+    }
+
+    /// The `configurationItemMD5Hash` of the configuration item this entry reports:
+    /// "unique MD5 hash that represents the configuration item's state", which a caller
+    /// uses "to compare the states of two or more configuration items that are associated
+    /// with the same resource".
+    ///
+    /// It is therefore the digest of the STATE the item records — the resource the item is
+    /// about, the status it was recorded with, the configuration document, the
+    /// supplementary blocks recorded beside it and the tags — and of nothing else: two
+    /// items that record the same state of one resource carry the same hash, every read of
+    /// ONE recorded state reports the same hash, and a state the resource changed into
+    /// carries a different one. That is what lets a caller compare two items and tell
+    /// whether the resource changed between them.
+    ///
+    /// The state is digested as one JSON document, so a value that could run into the next
+    /// cannot make two different states digest alike.
+    pub fn configuration_item_md5_hash(&self) -> String {
+        use ::md5::Digest;
+
+        let state = ::serde_json::json!({
+            "resourceType": self.resource_type,
+            "resourceId": self.resource_id,
+            "resourceName": self.resource_name,
+            "configurationItemStatus": self.configuration_item_status(),
+            "configuration": self.configuration,
+            "supplementaryConfiguration": self
+                .supplementary_configuration
+                .iter()
+                .map(|(block, value)| (block.clone(), value.clone()))
+                .collect::<::std::collections::BTreeMap<String, String>>(),
+            "tags": self
+                .tags
+                .iter()
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect::<::std::collections::BTreeMap<String, String>>(),
+        });
+        let mut digest = ::md5::Md5::new();
+        digest.update(state.to_string().as_bytes());
+        format!("{:x}", digest.finalize())
     }
 
     /// The `configurationStateId` of the current configuration item — "an identifier

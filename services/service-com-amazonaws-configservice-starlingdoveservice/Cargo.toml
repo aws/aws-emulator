@@ -81,6 +81,11 @@ uuid = { version = "1", features = ["v4"] }
 # every character from this crate's thread-local generator, for the same reason
 # (`state::identifier`).
 rand = "0.9"
+# `md-5`: a configuration item's `configurationItemMD5Hash` is "a unique MD5 hash that
+# represents the configuration item's state", which a caller uses "to compare the states
+# of two or more configuration items", so the hash is that digest of the state the item
+# records (`state::discovered_resource`).
+md-5 = "0.10"
 # `service-common` carries the workspace's ONE evaluation of an IAM policy document
 # (`iam_authorization`), which is how `PutDeliveryChannel` decides whether the delivery
 # bucket's own policy allows Config to deliver into it.

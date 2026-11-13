@@ -2230,9 +2230,10 @@ pub struct ComAmazonawsConfigserviceStarlingdoveserviceState {
     /// [`Self::owe_recording_pass`] and taken by
     /// [`Self::take_due_recording_pass`]; see `state::recording` for what a pass does.
     pub recording_pass_due: Option<SystemTime>,
-    /// Whether an in-process pump is already running the passes this store owes, so one
-    /// store has at most one ([`Self::claim_recording_pump`]).
-    pub recording_pump: bool,
+    /// The lease on the in-process pump that runs the passes this store owes, so one
+    /// store has at most one and a pump that is no longer running them holds it no longer
+    /// ([`PumpLease`], taken through [`PumpClaim`]).
+    pub recording_pump: PumpLease,
     /// Whether an in-process pump is already performing the configuration-snapshot
     /// deliveries this store owes, so one store has at most one
     /// ([`Self::claim_snapshot_delivery_pump`]); see `state::snapshot_delivery` for what
@@ -2847,6 +2848,13 @@ pub use change_notification::*;
 // reaches its names as `crate::state::<name>`.
 pub mod remediation_target;
 pub use remediation_target::*;
+
+// The CLAIM an in-process pump holds while it runs the work this store owes — the lease
+// that keeps a pump which is no longer running from wedging that work — lives in
+// `state/pump_lease.rs`, re-exported here like the modules above so a handler reaches its
+// names as `crate::state::<name>`.
+pub mod pump_lease;
+pub use pump_lease::*;
 
 // Which resource type NAMES a discovered-resource listing can be asked about — the types
 // this model enumerates and the CloudFormation registry type names a custom resource is

@@ -11624,6 +11624,7 @@ dependencies = [
  "flate2",
  "hex",
  "http",
+ "md-5 0.10.6",
  "rand 0.9.5",
  "regex",
  "serde_json",

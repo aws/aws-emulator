@@ -217,3 +217,10 @@ mod conformance_pack_not_found_message;
 mod remediation_needs_a_non_compliant_finding;
 #[path = "all/conformance_pack_type_and_stack_identity.rs"]
 mod conformance_pack_type_and_stack_identity;
+#[path = "all/recorded_item_status_and_resumed_recording.rs"]
+mod recorded_item_status_and_resumed_recording;
+// The suite in `all/scratch_resume.rs`: the recorded configuration document and the
+// digest a caller compares two configuration items by. The layout check requires the
+// module name to match the file name.
+#[path = "all/scratch_resume.rs"]
+mod scratch_resume;

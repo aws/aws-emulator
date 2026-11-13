@@ -63,9 +63,12 @@ pub const OBSERVABLE_RESOURCE_TYPES: [&str; 3] = [
 /// (`com.amazonaws.sqs#QueueAttributeName`), less the ones that are not how the queue is
 /// configured: the three `ApproximateNumberOfMessages*` values count the messages the
 /// queue HOLDS, and `CreatedTimestamp` and `LastModifiedTimestamp` say when it was created
-/// and last changed — none of which a later observation of an unchanged queue would report
-/// the same way, so recording them would record a changed configuration item for a queue
-/// nothing changed.
+/// and last changed — none of which is part of how the queue is configured, so recording
+/// them would name an instant among the properties a configuration change altered.
+///
+/// The document is rendered in THIS order, which is the order the names sort in: it is a
+/// catalogue rather than the order a client's map happened to hand the attributes over, so
+/// two observations of an unchanged queue render the same document.
 const RECORDED_QUEUE_ATTRIBUTES: [&str; 16] = [
     "ContentBasedDeduplication",
     "DeduplicationScope",
@@ -90,6 +93,17 @@ const RECORDED_QUEUE_ATTRIBUTES: [&str; 16] = [
 /// carries as its `arn`. It is one of [`RECORDED_QUEUE_ATTRIBUTES`] as well, because it is
 /// part of how the queue is configured.
 const QUEUE_ARN_ATTRIBUTE: &str = "QueueArn";
+
+/// How many pages of queues one pass reads before it stops asking for more.
+///
+/// A HOST bound, like the one on the pages of roles a pass reads: the inventory a pass
+/// writes into is bounded ([`super::DISCOVERED_RESOURCES_KEPT`]), so one pass reads at
+/// most the pages that can fill it rather than following a token without end.
+const MAX_QUEUE_PAGES: usize = 20;
+
+/// How many pages of buckets one pass reads before it stops asking for more; see
+/// [`MAX_QUEUE_PAGES`].
+const MAX_BUCKET_PAGES: usize = 20;
 
 /// How long after the call that makes one due Config runs the next
 /// recording-and-evaluation pass.
@@ -354,9 +368,19 @@ impl ComAmazonawsConfigserviceStarlingdoveserviceState {
     /// your resources against the rule automatically" (`PutConfigRule`) whether or not a
     /// recorder is running. An account that owes neither owes no pass, which is also what
     /// ends the pump.
+    ///
+    /// A pass ALREADY owed keeps the instant it falls due at: it is the pass the account
+    /// owes, and pushing it out on every call that notes one would let a caller that keeps
+    /// calling hold recording off for as long as it kept calling.
     pub fn owe_recording_pass(&mut self, now: SystemTime) {
         let owed = self.recording_recorder().is_some() || self.owes_rule_evaluation(now);
-        self.recording_pass_due = owed.then(|| now + RECORDING_PASS_DUE_AFTER);
+        if !owed {
+            self.recording_pass_due = None;
+            return;
+        }
+        if self.recording_pass_due.is_none() {
+            self.recording_pass_due = Some(now + RECORDING_PASS_DUE_AFTER);
+        }
     }
 
     /// Whether any rule of this account is still owed an evaluation pass — one a write or
@@ -376,30 +400,39 @@ impl ComAmazonawsConfigserviceStarlingdoveserviceState {
         })
     }
 
-    /// Claim the right to run this store's passes, answering `false` when a pump
-    /// already holds it — so one store has at most one pump.
-    pub fn claim_recording_pump(&mut self) -> bool {
-        if self.recording_pump {
-            return false;
-        }
-        self.recording_pump = true;
-        true
+    /// Give up the lease the pump `id` holds on this store's passes.
+    ///
+    /// The lease is TAKEN through [`super::PumpClaim`], which gives it up again however
+    /// the pump that holds it ends — so this is the one way it is released, and there is
+    /// no second way to take it that would skip that guard.
+    pub fn release_recording_pump(&mut self, id: u64) {
+        self.recording_pump.release(id);
     }
 
-    /// Give up the claim [`Self::claim_recording_pump`] took.
-    pub fn release_recording_pump(&mut self) {
-        self.recording_pump = false;
-    }
-
-    /// The instant this store's next pass falls due, releasing the pump's claim in the
-    /// same critical section when nothing is owed — so no pass can be owed while no
-    /// pump is running.
-    pub fn next_recording_pass_due_or_release_pump(&mut self) -> Option<SystemTime> {
-        let due = self.recording_pass_due;
-        if due.is_none() {
-            self.release_recording_pump();
+    /// The instant this store's next pass falls due, for the pump `id`: the lease is
+    /// renewed in the same critical section, and given up when the account owes no
+    /// further pass — so no pass can be owed while no pump is running.
+    ///
+    /// A pump ends when the account OWES nothing — which is what stopping every recorder
+    /// does — and not merely because the pass it was going to run has already been taken:
+    /// a recorder that is recording goes on owing the next pass, so the instant it falls
+    /// due at is noted again here ([`Self::owe_recording_pass`]).
+    ///
+    /// `None` ends that pump's loop, which is also what it answers when another pump has
+    /// taken the lease over.
+    pub fn next_recording_pass_due_or_release_pump(
+        &mut self,
+        id: u64,
+        now: SystemTime,
+    ) -> Option<SystemTime> {
+        if self.recording_pass_due.is_none() {
+            self.owe_recording_pass(now);
         }
-        due
+        let Some(due) = self.recording_pass_due else {
+            self.release_recording_pump(id);
+            return None;
+        };
+        self.recording_pump.renew(id, now).then_some(due)
     }
 
     /// Take the pass the clock has made due as of `now`, as the resource types the
@@ -421,27 +454,43 @@ impl ComAmazonawsConfigserviceStarlingdoveserviceState {
             return None;
         }
         self.recording_pass_due = None;
-        let Some(recorder) = self.recording_recorder() else {
-            return Some(Vec::new());
-        };
-        let group = recorder.recording_group.clone();
         Some(
             OBSERVABLE_RESOURCE_TYPES
                 .into_iter()
-                .filter(|resource_type| match group.as_ref() {
-                    // A recorder stored without a recording group records every
-                    // supported resource type, as a group of `allSupported` does.
-                    None => !super::observed_iam::is_global_resource_type(resource_type),
-                    Some(group) => {
-                        super::group_records_resource_type(group, resource_type)
-                            && super::observed_iam::group_records_global_resource_type(
-                                group,
-                                resource_type,
-                            )
-                    }
-                })
+                .filter(|resource_type| self.records_resource_type(resource_type))
                 .collect(),
         )
+    }
+
+    /// Whether this account is RECORDING `resource_type` at this instant: a recorder of
+    /// its own is recording and the recording group that recorder records by covers that
+    /// type.
+    ///
+    /// The ONE statement of what the account records, so the pass that OBSERVES the
+    /// resources of a type ([`Self::take_due_recording_pass`]) and the write that RECORDS
+    /// what it observed ([`Self::record_observed`]) cannot disagree about it.
+    ///
+    /// A GLOBAL resource type is recorded only where the recording group asks for the
+    /// global resource types (`RecordingGroup$includeGlobalResourceTypes`) or names that
+    /// type itself, which is what a group of `allSupported` alone does not cover
+    /// (`PutConfigurationRecorder`: "Default is to record all supported resource types,
+    /// excluding the global IAM resource types").
+    pub fn records_resource_type(&self, resource_type: &str) -> bool {
+        let Some(recorder) = self.recording_recorder() else {
+            return false;
+        };
+        match recorder.recording_group.as_ref() {
+            // A recorder stored without a recording group records every supported
+            // resource type, as a group of `allSupported` does.
+            None => !super::observed_iam::is_global_resource_type(resource_type),
+            Some(group) => {
+                super::group_records_resource_type(group, resource_type)
+                    && super::observed_iam::group_records_global_resource_type(
+                        group,
+                        resource_type,
+                    )
+            }
+        }
     }
 
     /// Record what a pass OBSERVED for one resource type: a configuration item per
@@ -456,12 +505,23 @@ impl ComAmazonawsConfigserviceStarlingdoveserviceState {
     /// Answers the configuration items the pass RECORDED, which are the ones the delivery
     /// channel owes a change notification for; an observation of a resource that is still
     /// in the state its held item records contributes none.
+    ///
+    /// Nothing is recorded for a type the account is no longer RECORDING
+    /// ([`Self::records_resource_type`]). A pass reads the resources from their own
+    /// services with this store's guard RELEASED, so the recorder can be stopped — or its
+    /// recording group narrowed — while it is reading: Config records nothing while it is
+    /// not recording, so what such a pass read is dropped rather than written as though
+    /// the recorder had still been on. The decision is taken here, under the guard that
+    /// writes, which is the only instant at which it holds.
     pub fn record_observed(
         &mut self,
         resource_type: &str,
         observed: Vec<DiscoveredResourceEntry>,
         now: SystemTime,
     ) -> Vec<RecordedItemChange> {
+        if !self.records_resource_type(resource_type) {
+            return Vec::new();
+        }
         let mut recorded = Vec::new();
         let mut seen: BTreeSet<(String, String)> = BTreeSet::new();
         for entry in observed {
@@ -693,6 +753,12 @@ pub async fn run_due_recording_pass<Eng: Send + Sync + 'static>(
 /// it ends as soon as the store owes nothing — which is what stopping every recorder
 /// does. With no async runtime to spawn onto there is no pump, and the pass is simply
 /// not run: nothing a caller is told depends on it.
+///
+/// A recorder that is recording keeps recording, so a pump that is no longer running
+/// the passes cannot be what stops them: it holds the store's pump lease only while it
+/// renews it ([`super::PumpClaim`]), and this call starts a fresh pump once that lease
+/// has lapsed — which is what resumes recording after a pass panicked, was dropped with
+/// the runtime that spawned it, or wedged in a call that never answered.
 pub fn drive_recorder_clock<Eng: Send + Sync + 'static>(
     ctx: &smithy_server_runtime::OperationContext<'_>,
     engine: &::std::sync::Arc<Eng>,
@@ -712,22 +778,28 @@ pub fn drive_recorder_clock<Eng: Send + Sync + 'static>(
     let Ok(runtime) = ::tokio::runtime::Handle::try_current() else {
         return;
     };
-    if !state.lock().claim_recording_pump() {
+    let Some(claim) = super::PumpClaim::take(
+        &state,
+        |store| &mut store.recording_pump,
+        SystemTime::now(),
+    ) else {
         return;
-    }
+    };
 
     let callback = ctx.callback().clone();
     let engine = ::std::sync::Arc::clone(engine);
     let region = region.to_string();
-    let pumped = ::engine::ServiceState::clone(&state);
     runtime.spawn(async move {
-        // `true` only if the pass cap below is what ended the loop; a pump that ran out
-        // of work has already released its claim inside the one critical section that
-        // observed it.
-        let mut capped = true;
+        // The claim is held for as long as this pump runs and given up however it ends,
+        // so the next call that makes a pass due can start a pump whatever became of
+        // this one.
+        let pump = claim.id();
         for _ in 0..MAX_RECORDING_PASSES {
-            let Some(due) = pumped.lock().next_recording_pass_due_or_release_pump() else {
-                capped = false;
+            let Some(due) = claim
+                .store()
+                .lock()
+                .next_recording_pass_due_or_release_pump(pump, SystemTime::now())
+            else {
                 break;
             };
             // Every wake-up waits, even for an instant already past, so the cap above
@@ -741,16 +813,13 @@ pub fn drive_recorder_clock<Eng: Send + Sync + 'static>(
             run_due_recording_pass(&callback, &*engine, &region, SystemTime::now()).await;
             // Continuous recording owes the next pass as soon as this one is done; an
             // account whose recorders are all stopped owes none, which ends the pump.
-            pumped.lock().owe_recording_pass(SystemTime::now());
-        }
-        if capped {
-            pumped.lock().release_recording_pump();
+            claim.store().lock().owe_recording_pass(SystemTime::now());
         }
     });
 }
 
 /// The configuration items the recorder observes for this Region's Amazon S3 buckets,
-/// or `None` when S3 could not be read at all — which is not the same as an account
+/// or `None` when S3 could not be read in full — which is not the same as an account
 /// with no buckets.
 ///
 /// Every member of the recorded configuration document comes from an S3 read named on
@@ -764,19 +833,51 @@ async fn observed_s3_buckets(
     // "Limits the response to buckets that are located in the specified Amazon Web
     // Services Region" (`ListBucketsRequest$BucketRegion`): a configuration recorder
     // records the resources of ONE Region, the one its own account and Region stand for.
-    let listed = match client.list_buckets().bucket_region(region).send().await {
-        Ok(listed) => listed,
-        Err(error) => {
-            ::tracing::warn!(
-                error = %::aws_smithy_types::error::display::DisplayErrorContext(&error),
-                "the configuration recorder could not read this account's S3 buckets"
-            );
-            return None;
+    //
+    // The listing is PAGED (`ListBucketsOutput$ContinuationToken`: "a token that you can
+    // use in a subsequent request to fetch the next page"), and a pass follows the token
+    // so an account holding more buckets than one page is observed in full. A listing this
+    // pass could not read to its end says nothing about what the account holds — every
+    // bucket past the last page it read would look gone — so it is answered as an unread
+    // listing rather than as a complete one.
+    let mut buckets: Vec<::aws_sdk_s3::types::Bucket> = Vec::new();
+    let mut continuation_token: Option<String> = None;
+    let mut read_in_full = false;
+    for _ in 0..MAX_BUCKET_PAGES {
+        let page = match client
+            .list_buckets()
+            .bucket_region(region)
+            .set_continuation_token(continuation_token.clone())
+            .send()
+            .await
+        {
+            Ok(page) => page,
+            Err(error) => {
+                ::tracing::warn!(
+                    error = %::aws_smithy_types::error::display::DisplayErrorContext(&error),
+                    "the configuration recorder could not read this account's S3 buckets"
+                );
+                return None;
+            }
+        };
+        buckets.extend(page.buckets().iter().cloned());
+        continuation_token = page.continuation_token;
+        if continuation_token.is_none() {
+            read_in_full = true;
+            break;
         }
-    };
+    }
+    if !read_in_full {
+        ::tracing::warn!(
+            pages = MAX_BUCKET_PAGES,
+            "the configuration recorder stopped short of this account's whole S3 bucket \
+             listing"
+        );
+        return None;
+    }
 
     let mut observed = Vec::new();
-    for bucket in listed.buckets() {
+    for bucket in &buckets {
         let Some(name) = bucket.name() else {
             continue;
         };
@@ -884,7 +985,7 @@ async fn observed_s3_buckets(
 }
 
 /// The configuration items the recorder observes for this Region's Amazon SQS queues, or
-/// `None` when Amazon SQS could not be read at all — which is not the same as an account
+/// `None` when Amazon SQS could not be read in full — which is not the same as an account
 /// with no queues.
 ///
 /// Every member of the recorded configuration document comes from an Amazon SQS read named
@@ -900,19 +1001,51 @@ async fn observed_sqs_queues(
     // "Returns a list of your queues in the current region" (`ListQueues`): a
     // configuration recorder records the resources of ONE Region, the one its own account
     // and Region stand for, which is the Region this client is built for.
-    let listed = match client.list_queues().send().await {
-        Ok(listed) => listed,
-        Err(error) => {
-            ::tracing::warn!(
-                error = %::aws_smithy_types::error::display::DisplayErrorContext(&error),
-                "the configuration recorder could not read this account's Amazon SQS queues"
-            );
-            return None;
+    //
+    // The listing is PAGED (`ListQueuesResult$NextToken`: "Pagination token to include in
+    // the next request"), and a pass follows the token so an account holding more queues
+    // than one page is observed in full. A listing this pass could not read to its end
+    // says nothing about what the account holds — every queue past the last page it read
+    // would look gone — so it is answered as an unread listing rather than as a complete
+    // one.
+    let mut queue_urls: Vec<String> = Vec::new();
+    let mut next_token: Option<String> = None;
+    let mut read_in_full = false;
+    for _ in 0..MAX_QUEUE_PAGES {
+        let page = match client
+            .list_queues()
+            .set_next_token(next_token.clone())
+            .send()
+            .await
+        {
+            Ok(page) => page,
+            Err(error) => {
+                ::tracing::warn!(
+                    error = %::aws_smithy_types::error::display::DisplayErrorContext(&error),
+                    "the configuration recorder could not read this account's Amazon SQS queues"
+                );
+                return None;
+            }
+        };
+        queue_urls.extend(page.queue_urls().iter().cloned());
+        next_token = page.next_token;
+        if next_token.is_none() {
+            read_in_full = true;
+            break;
         }
-    };
+    }
+    if !read_in_full {
+        ::tracing::warn!(
+            pages = MAX_QUEUE_PAGES,
+            "the configuration recorder stopped short of this account's whole Amazon SQS \
+             queue listing"
+        );
+        return None;
+    }
 
     let mut observed = Vec::new();
-    for queue_url in listed.queue_urls() {
+    for queue_url in &queue_urls {
+        let queue_url = queue_url.as_str();
         // "The queue name" is the last segment of a queue's url
         // (`https://sqs.<region>.amazonaws.com/<account>/<name>`), and it is the queue's
         // custom name; the url itself is how Amazon SQS addresses the queue and is what
@@ -922,14 +1055,25 @@ async fn observed_sqs_queues(
         };
         // `GetQueueAttributes`' `Attributes`, asked for in full and recorded as the
         // queue's configuration where the attribute is one.
-        let attributes = match client
+        //
+        // Keyed in the attribute names' own order rather than in the order Amazon SQS'
+        // client handed them over: that client answers an UNORDERED map, which hands the
+        // same attributes over in a different order each time it is read, and the
+        // document below is rendered in the order its members are written. A document
+        // whose member order moved would record a state the resource never left.
+        let attributes: BTreeMap<String, String> = match client
             .get_queue_attributes()
             .queue_url(queue_url)
             .attribute_names(::aws_sdk_sqs::types::QueueAttributeName::All)
             .send()
             .await
         {
-            Ok(answer) => answer.attributes.unwrap_or_default(),
+            Ok(answer) => answer
+                .attributes
+                .unwrap_or_default()
+                .into_iter()
+                .map(|(attribute, value)| (attribute.as_str().to_string(), value))
+                .collect(),
             Err(error) => {
                 ::tracing::warn!(
                     error = %::aws_smithy_types::error::display::DisplayErrorContext(&error),
@@ -938,11 +1082,14 @@ async fn observed_sqs_queues(
                 continue;
             }
         };
+        // The document's members are written in the catalogue's own order, so observing
+        // an unchanged queue twice renders the SAME document — see
+        // [`RECORDED_QUEUE_ATTRIBUTES`].
         let mut configuration = ::serde_json::Map::new();
-        for (attribute, value) in &attributes {
-            if RECORDED_QUEUE_ATTRIBUTES.contains(&attribute.as_str()) {
+        for attribute in RECORDED_QUEUE_ATTRIBUTES {
+            if let Some(value) = attributes.get(attribute) {
                 configuration.insert(
-                    attribute.as_str().to_string(),
+                    attribute.to_string(),
                     ::serde_json::Value::String(value.clone()),
                 );
             }
@@ -950,10 +1097,7 @@ async fn observed_sqs_queues(
         // The `QueueArn` attribute Amazon SQS itself reports for the queue, which is the
         // ARN its configuration item carries: an ARN the owning service stated is the one
         // the resource has.
-        let queue_arn = attributes
-            .iter()
-            .find(|(attribute, _)| attribute.as_str() == QUEUE_ARN_ATTRIBUTE)
-            .map(|(_, value)| value.clone());
+        let queue_arn = attributes.get(QUEUE_ARN_ATTRIBUTE).cloned();
         // `ListQueueTags`' `Tags`: the tags a rule's scope can narrow by.
         let tags: BTreeMap<String, String> = client
             .list_queue_tags()
