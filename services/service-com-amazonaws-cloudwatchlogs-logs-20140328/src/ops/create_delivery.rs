@@ -349,6 +349,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 crate::state::delivery_configuration_template(source, destination_type)
             });
 
+        // Which OBJECT LAYOUT this delivery writes under: the one the SENDER publishes for
+        // delivering these logs to an S3 bucket ([`crate::state::delivery_object_layout`]). A
+        // layout is published per log type rather than per destination, so it is read off the
+        // source and applies whatever kind of destination this delivery pairs it with.
+        let object_layout = store
+            .delivery_source(&region, &input.delivery_source_name)
+            .and_then(crate::state::delivery_object_layout);
+
         // "If the delivery's log source has mandatory fields, they must be included in this
         // list": a `recordFields` selection is the caller leaving fields OUT, so a log source
         // that publishes no field a delivery may drop supports no selection at all and one is
@@ -417,7 +425,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // governs this delivery publishes, so the delivery this call reports is the
         // configuration it will deliver under rather than the subset of it the request filled
         // in.
-        record.resolve_configuration(template.as_ref());
+        record.resolve_configuration(template.as_ref(), object_layout.as_ref());
         record.tags = input
             .tags
             .as_ref()

@@ -226,6 +226,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 crate::state::delivery_configuration_template(source, destination_type)
             });
 
+        // The OBJECT LAYOUT these logs are delivered under, as `CreateDelivery` resolves it:
+        // the one the SENDER publishes for delivering them to an S3 bucket, which is published
+        // per log type rather than per destination type.
+        let object_layout = store
+            .delivery_source(&region, &source_name)
+            .and_then(crate::state::delivery_object_layout);
+
         // "If the delivery's log source has mandatory fields, they must be included in this
         // list": narrowing the delivered fields is the caller leaving some OUT, so a log source
         // that publishes no field a delivery may drop supports no selection at all — the call
@@ -269,9 +276,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         }
         // The delivery still delivers under a WHOLE configuration afterwards, so a member this
         // reconfiguration left unstated — including one inside the S3 object layout it
-        // restated in part — takes the template's default again rather than becoming
+        // restated in part — takes its published default again rather than becoming
         // unreported.
-        delivery.resolve_configuration(template.as_ref());
+        delivery.resolve_configuration(template.as_ref(), object_layout.as_ref());
 
         // "You can't use this operation to change the source or destination of the delivery":
         // the delivery keeps its source, its destination, the destination type read off that

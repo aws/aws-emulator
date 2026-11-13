@@ -13,6 +13,28 @@
 
 use super::*;
 
+/// The OBJECT LAYOUT the catalogue publishes for the logs `source` sends: the
+/// `defaultDeliveryConfigValues.s3DeliveryConfiguration` of the template for delivering them to
+/// an S3 BUCKET, the one kind of destination an object layout is published for.
+///
+/// An object layout is published per LOG TYPE — `S3DeliveryConfiguration$suffixPath` documents
+/// that "the valid variables to use in the suffix path vary by log type" and that a caller finds
+/// them through `DescribeConfigurationTemplates` — so it is a fact about the SENDER, not about
+/// the kind of destination a particular delivery pairs it with. It is therefore the layout EVERY
+/// delivery of those logs reports, whatever it is pointed at: a delivery to a destination that
+/// is not a bucket reports the same layout as one to a bucket rather than losing it, which is
+/// what lets a caller read back where its objects would land.
+///
+/// `None` where the catalogue publishes no template for these logs at all: nothing published
+/// says what layout they are delivered under.
+pub fn delivery_object_layout(
+    source: &DeliverySourceRecord,
+) -> Option<crate::ops::types::S3DeliveryConfiguration> {
+    delivery_configuration_template(source, S3_DELIVERY_DESTINATION_TYPE)?
+        .default_delivery_config_values?
+        .s3_delivery_configuration
+}
+
 /// The configuration template that governs a delivery between `source` and a destination of
 /// `delivery_destination_type`, or `None` when the catalogue publishes none for them.
 ///

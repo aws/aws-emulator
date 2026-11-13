@@ -194,12 +194,28 @@ const ROWS: &[Row] = &[
             ("level", true),
         ],
     },
-    // An OpenTelemetry log record.
+    // An AgentCore record: the vended-log envelope the resource attributes it with, then the
+    // OpenTelemetry log record it envelopes.
     Row {
         service: "bedrock-agentcore",
         resource_type: "workload-identity",
         log_type: "APPLICATION_LOGS",
         schema: &[
+            ("timestamp", false),
+            ("resource_arn", true),
+            ("resource_id", false),
+            ("event_timestamp", true),
+            ("account_id", false),
+            ("request_id", false),
+            ("session_id", false),
+            ("span_id", false),
+            ("trace_id", false),
+            ("service_name", false),
+            ("operation", false),
+            ("request_payload", false),
+            ("response_payload", false),
+            ("resource", false),
+            ("attributes", false),
             ("timeUnixNano", true),
             ("severityNumber", false),
             ("severityText", false),
@@ -504,8 +520,9 @@ async fn an_s3_templates_suffix_path_variables_are_the_ones_its_sender_publishes
 
     // (service, log type, resource type, the published variables, the default path): a sender
     // whose resource takes two variables, two that publish the resource variable before the
-    // Region, one that publishes it after, and two that publish none at all — one of those
-    // partitioning its objects by the hour and one by the day.
+    // Region, one that publishes it after, and two that publish none at all — and the defaults
+    // they publish, which name a resource variable only where that sender's own default does:
+    // one path partitioning by the resource and the stage, three by the hour and one by the day.
     let cases: [(&str, &str, &str, &[&str], &str); 6] = [
         (
             "apigateway",
@@ -553,7 +570,7 @@ async fn an_s3_templates_suffix_path_variables_are_the_ones_its_sender_publishes
                 "dd",
                 "HH",
             ],
-            "{region}/{workload_identity_id}/{yyyy}/{MM}/{dd}/{HH}/",
+            "{region}/{yyyy}/{MM}/{dd}/{HH}/",
         ),
         (
             "workmail",

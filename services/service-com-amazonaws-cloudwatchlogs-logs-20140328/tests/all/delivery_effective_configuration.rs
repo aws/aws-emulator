@@ -15,9 +15,10 @@
 //!   resource it sends them from, to the kind of destination the delivery pairs it with. The
 //!   two members that apply to every delivery are resolved even where that template publishes
 //!   no default for them: a delivery that states no delimiter joins its fields with none, and
-//!   one that states no object layout writes under no suffix path with the Hive-compatible
-//!   prefix structure off. So each of the three is reported by every reader, for every
-//!   delivery.
+//!   its OBJECT LAYOUT — the suffix path and the Hive-compatible prefix structure — is the one
+//!   its SENDER publishes for delivering those logs to an S3 bucket, whatever kind of
+//!   destination it actually pairs with, because a layout is published per log type. So each of
+//!   the three is reported by every reader, for every delivery.
 //! * A `recordFields` selection is the caller leaving fields OUT of the record its source
 //!   sends, so a log source whose every published field is mandatory supports no selection:
 //!   `CreateDelivery` and `UpdateDeliveryConfiguration` both refuse one with
@@ -240,6 +241,38 @@ async fn governing_template(logs: &Logs, pairing: &Pairing) -> Value {
     published[0].clone()
 }
 
+/// The `DeliveryDestinationType` an OBJECT LAYOUT is published for: the one a delivery writes
+/// objects under, which is the destination type whose template carries an
+/// `s3DeliveryConfiguration`.
+const OBJECT_DESTINATION_TYPE: &str = "S3";
+
+/// The object layout the SENDER of a pairing publishes for its logs: the
+/// `defaultDeliveryConfigValues.s3DeliveryConfiguration` of its template for delivering them to
+/// an S3 BUCKET.
+///
+/// A layout is published per LOG TYPE — `S3DeliveryConfiguration$suffixPath`'s own variables
+/// "vary by log type" — so it is the layout EVERY delivery of those logs reports, whatever kind
+/// of destination it pairs with, and it is read off this template rather than off the one that
+/// governs the delivery.
+async fn published_object_layout(logs: &Logs, pairing: &Pairing) -> Option<Map<String, Value>> {
+    let answer = logs
+        .ok(
+            TEMPLATES,
+            &json!({
+                "service": pairing.service,
+                "logTypes": [pairing.log_type],
+                "resourceTypes": [pairing.resource_type],
+                "deliveryDestinationTypes": [OBJECT_DESTINATION_TYPE],
+            }),
+        )
+        .await;
+    answer["configurationTemplates"][0]
+        .get("defaultDeliveryConfigValues")
+        .and_then(|defaults| defaults.get("s3DeliveryConfiguration"))
+        .and_then(Value::as_object)
+        .cloned()
+}
+
 /// The `delivery` member of a response that carries one.
 fn delivery(answer: &Value, case: &str) -> Value {
     answer
@@ -317,19 +350,19 @@ async fn an_unconfigured_delivery_reports_the_templates_defaults() {
             .unwrap_or_else(|| {
                 panic!("case {case}: the delivery reports an object layout, got {created}")
             });
-        let published_layout = published
-            .get("s3DeliveryConfiguration")
-            .and_then(Value::as_object);
+        let published_layout = published_object_layout(&logs, &pairing).await;
         assert_eq!(
             stored_layout.get("suffixPath").and_then(Value::as_str),
             Some(
                 published_layout
+                    .as_ref()
                     .and_then(|layout| layout.get("suffixPath"))
                     .and_then(Value::as_str)
                     .unwrap_or_default()
             ),
-            "case {case}: the delivery's suffix path is the template's default, and the empty \
-             path where it publishes none, got {created}"
+            "case {case}: the delivery's suffix path is the one its SENDER publishes, whatever \
+             kind of destination it is delivered to, and no prefix where the sender publishes \
+             none, got {created}"
         );
         assert_eq!(
             stored_layout
@@ -337,12 +370,13 @@ async fn an_unconfigured_delivery_reports_the_templates_defaults() {
                 .and_then(Value::as_bool),
             Some(
                 published_layout
+                    .as_ref()
                     .and_then(|layout| layout.get("enableHiveCompatiblePath"))
                     .and_then(Value::as_bool)
                     .unwrap_or(false)
             ),
-            "case {case}: the delivery's Hive-compatible prefix setting is the template's \
-             default, and off where it publishes none, got {created}"
+            "case {case}: the delivery's Hive-compatible prefix setting is the sender's \
+             published default, and off where it publishes none, got {created}"
         );
 
         // The round trip: both readers report the delivery the create reported.

@@ -204,10 +204,33 @@ const BEDROCK_EVENT_FIELDS: &[TemplateField] = &[
     ("level", true),
 ];
 
-/// The record schema of an AgentCore resource's logs and traces: an OpenTelemetry log record
-/// — the event's instant and its body mandatory, its severity and the span it belongs to
-/// optional.
+/// The record schema of an AgentCore resource's logs and traces: the vended-log envelope the
+/// resource attributes its records with, then the OpenTelemetry log record itself.
+///
+/// The envelope is the one every newer sender writes — the record's own timestamp, the ARN and
+/// the id of the resource that sent it and the instant of the event — widened with the
+/// dimensions an agent call is identified by: the account it ran in, the request, session,
+/// span and trace it belongs to, the service and operation that ran, the payloads it exchanged,
+/// and the resource and attribute documents the call carried. The record closes with the
+/// OpenTelemetry log record the resource emits — the event's instant and its body mandatory,
+/// its severity and the span it belongs to optional — because an AgentCore record carries both
+/// the envelope and the telemetry item it envelopes.
 const AGENTCORE_FIELDS: &[TemplateField] = &[
+    ("timestamp", false),
+    ("resource_arn", true),
+    ("resource_id", false),
+    ("event_timestamp", true),
+    ("account_id", false),
+    ("request_id", false),
+    ("session_id", false),
+    ("span_id", false),
+    ("trace_id", false),
+    ("service_name", false),
+    ("operation", false),
+    ("request_payload", false),
+    ("response_payload", false),
+    ("resource", false),
+    ("attributes", false),
     ("timeUnixNano", true),
     ("severityNumber", false),
     ("severityText", false),
@@ -605,6 +628,24 @@ const WORKMAIL_PERSONAL_ACCESS_TOKEN_FIELDS: &[TemplateField] = &[
     ("event_name", true),
 ];
 
+/// The record schema of an Amazon Q Business application's logs: the application the record
+/// belongs to, the instant of the event, the kind of log it was written as and the account it
+/// happened in.
+///
+/// The application and the instant are mandatory, because a delivered record that attributes
+/// itself to neither an application nor a moment is not the record; the record's own ingestion
+/// timestamp is allowed without being delivered by default, as it is for every sender that
+/// publishes one ([`FIELDS_NOT_DELIVERED_BY_DEFAULT`]). One schema covers both of the log types
+/// this sender sends, the way the other senders with several log types of one record publish
+/// one schema for them.
+const QBUSINESS_FIELDS: &[TemplateField] = &[
+    ("timestamp", false),
+    ("application_id", true),
+    ("event_timestamp", true),
+    ("log_type", false),
+    ("account_id", false),
+];
+
 /// One log type a kind of resource sends, and what a delivery of it may carry.
 #[derive(Debug, Clone, Copy)]
 pub struct ConfigurationTemplateLogType {
@@ -826,9 +867,24 @@ const fn log_type_with_s3_tables(
 /// defaults to: the Region, the sending resource and the time partition.
 const RESOURCE_ID_SUFFIX_PATH: &str = "{region}/{resource_id}/{yyyy}/{MM}/{dd}/{HH}/";
 
-/// The suffix path an S3 delivery of a sender that partitions its objects by TIME ALONE
-/// defaults to: the Region the delivery is made in, then the hour the object covers.
-const TIME_SUFFIX_PATH: &str = "{region}/{yyyy}/{MM}/{dd}/{HH}/";
+/// The suffix path an S3 delivery DEFAULTS to for a sender that partitions its delivered
+/// objects by TIME ALONE: the Region the delivery is made in, then the hour the object covers.
+///
+/// A sender publishes a variable naming the sending resource among the variables a caller MAY
+/// write into a suffix path of its own ([`ACCOUNT_SUFFIX_PATH_FIELDS`] and the per-row lists
+/// below), which is not the same as the DEFAULT it publishes; a sender whose default partitions
+/// by the sending resource, by the day, or not at all states that default on its row
+/// ([`RESOURCE_ID_SUFFIX_PATH`], [`DAILY_SUFFIX_PATH`], [`NO_SUFFIX_PATH`]).
+const DEFAULT_DELIVERY_SUFFIX_PATH: &str = "{region}/{yyyy}/{MM}/{dd}/{HH}/";
+
+/// The suffix path of a sender that publishes NO prefix of its own: delivered objects are
+/// written under the prefix the destination itself configures, so the default adds nothing to
+/// it.
+///
+/// `FieldDelimiter` is not the only member whose default is the empty value — a sender that
+/// partitions its objects in no way publishes an empty suffix path, and a delivery of its logs
+/// reports that rather than a partition this service chose for it.
+const NO_SUFFIX_PATH: &str = "";
 
 /// The suffix path an S3 delivery of a sender that partitions its objects by DAY defaults to:
 /// the Region the delivery is made in, then the day the object covers.
@@ -884,14 +940,14 @@ pub const CONFIGURATION_TEMPLATE_SOURCES: &[ConfigurationTemplateSource] = &[
         service: "autoloop",
         resource_type: "subscription",
         suffix_path_fields: ACCOUNT_SUFFIX_PATH_FIELDS,
-        s3_suffix_path: TIME_SUFFIX_PATH,
+        s3_suffix_path: DEFAULT_DELIVERY_SUFFIX_PATH,
         log_types: &[log_type("ERROR_LOGS", AUTOLOOP_FIELDS)],
     },
     ConfigurationTemplateSource {
         service: "bedrock",
         resource_type: "agent-alias",
         suffix_path_fields: RESOURCE_ID_SUFFIX_PATH_FIELDS,
-        s3_suffix_path: TIME_SUFFIX_PATH,
+        s3_suffix_path: DEFAULT_DELIVERY_SUFFIX_PATH,
         log_types: &[
             log_type("APPLICATION_LOGS", BEDROCK_EVENT_FIELDS),
             log_type("EVENT_LOGS", BEDROCK_EVENT_FIELDS),
@@ -920,7 +976,7 @@ pub const CONFIGURATION_TEMPLATE_SOURCES: &[ConfigurationTemplateSource] = &[
             "dd",
             "HH",
         ],
-        s3_suffix_path: "{region}/{gateway_id}/{yyyy}/{MM}/{dd}/{HH}/",
+        s3_suffix_path: DEFAULT_DELIVERY_SUFFIX_PATH,
         log_types: &[
             log_type("APPLICATION_LOGS", AGENTCORE_FIELDS),
             log_type(TRACE_LOG_TYPE, AGENTCORE_FIELDS),
@@ -938,7 +994,7 @@ pub const CONFIGURATION_TEMPLATE_SOURCES: &[ConfigurationTemplateSource] = &[
             "dd",
             "HH",
         ],
-        s3_suffix_path: "{region}/{memory_id}/{yyyy}/{MM}/{dd}/{HH}/",
+        s3_suffix_path: DEFAULT_DELIVERY_SUFFIX_PATH,
         log_types: &[
             log_type("APPLICATION_LOGS", AGENTCORE_FIELDS),
             log_type(TRACE_LOG_TYPE, AGENTCORE_FIELDS),
@@ -948,7 +1004,7 @@ pub const CONFIGURATION_TEMPLATE_SOURCES: &[ConfigurationTemplateSource] = &[
         service: "bedrock-agentcore",
         resource_type: "payments",
         suffix_path_fields: RESOURCE_ID_SUFFIX_PATH_FIELDS,
-        s3_suffix_path: RESOURCE_ID_SUFFIX_PATH,
+        s3_suffix_path: DEFAULT_DELIVERY_SUFFIX_PATH,
         log_types: &[
             log_type("APPLICATION_LOGS", AGENTCORE_FIELDS),
             log_type(TRACE_LOG_TYPE, AGENTCORE_FIELDS),
@@ -966,7 +1022,7 @@ pub const CONFIGURATION_TEMPLATE_SOURCES: &[ConfigurationTemplateSource] = &[
             "dd",
             "HH",
         ],
-        s3_suffix_path: "{region}/{runtime_id}/{yyyy}/{MM}/{dd}/{HH}/",
+        s3_suffix_path: DEFAULT_DELIVERY_SUFFIX_PATH,
         log_types: &[
             log_type("APPLICATION_LOGS", AGENTCORE_FIELDS),
             log_type("USAGE_LOGS", AGENTCORE_FIELDS),
@@ -977,7 +1033,7 @@ pub const CONFIGURATION_TEMPLATE_SOURCES: &[ConfigurationTemplateSource] = &[
         service: "bedrock-agentcore",
         resource_type: "tools",
         suffix_path_fields: RESOURCE_ID_SUFFIX_PATH_FIELDS,
-        s3_suffix_path: RESOURCE_ID_SUFFIX_PATH,
+        s3_suffix_path: DEFAULT_DELIVERY_SUFFIX_PATH,
         log_types: &[
             log_type("APPLICATION_LOGS", AGENTCORE_FIELDS),
             log_type("USAGE_LOGS", AGENTCORE_FIELDS),
@@ -996,7 +1052,7 @@ pub const CONFIGURATION_TEMPLATE_SOURCES: &[ConfigurationTemplateSource] = &[
             "dd",
             "HH",
         ],
-        s3_suffix_path: "{region}/{workload_identity_id}/{yyyy}/{MM}/{dd}/{HH}/",
+        s3_suffix_path: DEFAULT_DELIVERY_SUFFIX_PATH,
         log_types: &[
             log_type("APPLICATION_LOGS", AGENTCORE_FIELDS),
             log_type(TRACE_LOG_TYPE, AGENTCORE_FIELDS),
@@ -1115,6 +1171,20 @@ pub const CONFIGURATION_TEMPLATE_SOURCES: &[ConfigurationTemplateSource] = &[
             log_type("TRANSCODE_LOGS", MEDIATAILOR_FIELDS),
         ],
     },
+    // Amazon Q Business sends the logs of its APPLICATION resource, and the `logType` member's
+    // own catalogue names both types it sends ("For Amazon Q, the valid values are EVENT_LOGS
+    // and SYNC_JOB_LOGS",
+    // `smithy_query(query="doc",shape="PutDeliverySourceRequest",member="logType")`).
+    ConfigurationTemplateSource {
+        service: "qbusiness",
+        resource_type: "application",
+        suffix_path_fields: ACCOUNT_SUFFIX_PATH_FIELDS,
+        s3_suffix_path: DEFAULT_DELIVERY_SUFFIX_PATH,
+        log_types: &[
+            log_type("EVENT_LOGS", QBUSINESS_FIELDS),
+            log_type("SYNC_JOB_LOGS", QBUSINESS_FIELDS),
+        ],
+    },
     ConfigurationTemplateSource {
         service: "s3",
         resource_type: "bucket",
@@ -1129,19 +1199,23 @@ pub const CONFIGURATION_TEMPLATE_SOURCES: &[ConfigurationTemplateSource] = &[
     // Security Hub, use arn:aws:securityhub:us-east-1:111122223333:hubv2/*"
     // (`smithy_query(query="doc",shape="PutDeliverySourceRequest",member="logType")`). So the
     // catalogue publishes a row per hub resource type, and a caller holding a source over
-    // either one finds the templates that apply to it.
-    ConfigurationTemplateSource {
-        service: "securityhub",
-        resource_type: "hub",
-        suffix_path_fields: RESOURCE_ID_SUFFIX_PATH_FIELDS,
-        s3_suffix_path: RESOURCE_ID_SUFFIX_PATH,
-        log_types: &[log_type("SECURITY_FINDING_LOGS", SECURITY_FINDING_FIELDS)],
-    },
+    // either one finds the templates that apply to it. The newer hub resource is published
+    // FIRST, so a caller that takes the first SECURITY_FINDING_LOGS template of the service
+    // binds its delivery to the hub resource the service vends findings from today.
     ConfigurationTemplateSource {
         service: "securityhub",
         resource_type: "hubv2",
         suffix_path_fields: RESOURCE_ID_SUFFIX_PATH_FIELDS,
-        s3_suffix_path: RESOURCE_ID_SUFFIX_PATH,
+        // Security Hub publishes no object prefix of its own: a delivery of its findings
+        // writes under the prefix its destination configures.
+        s3_suffix_path: NO_SUFFIX_PATH,
+        log_types: &[log_type("SECURITY_FINDING_LOGS", SECURITY_FINDING_FIELDS)],
+    },
+    ConfigurationTemplateSource {
+        service: "securityhub",
+        resource_type: "hub",
+        suffix_path_fields: RESOURCE_ID_SUFFIX_PATH_FIELDS,
+        s3_suffix_path: NO_SUFFIX_PATH,
         log_types: &[log_type("SECURITY_FINDING_LOGS", SECURITY_FINDING_FIELDS)],
     },
     ConfigurationTemplateSource {
@@ -1163,7 +1237,7 @@ pub const CONFIGURATION_TEMPLATE_SOURCES: &[ConfigurationTemplateSource] = &[
         suffix_path_fields: ACCOUNT_SUFFIX_PATH_FIELDS,
         // WorkMail partitions its delivered objects by time alone, under the Region the
         // delivery was made in.
-        s3_suffix_path: TIME_SUFFIX_PATH,
+        s3_suffix_path: DEFAULT_DELIVERY_SUFFIX_PATH,
         log_types: &[
             log_type("ACCESS_CONTROL_LOGS", WORKMAIL_ACCESS_CONTROL_FIELDS),
             log_type("AUTHENTICATION_LOGS", WORKMAIL_AUTHENTICATION_FIELDS),

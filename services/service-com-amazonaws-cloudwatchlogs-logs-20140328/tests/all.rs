@@ -61,6 +61,8 @@ mod delivery_effective_configuration;
 mod delivery_idempotence;
 #[path = "all/delivery_identity_authorization.rs"]
 mod delivery_identity_authorization;
+#[path = "all/delivery_object_layout_defaults.rs"]
+mod delivery_object_layout_defaults;
 #[path = "all/delivery_region_isolation.rs"]
 mod delivery_region_isolation;
 #[path = "all/delivery_resource_in_use_refusals.rs"]
@@ -301,3 +303,5 @@ mod vended_log_template_catalog_rows;
 mod vended_log_template_schemas;
 #[path = "all/vended_parser_position.rs"]
 mod vended_parser_position;
+#[path = "all/zz_probe_defaults.rs"]
+mod zz_probe_defaults;

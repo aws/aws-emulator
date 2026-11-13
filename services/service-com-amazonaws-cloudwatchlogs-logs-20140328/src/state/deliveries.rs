@@ -101,7 +101,8 @@ impl DeliveryRecord {
     }
 
     /// Resolve this delivery's EFFECTIVE configuration, from the configuration template that
-    /// governs it ([`delivery_configuration_template`]).
+    /// governs it ([`delivery_configuration_template`]) and the object layout its SENDER
+    /// publishes ([`delivery_object_layout`]).
     ///
     /// A delivery delivers under one configuration whether or not the request that created it
     /// stated the whole of it: a member the request named is the caller's, and a member it did
@@ -112,16 +113,22 @@ impl DeliveryRecord {
     /// create happened to be filled in, and a caller can tell a defaulted value from a
     /// configured one by comparing it with the template.
     ///
-    /// The two members that apply to every delivery are resolved even where the template
-    /// publishes no default for them: a delivery that states no delimiter joins its record
-    /// fields with none ([`CONFIGURATION_TEMPLATE_DEFAULT_FIELD_DELIMITER`]), and one that
-    /// states no S3 object layout writes under no suffix path, with the Hive-compatible prefix
-    /// structure off ([`CONFIGURATION_TEMPLATE_DEFAULT_HIVE_COMPATIBLE_PATH`]). `recordFields`
-    /// is left unreported when no template governs the delivery: which fields its records
-    /// carry is published by the sending service, and nothing published says.
+    /// The two members that apply to every delivery are resolved even where the GOVERNING
+    /// template publishes no default for them: a delivery that states no delimiter joins its
+    /// record fields with none ([`CONFIGURATION_TEMPLATE_DEFAULT_FIELD_DELIMITER`]), and the
+    /// object layout comes from the SENDER rather than from the destination this delivery pairs
+    /// it with — the layout is published per log type, so a delivery to a destination that is
+    /// not an S3 bucket reports the same suffix path as one to a bucket instead of losing it,
+    /// with the Hive-compatible prefix structure off where nothing published says otherwise
+    /// ([`CONFIGURATION_TEMPLATE_DEFAULT_HIVE_COMPATIBLE_PATH`]). A sender that publishes no
+    /// prefix of its own, and one the catalogue publishes nothing for, leave the suffix path at
+    /// no prefix at all. `recordFields` is left unreported when no template governs the
+    /// delivery: which fields its records carry is published by the sending service, and
+    /// nothing published says.
     pub fn resolve_configuration(
         &mut self,
         template: Option<&crate::ops::types::ConfigurationTemplate>,
+        object_layout: Option<&crate::ops::types::S3DeliveryConfiguration>,
     ) {
         let defaults = template.and_then(|template| template.default_delivery_config_values.as_ref());
         if self.record_fields.is_none() {
@@ -134,7 +141,6 @@ impl DeliveryRecord {
                     .unwrap_or_else(|| CONFIGURATION_TEMPLATE_DEFAULT_FIELD_DELIMITER.to_string()),
             );
         }
-        let published = defaults.and_then(|defaults| defaults.s3_delivery_configuration.as_ref());
         let configured = self.s3_delivery_configuration.take();
         self.s3_delivery_configuration = Some(crate::ops::types::S3DeliveryConfiguration {
             enable_hive_compatible_path: Some(
@@ -142,7 +148,7 @@ impl DeliveryRecord {
                     .as_ref()
                     .and_then(|configured| configured.enable_hive_compatible_path)
                     .or_else(|| {
-                        published.and_then(|published| published.enable_hive_compatible_path)
+                        object_layout.and_then(|published| published.enable_hive_compatible_path)
                     })
                     .unwrap_or(CONFIGURATION_TEMPLATE_DEFAULT_HIVE_COMPATIBLE_PATH),
             ),
@@ -150,7 +156,7 @@ impl DeliveryRecord {
                 configured
                     .as_ref()
                     .and_then(|configured| configured.suffix_path.clone())
-                    .or_else(|| published.and_then(|published| published.suffix_path.clone()))
+                    .or_else(|| object_layout.and_then(|published| published.suffix_path.clone()))
                     .unwrap_or_default(),
             ),
         });

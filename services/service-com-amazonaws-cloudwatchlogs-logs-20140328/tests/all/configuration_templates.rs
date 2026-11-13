@@ -81,10 +81,11 @@ const VENDED_LOGS_DELIVERY_ACTION: &str = "AllowVendedLogDeliveryForResource";
 /// caught instead of agreed with. Each pinned row is
 /// `service|logType|resourceType|deliveryDestinationType`: a CloudFront access log delivered
 /// to S3, a WorkMail access-control log delivered to a log group, an Application Load
-/// Balancer access log delivered to Firehose, an AgentCore trace delivered to X-Ray, and a
-/// Security Hub finding log delivered to S3 from each of the two hub resources that send one.
-const CATALOGUE_TEMPLATES: usize = 182;
-const PINNED_TEMPLATES: [&str; 8] = [
+/// Balancer access log delivered to Firehose, an AgentCore trace delivered to X-Ray, a
+/// Security Hub finding log delivered to S3 from each of the two hub resources that send one,
+/// and an Amazon Q Business event log delivered to a log group.
+const CATALOGUE_TEMPLATES: usize = 188;
+const PINNED_TEMPLATES: [&str; 9] = [
     "cloudfront|ACCESS_LOGS|distribution|S3",
     "workmail|ACCESS_CONTROL_LOGS|organization|CWL",
     "elasticloadbalancing|ALB_ACCESS_LOGS|loadbalancer|FH",
@@ -93,6 +94,7 @@ const PINNED_TEMPLATES: [&str; 8] = [
     "eks|AUTO_MODE_LOAD_BALANCING_LOGS|cluster|FH",
     "securityhub|SECURITY_FINDING_LOGS|hub|S3",
     "securityhub|SECURITY_FINDING_LOGS|hubv2|S3",
+    "qbusiness|EVENT_LOGS|application|CWL",
 ];
 
 /// The published bounds of the members a request names: `limit` is `DescribeLimit`
@@ -517,9 +519,14 @@ async fn every_template_derives_its_allowed_values_from_its_destination_type() {
                 .get("suffixPath")
                 .and_then(Value::as_str)
                 .unwrap_or_else(|| panic!("case {case}: the default S3 configuration carries a suffixPath, got {s3}"));
+            // A default suffix path fits the published maximum; a sender that publishes no
+            // object prefix of its own publishes the empty path, because a delivery of its logs
+            // writes under the prefix its destination configures. The lower bound
+            // `DeliverySuffixPath` states bounds what a CALLER may state, not the default a
+            // sender publishes for partitioning nothing.
             assert!(
-                (1..=MAX_SUFFIX_PATH_CHARS).contains(&suffix_path.chars().count()),
-                "case {case}: a suffix path is 1..{MAX_SUFFIX_PATH_CHARS} characters, got {suffix_path:?}"
+                suffix_path.chars().count() <= MAX_SUFFIX_PATH_CHARS,
+                "case {case}: a suffix path is at most {MAX_SUFFIX_PATH_CHARS} characters, got {suffix_path:?}"
             );
             for variable in suffix_path_variables(suffix_path) {
                 assert!(

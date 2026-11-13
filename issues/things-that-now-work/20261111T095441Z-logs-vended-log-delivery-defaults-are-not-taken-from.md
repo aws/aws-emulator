@@ -77,3 +77,33 @@ Replay of trace set simparity-wire-aws-v1 (186 fixtures, 1217 steps, 1057 passed
 4. Replay fixture logs-end-to-end-delivery-pipeline-create-configure-update step setup#3 and compare the order of the securityhub 'hub' / 'hubv2' templates and their allowedOutputFormats.
 5. Replay fixture logs-agentcore-traj-rewire-delivery-for-deleted-runtime: at step task#5 call CreateDelivery for the AgentCore runtime APPLICATION_LOGS delivery source with an S3 delivery destination and WITHOUT recordFields or s3DeliveryConfiguration, and compare delivery.recordFields with the recorded 19-field default.
 6. In the same fixture, step task#7, call GetDelivery with that delivery's id and inspect delivery.s3DeliveryConfiguration.suffixPath (empty string instead of '{region}/{yyyy}/{MM}/{dd}/{HH}/') and delivery.recordFields.
+
+## Resolution
+
+Every replay key this report carries is `fixed`: `CreateDelivery`/`GetDelivery` `recordFields` and
+`GetDelivery` `s3DeliveryConfiguration.suffixPath`.
+
+- Causes 4 and 5 are FIXED. A delivery's OBJECT LAYOUT is the one its SENDER publishes — an object
+  layout is published per log type, so it is read off the template for delivering those logs to an
+  S3 bucket and reported whatever kind of destination the delivery pairs with, instead of being
+  lost for every delivery to a log group or a stream
+  (`src/state/delivery_configuration.rs::delivery_object_layout`,
+  `src/state/deliveries.rs::resolve_configuration`). An AgentCore resource's published record is
+  the vended-log envelope — the resource, account, request, session, span, trace, service,
+  operation and payloads — followed by the OpenTelemetry log record it envelopes, so a delivery
+  created without `recordFields` carries the whole 19-field default rather than the OTLP tail
+  alone (`src/state/vended_log_templates.rs`).
+- Cause 1 is FIXED: at this commit the WorkMail S3 template already publishes
+  `allowedOutputFormats` ['plain','json','w3c','parquet'], `allowedFieldDelimiters` and
+  `allowedSuffixPathFields`, pinned by `tests/all/vended_log_template_schemas.rs` and
+  `tests/all/configuration_templates.rs`.
+- Cause 2 is FIXED for the missing row: the catalogue now publishes the Amazon Q Business
+  `application` templates for both log types that sender sends, so the slice a client enumerates
+  carries them and a delivery source can be created for each.
+- Cause 3 is FIXED for the ordering: the newer Security Hub hub resource is published first.
+- What remains of causes 2 and 3 — which record fields, output formats and field delimiters each
+  catalogue ROW publishes, and where a row sits in the whole-catalogue enumeration — is one rule
+  across the catalogue, carried by the `logs|DescribeConfigurationTemplates|2xx->2xx|$.configurationTemplates[*]`
+  key, which is NOT among this report's keys: the open issue
+  `20261111T095441Z-logs-describeconfigurationtemplates-catalog-omits-allowedfielddelimiters-allowedsuffixpathfields-and-fielddelimiter-and.md`
+  owns it and closes that part.

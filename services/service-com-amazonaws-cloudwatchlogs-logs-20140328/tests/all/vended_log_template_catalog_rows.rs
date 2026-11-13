@@ -276,7 +276,7 @@ async fn the_default_record_fields_are_the_allowed_fields_a_delivery_carries_by_
     let logs = Logs::new();
 
     // (service, log type, resource type, the default record field list the catalogue publishes)
-    let cases: [(&str, &str, &str, &[&str]); 7] = [
+    let cases: [(&str, &str, &str, &[&str]); 8] = [
         // A generic vended-log envelope: the record's own timestamp and the sending resource's
         // bare id are allowed without being delivered by default.
         (
@@ -387,19 +387,53 @@ async fn the_default_record_fields_are_the_allowed_fields_a_delivery_carries_by_
                 "level",
             ],
         ),
-        // An OpenTelemetry log record: it carries neither of the fields a delivery leaves out,
-        // so every allowed field is delivered.
+        // An AgentCore record: the vended-log envelope the resource attributes it with,
+        // followed by the OpenTelemetry log record it envelopes. The record's own `timestamp`
+        // and the bare `resource_id` are allowed without being delivered by default.
         (
             "bedrock-agentcore",
             "APPLICATION_LOGS",
             "workload-identity",
             &[
+                "resource_arn",
+                "event_timestamp",
+                "account_id",
+                "request_id",
+                "session_id",
+                "span_id",
+                "trace_id",
+                "service_name",
+                "operation",
+                "request_payload",
+                "response_payload",
+                "resource",
+                "attributes",
                 "timeUnixNano",
                 "severityNumber",
                 "severityText",
                 "body",
                 "traceId",
                 "spanId",
+            ],
+        ),
+        // A record that carries NEITHER of the fields a delivery leaves out by default, so
+        // every allowed field is delivered.
+        (
+            "mediatailor",
+            "AD_DECISION_SERVER_LOGS",
+            "playbackConfiguration",
+            &[
+                "eventTimestamp",
+                "awsAccountId",
+                "eventType",
+                "sessionId",
+                "originId",
+                "playbackConfigurationName",
+                "vastResponse",
+                "vastAds",
+                "adBreaks",
+                "beaconInfo",
+                "trackingEvents",
             ],
         ),
     ];
