@@ -15,12 +15,6 @@
 // exactly that. The lines above are the file header, which no landing edits.
 #[path = "all/prefix_lists.rs"]
 mod prefix_lists;
-// `DeleteIpamScope`: the scope a delete moves to `delete-in-progress` and the clock then
-// removes, the default scopes it refuses, the pools that block it, and the ids it turns down.
-// Declared beside `prefix_lists` for the reason the note above gives: the sorted neighbourhood
-// and the tail of this file are where every new ec2 suite inserts its lines.
-#[path = "all/ipam_scope_deletion.rs"]
-mod ipam_scope_deletion;
 // What `CreateClientVpnEndpoint` persists — the endpoint it stores from the request's members,
 // the certificates it resolves against Certificate Manager, and what it refuses. Declared
 // beside `prefix_lists` for the reason the note above gives: the sorted neighbourhood and the
@@ -2064,12 +2058,6 @@ mod instance_guest_console_user_data;
 // it leaves alone. Declared at the tail of this file, which is where every new ec2 suite
 #[path = "all/update_security_group_rule_descriptions_egress.rs"]
 mod update_security_group_rule_descriptions_egress;
-// `ModifyVpcEndpoint`: the subnets, security groups, route tables, policy and private hosted
-// zone the call applies to the stored endpoint it names, read back through
-// `DescribeVpcEndpoints` and `DescribeRouteTables`, beside what it refuses and what it leaves
-// alone. Declared at the tail of this file, which is where every new ec2 suite lands.
-#[path = "all/modify_vpc_endpoint.rs"]
-mod modify_vpc_endpoint;
 // How an instance, a network interface and a volume attachment are projected: the empty
 // reservation groupSet, the `attaching` attachment a launch makes and the volumes it hands
 // the instance as it completes, an interface's public hostname and requester, the zone a
@@ -2077,6 +2065,21 @@ mod modify_vpc_endpoint;
 // give it. Declared at the tail of this file, which is where every new ec2 suite lands.
 #[path = "all/instance_eni_and_volume_projections.rs"]
 mod instance_eni_and_volume_projections;
+// The log-delivery grants a flow log with an Amazon S3 destination leaves on that bucket:
+// written into the bucket's own policy, where Amazon S3 holds it, merged into whatever the
+// bucket already carried. Declared at the tail of this file, which is where every new ec2
+#[path = "all/flow_log_s3_delivery_grants.rs"]
+mod flow_log_s3_delivery_grants;
+// `DeleteIpamScope`: the scope a delete moves to `delete-in-progress` and the clock then
+// removes, the default scopes it refuses, the pools that block it, and the ids it turns down.
+#[path = "all/ipam_scope_deletion.rs"]
+mod ipam_scope_deletion;
+// `ModifyVpcEndpoint`: the subnets, security groups, route tables, policy and private hosted
+// zone the call applies to the stored endpoint it names, read back through
+// `DescribeVpcEndpoints` and `DescribeRouteTables`, beside what it refuses and what it leaves
+// alone. Declared at the tail of this file, which is where every new ec2 suite lands.
+#[path = "all/modify_vpc_endpoint.rs"]
+mod modify_vpc_endpoint;
 // How a launch template's KEY and its VERSION resolve across every operation that takes one: an
 // id no mint of this service reached is unreadable where one it issued whose template is gone is
 // absent, a launch pins a version the template holds or is refused naming it, and a version's

@@ -2574,6 +2574,12 @@ pub use client_vpn_connections::*;
 /// handler reaches it as `crate::state::require_enclave_certificate_arn` like any helper of
 /// this module.
 pub mod enclave_certificate_iam_roles;
+/// The Amazon S3 destination a flow log publishes to, and the permissions the log delivery
+/// service needs on that bucket — read out of the destination ARN and written into the
+/// bucket's own policy, where Amazon S3 owns it, in a file of its own rather than as more
+/// lines here. Everything it declares is re-exported below, so a handler reaches it as
+/// `crate::state::grant_flow_log_delivery` like any helper of this module.
+pub mod flow_log_s3_delivery;
 /// The attributes of the ACCOUNT itself — the catalog `DescribeAccountAttributes` reports,
 /// each attribute's value derived from what already owns it, and the refusal for a name that
 /// is no account attribute — in a file of its own rather than as more lines here. Everything
@@ -2733,6 +2739,8 @@ pub use network_acl_store::*;
 pub use account_attributes::*;
 
 pub use enclave_certificate_iam_roles::*;
+
+pub use flow_log_s3_delivery::*;
 
 impl ComAmazonawsEc2Amazonec2State {
     /// Whether another IPAM internet registry association fits inside the store's ceiling
