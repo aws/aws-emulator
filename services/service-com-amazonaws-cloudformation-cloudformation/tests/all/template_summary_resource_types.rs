@@ -4,11 +4,12 @@
 //! end over the awsQuery wire.
 //!
 //! THE RULE: "a list of all the template resource types that are defined in the template" is
-//! the type of EACH resource the body declares, in the order the body declares them — so a
-//! type several resources share is reported once per resource and nothing is collapsed or
-//! re-ordered. The per-TYPE reading of the same section is `ResourceIdentifierSummaries`,
-//! which carries one entry per type with the logical ids declared with it, so the two members
-//! are two readings of one order and this suite asserts both of one response.
+//! the type of EACH resource the body declares — so a type several resources share is
+//! reported once per resource and nothing is collapsed — reported ASCENDING BY TYPE NAME,
+//! whatever order the body declares its resources in. The per-TYPE reading of the same
+//! section is `ResourceIdentifierSummaries`, which carries one entry per type with the logical
+//! ids declared with it IN DECLARED ORDER, so the two members are two readings of one section
+//! and this suite asserts both of one response.
 //!
 //! The rows differ along what the rule generalises over: how many resources share a type,
 //! whether the declared order agrees with the ascending one, how many types the body
@@ -51,8 +52,8 @@ fn reported_summaries(xml: &str) -> Vec<(String, Vec<String>)> {
         .collect()
 }
 
-/// One row: a body, the types its summary must report, and the identifier summaries beside
-/// them.
+/// One row: a body, the types its summary must report (ascending by type name), and the
+/// identifier summaries beside them (one per type, in the order the body declares them).
 struct Row {
     case: &'static str,
     template: String,
@@ -71,7 +72,7 @@ fn rows() -> Vec<Row> {
                 "Store":{"Type":"AWS::S3::Bucket"},
                 "Access":{"Type":"AWS::IAM::Role"}}}"#
                 .to_string(),
-            types: vec!["AWS::S3::Bucket", "AWS::IAM::Role"],
+            types: vec!["AWS::IAM::Role", "AWS::S3::Bucket"],
             summaries: vec![
                 ("AWS::S3::Bucket", vec!["Store"]),
                 ("AWS::IAM::Role", vec!["Access"]),
@@ -108,10 +109,10 @@ fn rows() -> Vec<Row> {
                  Store:\n    Type: AWS::S3::Bucket\n"
                 .to_string(),
             types: vec![
-                "AWS::SQS::Queue",
+                "AWS::S3::Bucket",
                 "AWS::SNS::Topic",
                 "AWS::SQS::Queue",
-                "AWS::S3::Bucket",
+                "AWS::SQS::Queue",
             ],
             summaries: vec![
                 ("AWS::SQS::Queue", vec!["Zebra", "Mid"]),
@@ -129,7 +130,7 @@ fn rows() -> Vec<Row> {
 }
 
 #[tokio::test]
-async fn a_summary_reports_the_type_of_every_declared_resource_as_declared() {
+async fn a_summary_reports_the_type_of_every_declared_resource_by_type_name() {
     let router = router();
     for row in rows() {
         let case = row.case;
@@ -142,7 +143,7 @@ async fn a_summary_reports_the_type_of_every_declared_resource_as_declared() {
         let reported = reported_types(&body);
         assert_eq!(
             reported, row.types,
-            "case {case:?}: expected one entry per declared resource, in declared order, \
+            "case {case:?}: expected one entry per declared resource, ascending by type name, \
              {:?}, got {reported:?}",
             row.types
         );
@@ -166,6 +167,105 @@ async fn a_summary_reports_the_type_of_every_declared_resource_as_declared() {
             "case {case:?}: expected the identifier summaries {expected:?}, got {summaries:?}"
         );
     }
+}
+
+/// Every ordering of one `Resources` section is summarised with the SAME `ResourceTypes`
+/// list — ascending by type name — while the identifier summaries of that same response
+/// follow the order each body states. The invariant is asserted over every permutation of a
+/// four-resource section, which is the dimension the rule generalises over: the ORDER the
+/// body declares its resources in.
+#[tokio::test]
+async fn the_types_reported_do_not_depend_on_the_order_the_body_declares_resources_in() {
+    // Four declarations of three types, two of them sharing one type, each needing no
+    // properties. Identifiers are each type's primary identifier, which the per-TYPE member
+    // carries beside the logical ids.
+    let declarations: [(&str, &str); 4] = [
+        ("Store", "AWS::S3::Bucket"),
+        ("Access", "AWS::IAM::Role"),
+        ("Notify", "AWS::SNS::Topic"),
+        ("Archive", "AWS::S3::Bucket"),
+    ];
+    // The one list every ordering reports: one entry per declared resource, ascending.
+    let expected_types = vec![
+        "AWS::IAM::Role".to_string(),
+        "AWS::S3::Bucket".to_string(),
+        "AWS::S3::Bucket".to_string(),
+        "AWS::SNS::Topic".to_string(),
+    ];
+    let router = router();
+
+    for order in permutations(declarations.len()) {
+        let stated: Vec<(&str, &str)> = order.iter().map(|at| declarations[*at]).collect();
+        let case = stated
+            .iter()
+            .map(|(id, _)| *id)
+            .collect::<Vec<&str>>()
+            .join(",");
+        // Written out as text: `json!` would state the members in its own order, and what
+        // this case turns on is the order the BODY states them in.
+        let body = stated
+            .iter()
+            .map(|(id, resource_type)| format!(r#""{id}":{{"Type":"{resource_type}"}}"#))
+            .collect::<Vec<String>>()
+            .join(",");
+        let template = format!(r#"{{"Resources":{{{body}}}}}"#);
+
+        let (status, response) = summarise(&router, &template).await;
+        assert_eq!(
+            status, 200,
+            "case {case:?}: expected the body summarised, got {status} {response}"
+        );
+
+        let reported = reported_types(&response);
+        assert_eq!(
+            reported, expected_types,
+            "case {case:?}: expected {expected_types:?} whatever order the body states, got \
+             {reported:?}"
+        );
+
+        // The per-TYPE member of the SAME response follows this body's own order: one entry
+        // per type, at the position of the first resource declared with it, carrying the
+        // logical ids in declared order.
+        let mut expected_summaries: Vec<(String, Vec<String>)> = Vec::new();
+        for (id, resource_type) in &stated {
+            match expected_summaries
+                .iter_mut()
+                .find(|(reported_type, _)| reported_type == resource_type)
+            {
+                Some((_, ids)) => ids.push((*id).to_string()),
+                None => {
+                    expected_summaries.push(((*resource_type).to_string(), vec![(*id).to_string()]))
+                }
+            }
+        }
+        let summaries = reported_summaries(&response);
+        assert_eq!(
+            summaries, expected_summaries,
+            "case {case:?}: expected the identifier summaries {expected_summaries:?}, got \
+             {summaries:?}"
+        );
+    }
+}
+
+/// Every ordering of `count` items, as index lists.
+fn permutations(count: usize) -> Vec<Vec<usize>> {
+    if count == 0 {
+        return vec![Vec::new()];
+    }
+    let mut orders = Vec::new();
+    for at in 0..count {
+        for mut rest in permutations(count - 1) {
+            for index in &mut rest {
+                if *index >= at {
+                    *index += 1;
+                }
+            }
+            let mut order = vec![at];
+            order.extend(rest);
+            orders.push(order);
+        }
+    }
+    orders
 }
 
 /// A body declaring MANY resources of one type is summarised with as many entries as it

@@ -59,20 +59,32 @@ pub fn required_capabilities(body: &str, declared: &Template) -> RequiredCapabil
 }
 
 /// "A list of all the template resource types that are defined in the template": the type
-/// of EACH resource the `Resources` section declares, in the order the body declares them.
+/// of EACH resource the `Resources` section declares, reported by TYPE NAME ascending.
 ///
-/// The list is per RESOURCE, not per distinct type: a body declaring the same type for
-/// several resources reports that type once for each of them, so the list is as long as the
-/// section and a client reading it sees how many resources of a type the template defines.
-/// Nothing collapses or re-orders the entries, which is what keeps this member and
-/// `ResourceIdentifierSummaries` ([`identifier_summaries`]) — the per-TYPE reading of the
-/// same section, which carries every logical id declared with each type — two readings of
-/// one order rather than two different orders.
-pub fn resource_types(body: &str, declared: &Template) -> Vec<String> {
-    resources_as_declared(body, declared)
-        .into_iter()
+/// Two independent properties of the answer, each of them observable:
+///
+/// * the list is per RESOURCE, not per distinct type (the model declares `ResourceTypes` a
+///   list of `ResourceType` with no uniqueness): a body declaring the same type for several
+///   resources reports that type once for each of them, so the list is as long as the
+///   `Resources` section and a client reading it sees how many resources of a type the
+///   template defines;
+/// * the ORDER is the type names', not the body's: the entries are grouped by type and the
+///   groups ascend by name, so what a client reads back does not depend on where in the
+///   section each resource was declared.
+///
+/// That is what makes this member and `ResourceIdentifierSummaries`
+/// ([`identifier_summaries`]) — the per-TYPE reading of the same section, which carries every
+/// logical id declared with each type IN DECLARED ORDER — two readings of one section rather
+/// than one: the summaries answer "which resources", so they follow the body, while this
+/// member answers "which types, how many of each".
+pub fn resource_types(declared: &Template) -> Vec<String> {
+    let mut types: Vec<String> = declared
+        .resources
+        .iter()
         .map(|resource| resource.resource_type.clone())
-        .collect()
+        .collect();
+    types.sort();
+    types
 }
 
 /// The template's resources in the order the BODY declares them, which is the order every
@@ -191,27 +203,43 @@ mod tests {
         }
     }
 
-    /// Each resource the body declares contributes its own entry, in the order the body
-    /// declares it — so a type two resources share is reported twice, and the entries
-    /// follow the section rather than the type name.
+    /// Each resource the body declares contributes its own entry — so a type two resources
+    /// share is reported twice — and the entries follow the TYPE NAME rather than the
+    /// section: the same rows read back in ascending order whichever order the body states
+    /// them in.
     #[test]
-    fn the_resource_types_report_the_type_of_every_declared_resource_as_declared() {
-        let body = r#"{"Resources":{
-            "Zebra":{"Type":"AWS::S3::Bucket"},
-            "Alpha":{"Type":"AWS::IAM::Role"},
-            "Beta":{"Type":"AWS::S3::Bucket"}}}"#;
-        let declared = template::parse(body).expect("a readable template");
-        let reported = resource_types(body, &declared);
-        assert_eq!(
-            reported,
-            vec![
-                "AWS::S3::Bucket".to_string(),
-                "AWS::IAM::Role".to_string(),
-                "AWS::S3::Bucket".to_string()
-            ],
-            "case \"two buckets and a role, declared out of alphabetical order\": expected one \
-             entry per declared resource in declared order, got {reported:?}"
-        );
+    fn the_resource_types_report_the_type_of_every_declared_resource_by_type_name() {
+        let rows: &[(&str, &str)] = &[
+            (
+                "two buckets and a role, declared out of ascending order",
+                r#"{"Resources":{
+                    "Zebra":{"Type":"AWS::S3::Bucket"},
+                    "Alpha":{"Type":"AWS::IAM::Role"},
+                    "Beta":{"Type":"AWS::S3::Bucket"}}}"#,
+            ),
+            (
+                "the same three resources declared in ascending order",
+                r#"{"Resources":{
+                    "Alpha":{"Type":"AWS::IAM::Role"},
+                    "Zebra":{"Type":"AWS::S3::Bucket"},
+                    "Beta":{"Type":"AWS::S3::Bucket"}}}"#,
+            ),
+        ];
+        let expected = vec![
+            "AWS::IAM::Role".to_string(),
+            "AWS::S3::Bucket".to_string(),
+            "AWS::S3::Bucket".to_string(),
+        ];
+        for (case, body) in rows {
+            let declared = template::parse(body)
+                .unwrap_or_else(|| panic!("case {case:?}: expected a readable template"));
+            let reported = resource_types(&declared);
+            assert_eq!(
+                reported, expected,
+                "case {case:?}: expected one entry per declared resource, ascending by type \
+                 name, {expected:?}, got {reported:?}"
+            );
+        }
     }
 
     /// One summary per type, carrying every logical id declared with it and that type's

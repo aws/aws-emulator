@@ -12,9 +12,9 @@
 //!   refusals. The rows differ along the operation whose input carries the three members and
 //!   along which combination the request states.
 //! * **What a summary reports about a template's resources**: `ResourceTypes` carries the
-//!   type of EACH resource the body declares, in declared order, while each
-//!   `ResourceIdentifierSummary` carries the logical ids declared with its type in that same
-//!   order. The
+//!   type of EACH resource the body declares, ascending by type name, while each
+//!   `ResourceIdentifierSummary` carries the logical ids declared with its type in the order
+//!   the body declares them — so one response reads the two members back in two orders. The
 //!   rows differ along the spelling of the body (JSON and YAML), whether the declared order
 //!   agrees with the alphabetical one, and whether a type is declared once or several times.
 //! * **The size of a template an operation reads is the quota of the operation that takes
@@ -197,11 +197,10 @@ async fn a_request_that_states_no_one_template_source_is_refused_for_what_it_sta
 struct OrderRow {
     case: &'static str,
     template: String,
-    /// `ResourceTypes`, the type of each resource the body declares, in the order the body
-    /// declares it.
+    /// `ResourceTypes`, the type of each resource the body declares, ascending by type name.
     types: Vec<&'static str>,
-    /// Each `ResourceIdentifierSummary` as `(ResourceType, LogicalResourceIds)`, in that same
-    /// order.
+    /// Each `ResourceIdentifierSummary` as `(ResourceType, LogicalResourceIds)`, in the order
+    /// the body declares the resources.
     summaries: Vec<(&'static str, Vec<&'static str>)>,
 }
 
@@ -217,7 +216,7 @@ fn order_rows() -> Vec<OrderRow> {
                 "Alpha":{"Type":"AWS::SQS::Queue"},
                 "Mid":{"Type":"AWS::S3::Bucket"}}}"#
                 .to_string(),
-            types: vec!["AWS::SNS::Topic", "AWS::SQS::Queue", "AWS::S3::Bucket"],
+            types: vec!["AWS::S3::Bucket", "AWS::SNS::Topic", "AWS::SQS::Queue"],
             summaries: vec![
                 ("AWS::SNS::Topic", vec!["Zebra"]),
                 ("AWS::SQS::Queue", vec!["Alpha"]),
@@ -241,7 +240,7 @@ fn order_rows() -> Vec<OrderRow> {
                  Alpha:\n    Type: AWS::SNS::Topic\n  \
                  Mid:\n    Type: AWS::SQS::Queue\n"
                 .to_string(),
-            types: vec!["AWS::SQS::Queue", "AWS::SNS::Topic", "AWS::SQS::Queue"],
+            types: vec!["AWS::SNS::Topic", "AWS::SQS::Queue", "AWS::SQS::Queue"],
             summaries: vec![
                 ("AWS::SQS::Queue", vec!["Zebra", "Mid"]),
                 ("AWS::SNS::Topic", vec!["Alpha"]),

@@ -218,9 +218,9 @@ fn summary_of(
         capabilities: (!required.capabilities.is_empty()).then_some(required.capabilities),
         capabilities_reason: required.reason,
         // "A list of all the template resource types that are defined in the template": the
-        // type of each resource its `Resources` section declares, in declared order
-        // (`crate::state::template_summary::resource_types`).
-        resource_types: Some(crate::state::template_summary::resource_types(body, declared)),
+        // type of each resource its `Resources` section declares, grouped by type and
+        // ascending by type name (`crate::state::template_summary::resource_types`).
+        resource_types: Some(crate::state::template_summary::resource_types(declared)),
         // "The Amazon Web Services template format version, which identifies the
         // capabilities of the template": the version in FORCE for this template — the one it
         // states, or the latest, which is what a template stating none conforms to.

@@ -3,11 +3,11 @@
 //! The order a template BODY declares the entries of one of its sections in.
 //!
 //! A template section is a mapping, and what a client reads back about the template follows
-//! the order the body states that mapping in: `GetTemplateSummary` reports "a list of all the
-//! template resource types that are defined in the template" with one entry per declared
-//! resource, and the logical ids of each `ResourceIdentifierSummary` are "the logical IDs of
-//! the target resources … as defined in the import template". So the DECLARED order is part
-//! of the answer, and this module is where it is read.
+//! the order the body states that mapping in: the logical ids of each
+//! `ResourceIdentifierSummary` `GetTemplateSummary` reports are "the logical IDs of the target
+//! resources … as defined in the import template", and the summaries themselves follow the
+//! first resource declared with each type. So the DECLARED order is part of the answer, and
+//! this module is where it is read.
 //!
 //! It is read from the BODY rather than from the parsed document on purpose: a template is
 //! read into a `serde_json::Value`, whose object members are held sorted

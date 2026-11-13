@@ -564,8 +564,9 @@ fn summary_cases() -> Vec<SummaryCase<'static>> {
     vec![
         SummaryCase {
             // The identifier is the type's NAME property. Each resource contributes its own
-            // type entry, in the order the body declares it, and the identifier summaries
-            // follow that same order with one entry per type.
+            // type entry and the entries ascend by type name, while the identifier summaries
+            // follow the order the body declares the resources in, one entry per type — so
+            // this row reads the two members back in two different orders.
             case: "a bucket declared before a role",
             template: r#"{"AWSTemplateFormatVersion":"2010-09-09",
                 "Resources":{
@@ -573,7 +574,7 @@ fn summary_cases() -> Vec<SummaryCase<'static>> {
                     "Role":{"Type":"AWS::IAM::Role"}}}"#
                 .to_string(),
             version: "2010-09-09",
-            resource_types: vec!["AWS::S3::Bucket", "AWS::IAM::Role"],
+            resource_types: vec!["AWS::IAM::Role", "AWS::S3::Bucket"],
             summaries: vec![
                 summary("AWS::S3::Bucket", &["Bucket"], &["BucketName"]),
                 summary("AWS::IAM::Role", &["Role"], &["RoleName"]),
@@ -608,7 +609,7 @@ fn summary_cases() -> Vec<SummaryCase<'static>> {
                            "Properties":{"CidrBlock":"10.0.0.0/16"}}}}"#
                 .to_string(),
             version: "2010-09-09",
-            resource_types: vec!["AWS::S3::Bucket", "AWS::S3::Bucket", "AWS::EC2::VPC"],
+            resource_types: vec!["AWS::EC2::VPC", "AWS::S3::Bucket", "AWS::S3::Bucket"],
             summaries: vec![
                 summary("AWS::S3::Bucket", &["Data", "Archive"], &["BucketName"]),
                 summary("AWS::EC2::VPC", &["Vpc"], &["VpcId"]),
@@ -648,8 +649,8 @@ async fn a_template_summary_reports_its_version_types_and_identifier_summaries()
         let reported = wire_resource_types(&body);
         assert_eq!(
             reported, row.resource_types,
-            "case {case:?}: expected the type of each declared resource, in declared order, \
-             {:?}, got {reported:?}",
+            "case {case:?}: expected the type of each declared resource, ascending by type \
+             name, {:?}, got {reported:?}",
             row.resource_types
         );
         let reported = wire_summaries(&body);
