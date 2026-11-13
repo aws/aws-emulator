@@ -12,6 +12,12 @@ use super::*;
 /// lives beside this file rather than inside it.
 mod bucket_replication;
 
+/// The ACCESS-CONTROL settings that same type declares — its Object Ownership and its Block
+/// Public Access configuration — which decide every later ACL and policy call on the bucket
+/// and so are one concern of their own.
+mod bucket_access_controls;
+
+use bucket_access_controls::apply_access_controls;
 use bucket_replication::declared_replication_configuration;
 
 /// Amazon Data Firehose's signing name and `X-Amz-Target` prefix, from its model
@@ -2164,6 +2170,12 @@ pub(super) const NO_SUCH_BUCKET: &str = "NoSuchBucket";
 /// the tags the declaration asks for plus the ones CloudFormation gives the resource
 /// ([`tags_of`]). It is sent only where there are tags to set: an empty tag set is no
 /// tagging rather than a call that would clear one.
+///
+/// The bucket's ACCESS CONTROL is applied the same way, by the call S3 publishes for each
+/// setting: `OwnershipControls` is a `PutBucketOwnershipControls` and
+/// `PublicAccessBlockConfiguration` a `PutPublicAccessBlock`
+/// ([`bucket_access_controls`]), so the ACL and policy decisions taken on the deployed
+/// bucket are taken against the settings the template declared.
 pub(super) async fn create_bucket(
     ctx: &smithy_server_runtime::OperationContext<'_>,
     region: &str,
@@ -2387,6 +2399,10 @@ async fn configure_bucket(
             .await
             .map_err(|error| s3_refusal_of(&error))?;
     }
+    // The bucket's ACCESS CONTROL — its Object Ownership and its Block Public Access
+    // settings — each through the one call Amazon S3 publishes for it. Behind a box, for the
+    // reason [`apply_access_controls`] states.
+    Box::pin(apply_access_controls(client, bucket, resource)).await?;
     // The bucket's whole tag set, in the one call Amazon S3 takes it through.
     let tags = tags_of(&resource.properties, propagated);
     if !tags.is_empty() {

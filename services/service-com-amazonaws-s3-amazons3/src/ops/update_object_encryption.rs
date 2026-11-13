@@ -264,6 +264,69 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             ..crate::state::ObjectEncryption::default()
         };
 
+        // The OBJECT the call asks for it on is resolved first: what the call can say about
+        // the request's own members depends on the object it names, and every refusal below
+        // is about that object. The guard is taken for this stretch alone and released
+        // before KMS is asked, because that reads another service's store through the shared
+        // engine.
+        {
+            let store = state.lock();
+            let Some(bucket) = store.bucket(&input.bucket) else {
+                return Err(
+                    UpdateObjectEncryptionErrorModeled::NoSuchBucket(NoSuchBucket {}).into(),
+                );
+            };
+            let Some(object) = bucket.addressed_object(&input.key, version_id) else {
+                return Err(no_such_object(version_id));
+            };
+
+            // "The encryption type for the specified object can't be updated because that
+            // object is protected by S3 Object Lock. If the object has a governance-mode
+            // retention period or a legal hold, you must first remove the Object Lock status
+            // on the object before you issue your UpdateObjectEncryption request" (this
+            // operation's own list of `AccessDenied` messages).
+            let locked = object.legal_hold == Some(true)
+                || object.retention.as_ref().is_some_and(|retention| {
+                    retention.in_force_at(::std::time::SystemTime::now())
+                });
+            if locked {
+                return Err(access_denied(OBJECT_LOCK_DENIAL_MESSAGE));
+            }
+
+            // "Source objects that are unencrypted, or encrypted with either dual-layer
+            // server-side encryption with KMS keys (DSSE-KMS) or server-side encryption with
+            // customer-provided keys (SSE-C) aren't supported by this operation" — each with
+            // its own published sentence.
+            match object.encryption.sse_algorithm.as_deref() {
+                None => return Err(invalid_request(UNENCRYPTED_SOURCE_MESSAGE)),
+                Some(algorithm) if UNSUPPORTED_SOURCE_ALGORITHMS.contains(&algorithm) => {
+                    return Err(invalid_request(UNSUPPORTED_SOURCE_MESSAGE))
+                }
+                Some(_) => {}
+            }
+        }
+
+        let region = crate::state::request_region(ctx.parts());
+
+        // WHICH key the object may be re-encrypted onto: "by default, all
+        // UpdateObjectEncryption requests that specify a customer-managed KMS key are
+        // restricted to KMS keys that are owned by the bucket owner's Amazon Web Services
+        // account" (this operation's own documentation). This emulator serves ONE account, so
+        // the bucket owner's keys are the keys KMS holds for this account at the Region the
+        // request was signed for, and a target ARN KMS resolves to none of them — another
+        // account's, another Region's, or one no key exists for — is refused with the
+        // `AccessDenied` sentence this operation publishes for exactly that
+        // ([`crate::state::sse_kms::resolves_an_owned_key`] asks KMS, which is the service
+        // that owns the answer). The sentence names no key, so a refusal discloses nothing
+        // about which keys exist, and the object's encryption is left exactly as it was.
+        if !crate::state::sse_kms::resolves_an_owned_key(
+            &*self.engine,
+            &region,
+            &requested.kms_key_arn,
+        ) {
+            return Err(access_denied(FOREIGN_KMS_KEY_MESSAGE));
+        }
+
         // Re-encrypting an object under a customer-managed key needs a data key KMS mints
         // under THAT key — "to use this operation, you must have the following permissions:
         // s3:UpdateObjectEncryption kms:Encrypt kms:Decrypt kms:GenerateDataKey kms:ReEncrypt*"
@@ -278,7 +341,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         if let Some(denial) = crate::state::sse_kms::data_key_refusal(
             &*self.engine,
             ctx,
-            &crate::state::request_region(ctx.parts()),
+            &region,
             crate::state::sse_kms::EncryptedObject {
                 bucket: &input.bucket,
                 key: &input.key,
@@ -288,47 +351,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             return Err(access_denied(denial));
         }
 
-        // The object the call asks for it on is resolved next: what the call can say about
-        // the request's own members depends on the object it names.
         let mut store = state.lock();
-        let Some(bucket) = store.bucket(&input.bucket) else {
-            return Err(UpdateObjectEncryptionErrorModeled::NoSuchBucket(NoSuchBucket {}).into());
-        };
-        let Some(object) = bucket.addressed_object(&input.key, version_id) else {
-            return Err(no_such_object(version_id));
-        };
-
-        // "The encryption type for the specified object can't be updated because that
-        // object is protected by S3 Object Lock. If the object has a governance-mode
-        // retention period or a legal hold, you must first remove the Object Lock status on
-        // the object before you issue your UpdateObjectEncryption request" (this
-        // operation's own list of `AccessDenied` messages).
-        let locked = object.legal_hold == Some(true)
-            || object
-                .retention
-                .as_ref()
-                .is_some_and(|retention| retention.in_force_at(::std::time::SystemTime::now()));
-        if locked {
-            return Err(access_denied(OBJECT_LOCK_DENIAL_MESSAGE));
-        }
-
-        // "Source objects that are unencrypted, or encrypted with either dual-layer
-        // server-side encryption with KMS keys (DSSE-KMS) or server-side encryption with
-        // customer-provided keys (SSE-C) aren't supported by this operation" — each with
-        // its own published sentence.
-        match object.encryption.sse_algorithm.as_deref() {
-            None => return Err(invalid_request(UNENCRYPTED_SOURCE_MESSAGE)),
-            Some(algorithm) if UNSUPPORTED_SOURCE_ALGORITHMS.contains(&algorithm) => {
-                return Err(invalid_request(UNSUPPORTED_SOURCE_MESSAGE))
-            }
-            Some(_) => {}
-        }
-
         match store.replace_object_encryption(&input.bucket, &input.key, version_id, updated) {
             Some(crate::state::ObjectEncryptionWrite::Applied) => {}
-            // Unreachable through this handler (the address was just resolved under the
-            // same lock), and answered rather than asserted so a future caller of this
-            // state seam cannot turn a vanished address into a panic.
+            // The address is re-resolved under this SECOND acquisition — the guard the object
+            // checks were made under was released before KMS was asked — so a bucket, or an
+            // object, that was taken away in between is answered as the 404 it now is rather
+            // than written to.
             None => {
                 return Err(UpdateObjectEncryptionErrorModeled::NoSuchBucket(NoSuchBucket {}).into())
             }
@@ -435,6 +464,17 @@ const UNSUPPORTED_SOURCE_MESSAGE: &str =
     "The UpdateObjectEncryption operation doesn't support source objects with the encryption \
      type DSSE-KMS or SSE-C. Only source objects encrypted with SSE-S3 or SSE-KMS are \
      supported.";
+
+/// The `AccessDenied` sentence for a target KMS key that is not the bucket owner's own,
+/// verbatim from this operation's own list of them
+/// (`smithy_query(query="doc",shape="UpdateObjectEncryption")`).
+///
+/// It names no key: the refusal says the key must be the account's own and nothing about
+/// which keys exist, so an unresolvable reference and another account's are answered alike.
+const FOREIGN_KMS_KEY_MESSAGE: &str =
+    "The Amazon Web Services KMS key in the request must be owned by the same account as the \
+     bucket. Modify the request to specify a KMS key from the same account, and then try \
+     again.";
 
 /// The `AccessDenied` sentence for an object S3 Object Lock protects, from this operation's
 /// own list of them.

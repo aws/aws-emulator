@@ -377,6 +377,36 @@ pub fn write_key<Eng: Send + Sync + 'static>(
     }
 }
 
+/// Whether KMS, at `region`'s endpoint, resolves `reference` to a key THIS account owns.
+///
+/// The question an operation restricted to the bucket owner's OWN keys asks before it records
+/// a key on a resource: a KMS key ARN names one key in one Region of one account, and KMS
+/// resolves such a reference to a key only when both match the endpoint it was asked of
+/// ([`kms_store::ComAmazonawsKmsTrentserviceState::resolve`]), so a reference another
+/// account's key is named by, one naming a Region this endpoint does not serve, and one no
+/// key exists for all alike resolve nothing here.
+///
+/// Read-only, unlike [`write_key`]: nothing is materialised for the reference, so asking does
+/// not change what a later caller sees. The reference is taken as given rather than defaulted,
+/// because a member that REQUIRES a key ARN names one.
+///
+/// An engine carrying no KMS store cannot answer the question at all, which is reported as
+/// nothing contradicting the reference — the same silence [`WriteKey::Unasked`] carries.
+///
+/// LOCKING: this takes the KMS store's lock and no other, under [`write_key`]'s discipline —
+/// a caller holds NONE of this service's own while it asks.
+pub fn resolves_an_owned_key<Eng: Send + Sync + 'static>(
+    engine: &Eng,
+    region: &str,
+    reference: &str,
+) -> bool {
+    let Some(kms) = kms_store::service_state(engine) else {
+        return true;
+    };
+    let store = kms.lock();
+    matches!(store.resolve(region, reference), kms_store::KeyRef::Found(_))
+}
+
 /// The relay for a key whose key state mints no data key, worded by KMS for that state.
 ///
 /// The exception is the key state's own, because it is KMS that raises it: a DISABLED key

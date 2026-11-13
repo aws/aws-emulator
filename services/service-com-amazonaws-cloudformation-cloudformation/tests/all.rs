@@ -29,6 +29,8 @@ mod application_auto_scaling_resources;
 mod bedrock_knowledge_base_identity;
 #[path = "all/braket_spending_limit_resource_type.rs"]
 mod braket_spending_limit_resource_type;
+#[path = "all/bucket_access_controls.rs"]
+mod bucket_access_controls;
 #[path = "all/bucket_analytics_configurations.rs"]
 mod bucket_analytics_configurations;
 #[path = "all/bucket_default_encryption.rs"]

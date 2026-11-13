@@ -24,11 +24,20 @@
 //! * An object S3 Object Lock protects cannot be re-encrypted: "The encryption type for the
 //!   specified object can't be updated because that object is protected by S3 Object Lock"
 //!   (that operation's own list of `AccessDenied` messages).
+//! * The target key must be the bucket owner's OWN: "by default, all UpdateObjectEncryption
+//!   requests that specify a customer-managed KMS key are restricted to KMS keys that are
+//!   owned by the bucket owner's Amazon Web Services account" (the operation's own
+//!   documentation), so every row that is SERVED names a key KMS really holds for this
+//!   account and Region — created here with KMS's own `CreateKey` over the shared engine —
+//!   and a target ARN KMS resolves to none of this account's keys is refused `AccessDenied`
+//!   ([`a_target_key_outside_this_account_is_refused_and_re_encrypts_nothing`] spans that
+//!   rule).
 
 use service_com_amazonaws_s3_amazons3::service::wire::XML_NAMED_UNION_MEMBERS;
 use smithy_server_runtime::MultiServiceRouter;
 
 use super::bucket_lifecycle::{create_bucket, router, send, send_bytes, Answer};
+use super::kms_key_references::{created_key, kms_arn, router_with_kms, REGION};
 use super::object_and_tagging_roundtrip::{expected_etag, get_object, put_object, text};
 use super::object_versioning::set_versioning;
 
@@ -83,14 +92,13 @@ const XMLNS: &str = "http://s3.amazonaws.com/doc/2006-03-01/";
 /// (`smithy_query(query="shape",shape="ServerSideEncryption")` publishes it).
 const SSE_KMS: &str = "aws:kms";
 
-/// KMS key ARNs of the form `NonEmptyKmsKeyArnString`'s pattern publishes
-/// (`^arn:aws[a-zA-Z0-9-]*:kms:[a-z0-9-]+:[0-9]{12}:key/[a-zA-Z0-9-]+$`), differing in
-/// Region, account and key id form.
-const KEY_ARNS: [&str; 3] = [
-    "arn:aws:kms:us-east-1:000000000000:key/00000000-0000-0000-0000-000000000000",
-    "arn:aws:kms:eu-west-1:111122223333:key/1234abcd-12ab-34cd-56ef-1234567890ab",
-    "arn:aws-us-gov:kms:us-gov-west-1:444455556666:key/abcd1234",
-];
+/// The `AccessDenied` sentence this operation publishes for a target key that is not the
+/// bucket owner's own, from its own list of them
+/// (`smithy_query(query="doc",shape="UpdateObjectEncryption")`).
+const FOREIGN_KEY_MESSAGE: &str =
+    "The Amazon Web Services KMS key in the request must be owned by the same account as the \
+     bucket. Modify the request to specify a KMS key from the same account, and then try \
+     again.";
 
 /// The `ObjectEncryption` payload naming `key_arn`, with the S3 Bucket Key setting when the
 /// case carries one.
@@ -130,7 +138,7 @@ async fn head_object(router: &MultiServiceRouter, bucket: &str, key: &str) -> An
 
 #[tokio::test]
 async fn an_update_re_records_the_encryption_and_leaves_the_object_alone() {
-    let router = router();
+    let router = router_with_kms();
     let bucket = "object-encryption-update";
     let created = create_bucket(&router, bucket, None, None).await;
     assert_eq!(
@@ -140,13 +148,18 @@ async fn an_update_re_records_the_encryption_and_leaves_the_object_alone() {
         text(&created)
     );
 
-    // The rows differ along what the update generalises over: WHICH key ARN it names
-    // (every form the published pattern allows), whether it asks for an S3 Bucket Key (on,
-    // off, unnamed), and the object's own bytes and metadata, which must survive untouched.
+    // The rows differ along what the update generalises over: WHICH of this account's keys
+    // it names (a different key per row, so nothing is keyed to one value), whether it asks
+    // for an S3 Bucket Key (on, off, unnamed), and the object's own bytes and metadata,
+    // which must survive untouched. Each key is one KMS really holds, which is what the
+    // operation restricts its target to.
+    let (_, first) = created_key(&router, "object-encryption-update-first").await;
+    let (_, second) = created_key(&router, "object-encryption-update-second").await;
+    let (_, third) = created_key(&router, "object-encryption-update-third").await;
     let rows: &[(&str, &str, Option<bool>)] = &[
-        ("a key ARN alone", KEY_ARNS[0], None),
-        ("a key ARN with the Bucket Key on", KEY_ARNS[1], Some(true)),
-        ("a key ARN with the Bucket Key off", KEY_ARNS[2], Some(false)),
+        ("a key ARN alone", first.as_str(), None),
+        ("a second key, with the Bucket Key on", second.as_str(), Some(true)),
+        ("a third key, with the Bucket Key off", third.as_str(), Some(false)),
     ];
 
     for (index, (case, key_arn, bucket_key)) in rows.iter().enumerate() {
@@ -238,7 +251,7 @@ async fn an_update_re_records_the_encryption_and_leaves_the_object_alone() {
 
 #[tokio::test]
 async fn an_update_naming_an_address_this_emulator_does_not_hold_is_refused_with_its_own_404() {
-    let router = router();
+    let router = router_with_kms();
     let bucket = "object-encryption-update-missing";
     let created = create_bucket(&router, bucket, None, None).await;
     assert_eq!(
@@ -246,6 +259,9 @@ async fn an_update_naming_an_address_this_emulator_does_not_hold_is_refused_with
         "the bucket must be created first, got {}",
         created.status
     );
+    // The target key every row names is one KMS holds for this account, so each row fails on
+    // the ADDRESS and not on the key.
+    let (_, key_arn) = created_key(&router, "object-encryption-update-missing").await;
     set_versioning(&router, bucket, "Enabled").await;
     let held = "present.bin";
     let stored = put_object(&router, bucket, held, b"held", &[]).await;
@@ -288,8 +304,7 @@ async fn an_update_naming_an_address_this_emulator_does_not_hold_is_refused_with
             "the version row must name an id that is NOT the one the store minted"
         );
         let answer =
-            update_object_encryption(&router, bucket, key, query, &payload(KEY_ARNS[0], None))
-                .await;
+            update_object_encryption(&router, bucket, key, query, &payload(&key_arn, None)).await;
         assert_eq!(
             answer.status, 404,
             "case {case:?}: an address this emulator does not hold is HTTP 404, got {} with \
@@ -321,7 +336,7 @@ async fn an_update_naming_an_address_this_emulator_does_not_hold_is_refused_with
         "object-encryption-update-no-such-bucket",
         held,
         "",
-        &payload(KEY_ARNS[0], None),
+        &payload(&key_arn, None),
     )
     .await;
     assert_eq!(
@@ -335,7 +350,7 @@ async fn an_update_naming_an_address_this_emulator_does_not_hold_is_refused_with
     // The held key IS served, so every row above failed on the address rather than on the
     // request being unserveable.
     let served =
-        update_object_encryption(&router, bucket, held, "", &payload(KEY_ARNS[0], None)).await;
+        update_object_encryption(&router, bucket, held, "", &payload(&key_arn, None)).await;
     assert_eq!(
         served.status, 200,
         "the held object must be updated, got {} with body {:?}",
@@ -428,6 +443,114 @@ async fn an_update_naming_a_kms_key_arn_that_is_not_one_is_an_invalid_request() 
             read.header("x-amz-server-side-encryption").as_deref(),
             Some("AES256"),
             "case {value:?}: a refused update must leave the object's encryption alone, got \
+             {:?}",
+            read.header("x-amz-server-side-encryption")
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_target_key_outside_this_account_is_refused_and_re_encrypts_nothing() {
+    let router = router_with_kms();
+    let bucket = "object-encryption-update-foreign-key";
+    let created = create_bucket(&router, bucket, None, None).await;
+    assert_eq!(
+        created.status, 200,
+        "the bucket must be created first, got {}",
+        created.status
+    );
+    let key = "subject.bin";
+    let stored = put_object(&router, bucket, key, b"held", &[]).await;
+    assert_eq!(
+        stored.status, 200,
+        "the object must be stored first, got {} with body {:?}",
+        stored.status,
+        text(&stored)
+    );
+
+    // Two keys KMS really holds for THIS account and Region, which is what the operation
+    // restricts its target to, and one key id no `CreateKey` of this endpoint ever minted.
+    let (_, held) = created_key(&router, "object-encryption-update-owned").await;
+    let (_, also_held) = created_key(&router, "object-encryption-update-owned-too").await;
+    let unminted = "4f5fb9d9-3e64-4ee1-a07a-0cf0bcfee9f9";
+
+    // Each row is a target ARN inside `NonEmptyKmsKeyArnString`'s published pattern
+    // (`^arn:aws[a-zA-Z0-9-]*:kms:[a-z0-9-]+:[0-9]{12}:key/[a-zA-Z0-9-]+$`, so the ARN
+    // syntax refusal is not what is under test), paired with whether the update is SERVED.
+    // The refused rows differ in WHY KMS resolves none of this account's keys for them: no
+    // key of this account has that id, the ARN names another account, or it names another
+    // Region. They come FIRST, so each of them is judged against the object as it was
+    // stored; the two served rows close the table as its positive control.
+    let rows: &[(&str, String, bool)] = &[
+        (
+            "a key ARN of this account and Region that no key has",
+            kms_arn(&format!("key/{unminted}")),
+            false,
+        ),
+        (
+            "the same key id under another account",
+            format!("arn:aws:kms:{REGION}:111122223333:key/{unminted}"),
+            false,
+        ),
+        (
+            "a key of this account in another Region",
+            held.replace(REGION, "eu-west-1"),
+            false,
+        ),
+        ("a key this account holds", held.clone(), true),
+        (
+            "another key this account holds, so nothing is keyed to one value",
+            also_held.clone(),
+            true,
+        ),
+    ];
+
+    for (case, target, served) in rows {
+        let answer = update_object_encryption(&router, bucket, key, "", &payload(target, None)).await;
+        if *served {
+            assert_eq!(
+                answer.status, 200,
+                "case {case:?}: a target key this account owns must be served, got {} with \
+                 body {:?}",
+                answer.status,
+                text(&answer)
+            );
+            let read = head_object(&router, bucket, key).await;
+            assert_eq!(
+                read.header("x-amz-server-side-encryption-aws-kms-key-id")
+                    .as_deref(),
+                Some(target.as_str()),
+                "case {case:?}: the object must report the key the update named, got {:?}",
+                read.header("x-amz-server-side-encryption-aws-kms-key-id")
+            );
+            continue;
+        }
+        assert_eq!(
+            answer.status, 403,
+            "case {case:?}: a target key outside this account is HTTP 403, got {} with body \
+             {:?}",
+            answer.status,
+            text(&answer)
+        );
+        assert_eq!(
+            answer.error_code(),
+            "AccessDenied",
+            "case {case:?}: expected AccessDenied, got {:?}",
+            answer.error_code()
+        );
+        assert_eq!(
+            answer.error_message(),
+            FOREIGN_KEY_MESSAGE,
+            "case {case:?}: expected the published sentence, got {:?}",
+            answer.error_message()
+        );
+        // Nothing was re-encrypted: the object still carries the encryption it was stored
+        // with, which every refused row is judged against.
+        let read = head_object(&router, bucket, key).await;
+        assert_eq!(
+            read.header("x-amz-server-side-encryption").as_deref(),
+            Some("AES256"),
+            "case {case:?}: a refused update must leave the object's encryption alone, got \
              {:?}",
             read.header("x-amz-server-side-encryption")
         );

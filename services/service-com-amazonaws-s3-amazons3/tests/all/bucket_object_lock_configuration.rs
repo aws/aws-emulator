@@ -57,6 +57,7 @@ use smithy_server_runtime::MultiServiceRouter;
 
 use super::bucket_lifecycle::{router, send, Answer};
 use super::object_and_tagging_roundtrip::{bucket, put_object, text};
+use super::object_encryption::head_object;
 use super::object_retention::{get_object_retention, now_seconds};
 use super::object_versioning::set_versioning;
 
@@ -444,6 +445,56 @@ async fn a_configuration_round_trips_and_locks_the_objects_written_after_it() {
             untouched.status,
             text(&untouched)
         );
+
+        // The inherited retention is the VERSION's own, so every reader of that version
+        // reports it: `HeadObject` carries it in `x-amz-object-lock-mode` and
+        // `x-amz-object-lock-retain-until-date` ("the Object Lock mode, if any, that's in
+        // effect for this object" and the date it runs to,
+        // `HeadObjectOutput$ObjectLockMode`/`$ObjectLockRetainUntilDate`), and those two must
+        // agree with what `GetObjectRetention` reports for the same version — a client that
+        // gates a delete on the HEAD projection and one that asks the retention subresource
+        // cannot be told different things. A version carrying none reports neither header.
+        for key in ["written-after", "written-before"] {
+            let reported = get_object_retention(&router, name, key, "", &[]).await;
+            let head = head_object(&router, name, key).await;
+            assert_eq!(
+                head.status, 200,
+                "case {case:?}/{key}: the version must be readable, got {}",
+                head.status
+            );
+            assert_eq!(
+                head.header("x-amz-object-lock-mode"),
+                reported.element("Mode"),
+                "case {case:?}/{key}: HeadObject and GetObjectRetention must agree about the \
+                 mode, got {:?} and {:?}",
+                head.header("x-amz-object-lock-mode"),
+                reported.element("Mode")
+            );
+            assert_eq!(
+                head.header("x-amz-object-lock-retain-until-date")
+                    .map(|date| epoch_seconds(&date)),
+                reported
+                    .element("RetainUntilDate")
+                    .map(|date| epoch_seconds(&date)),
+                "case {case:?}/{key}: HeadObject and GetObjectRetention must agree about the \
+                 date, got {:?} and {:?}",
+                head.header("x-amz-object-lock-retain-until-date"),
+                reported.element("RetainUntilDate")
+            );
+            // And which of the two states that is follows the rule: the version written
+            // after a configuration that names one carries the retention, every other
+            // version carries none.
+            let expected_mode = (key == "written-after")
+                .then_some(retention)
+                .flatten()
+                .map(|(mode, _)| mode.to_string());
+            assert_eq!(
+                head.header("x-amz-object-lock-mode"),
+                expected_mode,
+                "case {case:?}/{key}: expected the reported mode {expected_mode:?}, got {:?}",
+                head.header("x-amz-object-lock-mode")
+            );
+        }
     }
 }
 
