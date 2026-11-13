@@ -36,12 +36,18 @@ const LEADING: [&str; 2] = ["parseJSON", "parseVPC"];
 
 /// One processor as a client writes it in a pipeline: the member naming the kind, with the
 /// configuration left to the service's defaults.
-fn processor(member: &str) -> Value {
+///
+/// `pub(crate)` because the refusal-text suite drives the same rule from other operations and
+/// at other depths, and a pipeline element is written the one way.
+pub(crate) fn processor(member: &str) -> Value {
     json!({member: {}})
 }
 
 /// The sentence the service answers a misplaced vended parser with, for the kind `named`.
-fn expected_message(named: &str) -> String {
+///
+/// `pub(crate)` so the one statement of this error class's fixed text is shared with the
+/// refusal-text suite rather than transcribed twice.
+pub(crate) fn expected_message(named: &str) -> String {
     format!("Log processor {named} must be in the first position of the processor list")
 }
 

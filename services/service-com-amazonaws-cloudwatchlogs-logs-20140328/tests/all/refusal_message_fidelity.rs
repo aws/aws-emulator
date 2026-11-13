@@ -94,15 +94,19 @@ const LOG_GROUP_NAME_PATTERN: &str = r"[\.\-_/#A-Za-z0-9]+";
 
 /// The clause one refused member is stated in, inside the envelope AWS wraps one violation
 /// in.
-fn one_violation(member: &str, requirement: &str) -> String {
+///
+/// `pub(crate)` so the one statement of that envelope is shared with the refusal-text suite
+/// rather than transcribed twice.
+pub(crate) fn one_violation(member: &str, requirement: &str) -> String {
     format!(
         "1 validation error detected: Value at '{member}' failed to satisfy constraint: \
          {requirement}"
     )
 }
 
-/// The requirement clause a value outside `pattern` states.
-fn pattern_requirement(pattern: &str) -> String {
+/// The requirement clause a value outside `pattern` states. `pub(crate)` for the same reason
+/// as [`one_violation`] above.
+pub(crate) fn pattern_requirement(pattern: &str) -> String {
     format!("Member must satisfy regular expression pattern: {pattern}")
 }
 

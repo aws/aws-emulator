@@ -239,6 +239,8 @@ mod refusal_error_codes;
 mod refusal_message_fidelity;
 #[path = "all/refusal_messages.rs"]
 mod refusal_messages;
+#[path = "all/refusal_text_variable_parts.rs"]
+mod refusal_text_variable_parts;
 #[path = "all/refusal_wording.rs"]
 mod refusal_wording;
 #[path = "all/resource_policies.rs"]
