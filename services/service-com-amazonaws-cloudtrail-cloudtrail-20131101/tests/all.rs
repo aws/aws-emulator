@@ -235,3 +235,9 @@ mod trail_destination_revalidation;
 // fixed sentence each refusal carries, over every operation that stores such a set.
 #[path = "all/advanced_event_selector_rules.rs"]
 mod advanced_event_selector_rules;
+// `identity_authorization` pins WHO may call this service: every operation is judged
+// against the identity-based IAM policies in force on the principal the request's
+// credential speaks for, for the action `cloudtrail:<OperationName>` on what the request
+// addresses, before the operation acts on it.
+#[path = "all/identity_authorization.rs"]
+mod identity_authorization;

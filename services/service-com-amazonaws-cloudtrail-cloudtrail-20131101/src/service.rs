@@ -57,6 +57,7 @@
 //! and is reached, not edited, through the one `definition` method below. You
 //! do not write it; editing the entry would let this file drift from the model.
 
+pub mod authorization;
 pub mod management_events;
 
 use aws_smithy_runtime_api::http::{Request as RtRequest, Response as RtResponse};

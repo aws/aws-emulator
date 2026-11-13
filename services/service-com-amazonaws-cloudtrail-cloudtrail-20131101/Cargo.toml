@@ -67,6 +67,18 @@ service-com-amazonaws-kms-trentservice = { workspace = true }
 # `CloudWatchLogsLogGroupArn` is resolved in the one CloudWatch Logs store
 # (`state::referenced_resources`).
 service-com-amazonaws-cloudwatchlogs-logs-20140328 = { workspace = true }
+# The account's IDENTITY-BASED POLICY documents and permissions boundaries: the
+# authorization decision every request to this service is judged by
+# (`src/service/authorization.rs`) reads them through IAM's own accessors, so a document
+# `iam:PutUserPolicy` wrote decides the next call. No cycle: that crate depends on no
+# service crate.
+service-com-amazonaws-iam-awsidentitymanagementv20100508 = { workspace = true }
+# The session registry in that same shared engine, which is where `sts:GetCallerIdentity`
+# answers from: that decision resolves the principal a request's credential speaks for —
+# and the session policies its mint scoped it with — through STS's OWN resolution rather
+# than guessing it (`src/service/authorization.rs`). No cycle: that crate does not depend
+# on this one.
+service-com-amazonaws-sts-awssecuritytokenservicev20110615 = { workspace = true }
 # Writes the DER PKCS#1 `RSAPublicKey` body a digest-signing public key is reported as
 # (`ListPublicKeys`, `PublicKey$Value`: "The DER encoded public key value in PKCS#1
 # format"), so that structure comes from an ASN.1 crate rather than from hand-written DER.

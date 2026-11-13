@@ -23,6 +23,10 @@ pub const TARGET_PREFIX: &str = "com.amazonaws.cloudtrail.v20131101.CloudTrail_2
 /// The Region most cases call in.
 pub const HOME_REGION: &str = "us-east-1";
 
+/// The access key id the harness signs with unless a suite names another: the long-term
+/// key this emulator publishes, which no IAM user holds — the account's own credential.
+pub const AMBIENT_ACCESS_KEY_ID: &str = "AKIDEMULATOR";
+
 /// This service's state, as a suite reaches it for a resource no implemented
 /// operation can create yet.
 pub type ServiceState = engine::ServiceState<
@@ -271,6 +275,14 @@ impl Emulator {
             .expect("the in-memory engine carries this service's state")
     }
 
+    /// The shared engine itself, for a suite that seeds the store of ANOTHER service of
+    /// the account — the IAM records an authorization decision is read from
+    /// (`tests/all/identity_authorization.rs`), which `iam:CreateUser` and
+    /// `iam:PutUserPolicy` write.
+    pub fn engine(&self) -> &Arc<engine::InMemoryEngine> {
+        &self.engine
+    }
+
     /// The account's management-event log in the shared engine — the SAME log the
     /// handlers record into and `LookupEvents` reports from, which is how a suite
     /// seeds an event served at a known instant.
@@ -301,6 +313,20 @@ impl Emulator {
     /// pointing a trail anywhere — unless it was built with
     /// [`Emulator::without_provisioned_destinations`].
     pub async fn call_with_target(&self, target: &str, region: &str, body: &Value) -> Reply {
+        self.call_with_target_as(target, AMBIENT_ACCESS_KEY_ID, region, body)
+            .await
+    }
+
+    /// [`Emulator::call_with_target`], signed with the access key id `access_key_id` —
+    /// which is what a suite about WHO made the call varies, since the principal a request
+    /// speaks for is resolved from the key its credential scope carries.
+    pub async fn call_with_target_as(
+        &self,
+        target: &str,
+        access_key_id: &str,
+        region: &str,
+        body: &Value,
+    ) -> Reply {
         if self.provision_destinations {
             let member = |name: &str| {
                 body.get(name)
@@ -328,7 +354,7 @@ impl Emulator {
         // The Region a request is served in comes from its SigV4 credential scope,
         // which is also how the router resolves the service.
         let authorization = format!(
-            "AWS4-HMAC-SHA256 Credential=AKIDEMULATOR/20260101/{region}/cloudtrail/aws4_request, \
+            "AWS4-HMAC-SHA256 Credential={access_key_id}/20260101/{region}/cloudtrail/aws4_request, \
              SignedHeaders=host;x-amz-date, Signature=0123456789abcdef"
         );
         let request = http::Request::builder()
@@ -348,6 +374,24 @@ impl Emulator {
     /// Call `operation` from [`HOME_REGION`].
     pub async fn call(&self, operation: &str, body: &Value) -> Reply {
         self.call_in(operation, HOME_REGION, body).await
+    }
+
+    /// Call `operation` from `region` signed with `access_key_id`, under the target prefix
+    /// every SDK sends ([`TARGET_PREFIX`]).
+    pub async fn call_in_as(
+        &self,
+        operation: &str,
+        access_key_id: &str,
+        region: &str,
+        body: &Value,
+    ) -> Reply {
+        self.call_with_target_as(
+            &format!("{TARGET_PREFIX}{operation}"),
+            access_key_id,
+            region,
+            body,
+        )
+        .await
     }
 }
 

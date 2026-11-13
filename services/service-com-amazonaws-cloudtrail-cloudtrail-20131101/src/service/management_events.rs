@@ -127,6 +127,26 @@ impl<Eng: Send + Sync + 'static> AuditedService for CloudTrailAudit<Eng> {
         // request carries is one its records withhold.
         &[]
     }
+
+    fn stopped_at_authorization(
+        &self,
+        operation: &str,
+        shape_name: &str,
+        http_status: u16,
+    ) -> bool {
+        // This service authorizes its OWN API: every call it serves is decided against the
+        // calling principal's identity-based policies by one gate
+        // ([`super::authorization`]) BEFORE the operation reads or writes anything, and the
+        // refusal that gate answers is this code with this status. A call refused that way
+        // reached no operation, so its record carries neither the parameters it would have
+        // been dispatched with nor any response elements. No handler of this service
+        // answers this error of its own — the two operations whose model declares the shape
+        // (`EnableFederation`, `DisableFederation`) refuse for their own reasons in their
+        // own error shapes — so the operation does not narrow it.
+        let _ = operation;
+        shape_name == crate::scaffolded::ACCESS_DENIED_CODE
+            && http_status == crate::scaffolded::ACCESS_DENIED_STATUS
+    }
 }
 
 /// The member every operation that addresses an existing resource of ONE kind carries,
@@ -202,14 +222,61 @@ fn addressed_resources(
     request_parameters: &serde_json::Value,
 ) -> Vec<AuditedResource> {
     let mut addressed: Vec<AuditedResource> = Vec::new();
-    let mut add = |kind: Option<ResourceKind>, identifier: &str| {
+    for (kind, identifier) in addressed_identifiers(operation, request_parameters).named {
         if let Some(resource) = named_resource(kind, identifier) {
             if !addressed.contains(&resource) {
                 addressed.push(resource);
             }
         }
-    };
+    }
+    addressed
+}
 
+/// How many identifiers of ONE request are read, at most.
+///
+/// Two of the members above carry a LIST the caller writes ([`IDENTIFIER_LIST_MEMBERS`]),
+/// so without a bound here the work one request costs — the resources its record names, and
+/// the resources the decision ahead of it is taken on — is chosen by the caller. The bound
+/// is far above every list CloudTrail itself accepts: `ListTags` "has a limit of 20 ARNs"
+/// for its `ResourceIdList`
+/// (`smithy_query(query="doc", shape="ListTagsRequest", member="ResourceIdList")`), and the
+/// account's trails-per-Region quota is a single digit, so no request the service serves
+/// reaches it; what it bounds is a request that names more identifiers than any list AWS
+/// accepts.
+pub(crate) const MAX_ADDRESSED_IDENTIFIERS: usize = 64;
+
+/// The identifiers of one request that name a CloudTrail resource, read up to
+/// [`MAX_ADDRESSED_IDENTIFIERS`].
+pub(crate) struct AddressedIdentifiers<'a> {
+    /// Each identifier, with the kind its MEMBER names — `None` for a member whose value is
+    /// an ARN, which names its own kind.
+    pub named: Vec<(Option<ResourceKind>, &'a str)>,
+    /// Set when the request carried MORE identifiers than the bound, so `named` holds only
+    /// the ones that were read.
+    pub beyond_the_bound: bool,
+}
+
+/// Every identifier the call `operation` carried that names a CloudTrail resource, each
+/// with the kind its MEMBER names.
+///
+/// The ONE reading of which member of a request addresses which resource, so the record of
+/// a call ([`addressed_resources`]) and the authorization decision taken ahead of it
+/// ([`super::authorization`]) cannot disagree about what a request addressed. Order is the
+/// order the member tables above state, a member the request did not carry contributes
+/// nothing, and no more than [`MAX_ADDRESSED_IDENTIFIERS`] are read.
+pub(crate) fn addressed_identifiers<'a>(
+    operation: &str,
+    request_parameters: &'a serde_json::Value,
+) -> AddressedIdentifiers<'a> {
+    let mut named: Vec<(Option<ResourceKind>, &'a str)> = Vec::new();
+    let mut beyond_the_bound = false;
+    let mut add = |kind: Option<ResourceKind>, identifier: &'a str| {
+        if named.len() < MAX_ADDRESSED_IDENTIFIERS {
+            named.push((kind, identifier));
+        } else {
+            beyond_the_bound = true;
+        }
+    };
     for (member, kind) in IDENTIFIER_MEMBERS {
         if let Some(identifier) = member_text(request_parameters, member) {
             add(Some(*kind), identifier);
@@ -230,7 +297,10 @@ fn addressed_resources(
             add(*kind, identifier);
         }
     }
-    addressed
+    AddressedIdentifiers {
+        named,
+        beyond_the_bound,
+    }
 }
 
 /// Which resource kind `operation`'s `Name` member names, or `None` for an operation that
@@ -290,7 +360,7 @@ fn member_list<'a>(request_parameters: &'a serde_json::Value, member: &str) -> V
 /// The envelope a pre-dispatch failure of one of this service's operations renders in:
 /// this service speaks `awsJson1_1`, which is the same value the generated per-operation
 /// shim passes.
-const JSON_ENVELOPE: PreDispatchProtocol<'static> = PreDispatchProtocol::Json {
+pub(crate) const JSON_ENVELOPE: PreDispatchProtocol<'static> = PreDispatchProtocol::Json {
     content_type: "application/x-amz-json-1.1",
     // The awsJson families convey the error type in the body's `__type`, not in a header.
     errortype_header: false,
@@ -309,6 +379,11 @@ const fn mutates() -> CallKind {
 /// Serve one operation of this service audited, as a call of the stated kind: `reports`
 /// for an operation that only REPORTS state, `mutates` for one that CHANGES the account's
 /// resources — which is the event's `readOnly`, and what a lookup can filter on.
+///
+/// The operation is served behind this service's AUTHORIZATION gate
+/// ([`super::authorization::Authorized`]), INSIDE the audit recorder: IAM decides a call
+/// before the operation acts on it, and a call refused that way is still a management event
+/// of the account.
 macro_rules! audited {
     (
         $table:expr, $engine:expr,
@@ -316,7 +391,10 @@ macro_rules! audited {
     ) => {{
         $(
             $table.serve(
-                crate::ops::$module::$operation::new(::std::sync::Arc::clone($engine)),
+                super::authorization::Authorized::new(
+                    crate::ops::$module::$operation::new(::std::sync::Arc::clone($engine)),
+                    ::std::sync::Arc::clone($engine),
+                ),
                 $kind(),
             );
         )*
@@ -335,7 +413,10 @@ macro_rules! audited_in_modelled_envelope {
     ) => {{
         $(
             $table.serve_behind(
-                crate::ops::$module::$operation::new(::std::sync::Arc::clone($engine)),
+                super::authorization::Authorized::new(
+                    crate::ops::$module::$operation::new(::std::sync::Arc::clone($engine)),
+                    ::std::sync::Arc::clone($engine),
+                ),
                 $kind(),
                 |audited, _pre_dispatch| super::InModelledEnvelope::new(audited, $refusal),
             );

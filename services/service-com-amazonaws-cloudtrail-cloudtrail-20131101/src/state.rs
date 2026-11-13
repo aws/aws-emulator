@@ -3100,6 +3100,21 @@ impl ResourceKind {
         self.resource_prefix().trim_end_matches('/')
     }
 
+    /// The ARN of the resource of this kind called `name`, homed in `region`.
+    ///
+    /// The one ARN form every CloudTrail resource carries —
+    /// `arn:aws:cloudtrail:<region>:<account>:<type>/<name>` — stated once here so a
+    /// policy decision about a resource and a record of it name the same string
+    /// ([`trail_arn`] is this for a trail, which is the kind with its own named builder
+    /// because every trail operation reaches for it).
+    pub fn resource_arn(self, region: &str, name: &str) -> String {
+        ::engine::emulator_arn(
+            SERVICE_NAMESPACE,
+            region,
+            &format!("{}{name}", self.resource_prefix()),
+        )
+    }
+
     /// The CloudFormation-style type name CloudTrail reports for this kind of resource in
     /// an event's `Resources`, which a lookup by `ResourceType` filters on.
     pub fn audited_resource_type(self) -> &'static str {
