@@ -453,7 +453,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // another service, which must not run under this store's lock.
         let (output, deliveries) = {
             let mut store = store.lock();
-            publish_into_store(&mut store, input, &destination)?
+            publish_into_store(ctx, &mut store, input, &destination)?
         };
         deliver_to_endpoints(ctx, &*self.engine, &deliveries).await;
         Ok(output)
@@ -466,6 +466,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 /// The whole store-touching half of the operation, so the one place that holds the store's
 /// lock is the caller's block.
 fn publish_into_store(
+    ctx: &smithy_server_runtime::OperationContext<'_>,
     store: &mut crate::state::ComAmazonawsSnsAmazonsimplenotificationserviceState,
     input: PublishInput,
     destination: &str,
@@ -550,6 +551,7 @@ fn publish_into_store(
         .cloned()
         .collect();
     let deliveries = subscription_deliveries(
+        ctx,
         &subscriptions,
         &published,
         Some(&topic),
@@ -828,11 +830,16 @@ fn report_exhausted_budget(subscription_arn: &str) {
 /// the same subscriptions, so it goes through this one definition of the envelope and the
 /// fan-out rather than a second copy, and shares one budget across its entries.
 pub(crate) fn subscription_deliveries(
+    ctx: &smithy_server_runtime::OperationContext<'_>,
     subscriptions: &[state::SubscriptionRecord],
     published: &PublishedMessage,
     topic: Option<&state::TopicRecord>,
     budget: &mut DeliveryBudget,
 ) -> Deliveries {
+    // What signs each notification of this message: the certificate a subscriber verifies it
+    // against, and the digest the TOPIC's own `SignatureVersion` selects — read once for the
+    // whole fan-out, because every subscriber of one topic verifies against the same key.
+    let signer = state::notification_signature::Signer::of_topic(ctx, topic);
     // The body the subscribers of each protocol receive, rendered on first use: the whole
     // published message, unless it was published with a per-protocol structure, in which
     // case it is the branch that structure names for that protocol.
@@ -865,6 +872,7 @@ pub(crate) fn subscription_deliveries(
                         published,
                         protocol_body,
                         &subscription.arn,
+                        &signer,
                     ))
                 };
                 if !budget.charge(body.len()) {
@@ -899,6 +907,7 @@ pub(crate) fn subscription_deliveries(
                     published,
                     protocol_body,
                     logged,
+                    &signer,
                 ) else {
                     continue;
                 };
@@ -934,6 +943,7 @@ pub(crate) fn subscription_deliveries(
 /// deliveries are returned rather than performed: they are handed to
 /// [`deliver_to_endpoints`] with the store's lock released, exactly as a publish's are.
 pub(crate) fn replay_deliveries(
+    ctx: &smithy_server_runtime::OperationContext<'_>,
     store: &mut crate::state::ComAmazonawsSnsAmazonsimplenotificationserviceState,
     subscription_arn: &str,
 ) -> Deliveries {
@@ -977,6 +987,7 @@ pub(crate) fn replay_deliveries(
             continue;
         }
         deliveries.absorb(subscription_deliveries(
+            ctx,
             &recipients,
             &message,
             topic.as_ref(),
@@ -1834,11 +1845,18 @@ fn notification_envelope(
     published: &PublishedMessage,
     body: &str,
     subscription_arn: &str,
+    signer: &state::notification_signature::Signer,
 ) -> String {
     let mut envelope = notification_members(published, body);
     if let Some(url) = unsubscribe_url(&published.topic_arn, subscription_arn) {
         envelope.insert("UnsubscribeURL".to_string(), serde_json::Value::from(url));
     }
+    // The signature members LAST, because the string that is signed is built from the
+    // members the subscriber receives ([`state::notification_signature`]).
+    signer.seal(
+        &mut envelope,
+        state::notification_signature::CERTIFICATE_URL_MEMBER,
+    );
     serde_json::Value::Object(envelope).to_string()
 }
 
@@ -1853,10 +1871,11 @@ fn notification_envelope(
 /// [`function_delivery`] for a function).
 ///
 /// The `body` wrapped is the message the SUBSCRIBER's protocol receives, which is the whole
-/// published message unless it was published as a structure of per-protocol branches. There
-/// are NO signature members (`Signature`, `SigningCertURL`): nothing signs a message in this
-/// emulator, and a member that looked like a signature would be one a subscriber could not
-/// verify.
+/// published message unless it was published as a structure of per-protocol branches. The
+/// signature members (`SignatureVersion`, `Signature`, and the certificate URL) are added by
+/// each caller AROUND these, because the string that is signed is built from the members the
+/// subscriber receives and the certificate URL's member is spelled differently per endpoint
+/// kind ([`state::notification_signature`]).
 fn notification_members(
     published: &PublishedMessage,
     body: &str,

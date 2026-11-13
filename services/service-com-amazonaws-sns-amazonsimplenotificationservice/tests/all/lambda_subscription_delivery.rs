@@ -658,6 +658,25 @@ async fn the_event_a_subscribed_function_receives_is_the_records_envelope() {
             ),
             "case {case:?}: expected the unsubscribe link of this subscription, got {event}"
         );
+        // The record is signed like every other enveloped notification, under the member
+        // names a function's event spells them by.
+        assert_eq!(
+            notification["SignatureVersion"].as_str(),
+            Some("1"),
+            "case {case:?}: expected the topic's default signature version, got {event}"
+        );
+        assert!(
+            notification["Signature"]
+                .as_str()
+                .is_some_and(|signature| !signature.is_empty()),
+            "case {case:?}: expected the record to carry a signature, got {event}"
+        );
+        assert!(
+            notification["SigningCertUrl"]
+                .as_str()
+                .is_some_and(|url| url.contains(".pem")),
+            "case {case:?}: expected the record to name the signing certificate, got {event}"
+        );
         // Always present, as an empty object for a message published with no attributes.
         let carried = notification["MessageAttributes"]
             .as_object()

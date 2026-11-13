@@ -97,6 +97,9 @@ mod lambda_subscription_grants;
 #[path = "all/list_subscriptions.rs"]
 mod list_subscriptions;
 
+#[path = "all/notification_signature.rs"]
+mod notification_signature;
+
 #[path = "all/origination_numbers_listing.rs"]
 mod origination_numbers_listing;
 
@@ -165,6 +168,9 @@ mod sms_attributes;
 
 #[path = "all/sms_sandbox_account_status.rs"]
 mod sms_sandbox_account_status;
+
+#[path = "all/sms_sandbox_destination_numbers.rs"]
+mod sms_sandbox_destination_numbers;
 
 #[path = "all/sms_sandbox_phone_numbers.rs"]
 mod sms_sandbox_phone_numbers;

@@ -70,6 +70,22 @@ aws-types = { version = "1", default-features = false }
 # network, which this parses rather than splitting the text by hand
 # (`state::message_filter`).
 ipnet = "2"
+# The RSA key a delivered notification is signed with, and the signature itself
+# (`state::notification_signature`).
+aws-lc-rs = "1"
+# The self-signed X.509 certificate published at the notification's SigningCertURL, minted
+# over that RSA key (`state::notification_signature`).
+rcgen = "0.13"
+# The DER container rcgen takes that RSA private key in.
+rustls-pki-types = "1"
+# The modular exponentiation of the RSASSA-PKCS1-v1_5 signature (`state::notification_signature`).
+num-bigint = "0.4"
+# Reads the PKCS#8 structure aws-lc-rs encodes the key as, for its modulus and private
+# exponent.
+pkcs1 = "0.7"
+pkcs8 = "0.10"
+# The validity window rcgen stamps on that certificate, converted from `SystemTime`.
+time = { version = "0.3", default-features = false, features = ["std"] }
 
 [build-dependencies]
 emulator-core-build-support = { workspace = true }
@@ -98,6 +114,9 @@ base64 = "0.22"
 # `time` on top of the workspace features: a delivery is made after the publishing call is
 # answered, and the tests wait that span out rather than parking a thread.
 tokio = { workspace = true, features = ["time"] }
+# Reads the certificate published at a notification's SigningCertURL, to verify that
+# notification's signature against the public key it carries — the check a subscriber makes.
+x509-cert = { version = "0.2", features = ["pem"] }
 
 [lints]
 workspace = true

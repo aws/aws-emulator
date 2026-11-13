@@ -332,6 +332,54 @@ impl ErasedOperation for WithRequestId {
     }
 }
 
+/// The media type the signing certificate is served as: it is a PEM certificate file.
+const CERTIFICATE_MEDIA_TYPE: &str = "application/x-pem-file";
+
+/// The document published at the URL every delivered notification carries as its
+/// `SigningCertURL`: the X.509 certificate that verifies the signature on that notification
+/// ([`crate::state::notification_signature`]).
+///
+/// It is served HERE rather than by a modelled operation because it is not one: SNS
+/// publishes the certificate as a plain document a subscriber fetches by URL, which the
+/// model's routing key — the `Action` of an awsQuery form — cannot name. That is what
+/// `override_operation` is for.
+struct SigningCertificate;
+
+impl ErasedOperation for SigningCertificate {
+    fn run<'r>(
+        &'r self,
+        _svc: &'r dyn Service,
+        req: &'r RtRequest,
+        _ctx: &'r OperationContext<'r>,
+    ) -> BoxFuture<'r, RtResponse> {
+        Box::pin(async move {
+            let (status, media_type, body) =
+                match crate::state::notification_signature::published_certificate(req.uri()) {
+                    Some(certificate) => (200, CERTIFICATE_MEDIA_TYPE, certificate.to_string()),
+                    // A URL that names no certificate this process holds leads to no
+                    // document, which is what a fetch of it is told.
+                    None => (
+                        404,
+                        "text/plain",
+                        "no such signing certificate".to_string(),
+                    ),
+                };
+            let status = ::aws_smithy_runtime_api::http::StatusCode::try_from(status)
+                .expect("the certificate response's status is a valid constant");
+            let mut resp = RtResponse::new(status, SdkBody::from(body));
+            resp.headers_mut().insert("content-type", media_type);
+            resp
+        })
+    }
+
+    /// `None`, so this request is authenticated exactly as the modelled operations are: the
+    /// URL a notification carries is signed ([`crate::state::notification_signature`]), so a
+    /// caller that fetches it sends a request this emulator verifies like any other.
+    fn auth_schemes(&self) -> Option<&'static [&'static str]> {
+        None
+    }
+}
+
 /// The `com-amazonaws-sns-amazonsimplenotificationservice` emulated service: the generated [`ServiceDefinition`] plus
 /// the behavioral seams this file owns.
 ///
@@ -341,6 +389,8 @@ pub struct EmulatedService<Eng: Send + Sync + 'static> {
     entry: crate::ServiceDefinition<Eng>,
     /// Held, not built per request: `override_operation` returns a reference to it.
     with_request_id: WithRequestId,
+    /// Held for the same reason: the signing certificate's own answer.
+    signing_certificate: SigningCertificate,
 }
 
 impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
@@ -348,9 +398,13 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
     /// generated [`ServiceDefinition`], which constructs each operation from it; the
     /// operation's behaviour lives in that operation's own `impl Operation`.
     pub fn new(engine: Arc<Eng>) -> Self {
+        // The key the notifications of this service are signed with is the SERVICE's own, so
+        // it is generated here rather than on the publish that first needs it.
+        crate::state::notification_signature::prepare_signing_key();
         Self {
             entry: crate::ServiceDefinition::new(engine),
             with_request_id: WithRequestId,
+            signing_certificate: SigningCertificate,
         }
     }
 }
@@ -377,6 +431,12 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
         &self,
         req: &aws_smithy_runtime_api::http::Request,
     ) -> Option<&dyn ErasedOperation> {
+        // The signing certificate of the notifications this service delivers is a plain
+        // document fetched by URL, which no modelled action names, so it is answered before
+        // the routing table is consulted.
+        if crate::state::notification_signature::addresses_certificate(req.method(), req.uri()) {
+            return Some(&self.signing_certificate);
+        }
         // Serve every modelled operation through [`WithRequestId`], which answers
         // from the generated routing table and then adds the `<RequestId>` element
         // the awsQuery error document carries beside `<Error>` — the one place every

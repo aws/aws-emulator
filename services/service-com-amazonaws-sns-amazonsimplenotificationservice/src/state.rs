@@ -15,6 +15,9 @@ use sha2::{Digest, Sha256};
 use crate::ops::types::{MessageAttributeValue, Subscription};
 
 pub mod filter_policy;
+/// The signature a delivered notification carries, and the certificate it verifies
+/// against.
+pub mod notification_signature;
 /// Which ACCOUNT the ARNs a request carries address, and what this endpoint answers a
 /// request addressing an account it does not serve.
 pub mod account_resolution;

@@ -116,6 +116,17 @@ impl From<CreateSMSSandboxPhoneNumberErrorModeled> for CreateSMSSandboxPhoneNumb
     }
 }
 
+/// The modelled refusal of a request parameter that does not comply with its
+/// constraints, which is what a destination phone number that is not one is.
+fn invalid_parameter(message: String) -> CreateSMSSandboxPhoneNumberError {
+    CreateSMSSandboxPhoneNumberErrorModeled::InvalidParameterException(
+        InvalidParameterException {
+            message: Some(message),
+        },
+    )
+    .into()
+}
+
 /// The `CreateSMSSandboxPhoneNumber` operation.
 ///
 /// Owns the shared engine (the constructor seam) and implements
@@ -187,6 +198,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 )
                 .into(),
             );
+        }
+
+        // The number has to BE a destination phone number, in E.164 format — "The
+        // destination phone number to verify" (`PhoneNumber` doc), and the modelled
+        // pattern admits forms E.164 does not (bare national digits, a country code
+        // beginning with zero). Argument validation, so it is judged before the store is
+        // consulted and nothing is registered for a number SNS would never send to.
+        if let Some(message) = state::phone_number_refusal(&input.phone_number) {
+            return Err(invalid_parameter(message));
         }
 
         let Some(store) = crate::state::service_state(&*self.engine) else {

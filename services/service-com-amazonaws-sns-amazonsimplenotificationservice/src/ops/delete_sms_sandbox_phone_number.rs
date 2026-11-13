@@ -70,6 +70,7 @@
 
 #[allow(unused_imports)]
 use super::types::*;
+use crate::state;
 
 // `#[operation_error]` below expands to an invocation of the LOCAL declarative
 // `smithy!` macro, which this line is what emits into the module. Without it the
@@ -106,6 +107,17 @@ impl From<DeleteSMSSandboxPhoneNumberErrorModeled> for DeleteSMSSandboxPhoneNumb
     fn from(modeled: DeleteSMSSandboxPhoneNumberErrorModeled) -> Self {
         crate::scaffolded::Scaffolded::Modeled(modeled)
     }
+}
+
+/// The modelled refusal of a request parameter that does not comply with its
+/// constraints, which is what a destination phone number that is not one is.
+fn invalid_parameter(message: String) -> DeleteSMSSandboxPhoneNumberError {
+    DeleteSMSSandboxPhoneNumberErrorModeled::InvalidParameterException(
+        InvalidParameterException {
+            message: Some(message),
+        },
+    )
+    .into()
 }
 
 /// The `DeleteSMSSandboxPhoneNumber` operation.
@@ -165,6 +177,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 )
                 .into(),
             );
+        }
+
+        // The number has to BE a destination phone number, in E.164 format: argument
+        // validation, so it is judged before the store is consulted — a value that could
+        // not be a destination number anywhere names no record that could be there.
+        if let Some(message) = state::phone_number_refusal(&input.phone_number) {
+            return Err(invalid_parameter(message));
         }
 
         let Some(store) = crate::state::service_state(&*self.engine) else {

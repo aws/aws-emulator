@@ -790,7 +790,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> Subscribe<Eng> {
         // re-subscribe writes nothing, so it starts no second replay of a policy the
         // subscription already holds.
         let replay = if asked_for_replay && wrote_attributes {
-            super::publish::replay_deliveries(&mut store, &arn)
+            super::publish::replay_deliveries(ctx, &mut store, &arn)
         } else {
             super::publish::Deliveries::default()
         };

@@ -588,6 +588,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     .cloned()
                     .collect();
                 deliveries.absorb(subscription_deliveries(
+                    ctx,
                     &accepted,
                     &published,
                     Some(&topic),

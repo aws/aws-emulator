@@ -96,6 +96,7 @@ impl FunctionDelivery {
         published: &PublishedMessage,
         protocol_body: &str,
         logged: Option<state::delivery_status::Logged>,
+        signer: &state::notification_signature::Signer,
     ) -> Option<Self> {
         let endpoint = subscription.endpoint.as_deref()?;
         let target = FunctionLocation::of_function_arn(endpoint)?;
@@ -108,7 +109,12 @@ impl FunctionDelivery {
             .and_then(QueueLocation::of_queue_arn)
             .map(|target| {
                 let held: ::std::sync::Arc<str> = ::std::sync::Arc::from(
-                    super::notification_envelope(published, protocol_body, &subscription.arn),
+                    super::notification_envelope(
+                        published,
+                        protocol_body,
+                        &subscription.arn,
+                        signer,
+                    ),
                 );
                 (target, held)
             });
@@ -120,6 +126,7 @@ impl FunctionDelivery {
                 published,
                 protocol_body,
                 &subscription.arn,
+                signer,
             )),
             dead_letter,
             message_group_id: published.message_group_id.clone(),
@@ -486,9 +493,14 @@ fn lambda_client(
 /// here, as an empty object for a message published with none: a handler reads the member
 /// off every record.
 ///
-/// It carries NO signature members: nothing signs a message in this emulator, and a member
-/// that looked like a signature would be one a subscriber could not verify.
-fn records_envelope(published: &PublishedMessage, body: &str, subscription_arn: &str) -> String {
+/// It carries the signature members the JSON envelope carries, under the names a function's
+/// event record spells them by ([`state::notification_signature`]).
+fn records_envelope(
+    published: &PublishedMessage,
+    body: &str,
+    subscription_arn: &str,
+    signer: &state::notification_signature::Signer,
+) -> String {
     let mut notification = super::notification_members(published, body);
     notification
         .entry(MESSAGE_ATTRIBUTES_MEMBER)
@@ -499,6 +511,12 @@ fn records_envelope(published: &PublishedMessage, body: &str, subscription_arn: 
             serde_json::Value::from(url),
         );
     }
+    // The signature members LAST, for the reason the JSON envelope adds them last: the
+    // string that is signed is built from the members the subscriber receives.
+    signer.seal(
+        &mut notification,
+        state::notification_signature::EVENT_CERTIFICATE_URL_MEMBER,
+    );
     let mut record = serde_json::Map::new();
     record.insert(
         "EventSource".to_string(),

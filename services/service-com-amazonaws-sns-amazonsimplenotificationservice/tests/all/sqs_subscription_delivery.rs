@@ -200,6 +200,31 @@ pub(crate) fn element(body: &str, tag: &str) -> String {
     body[start..start + end].to_string()
 }
 
+/// FETCH `url` through this same router, as a client that was handed it would: the host and
+/// the path (with its query) are taken from the URL itself, so a URL this emulator minted is
+/// followed exactly as it was handed out.
+///
+/// Answers the status and the body as text. `pub(crate)` because a URL a notification
+/// carries is only a URL if following it reaches a document
+/// (`notification_signature.rs`).
+pub(crate) async fn fetch(emulator: &Emulator, url: &str) -> (u16, String) {
+    let addressed = url.split_once("://").map_or(url, |(_, rest)| rest);
+    let (host, path) = match addressed.find('/') {
+        Some(at) => (&addressed[..at], &addressed[at..]),
+        None => (addressed, "/"),
+    };
+    let request = http::Request::builder()
+        .method("GET")
+        .uri(path)
+        .header("host", host)
+        .body(bytes::Bytes::new())
+        .expect("the test request is well formed");
+    let response = emulator.router.dispatch(request).await;
+    let status = response.status().as_u16();
+    let text = String::from_utf8_lossy(response.body()).to_string();
+    (status, text)
+}
+
 /// A queue called `name` an SNS topic may deliver to: its url and the ARN a subscription
 /// names it by, with the queue policy that grants SNS the send.
 pub(crate) async fn given_queue(emulator: &Emulator, name: &str) -> (String, String) {
@@ -416,9 +441,12 @@ async fn a_published_message_reaches_every_subscribed_queue() {
              {envelope}"
         );
         assert!(
-            envelope.get("Signature").is_none(),
-            "case {case:?}: nothing signs a message here, so the envelope must claim no \
-             signature, got {envelope}"
+            envelope
+                .get("Signature")
+                .and_then(Value::as_str)
+                .is_some_and(|signature| !signature.is_empty()),
+            "case {case:?}: an enveloped delivery is signed, so it must carry a signature, \
+             got {envelope}"
         );
         assert_eq!(
             *attributes,

@@ -192,7 +192,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // replay that write started owes are performed afterwards, because a delivery is
         // an in-process call into another service, which must not run under this store's
         // lock.
-        let replay = self.write_attribute(input, &state::request_region(ctx.parts()))?;
+        let replay = self.write_attribute(ctx, input, &state::request_region(ctx.parts()))?;
         super::publish::deliver_to_endpoints(ctx, &*self.engine, &replay).await;
         Ok(SetSubscriptionAttributesOutput)
     }
@@ -209,6 +209,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> SetSubscriptionAt
     /// belong to.
     fn write_attribute(
         &self,
+        ctx: &smithy_server_runtime::OperationContext<'_>,
         input: SetSubscriptionAttributesInput,
         region: &str,
     ) -> Result<super::publish::Deliveries, SetSubscriptionAttributesError> {
@@ -375,7 +376,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> SetSubscriptionAt
         // redelivered to this subscription — the same redelivery `Subscribe` starts when
         // it carries one.
         let replay = if input.attribute_name == state::REPLAY_POLICY_ATTRIBUTE {
-            super::publish::replay_deliveries(&mut store, &input.subscription_arn)
+            super::publish::replay_deliveries(ctx, &mut store, &input.subscription_arn)
         } else {
             super::publish::Deliveries::default()
         };

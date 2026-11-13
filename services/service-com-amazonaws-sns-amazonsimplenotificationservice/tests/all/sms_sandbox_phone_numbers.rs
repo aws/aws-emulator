@@ -115,11 +115,16 @@ pub(crate) async fn add(sns: &Sns, case: &str, number: &str) -> Answer {
     answer
 }
 
-/// The destination-number forms the model accepts: `smithy_query(query="shape",
+/// The destination-number forms the SMS sandbox accepts: `smithy_query(query="shape",
 /// shape="PhoneNumberString")` reports `length {min: 0, max: 20}` and pattern
-/// `^(\+[0-9]{8,}|[0-9]{0,9})$` — an E.164 number of at least eight digits, or a bare
-/// short code of up to nine digits. The rows cover both branches and both published
-/// length bounds of the E.164 branch.
+/// `^(\+[0-9]{8,}|[0-9]{0,9})$`, and the member is "The destination phone number to
+/// verify … that you can send SMS messages to"
+/// (`smithy_query(query="doc",shape="CreateSMSSandboxPhoneNumberInput",
+/// member="PhoneNumber")`) — a DESTINATION number, which is one in E.164 format. The forms
+/// that shared pattern admits and E.164 does not are refused
+/// ([`refused_number_forms`]). The rows cover both bounds of the E.164 digit count (the
+/// eight the pattern's own branch publishes, and the fifteen ITU-T E.164 caps a number at)
+/// and two country codes.
 ///
 /// `pub(crate)` so the sibling verification suite drives the same accepted forms
 /// rather than keeping a second catalog of them.
@@ -129,11 +134,26 @@ pub(crate) fn accepted_number_forms() -> Vec<(&'static str, String)> {
         ("e164 international", "+447700900123".to_string()),
         ("e164 at the eight digit minimum", "+12345678".to_string()),
         (
-            "e164 at the twenty character length bound",
-            format!("+{}", "1".repeat(19)),
+            "e164 at the fifteen digit maximum",
+            format!("+{}", "1".repeat(15)),
         ),
-        ("bare short code", "12345".to_string()),
-        ("bare short code at nine digits", "123456789".to_string()),
+    ]
+}
+
+/// The destination-number forms the sandbox REFUSES although the modelled pattern admits
+/// them: a bare national or short-code form (no `+`, so no country code), an E.164 form
+/// whose country code begins with zero — which E.164 assigns to no country — and one digit
+/// past the fifteen E.164 caps a number at.
+pub(crate) fn refused_number_forms() -> Vec<(&'static str, String)> {
+    vec![
+        ("a bare short code", "12345".to_string()),
+        ("bare digits at the nine digit bound", "123456789".to_string()),
+        ("no digits at all", String::new()),
+        ("a country code beginning with zero", "+0123456789".to_string()),
+        (
+            "one digit past the fifteen digit maximum",
+            format!("+{}", "1".repeat(16)),
+        ),
     ]
 }
 
