@@ -90,6 +90,20 @@ pub(super) fn naming_rules(resource_type: &str) -> Option<NameRules> {
         | crate::state::provisioning::logs_resources::LOGS_METRIC_FILTER => {
             rules(512, Characters::AsGenerated)
         }
+        // Amazon SageMaker AI `CreateModel.ModelName`, `CreateNotebookInstance.\
+        // NotebookInstanceName` and `CreateNotebookInstanceLifecycleConfig.\
+        // NotebookInstanceLifecycleConfigName`: each `@length(min: 0, max: 63)` with a pattern
+        // admitting letters, digits and inner hyphens and requiring an alphanumeric at each
+        // end (`^[a-zA-Z0-9](-*[a-zA-Z0-9])*$`, and the model's
+        // `^[a-zA-Z0-9]([\-a-zA-Z0-9]*[a-zA-Z0-9])?$`, in SageMaker's own Smithy model) —
+        // which a generated name is already inside, since it starts with a stack name's
+        // leading letter and carries only letters, digits and single hyphens, but may be
+        // longer than.
+        crate::state::provisioner::sagemaker_resources::SAGEMAKER_MODEL
+        | crate::state::provisioner::sagemaker_resources::SAGEMAKER_NOTEBOOK_INSTANCE
+        | crate::state::provisioner::sagemaker_resources::SAGEMAKER_NOTEBOOK_INSTANCE_LIFECYCLE_CONFIG => {
+            rules(63, Characters::AsGenerated)
+        }
         // AWS IoT `CreateAuthorizer.authorizerName`: `AuthorizerName`,
         // `@length(min: 1, max: 128)` with pattern `^[\w=,@-]+$` (AWS IoT's own Smithy
         // model), which a generated name is already inside — letters, digits and the hyphen

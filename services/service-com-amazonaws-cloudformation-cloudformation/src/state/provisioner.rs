@@ -702,6 +702,21 @@ pub(super) enum Provisioner {
     /// the queue.
     SqsQueuePolicy,
     SageMakerModelPackageGroup,
+    /// `AWS::SageMaker::Model`: the inference model `CreateModel` registers under the name
+    /// the template decided — the name every SageMaker call on a model takes — and
+    /// `DeleteModel` removes.
+    SageMakerModel,
+    /// `AWS::SageMaker::NotebookInstance`: the managed Jupyter instance
+    /// `CreateNotebookInstance` launches under that name. That create answers the instance
+    /// `Pending`, in which it serves no session, so the resource's creation is held open
+    /// until SageMaker reports it `InService`, and its deletion stops the instance before
+    /// `DeleteNotebookInstance` can take it away.
+    SageMakerNotebookInstance,
+    /// `AWS::SageMaker::NotebookInstanceLifecycleConfig`: the `OnCreate`/`OnStart` scripts a
+    /// notebook instance's `LifecycleConfigName` names, which
+    /// `CreateNotebookInstanceLifecycleConfig` creates and
+    /// `DeleteNotebookInstanceLifecycleConfig` removes.
+    SageMakerNotebookInstanceLifecycleConfig,
     SnsTopic,
     /// `AWS::SNS::TopicPolicy` and `AWS::SNS::TopicInlinePolicy`, which are not resources
     /// of Amazon SNS's own: each is the `Policy` ATTRIBUTE of the topics it names, so both
@@ -984,6 +999,11 @@ pub(super) fn provisioner_for(resource_type: &str) -> Option<Provisioner> {
         SQS_QUEUE => Some(Provisioner::SqsQueue),
         SQS_QUEUE_POLICY | SQS_QUEUE_INLINE_POLICY => Some(Provisioner::SqsQueuePolicy),
         SAGEMAKER_MODEL_PACKAGE_GROUP => Some(Provisioner::SageMakerModelPackageGroup),
+        SAGEMAKER_MODEL => Some(Provisioner::SageMakerModel),
+        SAGEMAKER_NOTEBOOK_INSTANCE => Some(Provisioner::SageMakerNotebookInstance),
+        SAGEMAKER_NOTEBOOK_INSTANCE_LIFECYCLE_CONFIG => {
+            Some(Provisioner::SageMakerNotebookInstanceLifecycleConfig)
+        }
         SNS_TOPIC => Some(Provisioner::SnsTopic),
         SNS_TOPIC_POLICY | SNS_TOPIC_INLINE_POLICY => Some(Provisioner::SnsTopicPolicy),
         SNS_SUBSCRIPTION => Some(Provisioner::SnsSubscription),
@@ -1186,6 +1206,21 @@ impl Provisioner {
             Self::SqsQueuePolicy => put_queue_policy(ctx, region, resource).await,
             Self::SageMakerModelPackageGroup => {
                 create_model_package_group(ctx, region, resource, propagated).await
+            }
+            // Each of the three creates takes a `Tags` list, so a model, a notebook instance
+            // and a lifecycle configuration a stack creates each carry the tags
+            // CloudFormation gives them beside the ones their declaration asks for.
+            Self::SageMakerModel => {
+                create_sagemaker_model(ctx, region, resource, propagated).await
+            }
+            Self::SageMakerNotebookInstance => {
+                create_sagemaker_notebook_instance(ctx, region, resource, propagated).await
+            }
+            Self::SageMakerNotebookInstanceLifecycleConfig => {
+                create_sagemaker_notebook_instance_lifecycle_config(
+                    ctx, region, resource, propagated,
+                )
+                .await
             }
             Self::SnsTopic => create_topic(ctx, region, resource, propagated).await,
             // Neither topic-policy type publishes a `Tags` property — a policy is an
@@ -1907,6 +1942,15 @@ impl Provisioner {
             Self::RedshiftCluster => {
                 Box::pin(redshift_cluster_readiness(ctx, region, physical_resource_id)).await
             }
+            // `CreateNotebookInstance` answers the instance `Pending` — SageMaker creates
+            // its network interface and launches the ML compute instance after the create
+            // has answered, and the instance serves no Jupyter session and mints no
+            // presigned URL until it is `InService` — so the resource is held open until
+            // that service reports it there
+            // ([`sagemaker_resources::notebook_instance_readiness`]).
+            Self::SageMakerNotebookInstance => {
+                notebook_instance_readiness(ctx, region, physical_resource_id).await
+            }
             _ => Ok(Readiness::Ready),
         }
     }
@@ -2050,6 +2094,13 @@ impl Provisioner {
             // cluster still sits in.
             Self::ElastiCacheCacheCluster => {
                 Box::pin(cache_cluster_removal(ctx, region, physical_resource_id)).await
+            }
+            // "Before you can delete a notebook instance, you must call the
+            // StopNotebookInstance API", so the delete stopped the instance and the
+            // deletion is finished once SageMaker no longer holds it
+            // ([`sagemaker_resources::notebook_instance_removal`]).
+            Self::SageMakerNotebookInstance => {
+                notebook_instance_removal(ctx, region, physical_resource_id).await
             }
             _ => Ok(Removal::Gone),
         }
@@ -2540,6 +2591,22 @@ impl Provisioner {
             Self::SageMakerModelPackageGroup => {
                 delete_model_package_group(ctx, region, physical_resource_id).await
             }
+            Self::SageMakerModel => {
+                delete_sagemaker_model(ctx, region, physical_resource_id).await
+            }
+            // The instance has to be stopped before SageMaker will take it away, which is
+            // what that arm asks for; the removal below finishes the deletion.
+            Self::SageMakerNotebookInstance => {
+                delete_sagemaker_notebook_instance(ctx, region, physical_resource_id).await
+            }
+            Self::SageMakerNotebookInstanceLifecycleConfig => {
+                delete_sagemaker_notebook_instance_lifecycle_config(
+                    ctx,
+                    region,
+                    physical_resource_id,
+                )
+                .await
+            }
             Self::SnsTopic => delete_topic(ctx, region, physical_resource_id).await,
             Self::SnsTopicPolicy => delete_topic_policy(ctx, region, resource).await,
             Self::SnsSubscription => unsubscribe(ctx, region, resource).await,
@@ -2996,6 +3063,22 @@ impl Provisioner {
             Self::SageMakerModelPackageGroup => {
                 describe_model_package_group(ctx, region, physical_resource_id).await
             }
+            // SageMaker's own reads of the three resources, each by the name it was created
+            // under, reported under the property names the type spells its members with.
+            Self::SageMakerModel => {
+                describe_sagemaker_model(ctx, region, physical_resource_id).await
+            }
+            Self::SageMakerNotebookInstance => {
+                describe_sagemaker_notebook_instance(ctx, region, physical_resource_id).await
+            }
+            Self::SageMakerNotebookInstanceLifecycleConfig => {
+                describe_sagemaker_notebook_instance_lifecycle_config(
+                    ctx,
+                    region,
+                    physical_resource_id,
+                )
+                .await
+            }
             Self::SnsTopic => describe_topic(ctx, region, physical_resource_id).await,
             // A policy resource's configuration is the `Policy` attribute of the topics it
             // names, which is read back from Amazon SNS as the document those topics carry
@@ -3371,6 +3454,11 @@ mod config_recording;
 mod event_pipes;
 mod bedrock_guardrails;
 mod bedrock_knowledge_bases;
+/// The Amazon SageMaker AI types a stack declares beside the model registry's: the model,
+/// the notebook instance and the lifecycle configuration one of those runs. Visible to the
+/// rest of this service's state because the type NAMES it owns are what the naming rules and
+/// the return-value catalogue key their entries for those types by.
+pub(crate) mod sagemaker_resources;
 mod braket_spending_limits;
 mod mwaa_environments;
 mod data_and_storage;
@@ -3401,6 +3489,7 @@ pub(crate) use application_services::*;
 use config_recording::*;
 use bedrock_guardrails::*;
 use bedrock_knowledge_bases::*;
+use sagemaker_resources::*;
 use braket_spending_limits::*;
 use mwaa_environments::*;
 use iam_identities::*;

@@ -543,6 +543,8 @@ mod cloudformation_provisions_cognito_user_pool_groups;
 mod cloudformation_provisions_cloudwatch_dashboards;
 #[path = "all/cloudformation_provisions_sagemaker_model_package_group.rs"]
 mod cloudformation_provisions_sagemaker_model_package_group;
+#[path = "all/cloudformation_provisions_sagemaker_notebook_estate.rs"]
+mod cloudformation_provisions_sagemaker_notebook_estate;
 // for the reason the notes above give: the tail is where every concurrently landing router
 // suite appends, so a line added there conflicts with all of them.
 #[path = "all/cloudformation_provisions_scheduler_schedules.rs"]

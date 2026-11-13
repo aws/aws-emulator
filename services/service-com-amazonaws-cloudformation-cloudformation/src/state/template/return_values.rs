@@ -131,6 +131,38 @@ pub(super) fn return_values(
             attributes.insert("Name".to_string(), machine);
             (arn, attributes)
         }
+        // The three Amazon SageMaker AI types `super::provisioning` creates in SageMaker
+        // itself ([`crate::state::provisioner::sagemaker_resources`]). Each publishes ONE
+        // `Fn::GetAtt` attribute, which is the resource's own NAME — `ModelName` ("the name
+        // of the model"), `NotebookInstanceName` ("the name of the notebook instance") and
+        // `NotebookInstanceLifecycleConfigName` ("the name of the lifecycle configuration")
+        // — so the attribute is the name CloudFormation decided and the create made the
+        // resource under.
+        //
+        // That name is this resource's physical id too, which is the position
+        // [`SAGEMAKER_MODEL_PACKAGE_GROUP`] is in and for the same reason: the name is what
+        // every SageMaker operation addresses one of these resources by (`DescribeModel` and
+        // `DeleteModel` take a `ModelName`, `DescribeNotebookInstance` and
+        // `CreatePresignedNotebookInstanceUrl` a `NotebookInstanceName`, and a notebook
+        // instance's `LifecycleConfigName` names a configuration by name), so the identifier
+        // a client can resolve is preferred over an ARN minted from a pattern. The ARN each
+        // create answers is not computed here, no type of the three publishing a return
+        // value for it.
+        crate::state::provisioner::sagemaker_resources::SAGEMAKER_MODEL => {
+            attributes.insert("ModelName".to_string(), name.to_string());
+            (name.to_string(), attributes)
+        }
+        crate::state::provisioner::sagemaker_resources::SAGEMAKER_NOTEBOOK_INSTANCE => {
+            attributes.insert("NotebookInstanceName".to_string(), name.to_string());
+            (name.to_string(), attributes)
+        }
+        crate::state::provisioner::sagemaker_resources::SAGEMAKER_NOTEBOOK_INSTANCE_LIFECYCLE_CONFIG => {
+            attributes.insert(
+                "NotebookInstanceLifecycleConfigName".to_string(),
+                name.to_string(),
+            );
+            (name.to_string(), attributes)
+        }
         // "Ref returns the user pool ID"; Fn::GetAtt: Arn
         // ("arn:aws:cognito-idp:us-east-1:123412341234:userpool/us-east-1_123412341"),
         // ProviderName ("The provider name of the Amazon Cognito user pool") and
@@ -1875,6 +1907,15 @@ pub fn published_attribute_names(resource_type: &str) -> &'static [&'static str]
         BACKUP_VAULT => &["BackupVaultArn", "BackupVaultName"],
         "AWS::SNS::Topic" => &["TopicArn", "TopicName"],
         SQS_QUEUE => &["Arn", "QueueName", "QueueUrl"],
+        // Each of the three SageMaker AI types publishes the one attribute that carries the
+        // resource's own name.
+        crate::state::provisioner::sagemaker_resources::SAGEMAKER_MODEL => &["ModelName"],
+        crate::state::provisioner::sagemaker_resources::SAGEMAKER_NOTEBOOK_INSTANCE => {
+            &["NotebookInstanceName"]
+        }
+        crate::state::provisioner::sagemaker_resources::SAGEMAKER_NOTEBOOK_INSTANCE_LIFECYCLE_CONFIG => {
+            &["NotebookInstanceLifecycleConfigName"]
+        }
         "AWS::S3::Bucket" => &[
             "Arn",
             "DomainName",

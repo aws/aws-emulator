@@ -60,6 +60,24 @@ pub const NOTEBOOK_INSTANCE_STATUS_STOPPED: &str = "Stopped";
 /// the due instant is stored rather than slept on.
 pub const NOTEBOOK_INSTANCE_STOPPED_AFTER: Duration = Duration::from_millis(300);
 
+/// The `NotebookInstanceStatus` an instance carries while SageMaker is removing it, from
+/// the modelled `NotebookInstanceStatus` enum (`smithy_query shape=NotebookInstanceStatus`).
+/// It is the status a refused `DeleteNotebookInstance` names as the one it could not move
+/// the instance to.
+pub const NOTEBOOK_INSTANCE_STATUS_DELETING: &str = "Deleting";
+
+/// The statuses a `DeleteNotebookInstance` takes an instance away FROM: the ones in which
+/// no ML compute instance is running for it.
+///
+/// `DeleteNotebookInstance`'s own doc states the rule — "before you can delete a notebook
+/// instance, you must call the StopNotebookInstance API" — so an instance that is serving,
+/// coming up or still stopping is refused rather than removed, and one whose provisioning
+/// failed has nothing running either and is removed.
+pub const NOTEBOOK_INSTANCE_DELETABLE_STATUSES: [&str; 2] = [
+    NOTEBOOK_INSTANCE_STATUS_STOPPED,
+    NOTEBOOK_INSTANCE_STATUS_FAILED,
+];
+
 /// The statuses a `StopNotebookInstance` transitions an instance OUT of: the ones where
 /// an ML compute instance exists to terminate, because it is serving (`InService`) or
 /// coming up (`Pending`). From every other `NotebookInstanceStatus` there is nothing to
@@ -255,6 +273,12 @@ impl NotebookInstance {
     /// status is one of [`NOTEBOOK_INSTANCE_STOPPABLE_STATUSES`].
     pub fn is_stoppable(&self) -> bool {
         NOTEBOOK_INSTANCE_STOPPABLE_STATUSES.contains(&self.status.as_str())
+    }
+
+    /// Whether `DeleteNotebookInstance` can take the instance away, i.e. the status is one
+    /// of [`NOTEBOOK_INSTANCE_DELETABLE_STATUSES`].
+    pub fn is_deletable(&self) -> bool {
+        NOTEBOOK_INSTANCE_DELETABLE_STATUSES.contains(&self.status.as_str())
     }
 
     /// Start terminating the ML compute instance: the status moves to `Stopping` now and

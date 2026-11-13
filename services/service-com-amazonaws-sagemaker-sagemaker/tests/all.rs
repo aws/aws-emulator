@@ -189,6 +189,8 @@ mod model_package_updates;
 mod not_found_refusal_wording;
 #[path = "all/notebook_instance_lifecycle.rs"]
 mod notebook_instance_lifecycle;
+#[path = "all/notebook_instance_deletion.rs"]
+mod notebook_instance_deletion;
 #[path = "all/notebook_instance_stop.rs"]
 mod notebook_instance_stop;
 #[path = "all/notebook_lifecycle_config.rs"]

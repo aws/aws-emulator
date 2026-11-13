@@ -827,6 +827,9 @@ pub const AWS_RESOURCE_TYPES: &[&str] = &[
     "AWS::SageMaker::Model",
     "AWS::SageMaker::ModelPackageGroup",
     "AWS::SageMaker::NotebookInstance",
+    // The `OnCreate`/`OnStart` shell scripts a notebook instance's `LifecycleConfigName`
+    // names, which the resource reference publishes beside the instance itself.
+    "AWS::SageMaker::NotebookInstanceLifecycleConfig",
     "AWS::SageMaker::Pipeline",
     "AWS::SageMaker::UserProfile",
     // Amazon EventBridge Scheduler
