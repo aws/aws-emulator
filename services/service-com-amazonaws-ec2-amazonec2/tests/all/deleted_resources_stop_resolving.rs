@@ -34,7 +34,7 @@ use service_com_amazonaws_ec2_amazonec2 as ec2;
 use ec2::ops::types::{Tag, TrafficMirrorSession};
 use ec2::state::{
     ComAmazonawsEc2Amazonec2State as Ec2State, AMAZON_SIDE_ASN_RANGE, DEPENDENCY_VIOLATION,
-    INVALID_NETWORK_INSIGHTS_ACCESS_SCOPE_ID_NOT_FOUND, INVALID_PARAMETER_VALUE,
+    INVALID_NETWORK_INSIGHTS_ACCESS_SCOPE_ID_NOT_FOUND,
     INVALID_TRAFFIC_MIRROR_FILTER_ID_NOT_FOUND, ROUTE_SERVER_STATE_AVAILABLE,
     ROUTE_SERVER_STATE_DELETED, ROUTE_SERVER_STATE_DELETING, ROUTE_SERVER_TAGGABLE_RESOURCE,
     TRAFFIC_MIRROR_FILTER_TAGGABLE_RESOURCE, TRANSITION_DELAY,
@@ -261,16 +261,17 @@ async fn a_deleted_access_scope_stops_resolving_for_every_read() {
 
             // A second delete is refused rather than answered as a no-op: a caller that
             // deletes twice has to be able to tell the deletion it performed from one it did
-            // not. The operation acting on the one scope it names words that refusal its own
-            // way.
+            // not. The id is one this service ISSUED whose scope has gone, so the refusal is
+            // this resource's own not-found code — the value refusal the delete words its own
+            // way is for a value the mint could never have handed out.
             refused(
                 case,
                 &router,
                 "DeleteNetworkInsightsAccessScope",
                 &named,
                 400,
-                INVALID_PARAMETER_VALUE,
-                &format!("NetworkInsightsAccessScopeId ({target}) is not valid"),
+                INVALID_NETWORK_INSIGHTS_ACCESS_SCOPE_ID_NOT_FOUND,
+                &not_found_message,
             )
             .await;
 

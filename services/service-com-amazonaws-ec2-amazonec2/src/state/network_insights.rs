@@ -331,7 +331,9 @@ pub fn network_insights_access_scope_analysis_payload_bytes(
 /// The message is the id the REQUEST carried followed by the fixed text " does not exist",
 /// the wording this surface's reads answer — the same template
 /// [`invalid_traffic_mirror_filter_id_not_found`] uses for its own resource — so a client
-/// reading the text sees which id it was.
+/// reading the text sees which id it was. The delete answers it too, for an id this service
+/// DID issue whose scope has gone, which is the other half of the pair
+/// [`invalid_network_insights_access_scope_id_value`] records.
 pub fn invalid_network_insights_access_scope_id_not_found<E>(scope_id: &str) -> Scaffolded<E> {
     Scaffolded::service_error(
         INVALID_NETWORK_INSIGHTS_ACCESS_SCOPE_ID_NOT_FOUND,
@@ -340,17 +342,20 @@ pub fn invalid_network_insights_access_scope_id_not_found<E>(scope_id: &str) -> 
     )
 }
 
-/// Refuse a Network Access Scope id the operation ACTING on the one scope it names cannot
-/// resolve: HTTP 400 `InvalidParameterValue`, naming the member that carried it and the
-/// value.
+/// Refuse a Network Access Scope id a request named that this service ITSELF could never have
+/// issued: HTTP 400 `InvalidParameterValue`, naming the member that carried it and the value.
 ///
-/// EC2 answers an id it cannot resolve in one of two ways, and WHICH one is a fact of the
-/// operation rather than of the id — the split [`invalid_id_parameter_value`] records: the
-/// reads answer this resource's own
-/// [`INVALID_NETWORK_INSIGHTS_ACCESS_SCOPE_ID_NOT_FOUND`], while the delete states that the
-/// id it was given is not a valid one — one answer for every id it cannot resolve, whatever
-/// its form. This is the ONE place that second wording lives, so the operation and the suite
-/// that asserts it cannot drift apart.
+/// EC2 answers a value it cannot resolve in one of two ways, and WHICH one it answers is a
+/// fact of the value and of the operation — the split
+/// [`ComAmazonawsEc2Amazonec2State::id_was_issued`] records for every kind that takes it: the
+/// operation ACTING on the one scope it is given screens the value FIRST and states that the
+/// `NetworkInsightsAccessScopeId` it was given is not a valid one for anything the mint could
+/// never have handed out — the all-zero placeholder a client reaches for, a value in no issued
+/// id form, a hand-written id above everything the mint reached — while an id it DID issue
+/// that the account holds no scope under is the not-found half of the pair
+/// ([`invalid_network_insights_access_scope_id_not_found`]), which every read of this surface
+/// answers for an id it cannot resolve whatever its form. This is the ONE place that first
+/// wording lives, so the operation and the suite that asserts it cannot drift apart.
 ///
 /// The wording is this operation's own and is NOT
 /// [`invalid_id_parameter_value`]'s ("Value (…) for parameter … is invalid. Expected: …"),

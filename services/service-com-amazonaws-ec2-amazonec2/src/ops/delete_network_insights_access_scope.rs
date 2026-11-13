@@ -143,35 +143,53 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 "The request must contain the parameter networkInsightsAccessScopeId",
             ));
         }
-
-        // "Checks whether you have the required permissions for the action, WITHOUT
-        // ACTUALLY MAKING THE REQUEST, and provides an error response. If you have the
-        // required permissions, the error response is DryRunOperation. Otherwise, it is
-        // UnauthorizedOperation" (`DryRun`): a question about the CALLER, answered once the
-        // request's own form has been read and before anything is resolved or written.
-        if input.dry_run.unwrap_or(false) {
-            return Err(state::dry_run_operation());
-        }
-
         let handle = state::require_service_state(&*self.engine)?;
         let mut store = handle.lock();
         // A move the clock already owes a record of this store fell due whether or not
         // anybody called, so those moves are applied before this call reads it.
         store.materialize_due_transitions();
 
-        // An id this account holds no access scope for has nothing to delete. The operation
-        // ACTING on the one scope it is given states that the `NetworkInsightsAccessScopeId`
-        // it was given is not a valid one — whatever the id's form — which is the refusal the
-        // recorded wire corpus shows this operation answering for an id nothing holds, and
-        // NOT the code the reads of this surface answer for an id they cannot resolve; the
-        // one place this crate words each of the two keeps them apart.
+        // A `NetworkInsightsAccessScopeId` this service could never have ISSUED is not a value
+        // this operation can resolve at all, so it is refused BEFORE any lookup: EC2 states
+        // that the id it was given is not a valid one, naming the member that carried it and
+        // the value. The ids this service has issued are the long-form values its mint has
+        // counted ([`crate::state::ComAmazonawsEc2Amazonec2State::id_was_issued`]), so the
+        // all-zero placeholder a client reaches for, a value in no issued id form, and a
+        // hand-written id above everything the mint reached are each answered here.
+        if !store.id_was_issued(
+            state::NETWORK_INSIGHTS_ACCESS_SCOPE_ID_PREFIX,
+            &input.network_insights_access_scope_id,
+        ) {
+            return Err(state::invalid_network_insights_access_scope_id_value(
+                &input.network_insights_access_scope_id,
+            ));
+        }
+
+        // Screening the value above is what keeps THIS half of the pair reachable: an id this
+        // service did issue names a scope that may since have gone, and an id the account
+        // holds no scope under is answered with this resource's own not-found code — the one
+        // wording every read of this surface answers for an id it cannot resolve — rather than
+        // as a delete that happened.
         if !store
             .network_insights_access_scopes
             .contains_key(&input.network_insights_access_scope_id)
         {
-            return Err(state::invalid_network_insights_access_scope_id_value(
+            return Err(state::invalid_network_insights_access_scope_id_not_found(
                 &input.network_insights_access_scope_id,
             ));
+        }
+
+        // "Checks whether you have the required permissions for the action, WITHOUT ACTUALLY
+        // MAKING THE REQUEST, and provides an error response. If you have the required
+        // permissions, the error response is DryRunOperation. Otherwise, it is
+        // UnauthorizedOperation" (`DryRun`): the flag asks whether the request WOULD have
+        // succeeded, so it is answered only once the scope it names has been resolved — a
+        // request that would have been refused is refused for that reason instead, the order
+        // every operation of this surface that ACTS on the one resource it names keeps. The
+        // request is one that would have succeeded, so the dry run stops HERE: nothing has
+        // been removed yet, and nothing is.
+        if input.dry_run.unwrap_or(false) {
+            return Err(state::dry_run_operation());
         }
 
         // The delete itself: the scope and the content stored with it are what hold this

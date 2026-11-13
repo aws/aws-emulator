@@ -2115,3 +2115,9 @@ mod published_catalog_rows;
 // have. Declared at the tail of this file, which is where every new ec2 suite lands.
 #[path = "all/capacity_reservation_fleet_previous_state.rs"]
 mod capacity_reservation_fleet_previous_state;
+// What `DeleteNetworkInsightsAccessScope` takes out of the Network Access Scope store: the one
+// scope the request names together with the content beside it, answered by its id, with the
+// client token that named it and the bytes it held released — and the ids and the dry run it
+// refuses, in the order a dry run is answered. Declared at the tail of this file, which is
+#[path = "all/delete_network_insights_access_scope.rs"]
+mod delete_network_insights_access_scope;
