@@ -2316,7 +2316,7 @@ impl ComAmazonawsCognitoidentityproviderAwscognitoidentityproviderserviceState {
             issuer,
             sub,
             stored_username,
-            email,
+            attribute_claims,
             groups,
             role_claims,
             signing_keys,
@@ -2331,7 +2331,7 @@ impl ComAmazonawsCognitoidentityproviderAwscognitoidentityproviderserviceState {
                 issuer: pool.issuer(&served_endpoint(parts, &pool.region)),
                 sub: user.sub.clone(),
                 stored_username: user.username.clone(),
-                email: user.attributes.get("email").cloned(),
+                attribute_claims: tokens::attribute_claims(&user.attributes),
                 groups: pool.user_group_names(user),
                 role_claims: pool.user_group_role_claims(user),
                 signing_keys: pool.signing_keys.clone(),
@@ -2391,8 +2391,11 @@ impl ComAmazonawsCognitoidentityproviderAwscognitoidentityproviderserviceState {
             "jti": new_uuid(),
             "origin_jti": origin_jti,
         });
-        if let (Some(email), Some(members)) = (email, id_claims.as_object_mut()) {
-            members.insert("email".to_string(), serde_json::Value::String(email));
+        // The user's OWN attributes are the identity token's claims beside the ones
+        // this sign-in mints ([`tokens::attribute_claims`]), so a token minted after an
+        // attribute changed carries the value the store holds now.
+        if let Some(members) = id_claims.as_object_mut() {
+            members.extend(attribute_claims);
         }
         // An access token a pre-token-generation function suppressed every scope of is
         // authorized for none, and the claim states the scopes a token IS authorized for

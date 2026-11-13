@@ -102,8 +102,9 @@ pub(super) struct TokenInputs {
     /// The username as STORED, which a case-insensitive pool may case
     /// differently from the request.
     pub(super) stored_username: String,
-    /// The stored `email` attribute, when the user has one.
-    pub(super) email: Option<String>,
+    /// The stored user's own attributes, as the claims an IDENTITY token carries
+    /// them ([`attribute_claims`]).
+    pub(super) attribute_claims: ::serde_json::Map<String, ::serde_json::Value>,
     /// The names of the pool's groups the stored user belongs to, in stored order.
     pub(super) groups: Vec<String>,
     /// What those groups' roles and precedences put in the identity token.
@@ -114,6 +115,62 @@ pub(super) struct TokenInputs {
     pub(super) access_ttl: Duration,
     pub(super) id_ttl: Duration,
     pub(super) refresh_ttl: Duration,
+}
+
+/// The claims an IDENTITY token carries of the sign-in itself, which no stored
+/// attribute of the same name stands in for.
+///
+/// The group and role claims are among them: a user's GROUPS decide
+/// `cognito:groups`, `cognito:roles` and `cognito:preferred_role`, so a stored
+/// attribute of one of those names supplies none of them.
+const MINTED_ID_CLAIMS: [&str; 13] = [
+    "sub",
+    "iss",
+    "aud",
+    "cognito:username",
+    "token_use",
+    "auth_time",
+    "iat",
+    "exp",
+    "jti",
+    "origin_jti",
+    "cognito:groups",
+    "cognito:roles",
+    "cognito:preferred_role",
+];
+
+/// The attributes whose claim is a BOOLEAN, although every attribute VALUE is
+/// carried as text: the two flags this API verifies are `Boolean` schema
+/// attributes ([`super::FLAG_CONFIRMED`] is the string `"true"`), and the claim
+/// of such an attribute is the boolean it states.
+const BOOLEAN_ID_CLAIMS: [&str; 2] = ["email_verified", "phone_number_verified"];
+
+/// The claims the stored `attributes` of a user put in an IDENTITY token.
+///
+/// An identity token "contains claims about the identity of the authenticated
+/// user, such as `name`, `family_name`, and `phone_number`"
+/// (`AuthenticationResultType.IdToken` in this service's model), so the user's
+/// own attributes ARE those claims: each travels under the name it is stored
+/// under — which for a custom attribute is already its `custom:` name — and the
+/// two verification flags travel as the boolean each states rather than as the
+/// text an attribute value is carried in. The claims the sign-in mints itself
+/// ([`MINTED_ID_CLAIMS`]) are the sign-in's own and are never taken from an
+/// attribute.
+pub(super) fn attribute_claims(
+    attributes: &BTreeMap<String, String>,
+) -> ::serde_json::Map<String, ::serde_json::Value> {
+    attributes
+        .iter()
+        .filter(|(name, _value)| !MINTED_ID_CLAIMS.contains(&name.as_str()))
+        .map(|(name, value)| {
+            let claim = if BOOLEAN_ID_CLAIMS.contains(&name.as_str()) {
+                ::serde_json::Value::Bool(value == super::FLAG_CONFIRMED)
+            } else {
+                ::serde_json::Value::String(value.clone())
+            };
+            (name.clone(), claim)
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -388,4 +445,85 @@ pub(super) fn signed_jws(claims: &serde_json::Value, key: &PoolSigningKey) -> Op
     );
     let signature = key.sign(signing_input.as_bytes())?;
     Some(format!("{signing_input}.{}", base64_url(&signature)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// RULE: a user's own attributes are the claims of its identity token, each under the
+    /// name it is stored under, with the two verification flags as the boolean each states
+    /// and the sign-in's own claims never taken from an attribute.
+    ///
+    /// The rows span what the rule generalises over: a standard text attribute, each
+    /// verification flag in each of its two states, a custom attribute, the immutable id the
+    /// sign-in mints itself, and an attribute whose value is empty.
+    #[test]
+    fn a_users_attributes_are_its_identity_tokens_claims() {
+        let attributes: BTreeMap<String, String> = [
+            ("sub", "11111111-2222-3333-4444-555555555555"),
+            ("email", "reader@example.test"),
+            ("email_verified", FLAG_CONFIRMED),
+            ("phone_number", "+15550100"),
+            ("phone_number_verified", FLAG_UNCONFIRMED),
+            ("given_name", "Ada"),
+            ("custom:tier", "gold"),
+            ("nickname", ""),
+            ("cognito:username", "not-the-stored-username"),
+            ("cognito:groups", "not-a-group-of-this-user"),
+        ]
+        .into_iter()
+        .map(|(name, value)| (name.to_string(), value.to_string()))
+        .collect();
+        let claims = attribute_claims(&attributes);
+        // (case, the claim, what it must be)
+        let rows: &[(&str, &str, Option<::serde_json::Value>)] = &[
+            (
+                "a standard text attribute",
+                "email",
+                Some(::serde_json::json!("reader@example.test")),
+            ),
+            (
+                "a confirmed verification flag",
+                "email_verified",
+                Some(::serde_json::json!(true)),
+            ),
+            (
+                "an unconfirmed verification flag",
+                "phone_number_verified",
+                Some(::serde_json::json!(false)),
+            ),
+            (
+                "another standard attribute",
+                "given_name",
+                Some(::serde_json::json!("Ada")),
+            ),
+            (
+                "a custom attribute, under its own name",
+                "custom:tier",
+                Some(::serde_json::json!("gold")),
+            ),
+            (
+                "an attribute whose value is empty",
+                "nickname",
+                Some(::serde_json::json!("")),
+            ),
+            // The claims the sign-in mints are the sign-in's own: an attribute of that name
+            // states nothing about them.
+            ("the immutable id", "sub", None),
+            ("the username claim", "cognito:username", None),
+            (
+                "the group claim, which the user's groups decide",
+                "cognito:groups",
+                None,
+            ),
+        ];
+        for (case, claim, expected) in rows {
+            let held = claims.get(*claim).cloned();
+            assert_eq!(
+                held, *expected,
+                "case {case:?}: expected the claim {claim:?} to be {expected:?}, got {held:?}"
+            );
+        }
+    }
 }

@@ -652,9 +652,17 @@ fn user_not_found() -> RespondToAuthChallengeError {
 
 /// This operation's `CodeMismatchException`: "this exception is thrown if the
 /// provided code doesn't match what the server was expecting" (this service's model).
+///
+/// A code presented as a challenge RESPONSE is refused with the wording of the
+/// authentication state it did not match ([`crate::state::INVALID_CHALLENGE_STATE_MESSAGE`]),
+/// not with the sentence the operations that consume a DELIVERED verification code carry
+/// ([`crate::state::CODE_MISMATCH_MESSAGE`]): what this call presents is a session and the
+/// code that answers it, and a response whose code is not the one the challenge delivered
+/// does not match that state any more than one naming another challenge does — so the two
+/// are reported alike, and neither says which part did not match.
 fn code_mismatch() -> RespondToAuthChallengeError {
     RespondToAuthChallengeErrorModeled::CodeMismatchException(CodeMismatchException {
-        message: Some(crate::state::CODE_MISMATCH_MESSAGE.to_string()),
+        message: Some(crate::state::INVALID_CHALLENGE_STATE_MESSAGE.to_string()),
     })
     .into()
 }

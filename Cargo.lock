@@ -4577,6 +4577,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0a7763b98ba8a24f59e698bf9ab197e7676c640d6455d1580b4ce7dc560f0f0d"
 
 [[package]]
+name = "hkdf"
+version = "0.12.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7b5f8eb2ad728638ea2c7d47a21db23b7b58a72ed6a38256b8a1849f15fbbdf7"
+dependencies = [
+ "hmac 0.12.1",
+]
+
+[[package]]
 name = "hmac"
 version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -15110,6 +15119,8 @@ dependencies = [
 name = "service-com-amazonaws-lambda-awsgirapiservice"
 version = "0.1.0"
 dependencies = [
+ "aes",
+ "aes-gcm",
  "aws-credential-types",
  "aws-emulator-build-support",
  "aws-emulator-emulator-telemetry",
@@ -15133,11 +15144,14 @@ dependencies = [
  "aws-smithy-types",
  "base64 0.22.1",
  "bytes",
+ "cbc",
  "chrono",
  "chrono-tz",
+ "ctr",
  "form_urlencoded",
  "getrandom 0.3.4",
  "hex",
+ "hkdf",
  "hmac 0.12.1",
  "http",
  "image",

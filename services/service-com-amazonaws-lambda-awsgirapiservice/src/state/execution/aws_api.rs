@@ -386,6 +386,28 @@ pub const APIS: &[Api] = &[
         },
         answer_model: Some(&SECRETSMANAGER),
     },
+    // `services/service-com-amazonaws-kms-trentservice/smithy-model/
+    // com-amazonaws-kms-trentservice.json`: awsJson1_1, sigv4Name `kms`, endpointPrefix `kms`,
+    // sdkId `KMS`, service shape `TrentService`.
+    //
+    // ENVELOPE ENCRYPTION is what a handler that is handed a ciphertext does with it: a
+    // function invoked with a payload another service sealed under a customer managed key —
+    // the code a user pool's custom sender trigger delivers, an object's data key, a sealed
+    // parameter — reads the plaintext back with `Decrypt`, and a handler that seals its own
+    // writes calls `Encrypt` or `GenerateDataKey`. A handler that cannot reach this service
+    // can neither open what it was sent nor protect what it stores.
+    Api {
+        sdk_token: "kms",
+        signing_name: "kms",
+        endpoint_prefix: "kms",
+        model: Some(KMS_MODEL),
+        protocol: Protocol::AwsJson {
+            target_prefix: "TrentService",
+            json_version: "1.1",
+            query_compatible: false,
+        },
+        answer_model: Some(&KMS),
+    },
     // `services/service-com-amazonaws-ssm-amazonssm/smithy-model/
     // com-amazonaws-ssm-amazonssm.json`: awsJson1_1, sigv4Name `ssm`, endpointPrefix `ssm`,
     // sdkId `SSM`, service shape `AmazonSSM`.
@@ -790,6 +812,10 @@ pub(super) const SSM_MODEL: &str = include_str!(
     "../../../../service-com-amazonaws-ssm-amazonssm/smithy-model/\
      com-amazonaws-ssm-amazonssm.json"
 );
+pub(super) const KMS_MODEL: &str = include_str!(
+    "../../../../service-com-amazonaws-kms-trentservice/smithy-model/\
+     com-amazonaws-kms-trentservice.json"
+);
 pub(super) const APIGATEWAY_MODEL: &str = include_str!(
     "../../../../service-com-amazonaws-apigateway-backplanecontrolservice/smithy-model/\
      com-amazonaws-apigateway-backplanecontrolservice.json"
@@ -909,6 +935,10 @@ static SFN: super::blob_members::ServiceModel = super::blob_members::ServiceMode
 };
 static SSM: super::blob_members::ServiceModel = super::blob_members::ServiceModel {
     source: SSM_MODEL,
+    plan: ::std::sync::OnceLock::new(),
+};
+static KMS: super::blob_members::ServiceModel = super::blob_members::ServiceModel {
+    source: KMS_MODEL,
     plan: ::std::sync::OnceLock::new(),
 };
 static APIGATEWAY_ANSWERS: super::blob_members::ServiceModel = super::blob_members::ServiceModel {

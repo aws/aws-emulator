@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: CC0-1.0
 
-//! The three COMPUTATIONS the `crypto` core module is served by: a digest, a keyed digest
-//! and cryptographic random bytes.
+//! The three COMPUTATIONS the `crypto` core module is served by: a digest, a keyed digest,
+//! the key a digest derives and cryptographic random bytes.
 //!
 //! None of them is written here. A digest is the arithmetic the RustCrypto implementations
-//! this crate links already state, the keyed digest is `hmac` over one of them, and the
-//! random bytes are the platform's own cryptographic source. They are host functions rather
-//! than guest source because that is where those implementations are — not because the
-//! guest is given any new reach: an algorithm name and bytes go in, bytes come out, and
-//! nothing here opens a file, a socket or an environment.
+//! this crate links already state, the keyed digest is `hmac` over one of them, the derived
+//! key is `hkdf` over the same, and the random bytes are the platform's own cryptographic
+//! source. They are host functions rather than guest source because that is where those
+//! implementations are — not because the guest is given any new reach: an algorithm name and
+//! bytes go in, bytes come out, and nothing here opens a file, a socket or an environment.
 
 use ::hmac::Mac;
 use ::sha2::Digest;
@@ -64,6 +64,56 @@ pub(super) fn hmac(algorithm: &str, key: &str, data: &str) -> Option<String> {
         _ => return None,
     };
     Some(keyed)
+}
+
+/// How many bytes one derivation may ask for.
+///
+/// The construction's OWN ceiling is 255 times the digest's length (RFC 5869 §2.3), which the
+/// expansion below refuses past exactly, per digest; this is that ceiling for the longest
+/// digest here — the bound the host checks BEFORE a length becomes an allocation, as
+/// [`MAX_RANDOM_BYTES`] is for a draw, because the bytes are materialised in host memory
+/// outside the engine's own allocation ceiling.
+pub(super) const MAX_DERIVED_BYTES: usize = 255 * 64;
+
+/// The `length` bytes HKDF derives from `ikm` under `algorithm`, salted with `salt` and bound
+/// to `info` — hex in, hex out.
+///
+/// The extract-and-expand construction itself is not written here: it is the one its own crate
+/// states, over the same digests as the keyed digest above, so a key derived here is the key
+/// any other implementation of the construction derives from the same four inputs.
+#[must_use]
+pub(super) fn hkdf(
+    algorithm: &str,
+    ikm: &str,
+    salt: &str,
+    info: &str,
+    length: usize,
+) -> Option<String> {
+    if !DIGEST_ALGORITHMS.contains(&algorithm) || length > MAX_DERIVED_BYTES {
+        return None;
+    }
+    let ikm = ::hex::decode(ikm).ok()?;
+    let salt = ::hex::decode(salt).ok()?;
+    let info = ::hex::decode(info).ok()?;
+    // One arm per hash, because the construction is instantiated over the hash's type.
+    macro_rules! derived {
+        ($hash:ty) => {{
+            let mut bytes = vec![0_u8; length];
+            ::hkdf::Hkdf::<$hash>::new(Some(&salt), &ikm)
+                .expand(&info, &mut bytes)
+                .ok()?;
+            ::hex::encode(bytes)
+        }};
+    }
+    let derived = match algorithm {
+        "md5" => derived!(::md5::Md5),
+        "sha1" => derived!(::sha1::Sha1),
+        "sha256" => derived!(::sha2::Sha256),
+        "sha384" => derived!(::sha2::Sha384),
+        "sha512" => derived!(::sha2::Sha512),
+        _ => return None,
+    };
+    Some(derived)
 }
 
 /// The TEXT CODINGS the `buffer` core module converts bytes with, computed by the crates
@@ -239,6 +289,58 @@ mod tests {
             assert!(
                 encode(absent, Vec::new()).is_none() && decode(absent, "").is_none(),
                 "case {absent:?}: this runtime converts no such coding"
+            );
+        }
+    }
+
+    /// RULE: a derived key is the extract-and-expand construction's own answer over the four
+    /// inputs, which is what makes a key derived here the key any other implementation
+    /// derives.
+    ///
+    /// The rows are RFC 5869's published test vectors: case 1 (SHA-256, with a salt and an
+    /// info), case 3 (SHA-256, with neither) — plus the length the construction generalises
+    /// over, asserted by the first vector's own output length.
+    #[test]
+    fn a_derived_key_is_its_constructions_own() {
+        // Each row: the case, the digest, the input key material, the salt, the info, the
+        // length, and the key RFC 5869 publishes for it.
+        let cases: &[(&str, &str, &str, &str, &str, usize, &str)] = &[
+            (
+                "RFC 5869 case 1",
+                "sha256",
+                "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+                "000102030405060708090a0b0c",
+                "f0f1f2f3f4f5f6f7f8f9",
+                42,
+                "3cb25f25faacd57a90434f64d0362f2a2d2d0a90cf1a5a4c5db02d56ecc4c5bf34007208d5b887185865",
+            ),
+            (
+                "RFC 5869 case 3, with neither a salt nor an info",
+                "sha256",
+                "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+                "",
+                "",
+                42,
+                "8da4e775a563c18f715f802a063c5a31b8a11f5c5ee1879ec3454e5f3c738d2d9d201395faa4b61a96c8",
+            ),
+        ];
+        for (case, algorithm, ikm, salt, info, length, expected) in cases {
+            let derived = hkdf(algorithm, ikm, salt, info, *length);
+            assert_eq!(
+                derived.as_deref(),
+                Some(*expected),
+                "case {case:?}: expected the published derived key, got {derived:?}"
+            );
+        }
+        // A digest this module does not compute derives nothing, and neither does a length
+        // past the host's ceiling.
+        for (case, algorithm, length) in [
+            ("a digest this module does not compute", "sha3-256", 32_usize),
+            ("a length past the host's ceiling", "sha256", MAX_DERIVED_BYTES + 1),
+        ] {
+            assert!(
+                hkdf(algorithm, "0b", "", "", length).is_none(),
+                "case {case:?}: expected no key to be derived"
             );
         }
     }

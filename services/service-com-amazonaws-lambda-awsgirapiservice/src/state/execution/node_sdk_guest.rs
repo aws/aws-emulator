@@ -347,10 +347,10 @@ function serviceError(answered) {
     });
 }
 
-// The input members a call carries BYTES in, by service: every protocol this SDK speaks
-// carries a blob as base64 text, so the bytes a handler passes in one of these are encoded
-// before the call is made. A string is encoded as UTF-8 first, which is what a client does
-// with a text body.
+// The input members a handler may hand the TEXT of its bytes, by service: a client of one
+// of these sends the UTF-8 of a string given for a member its model types as a blob, which
+// is what a text body is, so the text becomes bytes here and `bytesSent` below encodes them
+// with every other value a call carries bytes in.
 var BLOB_PARAMETERS = { s3: ['Body'] };
 
 // A native date a handler puts on a timestamp member, rendered the way the protocol carries
@@ -379,25 +379,55 @@ function timestamps(value) {
     return value;
 }
 
+// Every value a call carries BYTES in, as the protocol carries one: a JSON protocol has no
+// byte type, so a blob travels as the base64 text of its bytes, which is what an SDK sends
+// for a member its service's model types as one. The bytes a handler holds are a typed
+// array — a `Buffer`, a `Uint8Array`, any other view of an `ArrayBuffer`, the buffer
+// itself — so one of those reached at ANY depth of the input is encoded, and every other
+// value is handed on exactly as it arrived.
+function bytesSent(value) {
+    if (value instanceof Uint8Array) {
+        return globalThis.Buffer.from(value).toString('base64');
+    }
+    if (value instanceof ArrayBuffer) {
+        return globalThis.Buffer.from(new Uint8Array(value)).toString('base64');
+    }
+    if (ArrayBuffer.isView(value)) {
+        return globalThis.Buffer
+            .from(new Uint8Array(value.buffer, value.byteOffset, value.byteLength))
+            .toString('base64');
+    }
+    if (Array.isArray(value)) {
+        return value.map(bytesSent);
+    }
+    if (value !== null && typeof value === 'object') {
+        var prototype = Object.getPrototypeOf(value);
+        if (prototype !== Object.prototype && prototype !== null) {
+            return value;
+        }
+        var sent = {};
+        Object.keys(value).forEach(function (name) {
+            sent[name] = bytesSent(value[name]);
+        });
+        return sent;
+    }
+    return value;
+}
+
 function sentInput(input) {
     input = timestamps(input);
     var members = BLOB_PARAMETERS[SERVICE];
-    if (members === undefined || input === null || typeof input !== 'object') {
-        return input;
+    if (members !== undefined && input !== null && typeof input === 'object') {
+        var held = {};
+        Object.keys(input).forEach(function (name) { held[name] = input[name]; });
+        members.forEach(function (member) {
+            if (typeof held[member] === 'string') {
+                held[member] = globalThis.Buffer.from(held[member], 'utf8');
+            }
+        });
+        input = held;
     }
-    var sent = {};
-    Object.keys(input).forEach(function (name) { sent[name] = input[name]; });
-    members.forEach(function (member) {
-        if (sent[member] === undefined || sent[member] === null) {
-            return;
-        }
-        var value = sent[member];
-        if (typeof value === 'string') {
-            value = globalThis.Buffer.from(value, 'utf8');
-        }
-        sent[member] = globalThis.Buffer.from(value).toString('base64');
-    });
-    return sent;
+    return bytesSent(input);
 }
 
 // A member of an answer that carries BYTES is handed over the way a v3 client hands over a

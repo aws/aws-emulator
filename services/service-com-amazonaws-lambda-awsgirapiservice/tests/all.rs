@@ -379,6 +379,10 @@ mod log_level_requires_json_format;
 mod missing_policy_refusal;
 #[path = "all/node_error_trace_lines.rs"]
 mod node_error_trace_lines;
+#[path = "all/node_handler_crypto_surface.rs"]
+mod node_handler_crypto_surface;
+#[path = "all/node_handler_kms_envelope.rs"]
+mod node_handler_kms_envelope;
 #[path = "all/node_handler_error_wording.rs"]
 mod node_handler_error_wording;
 #[path = "all/node_handler_sdk_aggregated_client.rs"]

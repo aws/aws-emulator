@@ -61,6 +61,18 @@ service-com-amazonaws-sts-awssecuritytokenservicev20110615 = { workspace = true 
 sha2 = { workspace = true }
 # ...reported base64-encoded, as the model's CodeSha256 member describes it.
 base64 = "0.22"
+# The key DERIVATION the same module computes (`crypto.hkdfSync`): the extract-and-expand
+# construction over the digests above, taken from its own crate rather than composed here.
+hkdf = "0.12"
+# The SYMMETRIC CIPHERS that same `crypto` core module computes
+# (`state::execution::node::cipher`): a handler that is handed an envelope-encrypted payload
+# opens it with `createDecipheriv`, so the AES modes it names are taken from maintained
+# implementations rather than written here — the authenticated mode, and the two block modes
+# over the `aes` block cipher.
+aes-gcm = { version = "0.10", default-features = false, features = ["aes", "alloc"] }
+aes = "0.8"
+cbc = { version = "0.1", features = ["alloc"] }
+ctr = "0.9"
 # The other two digest families the `crypto` core module a Node handler imports computes
 # (`state::execution::node::digest`), beside the SHA-2 one above, and the keyed form of all
 # of them. Taken from crates rather than written here: a digest is arithmetic a maintained

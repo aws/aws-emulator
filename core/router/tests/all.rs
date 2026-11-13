@@ -1845,4 +1845,4 @@ mod logs_vended_group_lambda_subscriber_permission;
 // suites exist under tests/all/ and had lost their declaration when two branches removed
 // the same duplicated pair, which compiles them nowhere.
 // (`cloudformation_monitored_alb_search_estate` and `cloudformation_domain_endpoint_outputs`
-// are declared further up this tail already: a module may be declared only once.)
+// are declared in the head region above: a module may be declared only once.)

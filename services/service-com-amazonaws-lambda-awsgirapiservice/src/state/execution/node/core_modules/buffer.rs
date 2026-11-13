@@ -532,6 +532,69 @@ class Buffer extends Uint8Array {
         this[at + 3] = (word >>> 24) & 0xff;
         return at + 4;
     }
+
+    // The 64-bit readings and writings, which carry a `BigInt` because a 64-bit value does
+    // not fit a double exactly — the length field of a framed message, a sequence number, a
+    // timestamp in nanoseconds. Each is the same byte order as its 32-bit sibling above.
+    readBigUInt64BE(offset) {
+        var at = clampIndex(offset, 0, this.length);
+        var value = BigInt(0);
+        for (var index = 0; index < 8; index += 1) {
+            value = (value << BigInt(8)) | BigInt(this[at + index] & 0xff);
+        }
+        return value;
+    }
+
+    readBigUInt64LE(offset) {
+        var at = clampIndex(offset, 0, this.length);
+        var value = BigInt(0);
+        for (var index = 7; index >= 0; index -= 1) {
+            value = (value << BigInt(8)) | BigInt(this[at + index] & 0xff);
+        }
+        return value;
+    }
+
+    readBigInt64BE(offset) {
+        var value = this.readBigUInt64BE(offset);
+        return value > BigInt('0x7fffffffffffffff')
+            ? value - BigInt('0x10000000000000000')
+            : value;
+    }
+
+    readBigInt64LE(offset) {
+        var value = this.readBigUInt64LE(offset);
+        return value > BigInt('0x7fffffffffffffff')
+            ? value - BigInt('0x10000000000000000')
+            : value;
+    }
+
+    writeBigUInt64BE(value, offset) {
+        var at = clampIndex(offset, 0, this.length);
+        var held = BigInt(value) & BigInt('0xffffffffffffffff');
+        for (var index = 7; index >= 0; index -= 1) {
+            this[at + index] = Number(held & BigInt(0xff));
+            held = held >> BigInt(8);
+        }
+        return at + 8;
+    }
+
+    writeBigUInt64LE(value, offset) {
+        var at = clampIndex(offset, 0, this.length);
+        var held = BigInt(value) & BigInt('0xffffffffffffffff');
+        for (var index = 0; index < 8; index += 1) {
+            this[at + index] = Number(held & BigInt(0xff));
+            held = held >> BigInt(8);
+        }
+        return at + 8;
+    }
+
+    writeBigInt64BE(value, offset) {
+        return this.writeBigUInt64BE(value, offset);
+    }
+
+    writeBigInt64LE(value, offset) {
+        return this.writeBigUInt64LE(value, offset);
+    }
 }
 
 // `Buffer.poolSize` is read by programs that size their own reads by it; this container

@@ -51,6 +51,9 @@ pub(super) const RUNTIME_SOURCE: &str = r##"
     var hostCoreSource = globalThis.__hostCoreSource;
     var hostDigest = globalThis.__hostDigest;
     var hostHmac = globalThis.__hostHmac;
+    var hostCipher = globalThis.__hostCipher;
+    var hostCiphers = globalThis.__hostCiphers;
+    var hostHkdf = globalThis.__hostHkdf;
     var hostRandomHex = globalThis.__hostRandomHex;
     var hostAwsCall = globalThis.__hostAwsCall;
     var hostCompileScript = globalThis.__hostCompileScript;
@@ -64,6 +67,9 @@ pub(super) const RUNTIME_SOURCE: &str = r##"
     delete globalThis.__hostCoreSource;
     delete globalThis.__hostDigest;
     delete globalThis.__hostHmac;
+    delete globalThis.__hostCipher;
+    delete globalThis.__hostCiphers;
+    delete globalThis.__hostHkdf;
     delete globalThis.__hostRandomHex;
     delete globalThis.__hostAwsCall;
     delete globalThis.__hostCompileScript;
@@ -1703,8 +1709,9 @@ pub(super) const RUNTIME_SOURCE: &str = r##"
         // that resolves to nothing fails the way a `require` of the same specifier does.
         moduleNotFound: moduleNotFound,
         requireId: requireId,
-        // The three computations the `crypto` core module is served by, and the two reads
-        // the `fs` one answers from the read-only mounts.
+        // The three computations the `crypto` core module is served by, the symmetric
+        // transform beside them, and the two reads the `fs` one answers from the read-only
+        // mounts.
         digest: function (algorithm, data) {
             var digested = hostDigest(algorithm, data);
             if (digested === null || digested === undefined) {
@@ -1718,6 +1725,27 @@ pub(super) const RUNTIME_SOURCE: &str = r##"
                 throw new Error('Digest method not supported');
             }
             return keyed;
+        },
+        // The symmetric transform of one message: the parts go over as one list and the
+        // answer's first word says whether it was computed ([`super::cipher`]).
+        cipher: function (parts, decrypting) {
+            var answered = hostCipher(parts, decrypting === true);
+            return answered === null || answered === undefined ? ['unknown'] : answered;
+        },
+        // The ciphers the host computes, which is the one list the `crypto` module reports
+        // and resolves a name against.
+        ciphers: function () {
+            var named = hostCiphers();
+            return named === null || named === undefined ? [] : named;
+        },
+        // The key a digest derives from the parts a derivation is given, which is the one
+        // the construction itself states ([`super::digest`]).
+        hkdf: function (parts, length) {
+            var derived = hostHkdf(parts, length);
+            if (derived === null || derived === undefined) {
+                throw new RangeError('Invalid key length');
+            }
+            return derived;
         },
         randomHex: function (count) {
             var drawn = hostRandomHex(count);

@@ -90,6 +90,9 @@ mod core_modules;
 /// The digests and random bytes the `crypto` core module is served by.
 mod digest;
 
+/// The symmetric ciphers that same core module is served by.
+mod cipher;
+
 /// `Intl` and the local time zone a run reads its clock in.
 mod intl;
 
@@ -509,6 +512,61 @@ fn install_host(
             }),
         )
         .map_err(|error| format!("the keyed digests could not be installed: {error}"))?;
+    // The SYMMETRIC CIPHERS that same module is served by, the same way: an algorithm name
+    // and hex bytes go in, hex bytes come out ([`cipher`]). The parts travel as ONE list
+    // because a cipher call carries the key, the IV, the additional data, the message and
+    // the tag together.
+    globals
+        .set(
+            "__hostCipher",
+            Func::from(|parts: Vec<String>, decrypting: bool| {
+                let part = |at: usize| parts.get(at).map_or("", String::as_str);
+                cipher::cipher(
+                    part(0),
+                    part(1),
+                    part(2),
+                    part(3),
+                    part(4),
+                    part(5),
+                    decrypting,
+                )
+            }),
+        )
+        .map_err(|error| format!("the ciphers could not be installed: {error}"))?;
+    globals
+        .set(
+            "__hostCiphers",
+            Func::from(|| {
+                cipher::CIPHERS
+                    .iter()
+                    .map(|named| (*named).to_string())
+                    .collect::<Vec<String>>()
+            }),
+        )
+        .map_err(|error| format!("the cipher names could not be installed: {error}"))?;
+    // The KEY DERIVATION the same module computes, the same way: the parts travel as one
+    // list and the length beside them ([`digest::hkdf`]).
+    globals
+        .set(
+            "__hostHkdf",
+            Func::from(|parts: Vec<String>, length: f64| {
+                let part = |at: usize| parts.get(at).map_or("", String::as_str);
+                // The derivation happens in HOST memory, so the length is checked before it
+                // becomes one: a value that is not a whole number inside the ceiling is
+                // refused rather than cast (an `as` cast of a large float saturates).
+                #[allow(clippy::cast_precision_loss)]
+                if !length.is_finite()
+                    || length < 0.0
+                    || length.fract() != 0.0
+                    || length > digest::MAX_DERIVED_BYTES as f64
+                {
+                    return None;
+                }
+                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                digest::hkdf(part(0), part(1), part(2), part(3), length as usize)
+            }),
+        )
+        .map_err(|error| format!("the key derivation could not be installed: {error}"))?;
     globals
         .set(
             "__hostEncode",

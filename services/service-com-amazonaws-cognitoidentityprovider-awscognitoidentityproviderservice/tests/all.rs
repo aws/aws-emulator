@@ -79,6 +79,8 @@ mod confidential_client_challenge_response;
 mod confirm_forgot_password_validation_order;
 #[path = "all/constraint_refusal_values.rs"]
 mod constraint_refusal_values;
+#[path = "all/custom_email_sender_node_handler.rs"]
+mod custom_email_sender_node_handler;
 #[path = "all/custom_email_sender_trigger.rs"]
 mod custom_email_sender_trigger;
 #[path = "all/delete_group.rs"]
