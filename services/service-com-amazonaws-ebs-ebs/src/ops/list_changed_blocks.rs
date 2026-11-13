@@ -189,7 +189,19 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        let _ = ctx;
+        // Authorization comes FIRST: AWS decides it at the IAM layer, ahead of the service
+        // looking at either snapshot, so a caller whose identity-based policies do not
+        // allow this comparison is refused without being told anything about them. BOTH
+        // snapshots the request names are judged, since a grant has to cover the resource
+        // it is read for ([`crate::service::authorization`]).
+        let region = crate::state::kms_reference::request_region(ctx);
+        let addressed: Vec<String> = ::std::iter::once(input.second_snapshot_id.as_str())
+            .chain(input.first_snapshot_id.as_deref())
+            .map(|snapshot_id| crate::service::authorization::snapshot_arn(&region, snapshot_id))
+            .collect();
+        crate::service::authorization::authorize(&*self.engine, ctx, Self::NAME, &addressed)
+            .map_err(ListChangedBlocksErrorModeled::AccessDeniedException)?;
+
         let state = crate::state::service_state(&*self.engine).ok_or_else(no_state)?;
         let now = SystemTime::now();
         let mut store = state.lock();

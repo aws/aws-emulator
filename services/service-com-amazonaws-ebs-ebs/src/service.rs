@@ -44,6 +44,7 @@ use aws_smithy_schema::Schema;
 use smithy_server_runtime::{http, ErasedOperation, Operation, Refusal, Refused, Service};
 use std::sync::Arc;
 
+pub mod authorization;
 mod required_members;
 
 use required_members::{Binding, RequiredMember, RequiresMembers};

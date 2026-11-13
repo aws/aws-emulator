@@ -231,7 +231,22 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        let _ = ctx;
+        // Authorization comes FIRST: AWS decides it at the IAM layer, ahead of the service
+        // judging the request, so a caller whose identity-based policies do not allow the
+        // create is refused without a snapshot being minted. The snapshot this call creates
+        // has no id until it succeeds, so what IAM evaluates is every snapshot of the
+        // Region ([`crate::service::authorization::snapshot_collection_arn`]).
+        let region = request_region(ctx);
+        crate::service::authorization::authorize(
+            &*self.engine,
+            ctx,
+            Self::NAME,
+            &[crate::service::authorization::snapshot_collection_arn(
+                &region,
+            )],
+        )
+        .map_err(StartSnapshotErrorModeled::AccessDeniedException)?;
+
         // Judged before anything is read or created, and in this order: the request's own
         // parameters first, then the resource it references in ANOTHER service.
         //
@@ -264,7 +279,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // `crate::state::kms_reference`, which also says why an emulator with no KMS
         // mounted accepts the reference as given.
         if let Some(kms_key_arn) = input.kms_key_arn.as_deref() {
-            let region = request_region(ctx);
             if let KeyReference::Refused(message) =
                 kms_reference::resolve_key(ctx, &region, kms_key_arn).await
             {

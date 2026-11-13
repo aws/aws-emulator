@@ -10,7 +10,9 @@ build = "build.rs"
 engine = { workspace = true }
 # The shared rule for naming the operation a request ADDRESSES from its own `@http`
 # binding, which is how the routes whose `@required` header/query members the REST router
-# keys on are served (see `src/service.rs`).
+# keys on are served (see `src/service.rs`); the ONE evaluation of IAM policy documents
+# against an action on a resource, and the one wording of a denial; and the shared reading
+# of which IAM entity a principal ARN names.
 service-common = { path = "../common" }
 smithy-macros = { workspace = true }
 aws-smithy-schema = { workspace = true }
@@ -37,6 +39,14 @@ aws-sdk-kms = { version = "1", default-features = false, features = ["rt-tokio",
 # The request identifier a relayed dependent-service refusal names, for an answer that
 # carried none of its own.
 uuid = { version = "1", features = ["v4"] }
+# The STS store, for the identity an access key id speaks for — the principal
+# `sts:GetCallerIdentity` answers for the credentials a request signed with — and the
+# session policies its mint scoped it with.
+service-com-amazonaws-sts-awssecuritytokenservicev20110615 = { workspace = true }
+# The IAM store, for the identity-based policy documents in force on that principal and
+# the permissions boundary that caps them: the authorization gate reads both services'
+# OWN state accessors rather than keeping a second copy of either fact.
+service-com-amazonaws-iam-awsidentitymanagementv20100508 = { workspace = true }
 
 [build-dependencies]
 emulator-core-build-support = { workspace = true }

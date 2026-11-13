@@ -171,7 +171,22 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        let _ = ctx;
+        // Authorization comes FIRST: AWS decides it at the IAM layer, ahead of the service
+        // looking at the snapshot, so a caller whose identity-based policies do not allow
+        // the seal is refused without being told anything about the snapshot and nothing
+        // about it changes ([`crate::service::authorization`]).
+        let region = crate::state::kms_reference::request_region(ctx);
+        crate::service::authorization::authorize(
+            &*self.engine,
+            ctx,
+            Self::NAME,
+            &[crate::service::authorization::snapshot_arn(
+                &region,
+                &input.snapshot_id,
+            )],
+        )
+        .map_err(CompleteSnapshotErrorModeled::AccessDeniedException)?;
+
         let state = crate::state::service_state(&*self.engine).ok_or_else(no_state)?;
         let now = SystemTime::now();
         let mut store = state.lock();

@@ -17,6 +17,8 @@ mod absent_required_members;
 mod changed_blocks_between_snapshots;
 #[path = "all/declared_block_inputs.rs"]
 mod declared_block_inputs;
+#[path = "all/identity_authorization.rs"]
+mod identity_authorization;
 #[path = "all/minted_query_tokens.rs"]
 mod minted_query_tokens;
 #[path = "all/payload_checksum_integrity.rs"]

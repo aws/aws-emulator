@@ -179,7 +179,22 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        let _ = ctx;
+        // Authorization comes FIRST: AWS decides it at the IAM layer, ahead of the service
+        // looking at the snapshot, so a caller whose identity-based policies do not allow
+        // this read is refused without being told anything about the snapshot or the block
+        // ([`crate::service::authorization`]).
+        let region = crate::state::kms_reference::request_region(ctx);
+        crate::service::authorization::authorize(
+            &*self.engine,
+            ctx,
+            Self::NAME,
+            &[crate::service::authorization::snapshot_arn(
+                &region,
+                &input.snapshot_id,
+            )],
+        )
+        .map_err(GetSnapshotBlockErrorModeled::AccessDeniedException)?;
+
         // `BlockToken` is judged HERE rather than at the boundary (the member carries
         // `skip_validation` on `GetSnapshotBlockInput`), because the expression the
         // service enforces is WIDER than the one the on-disk model declares: a
