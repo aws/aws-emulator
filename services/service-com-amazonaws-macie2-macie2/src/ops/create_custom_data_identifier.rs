@@ -264,7 +264,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             );
         }
 
-        let id = crate::state::new_resource_id(state.next_id_seed(), now);
+        let id = crate::state::new_custom_data_identifier_id(state.next_id_seed(), now);
+        // A level set the request did not name is the service's own default,
+        // stored like the match distance below so later reads report the
+        // severity configuration that is in effect.
+        let severity_levels = match input.severity_levels.clone() {
+            Some(levels) if !levels.is_empty() => levels,
+            _ => crate::state::default_severity_levels(),
+        };
         let identifier = crate::state::CustomDataIdentifier {
             arn: crate::state::custom_data_identifier_arn(&region, &id),
             id: id.clone(),
@@ -279,7 +286,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             maximum_match_distance: input
                 .maximum_match_distance
                 .unwrap_or(crate::state::DEFAULT_MAXIMUM_MATCH_DISTANCE),
-            severity_levels: input.severity_levels.clone().unwrap_or_default(),
+            severity_levels,
             tags: input
                 .tags
                 .clone()

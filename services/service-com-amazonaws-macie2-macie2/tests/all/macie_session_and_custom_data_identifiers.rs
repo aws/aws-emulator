@@ -164,20 +164,37 @@ async fn create(router: &MultiServiceRouter, body: &serde_json::Value, case: &st
         .to_string()
 }
 
-/// Assert `id` has the Macie resource-id grammar the model pins
-/// (`^[a-z0-9]{22}$`).
-fn assert_id_grammar(id: &str, case: &str) {
+/// Assert `id` is a canonical UUID, the form the service issues a custom data
+/// identifier's id in: 36 characters, lowercase hex grouped 8-4-4-4-12.
+pub(crate) fn assert_id_grammar(id: &str, case: &str) {
     assert_eq!(
         id.chars().count(),
-        macie2::state::RESOURCE_ID_LEN,
-        "case {case:?}: a Macie id is {} characters, got {id:?}",
-        macie2::state::RESOURCE_ID_LEN
+        36,
+        "case {case:?}: a custom data identifier's id is a 36-character UUID, got {id:?}"
+    );
+    assert_eq!(
+        id.match_indices('-').map(|(at, _)| at).collect::<Vec<_>>(),
+        vec![8, 13, 18, 23],
+        "case {case:?}: a canonical UUID groups 8-4-4-4-12, got {id:?}"
     );
     assert!(
         id.chars()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit()),
-        "case {case:?}: a Macie id is lowercase alphanumeric, got {id:?}"
+            .all(|c| c == '-' || c.is_ascii_digit() || ('a'..='f').contains(&c)),
+        "case {case:?}: a canonical UUID is lowercase hex, got {id:?}"
     );
+}
+
+/// The `severityLevels` a read reports for an identifier whose create named
+/// none: the service's own default level.
+///
+/// Written out here rather than read from the crate, so this expectation can
+/// fail. Source: the `severityLevels` member doc of
+/// `GetCustomDataIdentifierResponse` in this service's Smithy model — "By
+/// default, Amazon Macie creates findings for S3 objects that contain at least
+/// one occurrence of text that matches the detection criteria, and Macie
+/// assigns the MEDIUM severity to those findings."
+pub(crate) fn default_severity_levels_json() -> Vec<serde_json::Value> {
+    vec![serde_json::json!({ "severity": "MEDIUM", "occurrencesThreshold": 1 })]
 }
 
 /// One instant a response reports, required to be in the form the model pins.
@@ -540,7 +557,7 @@ async fn a_created_identifier_reads_back_exactly_as_it_was_stored() {
             Some(format!("arn:aws:macie2:{REGION}:{ACCOUNT}:custom-data-identifier/{id}").as_str()),
             "case {case:?}: the ARN must name this service, region, account and id, got {record:?}"
         );
-        for member in ["name", "regex", "description", "keywords", "ignoreWords", "tags"] {
+        for member in ["name", "regex", "description", "tags"] {
             let sent = body.get(member).cloned().unwrap_or(serde_json::Value::Null);
             if sent.is_null() {
                 assert!(
@@ -556,6 +573,20 @@ async fn a_created_identifier_reads_back_exactly_as_it_was_stored() {
                 );
             }
         }
+        // The list members a read always serializes: what was stored, and an
+        // empty array when the create named none.
+        for member in ["keywords", "ignoreWords"] {
+            let sent = body
+                .get(member)
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!([]));
+            assert_eq!(
+                record[member], sent,
+                "case {case:?}: {member} must be reported as the stored array, empty when the \
+                 create named none, got {:?}",
+                record.get(member)
+            );
+        }
         assert_eq!(
             record["maximumMatchDistance"].as_i64(),
             Some(
@@ -566,27 +597,22 @@ async fn a_created_identifier_reads_back_exactly_as_it_was_stored() {
             "case {case:?}: the stored match distance, or the documented default, \
              must be reported, got {record:?}"
         );
-        match body.get("severityLevels") {
-            Some(sent) => {
-                let mut reported = record["severityLevels"]
-                    .as_array()
-                    .cloned()
-                    .unwrap_or_default();
-                let mut expected = sent.as_array().cloned().unwrap_or_default();
-                reported.sort_by_key(|level| level["severity"].as_str().unwrap_or("").to_string());
-                expected.sort_by_key(|level| level["severity"].as_str().unwrap_or("").to_string());
-                assert_eq!(
-                    reported, expected,
-                    "case {case:?}: the stored severity levels must be reported, got {record:?}"
-                );
-            }
-            None => assert!(
-                record.get("severityLevels").is_none_or(serde_json::Value::is_null),
-                "case {case:?}: no severity levels were sent, so none must be reported, \
-                 got {:?}",
-                record.get("severityLevels")
-            ),
-        }
+        let mut reported = record["severityLevels"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        let mut expected = match body.get("severityLevels") {
+            Some(sent) => sent.as_array().cloned().unwrap_or_default(),
+            // Named none, so the service's own default level is in effect and
+            // is what a read reports.
+            None => default_severity_levels_json(),
+        };
+        reported.sort_by_key(|level| level["severity"].as_str().unwrap_or("").to_string());
+        expected.sort_by_key(|level| level["severity"].as_str().unwrap_or("").to_string());
+        assert_eq!(
+            reported, expected,
+            "case {case:?}: the severity levels in effect must be reported, got {record:?}"
+        );
         assert_eq!(
             record["deleted"].as_bool(),
             Some(false),

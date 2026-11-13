@@ -27,6 +27,9 @@ hex = { workspace = true }
 # Regular expressions, to decide whether a custom data identifier's `regex`
 # member is a pattern this service can run before it is stored.
 regex = "1.13"
+# `service-common` carries this tree's ONE rendering of 16 service-produced bytes
+# as the text of a UUID, which is the form a custom data identifier's id takes.
+service-common = { path = "../common" }
 
 [build-dependencies]
 emulator-core-build-support = { workspace = true }

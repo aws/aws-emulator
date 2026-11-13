@@ -15,6 +15,8 @@
 mod automated_discovery_configuration;
 #[path = "all/custom_data_identifier_patterns.rs"]
 mod custom_data_identifier_patterns;
+#[path = "all/custom_data_identifier_response_shape.rs"]
+mod custom_data_identifier_response_shape;
 #[path = "all/findings_publication_configuration.rs"]
 mod findings_publication_configuration;
 #[path = "all/macie_session_and_custom_data_identifiers.rs"]

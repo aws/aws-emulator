@@ -47,10 +47,14 @@ pub const CUSTOM_DATA_IDENTIFIER_RESOURCE_TYPE: &str = "custom-data-identifier";
 /// resource portion after this segment.
 pub const MEMBER_RESOURCE_TYPE: &str = "member";
 
-/// Width of a Macie resource id. The model pins `CreateAllowListResponse$id` at
-/// `^[a-z0-9]{22}$`, which is the shape every Macie resource id takes; the
-/// custom-data-identifier id is modelled as a bare `__string`, so this is the
-/// grammar it follows.
+/// Width of a Macie resource id whose alphabet the model pins to lowercase
+/// alphanumerics: `CreateAllowListResponse$id` is `^[a-z0-9]{22}$` and
+/// `ClassificationScopeId` is `^[0-9a-z]*$`, so neither can carry a hyphen.
+///
+/// This is NOT the id format of every Macie resource: the format a resource's
+/// ids take is the one the service issues for THAT resource type, and a custom
+/// data identifier's is a canonical UUID ([`new_custom_data_identifier_id`]),
+/// which this alphabet could not spell.
 pub const RESOURCE_ID_LEN: usize = 22;
 
 /// The resource portion of the service-linked role Amazon Macie uses on an
@@ -167,6 +171,17 @@ pub const MAX_SEVERITY_LEVELS: usize = 3;
 /// moving from LOW to HIGH", so this order is the rule rather than the
 /// alphabetical order of [`crate::ops::types::DATA_IDENTIFIER_SEVERITY_VALUES`].
 pub const SEVERITIES_ASCENDING: [&str; 3] = ["LOW", "MEDIUM", "HIGH"];
+
+/// The `occurrencesThreshold` of the severity level the service applies when a
+/// create names no `severityLevels`: the member doc states "By default, Amazon
+/// Macie creates findings for S3 objects that contain at least one occurrence
+/// of text that matches the detection criteria", so one occurrence is enough.
+pub const DEFAULT_SEVERITY_OCCURRENCES_THRESHOLD: i64 = 1;
+
+/// The `severity` of that same default level: the doc sentence continues "and
+/// Macie assigns the MEDIUM severity to those findings". An entry of
+/// [`SEVERITIES_ASCENDING`].
+pub const DEFAULT_SEVERITY: &str = "MEDIUM";
 
 /// The page size `ListCustomDataIdentifiers` uses when a request names no
 /// `maxResults`. The member is a bare `__integer` with neither a modelled range
@@ -350,20 +365,28 @@ pub struct CustomDataIdentifier {
 }
 
 impl CustomDataIdentifier {
-    /// This identifier's `keywords`, as a read reports them: absent rather
-    /// than an empty array when it lists none.
+    /// This identifier's `keywords`, as a read reports them: PRESENT, and an
+    /// empty array when it lists none.
+    ///
+    /// A list member of a custom data identifier read is always serialized, so
+    /// "lists nothing" is an empty array rather than an absent member — the
+    /// difference a client that iterates the collection depends on.
     pub fn keywords_output(&self) -> Option<Vec<String>> {
-        non_empty(&self.keywords)
+        Some(self.keywords.clone())
     }
 
-    /// This identifier's `ignoreWords`, as a read reports them.
+    /// This identifier's `ignoreWords`, as a read reports them, on the same
+    /// footing as [`Self::keywords_output`].
     pub fn ignore_words_output(&self) -> Option<Vec<String>> {
-        non_empty(&self.ignore_words)
+        Some(self.ignore_words.clone())
     }
 
-    /// This identifier's `severityLevels`, as a read reports them.
+    /// This identifier's `severityLevels`, as a read reports them. A stored
+    /// identifier always carries the level set that is in effect — the one the
+    /// create named, or [`default_severity_levels`] — so this reports the
+    /// severity configuration a client reads to learn what findings will carry.
     pub fn severity_levels_output(&self) -> Option<Vec<SeverityLevel>> {
-        non_empty(&self.severity_levels)
+        Some(self.severity_levels.clone())
     }
 
     /// This identifier's `tags`, as a read reports them: the modelled `TagMap`
@@ -378,16 +401,6 @@ impl CustomDataIdentifier {
                 .map(|(key, value)| (key.clone(), value.clone()))
                 .collect(),
         )
-    }
-}
-
-/// A list member as a read reports it: `None` for an empty list, so an absent
-/// member and an empty array do not both appear for "nothing was specified".
-fn non_empty<T: Clone>(values: &[T]) -> Option<Vec<T>> {
-    if values.is_empty() {
-        None
-    } else {
-        Some(values.to_vec())
     }
 }
 
@@ -703,8 +716,9 @@ pub fn service_role_arn() -> String {
     ::engine::emulator_arn("iam", "", SERVICE_LINKED_ROLE_RESOURCE)
 }
 
-/// The Macie resource id for `seed`: [`RESOURCE_ID_LEN`] lowercase base-36
-/// digits, as the modelled `[a-z0-9]{22}` id grammar requires.
+/// The id of a Macie resource whose ids the service issues as
+/// [`RESOURCE_ID_LEN`] lowercase base-36 digits, which is the grammar the model
+/// pins for an allow list and a classification scope.
 ///
 /// Base 36 rather than hex because hex would fill only 16 of the grammar's 36
 /// digits. `seed` comes from
@@ -715,6 +729,60 @@ pub fn new_resource_id(seed: u64, now: SystemTime) -> String {
     base36(spread(seed, now), RESOURCE_ID_LEN)
 }
 
+/// The bits of [`mix64`] of a seed that a UUID's low half has room for: the top
+/// two bits of that half are where the variant lives, so the seed's other two
+/// bits go beside the version instead.
+const UUID_LOW_HALF_BITS: u32 = 62;
+
+/// How far the top byte of [`mix64`] of a seed is shifted down to leave exactly
+/// the bits [`UUID_LOW_HALF_BITS`] had no room for. Shifting a byte by it is
+/// TOTAL — the result cannot exceed a nibble — so none of those bits can be
+/// lost on the way into the layout below.
+const UUID_HIGH_BITS_SHIFT: u32 = 8 - (64 - UUID_LOW_HALF_BITS);
+
+/// The id of a custom data identifier for `seed`: a canonical UUID — 36
+/// characters, lowercase hex in 8-4-4-4-12 groups — which is the form Macie
+/// issues one of these ids in. The text comes from
+/// [`::service_common::uuid_from_random_bytes`], this tree's one rendering of 16
+/// service-produced bytes as a UUID, so neither the grouping nor the version
+/// and variant bits are spelled out here.
+///
+/// INJECTIVE in `seed`, the property [`new_resource_id`] rests on too: all 64
+/// bits of [`mix64`] of the seed land in positions that rendering leaves free
+/// ([`UUID_LOW_HALF_BITS`] of them in the low half, the remaining two in the
+/// nibble beside the version), so no two identifiers of one store can carry the
+/// same id however the clock behaves. The rest of the bytes carry the instant it
+/// was minted at, so the ids of one store do not read as a counter.
+pub fn new_custom_data_identifier_id(seed: u64, now: SystemTime) -> String {
+    let unique = mix64(seed);
+    let instant = mix64(minted_at_bits(now) ^ unique).to_be_bytes();
+
+    let mut bytes = [0_u8; 16];
+    // The instant-derived half, except for the two positions a UUID reserves.
+    bytes[..6].copy_from_slice(&instant[..6]);
+    bytes[7] = instant[6];
+    // The bits of `unique` the low half has no room for, in the low nibble of
+    // the byte whose high nibble carries the version.
+    bytes[6] = unique.to_be_bytes()[0] >> UUID_HIGH_BITS_SHIFT;
+    // The rest of `unique`; the bits this leaves clear at the top are the ones
+    // the variant occupies.
+    let low = unique & ((1 << UUID_LOW_HALF_BITS) - 1);
+    bytes[8..].copy_from_slice(&low.to_be_bytes());
+
+    ::service_common::uuid_from_random_bytes(bytes)
+}
+
+/// The low 64 bits of the instant `now`, in nanoseconds since the epoch — what
+/// a minted id carries so that the ids of one store do not read as a counter.
+fn minted_at_bits(now: SystemTime) -> u64 {
+    let nanos = now
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    // The mask keeps this total rather than relying on a lossy cast.
+    u64::try_from(nanos & u128::from(u64::MAX)).unwrap_or_default()
+}
+
 /// 128 bits for one identifier: `seed` spread over the whole range, with the
 /// instant it was minted at in the high half so ids of one store do not read as
 /// a counter.
@@ -723,13 +791,8 @@ pub fn new_resource_id(seed: u64, now: SystemTime) -> String {
 /// [`mix64`] of the seed and `mix64` is a bijection on `u64`, so distinct seeds
 /// give distinct ids whatever the clock does.
 fn spread(seed: u64, now: SystemTime) -> u128 {
-    let nanos = now
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    // The low 64 bits of the instant are enough to spread the high half; the
-    // mask keeps this total rather than relying on a lossy cast.
-    let minted_at = u64::try_from(nanos & u128::from(u64::MAX)).unwrap_or_default();
+    // The low 64 bits of the instant are enough to spread the high half.
+    let minted_at = minted_at_bits(now);
     let high = mix64(minted_at ^ mix64(seed));
     (u128::from(high) << 64) | u128::from(mix64(seed))
 }
@@ -776,13 +839,107 @@ pub fn severity_rank(severity: &str) -> Option<usize> {
         .position(|known| *known == severity)
 }
 
+/// The severity configuration the service applies to a custom data identifier
+/// whose create named no `severityLevels`: one level, assigning
+/// [`DEFAULT_SEVERITY`] from [`DEFAULT_SEVERITY_OCCURRENCES_THRESHOLD`]
+/// occurrence onwards.
+///
+/// Stored with the identifier, the same way the documented
+/// [`DEFAULT_MAXIMUM_MATCH_DISTANCE`] is, so every later read reports the
+/// configuration that is actually in effect.
+pub fn default_severity_levels() -> Vec<SeverityLevel> {
+    vec![SeverityLevel {
+        severity: DEFAULT_SEVERITY.to_string(),
+        occurrences_threshold: DEFAULT_SEVERITY_OCCURRENCES_THRESHOLD,
+    }]
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        base36, custom_data_identifier_arn, is_region_shaped, new_resource_id, service_role_arn,
-        severity_rank, spread, RESOURCE_ID_LEN, SEVERITIES_ASCENDING,
+        base36, custom_data_identifier_arn, default_severity_levels, is_region_shaped,
+        new_custom_data_identifier_id, new_resource_id, service_role_arn, severity_rank, spread,
+        DEFAULT_SEVERITY, DEFAULT_SEVERITY_OCCURRENCES_THRESHOLD, MAX_SEVERITY_LEVELS,
+        RESOURCE_ID_LEN, SEVERITIES_ASCENDING,
     };
     use std::time::SystemTime;
+
+    /// Every custom-data-identifier id is a canonical UUID — the form the
+    /// service issues one in — and two seeds never collide, over a span of
+    /// seeds and of minting instants.
+    #[test]
+    fn minted_custom_data_identifier_ids_are_canonical_uuids_and_never_repeat() {
+        let mut seen = std::collections::BTreeSet::new();
+        let instants = [
+            SystemTime::UNIX_EPOCH,
+            SystemTime::UNIX_EPOCH + std::time::Duration::from_nanos(1),
+            SystemTime::now(),
+        ];
+        for now in instants {
+            for seed in 1..=256_u64 {
+                let id = new_custom_data_identifier_id(seed, now);
+                let case = format!("seed {seed} at {now:?}");
+                assert_eq!(
+                    id.chars().count(),
+                    36,
+                    "case {case}: a canonical UUID is 36 characters, got {id:?}"
+                );
+                assert_eq!(
+                    id.match_indices('-').map(|(at, _)| at).collect::<Vec<_>>(),
+                    vec![8, 13, 18, 23],
+                    "case {case}: a canonical UUID groups 8-4-4-4-12, got {id:?}"
+                );
+                assert!(
+                    id.chars()
+                        .all(|c| c == '-' || c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
+                    "case {case}: a canonical UUID is lowercase hex, got {id:?}"
+                );
+                assert!(
+                    seen.insert(id.clone()),
+                    "case {case}: {id:?} was already minted for another seed"
+                );
+            }
+        }
+    }
+
+    /// The severity configuration a create naming no `severityLevels` gets: one
+    /// level, carrying the values the member doc states — "at least one
+    /// occurrence" at the MEDIUM severity — and inside every documented bound
+    /// on the member.
+    #[test]
+    fn the_default_severity_level_is_the_documented_one() {
+        let levels = default_severity_levels();
+        assert_eq!(
+            levels.len(),
+            1,
+            "the default is a single level, got {levels:?}"
+        );
+        assert!(
+            levels.len() <= MAX_SEVERITY_LEVELS,
+            "the default must fit the documented bound of {MAX_SEVERITY_LEVELS}, got {levels:?}"
+        );
+        let level = &levels[0];
+        assert_eq!(
+            level.severity, "MEDIUM",
+            "the default level assigns the MEDIUM severity, got {level:?}"
+        );
+        assert_eq!(
+            level.occurrences_threshold, 1,
+            "the default level produces a finding from one occurrence, got {level:?}"
+        );
+        assert_eq!(
+            level.severity, DEFAULT_SEVERITY,
+            "the level and the constant naming its severity must agree, got {level:?}"
+        );
+        assert_eq!(
+            level.occurrences_threshold, DEFAULT_SEVERITY_OCCURRENCES_THRESHOLD,
+            "the level and the constant naming its threshold must agree, got {level:?}"
+        );
+        assert!(
+            severity_rank(&level.severity).is_some(),
+            "the default severity must be one the service orders, got {level:?}"
+        );
+    }
 
     /// Every minted id has the modelled width and alphabet, and two seeds never
     /// collide — the property the id grammar and uniqueness both rest on.
