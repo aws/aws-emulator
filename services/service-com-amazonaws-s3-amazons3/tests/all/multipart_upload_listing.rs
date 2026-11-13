@@ -452,14 +452,19 @@ async fn every_upload_in_progress_reads_back_in_key_then_initiation_order() {
         "no selection at all",
         page.entries()
     );
+    let (last_key, last_id) = expected
+        .last()
+        .cloned()
+        .unwrap_or_else(|| panic!("the listing table must report at least one upload"));
     for (element, wanted) in [
         ("Bucket", name.to_string()),
         ("IsTruncated", "false".to_string()),
         ("MaxUploads", MAX_UPLOADS_PER_PAGE.to_string()),
-        // Nothing was left for a next page, so no continuation marker is reported, and the
-        // request named no marker to echo.
-        ("NextKeyMarker", String::new()),
-        ("NextUploadIdMarker", String::new()),
+        // The continuation markers name the last entry this page reported — the position a
+        // next page would resume after — and are part of the answer even though nothing was
+        // left for one; the request named no marker to echo.
+        ("NextKeyMarker", last_key),
+        ("NextUploadIdMarker", last_id),
         ("KeyMarker", String::new()),
         ("UploadIdMarker", String::new()),
         ("EncodingType", String::new()),
@@ -688,16 +693,6 @@ async fn paging_reports_every_upload_exactly_once() {
                 page.field("MaxUploads")
             );
             seen.extend(page.entries());
-            if page.field("IsTruncated") != "true" {
-                assert_eq!(
-                    page.field("NextKeyMarker"),
-                    "",
-                    "case {case:?}: a page that is not truncated reports no next key marker, \
-                     got {:?}",
-                    page.field("NextKeyMarker")
-                );
-                break;
-            }
             let (key_marker, id_marker) = (
                 page.field("NextKeyMarker"),
                 page.field("NextUploadIdMarker"),
@@ -711,6 +706,9 @@ async fn paging_reports_every_upload_exactly_once() {
                 "case {case:?}: the next markers must name the last entry this page \
                  reported, got {key_marker:?} and {id_marker:?}"
             );
+            if page.field("IsTruncated") != "true" {
+                break;
+            }
             query = format!(
                 "&max-uploads={size}&key-marker={}&upload-id-marker={}",
                 in_path(&key_marker),

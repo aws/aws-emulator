@@ -115,8 +115,9 @@ impl Rendering {
 }
 
 /// What one walk of `ListMultipartUploads` reported: every entry as `(key, upload id)` with
-/// the key as STORED, and the `(NextKeyMarker, NextUploadIdMarker)` each truncated page
-/// handed back, as written on the wire.
+/// the key as STORED, and the `(NextKeyMarker, NextUploadIdMarker)` each TRUNCATED page
+/// handed back, as written on the wire — the walk resumes from those; the position the page
+/// that ends the walk reports is asserted where it is read.
 #[derive(Debug, Default)]
 struct UploadWalk {
     entries: Vec<(String, String)>,
@@ -205,6 +206,19 @@ async fn walk_uploads(
         let truncated = listing.field("IsTruncated");
         let next_key = listing.field("NextKeyMarker");
         let next_id = listing.field("NextUploadIdMarker");
+        // The position a next page resumes after is reported on EVERY page — the last entry
+        // this one reported, in the same rendering as its `Key` for the key name and as
+        // minted for the upload id — whatever `IsTruncated` says; it is empty only for a
+        // page that reported no entry at all.
+        let (last_key, last_id) = reported.last().cloned().unwrap_or_default();
+        assert_eq!(
+            (next_key.as_str(), next_id.as_str()),
+            (last_key.as_str(), last_id.as_str()),
+            "case {case:?} ({}): the next markers must name the last entry this page \
+             reported, got {:?}",
+            rendering.label(),
+            (&next_key, &next_id)
+        );
         if truncated != "true" {
             assert_eq!(
                 truncated,
@@ -213,33 +227,11 @@ async fn walk_uploads(
                  {truncated:?}",
                 rendering.label()
             );
-            assert_eq!(
-                (next_key.as_str(), next_id.as_str()),
-                ("", ""),
-                "case {case:?} ({}): the page that ends the walk hands back no resume \
-                 position, got {:?}",
-                rendering.label(),
-                (&next_key, &next_id)
-            );
             break;
         }
-        let (last_key, last_id) = reported.last().cloned().unwrap_or_else(|| {
-            panic!(
-                "case {case:?} ({}): a truncated page must report the entry it resumes \
-                 after",
-                rendering.label()
-            )
-        });
-        assert_eq!(
-            next_key, last_key,
-            "case {case:?} ({}): NextKeyMarker names the last entry the page reported, in the \
-             same rendering as its Key, got {next_key:?}",
-            rendering.label()
-        );
-        assert_eq!(
-            next_id, last_id,
-            "case {case:?} ({}): NextUploadIdMarker is that entry's upload id, got \
-             {next_id:?}",
+        assert!(
+            !reported.is_empty(),
+            "case {case:?} ({}): a truncated page must report the entry it resumes after",
             rendering.label()
         );
         walk.markers.push((next_key.clone(), next_id.clone()));

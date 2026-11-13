@@ -219,6 +219,8 @@ mod multipart_upload_initiation;
 mod multipart_upload_initiation_order;
 #[path = "all/multipart_upload_listing.rs"]
 mod multipart_upload_listing;
+#[path = "all/multipart_upload_resume_position.rs"]
+mod multipart_upload_resume_position;
 #[path = "all/not_modified_version_headers.rs"]
 mod not_modified_version_headers;
 #[path = "all/notification_destination_validation.rs"]
@@ -423,3 +425,6 @@ mod zz_host_style_probe;
 mod zz_probe;
 #[path = "all/zzz_batch_probe.rs"]
 mod zzz_batch_probe;
+#[path = "all/zzz_marker_probe.rs"]
+mod zzz_marker_probe;
+

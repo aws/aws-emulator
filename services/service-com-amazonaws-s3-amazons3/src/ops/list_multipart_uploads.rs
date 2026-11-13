@@ -5,8 +5,9 @@
 //! progress — it reports the uploads `CreateMultipartUpload` recorded in this service's
 //! state ([`crate::state::MultipartUpload`]), in key order and, within one key, in
 //! initiation order, filtered by `prefix`, rolled up by `delimiter` and paged by
-//! `max-uploads` from the position `key-marker`/`upload-id-marker` names, and refuses a
-//! bucket this emulator does not hold with `NoSuchBucket`.
+//! `max-uploads` from the position `key-marker`/`upload-id-marker` names, reports the
+//! position the NEXT page resumes after in `NextKeyMarker`/`NextUploadIdMarker`, and
+//! refuses a bucket this emulator does not hold with `NoSuchBucket`.
 //!
 //! ## Shape of an operation
 //!
@@ -549,9 +550,19 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // entry this page reported, which is the position the next request resumes after.
         // That pair is what makes paging lossless: every upload is reported exactly once,
         // whatever the page size.
-        let (next_key_marker, next_upload_id_marker) = match (truncated, last_entry) {
-            (true, Some((key, upload_id))) => (Some(key), upload_id),
-            _ => (None, None),
+        //
+        // The pair is part of EVERY answer, like the `KeyMarker`/`UploadIdMarker` that say
+        // where this page began: recorded behaviour reports the position of the last entry
+        // of a page that is not truncated too (a client paging by `IsTruncated` simply stops
+        // reading them), and reports both empty for a page that reported no entry at all,
+        // where there is no position to resume after. A rolled-up `CommonPrefixes` entry is
+        // a key name and no upload, so the key marker names it and the upload-id marker is
+        // the empty value — resuming after a prefix needs no upload id, because the prefix
+        // itself is "filtered out from results if it is not lexicographically greater than
+        // the key-marker" (`ListMultipartUploadsRequest$Delimiter`).
+        let (next_key_marker, next_upload_id_marker) = match last_entry {
+            Some((key, upload_id)) => (key, upload_id.unwrap_or_default()),
+            None => (String::new(), String::new()),
         };
 
         // The key-name elements of this listing, encoded when the request asked for an
@@ -589,10 +600,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             key_marker: Some(encode(input.key_marker.clone().unwrap_or_default())),
             upload_id_marker: Some(input.upload_id_marker.clone().unwrap_or_default()),
             // Truncated exactly when an entry was left for the next page; the markers name
-            // the last entry reported here, which the next request resumes after.
+            // the last entry reported here, which the next request resumes after, and are
+            // reported whatever that says.
             is_truncated: Some(truncated),
-            next_key_marker: next_key_marker.map(encode),
-            next_upload_id_marker,
+            next_key_marker: Some(encode(next_key_marker)),
+            next_upload_id_marker: Some(next_upload_id_marker),
             uploads: (!uploads.is_empty()).then(|| {
                 uploads
                     .into_iter()
