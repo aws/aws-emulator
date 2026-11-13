@@ -20,6 +20,7 @@
 //! reading a file at a commit specifier is a lookup rather than a tree walk.
 
 pub mod conflict_report;
+pub mod git_endpoint;
 pub mod git_object;
 pub mod merge;
 mod merge_record;
@@ -1360,6 +1361,14 @@ pub struct ComAmazonawsCodecommitCodecommit20150413State {
     /// (`GetPullRequest` takes a `pullRequestId` and nothing else), and ids are
     /// never reused, so this counter only ever goes up.
     pub pull_requests_created: u64,
+    /// The address this emulator serves the git transport of EVERY repository at:
+    /// the authority each announced clone URL names, and the listener that answers
+    /// there ([`git_endpoint`]). Opened by the call that creates a repository and
+    /// held for the life of the store, so the announced address stays dialable for
+    /// as long as a repository can be cloned; `None` on an engine that vends no
+    /// listener, where a clone URL names the endpoint the asking request arrived at
+    /// instead.
+    pub git_endpoint: Option<git_endpoint::GitEndpoint>,
 }
 
 impl ComAmazonawsCodecommitCodecommit20150413State {
@@ -1616,6 +1625,18 @@ const LOOPBACK_HOST: &str = "127.0.0.1";
 pub struct ServingEndpoint {
     pub scheme: String,
     pub authority: String,
+    /// The `host:port` this emulator serves the GIT transport at, when it has an
+    /// address of its own for it ([`git_endpoint`]): the authority `cloneUrlHttp`
+    /// names, under the scheme that address is served in the clear on.
+    ///
+    /// A clone URL is dialled by a stock git client with the trust material it
+    /// already has, and the emulator's own front door presents a certificate no
+    /// default trust store accepts — so the git transport is announced on the
+    /// address opened for it rather than on the one the asking request arrived at.
+    /// `None` on an engine that vends no listener, where the announced URL falls
+    /// back to the endpoint the request arrived at: the address this emulator is
+    /// reached on is still the only one it answers git at.
+    pub git_authority: Option<String>,
 }
 
 impl ServingEndpoint {
@@ -1654,13 +1675,37 @@ impl ServingEndpoint {
             // scheme CodeCommit publishes a clone URL for.
             .unwrap_or("https")
             .to_string();
-        Self { scheme, authority }
+        Self {
+            scheme,
+            authority,
+            git_authority: None,
+        }
+    }
+
+    /// The same endpoint, announcing the git transport at the address this emulator
+    /// opened for it ([`git_endpoint::ensure_git_endpoint`]). `None` leaves the
+    /// announced clone URL naming the endpoint the request arrived at.
+    #[must_use]
+    pub fn serving_git_at(mut self, git_authority: Option<String>) -> Self {
+        self.git_authority = git_authority;
+        self
     }
 
     /// The HTTPS clone URL for a repository: the git smart-HTTP endpoint this
     /// emulator serves for it (see [`crate::service::git_http`]).
+    ///
+    /// The ADDRESS is the one that transport is served at — the git listener's when
+    /// this emulator opened one, and the endpoint the asking request arrived at
+    /// otherwise — because a client hands this value straight to git, which dials it
+    /// as it stands (see [`Self::git_authority`]).
     pub fn clone_url_http(&self, name: &str) -> String {
-        format!("{}://{}/v1/repos/{name}", self.scheme, self.authority)
+        match &self.git_authority {
+            Some(authority) => format!(
+                "{}://{authority}/v1/repos/{name}",
+                git_endpoint::GIT_SCHEME
+            ),
+            None => format!("{}://{}/v1/repos/{name}", self.scheme, self.authority),
+        }
     }
 
     /// The SSH clone URL for a repository, naming the same host.

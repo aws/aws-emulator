@@ -152,17 +152,24 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The clone URLs this reports name the endpoint THIS request arrived at —
-        // the address the emulator's git transport answers on for the repository —
-        // so they are derived from the request rather than stored (see
-        // `crate::state::ServingEndpoint`).
-        let endpoint = crate::state::ServingEndpoint::from_request(ctx.parts());
+        // The clone URLs this reports name the address this emulator serves the git
+        // transport at — the one its own listener answers on, and the endpoint the
+        // ASKING request arrived at when it has none — so they are derived on every
+        // read rather than stored (see `crate::state::ServingEndpoint`). A READ: the
+        // address is the one the create that made the repository opened, so nothing
+        // is opened here.
         let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
             // An unreachable store is an internal mounting fault, not a modelled
             // CodeCommit failure; every handler in this crate refuses it this way.
             crate::scaffolded::Scaffolded::validation("the repository store is unavailable")
         })?;
         let store = state.lock();
+        let endpoint = crate::state::ServingEndpoint::from_request(ctx.parts()).serving_git_at(
+            store
+                .git_endpoint
+                .as_ref()
+                .map(|git| git.authority().to_string()),
+        );
 
         let repository = store.repositories.get(&input.repository_name).ok_or_else(|| {
             GetRepositoryErrorModeled::RepositoryDoesNotExistException(

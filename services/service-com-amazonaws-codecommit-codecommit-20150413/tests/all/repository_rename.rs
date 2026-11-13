@@ -214,9 +214,19 @@ async fn a_renamed_repository_keeps_its_identity_and_answers_to_the_new_name() {
             ),
             "case {label:?}: Arn must address the new name"
         );
+        // The clone URL names the address this emulator serves git at — its own git
+        // listener's, which a stock git client dials in the clear — with the new
+        // repository name on its path.
         assert_eq!(
             string_at(&after, "/cloneUrlHttp"),
-            format!("https://{ENDPOINT_AUTHORITY}/v1/repos/{}", case.new_name),
+            format!(
+                "{}/v1/repos/{}",
+                string_at(&before, "/cloneUrlHttp")
+                    .rsplit_once("/v1/repos/")
+                    .map(|(origin, _)| origin.to_string())
+                    .unwrap_or_default(),
+                case.new_name
+            ),
             "case {label:?}: cloneUrlHttp must address the new name"
         );
         assert_eq!(

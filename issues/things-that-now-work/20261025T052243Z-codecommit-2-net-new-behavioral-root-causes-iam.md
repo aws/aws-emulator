@@ -10,6 +10,65 @@ Issue-Commit: 35f0669fbed72946ad7349f4657cbc8fac9f7c2b
 
 # CodeCommit: 2 net-new behavioral root causes — IAM-conditioned git-push refusals are unobservable because the announced clone URL is still unusable, and ManualMergeRequiredException carries emulator prose instead of AWS's fixed text
 
+## Resolution
+
+Both causes are implemented in the emulator. Cause 2 was already fixed by a later change
+to the merge-legality validator; cause 1 — the transport AND the receive-pack
+authorization path the "Fix:" line below names — landed here.
+
+* Cause 1, the announced address (FIXED) — `cloneUrlHttp` is now
+  `http://<host>:<port>/v1/repos/<repositoryName>` on a listener of this emulator's own,
+  opened by `CreateRepository` through the core's plaintext socket
+  (`src/state/git_endpoint.rs`, `Listeners::tcp_plaintext`, so the core keeps the bind
+  interface — loopback by default — the port range, the connection caps and the
+  teardown). It speaks HTTP/1.1, negotiates TLS in band for a client that dials the same
+  address with `https://`, and hands every request to the router that serves this
+  emulator, so the announced origin is one an unmodified git client dials with no extra
+  trust material and no certificate to accept. `tests/all/git_push_authorization.rs`
+  opens a real socket to the announced authority and completes the exchange there.
+* Cause 1, the authorization path (FIXED) — every request to the git transport is now
+  authenticated and authorized (`src/service/git_authorization.rs`): a request presenting
+  no credential is answered `401` with a `WWW-Authenticate: Basic` challenge, the git
+  credentials it then presents (the access key id the CodeCommit credential helper writes,
+  with its session token after a `%`, or an IAM service-specific credential's
+  `ServiceUserName`) are resolved to their principal through the STS and IAM stores that
+  minted them, and the identity-based policies in force on that principal decide
+  `codecommit:GitPull` and `codecommit:GitPush`. The push is decided ONCE PER
+  AUTHORIZATION STEP: the ref advertisement carries no value for
+  `codecommit:References`, and each ref update command carries its own — so the
+  documented `Null: {"codecommit:References": "false"}` guard behaves here as it does on
+  AWS (dropping it widens the deny from one ref to the keyless step, which is refused
+  `403` before any pack data is read), and a refused ref is refused on AUTHORIZATION
+  ("You don't have permission to push changes to this branch."), leaves that ref where it
+  stood, and does not stop the other refs of the same push.
+* Cause 2 (FIXED, before this change) — `ManualMergeRequiredException` carries the fixed
+  AWS sentence "Current branches cannot be merged, please try to merge using a Git client
+  locally." (`src/state.rs`), shared by the branch and pull-request fast-forward paths,
+  and the check `codecommit.fast-forward-merge-refused-on-diverged-branches` passes.
+
+What REMAINS, and it is not this crate's to serve: the two git checks still spend their
+whole window in their first poll, which is a `git clone` driven with
+`-c credential.helper='!aws codecommit credential-helper $@'`. That helper is documented
+for CodeCommit's own `https` origins (it signs a canonical request for the
+`git-codecommit.<region>.amazonaws.com` host family), and the evidence here is consistent
+with it printing nothing for an address an emulator serves on the machine it runs on: git
+then has no credentials to present to the `401`, so no principal reaches the authorization
+path those two checks grade, and every retry inside their 120 s window fails the same way
+(the harness cuts the check at 60 s, before the poll's own assertion is reached, so the
+verdict carries no git stderr to confirm it from). A client that CAN present git
+credentials — an IAM service-specific credential pair, or any `Authorization: Basic`
+header — completes the clone, the fetch and the push on the announced address today.
+Closing the credential-helper path needs a transport whose certificate a stock git client
+already trusts for an address this emulator answers on, which the core's listeners cannot
+present (`vendor/server/src/tls_certificate_authority.rs` generates one self-signed
+certificate per process and `vendor/server/src/listeners.rs` serves it on every listener).
+The open
+`issues/things-that-do-not-work/20261107T223907Z-codecommit-the-announced-cloneurlhttp-is-served-over-tls.md`
+carries that gap and both check ids. Everything behind the transport is now exercised by
+`tests/all/git_push_authorization.rs` instead: the announced address over a socket, the
+challenge, the per-reference decision, the keyless step, the `Null` guard, and both
+documented kinds of git credentials.
+
 > _Note: this issue was identified against the code base at commit `35f0669fbed72946ad7349f4657cbc8fac9f7c2b`. If you are an issue fixer working on this, the code base you are currently working in can have drifted, so you might need to trace the issue back to the current code base._
 
 ## Operation

@@ -270,13 +270,30 @@ async fn a_written_repository_and_file_are_read_back_from_state() {
             engine::emulator_account_id(),
             "case {label:?}: accountId"
         );
-        // The clone URL names the endpoint this request was addressed to — the
-        // address this emulator's git transport answers on — not the public AWS
-        // git host, which is a different server.
+        // The clone URL names an address of THIS emulator — the one its git transport
+        // answers on, which a stock git client dials in the clear — not the public AWS
+        // git host, which is a different server. This repository was created through
+        // `CreateRepository`, so that address is open: the URL is the git listener's
+        // own loopback authority with this repository on its path.
+        let clone_url_http = string_at(&metadata, "/cloneUrlHttp");
+        let (origin, path) = clone_url_http
+            .split_once("/v1/repos/")
+            .unwrap_or_else(|| panic!("case {label:?}: cloneUrlHttp {clone_url_http:?}"));
         assert_eq!(
-            string_at(&metadata, "/cloneUrlHttp"),
-            format!("https://{ENDPOINT_AUTHORITY}/v1/repos/{}", case.name),
-            "case {label:?}: cloneUrlHttp"
+            path, case.name,
+            "case {label:?}: cloneUrlHttp must carry the repository on its path, got \
+             {clone_url_http:?}"
+        );
+        let port = origin.strip_prefix("http://127.0.0.1:").unwrap_or_else(|| {
+            panic!(
+                "case {label:?}: cloneUrlHttp must name this emulator's own git address in \
+                 the clear, got {clone_url_http:?}"
+            )
+        });
+        assert!(
+            port.parse::<u16>().is_ok_and(|port| port > 0),
+            "case {label:?}: cloneUrlHttp must name the port the git listener bound, got \
+             {clone_url_http:?}"
         );
         assert_eq!(
             string_at(&metadata, "/cloneUrlSsh"),

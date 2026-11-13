@@ -113,6 +113,8 @@ mod folder_listing;
 mod git_object_and_commit_specifier_messages;
 #[path = "all/git_object_ids.rs"]
 mod git_object_ids;
+#[path = "all/git_push_authorization.rs"]
+mod git_push_authorization;
 #[path = "all/git_transport.rs"]
 mod git_transport;
 #[path = "all/git_transport_body_bound.rs"]

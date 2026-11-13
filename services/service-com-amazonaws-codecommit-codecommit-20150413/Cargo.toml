@@ -12,6 +12,19 @@ engine = { workspace = true }
 # principal the credential it was signed with was minted for (see
 # `crate::state::caller_identity_arn`).
 service-com-amazonaws-sts-awssecuritytokenservicev20110615 = { workspace = true }
+# The IAM account: whose policies decide a git request. The git transport resolves the
+# credential a git client presents to its principal through the registries that minted
+# it — the account's access keys, its service-specific git credentials and its roles —
+# and reads the identity-based documents in force on it through IAM's own accessors
+# (`src/service/git_authorization.rs`).
+service-com-amazonaws-iam-awsidentitymanagementv20100508 = { workspace = true }
+# `iam_authorization`: the ONE evaluation of an IAM policy document against an action,
+# a resource and a condition context, which is what decides `codecommit:GitPull` and
+# per-reference `codecommit:GitPush`; `iam_role` and `caller_principal`: the shared
+# readings of a principal ARN; `in_band_tls` and `data_plane_addressing`: the ONE
+# reading of a listener's published `host:port` and of a connection whose encryption is
+# negotiated in band, which the announced git address is served through.
+service-common = { path = "../common" }
 smithy-macros = { workspace = true }
 aws-smithy-schema = { workspace = true }
 aws-smithy-schema-server = { workspace = true }
@@ -20,9 +33,19 @@ emulator-server = { workspace = true }
 emulator-telemetry = { workspace = true }
 aws-smithy-runtime-api = { workspace = true }
 aws-smithy-types = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["sync", "time"] }
 bytes = { workspace = true }
 http = { workspace = true }
+# Speaks HTTP/1.1 on the raw connection the core hands the listener the announced clone
+# URL names, which is what makes that URL an address a stock git client dials
+# (`src/state/git_endpoint.rs`). `hyper-util` carries the tokio IO and timer adapters
+# for it, `http-body-util` the bounded body reader and the one-shot body.
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http-body-util = "0.1"
+# Decodes the HTTP Basic credentials a git client presents, whose user name is the
+# credential id the principal behind the request is resolved from.
+base64 = "0.22"
 serde_json = { workspace = true }
 tracing = { workspace = true }
 # Content-addressed ids: the git object encoding of a blob/tree/commit, and the
@@ -46,10 +69,9 @@ diffy = "0.4"
 emulator-core-build-support = { workspace = true }
 
 [dev-dependencies]
-# The IAM store, so a test can seed the account's record of which user holds a
-# long-term access key — the record `crate::state::caller_identity_arn` resolves such
-# a key's identity through.
-service-com-amazonaws-iam-awsidentitymanagementv20100508 = { workspace = true }
+# Dials the announced clone URL in this process, exactly as a git client handed that
+# URL does: tokio's socket and byte-stream halves carry the HTTP exchange on it.
+tokio = { workspace = true, features = ["io-util", "net", "sync", "time"] }
 
 [lints]
 workspace = true

@@ -174,11 +174,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The clone URLs this reports name the endpoint THIS request arrived at —
-        // the address the emulator's git transport answers on for the repository —
-        // so they are derived from the request rather than stored (see
-        // `crate::state::ServingEndpoint`).
-        let endpoint = crate::state::ServingEndpoint::from_request(ctx.parts());
+        // The clone URLs this reports name the address this emulator serves the git
+        // transport at — the one its own listener answers on, and the endpoint the
+        // ASKING request arrived at when it has none — so they are derived on every
+        // read rather than stored (see `crate::state::ServingEndpoint`).
 
         // Each name's length and pattern are modeled on `RepositoryNameList`'s member,
         // so the boundary validator already refused anything outside them. The limit on
@@ -204,6 +203,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             crate::scaffolded::Scaffolded::validation("the repository store is unavailable")
         })?;
         let store = state.lock();
+        let endpoint = crate::state::ServingEndpoint::from_request(ctx.parts()).serving_git_at(
+            store
+                .git_endpoint
+                .as_ref()
+                .map(|git| git.authority().to_string()),
+        );
 
         // One entry per name, in the order the request listed them: a name the store
         // holds contributes the SAME metadata projection `GetRepository` reports, and a

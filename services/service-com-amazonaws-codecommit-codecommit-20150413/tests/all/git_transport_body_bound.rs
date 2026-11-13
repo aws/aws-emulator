@@ -26,8 +26,25 @@ use smithy_server_runtime::MultiServiceRouter;
 
 use super::repository_lifecycle::{emulator, ok, string_at};
 
+/// The user name of the git credentials every request here presents. The account
+/// holds no record of it, so it speaks for no IAM identity and no identity-based
+/// policy is in force on it.
+const GIT_USER: &str = "body-bound-user-at-000000000000";
+
+/// The `Authorization` header a git client sends once it has been challenged: the git
+/// credentials as HTTP Basic ones.
+fn git_credentials() -> String {
+    use base64::Engine as _;
+    format!(
+        "Basic {}",
+        base64::engine::general_purpose::STANDARD.encode(format!("{GIT_USER}:password"))
+    )
+}
+
 /// Send one git transport request the way a git client does: no SigV4 credential, no
-/// `X-Amz-Target`, the `Host` of the clone URL it was given.
+/// `X-Amz-Target`, the `Host` of the clone URL it was given, and git credentials as
+/// HTTP Basic ones — which is what the transport challenges a request carrying none
+/// for.
 async fn post(
     router: &MultiServiceRouter,
     url: &str,
@@ -36,7 +53,8 @@ async fn post(
     body: Vec<u8>,
 ) -> (u16, String) {
     let host = url
-        .trim_start_matches("https://")
+        .split_once("://")
+        .map_or(url, |(_scheme, authority)| authority)
         .split('/')
         .next()
         .unwrap_or_default()
@@ -46,6 +64,7 @@ async fn post(
         .uri(format!("{url}/{service}"))
         .header("host", host)
         .header("user-agent", "git/2.43.0")
+        .header("authorization", git_credentials())
         .header("content-type", format!("application/x-{service}-request"));
     if let Some(encoding) = content_encoding {
         request = request.header("content-encoding", encoding);

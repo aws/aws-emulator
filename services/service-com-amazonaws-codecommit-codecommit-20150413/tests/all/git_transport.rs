@@ -5,8 +5,8 @@
 //!
 //! The rules under test:
 //!
-//! 1. `RepositoryMetadata.cloneUrlHttp` names the endpoint the ASKING request
-//!    arrived at, and that URL — not a rewritten one — is the address the git
+//! 1. `RepositoryMetadata.cloneUrlHttp` names an address THIS emulator serves the
+//!    git transport at, and that URL — not a rewritten one — is the address the git
 //!    transport answers on (`info/refs`, `git-upload-pack`, `git-receive-pack`).
 //! 2. A push is stored as git objects and projected into the control plane: the
 //!    commits and tags a client pushes are readable through `GetBranch`/`GetFile`
@@ -59,7 +59,10 @@ struct GitReply {
 }
 
 /// Send a git transport request to `url` exactly as a git client would: no SigV4
-/// credential, no `X-Amz-Target`, the `Host` of the URL it was given.
+/// credential, no `X-Amz-Target`, the `Host` of the URL it was given, and the git
+/// credentials of a caller as HTTP Basic ones — which is how a git client
+/// authenticates to CodeCommit, and what the transport challenges a request that
+/// carries none for.
 async fn git(
     router: &MultiServiceRouter,
     method: &str,
@@ -67,12 +70,43 @@ async fn git(
     content_type: Option<&str>,
     body: Vec<u8>,
 ) -> GitReply {
+    git_as(router, method, url, content_type, body, Some(GIT_USER)).await
+}
+
+/// The user name of the git credentials the cases here present. The account holds no
+/// record of it, so it speaks for no IAM identity and no identity-based policy is in
+/// force on it — the position the account's own credentials are in.
+const GIT_USER: &str = "git-user-at-000000000000";
+
+/// The `Authorization` header a git client sends once it has been challenged:
+/// Basic credentials whose user name is the git credential's.
+fn basic(user: &str) -> String {
+    use base64::Engine as _;
+    format!(
+        "Basic {}",
+        base64::engine::general_purpose::STANDARD.encode(format!("{user}:password"))
+    )
+}
+
+/// [`git`], with the git credentials the request presents named — `None` for a
+/// request that presents none at all.
+async fn git_as(
+    router: &MultiServiceRouter,
+    method: &str,
+    url: &str,
+    content_type: Option<&str>,
+    body: Vec<u8>,
+    user: Option<&str>,
+) -> GitReply {
     let mut request = http::Request::builder()
         .method(method)
         .uri(url)
         .header("host", ENDPOINT)
         .header("user-agent", "git/2.43.0")
         .header("accept", "*/*");
+    if let Some(user) = user {
+        request = request.header("authorization", basic(user));
+    }
     if let Some(content_type) = content_type {
         request = request.header("content-type", content_type);
     }
@@ -115,6 +149,56 @@ async fn rpc(router: &MultiServiceRouter, clone_url: &str, service: &str, body: 
         body,
     )
     .await
+}
+
+/// Assert that the clone URL `created` announced for `repository` is the address this
+/// emulator serves git at, in the FORM the announcement has to take — the git
+/// listener's own loopback authority under the scheme it speaks in the clear, with the
+/// repository on the path — and that `GetRepository` reports the same value.
+async fn assert_announced_git_url(
+    router: &MultiServiceRouter,
+    label: &str,
+    repository: &str,
+    clone_url: &str,
+) {
+    let (scheme, rest) = clone_url
+        .split_once("://")
+        .unwrap_or_else(|| panic!("case {label:?}: the clone URL names no origin: {clone_url:?}"));
+    assert_eq!(
+        scheme, "http",
+        "case {label:?}: the git address is served in the clear, so a stock client dials \
+         it with no trust material: {clone_url:?}"
+    );
+    let (authority, path) = rest
+        .split_once('/')
+        .unwrap_or_else(|| panic!("case {label:?}: the clone URL names no path: {clone_url:?}"));
+    assert_eq!(
+        path,
+        format!("v1/repos/{repository}"),
+        "case {label:?}: the clone URL's path: {clone_url:?}"
+    );
+    let (host, port) = authority
+        .rsplit_once(':')
+        .unwrap_or_else(|| panic!("case {label:?}: the clone URL names no port: {clone_url:?}"));
+    assert_eq!(
+        host, "127.0.0.1",
+        "case {label:?}: the git listener's address is this machine's own: {clone_url:?}"
+    );
+    assert!(
+        port.parse::<u16>().is_ok_and(|port| port > 0),
+        "case {label:?}: the clone URL names the port the listener bound: {clone_url:?}"
+    );
+    let read = ok(
+        router,
+        "GetRepository",
+        &json!({ "repositoryName": repository }),
+    )
+    .await;
+    assert_eq!(
+        string_at(&read, "/repositoryMetadata/cloneUrlHttp"),
+        clone_url,
+        "case {label:?}: every read announces the one address this emulator serves git at"
+    );
 }
 
 // ------------------------------------------------------------------- git objects
@@ -753,11 +837,7 @@ async fn a_push_to_the_announced_clone_url_is_readable_through_the_api_and_clona
         )
         .await;
         let clone_url = string_at(&created, "/repositoryMetadata/cloneUrlHttp");
-        assert_eq!(
-            clone_url,
-            format!("https://{ENDPOINT}/v1/repos/{}", case.repository),
-            "case {label:?}: the clone URL must name the endpoint the request arrived at"
-        );
+        assert_announced_git_url(&router, label, case.repository, &clone_url).await;
 
         // An empty repository advertises no ref, and advertises its capabilities
         // on the line git reserves for that.
@@ -2188,7 +2268,8 @@ async fn the_transport_is_claimed_by_path_whatever_host_the_client_was_given() {
         let mut request = http::Request::builder()
             .method("GET")
             .uri("/v1/repos/hosts/info/refs?service=git-upload-pack")
-            .header("user-agent", "git/2.43.0");
+            .header("user-agent", "git/2.43.0")
+            .header("authorization", basic(GIT_USER));
         if let Some(host) = host {
             request = request.header("host", host);
         }
@@ -2225,6 +2306,11 @@ async fn the_transport_is_claimed_by_path_whatever_host_the_client_was_given() {
 #[tokio::test]
 async fn the_announced_clone_url_names_whichever_endpoint_the_request_arrived_at() {
     let (router, engine) = emulator_with_engine();
+    // This store was never written through `CreateRepository`, so this emulator opened
+    // no git address of its own (see `crate::state::git_endpoint`): the announced URLs
+    // name the endpoint the ASKING request arrived at, which is the fallback — the
+    // address this emulator is reached on is still the only one it answers git at.
+    //
     // Rows: a host-style AWS endpoint, a loopback address with a port, an IPv6
     // literal with a port, a container endpoint, and a request with no Host at
     // all (only an in-process caller, which falls back to loopback — the address

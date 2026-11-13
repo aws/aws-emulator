@@ -62,16 +62,32 @@
 //! a push's whole read-check-update sequence, because that atomicity is exactly
 //! what makes a concurrent pusher's stale `old` value detectable.
 //!
-//! It verifies no request signature, and cannot: a git client authenticates with
-//! the HTTPS git credentials IAM's `CreateServiceSpecificCredential` vends, which
-//! are not a SigV4 credential and which this emulator does not mint — there is
-//! nothing for the framework's SigV4 authenticator to check, and refusing every
-//! git request instead is exactly the defect this transport fixes. That matches
-//! the emulator's posture for the data planes it serves: it binds loopback by
-//! default (`EMULATOR_BIND_ADDRESS`) and holds only emulated state.
+//! # Who may fetch, and who may push what
+//!
+//! Every request to it is made with git credentials, and the principal behind them
+//! decides what it may do: a fetch is `codecommit:GitPull` and a push is
+//! `codecommit:GitPush`, taken PER REFERENCE, which is the only branch protection
+//! CodeCommit has. A request that presents no credential at all is answered `401`
+//! with a `Basic` challenge — which is what makes a git client run its credential
+//! helper and send the request again — and the credential it then presents is
+//! resolved to its principal, whose IAM policies are evaluated once per
+//! authorization step ([`super::git_authorization`], which also states what a
+//! credential can and cannot prove here).
+//!
+//! It verifies no request SIGNATURE, and cannot: a git credential is not a SigV4
+//! credential, and the secret half of one is held by the credential store, which
+//! hands a secret back to nobody — so there is nothing here to check a password
+//! against, and refusing every git request instead is exactly the defect this
+//! transport fixes. That matches the emulator's posture for the data planes it
+//! serves: it binds loopback by default (`EMULATOR_BIND_ADDRESS`) and holds only
+//! emulated state.
 
 use std::time::SystemTime;
 
+use super::git_authorization::{
+    GitPrincipal, GIT_PULL_ACTION, GIT_PUSH_ACTION, NO_PERMISSION_TO_PULL, NO_PERMISSION_TO_PUSH,
+    NO_PERMISSION_TO_PUSH_REFERENCE,
+};
 use super::git_pack;
 use crate::state::git_object::{self, Kind, Object};
 use crate::state::{
@@ -96,6 +112,17 @@ const MAX_REF_COMMANDS_PER_REQUEST: usize = 256;
 
 /// A flush packet: the end of a pkt-line stream or section.
 const FLUSH: &[u8] = b"0000";
+
+/// The challenge a request that presented NO credential is answered with, which is
+/// what makes a git client ask its credential helper for one and send the request
+/// again: the scheme CodeCommit's git transport authenticates under (a git client
+/// presents HTTPS git credentials as HTTP Basic ones) and the realm it names.
+const BASIC_CHALLENGE: &str = "Basic realm=\"CodeCommit\"";
+
+/// What a request that presented no credential at all is told. A git client prints
+/// its own message for a `401`; this is the body behind it.
+const CREDENTIALS_REQUIRED: &str =
+    "This repository requires the git credentials of an authorized IAM principal.";
 
 /// Which of the two git services a request addresses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -150,6 +177,10 @@ pub struct Response {
     pub status: u16,
     pub content_type: String,
     pub body: Vec<u8>,
+    /// The `WWW-Authenticate` challenge the answer carries, set only on the `401`
+    /// that asks a client for credentials — RFC 9110 requires a challenge on one,
+    /// and it is the challenge that makes a git client run its credential helper.
+    pub www_authenticate: Option<String>,
 }
 
 impl Response {
@@ -158,6 +189,7 @@ impl Response {
             status,
             content_type,
             body,
+            www_authenticate: None,
         }
     }
 
@@ -167,6 +199,16 @@ impl Response {
             status,
             content_type: "text/plain; charset=utf-8".to_string(),
             body: format!("{message}\n").into_bytes(),
+            www_authenticate: None,
+        }
+    }
+
+    /// The refusal of a request that presented no credential: a `401` carrying the
+    /// challenge under which the client may present one.
+    pub fn challenge(message: &str) -> Self {
+        Self {
+            www_authenticate: Some(BASIC_CHALLENGE.to_string()),
+            ..Self::text(401, message)
         }
     }
 }
@@ -252,7 +294,27 @@ pub const MAX_REQUEST_BODY_BYTES: usize = git_pack::MAX_PACK_BYTES + 64 * 1024;
 /// `body` is the request body with its `Content-Encoding` already undone
 /// ([`decode_body`]), so the decompression — caller-driven CPU over caller-supplied
 /// bytes — happens before the store guard this function is handed is taken.
-pub fn serve(store: &mut Store, request: &Request, body: &[u8]) -> Response {
+///
+/// `caller` is the principal the credentials the request PRESENTED speak for
+/// ([`super::git_authorization`]), or `None` for a request that presented none —
+/// which is answered with a challenge, because every request to a CodeCommit
+/// repository's git transport is made with git credentials and the principal behind
+/// them is what the authorization steps below are decided for.
+///
+/// Each of those steps is one IAM decision, taken BEFORE the state of the repository
+/// is consulted: a refusal is an authorization refusal and never git's own
+/// "fetch first". The ref advertisement is decided with no reference in hand,
+/// because the client has not said what it intends to update yet; each ref update
+/// command of a push is decided with its own.
+pub fn serve(
+    store: &mut Store,
+    request: &Request,
+    body: &[u8],
+    caller: Option<&GitPrincipal>,
+) -> Response {
+    let Some(principal) = caller else {
+        return Response::challenge(CREDENTIALS_REQUIRED);
+    };
     let Some(repository) = store.repositories.get_mut(&request.repository) else {
         // The same refusal a git host gives for a path that names no repository;
         // a git client prints it as "repository not found".
@@ -261,16 +323,69 @@ pub fn serve(store: &mut Store, request: &Request, body: &[u8]) -> Response {
             &format!("repository {} not found", request.repository),
         );
     };
+    // The ARN of the repository the request addressed, which is the resource an IAM
+    // statement's `Resource` element names for a git action on it.
+    let resource = repository.arn.clone();
     match &request.endpoint {
         Endpoint::Advertisement(None) => Response::text(
             403,
             "this server speaks only the git smart HTTP protocol; \
              request info/refs with service=git-upload-pack or service=git-receive-pack",
         ),
-        Endpoint::Advertisement(Some(service)) => advertise(repository, *service),
-        Endpoint::UploadPack => upload_pack(repository, body),
-        Endpoint::ReceivePack => receive_pack(repository, body),
+        Endpoint::Advertisement(Some(service)) => {
+            // The KEYLESS authorization step: the advertisement a fetch or a push
+            // begins with names no reference, so the decision carries no value for
+            // `codecommit:References`.
+            match refusal_of(principal, *service, &resource, None) {
+                Some(refusal) => refusal,
+                None => advertise(repository, *service),
+            }
+        }
+        Endpoint::UploadPack => match refusal_of(
+            principal,
+            GitService::Upload,
+            &resource,
+            None,
+        ) {
+            Some(refusal) => refusal,
+            None => upload_pack(repository, body),
+        },
+        Endpoint::ReceivePack => receive_pack(repository, body, principal),
     }
+}
+
+/// The refusal a step of `service` on `resource` gets when the policies in force on
+/// `principal` do not permit it, or `None` when they do.
+///
+/// `reference` is the fully qualified name of the ref the step is about, and `None`
+/// for a step that is about none. The status is a `403`: the request identified a
+/// principal, and that principal may not take this step — which is what a git client
+/// prints as the server having refused it.
+fn refusal_of(
+    principal: &GitPrincipal,
+    service: GitService,
+    resource: &str,
+    reference: Option<&str>,
+) -> Option<Response> {
+    let (action, refused) = match service {
+        GitService::Upload => (GIT_PULL_ACTION, NO_PERMISSION_TO_PULL),
+        GitService::Receive => (GIT_PUSH_ACTION, NO_PERMISSION_TO_PUSH),
+    };
+    if principal.permits(action, resource, reference) {
+        return None;
+    }
+    // Audit record for the refusal: the acting principal, what it asked for and the
+    // decision. The policy documents themselves are not logged.
+    ::tracing::info!(
+        audit = true,
+        outcome = "refused_access_denied",
+        principal = %principal.arn,
+        action = %action,
+        resource = %resource,
+        reference = reference.unwrap_or_default(),
+        "the policies in force on the caller do not permit this git request"
+    );
+    Some(Response::text(403, refused))
 }
 
 /// The request body with its `Content-Encoding` undone.
@@ -534,10 +649,11 @@ struct Command {
 }
 
 /// Serve a push: read the ref commands and the packfile, store what the pack
-/// carries, apply the updates the repository's state allows, and report a verdict
-/// per ref.
-fn receive_pack(repository: &mut Repository, body: &[u8]) -> Response {
+/// carries, apply the updates the caller is authorized for and the repository's
+/// state allows, and report a verdict per ref.
+fn receive_pack(repository: &mut Repository, body: &[u8], principal: &GitPrincipal) -> Response {
     let content_type = format!("application/x-{}-result", GitService::Receive.name());
+    let resource = repository.arn.clone();
     let (lines, pack) = match read_pkt_lines(body, true) {
         Ok(parsed) => parsed,
         Err(message) => return Response::text(400, &message),
@@ -624,6 +740,23 @@ fn receive_pack(repository: &mut Repository, body: &[u8]) -> Response {
         let verdict = match &unpacked {
             // git's own wording: the detail is on the `unpack` line above.
             Err(_) => Err("unpacker error".to_string()),
+            // ONE authorization step per ref update, decided with that ref as the
+            // value of `codecommit:References` and BEFORE the repository's state is
+            // consulted: a refused ref is refused for authorization, so it never
+            // reports git's own "fetch first", it leaves the ref where it stands,
+            // and the other refs of the same push are decided on their own.
+            Ok(()) if !principal.permits(GIT_PUSH_ACTION, &resource, Some(&command.name)) => {
+                ::tracing::info!(
+                    audit = true,
+                    outcome = "refused_access_denied",
+                    principal = %principal.arn,
+                    action = %GIT_PUSH_ACTION,
+                    resource = %resource,
+                    reference = %command.name,
+                    "the policies in force on the caller do not permit this ref update"
+                );
+                Err(NO_PERMISSION_TO_PUSH_REFERENCE.to_string())
+            }
             Ok(()) => judge(repository, &command, &mut projection, &mut verified)
                 .and_then(|()| project(repository, &command, &mut projection)),
         };

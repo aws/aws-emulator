@@ -46,6 +46,7 @@ use smithy_server_runtime::{
 use std::sync::Arc;
 
 pub mod conflict_resolution;
+pub mod git_authorization;
 pub mod git_http;
 pub mod git_pack;
 
@@ -728,15 +729,20 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
         // client is what reads it.
         let (path, query) = git_http::split_uri(req.uri());
         let request = git_http::route(req.method(), &path, query.as_deref())?;
+        // WHO the request speaks for, resolved before this service's store is
+        // locked: the principal reads the IAM and STS stores, and the decisions the
+        // transport takes per authorization step are then made from that snapshot
+        // alone, so no two stores are held at once. `None` is a request that
+        // presented no credential, which the transport answers with a challenge.
+        let caller = git_authorization::presented_principal(
+            &*self.engine,
+            req.headers().get("authorization"),
+        );
         // A body that is not in memory is a body this service never read: it must
         // not be served as an EMPTY one, which a push would answer as a no-op
         // success. The router buffers every request body, so this is the
         // can't-happen arm, refused the same way an unreachable store is.
-        let unreadable = || git_http::Response {
-            status: 500,
-            content_type: "text/plain; charset=utf-8".to_string(),
-            body: b"the request body could not be read\n".to_vec(),
-        };
+        let unreadable = || git_http::Response::text(500, "the request body could not be read");
         let response = match (
             crate::state::service_state(&*self.engine),
             req.body().bytes(),
@@ -787,17 +793,13 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
                         // and its budget) — so the span the lock is held for is
                         // bounded whatever the body carries.
                         Ok(decoded) => off_the_async_worker(|| {
-                            git_http::serve(&mut state.lock(), &request, &decoded)
+                            git_http::serve(&mut state.lock(), &request, &decoded, caller.as_ref())
                         }),
                         Err(message) => git_http::Response::text(400, &message),
                     }
                 }
             }
-            (None, _) => git_http::Response {
-                status: 500,
-                content_type: "text/plain; charset=utf-8".to_string(),
-                body: b"the repository store is unavailable\n".to_vec(),
-            },
+            (None, _) => git_http::Response::text(500, "the repository store is unavailable"),
             (_, None) => unreadable(),
         };
         let mut rendered = aws_smithy_runtime_api::http::Response::new(
@@ -808,6 +810,12 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
         rendered
             .headers_mut()
             .insert("content-type", response.content_type);
+        // RFC 9110 requires a `WWW-Authenticate` challenge on a `401`, and it is the
+        // challenge that makes a git client ask its credential helper for the
+        // credentials and send the request again.
+        if let Some(challenge) = response.www_authenticate {
+            rendered.headers_mut().insert("www-authenticate", challenge);
+        }
         // A git client must never serve a ref advertisement or a packfile from a
         // cache: both are a snapshot of refs that the next request may move.
         rendered.headers_mut().insert("cache-control", "no-cache");

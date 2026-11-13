@@ -295,6 +295,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // a KMS integrity check failed.
             crate::scaffolded::Scaffolded::validation("the repository store is unavailable")
         })?;
+        // The address this emulator serves the git transport at, opened on the first
+        // create: a repository is clonable from the moment it exists, so the address
+        // its metadata announces has to be open by the time this call answers. It is
+        // opened once for the whole store and changes no repository
+        // (`crate::state::git_endpoint`); the store guard is taken after it, because
+        // a guard held across an await would make this future non-`Send`.
+        let git_authority = crate::state::git_endpoint::ensure_git_endpoint(
+            &*self.engine,
+            &state,
+            ctx.callback(),
+        )
+        .await;
         let mut store = state.lock();
 
         if store.repositories.contains_key(&input.repository_name) {
@@ -331,11 +343,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             &crate::state::region_of(ctx.parts()),
             std::time::SystemTime::now(),
         );
-        // The clone URLs name the endpoint THIS request arrived at, which is where
-        // the emulator's git transport (`crate::service::git_http`) answers for the
-        // repository; the public AWS git host is a different server, and a client
-        // that followed it would leave the emulator entirely.
-        let metadata = repository.metadata(&crate::state::ServingEndpoint::from_request(ctx.parts()));
+        // The clone URLs name an address of THIS emulator, which is where its git
+        // transport (`crate::service::git_http`) answers for the repository; the
+        // public AWS git host is a different server, and a client that followed it
+        // would leave the emulator entirely.
+        let metadata = repository.metadata(
+            &crate::state::ServingEndpoint::from_request(ctx.parts())
+                .serving_git_at(git_authority),
+        );
         store
             .repositories
             .insert(input.repository_name.clone(), repository);
