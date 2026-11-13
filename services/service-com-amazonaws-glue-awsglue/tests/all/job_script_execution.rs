@@ -35,7 +35,7 @@ use serde_json::{json, Value};
 use service_com_amazonaws_glue_awsglue::state::{
     job_run_language_not_runnable, job_run_script_ceiling_reached, JOB_RUN_NO_SCRIPT_LOCATION,
     JOB_RUN_SCRIPT_UNREADABLE_LEAD, JOB_RUN_STATE_FAILED, JOB_RUN_STATE_SUCCEEDED,
-    JOB_RUN_STATE_TIMEOUT,
+    JOB_RUN_STATE_TIMEOUT, MAX_CONCURRENT_JOB_SCRIPT_RUNS,
 };
 use smithy_server_runtime::MultiServiceRouter;
 
@@ -111,6 +111,37 @@ pub(crate) async fn object_body(router: &MultiServiceRouter, key: &str) -> Optio
     let bytes = object.body.collect().await.ok()?.into_bytes();
     String::from_utf8(bytes.to_vec()).ok()
 }
+
+/// How many objects the store holds under `prefix` — which is how many times a script that
+/// appends one object per execution really ran.
+async fn objects_under(router: &MultiServiceRouter, prefix: &str) -> usize {
+    let listed = s3(router)
+        .list_objects_v2()
+        .bucket(BUCKET)
+        .prefix(prefix)
+        .send()
+        .await
+        .unwrap_or_else(|error| panic!("the listing of {prefix} must answer, got {error:?}"));
+    usize::try_from(listed.key_count().unwrap_or_default()).unwrap_or_default()
+}
+
+/// A script that writes ONE object per execution, under a key no two executions of it share:
+/// how many executions really happened is then readable from the object store rather than
+/// from the run records alone.
+const APPENDS_ONE_OBJECT: &str = r#"
+import sys
+
+import boto3
+
+named = dict(zip(sys.argv[1::2], sys.argv[2::2]))
+client = boto3.client("s3")
+listed = client.list_objects_v2(Bucket=named["--bucket"], Prefix=named["--key"])
+client.put_object(
+    Bucket=named["--bucket"],
+    Key="%s%d" % (named["--key"], listed.get("KeyCount") or 0),
+    Body=named["--token"].encode("utf-8"),
+)
+"#;
 
 /// Start a run of `job_name` with `arguments` and answer the `JobRun` `GetJobRun` reports
 /// once that run has come to rest.
@@ -659,18 +690,10 @@ raise RuntimeError("this attempt failed after writing its object")
 
         // One object per execution the chain really performed: a retry re-runs the script,
         // so the effects of each attempt are there, and a run nothing retried has one.
-        let written = s3(&router)
-            .list_objects_v2()
-            .bucket(BUCKET)
-            .prefix(&prefix)
-            .send()
-            .await
-            .unwrap_or_else(|error| panic!("case {case:?}: the listing must answer, got {error:?}"));
         let expected_objects = if script == EXITS_CLEANLY { 0 } else { attempts };
-        let actual_objects = written.key_count().unwrap_or_default();
+        let actual_objects = objects_under(&router, &prefix).await;
         assert_eq!(
-            usize::try_from(actual_objects).unwrap_or_default(),
-            expected_objects,
+            actual_objects, expected_objects,
             "case {case:?}: expected {expected_objects} object(s) from {attempts} execution(s), \
              got {actual_objects}"
         );
@@ -684,6 +707,15 @@ raise RuntimeError("this attempt failed after writing its object")
 /// The rows are one per primitive a script could try to reach the host with, and each is
 /// attempted FROM the script. The control is the row that writes an object instead, which
 /// must succeed — so the table cannot pass by every script failing for some other reason.
+///
+/// What each row asserts is decided by the script's own EXECUTION and by nothing else: the
+/// module a contained script reaches for is one the engine never registered, so the script
+/// raises on every host and the run carries that exception. The one thing in the path that
+/// depends on what else the host is doing is WHICH call performs that execution — the start,
+/// or a later read when no interpreter was free for the start — which is why every row reads
+/// the run back until it has come to rest ([`run_to_rest`]) rather than once after the span
+/// the start left owed is made due: a single read reports a run whose execution the READ
+/// performed as still in flight, because that execution records an owed span of its own.
 #[tokio::test]
 async fn a_script_reaches_nothing_of_the_host() {
     // (case, the script, whether it must come to rest having succeeded)
@@ -789,22 +821,6 @@ async fn a_script_reaches_nothing_of_the_host() {
 /// a second one. The rows differ along which read is made and how many times.
 #[tokio::test]
 async fn a_runs_script_is_executed_exactly_once_however_often_it_is_read() {
-    // A script that writes one object per execution, under a key no two executions share.
-    const APPENDS_ONE_OBJECT: &str = r#"
-import sys
-
-import boto3
-
-named = dict(zip(sys.argv[1::2], sys.argv[2::2]))
-client = boto3.client("s3")
-listed = client.list_objects_v2(Bucket=named["--bucket"], Prefix=named["--key"])
-client.put_object(
-    Bucket=named["--bucket"],
-    Key="%s%d" % (named["--key"], listed.get("KeyCount") or 0),
-    Body=named["--token"].encode("utf-8"),
-)
-"#;
-
     let (router, engine) = emulator_with_s3();
     create_bucket(&router).await;
     let name = "script-executed-once";
@@ -858,20 +874,16 @@ client.put_object(
     ] {
         let operation = case.split_whitespace().next().unwrap_or(case);
         ok(&router, operation, &body).await;
-        let listed = s3(&router)
-            .list_objects_v2()
-            .bucket(BUCKET)
-            .prefix(&prefix)
-            .send()
-            .await
-            .unwrap_or_else(|error| panic!("case {case:?}: the listing must answer, got {error:?}"));
-        let written = listed.key_count().unwrap_or_default();
+        let written = objects_under(&router, &prefix).await;
         assert_eq!(
             written, 1,
             "case {case:?}: the script must have run exactly once, got {written} object(s)"
         );
     }
 }
+
+/// The script reads the arguments THE RUN resolved: the job's `DefaultArguments` with the
+/// start's own `Arguments` over them, on the command line the script resolves them off.
 ///
 /// The rows differ along which side names the value: the job alone, the start alone, and
 /// both — where the start wins, as `StartJobRun$Arguments` documents ("For this job run,
@@ -966,5 +978,177 @@ boto3.client("s3").put_object(
             Some(expected),
             "case {case:?}: the run must report the arguments it resolved, got {run}"
         );
+    }
+}
+
+/// Runs started AT ONCE each come to rest in what ITS OWN execution came to, and each script
+/// is executed exactly once.
+///
+/// This emulator runs a bounded number of job scripts at the same time
+/// ([`MAX_CONCURRENT_JOB_SCRIPT_RUNS`]), so the start that begins a run performs that run's
+/// one execution only while an interpreter is free for it; a start that finds none leaves the
+/// run owing its script, and the first read that finds it owed is what performs it, recording
+/// an owed span of its own. Either way what the run reports once it has come to rest is what
+/// its own execution answered — never an outcome nothing produced, and never a script run
+/// twice — and reading the run back until it has come to rest is how a client observes that,
+/// whichever call did the work.
+///
+/// The rows differ along how many runs are started at once: one, with every interpreter free
+/// for it, and as many at once as there are interpreters. No row oversubscribes that pool:
+/// it is shared by every run in this process, so a test that took more of it than there is
+/// would be deciding what the tests beside it see.
+#[tokio::test]
+async fn runs_started_at_once_each_come_to_rest_in_what_their_own_script_came_to() {
+    // (case, how many runs are started at once beside the one under test)
+    let rows: [(&str, usize); 2] = [
+        ("one run, with every interpreter free for it", 0),
+        (
+            "as many runs at once as there are interpreters",
+            MAX_CONCURRENT_JOB_SCRIPT_RUNS.saturating_sub(1),
+        ),
+    ];
+
+    let (router, engine) = emulator_with_s3();
+    create_bucket(&router).await;
+
+    for (index, (case, beside)) in rows.into_iter().enumerate() {
+        // The runs started beside the one under test: one job, started `beside` times, each
+        // run writing the object its own arguments name, which shows that its own script ran.
+        let beside_name = format!("script-beside-{index}");
+        let beside_location =
+            stage_script(&router, &format!("{SCRIPTS}{beside_name}.py"), WRITES_FROM_ARGV).await;
+        let marker_prefix = format!("beside/{beside_name}/");
+        ok(
+            &router,
+            "CreateJob",
+            &json!({
+                "Name": beside_name,
+                "Role": ROLE_ARN,
+                "Command": {
+                    "Name": "pythonshell",
+                    "PythonVersion": "3.9",
+                    "ScriptLocation": beside_location,
+                },
+                "MaxCapacity": 0.0625,
+                "Timeout": 5,
+                // As many runs of this job as the row starts of it, and no more.
+                "ExecutionProperty": { "MaxConcurrentRuns": beside.max(1) },
+            }),
+        )
+        .await;
+
+        // The run under test: a script that writes one object per execution, so how many
+        // executions really happened is readable from the object store.
+        let name = format!("script-at-once-{index}");
+        let location =
+            stage_script(&router, &format!("{SCRIPTS}{name}.py"), APPENDS_ONE_OBJECT).await;
+        let prefix = format!("at-once/{name}/");
+        ok(
+            &router,
+            "CreateJob",
+            &json!({
+                "Name": name,
+                "Role": ROLE_ARN,
+                "Command": {
+                    "Name": "pythonshell",
+                    "PythonVersion": "3.9",
+                    "ScriptLocation": location,
+                },
+                "MaxCapacity": 0.0625,
+                "Timeout": 5,
+            }),
+        )
+        .await;
+
+        // The runs beside it are started while nothing waits for them, so they are in flight
+        // together: a start performs its run's script inside the call, and the execution runs
+        // on a thread of its own, so the call awaiting it lets the next start proceed and the
+        // run under test begins among them. Which of them an interpreter is free for first is
+        // the host's business, which is exactly what the assertions below must not depend on.
+        let mut started_beside = Vec::with_capacity(beside);
+        for which in 0..beside {
+            let router = router.clone();
+            let body = json!({
+                "JobName": beside_name,
+                "Arguments": {
+                    "--bucket": BUCKET,
+                    "--key": format!("{marker_prefix}{which}"),
+                    "--token": "ran",
+                },
+            });
+            started_beside.push(tokio::spawn(async move {
+                ok(&router, "StartJobRun", &body).await;
+            }));
+        }
+
+        let run = run_to_rest(
+            &router,
+            &engine,
+            &name,
+            &json!({
+                "--bucket": BUCKET,
+                "--key": prefix,
+                "--token": "at-once",
+            }),
+        )
+        .await;
+        assert_eq!(
+            run.get("JobRunState").and_then(Value::as_str),
+            Some(JOB_RUN_STATE_SUCCEEDED),
+            "case {case:?}: the script exits cleanly, so the run comes to rest in \
+             {JOB_RUN_STATE_SUCCEEDED} whichever call performed it, got {run}"
+        );
+        assert!(
+            run.get("ErrorMessage").is_none(),
+            "case {case:?}: a run whose script failed at nothing carries no ErrorMessage, got \
+             {run}"
+        );
+        assert!(
+            run.get("CompletedOn").and_then(Value::as_f64).is_some(),
+            "case {case:?}: a run that has come to rest reports when it finished, got {run}"
+        );
+        let written = objects_under(&router, &prefix).await;
+        assert_eq!(
+            written, 1,
+            "case {case:?}: the run's script is executed exactly once, however many reads it \
+             took to observe the run at rest, got {written} object(s)"
+        );
+
+        for (which, started) in started_beside.into_iter().enumerate() {
+            started.await.unwrap_or_else(|error| {
+                panic!("case {case:?}: the run started beside it ({which}) must answer, got \
+                        {error:?}")
+            });
+        }
+
+        // Each run started beside it comes to rest in what its OWN script came to as well —
+        // read back through the one spelling of that wait ([`crate::job_runs::runs_at_rest`]) —
+        // and the object each of them writes is there: one per run, so every one of those
+        // scripts really ran, whichever call ran it, the start that found an interpreter free
+        // or the read that found the run still owed its script. The uncontended row starts
+        // none of them and asserts nothing about them.
+        if beside > 0 {
+            let runs_beside = runs_at_rest(&router, &engine, case, &beside_name).await;
+            assert_eq!(
+                runs_beside.len(),
+                beside,
+                "case {case:?}: the job must hold the {beside} run(s) started of it, got \
+                 {runs_beside:?}"
+            );
+            for (which, at_rest) in runs_beside.iter().enumerate() {
+                assert_eq!(
+                    at_rest.get("JobRunState").and_then(Value::as_str),
+                    Some(JOB_RUN_STATE_SUCCEEDED),
+                    "case {case:?}: run {which} beside it exits cleanly too, so it comes to rest \
+                     in {JOB_RUN_STATE_SUCCEEDED} whichever call performed it, got {at_rest}"
+                );
+            }
+            let marked = objects_under(&router, &marker_prefix).await;
+            assert_eq!(
+                marked, beside,
+                "case {case:?}: each of the {beside} run(s) beside it ran its script, so each \
+                 wrote its own object, got {marked}"
+            );
+        }
     }
 }

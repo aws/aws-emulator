@@ -27,7 +27,8 @@
 //! staged through Amazon S3's own `PutObject` and the IAM records are seeded into the SAME
 //! shared engine the service reads them from — the store `CreateRole`, `PutRolePolicy` and
 //! `AttachRolePolicy` write. The due instant a run's terminal state falls at is moved THROUGH
-//! THE STORE rather than slept for, so every transition here is deterministic.
+//! THE STORE rather than slept for, and each run is read back until it HAS come to rest
+//! ([`crate::job_runs::run_at_rest`]), so every transition here is deterministic.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -44,7 +45,7 @@ use smithy_server_runtime::MultiServiceRouter;
 
 use crate::crawler_role_trust::{emulator_with_iam, glue_trust, seed_role, trust};
 use crate::job_script_execution::{create_bucket, object_body, stage_script, BUCKET, SCRIPTS};
-use crate::job_runs::{already_past, set_due_instant};
+use crate::job_runs::run_at_rest;
 use crate::wire::{ok, ACCOUNT_ID};
 
 /// The fixed text Glue's script-access failure states, written out here rather than read from
@@ -355,14 +356,12 @@ async fn a_job_run_is_dispatched_only_for_a_role_that_can_assume_and_read_the_sc
             .as_str()
             .unwrap_or_else(|| panic!("case {case:?}: StartJobRun must answer a JobRunId"))
             .to_string();
-        set_due_instant(&engine, &job_name, already_past());
-        let read = ok(
-            &router,
-            "GetJobRun",
-            &json!({ "JobName": job_name, "RunId": run_id }),
-        )
-        .await;
-        let run = &read["JobRun"];
+        // The run is read back until it HAS come to rest: whichever call finds a run still
+        // owed its script's ONE execution performs it — the start, or a later read when no
+        // interpreter was free for the start — and that execution records an owed span of its
+        // own, so a single read made after the start's span is forced due can still report a
+        // run in flight.
+        let run = run_at_rest(&router, &engine, case, &job_name, &run_id).await;
         let state = run["JobRunState"].as_str().unwrap_or_default();
         let message = run["ErrorMessage"].as_str().unwrap_or_default().to_string();
 

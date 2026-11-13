@@ -21,8 +21,9 @@
 //! EventBridge, SQS and Amazon S3 are mounted BESIDE Glue on the SAME engine, so the
 //! publication travels the real in-process callback, through the real bus, to a real SQS
 //! target: nothing here reads the publisher's own queue. The due instant a run's terminal
-//! state falls at is moved THROUGH THE STORE rather than slept for, and the publication is
-//! made by the very call that materialises the transition, so no case waits on the clock.
+//! state falls at is moved THROUGH THE STORE rather than slept for, each run is read back
+//! until it HAS come to rest ([`crate::job_runs::run_at_rest`]), and the publication is made
+//! by the very call that materialises the transition, so no case waits on the clock.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -34,7 +35,7 @@ use service_com_amazonaws_glue_awsglue::state::{
 use smithy_server_runtime::MultiServiceRouter;
 
 use crate::job_script_execution::{create_bucket, stage_script, SCRIPTS};
-use crate::job_runs::{already_past, far_future, set_due_instant};
+use crate::job_runs::{far_future, run_at_rest, set_due_instant};
 use crate::wire::{ok, REGION};
 
 /// The `source` and `detail-type` Glue publishes a job run's terminal state under, spelled
@@ -398,14 +399,12 @@ async fn a_job_run_that_comes_to_rest_publishes_a_glue_job_state_change() {
             )
             .await;
         }
-        set_due_instant(&engine, &job_name, already_past());
-        let read = ok(
-            &router,
-            "GetJobRun",
-            &json!({ "JobName": job_name, "RunId": run_id }),
-        )
-        .await;
-        let run = &read["JobRun"];
+        // The run is read back until it HAS come to rest: whichever call finds a run still
+        // owed its script's ONE execution performs it — the start, or a later read when no
+        // interpreter was free for the start — and that execution records an owed span of its
+        // own, so a single read made after the start's span is forced due can still report a
+        // run in flight.
+        let run = run_at_rest(&router, &engine, case, &job_name, &run_id).await;
         assert_eq!(
             run["JobRunState"].as_str().unwrap_or_default(),
             row.state,
