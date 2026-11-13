@@ -23,12 +23,13 @@
 //!
 //! The pools, app clients, users and access tokens are all real: they come from
 //! `CreateUserPool`, `SetUserPoolMfaConfig`, `CreateUserPoolClient`,
-//! `AdminCreateUser`, `AdminSetUserPassword` and `InitiateAuth`. Two facts have
-//! no implemented operation that writes them yet and are planted in this
-//! service's state instead: a user's registered TOTP authenticator (which
-//! `AssociateSoftwareToken` and `VerifySoftwareToken` will write, both still
-//! scaffold stubs) and a registered passkey (`CompleteWebAuthnRegistration`,
-//! likewise).
+//! `AdminCreateUser`, `AdminSetUserPassword` and `InitiateAuth`. Two facts are
+//! planted in this service's state rather than written through the operations
+//! that own them: a user's registered TOTP authenticator (which
+//! `AssociateSoftwareToken` and `VerifySoftwareToken` write, asserted by
+//! [`super::software_token_setup`], so these rows need none of that arithmetic)
+//! and a registered passkey (`CompleteWebAuthnRegistration`, still a scaffold
+//! stub).
 //!
 //! Each table row names the case it asserts.
 
@@ -267,9 +268,9 @@ async fn fixture(
     }
 }
 
-/// Plant the TOTP authenticator registration that `AssociateSoftwareToken` and
-/// `VerifySoftwareToken` will write once those scaffolds are implemented, so the
-/// rows that need a user who HAS registered one can be driven at all.
+/// Plant the TOTP authenticator registration `AssociateSoftwareToken` and
+/// `VerifySoftwareToken` write, so the rows that need a user who HAS registered
+/// one are driven without this suite computing one-time passwords.
 fn register_software_token(emulator: &Emulator, user_pool_id: &str, username: &str) {
     let service_state = state::service_state(&*emulator.engine).expect("this service's state");
     let mut guard = service_state.lock();

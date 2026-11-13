@@ -1,15 +1,12 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op AssociateSoftwareToken
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `AssociateSoftwareToken`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`AssociateSoftwareToken::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! Begins the setup of a user's time-based one-time password (TOTP)
+//! authenticator: it mints the private key that authenticator is provisioned
+//! with, stores it as the key the registration of a presented code is checked
+//! against ([`crate::state::ComAmazonawsCognitoidentityproviderAwscognitoidentityproviderserviceState::associate_software_token`]),
+//! and hands it back as `SecretCode`.
 //!
 //! ## Shape of an operation
 //!
@@ -178,18 +175,132 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `AssociateSoftwareToken` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(AssociateSoftwareTokenErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("AssociateSoftwareToken"))
+        // The user this setup is for is named by the credential in the body — this
+        // operation models no `UserPoolId` or `Username` — and the credential store
+        // is what mints the private key it hands back.
+        let Some(state) = crate::state::service_state(&*self.engine) else {
+            return Err(internal_error());
+        };
+        // A credential's window is read against the clock, so an access token or a
+        // challenge session the clock is past is refused whether or not anything has
+        // swept it.
+        let now = ::std::time::SystemTime::now();
+
+        let guard = &mut *state.lock();
+        let caller = guard
+            .software_token_caller(input.access_token.as_deref(), input.session.as_deref(), now)
+            .map_err(caller_rejected)?;
+        // The key is minted only once the call is known to be for a stored user, by
+        // the one component that generates secrets — as the sign-in operations of
+        // this service mint the credential a completed sign-in hands back.
+        let secret_code =
+            crate::state::mint_software_token_secret(ctx.credential_store()).ok_or_else(
+                || internal_error_for("the cognito-idp emulator could not mint a private key"),
+            )?;
+        // The key the caller is handed is the key the user holds: an association
+        // that stored nothing would report a secret no later verification could
+        // check a code against.
+        if !guard.associate_software_token(&caller, &secret_code) {
+            return Err(internal_error());
+        }
+        // A call the session flow authorized is handed the session that carries the
+        // setup forward, and one an access token authorized carries no session at
+        // all: the access token is what the verification of this key presents too.
+        let session = guard.continue_software_token_session(&caller, now);
+
+        Ok(AssociateSoftwareTokenOutput {
+            secret_code: Some(secret_code),
+            session,
+        })
     }
+}
+
+/// This operation's answer to a request whose credentials identify no user to set a
+/// factor up for.
+///
+/// Every rejection of a credential itself answers `NotAuthorizedException`, which
+/// "is thrown when a user isn't authorized" (this service's model), while a request
+/// that carries the wrong NUMBER of credentials is refused for the parameters it
+/// carries and one whose pool or user is gone answers for the resource that is
+/// gone. This operation models neither `PasswordResetRequiredException` nor
+/// `UserNotFoundException`, so a user Amazon Cognito is waiting on a new password
+/// from is refused as unauthorized and one its pool no longer holds as a resource
+/// that cannot be found. No message names a stored value.
+fn caller_rejected(refusal: crate::state::SoftwareTokenRefusal) -> AssociateSoftwareTokenError {
+    match refusal {
+        crate::state::SoftwareTokenRefusal::NotOneCredential => {
+            invalid_parameter(crate::state::ONE_SOFTWARE_TOKEN_CREDENTIAL_MESSAGE.to_string())
+        }
+        crate::state::SoftwareTokenRefusal::AccessToken(rejection) => match rejection {
+            crate::state::TokenRejection::NotAnAccessToken => {
+                not_authorized("Invalid Access Token")
+            }
+            crate::state::TokenRejection::Revoked => {
+                not_authorized(crate::state::ACCESS_TOKEN_REVOKED_MESSAGE)
+            }
+            crate::state::TokenRejection::Expired => not_authorized("Access Token has expired"),
+            crate::state::TokenRejection::MissingRequiredScopes => {
+                not_authorized(crate::state::MISSING_REQUIRED_SCOPES_MESSAGE)
+            }
+            crate::state::TokenRejection::PasswordResetRequired => {
+                not_authorized(crate::state::PASSWORD_RESET_REQUIRED_MESSAGE)
+            }
+            // The caller named no pool and no user — its credential did — so these
+            // messages name none either.
+            crate::state::TokenRejection::PoolGone => resource_not_found("User pool does not exist."),
+            crate::state::TokenRejection::UserGone => {
+                resource_not_found(crate::state::USER_NOT_FOUND_MESSAGE)
+            }
+        },
+        crate::state::SoftwareTokenRefusal::SessionExpired => {
+            not_authorized(crate::state::SESSION_EXPIRED_MESSAGE)
+        }
+        crate::state::SoftwareTokenRefusal::SessionAlreadyUsed => {
+            not_authorized(crate::state::SESSION_ALREADY_USED_MESSAGE)
+        }
+        crate::state::SoftwareTokenRefusal::SessionNotForThisRequest => {
+            not_authorized(crate::state::SESSION_NOT_FOR_THIS_REQUEST_MESSAGE)
+        }
+    }
+}
+
+/// This operation's `NotAuthorizedException`, carrying `message`.
+fn not_authorized(message: &str) -> AssociateSoftwareTokenError {
+    AssociateSoftwareTokenErrorModeled::NotAuthorizedException(NotAuthorizedException {
+        message: Some(message.to_string()),
+    })
+    .into()
+}
+
+/// This operation's `ResourceNotFoundException`, carrying `message`.
+fn resource_not_found(message: &str) -> AssociateSoftwareTokenError {
+    AssociateSoftwareTokenErrorModeled::ResourceNotFoundException(ResourceNotFoundException {
+        message: Some(message.to_string()),
+    })
+    .into()
+}
+
+/// This operation's `InvalidParameterException`, carrying `message`.
+fn invalid_parameter(message: String) -> AssociateSoftwareTokenError {
+    AssociateSoftwareTokenErrorModeled::InvalidParameterException(InvalidParameterException {
+        message: Some(message),
+        // `reasonCode` is AWS's own classification of the bad parameter and this
+        // service's model documents no value for it, so nothing is invented here.
+        reason_code: None,
+    })
+    .into()
+}
+
+/// The modelled server error for an engine this service cannot reach.
+fn internal_error() -> AssociateSoftwareTokenError {
+    internal_error_for("the cognito-idp emulator could not reach its state store")
+}
+
+/// The modelled server error carrying `message`, for a step of this operation that
+/// could not be completed at all — a key nothing minted is not one to report.
+fn internal_error_for(message: &str) -> AssociateSoftwareTokenError {
+    AssociateSoftwareTokenErrorModeled::InternalErrorException(InternalErrorException {
+        message: Some(message.to_string()),
+    })
+    .into()
 }

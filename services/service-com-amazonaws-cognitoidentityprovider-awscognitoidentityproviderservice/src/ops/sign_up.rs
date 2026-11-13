@@ -580,9 +580,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> SignUp<Eng> {
             // itself: a link exists only once `AdminLinkProviderForUser` has
             // made one.
             provider_links: ::std::collections::BTreeMap::new(),
-            // Nor has it registered a TOTP authenticator, and it has expressed
-            // no passkey MFA preference of its own.
+            // Nor has it registered a TOTP authenticator, nor had a private key
+            // for one minted, and it has expressed no passkey MFA preference of
+            // its own.
             software_token_registered: false,
+            software_token_key: None,
             web_authn_mfa_enabled: None,
             // The registration this call logs is appended once the user is
             // stored, so the history it starts out with is empty.

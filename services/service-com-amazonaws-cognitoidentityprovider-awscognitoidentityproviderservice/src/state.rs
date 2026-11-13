@@ -50,6 +50,9 @@ mod presented_tokens;
 /// The token lifetimes an app client may be configured with, and the range each
 /// one's duration has to lie in.
 mod token_validity;
+/// The software token a user sets up as a TOTP authenticator: the private key an
+/// association mints for it and the one-time password a registration presents.
+mod software_tokens;
 pub use attributes::*;
 pub use csv_header::*;
 pub use presented_tokens::*;
@@ -59,6 +62,7 @@ pub use pool_preconditions::*;
 pub use pool_resources::*;
 pub use refresh_token_jwe::*;
 pub use saml_signing_certificate::*;
+pub use software_tokens::*;
 pub use token_validity::*;
 pub use tokens::*;
 pub use user_pool::*;

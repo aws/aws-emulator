@@ -361,6 +361,7 @@ fn store_migrated_user(
         web_authn_credentials: Vec::new(),
         provider_links: BTreeMap::new(),
         software_token_registered: false,
+        software_token_key: None,
         web_authn_mfa_enabled: None,
         auth_events: Vec::new(),
     };

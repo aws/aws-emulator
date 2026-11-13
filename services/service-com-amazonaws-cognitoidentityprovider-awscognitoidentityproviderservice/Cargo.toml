@@ -89,6 +89,15 @@ subtle = "2.6"
 # (`src/state/saml_signing_certificate.rs`). rcgen is the generator this tree already
 # uses for certificate material.
 rcgen = "0.13"
+# Spells the private key of a user's software token in base32, the encoding an
+# authenticator app provisioned with a shared secret reads a key in
+# (`src/state/software_tokens.rs`).
+data-encoding = "2"
+# Computes the one-time password that authenticator emits from that key (RFC 6238's
+# TOTP), which `VerifySoftwareToken` registers the authenticator against: the code has
+# to be byte-identical to the one the app shows, so it comes from a library of that
+# algorithm rather than from an implementation of it here.
+totp-lite = "2.0"
 # The validity window rcgen stamps on that certificate is the one the model documents
 # for an issued signing certificate, so the two instants are converted from the pool's
 # `SystemTime`s into the date-time type rcgen takes.
@@ -123,6 +132,12 @@ service-com-amazonaws-s3-amazons3 = { workspace = true }
 # The authorization suite makes the principals it calls as through IAM's own operations,
 # so the documents the gate reads are the ones that service wrote.
 service-com-amazonaws-iam-awsidentitymanagementv20100508 = { workspace = true }
+# The software-token suite computes the one-time passwords it presents from RFC 6238's
+# definition — the HMAC-SHA-1 of the time step over the key the association handed out —
+# rather than from the TOTP library the service computes with, so a wrong algorithm in the
+# service cannot be the reason a row passes.
+hmac = "0.12"
+sha1 = "0.10"
 
 [lints]
 workspace = true

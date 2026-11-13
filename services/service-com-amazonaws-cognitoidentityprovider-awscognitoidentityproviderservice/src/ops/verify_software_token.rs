@@ -1,15 +1,12 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op VerifySoftwareToken
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `VerifySoftwareToken`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`VerifySoftwareToken::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! Completes the setup `AssociateSoftwareToken` began: it checks the presented
+//! one-time password against the private key that association stored for the user
+//! and, when the authenticator emits it, marks the user's software token MFA
+//! status as verified
+//! ([`crate::state::ComAmazonawsCognitoidentityproviderAwscognitoidentityproviderserviceState::register_software_token`]).
 //!
 //! ## Shape of an operation
 //!
@@ -198,18 +195,160 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `VerifySoftwareToken` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(VerifySoftwareTokenErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("VerifySoftwareToken"))
+        // Request metadata only: the user this registration is for is named by the
+        // credential in the body, not by the request's signature.
+        let _ = ctx;
+        let Some(state) = crate::state::service_state(&*self.engine) else {
+            return Err(internal_error());
+        };
+        // A credential's window, and the time step a one-time password belongs to,
+        // are both read against the clock.
+        let now = ::std::time::SystemTime::now();
+
+        let guard = &mut *state.lock();
+        let caller = guard
+            .software_token_caller(input.access_token.as_deref(), input.session.as_deref(), now)
+            .map_err(caller_rejected)?;
+        match guard.register_software_token(&caller, &input.user_code, now) {
+            crate::state::SoftwareTokenRegistration::Registered => {}
+            crate::state::SoftwareTokenRegistration::CodeMismatch => {
+                return Err(code_mismatch());
+            }
+            crate::state::SoftwareTokenRegistration::UserGone => return Err(internal_error()),
+        }
+        // `FriendlyDeviceName` is "a friendly name for the device that's running the
+        // TOTP authenticator" (this service's model). No modelled member of any
+        // operation reports it back, and a user holds ONE software token, so the
+        // name adds nothing to what the registration stores.
+        let _ = &input.friendly_device_name;
+
+        // A call the session flow authorized is handed the session that "satisfies
+        // an MFA_SETUP challenge" (this operation's `Session` in the model), which
+        // the challenge response then supplies; one an access token authorized is
+        // answering no challenge, so it carries no session at all.
+        let session = guard.continue_software_token_session(&caller, now);
+        Ok(VerifySoftwareTokenOutput {
+            // The authenticator is registered, which is the success this member
+            // reports: one of the two modelled `VerifySoftwareTokenResponseType`
+            // values (`crate::ops::types::VERIFY_SOFTWARE_TOKEN_RESPONSE_TYPE_VALUES`).
+            status: Some(VERIFICATION_SUCCEEDED.to_string()),
+            session,
+        })
     }
+}
+
+/// `VerifySoftwareTokenResponseType`'s value for a verification that registered
+/// the authenticator: "this response parameter indicates the success of TOTP
+/// verification" (this operation's `Status` in this service's model).
+const VERIFICATION_SUCCEEDED: &str = "SUCCESS";
+
+/// The message this operation owes a `UserCode` the user's associated private key
+/// does not emit.
+///
+/// `EnableSoftwareTokenMFAException` "is thrown when there is a code mismatch and
+/// the service fails to configure the software token TOTP multi-factor
+/// authentication" (this service's model): the presented code is what failed, so
+/// nothing is registered and the user keeps the software token MFA status it
+/// already had. The sentence names no value from the request.
+const CODE_MISMATCH_MESSAGE: &str = "Code mismatch and fail enable Software Token MFA";
+
+/// This operation's answer to a `UserCode` that is none the associated key emits —
+/// a user that has associated no key emits none at all, so a code presented before
+/// any association is the same mismatch.
+fn code_mismatch() -> VerifySoftwareTokenError {
+    VerifySoftwareTokenErrorModeled::EnableSoftwareTokenMFAException(
+        EnableSoftwareTokenMFAException {
+            message: Some(CODE_MISMATCH_MESSAGE.to_string()),
+        },
+    )
+    .into()
+}
+
+/// This operation's answer to a request whose credentials identify no user to
+/// register an authenticator for.
+///
+/// Every rejection of a credential itself answers `NotAuthorizedException`, which
+/// "is thrown when a user isn't authorized" (this service's model), while a request
+/// that carries the wrong NUMBER of credentials is refused for the parameters it
+/// carries and one whose pool or user is gone answers for the resource that is
+/// gone — each of which this operation declares its own error for. No message names
+/// a stored value.
+fn caller_rejected(refusal: crate::state::SoftwareTokenRefusal) -> VerifySoftwareTokenError {
+    match refusal {
+        crate::state::SoftwareTokenRefusal::NotOneCredential => {
+            invalid_parameter(crate::state::ONE_SOFTWARE_TOKEN_CREDENTIAL_MESSAGE.to_string())
+        }
+        crate::state::SoftwareTokenRefusal::AccessToken(rejection) => match rejection {
+            crate::state::TokenRejection::NotAnAccessToken => {
+                not_authorized("Invalid Access Token")
+            }
+            crate::state::TokenRejection::Revoked => {
+                not_authorized(crate::state::ACCESS_TOKEN_REVOKED_MESSAGE)
+            }
+            crate::state::TokenRejection::Expired => not_authorized("Access Token has expired"),
+            crate::state::TokenRejection::MissingRequiredScopes => {
+                not_authorized(crate::state::MISSING_REQUIRED_SCOPES_MESSAGE)
+            }
+            crate::state::TokenRejection::PasswordResetRequired => {
+                VerifySoftwareTokenErrorModeled::PasswordResetRequiredException(
+                    PasswordResetRequiredException {
+                        message: Some(crate::state::PASSWORD_RESET_REQUIRED_MESSAGE.to_string()),
+                    },
+                )
+                .into()
+            }
+            // The caller named no pool and no user — its credential did — so these
+            // messages name none either.
+            crate::state::TokenRejection::PoolGone => {
+                VerifySoftwareTokenErrorModeled::ResourceNotFoundException(
+                    ResourceNotFoundException {
+                        message: Some("User pool does not exist.".to_string()),
+                    },
+                )
+                .into()
+            }
+            crate::state::TokenRejection::UserGone => {
+                VerifySoftwareTokenErrorModeled::UserNotFoundException(UserNotFoundException {
+                    message: Some(crate::state::USER_NOT_FOUND_MESSAGE.to_string()),
+                })
+                .into()
+            }
+        },
+        crate::state::SoftwareTokenRefusal::SessionExpired => {
+            not_authorized(crate::state::SESSION_EXPIRED_MESSAGE)
+        }
+        crate::state::SoftwareTokenRefusal::SessionAlreadyUsed => {
+            not_authorized(crate::state::SESSION_ALREADY_USED_MESSAGE)
+        }
+        crate::state::SoftwareTokenRefusal::SessionNotForThisRequest => {
+            not_authorized(crate::state::SESSION_NOT_FOR_THIS_REQUEST_MESSAGE)
+        }
+    }
+}
+
+/// This operation's `NotAuthorizedException`, carrying `message`.
+fn not_authorized(message: &str) -> VerifySoftwareTokenError {
+    VerifySoftwareTokenErrorModeled::NotAuthorizedException(NotAuthorizedException {
+        message: Some(message.to_string()),
+    })
+    .into()
+}
+
+/// This operation's `InvalidParameterException`, carrying `message`.
+fn invalid_parameter(message: String) -> VerifySoftwareTokenError {
+    VerifySoftwareTokenErrorModeled::InvalidParameterException(InvalidParameterException {
+        message: Some(message),
+        // `reasonCode` is AWS's own classification of the bad parameter and this
+        // service's model documents no value for it, so nothing is invented here.
+        reason_code: None,
+    })
+    .into()
+}
+
+/// The modelled server error for an engine this service cannot reach.
+fn internal_error() -> VerifySoftwareTokenError {
+    VerifySoftwareTokenErrorModeled::InternalErrorException(InternalErrorException {
+        message: Some("the cognito-idp emulator could not reach its state store".to_string()),
+    })
+    .into()
 }

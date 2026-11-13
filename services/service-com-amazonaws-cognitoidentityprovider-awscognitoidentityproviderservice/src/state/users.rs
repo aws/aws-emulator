@@ -143,6 +143,18 @@ pub struct User {
     /// a software token and verifying a code from it, so `false` until that
     /// registration succeeds.
     pub software_token_registered: bool,
+    /// The private key of the software token this user is setting up, as the last
+    /// association minted it ([`SoftwareTokenKey`]): "a unique private key that
+    /// Amazon Cognito generates and returns in the API response"
+    /// (`AssociateSoftwareToken` in this service's model), and `None` for a user
+    /// no association has minted one for.
+    ///
+    /// It is the key a presented one-time password is checked against
+    /// ([`User::software_token_emits`]), which is what registers the
+    /// authenticator, so it is held beside the registration rather than with the
+    /// call that minted it. Never rendered: no modelled member reports a user's
+    /// key, and the one response that carries it is the association's own.
+    pub software_token_key: Option<SoftwareTokenKey>,
     /// Whether this user has activated or deactivated passkey MFA for itself
     /// (`SetUserMFAPreference.WebAuthnMfaSettings.Enabled`), or `None` while the
     /// user has expressed no preference and the pool's passkey configuration
