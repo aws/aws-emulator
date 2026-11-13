@@ -144,6 +144,9 @@ mod dispatch;
 /// What the stage LOGS about a request it served: its access-log record, rendered by the
 /// stage's own `$context` format.
 mod access_logs;
+/// What the stage PUBLISHES about a request it served: the CloudWatch counters and
+/// measurements of that request.
+mod request_metrics;
 // `pub(crate)` for the three steps BOTH data planes of this service perform, so the rule
 // each states is written once and the two protocols cannot drift apart:
 //
@@ -643,18 +646,13 @@ pub async fn serve<Eng: Send + Sync + 'static>(
         answered,
         &request_id,
     );
-    // What the STAGE logs about the request it just answered, delivered to the destination
-    // the stage names ([`access_logs`]). After the response is computed and never before: a
-    // record is about a request that was answered.
-    access_logs::delivered(
-        engine,
-        req,
-        ctx,
-        &request_id,
-        &served,
-        started.elapsed(),
-    )
-    .await;
+    let latency = started.elapsed();
+    // What the STAGE publishes about the request it just answered ([`request_metrics`]), and
+    // what it LOGS about it ([`access_logs`]), delivered to the destination the stage names.
+    // After the response is computed and never before: a counter counts a request that was
+    // answered, and a record is about one.
+    request_metrics::published(engine, req, &served, latency);
+    access_logs::delivered(engine, req, ctx, &request_id, &served, latency).await;
     served
 }
 
@@ -680,6 +678,7 @@ pub fn serve_without_transport<Eng: Send + Sync + 'static>(
     req: &RtRequest,
 ) -> RtResponse {
     let request_id = proxy_event::mint_request_id();
+    let started = ::std::time::Instant::now();
     let answered = match resolved(&**engine, req, &request_id) {
         Err(answered) => *answered,
         Ok((decoration, Answer::Now(response))) => decorated(*response, &decoration),
@@ -691,7 +690,13 @@ pub fn serve_without_transport<Eng: Send + Sync + 'static>(
     // No access-log record is delivered from here: the delivery is a CALL into the
     // CloudWatch Logs this emulator mounts, and this seam has no request of its own to
     // measure or to carry one over. The response still names the request it answered.
-    ::service_common::query_error_envelope::with_stated_request_id_header(answered, &request_id)
+    let served =
+        ::service_common::query_error_envelope::with_stated_request_id_header(answered, &request_id);
+    // The metric publication IS made from here: it is a write into the metric store this
+    // emulator's CloudWatch holds on the same engine rather than a call over a transport, so
+    // a request served from this seam is counted like any other.
+    request_metrics::published(&**engine, req, &served, started.elapsed());
+    served
 }
 
 /// Perform `dispatch` over the transport this service remembered, and answer what the route's
@@ -1041,11 +1046,7 @@ fn payload_refusal(
     route: &Route,
     req: &RtRequest,
 ) -> Option<RtResponse> {
-    let payload_bytes = req.body().bytes().map(<[u8]>::len).or_else(|| {
-        req.headers()
-            .get(CONTENT_LENGTH_HEADER)
-            .and_then(|stated| stated.trim().parse::<usize>().ok())
-    })?;
+    let payload_bytes = payload_bytes(req)?;
     if payload_bytes <= crate::state::MAX_HTTP_API_PAYLOAD_BYTES {
         return None;
     }
@@ -1063,6 +1064,23 @@ fn payload_refusal(
         PAYLOAD_TOO_LARGE_MESSAGE,
         None,
     ))
+}
+
+/// How many bytes of PAYLOAD this request carries, or `None` for a request whose size nothing
+/// read.
+///
+/// The body as it arrived is what is measured: the front door buffers every request, so the
+/// bytes are in memory and are counted. A body that is NOT in memory is measured by what the
+/// request states its length to be ([`CONTENT_LENGTH_HEADER`]), and a request that states
+/// nothing either has no size to measure at all. ONE reading, because both readers of it have
+/// to agree about what a request carried: the quota above refuses what is past the bound, and
+/// the stage's own metrics report the same figure ([`request_metrics`]).
+fn payload_bytes(req: &RtRequest) -> Option<usize> {
+    req.body().bytes().map(<[u8]>::len).or_else(|| {
+        req.headers()
+            .get(CONTENT_LENGTH_HEADER)
+            .and_then(|stated| stated.trim().parse::<usize>().ok())
+    })
 }
 
 /// The decoration an HTTP api's stored `CorsConfiguration` puts on the answer to this
