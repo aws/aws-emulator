@@ -220,6 +220,9 @@ pub const UPDATE_ACCOUNT_PASSWORD_POLICY: &str = "iam:UpdateAccountPasswordPolic
 /// `iam:GetAccountPasswordPolicy`.
 pub const GET_ACCOUNT_PASSWORD_POLICY: &str = "iam:GetAccountPasswordPolicy";
 
+/// `iam:DeleteAccountPasswordPolicy`.
+pub const DELETE_ACCOUNT_PASSWORD_POLICY: &str = "iam:DeleteAccountPasswordPolicy";
+
 /// `iam:CreateAccountAlias`.
 pub const CREATE_ACCOUNT_ALIAS: &str = "iam:CreateAccountAlias";
 

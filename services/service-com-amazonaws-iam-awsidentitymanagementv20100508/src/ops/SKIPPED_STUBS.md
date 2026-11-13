@@ -49,6 +49,12 @@ generator did not emit it.
 `//! @op GetAccountPasswordPolicy` header. Its decline line above likewise records only
 that the generator did not emit it.
 
+`DeleteAccountPasswordPolicy` — the DELETE of that same account password policy — is
+hand-authored the same way, in `src/ops/delete_account_password_policy.rs` with its input in
+`src/ops/types/delete_account_password_policy_types.rs` and its unit output beside the
+operation, and is wired in from its own `//! @op DeleteAccountPasswordPolicy` header. Its
+decline line above likewise records only that the generator did not emit it.
+
 The three OUTBOUND WEB IDENTITY FEDERATION operations —
 `EnableOutboundWebIdentityFederation`, `GetOutboundWebIdentityFederationInfo` and
 `DisableOutboundWebIdentityFederation` — are hand-authored the same way, each in its own

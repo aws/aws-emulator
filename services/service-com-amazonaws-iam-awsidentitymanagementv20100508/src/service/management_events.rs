@@ -411,6 +411,7 @@ pub fn audited_table<Eng: Send + Sync + 'static>(engine: &Arc<Eng>) -> Operation
         deactivate_mfa_device::DeactivateMFADevice => mutates,
         delete_access_key::DeleteAccessKey => mutates,
         delete_account_alias::DeleteAccountAlias => mutates,
+        delete_account_password_policy::DeleteAccountPasswordPolicy => mutates,
         delete_group::DeleteGroup => mutates,
         delete_group_policy::DeleteGroupPolicy => mutates,
         delete_instance_profile::DeleteInstanceProfile => mutates,

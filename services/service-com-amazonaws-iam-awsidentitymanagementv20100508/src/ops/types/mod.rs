@@ -42,6 +42,7 @@ pub mod create_virtual_mfa_device_types;
 pub mod deactivate_mfa_device_types;
 pub mod delete_access_key_types;
 pub mod delete_account_alias_types;
+pub mod delete_account_password_policy_types;
 pub mod delete_group_policy_types;
 pub mod delete_group_types;
 pub mod delete_instance_profile_types;
@@ -250,6 +251,7 @@ pub use deactivate_mfa_device_types::*;
 pub use delete_access_key_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use delete_account_alias_types::*;
+pub use delete_account_password_policy_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use delete_group_policy_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]

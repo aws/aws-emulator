@@ -25,6 +25,10 @@
 //!
 //! The awsQuery harness (`router`, `call`, `call_signed_by`, `element`, `error_code`) is the
 //! one `tests/all/user_lifecycle.rs` owns and every suite in this crate shares.
+//!
+//! The read and the DELETE of that same account record are driven here too: the read reports
+//! the policy the account configured, the delete removes it, and an account holding none
+//! answers each of them with the modelled `NoSuchEntity` worded for the request it refuses.
 
 use smithy_server_runtime::MultiServiceRouter;
 
@@ -797,6 +801,323 @@ async fn the_account_password_policy_is_read_back_as_the_account_configured_it()
             (again_status, element(&again, "MinimumPasswordLength")),
             (status, element(&body, "MinimumPasswordLength")),
             "case {case:?}: a second read must answer the same policy, got {again}"
+        );
+    }
+}
+
+/// One `DeleteAccountPasswordPolicy`: the operation takes no input at all — "deletes the
+/// password policy for the Amazon Web Services account. There are no parameters."
+async fn delete_policy(router: &MultiServiceRouter) -> (u16, String) {
+    call(router, "DeleteAccountPasswordPolicy", &[]).await
+}
+
+/// The WHOLE sentence a delete of a policy the account does not hold carries, spelled out
+/// here rather than read from the handler so a change of the wording fails this suite
+/// instead of following it. It interpolates nothing: the delete addresses the
+/// ACCOUNT-LEVEL policy, held under one fixed name, and its request carries no value.
+const NO_ACCOUNT_POLICY_MESSAGE: &str = "The account policy with name PasswordPolicy cannot \
+     be found.";
+
+/// The sentence the READ of an absent policy carries instead — a different sentence, naming
+/// the account the policy would belong to.
+fn no_password_policy_message() -> String {
+    format!(
+        "The Password Policy with domain name {} cannot be found.",
+        engine::emulator_account_id()
+    )
+}
+
+/// Assert that `router`'s account holds no password policy at all: the read is refused with
+/// the modelled `NoSuchEntity` naming the account, rather than answering a policy.
+async fn assert_no_policy_held(router: &MultiServiceRouter, case: &str) {
+    let (status, body) = read_policy(router).await;
+    assert_eq!(
+        status, 404,
+        "case {case:?}: expected HTTP 404 from a read of a policy the account does not \
+         hold, got {status}: {body}"
+    );
+    let code = error_code(&body);
+    assert_eq!(
+        code, NO_SUCH_ENTITY_CODE,
+        "case {case:?}: expected the code {NO_SUCH_ENTITY_CODE} from the read, got {code:?}: \
+         {body}"
+    );
+    let message = element(&body, "Message");
+    assert_eq!(
+        message,
+        no_password_policy_message(),
+        "case {case:?}: expected the read's refusal to name the account, got {message:?}"
+    );
+}
+
+/// RULE: `DeleteAccountPasswordPolicy` REMOVES the account's one password-policy record, so
+/// every later reader of it sees the account holding none — the read answers the modelled
+/// `NoSuchEntity` rather than a policy — and a delete made when the account holds no policy
+/// references nothing, which is that same modelled refusal, worded for the account-level
+/// policy the request addresses.
+///
+/// The rows differ along what the account had configured when the delete arrived: nothing
+/// at all, a bare write of defaults, each kind of member a write can set, and every member
+/// at once. What the record HELD cannot change what deleting it leaves behind.
+#[tokio::test]
+async fn deleting_the_account_password_policy_leaves_the_account_holding_none() {
+    // One row per shape of policy a write can leave behind, as the parameters that write
+    // carries. The empty row is a write naming no parameter at all, which still leaves a
+    // policy (of documented defaults) for the delete to remove.
+    type Row = (&'static str, &'static [(&'static str, &'static str)]);
+    let rows: [Row; 7] = [
+        ("a write carrying no parameter at all", &[]),
+        (
+            "the published floor of the minimum length",
+            &[("MinimumPasswordLength", "6")],
+        ),
+        (
+            "the published ceiling of the minimum length",
+            &[("MinimumPasswordLength", "128")],
+        ),
+        (
+            "every character class required",
+            &[
+                ("RequireSymbols", "true"),
+                ("RequireNumbers", "true"),
+                ("RequireUppercaseCharacters", "true"),
+                ("RequireLowercaseCharacters", "true"),
+            ],
+        ),
+        (
+            "an expiry age and hard expiry",
+            &[("MaxPasswordAge", "90"), ("HardExpiry", "true")],
+        ),
+        (
+            "a reuse count and self-service changes",
+            &[
+                ("PasswordReusePrevention", "24"),
+                ("AllowUsersToChangePassword", "true"),
+            ],
+        ),
+        (
+            "every member at once",
+            &[
+                ("MinimumPasswordLength", "14"),
+                ("RequireSymbols", "true"),
+                ("RequireNumbers", "true"),
+                ("RequireUppercaseCharacters", "true"),
+                ("RequireLowercaseCharacters", "true"),
+                ("AllowUsersToChangePassword", "true"),
+                ("MaxPasswordAge", "45"),
+                ("PasswordReusePrevention", "12"),
+                ("HardExpiry", "true"),
+            ],
+        ),
+    ];
+
+    for (case, written) in rows {
+        // One router per row, so each row deletes only what its own write left.
+        let router = router();
+        let policy: Vec<(&str, String)> = written
+            .iter()
+            .map(|(name, value)| (*name, (*value).to_string()))
+            .collect();
+        set_policy(&router, case, &policy).await;
+
+        // The policy is in force before the delete, so the row shows the delete removing a
+        // record that was there rather than a read that never worked.
+        let (status, body) = read_policy(&router).await;
+        assert_eq!(
+            status, 200,
+            "case {case:?}: expected the written policy to be served before the delete, got \
+             {status}: {body}"
+        );
+
+        let (status, body) = delete_policy(&router).await;
+        assert_eq!(
+            status, 200,
+            "case {case:?}: expected the held policy to be deletable, got {status}: {body}"
+        );
+
+        // The record is GONE: the read reports the account holding no policy.
+        assert_no_policy_held(&router, case).await;
+
+        // A second delete references nothing, which is the modelled refusal worded for the
+        // account-level policy — a different sentence from the read's.
+        let (status, body) = delete_policy(&router).await;
+        assert_eq!(
+            status, 404,
+            "case {case:?}: expected HTTP 404 from a repeat delete, got {status}: {body}"
+        );
+        let code = error_code(&body);
+        assert_eq!(
+            code, NO_SUCH_ENTITY_CODE,
+            "case {case:?}: expected the code {NO_SUCH_ENTITY_CODE} from a repeat delete, \
+             got {code:?}: {body}"
+        );
+        let message = element(&body, "Message");
+        assert_eq!(
+            message, NO_ACCOUNT_POLICY_MESSAGE,
+            "case {case:?}: expected the repeat delete to name the account-level policy, \
+             got {message:?}"
+        );
+
+        // The delete clears the record rather than disabling the feature: a fresh write is
+        // held and read back, and is deletable in its turn.
+        set_policy(
+            &router,
+            case,
+            &[("MinimumPasswordLength", "20".to_string())],
+        )
+        .await;
+        let (status, body) = read_policy(&router).await;
+        assert_eq!(
+            (status, member(&body, "MinimumPasswordLength").as_deref()),
+            (200, Some("20")),
+            "case {case:?}: expected a write after the delete to be read back, got {status}: \
+             {body}"
+        );
+        let (status, body) = delete_policy(&router).await;
+        assert_eq!(
+            status, 200,
+            "case {case:?}: expected the re-written policy to be deletable, got {status}: \
+             {body}"
+        );
+        assert_no_policy_held(&router, case).await;
+    }
+}
+
+/// RULE: a delete of a policy the account never set references nothing, so it is refused
+/// with the modelled `NoSuchEntity` and writes nothing at all.
+///
+/// The rows differ along how many deletes in turn the account is sent: an account that
+/// never set a policy answers every one of them the same way, since none of them changes
+/// what it holds.
+#[tokio::test]
+async fn deleting_a_password_policy_the_account_never_set_is_refused() {
+    for deletes in [1_usize, 2, 3] {
+        let router = router();
+        let case = format!("{deletes} delete(s) against an account that never set a policy");
+        for attempt in 1..=deletes {
+            let (status, body) = delete_policy(&router).await;
+            assert_eq!(
+                status, 404,
+                "case {case:?}: attempt {attempt} expected HTTP 404, got {status}: {body}"
+            );
+            let code = error_code(&body);
+            assert_eq!(
+                code, NO_SUCH_ENTITY_CODE,
+                "case {case:?}: attempt {attempt} expected the code {NO_SUCH_ENTITY_CODE}, \
+                 got {code:?}: {body}"
+            );
+            let message = element(&body, "Message");
+            assert_eq!(
+                message, NO_ACCOUNT_POLICY_MESSAGE,
+                "case {case:?}: attempt {attempt} expected the account-level policy \
+                 sentence, got {message:?}"
+            );
+        }
+        // The refused deletes wrote nothing: the account still holds no policy, and a
+        // write after them is held.
+        assert_no_policy_held(&router, &case).await;
+        set_policy(
+            &router,
+            &case,
+            &[("MinimumPasswordLength", "16".to_string())],
+        )
+        .await;
+        let (status, body) = read_policy(&router).await;
+        assert_eq!(
+            (status, member(&body, "MinimumPasswordLength").as_deref()),
+            (200, Some("16")),
+            "case {case:?}: expected a write after the refused deletes to be held, got \
+             {status}: {body}"
+        );
+    }
+}
+
+/// RULE: the deleted policy is in force for NOBODY — the password checks every
+/// password-setting operation makes read the same account record, so a password one of
+/// the policy's content rules refused is admitted once the policy is deleted.
+///
+/// The rows differ along which rule the policy stated, and therefore which password it
+/// refused: the minimum length, and each of the four character classes.
+#[tokio::test]
+async fn a_password_the_deleted_policy_refused_is_admitted_after_the_delete() {
+    // One row per rule the policy can state: the rule, the parameters stating it, and a
+    // password it refuses that the Amazon Web Services defaults admit — at least the
+    // default minimum of six characters, with no character class required.
+    type Row = (
+        &'static str,
+        &'static [(&'static str, &'static str)],
+        &'static str,
+    );
+    let rows: [Row; 5] = [
+        (
+            "a minimum length above the default",
+            &[("MinimumPasswordLength", "24")],
+            "Aa1!short",
+        ),
+        (
+            "a required symbol",
+            &[("RequireSymbols", "true")],
+            "Password123",
+        ),
+        (
+            "a required digit",
+            &[("RequireNumbers", "true")],
+            "Passwordxx!",
+        ),
+        (
+            "a required uppercase character",
+            &[("RequireUppercaseCharacters", "true")],
+            "password1!",
+        ),
+        (
+            "a required lowercase character",
+            &[("RequireLowercaseCharacters", "true")],
+            "PASSWORD1!",
+        ),
+    ];
+
+    for (case, written, password) in rows {
+        let router = router();
+        let policy: Vec<(&str, String)> = written
+            .iter()
+            .map(|(name, value)| (*name, (*value).to_string()))
+            .collect();
+        set_policy(&router, case, &policy).await;
+
+        let user = "console-user";
+        create_user(&router, case, user).await;
+
+        // Under the policy the password is refused, and no login profile is written.
+        let (status, body) = create_login_profile(&router, user, password).await;
+        assert_eq!(
+            status, 400,
+            "case {case:?}: expected the policy to refuse {password:?}, got {status}: {body}"
+        );
+        let code = error_code(&body);
+        assert_eq!(
+            code, VIOLATION_CODE,
+            "case {case:?}: expected the code {VIOLATION_CODE}, got {code:?}: {body}"
+        );
+
+        let (status, body) = delete_policy(&router).await;
+        assert_eq!(
+            status, 200,
+            "case {case:?}: expected the policy to be deletable, got {status}: {body}"
+        );
+
+        // With no policy in force the same password breaks no rule.
+        let (status, body) = create_login_profile(&router, user, password).await;
+        assert_eq!(
+            status, 200,
+            "case {case:?}: expected {password:?} to be admitted once the policy is \
+             deleted, got {status}: {body}"
+        );
+        let (status, profile) = read_profile(&router, user).await;
+        assert_eq!(
+            (status, element(&profile, "UserName")),
+            (200, user.to_string()),
+            "case {case:?}: expected the login profile to be readable back, got {status}: \
+             {profile}"
         );
     }
 }
