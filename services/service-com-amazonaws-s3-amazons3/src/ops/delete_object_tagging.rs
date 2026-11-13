@@ -265,19 +265,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> DeleteObjectTaggi
             ));
         }
 
-        // "To delete tags of a specific object version, add the versionId query parameter
-        // in the request" — the store does keep versions (`PutObject` mints a version id on
-        // a versioning-enabled bucket), but an object's tag set is only ever written
-        // through the byte budgets of the object at the key, which is the CURRENT one, so
-        // this handler removes the current object's tag set alone. Removing one stored
-        // version's tag set is its own behaviour, as it is for the reader and the writer of
-        // this subresource; the 501 says so rather than clearing the current object's tags
-        // as if they were the named version's.
-        if input.version_id.is_some() {
-            return Err(crate::scaffolded::Scaffolded::not_implemented(
-                "DeleteObjectTagging with versionId",
-            ));
-        }
+        // "To delete tags of a specific object version, add the versionId query parameter in
+        // the request" — a tag set belongs to a stored VERSION, so the parameter addresses the
+        // version this call clears and the key's current object is what a request naming none
+        // clears.
+        let version_id = input.version_id.as_deref();
 
         let Some(state) = crate::state::service_state(&*self.engine) else {
             // Without the store no tag set can be removed at all, and either modelled
@@ -294,17 +286,38 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> DeleteObjectTaggi
         // emulator does not hold answers that — the way every other object-tagging handler
         // orders the two refusals — rather than reporting a removal from an object no
         // caller could have tagged.
-        match store
-            .bucket(&input.bucket)
-            .map(|bucket| bucket.object(&input.key).is_some())
-        {
+        match store.bucket(&input.bucket).map(|bucket| {
+            (
+                bucket.addressed_object(&input.key, version_id).is_some(),
+                version_id.is_some_and(|named| {
+                    bucket
+                        .stored_version(&input.key, named)
+                        .is_some_and(|held| held.as_delete_marker().is_some())
+                }),
+            )
+        }) {
             None => {
                 return Err(DeleteObjectTaggingErrorModeled::NoSuchBucket(NoSuchBucket {}).into())
             }
-            Some(false) => {
-                return Err(DeleteObjectTaggingErrorModeled::NoSuchKey(NoSuchKey {}).into())
+            // A delete marker is no object, so it carries no tag set to remove: 405, the
+            // status S3 answers an object-level call addressed to a marker with.
+            Some((_, true)) => {
+                return Err(crate::scaffolded::Scaffolded::method_not_allowed(
+                    TAGGING_DELETE_METHOD,
+                    crate::state::DELETE_MARKER_RESOURCE_TYPE,
+                ))
             }
-            Some(true) => {}
+            Some((false, _)) => {
+                return Err(match version_id {
+                    Some(_) => crate::scaffolded::Scaffolded::unmodeled(
+                        crate::state::NO_SUCH_VERSION_CODE,
+                        NO_SUCH_VERSION_STATUS,
+                        crate::state::NO_SUCH_VERSION_MESSAGE,
+                    ),
+                    None => DeleteObjectTaggingErrorModeled::NoSuchKey(NoSuchKey {}).into(),
+                })
+            }
+            Some((true, _)) => {}
         }
 
         // "Removes the entire tag set from the specified object": the whole set goes, not
@@ -317,7 +330,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> DeleteObjectTaggi
         // guards; taking a set AWAY only releases bytes, so neither can be reached from
         // here. Both are answered rather than asserted, so a future caller of this seam
         // cannot turn one into a panic.
-        match store.replace_object_tags(&input.bucket, &input.key, Vec::new()) {
+        match store.replace_object_tags(&input.bucket, &input.key, version_id, Vec::new()) {
             Some(crate::state::ObjectTagWrite::Applied) => {}
             // Unreachable through this handler: the address was just resolved under the
             // same lock.
@@ -356,7 +369,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> DeleteObjectTaggi
         // The version this call took the tag set OFF, read back under the same lock.
         let untagged_object = store
             .bucket(&input.bucket)
-            .and_then(|bucket| bucket.object(&input.key));
+            .and_then(|bucket| bucket.addressed_object(&input.key, version_id));
         let untagged = match untagged_object {
             Some(object) => untagged.of_object(object),
             None => untagged,
@@ -382,3 +395,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> DeleteObjectTaggi
         })
     }
 }
+
+/// The method a removal of this subresource is made with, for the 405 a delete marker earns:
+/// `DELETE /{Bucket}/{Key+}?tagging`
+/// (`smithy_query(query="operation",operation="DeleteObjectTagging")`).
+const TAGGING_DELETE_METHOD: &str = "DELETE";
+
+/// The status a `versionId` naming no version of the key is answered with: `NoSuchVersion`,
+/// the 404 every version-addressed call of this service answers one with.
+const NO_SUCH_VERSION_STATUS: u16 = 404;

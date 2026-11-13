@@ -153,6 +153,8 @@ mod directory_bucket_conditional_deletes;
 mod directory_bucket_listings;
 #[path = "all/directory_bucket_renames.rs"]
 mod directory_bucket_renames;
+#[path = "all/directory_bucket_session_constraints.rs"]
+mod directory_bucket_session_constraints;
 #[path = "all/delete_marker_refusal_headers.rs"]
 mod delete_marker_refusal_headers;
 #[path = "all/directory_bucket_sessions_and_appends.rs"]
@@ -403,6 +405,8 @@ mod version_listing_echoed_members;
 mod version_listing_owner;
 #[path = "all/version_listing_resume_markers.rs"]
 mod version_listing_resume_markers;
+#[path = "all/versioned_object_tag_sets.rs"]
+mod versioned_object_tag_sets;
 #[path = "all/versioned_removal_event_split.rs"]
 mod versioned_removal_event_split;
 #[path = "all/website_redirect_location.rs"]

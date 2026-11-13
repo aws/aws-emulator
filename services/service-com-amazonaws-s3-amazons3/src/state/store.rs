@@ -234,6 +234,10 @@ impl ComAmazonawsS3Amazons3State {
     /// [`Self::record_vended_session`] for a session `CreateSession` vended: the same bound,
     /// and the SCOPE the session was created with — the directory bucket it is for and the
     /// token a Zonal endpoint request presents it with.
+    ///
+    /// The session is recorded in the DEFAULT mode and under no encryption algorithm, which
+    /// is what a `CreateSession` naming neither establishes; a vend that names either records
+    /// the whole scope through [`Self::record_vended_session_scoped`].
     pub fn record_vended_session_on(
         &mut self,
         id: &str,
@@ -241,14 +245,32 @@ impl ComAmazonawsS3Amazons3State {
         bucket: &str,
         token: &str,
     ) -> bool {
+        self.record_vended_session_scoped(
+            id,
+            expires_at,
+            SessionScope {
+                bucket: bucket.to_string(),
+                token: token.to_string(),
+                mode: SessionMode::default(),
+                encryption_algorithm: None,
+            },
+        )
+    }
+
+    /// [`Self::record_vended_session_on`] with the WHOLE scope the vend settled: the bucket,
+    /// the token, the mode the session was created in and the encryption algorithm it was
+    /// established under.
+    pub fn record_vended_session_scoped(
+        &mut self,
+        id: &str,
+        expires_at: SystemTime,
+        scope: SessionScope,
+    ) -> bool {
         self.record_session(
             id,
             VendedSession {
                 expires_at,
-                scope: Some(SessionScope {
-                    bucket: bucket.to_string(),
-                    token: token.to_string(),
-                }),
+                scope: Some(scope),
             },
         )
     }
@@ -329,6 +351,58 @@ impl ComAmazonawsS3Amazons3State {
             true => SessionTokenVerdict::Authorized,
             false => SessionTokenVerdict::OtherBucket,
         }
+    }
+
+    /// What the session `presented` names authorizes on the bucket named `bucket`, at `now`,
+    /// or `None` when it names no scoped session at all — a credential this rule has nothing
+    /// to say about.
+    ///
+    /// The ONE entry point for judging a presented session, whichever of its two halves the
+    /// request carried ([`PresentedSession`]): a token is judged by
+    /// [`Self::session_token_verdict`] and a key pair by
+    /// [`Self::session_credential_verdict`], so the two cannot drift apart.
+    pub fn presented_session_verdict(
+        &self,
+        presented: &PresentedSession,
+        bucket: &str,
+        now: SystemTime,
+    ) -> Option<SessionTokenVerdict> {
+        match presented {
+            PresentedSession::Token(token) => {
+                Some(self.session_token_verdict(token, bucket, now))
+            }
+            PresentedSession::Credential(key_id) => {
+                self.session_credential_verdict(key_id, bucket, now)
+            }
+        }
+    }
+
+    /// The SCOPE of the live session `presented` names, or `None` when it names none — a
+    /// token no session carries, a credential that is not a session's, or a session the clock
+    /// has expired ("after the expiration time, any calls that you make with those
+    /// credentials will fail").
+    ///
+    /// What a call acting UNDER a session reads about it: the mode it was created in and the
+    /// encryption algorithm it was established under. Read-only; the expiry is applied here
+    /// rather than by releasing anything, exactly as the verdicts above apply it.
+    pub fn presented_session_scope(
+        &self,
+        presented: &PresentedSession,
+        now: SystemTime,
+    ) -> Option<&SessionScope> {
+        let session = match presented {
+            PresentedSession::Token(token) => self.vended_sessions.values().find(|session| {
+                session
+                    .scope
+                    .as_ref()
+                    .is_some_and(|scope| &scope.token == token)
+            })?,
+            PresentedSession::Credential(key_id) => self.vended_sessions.get(key_id)?,
+        };
+        if session.expires_at <= now {
+            return None;
+        }
+        session.scope.as_ref()
     }
 
     /// Whether the managed table bucket already holds the metadata table `table`, named as
@@ -1315,14 +1389,22 @@ impl ComAmazonawsS3Amazons3State {
         }
     }
 
-    /// Replace the tag set of the object at `key` in the bucket named `bucket`, reporting
-    /// what that did, or `None` when this emulator holds no such bucket (so a tagging
-    /// write refuses a name that is not a bucket instead of creating one).
+    /// Replace the tag set of the object version `version_id` names at `key` in the bucket
+    /// named `bucket` — the key's CURRENT object when it names none — reporting what that did,
+    /// or `None` when this emulator holds no such bucket (so a tagging write refuses a name
+    /// that is not a bucket instead of creating one).
     ///
     /// A REPLACEMENT of the whole tag set, the way [`Bucket::replace_tags`] replaces a
     /// bucket's: `Tagging` is the complete container the request carries, so what the
     /// object holds afterwards is exactly what this call carried and nothing of the set
     /// before it — an empty `TagSet` therefore leaves the object with no tags.
+    ///
+    /// Version-scoped, because a tag set is a VERSION's: "to add tags to the current version,
+    /// use the versionId query parameter" and "tags are stored at the version level"
+    /// (`PutObjectTagging` and `GetObjectTagging`), so a write that names a version leaves
+    /// every other version's tag set exactly as it was — the way
+    /// [`Self::replace_object_retention`] and [`Self::replace_object_legal_hold`] address a
+    /// version.
     ///
     /// This is the ONLY way an object's tag set is recorded, because it is the only place
     /// that can see BOTH the per-bucket byte budget and the service-wide one: a tag set is
@@ -1334,10 +1416,11 @@ impl ComAmazonawsS3Amazons3State {
         &mut self,
         bucket: &str,
         key: &str,
+        version_id: Option<&str>,
         tags: Vec<ResourceTag>,
     ) -> Option<ObjectTagWrite> {
         let held = self.buckets.get(bucket)?;
-        let Some(object) = held.object(key) else {
+        let Some(object) = held.addressed_object(key, version_id) else {
             return Some(ObjectTagWrite::NoSuchKey);
         };
 
@@ -1362,7 +1445,7 @@ impl ComAmazonawsS3Amazons3State {
 
         self.buckets
             .get_mut(bucket)
-            .and_then(|held| held.object_mut(key))
+            .and_then(|held| held.addressed_object_mut(key, version_id))
             .map(|object| {
                 object.tags = tags;
                 ObjectTagWrite::Applied

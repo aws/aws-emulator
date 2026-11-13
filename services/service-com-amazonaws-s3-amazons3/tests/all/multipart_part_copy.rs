@@ -544,7 +544,7 @@ async fn a_part_copy_this_emulator_cannot_serve_records_nothing_and_says_why() {
             code: "NotImplemented",
         },
         RefusalRow {
-            case: "a customer-provided encryption key for the part",
+            case: "a customer-provided encryption key for the part with no key beside it",
             upload_key: None,
             copy_source: format!("{origin}/{source_key}"),
             part_number: 1,
@@ -552,8 +552,8 @@ async fn a_part_copy_this_emulator_cannot_serve_records_nothing_and_says_why() {
                 "x-amz-server-side-encryption-customer-algorithm",
                 "AES256",
             )],
-            status: 501,
-            code: "NotImplemented",
+            status: 400,
+            code: INVALID_ARGUMENT_CODE,
         },
         RefusalRow {
             case: "an expected bucket owner that is not this account",

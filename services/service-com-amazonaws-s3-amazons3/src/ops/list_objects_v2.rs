@@ -443,10 +443,47 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // truncated one — reporting it as truncated would hand a paginating client a
         // token that makes no progress — so the walk below is skipped entirely.
         if page_limit > 0 {
-            // The store keys objects in a `BTreeMap<String, _>`, so this walk is
-            // already in ascending UTF-8 byte order and every key rolling into one
-            // common prefix is contiguous within it.
-            for (key, object) in bucket.objects() {
+            // The entries this listing walks, in ascending key order — every CURRENT OBJECT
+            // the bucket holds, and for a DIRECTORY bucket the key of every multipart upload
+            // it has IN PROGRESS.
+            //
+            // A directory bucket keeps its keys in a true directory hierarchy, so initiating a
+            // multipart upload already places that key's directories in the bucket's listing
+            // namespace: a delimiter listing reports them among `CommonPrefixes` while the
+            // upload is in flight, and the prefix goes away again with the upload (completing
+            // it leaves an object at the key, aborting it leaves nothing). The key ITSELF is
+            // no object yet, so it is never reported in `Contents` and a listing that does not
+            // roll it up into a prefix reports nothing for it — which is what [`None`] here
+            // means.
+            //
+            // A general purpose bucket has no such hierarchy, so its uploads add nothing to
+            // its listing: there the store's own ascending iterator IS the walk, and nothing
+            // is collected — the merge below is built for a directory bucket alone, so a
+            // large general purpose bucket pays no allocation per page.
+            let merged: Option<::std::collections::BTreeMap<&str, Option<&crate::state::Object>>> =
+                bucket.is_directory().then(|| {
+                    let mut merged: ::std::collections::BTreeMap<
+                        &str,
+                        Option<&crate::state::Object>,
+                    > = bucket
+                        .objects()
+                        .map(|(key, object)| (key, Some(object)))
+                        .collect();
+                    for upload in bucket.multipart_uploads().values() {
+                        merged.entry(upload.key.as_str()).or_insert(None);
+                    }
+                    merged
+                });
+            let entries: Box<dyn Iterator<Item = (&str, Option<&crate::state::Object>)>> =
+                match &merged {
+                    Some(merged) => {
+                        Box::new(merged.iter().map(|(key, object)| (*key, *object)))
+                    }
+                    None => Box::new(bucket.objects().map(|(key, object)| (key, Some(object)))),
+                };
+            // The walk is in ascending UTF-8 byte order — the order S3 lists keys in — so
+            // every key rolling into one common prefix is contiguous within it.
+            for (key, object) in entries {
                 if !key.starts_with(&prefix) {
                     continue;
                 }
@@ -468,6 +505,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                         .find(delimiter.as_str())
                         .map(|at| key[..prefix.len() + at + delimiter.len()].to_string())
                 };
+
+                // An in-flight upload's key is no object: it is reported only through the
+                // prefix it rolls up into, so a listing that rolls it up into none reports
+                // nothing at all for it.
+                if object.is_none() && rolled_up.is_none() {
+                    continue;
+                }
 
                 // "All of the keys that roll up into a common prefix count as a
                 // single return": a key under a prefix already on this page consumes
@@ -501,9 +545,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     break;
                 }
 
-                match rolled_up {
-                    Some(rolled_up) => common_prefixes.push(rolled_up),
-                    None => contents.push(Object {
+                match (rolled_up, object) {
+                    (Some(rolled_up), _) => common_prefixes.push(rolled_up),
+                    (None, Some(object)) => contents.push(Object {
                         key: Some(key.to_string()),
                         // "The owner field is not present in ListObjectsV2 by default. If
                         // you want to return the owner field with each key in the result,
@@ -542,6 +586,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                             .map(|checksum| checksum.checksum_type.clone()),
                         ..Object::default()
                     }),
+                    // Unreachable: an entry naming no object that rolls up into no prefix
+                    // was stepped over above.
+                    (None, None) => {}
                 }
             }
         }

@@ -59,4 +59,88 @@ pub struct SessionScope {
     /// The session token the caller was handed, as it is presented in
     /// `x-amz-s3session-token`.
     pub token: String,
+    /// The MODE the session was created in, which decides WHICH Zonal endpoint operations
+    /// the caller may execute under it — see [`SessionMode`].
+    pub mode: SessionMode,
+    /// The server-side encryption algorithm the session was ESTABLISHED with: "Amazon S3
+    /// will use the encryption settings values from the `CreateSession` request to protect
+    /// new objects in the directory bucket", and "in the Zonal endpoint API calls … the
+    /// encryption request headers must match the encryption settings that are specified in
+    /// the `CreateSession` request" (`PutObjectRequest$ServerSideEncryption`, of a directory
+    /// bucket) — so a write naming another algorithm is refused against this one.
+    ///
+    /// `None` for a session established under no algorithm at all, which names nothing for a
+    /// write to differ from.
+    pub encryption_algorithm: Option<String>,
+}
+
+/// The MODE one session was created in: "specifies the mode of the session that will be
+/// created, either `ReadWrite` or `ReadOnly`. … A `ReadWrite` session is capable of executing
+/// all the Zonal endpoint API operations on a directory bucket. A `ReadOnly` session is
+/// constrained to execute [a published set of] Zonal endpoint API operations"
+/// (`CreateSessionRequest$SessionMode`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum SessionMode {
+    /// "Capable of executing all the Zonal endpoint API operations on a directory bucket" —
+    /// and the DEFAULT, because "if no session mode is specified, the default behavior
+    /// attempts to create a session with the maximum allowable privilege. It will first
+    /// attempt to create a `ReadWrite` session" (same member).
+    #[default]
+    ReadWrite,
+    /// "Constrained to execute the following Zonal endpoint API operations" — the published
+    /// set, which [`crate::service::express_session::READ_ONLY_SESSION_OPERATIONS`] carries.
+    ReadOnly,
+}
+
+/// The `SessionMode` value naming [`SessionMode::ReadOnly`], as the model's `SessionMode`
+/// enum publishes it (`smithy_query(query="shape",shape="SessionMode")` reports
+/// `ReadOnly | ReadWrite`).
+pub const READ_ONLY_SESSION_MODE: &str = "ReadOnly";
+
+impl SessionMode {
+    /// The mode a `CreateSession` request naming `requested` is created in: the one it named,
+    /// and [`SessionMode::ReadWrite`] for a request naming none — "the default behavior
+    /// attempts to create a session with the maximum allowable privilege".
+    pub fn requested(requested: Option<&str>) -> Self {
+        match requested {
+            Some(READ_ONLY_SESSION_MODE) => Self::ReadOnly,
+            _ => Self::ReadWrite,
+        }
+    }
+}
+
+/// The header a Zonal endpoint request carries its session token in: "you also apply the
+/// session token to the `x-amz-s3session-token` request header for authorization"
+/// (`CreateSession`'s own documentation).
+pub const SESSION_TOKEN_HEADER: &str = "x-amz-s3session-token";
+
+/// WHICH session a request presents, in the two places a session travels — the one key a
+/// stored session is looked up by ([`ComAmazonawsS3Amazons3State::presented_session_scope`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PresentedSession {
+    /// The session token the request carries in [`SESSION_TOKEN_HEADER`].
+    Token(String),
+    /// The access key id the request is SIGNED with, for a request presenting no token: the
+    /// scope and the expiry belong to the credentials as much as to the token.
+    Credential(String),
+}
+
+/// The session `headers` presents, or `None` for a request presenting neither a session token
+/// nor a credential this emulator can read a key id out of.
+///
+/// The reader a HANDLER uses, over the `http::HeaderMap` its `OperationContext` carries; the
+/// routing seam reads the same two places off the runtime request
+/// ([`crate::service::express_session::presented_token`]).
+pub fn presented_session(headers: &::http::HeaderMap) -> Option<PresentedSession> {
+    let token = headers
+        .get(SESSION_TOKEN_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|token| !token.is_empty());
+    if let Some(token) = token {
+        return Some(PresentedSession::Token(token.to_string()));
+    }
+    Some(PresentedSession::Credential(
+        ::emulator_server::sigv4_credential_scope(headers)?.access_key_id,
+    ))
 }

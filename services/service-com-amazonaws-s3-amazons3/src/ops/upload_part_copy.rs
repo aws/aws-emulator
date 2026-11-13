@@ -289,16 +289,43 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let _ = ctx;
 
         // What this emulator cannot carry out faithfully, refused rather than answered with
-        // an entity tag that would claim it — the same list `UploadPart` refuses a part for,
-        // plus the copy-source half of SSE-C: those members carry a customer-provided KEY
-        // that S3 itself does not store, so no object here was encrypted with one and no
-        // upload here was initiated with one, and `RequestPayer` asks to be charged for the
-        // request, which nothing here does.
+        // an entity tag that would claim it — the same list `UploadPart` refuses a part for:
+        // `RequestPayer` asks to be charged for the request, which nothing here does.
+        //
+        // The SSE-C members are NOT in this list, on either side of the copy: a part copied
+        // into an upload initiated under a customer-provided key carries that same key, and a
+        // source object stored under one is read with the key the `x-amz-copy-source-`
+        // members present — each judged below against the digest the upload and the source
+        // object recorded.
         if let Some(unserved) = unserved_feature(&input) {
             return Err(crate::scaffolded::Scaffolded::not_implemented(&format!(
                 "UploadPartCopy with {unserved}"
             )));
         }
+
+        // The two CUSTOMER-PROVIDED keys this request presents, each read through the one rule
+        // every call of this service reads the three members by
+        // ([`crate::state::requested_customer_key`]): the key the PART is written under —
+        // "this must be the same encryption key specified in the initiate multipart upload
+        // request" (`UploadPartCopyRequest$SSECustomerKey`) — and the key the SOURCE object was
+        // stored under, which "must be the same one that was used when the source object was
+        // created" (`UploadPartCopyRequest$CopySourceSSECustomerKey`). Both are judged for
+        // THEMSELVES here and against what the upload and the source recorded below, once
+        // those have been read.
+        let presented_key = crate::state::requested_customer_key(
+            input.sse_customer_algorithm.as_deref(),
+            input.sse_customer_key.as_deref(),
+            input.sse_customer_key_md5.as_deref(),
+            None,
+        )
+        .map_err(crate::scaffolded::Scaffolded::customer_key)?;
+        let source_key = crate::state::requested_customer_key(
+            input.copy_source_sse_customer_algorithm.as_deref(),
+            input.copy_source_sse_customer_key.as_deref(),
+            input.copy_source_sse_customer_key_md5.as_deref(),
+            None,
+        )
+        .map_err(crate::scaffolded::Scaffolded::customer_key)?;
 
         // "If the account ID that you provide does not match the actual owner of the
         // destination bucket, the request fails with the HTTP status code 403 Forbidden"
@@ -395,6 +422,16 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // that names one.
         let encryption = upload.encryption.clone();
         let initiated_algorithm = upload.checksum_algorithm.clone();
+        // A part of an upload initiated under a customer-provided key must present that key,
+        // and a part of an upload initiated without one must present none — judged through the
+        // one rule every part write of this service is judged by
+        // ([`crate::state::sse_customer::part_refusal`]), before any of the source's bytes are
+        // read, so a part under the wrong key leaves the slot its number addresses as it was.
+        if let Some(refusal) =
+            crate::state::sse_customer::part_refusal(&encryption, presented_key.as_ref())
+        {
+            return Err(crate::scaffolded::Scaffolded::customer_key_read(refusal));
+        }
 
         // The SOURCE object, copied out of the store so the part write below can borrow it
         // mutably. "If your source bucket versioning is enabled, the x-amz-copy-source header
@@ -519,6 +556,22 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             &source_object,
         ) {
             return Err(crate::scaffolded::Scaffolded::precondition_failed(unmet));
+        }
+
+        // A part copy READS the source object's bytes, so a source stored under a
+        // CUSTOMER-PROVIDED key is read with the key the `x-amz-copy-source-` members present:
+        // "the encryption key provided in this header must be the same one that was used when
+        // the source object was created"
+        // (`UploadPartCopyRequest$CopySourceSSECustomerKey`). The decision is the digest the
+        // source object recorded against the digest of the key this request carried — the one
+        // comparison every read of such an object is decided by
+        // ([`crate::state::sse_customer::read_refusal`]), so a copy and a `GetObject` of the
+        // same version are refused alike.
+        if let Some(refusal) = crate::state::sse_customer::read_refusal(
+            &source_object.encryption,
+            source_key.as_ref(),
+        ) {
+            return Err(crate::scaffolded::Scaffolded::customer_key_read(refusal));
         }
 
         // A part copy READS the source object's bytes, so an SSE-KMS source is read through
@@ -685,9 +738,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             server_side_encryption: encryption.sse_algorithm.clone(),
             ssekms_key_id: encryption.kms_key_id.clone(),
             bucket_key_enabled: encryption.reported_bucket_key_enabled(),
+            // "If server-side encryption with a customer-provided encryption key was
+            // requested, the response will include this header"
+            // (`UploadPartCopyOutput$SSECustomerAlgorithm` and `$SSECustomerKeyMD5`) — the
+            // algorithm and the DIGEST the upload recorded, never the key itself, which is
+            // what `UploadPart` reports for a part of the same upload.
+            sse_customer_algorithm: encryption.sse_customer_algorithm.clone(),
+            sse_customer_key_md5: encryption.sse_customer_key_md5.clone(),
             // Everything else this output can carry describes something no recorded part
-            // has: the SSE-C members are refused above, and `RequestCharged` reports a
-            // Requester Pays charge nothing here makes.
+            // has: `RequestCharged` reports a Requester Pays charge nothing here makes.
             ..UploadPartCopyOutput::default()
         })
     }
@@ -734,22 +793,7 @@ fn parse_copy_source_range(value: &str) -> Option<(usize, usize)> {
 /// The feature `input` asks for that this emulator does not serve, if any — named for the
 /// 501 that refuses it, the way `UploadPart` names its own.
 fn unserved_feature(input: &UploadPartCopyInput) -> Option<&'static str> {
-    [
-        (
-            input.sse_customer_algorithm.is_some(),
-            "SSECustomerAlgorithm",
-        ),
-        (input.sse_customer_key.is_some(), "SSECustomerKey"),
-        (
-            input.copy_source_sse_customer_algorithm.is_some(),
-            "CopySourceSSECustomerAlgorithm",
-        ),
-        (
-            input.copy_source_sse_customer_key.is_some(),
-            "CopySourceSSECustomerKey",
-        ),
-        (input.request_payer.is_some(), "RequestPayer"),
-    ]
-    .into_iter()
-    .find_map(|(asked, name)| asked.then_some(name))
+    [(input.request_payer.is_some(), "RequestPayer")]
+        .into_iter()
+        .find_map(|(asked, name)| asked.then_some(name))
 }

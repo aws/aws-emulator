@@ -617,6 +617,16 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // object", so a class the bucket cannot hold is refused here rather than at the
         // completion. A bucket this emulator does not hold is answered by the initiation
         // below instead.
+        //
+        // And, for a DIRECTORY bucket, the ENCRYPTION the initiation names has to be the one
+        // its session was established with: "in the Zonal endpoint API calls (except
+        // CopyObject and UploadPartCopy) … the encryption request headers must match the
+        // encryption settings that are specified in the CreateSession request"
+        // (`PutObjectRequest$ServerSideEncryption`), judged through the one place that rule
+        // lives ([`crate::service::object_write::session_encryption_refusal`]) so an
+        // initiation and a one-shot write of the same bytes are refused alike — and before any
+        // upload is registered, so no part can be uploaded under an encryption the object
+        // cannot be stored with.
         {
             let store = state.lock();
             if let Some(message) = store.bucket(&input.bucket).and_then(|bucket| {
@@ -630,6 +640,27 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     crate::service::object_write::INVALID_STORAGE_CLASS_STATUS,
                     message,
                 ));
+            }
+            if store
+                .bucket(&input.bucket)
+                .is_some_and(crate::state::Bucket::is_directory)
+            {
+                let committed = crate::service::object_write::committed_encryption(
+                    &store,
+                    &input.bucket,
+                    &ctx.parts().headers,
+                    ::std::time::SystemTime::now(),
+                );
+                if let Some(message) = crate::service::object_write::session_encryption_refusal(
+                    committed.as_deref(),
+                    input.server_side_encryption.as_deref(),
+                ) {
+                    return Err(crate::scaffolded::Scaffolded::unmodeled(
+                        crate::state::INVALID_REQUEST_CODE,
+                        crate::state::INVALID_REQUEST_STATUS,
+                        message,
+                    ));
+                }
             }
         }
 

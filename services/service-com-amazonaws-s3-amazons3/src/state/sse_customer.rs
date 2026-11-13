@@ -104,6 +104,25 @@ const KEY_REQUIRED_MESSAGE: &str =
 const KEY_NOT_APPLICABLE_MESSAGE: &str = "The encryption parameters are not applicable to this \
                                           object.";
 
+/// The sentence S3 answers a PART of a multipart upload that was initiated under a
+/// customer-provided key when the part presents none: "this must be the same encryption key
+/// specified in the initiate multipart upload request" (`UploadPartRequest$SSECustomerKey`),
+/// so what the caller is told is about the UPLOAD's parameters — the initiation asked for
+/// encryption and every part of it has to carry the same key — rather than about reading a
+/// stored object's bytes.
+const INITIATE_ENCRYPTED_MESSAGE: &str =
+    "The multipart upload initiate requested encryption. Subsequent part requests must \
+     include the appropriate encryption parameters.";
+
+/// The sentence S3 answers a PART that presents a DIFFERENT customer-provided key from the
+/// one its upload was initiated under: "this must be the same encryption key specified in the
+/// initiate multipart upload request" (`UploadPartRequest$SSECustomerKey`), so what the caller
+/// is told is that the parameters are not the upload's own — a statement about the REQUEST,
+/// which is why it carries [`super::INVALID_REQUEST_CODE`] rather than the 403 a read of a
+/// stored object under another key earns.
+const PARAMETERS_MISMATCH_MESSAGE: &str =
+    "The provided encryption parameters did not match the ones used originally.";
+
 /// The customer-provided key one request carries, as this service keeps it: the algorithm it
 /// names and the DIGEST of the key, which is all an object records of it and all a later read
 /// is compared against. The key itself is read for its digest and dropped.
@@ -271,6 +290,43 @@ pub fn read_refusal(
             super::ACCESS_DENIED_MESSAGE,
         ),
         (Some(_), Some(_)) => None,
+    }
+}
+
+/// Why a PART of the multipart upload whose `initiated` encryption is given cannot be written
+/// presenting `presented`, or `None` when it can.
+///
+/// The same comparison a READ of a stored object is decided by ([`read_refusal`]) — the digest
+/// the upload recorded against the digest of the key the part carried — because "this must be
+/// the same encryption key specified in the initiate multipart upload request"
+/// (`UploadPartRequest$SSECustomerKey`). What differs is WHAT THE CALLER IS TOLD for the two
+/// conditions that are about the upload rather than about an object's bytes, because there is
+/// no stored object yet for the read's own sentences to be about:
+///
+/// * a part presenting NO key is told the initiation asked for encryption
+///   ([`INITIATE_ENCRYPTED_MESSAGE`]); and
+/// * a part presenting ANOTHER key is told its parameters are not the ones the upload was
+///   initiated with ([`PARAMETERS_MISMATCH_MESSAGE`]).
+///
+/// Both are a request S3 cannot serve ([`super::INVALID_REQUEST_CODE`], HTTP 400). Every other
+/// condition is the read's own.
+pub fn part_refusal(
+    initiated: &super::ObjectEncryption,
+    presented: Option<&CustomerKey>,
+) -> Option<ReadRefusal> {
+    let refused = |message: &'static str| {
+        Some(ReadRefusal {
+            code: super::INVALID_REQUEST_CODE,
+            status: super::INVALID_REQUEST_STATUS,
+            message,
+        })
+    };
+    match (initiated.sse_customer_key_md5.as_deref(), presented) {
+        (Some(_), None) => refused(INITIATE_ENCRYPTED_MESSAGE),
+        (Some(stored), Some(presented)) if stored != presented.key_md5 => {
+            refused(PARAMETERS_MISMATCH_MESSAGE)
+        }
+        _ => read_refusal(initiated, presented),
     }
 }
 

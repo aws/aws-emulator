@@ -34,7 +34,10 @@ use crate::state::SessionTokenVerdict;
 /// The header a Zonal endpoint request carries its session token in: "you also apply the
 /// session token to the `x-amz-s3session-token` request header for authorization"
 /// (`CreateSession`'s own documentation).
-pub const SESSION_TOKEN_HEADER: &str = "x-amz-s3session-token";
+///
+/// The name itself lives beside the sessions in [`crate::state`], so the routing seam here
+/// and a handler reading its own request's session name the one header.
+pub const SESSION_TOKEN_HEADER: &str = crate::state::SESSION_TOKEN_HEADER;
 
 /// The key this service serves the refusal of an unauthorized session under, one per
 /// condition ([`SessionRefusal`]).
@@ -47,11 +50,48 @@ pub const SESSION_TOKEN_HEADER: &str = "x-amz-s3session-token";
 /// because the operation behind it answers one fixed document, and the seam that decides
 /// WHICH condition refused the request can only hand back a borrow of an operation the
 /// service already holds.
-pub const SESSION_DENIED_KEYS: [(&str, SessionRefusal); 3] = [
-    ("@refuse-session-invalid-token", INVALID_TOKEN),
-    ("@refuse-session-expired-token", EXPIRED_TOKEN),
-    ("@refuse-session-other-bucket", OTHER_BUCKET),
+pub const SESSION_DENIED_KEYS: [(&str, SessionRefusal); 4] = [
+    (REFUSE_INVALID_TOKEN, INVALID_TOKEN),
+    (REFUSE_EXPIRED_TOKEN, EXPIRED_TOKEN),
+    (REFUSE_OTHER_BUCKET, OTHER_BUCKET),
+    (REFUSE_READ_ONLY_SESSION, READ_ONLY_SESSION),
 ];
+
+/// See [`SESSION_DENIED_KEYS`].
+const REFUSE_INVALID_TOKEN: &str = "@refuse-session-invalid-token";
+/// See [`SESSION_DENIED_KEYS`].
+const REFUSE_EXPIRED_TOKEN: &str = "@refuse-session-expired-token";
+/// See [`SESSION_DENIED_KEYS`].
+const REFUSE_OTHER_BUCKET: &str = "@refuse-session-other-bucket";
+/// The key the refusal of a WRITE presented with a `ReadOnly` session is served under — see
+/// [`SESSION_DENIED_KEYS`] and [`READ_ONLY_SESSION_OPERATIONS`].
+pub const REFUSE_READ_ONLY_SESSION: &str = "@refuse-session-read-only";
+
+/// The Zonal endpoint API operations a `ReadOnly` session executes: "a `ReadOnly` session is
+/// constrained to execute the following Zonal endpoint API operations: `GetObject`,
+/// `HeadObject`, `ListObjectsV2`, `GetObjectAttributes`, `ListParts`, and
+/// `ListMultipartUploads`" (`CreateSessionRequest$SessionMode`).
+///
+/// `CreateSession` itself is in the set because it is not executed UNDER a session at all:
+/// "you use IAM credentials to make the CreateSession API request on the bucket" (that
+/// operation's own documentation), so taking a new session is never the thing a session's own
+/// mode constrains.
+pub const READ_ONLY_SESSION_OPERATIONS: [&str; 7] = [
+    "GetObject",
+    "HeadObject",
+    "ListObjectsV2",
+    "GetObjectAttributes",
+    "ListParts",
+    "ListMultipartUploads",
+    "CreateSession",
+];
+
+/// Whether a `ReadOnly` session executes `operation` — `false` for every operation outside
+/// the published set, and for a request whose address names no operation of this model at all,
+/// because such a session is "CONSTRAINED to execute the following" and nothing else.
+pub fn read_only_session_serves(operation: Option<&str>) -> bool {
+    operation.is_some_and(|operation| READ_ONLY_SESSION_OPERATIONS.contains(&operation))
+}
 
 /// The session token `req` presents, when it presents one at all.
 pub fn presented_token(req: &RtRequest) -> Option<&str> {
@@ -104,6 +144,15 @@ const OTHER_BUCKET: SessionRefusal = SessionRefusal {
     status: crate::state::ACCESS_DENIED_STATUS,
     message: crate::state::ACCESS_DENIED_MESSAGE,
 };
+/// A live session that covers the bucket and was created `ReadOnly`, presented with an
+/// operation such a session does not execute: the session is a credential this caller holds
+/// and it grants nothing beyond the published set, which is the same refusal — code, status
+/// and sentence — that a session granting nothing on the addressed bucket earns.
+const READ_ONLY_SESSION: SessionRefusal = SessionRefusal {
+    code: crate::state::ACCESS_DENIED_CODE,
+    status: crate::state::ACCESS_DENIED_STATUS,
+    message: crate::state::ACCESS_DENIED_MESSAGE,
+};
 
 /// The refusal `verdict` earns, or `None` for the one verdict that is not a refusal.
 pub fn refusal_for(verdict: SessionTokenVerdict) -> Option<SessionRefusal> {
@@ -118,11 +167,12 @@ pub fn refusal_for(verdict: SessionTokenVerdict) -> Option<SessionRefusal> {
 /// The [`SESSION_DENIED_KEYS`] key the refusal `verdict` earns is served under, or `None`
 /// for the one verdict that is not a refusal.
 pub fn denial_key(verdict: SessionTokenVerdict) -> Option<&'static str> {
-    let refused = refusal_for(verdict)?;
-    SESSION_DENIED_KEYS
-        .iter()
-        .find(|(_, refusal)| refusal.code == refused.code)
-        .map(|(key, _)| *key)
+    match verdict {
+        SessionTokenVerdict::Authorized => None,
+        SessionTokenVerdict::Unknown => Some(REFUSE_INVALID_TOKEN),
+        SessionTokenVerdict::Expired => Some(REFUSE_EXPIRED_TOKEN),
+        SessionTokenVerdict::OtherBucket => Some(REFUSE_OTHER_BUCKET),
+    }
 }
 
 /// The operation this service serves a request whose session token authorizes nothing with.

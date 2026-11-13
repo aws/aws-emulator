@@ -148,6 +148,76 @@ pub fn directory_bucket_only_query_parameter(query: &str) -> Option<&'static str
         .find(|parameter| crate::service::query_carries(query, parameter))
 }
 
+/// The server-side encryption algorithm a Zonal endpoint write into the directory bucket
+/// `bucket` is judged against — the algorithm the write's own `x-amz-server-side-encryption`
+/// has to match ([`session_encryption_refusal`]) — or `None` for a request that presents no
+/// live session of that bucket, which committed nothing for a write to differ from.
+///
+/// "In the Zonal endpoint API calls … the encryption request headers must match the encryption
+/// settings that are specified in the `CreateSession` request"
+/// (`PutObjectRequest$ServerSideEncryption`, of a directory bucket), so it is the algorithm the
+/// SESSION the request presents was established with: a session that named one was established
+/// under it, and one that named none under the bucket's own default encryption configuration
+/// (`CreateSession` settles that, which is why this reads the session rather than the bucket).
+///
+/// Read-only: the session is read, and nothing is written.
+pub fn committed_encryption(
+    store: &state::ComAmazonawsS3Amazons3State,
+    bucket: &str,
+    headers: &::http::HeaderMap,
+    now: ::std::time::SystemTime,
+) -> Option<String> {
+    let presented = state::presented_session(headers)?;
+    let scope = store.presented_session_scope(&presented, now)?;
+    if scope.bucket != bucket {
+        return None;
+    }
+    scope.encryption_algorithm.clone()
+}
+
+/// The sentence S3 refuses a Zonal endpoint write naming `requested` under a session
+/// established with `committed` with, or `None` when the two name one encryption.
+///
+/// "You can't override the values of the encryption settings … that are specified in the
+/// `CreateSession` request. You don't need to explicitly specify these encryption settings
+/// values in Zonal endpoint API calls, and Amazon S3 will use the encryption settings values
+/// from the `CreateSession` request to protect new objects in the directory bucket"
+/// (`PutObjectRequest$ServerSideEncryption`) — so a write that names NO algorithm is stored
+/// under the session's own and matches it, and a write that names ANOTHER one names an
+/// encryption the object cannot be stored under, which is a request S3 cannot serve
+/// ([`state::INVALID_REQUEST_CODE`], HTTP 400).
+///
+/// The sentence is that class's fixed text with the two algorithms substituted, each named the
+/// way S3 names an encryption type in it ([`encryption_type_name`]).
+pub fn session_encryption_refusal(
+    committed: Option<&str>,
+    requested: Option<&str>,
+) -> Option<String> {
+    let requested = requested.filter(|algorithm| !algorithm.is_empty())?;
+    let committed = committed.filter(|algorithm| !algorithm.is_empty())?;
+    (committed != requested).then(|| {
+        format!(
+            "Session was created with ServerSideEncryption as {} but request header specifies \
+             {}.",
+            encryption_type_name(committed),
+            encryption_type_name(requested)
+        )
+    })
+}
+
+/// How S3 names a server-side encryption type in that sentence: the published SHORT NAME of
+/// each KMS form — "server-side encryption with KMS keys (SSE-KMS) (`aws:kms`)" and its
+/// dual-layer sibling (`PutObjectRequest$ServerSideEncryption`) — and the model's own
+/// `ServerSideEncryption` value for every other, which for SSE-S3 is the algorithm name
+/// `AES256` itself.
+fn encryption_type_name(algorithm: &str) -> &str {
+    match algorithm {
+        kms if kms == state::KMS_SSE_ALGORITHMS[0] => "SSE-KMS",
+        dsse if dsse == state::KMS_SSE_ALGORITHMS[1] => "DSSE-KMS",
+        named => named,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

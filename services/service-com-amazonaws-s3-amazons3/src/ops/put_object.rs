@@ -676,6 +676,41 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> PutObject<Eng> {
         // key ID provided in PutBucketEncryption requests" (`PutBucketEncryption`'s own
         // documentation), so a default naming a key that is gone is stored and fails at the
         // write that would have used it.
+        // A Zonal endpoint write is stored under the encryption its SESSION was established
+        // with: "you can't override the values of the encryption settings … that are specified
+        // in the CreateSession request. … Amazon S3 will use the encryption settings values
+        // from the CreateSession request to protect new objects in the directory bucket"
+        // (`PutObjectRequest$ServerSideEncryption`, of a directory bucket). So a write naming
+        // ANOTHER algorithm names an encryption the object cannot be stored under, and is
+        // refused here — before KMS is asked anything and before anything is written — rather
+        // than silently switching the object's encryption per request. See
+        // [`crate::service::object_write::session_encryption_refusal`] for the rule and
+        // [`crate::service::object_write::committed_encryption`] for what it is matched
+        // against. A bucket this emulator does not hold is answered by the write below.
+        {
+            let store = state.lock();
+            if store
+                .bucket(&input.bucket)
+                .is_some_and(crate::state::Bucket::is_directory)
+            {
+                let committed = crate::service::object_write::committed_encryption(
+                    &store,
+                    &input.bucket,
+                    &ctx.parts().headers,
+                    ::std::time::SystemTime::now(),
+                );
+                if let Some(message) = crate::service::object_write::session_encryption_refusal(
+                    committed.as_deref(),
+                    input.server_side_encryption.as_deref(),
+                ) {
+                    return Err(crate::scaffolded::Scaffolded::unmodeled(
+                        crate::state::INVALID_REQUEST_CODE,
+                        crate::state::INVALID_REQUEST_STATUS,
+                        message,
+                    ));
+                }
+            }
+        }
         let mut stored_under = {
             let store = state.lock();
             match store.bucket(&input.bucket) {

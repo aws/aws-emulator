@@ -28,8 +28,9 @@
 //!   another bucket, nor the bucket's own tag set, and a `PutObject` that replaces the
 //!   object replaces its tag set with none ("You cannot use PutObject to only update a
 //!   single piece of metadata for an existing object").
-//! * `versionId` names an object version this emulator does not keep, so it keeps the
-//!   scaffold's 501 rather than being answered over the current object.
+//! * `versionId` names ONE stored version, and a tag set belongs to that version: a call
+//!   naming a version the key does not carry is that version's own 404
+//!   (`NoSuchVersion`) and changes nothing.
 
 use service_com_amazonaws_s3_amazons3::state::{
     MAX_TAGS_PER_BUCKET, MAX_TAGS_PER_OBJECT, MAX_TAG_KEY_CHARS, MAX_TAG_VALUE_CHARS,
@@ -620,14 +621,22 @@ async fn a_tagging_parameter_this_emulator_cannot_serve_is_refused_not_guessed()
         text(&put)
     );
 
-    // `versionId` names one version of an object. The store does keep versions (see the
-    // `object_versioning` suite), but these two handlers act on the CURRENT object alone —
-    // a tag write goes through the byte budgets of the object at the key, which is the
-    // current one — so neither may answer a request naming a version over it: tagging one
-    // version of a key is its own behaviour, and until it is written the scaffold's 501
-    // says so. The version ids below are the shapes a client sends: a generated-looking id
-    // and the literal `null` S3 uses for an object written before versioning was enabled.
-    for version in ["3HL4kqtJlcpXroDTDmjVBH40Nrjfkd", "null"] {
+    // `versionId` names ONE version of an object, and a tag set belongs to that version:
+    // "to retrieve tags of any other version, use the versionId query parameter"
+    // (`GetObjectTagging`). The ids below are the shapes a client sends: the literal `null`,
+    // which names the version a write made while the bucket was not versioning-enabled —
+    // this object's — and a generated-looking id no version of the key carries, which is
+    // that version's own 404.
+    let read = get_object_tagging(&router, "tag-unserved", "versioned", "&versionId=null").await;
+    assert_eq!(
+        (read.status, tag_set_of(&read)),
+        (200, stored.clone()),
+        "case \"null\": the null version is this object, so its tag set is the one stored, \
+         got {} with body {:?}",
+        read.status,
+        text(&read)
+    );
+    for version in ["3HL4kqtJlcpXroDTDmjVBH40Nrjfkd", "NoSuchVersionAtAll00000000000000"] {
         let read = get_object_tagging(
             &router,
             "tag-unserved",
@@ -636,9 +645,10 @@ async fn a_tagging_parameter_this_emulator_cannot_serve_is_refused_not_guessed()
         )
         .await;
         assert_eq!(
-            read.status, 501,
-            "case {version:?}: GetObjectTagging with a versionId keeps the scaffold's \
-             501, got {} with body {:?}",
+            (read.status, read.error_code()),
+            (404, "NoSuchVersion".to_string()),
+            "case {version:?}: GetObjectTagging naming a version the key does not carry is \
+             that version's 404, got {} with body {:?}",
             read.status,
             text(&read)
         );
@@ -652,9 +662,10 @@ async fn a_tagging_parameter_this_emulator_cannot_serve_is_refused_not_guessed()
         )
         .await;
         assert_eq!(
-            written.status, 501,
-            "case {version:?}: PutObjectTagging with a versionId keeps the scaffold's \
-             501, got {} with body {:?}",
+            (written.status, written.error_code()),
+            (404, "NoSuchVersion".to_string()),
+            "case {version:?}: PutObjectTagging naming a version the key does not carry is \
+             that version's 404, got {} with body {:?}",
             written.status,
             text(&written)
         );

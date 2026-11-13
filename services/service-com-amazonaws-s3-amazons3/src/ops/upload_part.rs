@@ -448,13 +448,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // And the SAME-key half: a part of an upload initiated under a customer-provided key
         // must present that key, and a part of an upload initiated without one must present
         // none — the same comparison, against the same recorded digest, that a READ of the
-        // finished object is decided by ([`crate::state::sse_customer::read_refusal`]), so
-        // one rule answers both. Judged before the part is recorded, so a part under the
-        // wrong key leaves the slot its number addresses exactly as it was. An upload this
-        // bucket does not hold is answered by the record below, which reports that instead.
+        // finished object is decided by ([`crate::state::sse_customer::part_refusal`] holds
+        // both, so one rule answers both and only the sentence for the key-less part is the
+        // upload's own). Judged before the part is recorded, so a part under the wrong key
+        // leaves the slot its number addresses exactly as it was. An upload this bucket does
+        // not hold is answered by the record below, which reports that instead.
         if let Some((recorded, _)) = &recorded_upload {
             if let Some(refusal) =
-                crate::state::sse_customer::read_refusal(recorded, presented_key.as_ref())
+                crate::state::sse_customer::part_refusal(recorded, presented_key.as_ref())
             {
                 return Err(crate::scaffolded::Scaffolded::customer_key_read(refusal));
             }

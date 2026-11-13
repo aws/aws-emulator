@@ -302,7 +302,7 @@ fn seed_tags(
         .replace_tags(held.clone());
     assert!(
         store
-            .replace_object_tags(bucket_name, key, held)
+            .replace_object_tags(bucket_name, key, None, held)
             .is_some(),
         "the object {key:?} must be stored"
     );

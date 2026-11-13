@@ -193,18 +193,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             ));
         }
 
-        // "To retrieve tags of any other version, use the versionId query parameter" — the
-        // store does keep versions (`PutObject` mints a version id on a
-        // versioning-enabled bucket), but this handler reads the tag set of the CURRENT
-        // object alone, and a stored version's tag set is only ever written through the
-        // byte-budget path of the object at the key. Reporting one version's tags is its
-        // own behaviour; the 501 says so rather than answering the current object's tag
-        // set as if it were the named version's.
-        if input.version_id.is_some() {
-            return Err(crate::scaffolded::Scaffolded::not_implemented(
-                "GetObjectTagging with versionId",
-            ));
-        }
+        // "To retrieve tags of any other version, use the versionId query parameter" — a tag
+        // set belongs to a stored VERSION, so the parameter addresses the version whose tag
+        // set is reported and the key's current object is what a request naming none reports.
+        let version_id = input.version_id.as_deref();
 
         let Some(state) = crate::state::service_state(&*self.engine) else {
             // Nothing can be reported about an object the emulator cannot look up, and
@@ -222,8 +214,31 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let Some(bucket) = store.bucket(&input.bucket) else {
             return Err(GetObjectTaggingErrorModeled::NoSuchBucket(NoSuchBucket {}).into());
         };
-        let Some(object) = bucket.object(&input.key) else {
-            return Err(GetObjectTaggingErrorModeled::NoSuchKey(NoSuchKey {}).into());
+        // A delete marker is no object, so it carries no tag set to report: 405, the status
+        // S3 answers an object-level call addressed to a marker with, as every other
+        // version-addressed subresource of this service answers it.
+        if version_id.is_some_and(|named| {
+            bucket
+                .stored_version(&input.key, named)
+                .is_some_and(|held| held.as_delete_marker().is_some())
+        }) {
+            return Err(crate::scaffolded::Scaffolded::method_not_allowed(
+                TAGGING_READ_METHOD,
+                crate::state::DELETE_MARKER_RESOURCE_TYPE,
+            ));
+        }
+        let Some(object) = bucket.addressed_object(&input.key, version_id) else {
+            // A `versionId` naming no version of the key is that version's own 404, the way
+            // every version-addressed read of this service answers one; a request naming no
+            // version is about the key, which is `NoSuchKey`.
+            return Err(match version_id {
+                Some(_) => crate::scaffolded::Scaffolded::unmodeled(
+                    crate::state::NO_SUCH_VERSION_CODE,
+                    NO_SUCH_VERSION_STATUS,
+                    crate::state::NO_SUCH_VERSION_MESSAGE,
+                ),
+                None => GetObjectTaggingErrorModeled::NoSuchKey(NoSuchKey {}).into(),
+            });
         };
 
         Ok(GetObjectTaggingOutput {
@@ -249,3 +264,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         })
     }
 }
+
+/// The method a read of this subresource is made with, for the 405 a delete marker earns:
+/// `GET /{Bucket}/{Key+}?tagging`
+/// (`smithy_query(query="operation",operation="GetObjectTagging")`).
+const TAGGING_READ_METHOD: &str = "GET";
+
+/// The status a `versionId` naming no version of the key is answered with: `NoSuchVersion`,
+/// the 404 every version-addressed read of this service answers one with.
+const NO_SUCH_VERSION_STATUS: u16 = 404;

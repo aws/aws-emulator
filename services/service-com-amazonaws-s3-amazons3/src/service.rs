@@ -1552,22 +1552,66 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
         let bucket = first_path_segment(&path)?;
         let state = crate::state::service_state(&*self.engine)?;
         let now = ::std::time::SystemTime::now();
-        // The TOKEN the request presents, judged against the session that carries it.
-        if let Some(token) = express_session::presented_token(req) {
-            let verdict = state.lock().session_token_verdict(token, bucket, now);
-            return self.door.get(express_session::denial_key(verdict)?);
+        // WHICH session the request presents: the TOKEN it carries, else the key pair it is
+        // SIGNED with — a request that presents no token may still be signed with a session's
+        // own key pair, which carries the same scope and the same expiry: "temporary security
+        // credentials are scoped to the bucket and expire after 5 minutes", so such a request
+        // reaches the bucket its session was created for while that session lives. A
+        // credential that is not a session's says nothing, which leaves every other request
+        // of this service exactly as it was.
+        let presented = match express_session::presented_token(req) {
+            Some(token) => crate::state::PresentedSession::Token(token.to_string()),
+            None => crate::state::PresentedSession::Credential(
+                sigv4::credential_scope(req)?.access_key_id,
+            ),
+        };
+        let (verdict, read_only) = {
+            let store = state.lock();
+            (
+                store.presented_session_verdict(&presented, bucket, now)?,
+                store
+                    .presented_session_scope(&presented, now)
+                    .is_some_and(|scope| scope.mode == crate::state::SessionMode::ReadOnly),
+            )
+        };
+        if let Some(key) = express_session::denial_key(verdict) {
+            return self.door.get(key);
         }
-        // A request that presents no token may still be SIGNED with a session's own key
-        // pair, which carries the same scope and the same expiry: "temporary security
-        // credentials are scoped to the bucket and expire after 5 minutes", so such a
-        // request reaches the bucket its session was created for while that session lives.
-        // A credential that is not a session's says nothing, which leaves every other
-        // request of this service exactly as it was.
-        let key_id = sigv4::credential_scope(req)?.access_key_id;
-        let verdict = state
-            .lock()
-            .session_credential_verdict(&key_id, bucket, now)?;
-        self.door.get(express_session::denial_key(verdict)?)
+        // A session that covers the bucket still grants only what its MODE does: "a ReadOnly
+        // session is constrained to execute the following Zonal endpoint API operations"
+        // (`CreateSessionRequest$SessionMode`), so a request under one that names any other
+        // operation of this model is refused here — whichever operation it addressed, and
+        // before that operation runs. See [`express_session::READ_ONLY_SESSION_OPERATIONS`].
+        if read_only
+            && !express_session::read_only_session_serves(
+                self.addressed_operation(req).as_deref(),
+            )
+        {
+            return self.door.get(express_session::REFUSE_READ_ONLY_SESSION);
+        }
+        None
+    }
+
+    /// The operation of this model `req`'s address names, or `None` for a request whose
+    /// address resolves to none.
+    ///
+    /// Resolved through the ENTRY's own protocol — the one carrying this service's
+    /// model-derived routes — over the request's PATH-STYLE address
+    /// ([`with_path_style_address`]), so a virtual-hosted-style Zonal request (the form a
+    /// client addresses a directory bucket in) names the same operation a path-style one does.
+    /// Nothing of the store is read and nothing is written: this is the route lookup the
+    /// routing seam itself makes, asked for the NAME alone.
+    fn addressed_operation(&self, req: &RtRequest) -> Option<String> {
+        let routable = match self.host_addressed_bucket(req, wire::request_path(req.uri())) {
+            Some(bucket) => Some(with_path_style_address(req, &bucket)?),
+            None => None,
+        };
+        let asked = routable.as_ref().unwrap_or(req);
+        self.entry
+            .protocol()
+            .routing_key(asked)
+            .ok()
+            .map(|key| key.to_string())
     }
 
     /// Whether `req` is the BROWSER-FORM upload of an object: "the POST operation adds an

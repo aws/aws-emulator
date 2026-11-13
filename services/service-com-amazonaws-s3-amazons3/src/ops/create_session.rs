@@ -400,11 +400,24 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let (released, recorded) = {
             let mut store = state.lock();
             let released = store.release_expired_sessions(::std::time::SystemTime::now());
-            let recorded = store.record_vended_session_on(
+            let recorded = store.record_vended_session_scoped(
                 &minted.id,
                 expires_at,
-                &input.bucket,
-                &session_token,
+                crate::state::SessionScope {
+                    bucket: input.bucket.clone(),
+                    token: session_token.clone(),
+                    // "Specifies the mode of the session that will be created, either
+                    // ReadWrite or ReadOnly" — recorded, because WHICH Zonal endpoint
+                    // operations the caller may execute under the session follows from it,
+                    // and a request naming no mode takes "the maximum allowable privilege"
+                    // ([`crate::state::SessionMode::requested`]).
+                    mode: crate::state::SessionMode::requested(input.session_mode.as_deref()),
+                    // The algorithm the session was ESTABLISHED under, settled above: "the
+                    // encryption request headers must match the encryption settings that are
+                    // specified in the CreateSession request", so the writes made under this
+                    // session are judged against this value.
+                    encryption_algorithm: encryption.sse_algorithm.clone(),
+                },
             );
             (released, recorded)
         };

@@ -22,9 +22,9 @@
 //! * An `x-amz-expected-bucket-owner` that is not this emulator's account is "403 Forbidden
 //!   (access denied)" (`DeleteObjectTaggingRequest$ExpectedBucketOwner`) and removes
 //!   nothing; the account this emulator does serve is accepted.
-//! * `versionId` names an object version this emulator does not tag, so it keeps the
-//!   scaffold's 501 rather than being answered over the current object — as it does for the
-//!   reader and the writer of the same subresource.
+//! * `versionId` names ONE stored version, and a tag set belongs to that version: a removal
+//!   naming a version the key does not carry is that version's own 404 (`NoSuchVersion`) and
+//!   removes nothing — as it is for the reader and the writer of the same subresource.
 //! * Nothing reads an object's tags through a stale copy: a tag-filtered lifecycle rule
 //!   stops applying to the object as soon as its tag set is removed.
 
@@ -403,14 +403,11 @@ async fn a_removal_parameter_this_emulator_cannot_serve_is_refused_not_guessed()
         text(&stored)
     );
 
-    // `versionId` names ONE version of an object. The store does keep versions (see the
-    // `object_versioning` suite), but this handler acts on the CURRENT object alone — a tag
-    // write goes through the byte budgets of the object at the key, which is the current
-    // one — so a request naming a version may not be answered over it: removing one
-    // version's tag set is its own behaviour, and until it is written the scaffold's 501
-    // says so. The ids below are the shapes a client sends: a generated-looking one and the
-    // literal `null` S3 uses for an object written before versioning was enabled.
-    for version in ["3HL4kqtJlcpXroDTDmjVBH40Nrjfkd", "null"] {
+    // `versionId` names ONE version of an object, and a tag set belongs to that version: "to
+    // delete tags of a specific object version, add the versionId query parameter in the
+    // request" (`DeleteObjectTagging`). An id no version of the key carries is that version's
+    // own 404, and nothing is removed for it.
+    for version in ["3HL4kqtJlcpXroDTDmjVBH40Nrjfkd", "NoSuchVersionAtAll00000000000000"] {
         let refused = delete_object_tagging(
             &router,
             "removal-unserved",
@@ -420,9 +417,10 @@ async fn a_removal_parameter_this_emulator_cannot_serve_is_refused_not_guessed()
         )
         .await;
         assert_eq!(
-            refused.status, 501,
-            "case {version:?}: a removal naming a versionId keeps the scaffold's 501, got \
-             {} with body {:?}",
+            (refused.status, refused.error_code()),
+            (404, "NoSuchVersion".to_string()),
+            "case {version:?}: a removal naming a version the key does not carry is that \
+             version's 404, got {} with body {:?}",
             refused.status,
             text(&refused)
         );

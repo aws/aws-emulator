@@ -224,17 +224,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> PutObjectTagging<
             ));
         }
 
-        // "To put tags of any other version, use the versionId query parameter" — the
-        // store does keep versions (`PutObject` mints a version id on a
-        // versioning-enabled bucket), but this handler writes the tag set of the CURRENT
-        // object alone, through the byte budgets of the object at the key. Tagging one
-        // stored version is its own behaviour; the 501 says so rather than tagging the
-        // current object as if it were the version the request named.
-        if input.version_id.is_some() {
-            return Err(crate::scaffolded::Scaffolded::not_implemented(
-                "PutObjectTagging with versionId",
-            ));
-        }
+        // "To put tags of any other version, use the versionId query parameter" — a tag set
+        // belongs to a stored VERSION, so the parameter addresses the version whose tag set
+        // this call replaces and the key's current object is what a request naming none
+        // replaces.
+        let version_id = input.version_id.as_deref();
 
         let Some(state) = crate::state::service_state(&*self.engine) else {
             // Without the store the tag set cannot be recorded at all, and neither
@@ -264,23 +258,44 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> PutObjectTagging<
         // emulator does not hold answers that — the way the service orders the refusals —
         // rather than reporting whatever is wrong with a tag set no object could have
         // carried.
-        match store
-            .bucket(&input.bucket)
-            .map(|bucket| bucket.object(&input.key).is_some())
-        {
+        match store.bucket(&input.bucket).map(|bucket| {
+            (
+                bucket.addressed_object(&input.key, version_id).is_some(),
+                version_id.is_some_and(|named| {
+                    bucket
+                        .stored_version(&input.key, named)
+                        .is_some_and(|held| held.as_delete_marker().is_some())
+                }),
+            )
+        }) {
             None => return Err(PutObjectTaggingErrorModeled::NoSuchBucket(NoSuchBucket {}).into()),
-            Some(false) => {
-                return Err(PutObjectTaggingErrorModeled::NoSuchKey(NoSuchKey {}).into())
+            // A delete marker is no object, so no tag set can be placed on it: 405, the
+            // status S3 answers an object-level call addressed to a marker with.
+            Some((_, true)) => {
+                return Err(crate::scaffolded::Scaffolded::method_not_allowed(
+                    TAGGING_WRITE_METHOD,
+                    crate::state::DELETE_MARKER_RESOURCE_TYPE,
+                ))
             }
-            Some(true) => {}
+            Some((false, _)) => {
+                return Err(match version_id {
+                    Some(_) => crate::scaffolded::Scaffolded::unmodeled(
+                        crate::state::NO_SUCH_VERSION_CODE,
+                        NO_SUCH_VERSION_STATUS,
+                        crate::state::NO_SUCH_VERSION_MESSAGE,
+                    ),
+                    None => PutObjectTaggingErrorModeled::NoSuchKey(NoSuchKey {}).into(),
+                })
+            }
+            Some((true, _)) => {}
         }
 
-        // The tag set this one REPLACES, read off the object the request addressed: a tag in
+        // The tag set this one REPLACES, read off the version the request addressed: a tag in
         // the namespace AWS keeps for itself that the object already carries with this very
         // value is neither added nor updated by this request.
         let in_force: Vec<crate::state::ResourceTag> = store
             .bucket(&input.bucket)
-            .and_then(|bucket| bucket.object(&input.key))
+            .and_then(|bucket| bucket.addressed_object(&input.key, version_id))
             .map(|object| object.tags.clone())
             .unwrap_or_default();
 
@@ -315,7 +330,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> PutObjectTagging<
         // The store reports what the write did, because it may refuse: a tag set is
         // retained with the object, so one that would take the bucket or the whole store
         // past the byte budgets this emulator keeps is refused rather than recorded.
-        let outcome = store.replace_object_tags(&input.bucket, &input.key, tags);
+        let outcome = store.replace_object_tags(&input.bucket, &input.key, version_id, tags);
         match outcome {
             Some(crate::state::ObjectTagWrite::Applied) => {}
             // Unreachable through this handler (the address was just resolved under the
@@ -359,7 +374,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> PutObjectTagging<
         // The version this call wrote the tag set OF, read back under the same lock.
         let written = store
             .bucket(&input.bucket)
-            .and_then(|bucket| bucket.object(&input.key));
+            .and_then(|bucket| bucket.addressed_object(&input.key, version_id));
         let tagged = match written {
             Some(object) => tagged.of_object(object),
             None => tagged,
@@ -385,3 +400,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> PutObjectTagging<
         })
     }
 }
+
+/// The method a write of this subresource is made with, for the 405 a delete marker earns:
+/// `PUT /{Bucket}/{Key+}?tagging`
+/// (`smithy_query(query="operation",operation="PutObjectTagging")`).
+const TAGGING_WRITE_METHOD: &str = "PUT";
+
+/// The status a `versionId` naming no version of the key is answered with: `NoSuchVersion`,
+/// the 404 every version-addressed call of this service answers one with.
+const NO_SUCH_VERSION_STATUS: u16 = 404;

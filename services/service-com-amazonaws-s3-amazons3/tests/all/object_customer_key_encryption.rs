@@ -35,6 +35,12 @@
 //!    a multipart INITIATION the same way, because "you must be allowed to perform the
 //!    `s3:PutObject` action on an object to initiate a multipart upload"
 //!    (`CreateMultipartUpload`'s own documentation).
+//! 6. A part COPY carries two keys: the source's, in the `x-amz-copy-source-` spelling of the
+//!    three headers ("the encryption key provided in this header must be the same one that was
+//!    used when the source object was created",
+//!    `UploadPartCopyRequest$CopySourceSSECustomerKey`), and the upload's own — so an SSE-C
+//!    source is re-keyed into an SSE-C multipart object, and each half is refused on its own
+//!    when the key it needs is missing or is another one.
 //!
 //! The rows differ along what the rules generalise over: the key material (several distinct
 //! 256-bit keys), the FORM of the object key (a plain name, `/` separators), the size of the
@@ -47,6 +53,7 @@ use ::md5::Digest as _;
 use smithy_server_runtime::MultiServiceRouter;
 
 use super::bucket_lifecycle::{put_bucket_policy, router, send, send_bytes, Answer};
+use super::multipart_part_copy::upload_part_copy;
 use super::object_and_tagging_roundtrip::{bucket, get_object, put_object, text};
 use super::object_write_authorization::{explicit_deny_message, policy_document, statement};
 
@@ -506,19 +513,19 @@ async fn a_multipart_upload_under_a_customer_key_is_carried_out_with_that_key() 
     let part_address =
         format!("/sse-c-multipart/assembled.bin?partNumber=1&uploadId={upload_id}");
 
-    // A part presenting ANOTHER key is refused the way a read of the object under another key
-    // is, and a part presenting none cannot be served at all.
+    // A part presenting ANOTHER key is refused for parameters that are not the upload's own,
+    // and a part presenting none cannot be served at all.
     let wrong_part = send_bytes(&router, "PUT", &part_address, &borrowed(&other), &body).await;
     assert_eq!(
-        wrong_part.status, 403,
-        "case \"a part under another key\": expected HTTP 403, got {} with body {:?}",
+        wrong_part.status, 400,
+        "case \"a part under another key\": expected HTTP 400, got {} with body {:?}",
         wrong_part.status,
         text(&wrong_part)
     );
     assert_eq!(
         wrong_part.error_code(),
-        ACCESS_DENIED,
-        "case \"a part under another key\": expected the {ACCESS_DENIED} code, got {:?}",
+        INVALID_REQUEST,
+        "case \"a part under another key\": expected the {INVALID_REQUEST} code, got {:?}",
         wrong_part.error_code()
     );
     let keyless_part = send_bytes(&router, "PUT", &part_address, &[], &body).await;
@@ -769,4 +776,255 @@ async fn a_policy_over_the_customer_key_condition_decides_the_write_and_the_init
             }
         }
     }
+}
+
+/// The three COPY-SOURCE headers a part copy presents the SOURCE object's own key in: the
+/// `x-amz-copy-source-` spelling of the same three
+/// (`smithy_query(query="operation",operation="UploadPartCopy")` binds
+/// `CopySourceSSECustomerAlgorithm`, `CopySourceSSECustomerKey` and
+/// `CopySourceSSECustomerKeyMD5` to them).
+const COPY_SOURCE_ALGORITHM_HEADER: &str =
+    "x-amz-copy-source-server-side-encryption-customer-algorithm";
+const COPY_SOURCE_KEY_HEADER: &str = "x-amz-copy-source-server-side-encryption-customer-key";
+const COPY_SOURCE_KEY_MD5_HEADER: &str =
+    "x-amz-copy-source-server-side-encryption-customer-key-MD5";
+
+/// The three copy-source headers a part copy reading `key` carries.
+fn presenting_source(key: &str) -> Vec<(&'static str, String)> {
+    vec![
+        (COPY_SOURCE_ALGORITHM_HEADER, ALGORITHM.to_string()),
+        (COPY_SOURCE_KEY_HEADER, key.to_string()),
+        (COPY_SOURCE_KEY_MD5_HEADER, key_digest(key)),
+    ]
+}
+
+/// The sentence S3 answers a PART of an SSE-C upload that presents no key: the initiation
+/// asked for encryption, so every part of it has to carry the same key.
+const INITIATE_ENCRYPTED_MESSAGE: &str =
+    "The multipart upload initiate requested encryption. Subsequent part requests must \
+     include the appropriate encryption parameters.";
+
+/// The sentence S3 answers a PART that presents a DIFFERENT key from the upload's own.
+const PARAMETERS_MISMATCH_MESSAGE: &str =
+    "The provided encryption parameters did not match the ones used originally.";
+
+/// One row of the part-copy table: the case, the key the copy presents for the SOURCE and the
+/// key it presents for the PART (`None` for a row that presents neither), and the refusal
+/// expected as `(status, code, message)` — `None` for a copy that is served.
+type CopyRow = (
+    &'static str,
+    Option<u8>,
+    Option<u8>,
+    Option<(u16, &'static str, &'static str)>,
+);
+
+/// RULE: a part copy whose source is stored under a customer-provided key presents that key in
+/// the `x-amz-copy-source-` headers and the UPLOAD's own key in its own, so an SSE-C source is
+/// re-keyed into an SSE-C multipart object; each half is refused on its own when the key it
+/// needs is missing or is another one.
+///
+/// The rows differ along WHICH half of the copy carries which key — both, neither, each one
+/// alone, and each one wrong — so the rule is pinned over the two keys rather than over one
+/// request.
+#[tokio::test]
+async fn a_part_copy_re_keys_an_ssec_source_into_an_ssec_upload() {
+    let router = router();
+    bucket(&router, "sse-c-part-copy").await;
+    let source_seed = 41_u8;
+    let upload_seed = 42_u8;
+    let source_key = customer_key(source_seed);
+    let upload_key = customer_key(upload_seed);
+    assert_ne!(
+        source_key, upload_key,
+        "the source and the upload must be stored under different keys"
+    );
+    let body = vec![0x5A_u8; 1_024];
+
+    // The SOURCE object, stored under its own customer key.
+    let stored = send_bytes(
+        &router,
+        "PUT",
+        "/sse-c-part-copy/source.bin",
+        &borrowed(&presenting(&source_key)),
+        &body,
+    )
+    .await;
+    assert_eq!(
+        stored.status, 200,
+        "the source object must be stored under its key, got {} with body {:?}",
+        stored.status,
+        text(&stored)
+    );
+
+    // The UPLOAD, initiated under a DIFFERENT customer key: re-keying is what this copy does.
+    let initiated = send_bytes(
+        &router,
+        "POST",
+        "/sse-c-part-copy/rekeyed.bin?uploads",
+        &borrowed(&presenting(&upload_key)),
+        b"",
+    )
+    .await;
+    assert_eq!(
+        initiated.status, 200,
+        "the upload must be initiated under its key, got {} with body {:?}",
+        initiated.status,
+        text(&initiated)
+    );
+    let upload_id = initiated
+        .element("UploadId")
+        .expect("an initiation must report an UploadId");
+
+    let rows: [CopyRow; 5] = [
+        (
+            "no key for either half",
+            None,
+            None,
+            Some((400, INVALID_REQUEST, INITIATE_ENCRYPTED_MESSAGE)),
+        ),
+        (
+            "the upload's key and no source key",
+            None,
+            Some(upload_seed),
+            Some((400, INVALID_REQUEST, KEY_REQUIRED_MESSAGE)),
+        ),
+        (
+            "the source's key and no upload key",
+            Some(source_seed),
+            None,
+            Some((400, INVALID_REQUEST, INITIATE_ENCRYPTED_MESSAGE)),
+        ),
+        (
+            "another key for the upload",
+            Some(source_seed),
+            Some(upload_seed.wrapping_add(7)),
+            Some((400, INVALID_REQUEST, PARAMETERS_MISMATCH_MESSAGE)),
+        ),
+        (
+            "another key for the source",
+            Some(source_seed.wrapping_add(7)),
+            Some(upload_seed),
+            Some((403, ACCESS_DENIED, "Access Denied")),
+        ),
+    ];
+    for (case, source, upload, refused) in rows {
+        let mut headers: Vec<(&'static str, String)> = Vec::new();
+        if let Some(seed) = source {
+            headers.extend(presenting_source(&customer_key(seed)));
+        }
+        if let Some(seed) = upload {
+            headers.extend(presenting(&customer_key(seed)));
+        }
+        let copied = upload_part_copy(
+            &router,
+            "sse-c-part-copy",
+            "rekeyed.bin",
+            &upload_id,
+            1,
+            "sse-c-part-copy/source.bin",
+            &borrowed(&headers),
+        )
+        .await;
+        let (status, code, message) =
+            refused.expect("every row of this table names a refusal");
+        assert_eq!(
+            (copied.status, copied.error_code(), copied.error_message()),
+            (status, code.to_string(), message.to_string()),
+            "case {case:?}: expected {status} {code:?}, got {} with body {:?}",
+            copied.status,
+            text(&copied)
+        );
+        // A refused copy recorded nothing: the upload still holds no part.
+        let parts = send(
+            &router,
+            "GET",
+            &format!("/sse-c-part-copy/rekeyed.bin?uploadId={upload_id}&x-id=ListParts"),
+            &borrowed(&presenting(&upload_key)),
+            "",
+        )
+        .await;
+        assert!(
+            parts.elements("PartNumber").is_empty(),
+            "case {case:?}: a refused copy must record no part, got {:?}",
+            text(&parts)
+        );
+    }
+
+    // Both keys together: the copy is served, reports the UPLOAD's digest (the part is stored
+    // under the upload's key, not the source's), and the assembled object reads back with the
+    // upload's key alone.
+    let mut both = presenting_source(&source_key);
+    both.extend(presenting(&upload_key));
+    let copied = upload_part_copy(
+        &router,
+        "sse-c-part-copy",
+        "rekeyed.bin",
+        &upload_id,
+        1,
+        "sse-c-part-copy/source.bin",
+        &borrowed(&both),
+    )
+    .await;
+    assert_eq!(
+        copied.status, 200,
+        "a copy presenting both keys must be served, got {} with body {:?}",
+        copied.status,
+        text(&copied)
+    );
+    assert_eq!(
+        copied.header(KEY_MD5_HEADER).as_deref(),
+        Some(key_digest(&upload_key).as_str()),
+        "the copy must confirm the UPLOAD's key digest, got {:?}",
+        copied.header(KEY_MD5_HEADER)
+    );
+    let etag = copied
+        .element("ETag")
+        .expect("a part copy must report the part's ETag");
+    let completed = send(
+        &router,
+        "POST",
+        &format!("/sse-c-part-copy/rekeyed.bin?uploadId={upload_id}"),
+        &borrowed(&presenting(&upload_key)),
+        &format!(
+            "<CompleteMultipartUpload><Part><PartNumber>1</PartNumber><ETag>{etag}</ETag>\
+             </Part></CompleteMultipartUpload>"
+        ),
+    )
+    .await;
+    assert_eq!(
+        completed.status, 200,
+        "the completion under the upload's key must be served, got {} with body {:?}",
+        completed.status,
+        text(&completed)
+    );
+    let served = get_object(
+        &router,
+        "sse-c-part-copy",
+        "rekeyed.bin",
+        "",
+        &borrowed(&presenting(&upload_key)),
+    )
+    .await;
+    assert_eq!(
+        served.body.as_ref(),
+        body.as_slice(),
+        "the re-keyed object must hold the source's bytes, got {} bytes with status {}",
+        served.body.len(),
+        served.status
+    );
+    let with_source_key = get_object(
+        &router,
+        "sse-c-part-copy",
+        "rekeyed.bin",
+        "",
+        &borrowed(&presenting(&source_key)),
+    )
+    .await;
+    assert_eq!(
+        (with_source_key.status, with_source_key.error_code()),
+        (403, ACCESS_DENIED.to_string()),
+        "the re-keyed object must not open with the SOURCE's key, got {} with body {:?}",
+        with_source_key.status,
+        text(&with_source_key)
+    );
 }
