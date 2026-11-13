@@ -47,6 +47,7 @@ use ::serde_json::{Map, Value};
 use ::smithy_server_runtime::EmbeddedEmulator;
 
 use super::aws_api::{Answer, CallerIdentity, Refusal, MAX_RESPONSE_BYTES};
+use super::sdk_call::insert_flag;
 
 /// The bucket-wide half of this seam: a bucket's own configuration subresources, and the
 /// operations that act on its objects as a set.
@@ -283,12 +284,12 @@ async fn get_object(
     insert_text(&mut document, "Expiration", read.expiration());
     insert_number(&mut document, "ContentLength", read.content_length());
     insert_timestamp(&mut document, "LastModified", read.last_modified());
-    insert_text(
+    insert_encryption(
         &mut document,
-        "ServerSideEncryption",
-        read.server_side_encryption().map(
-            ::aws_sdk_s3::types::ServerSideEncryption::as_str,
-        ),
+        read.server_side_encryption()
+            .map(::aws_sdk_s3::types::ServerSideEncryption::as_str),
+        read.ssekms_key_id(),
+        read.bucket_key_enabled(),
     );
     insert_text(
         &mut document,
@@ -349,12 +350,12 @@ async fn head_object(
     insert_text(&mut document, "AcceptRanges", read.accept_ranges());
     insert_number(&mut document, "ContentLength", read.content_length());
     insert_timestamp(&mut document, "LastModified", read.last_modified());
-    insert_text(
+    insert_encryption(
         &mut document,
-        "ServerSideEncryption",
-        read.server_side_encryption().map(
-            ::aws_sdk_s3::types::ServerSideEncryption::as_str,
-        ),
+        read.server_side_encryption()
+            .map(::aws_sdk_s3::types::ServerSideEncryption::as_str),
+        read.ssekms_key_id(),
+        read.bucket_key_enabled(),
     );
     insert_text(
         &mut document,
@@ -425,14 +426,14 @@ async fn put_object(
     insert_text(&mut document, "ETag", written.e_tag());
     insert_text(&mut document, "VersionId", written.version_id());
     insert_text(&mut document, "Expiration", written.expiration());
-    insert_text(
+    insert_encryption(
         &mut document,
-        "ServerSideEncryption",
-        written.server_side_encryption().map(
-            ::aws_sdk_s3::types::ServerSideEncryption::as_str,
-        ),
+        written
+            .server_side_encryption()
+            .map(::aws_sdk_s3::types::ServerSideEncryption::as_str),
+        written.ssekms_key_id(),
+        written.bucket_key_enabled(),
     );
-    insert_text(&mut document, "SSEKMSKeyId", written.ssekms_key_id());
     observed.answer(document, Vec::new())
 }
 
@@ -495,12 +496,13 @@ async fn copy_object(
         "CopySourceVersionId",
         copied.copy_source_version_id(),
     );
-    insert_text(
+    insert_encryption(
         &mut document,
-        "ServerSideEncryption",
-        copied.server_side_encryption().map(
-            ::aws_sdk_s3::types::ServerSideEncryption::as_str,
-        ),
+        copied
+            .server_side_encryption()
+            .map(::aws_sdk_s3::types::ServerSideEncryption::as_str),
+        copied.ssekms_key_id(),
+        copied.bucket_key_enabled(),
     );
     observed.answer(document, Vec::new())
 }
@@ -1027,6 +1029,25 @@ fn insert_timestamp(
     if let Some(value) = value {
         document.insert(name.to_string(), Value::Number(value.secs().into()));
     }
+}
+
+/// Put how an object is PROTECTED on the answer's document: the algorithm in force on it,
+/// the key that algorithm used, and whether a bucket-scoped key was used with it.
+///
+/// The key's identity travels with the algorithm wherever one of them does: a handler that
+/// learns only the algorithm cannot tell which customer master key protects the bytes it
+/// was handed, so it can neither audit that key nor write under the same one — and the
+/// service answered the key itself, so it is reported rather than dropped. A member the
+/// answer did not carry is left off, so an object under no key reports none.
+fn insert_encryption(
+    document: &mut Map<String, Value>,
+    algorithm: Option<&str>,
+    key_id: Option<&str>,
+    bucket_key_enabled: Option<bool>,
+) {
+    insert_text(document, "ServerSideEncryption", algorithm);
+    insert_text(document, "SSEKMSKeyId", key_id);
+    insert_flag(document, "BucketKeyEnabled", bucket_key_enabled);
 }
 
 /// Put the object's user-defined metadata on it, where the answer carried any.

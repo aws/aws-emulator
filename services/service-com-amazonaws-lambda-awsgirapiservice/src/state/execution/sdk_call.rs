@@ -406,6 +406,15 @@ pub(super) fn insert_text(document: &mut Map<String, Value>, name: &str, value: 
     }
 }
 
+/// Put a boolean member on it, the same way: a member the answer did not carry is left off
+/// rather than reported as `false`, because "absent" and "false" are different facts about a
+/// resource and a handler reads the presence of the member as what the service decided.
+pub(super) fn insert_flag(document: &mut Map<String, Value>, name: &str, value: Option<bool>) {
+    if let Some(value) = value {
+        document.insert(name.to_string(), Value::Bool(value));
+    }
+}
+
 /// Put a map-of-text member on it, the same way — the attributes an answer reports.
 pub(super) fn insert_text_map(
     document: &mut Map<String, Value>,

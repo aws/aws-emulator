@@ -267,6 +267,8 @@ mod handler_dynamodb_binary_attributes;
 mod handler_dynamodb_resource;
 #[path = "all/handler_email_sdk.rs"]
 mod handler_email_sdk;
+#[path = "all/handler_object_encryption_members.rs"]
+mod handler_object_encryption_members;
 #[path = "all/handler_object_storage_sdk.rs"]
 mod handler_object_storage_sdk;
 #[path = "all/handler_rds_data_sdk.rs"]
