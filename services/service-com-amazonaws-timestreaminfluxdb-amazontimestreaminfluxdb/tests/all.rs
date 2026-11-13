@@ -19,6 +19,8 @@ mod db_cluster_lifecycle;
 mod db_cluster_marketplace_subscription;
 #[path = "all/db_instance_lifecycle.rs"]
 mod db_instance_lifecycle;
+#[path = "all/db_instance_reboot.rs"]
+mod db_instance_reboot;
 #[path = "all/db_parameter_group.rs"]
 mod db_parameter_group;
 #[path = "all/db_parameter_group_catalog.rs"]

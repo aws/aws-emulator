@@ -15,6 +15,7 @@ use crate::ops::types::{
     ConflictException, DbBackupConfiguration, DbBackupConfigurationOutput, DbInstanceSummary,
     DbParameterGroupSummary, InfluxDBv2Parameters, InfluxDBv3CoreParameters,
     InfluxDBv3EnterpriseParameters, LogDeliveryConfiguration, MaintenanceSchedule, Parameters,
+    ValidationException,
 };
 
 /// The DB-cluster records and the helpers the cluster operations share. A cluster
@@ -43,6 +44,8 @@ pub const STATUS_AVAILABLE: &str = "AVAILABLE";
 pub const STATUS_DELETING: &str = "DELETING";
 /// See [`STATUS_CREATING`].
 pub const STATUS_UPDATING: &str = "UPDATING";
+/// See [`STATUS_CREATING`].
+pub const STATUS_REBOOTING: &str = "REBOOTING";
 /// See [`STATUS_CREATING`].
 pub const STATUS_UPDATING_INSTANCE_TYPE: &str = "UPDATING_INSTANCE_TYPE";
 /// See [`STATUS_CREATING`].
@@ -118,6 +121,32 @@ pub fn name_already_exists(
         ),
         resource_id: existing_id.to_string(),
         resource_type: resource.resource_type.to_string(),
+    }
+}
+
+/// The refusal a lifecycle action gets while the resource it names is still busy with a
+/// change of its own: the request is well formed, but the resource is not in the status
+/// the action can start from.
+///
+/// Names the resource, its id, the status it is actually in and the status the action
+/// needs — all four read out of this emulator's own state, nothing of them interpolated
+/// from a recording.
+#[must_use]
+pub fn resource_not_in_status(
+    resource: NamedResource,
+    id: &str,
+    current_status: &str,
+    required_status: &str,
+) -> ValidationException {
+    ValidationException {
+        message: format!(
+            "The {} with id [{id}] is in status [{current_status}] and must be in status \
+             [{required_status}] for the requested operation",
+            resource.spelling,
+        ),
+        // The request itself is valid and no field of it failed validation — the
+        // resource's status is what refuses it — so the reason is the modelled catch-all.
+        reason: VALIDATION_EXCEPTION_REASON_OTHER.to_string(),
     }
 }
 
@@ -251,6 +280,13 @@ impl DbInstance {
         self.settles_at = Some(now + TRANSITION_SPAN);
     }
 
+    /// Whether this record is settled and idle: in `AVAILABLE`, the only status a
+    /// lifecycle action that restarts the instance can start from. Call [`Self::settle`]
+    /// first, so a transition the clock already owed is not read as still running.
+    pub fn is_available(&self) -> bool {
+        self.status == STATUS_AVAILABLE
+    }
+
     /// The list-shaped projection of this record.
     pub fn to_summary(&self) -> DbInstanceSummary {
         DbInstanceSummary {
@@ -368,6 +404,7 @@ db_instance_record_projections! {
     to_get_output -> crate::ops::types::GetDbInstanceOutput,
     to_update_output -> crate::ops::types::UpdateDbInstanceOutput,
     to_delete_output -> crate::ops::types::DeleteDbInstanceOutput,
+    to_reboot_output -> crate::ops::types::RebootDbInstanceOutput,
 }
 
 /// One persisted Timestream for InfluxDB DB parameter group: the single source of truth

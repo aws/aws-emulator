@@ -1155,7 +1155,6 @@ async fn the_store_is_bounded_and_delete_releases_capacity() {
 async fn the_operations_outside_this_slice_still_answer_501() {
     let router = router();
     for (operation, body) in [
-        ("RebootDbInstance", json!({ "identifier": "abc" })),
         // `GetDbCluster` and `ListDbClusters` are implemented beside `CreateDbCluster`;
         // the cluster operations still scaffolded are these.
         ("ListDbInstancesForCluster", json!({ "dbClusterId": "abc" })),
@@ -1182,6 +1181,7 @@ fn every_status_and_resource_type_this_service_reports_is_a_modelled_value() {
         st::STATUS_UPDATING,
         st::STATUS_UPDATING_INSTANCE_TYPE,
         st::STATUS_UPDATING_DEPLOYMENT_TYPE,
+        st::STATUS_REBOOTING,
     ] {
         assert!(
             STATUS_VALUES.contains(&status),
