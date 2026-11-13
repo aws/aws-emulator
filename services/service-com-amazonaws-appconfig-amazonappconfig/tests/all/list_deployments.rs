@@ -127,9 +127,9 @@ async fn create_strategy(
 }
 
 /// A strategy with no rollout window and no bake time: a deployment it paces has nothing
-/// left to wait for, so it is `COMPLETE` the instant it starts — which is what lets one
-/// environment hold many deployments (`StartDeployment` refuses a second while one is
-/// still active).
+/// to wait out but the one growth interval every rollout takes, so it is over a span after
+/// it started — which is what lets one environment hold many deployments
+/// (`StartDeployment` refuses a second while one is still active).
 async fn instant_strategy(router: &MultiServiceRouter, name: &str) -> String {
     create_strategy(router, name, 0, 100.0, "LINEAR", 0).await
 }
@@ -336,7 +336,11 @@ const PLAN: [Planned; 5] = [
     },
     Planned {
         case: "a deployment of an unlabelled version",
-        pacing: (0, 1.0, "LINEAR", 0),
+        // A growth factor that takes more than one interval to reach every target, so the
+        // table spans a multi-interval rollout. Not the model's minimum of 1%: each
+        // interval of a rollout is a transition of its own, so a hundred of them is a
+        // hundred spans to wait out, and this row waits for its deployment to be over.
+        pacing: (0, 50.0, "LINEAR", 0),
         version: "3",
         description: Some(""),
         revert: false,
@@ -415,6 +419,18 @@ async fn deploy_the_plan(
             });
 
         if row.revert {
+            // Every stage after the one the start answers is owed by the CLOCK, and only a
+            // deployment that COMPLETED can be reverted, so the row waits for the
+            // condition rather than for a span.
+            crate::appconfig_workflow::deployment_in_state(
+                router,
+                row.case,
+                application,
+                environment,
+                number,
+                &["COMPLETE"],
+            )
+            .await;
             let stopped = send(
                 router,
                 "DELETE",
@@ -435,14 +451,27 @@ async fn deploy_the_plan(
                 String::from_utf8_lossy(&stopped.body)
             );
         }
+        // An environment holds one deployment at a time, so a row whose deployment is
+        // meant to be over waits for it before the next row starts.
+        if row.expected_state != "DEPLOYING" {
+            crate::appconfig_workflow::deployment_in_state(
+                router,
+                row.case,
+                application,
+                environment,
+                number,
+                crate::appconfig_workflow::TERMINAL_DEPLOYMENT_STATES,
+            )
+            .await;
+        }
         numbers.push(number);
     }
     numbers
 }
 
-/// Build `count` deployments that complete at once in a fresh environment, answering their
-/// deployment numbers. Used by the pagination walk, where only the ORDER and the count
-/// matter.
+/// Build `count` deployments that are over by the time this answers, in a fresh
+/// environment, answering their deployment numbers. Used by the pagination walk, where
+/// only the ORDER and the count matter.
 async fn deploy_completed(
     router: &MultiServiceRouter,
     application: &str,
@@ -466,11 +495,21 @@ async fn deploy_completed(
             }),
         )
         .await;
-        numbers.push(
-            member(&started.json(), "DeploymentNumber")
-                .as_i64()
-                .unwrap_or_else(|| panic!("case {case:?}: no DeploymentNumber")),
-        );
+        let number = member(&started.json(), "DeploymentNumber")
+            .as_i64()
+            .unwrap_or_else(|| panic!("case {case:?}: no DeploymentNumber"));
+        // The rollout is a transition of its own, so the next deployment into the same
+        // environment waits for this one to be over — on the condition, not on a span.
+        crate::appconfig_workflow::deployment_in_state(
+            router,
+            &case,
+            application,
+            environment,
+            number,
+            &["COMPLETE"],
+        )
+        .await;
+        numbers.push(number);
     }
     numbers
 }

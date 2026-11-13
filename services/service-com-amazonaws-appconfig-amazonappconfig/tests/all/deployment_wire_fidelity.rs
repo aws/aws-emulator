@@ -14,10 +14,15 @@
 //!    `AppliedExtensions` (the extensions the deployment invoked) and `Type` (its
 //!    `DeploymentType`, `USER` for a deployment a caller started).
 //! 3. `StartDeployment` answers the deployment as it stands at the instant it was asked
-//!    for: a strategy with a rollout window has reached nobody yet and carries only its
-//!    start event, while one with no rollout window has reached everybody — and with no
-//!    bake time to follow, nothing is left to wait for, so the deployment is already
-//!    `COMPLETE` with a `CompletedAt` and a completion event.
+//!    for: a strategy that paces any stage — a rollout window or a final bake time — leaves
+//!    it still `DEPLOYING`, having reached nobody and carrying only its start event,
+//!    because reaching the targets, baking and completing are transitions AppConfig
+//!    performs after the call; a strategy that paces NEITHER leaves AppConfig nothing to
+//!    pace or monitor, so the deployment is already `COMPLETE` with a `CompletedAt` and a
+//!    completion event.
+//! 4. Every `EventLog` entry carries `ActionInvocations` as a LIST — "the list of
+//!    extensions that were invoked as part of the deployment" — which is empty for an
+//!    event no extension action fired for rather than absent.
 //!
 //! The table spans what those rules generalise over: the length of the rollout window (none,
 //! minutes, and the published maximum of `DeploymentDurationInMinutes`), the growth factor
@@ -243,6 +248,14 @@ fn assert_document_shape(case: &str, document: &str, body: &Value) {
             "case {case:?}: {document}'s EventLog[{index}].TriggeredBy must be a modelled \
              TriggeredBy, got {triggered_by:?}"
         );
+        // "The list of extensions that were invoked as part of the deployment": a list on
+        // every event, empty when no extension action fired for it.
+        let invocations = member(event, "ActionInvocations");
+        assert!(
+            invocations.is_array(),
+            "case {case:?}: {document}'s EventLog[{index}].ActionInvocations is a list of the \
+             extensions invoked for that event, got {invocations}"
+        );
         assert!(
             at.as_secs_f64() >= started_at.as_secs_f64(),
             "case {case:?}: {document}'s EventLog[{index}].OccurredAt is an instant of this \
@@ -272,26 +285,45 @@ fn assert_document_shape(case: &str, document: &str, body: &Value) {
 /// event log — newest first.
 fn expected_at_start(row: &Row) -> (&'static str, f64, bool, Vec<&'static str>) {
     let (_, duration, _, _, bake) = *row;
-    match (duration, bake) {
-        // No rollout window and no bake time: nothing is left to wait for.
-        (0, 0) => (
+    if duration == 0 && bake == 0 {
+        // No rollout window and no bake time: AppConfig has nothing to pace and nothing to
+        // monitor, so the deployment is over when the start answers.
+        return (
             "COMPLETE",
             100.0,
             true,
             vec!["DEPLOYMENT_COMPLETED", "DEPLOYMENT_STARTED"],
-        ),
-        // No rollout window, so every target has it already, and the bake time follows.
-        (0, _) => (
-            "BAKING",
-            100.0,
-            false,
-            vec!["BAKE_TIME_STARTED", "DEPLOYMENT_STARTED"],
-        ),
-        // A rollout window: no interval of it has elapsed at the start instant, so no
-        // growth step is due and nobody has the configuration yet.
-        _ => ("DEPLOYING", 0.0, false, vec!["DEPLOYMENT_STARTED"]),
+        );
     }
+    // Any paced stage puts every later stage after this call: no interval of the rollout
+    // has elapsed at the start instant, so no growth step is due and nobody has the
+    // configuration yet.
+    ("DEPLOYING", 0.0, false, vec!["DEPLOYMENT_STARTED"])
 }
+
+/// The members of a Deployment document that NOTHING the clock does changes, so the read
+/// path must report each one exactly as the start did.
+///
+/// `State`, `PercentageComplete`, `CompletedAt` and `EventLog` are deliberately absent:
+/// each of them is moved by a stage the clock makes due, so a read taken later reports the
+/// progression rather than a frozen copy — what the read must agree with the start about
+/// is asserted on its own below.
+const UNCHANGING_MEMBERS: &[&str] = &[
+    "ApplicationId",
+    "EnvironmentId",
+    "DeploymentStrategyId",
+    "ConfigurationProfileId",
+    "DeploymentNumber",
+    "ConfigurationName",
+    "ConfigurationVersion",
+    "Type",
+    "StartedAt",
+    "AppliedExtensions",
+    "GrowthFactor",
+    "GrowthType",
+    "DeploymentDurationInMinutes",
+    "FinalBakeTimeInMinutes",
+];
 
 /// `StartDeployment` answers the deployment as it stands when it is asked for, in the
 /// modelled wire form, and `GetDeployment` answers the same document back.
@@ -392,19 +424,7 @@ async fn a_deployment_document_reports_the_deployment_in_the_modelled_wire_form(
         );
         let read_body = fetched.json();
         assert_document_shape(case, "GetDeployment", &read_body);
-        for name in [
-            "State",
-            "Type",
-            "PercentageComplete",
-            "StartedAt",
-            "CompletedAt",
-            "AppliedExtensions",
-            "DeploymentNumber",
-            "GrowthFactor",
-            "GrowthType",
-            "DeploymentDurationInMinutes",
-            "FinalBakeTimeInMinutes",
-        ] {
+        for name in UNCHANGING_MEMBERS {
             assert_eq!(
                 member(&read_body, name),
                 member(&start_body, name),
@@ -414,10 +434,36 @@ async fn a_deployment_document_reports_the_deployment_in_the_modelled_wire_form(
                 member(&read_body, name)
             );
         }
+        // The read reports the deployment as it stands when it is read, which is the start
+        // plus whatever the clock has made due since: a share of targets that never
+        // shrinks, and an event log the start's own entries are still the oldest of.
+        let read_percentage = member(&read_body, "PercentageComplete")
+            .as_f64()
+            .unwrap_or_default();
+        let start_percentage = member(&start_body, "PercentageComplete")
+            .as_f64()
+            .unwrap_or_default();
+        assert!(
+            read_percentage >= start_percentage,
+            "case {case:?}: GetDeployment reports a share of targets no smaller than the \
+             {start_percentage}% the start answered, got {read_percentage}"
+        );
+        let read_events = event_types(&event_log(case, "GetDeployment", &read_body));
+        let start_events = event_types(&event_log(case, "StartDeployment", &start_body));
         assert_eq!(
-            event_types(&event_log(case, "GetDeployment", &read_body)),
-            event_types(&event_log(case, "StartDeployment", &start_body)),
-            "case {case:?}: GetDeployment must report the stored event log"
+            read_events.last().map(String::as_str),
+            Some("DEPLOYMENT_STARTED"),
+            "case {case:?}: GetDeployment must report the stored event log, whose oldest \
+             entry is the deployment's start, got {read_events:?}"
+        );
+        // Newest first, so the entries the start answered are the TAIL of the ones the read
+        // answers: the read adds only what the clock made due in between, and rewrites
+        // nothing the start already reported.
+        assert!(
+            read_events.len() >= start_events.len()
+                && read_events[read_events.len() - start_events.len()..] == start_events[..],
+            "case {case:?}: GetDeployment must still report every event StartDeployment \
+             answered, in that order, got {read_events:?} after {start_events:?}"
         );
     }
 }

@@ -378,7 +378,7 @@ async fn an_at_deployment_tick_directive_steers_the_deployment_it_is_invoked_for
     let (router, engine) = emulator();
     // One instant strategy to put the PREVIOUS version in service, and one paced strategy
     // for the deployment under tick: an action point fires for a deployment that is in
-    // FLIGHT, and a strategy with no rollout window leaves none in flight.
+    // FLIGHT, and a strategy that paces no stage leaves none in flight.
     let instant = given_strategy(&router, "tick-instant", 0, 0).await;
     let paced = given_growing_strategy(&router, "tick-paced", 1, 0, GROWTH_FACTOR).await;
 

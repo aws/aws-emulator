@@ -407,11 +407,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // Bring the environment up to date first: a deployment whose rollout and bake
         // time have both elapsed is no longer in flight, and must not block this one.
         environment.materialize(started_at);
-        if let Some(active) = environment.active_deployment() {
+        if environment.active_deployment().is_some() {
+            // The refusal reports the ENVIRONMENT's own state, which is what it has been
+            // brought up to above: see `environment_not_ready_for_deployment`.
             return Err(StartDeploymentErrorModeled::ConflictException(ConflictException {
                 message: Some(crate::state::environment_not_ready_for_deployment(
                     &environment.id,
-                    &active.state,
+                    &environment.state,
                 )),
             })
             .into());
@@ -567,11 +569,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // deployment if nothing else started one while the action point was being
         // consulted.
         environment.materialize(started_at);
-        if let Some(active) = environment.active_deployment() {
+        if environment.active_deployment().is_some() {
             return Err(StartDeploymentErrorModeled::ConflictException(ConflictException {
                 message: Some(crate::state::environment_not_ready_for_deployment(
                     &environment.id,
-                    &active.state,
+                    &environment.state,
                 )),
             })
             .into());

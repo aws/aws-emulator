@@ -476,8 +476,9 @@ async fn a_completed_deployment_without_its_environment_is_only_revertable() {
     let application = create_application(&router, "revert-orphaned").await;
     let profile = create_profile(&router, &application, "config").await;
     host_version(&router, &application, &profile).await;
-    // No rollout window and no bake time: nothing is left to wait for, so the deployment
-    // this paces is COMPLETE the moment it is started — the one state a revert applies to.
+    // No rollout window and no bake time: the deployment this paces has nothing to wait
+    // out but the one growth interval every rollout takes, so it completes a span after it
+    // was started — COMPLETE being the one state a revert applies to.
     let row: Row = ("all at once", 0, 100.0, "LINEAR", 0);
     let strategy = create_strategy(&router, 0, &row).await;
 
@@ -500,12 +501,21 @@ async fn a_completed_deployment_without_its_environment_is_only_revertable() {
             started.status,
             String::from_utf8_lossy(&started.body)
         );
-        let start_body = started.json();
+        // Completing is a transition the clock owes, so the row waits for the condition
+        // before deleting the environment the completed deployment was started into.
+        let start_body = crate::appconfig_workflow::deployment_in_state(
+            &router,
+            case,
+            &application,
+            &environment,
+            1,
+            &["COMPLETE"],
+        )
+        .await;
         assert_eq!(
             member(&start_body, "State").as_str(),
             Some("COMPLETE"),
-            "case {case:?}: a strategy with no rollout window and no bake time completes at \
-             once, got {}",
+            "case {case:?}: a deployment nobody stopped completes on its own, got {}",
             member(&start_body, "State")
         );
 
@@ -640,8 +650,9 @@ fn a_deployment_without_its_environment_is_owed_nothing_by_the_clock_and_rolls_b
     // Rows differ along the pacing of the deployment the delete arrives in the middle of —
     // both published bounds of `MinutesBetween0And24Hours` and both `GrowthType` values —
     // and along how far into the deployment the environment is deleted. Each row's instant
-    // is inside the stage its strategy declares, which this service paces as one short span
-    // per declared stage (`state::stage_duration`).
+    // is inside a stage its strategy declares: the rollout's intervals are one short span
+    // each (`state::STAGE_DURATION`) and the bake keeps its declared minutes
+    // (`state::bake_duration`).
     let rows: [(&str, i32, &str, f32, i32, u64); 5] = [
         ("deleted a second into the longest rollout", 1440, state::GROWTH_LINEAR, 100.0, 0, 1),
         ("deleted at the instant it started", 60, state::GROWTH_EXPONENTIAL, 1.0, 10, 0),
@@ -873,11 +884,18 @@ fn the_documented_revert_window_governs_a_record_without_its_environment() {
     ];
 
     for (case, elapsed, inside_window) in rows {
-        // No rollout window and no bake time, so the deployment is COMPLETE at once and the
-        // window is measured from an instant this test knows.
+        // No rollout window and no bake time, so the deployment completes one growth
+        // interval after it started and the window is measured from an instant this test
+        // knows. The completion is owed while the environment still holds the deployment,
+        // so the record is brought up to it before the environment is deleted.
         let strategy = strategy_of(0, state::GROWTH_LINEAR, 100.0, 0);
         let mut application = application_with_a_deployment(&strategy, started_at);
         let new = new_deployment();
+        application
+            .environments
+            .get_mut(&new.environment_id)
+            .unwrap_or_else(|| panic!("case {case:?}: the environment holds the deployment"))
+            .materialize(started_at + state::STAGE_DURATION);
         assert!(
             application.delete_environment(&new.environment_id).is_some(),
             "case {case:?}: deleting the environment must answer the record it removed"
@@ -964,11 +982,16 @@ fn the_documented_revert_window_governs_a_record_without_its_environment() {
 /// Create environment `index` under `application`, start one deployment into it paced by
 /// `strategy` at `started_at`, and delete the environment again — the loop the retention
 /// bound governs. Answers the environment's id.
+///
+/// `settled` brings the deployment up to what the clock owes it one growth interval in,
+/// before the environment goes: every rollout takes an interval, so a record whose
+/// environment is deleted at the instant it started is one still in flight.
 fn tear_down_one_environment(
     application: &mut Application,
     index: usize,
     strategy: &DeploymentStrategy,
     started_at: SystemTime,
+    settled: bool,
 ) -> String {
     let environment_id = format!("env{index:04}");
     let mut environment = Environment::new(
@@ -982,6 +1005,9 @@ fn tear_down_one_environment(
     let mut new = new_deployment();
     new.environment_id = environment_id.clone();
     environment.record_deployment(Deployment::start(new, strategy, started_at));
+    if settled {
+        environment.materialize(started_at + state::STAGE_DURATION);
+    }
     assert!(
         application.try_insert_environment(environment).is_some(),
         "environment {index} must be stored before it is deleted"
@@ -1017,18 +1043,20 @@ fn the_retention_bound_on_records_without_an_environment_binds_unconditionally()
     // Rows differ along what state the deployments were in when their environments were
     // deleted: the longest rollout the model allows leaves every record in flight, and a
     // strategy with no rollout window and no bake time leaves every one complete.
-    let rows: [(&str, DeploymentStrategy); 2] = [
+    let rows: [(&str, DeploymentStrategy, bool); 2] = [
         (
             "every record still rolling out",
             strategy_of(1440, state::GROWTH_LINEAR, 100.0, 0),
+            false,
         ),
         (
             "every record already complete",
             strategy_of(0, state::GROWTH_LINEAR, 100.0, 0),
+            true,
         ),
     ];
 
-    for (case, strategy) in rows {
+    for (case, strategy, settled) in rows {
         let mut application = empty_application();
         let mut ids = Vec::new();
         for index in 0..count {
@@ -1038,6 +1066,7 @@ fn the_retention_bound_on_records_without_an_environment_binds_unconditionally()
                 index,
                 &strategy,
                 started_at + Duration::from_secs(index as u64),
+                settled,
             ));
         }
 
@@ -1082,6 +1111,7 @@ fn the_retention_bound_drops_finished_records_before_active_ones() {
             index,
             &in_flight,
             started_at + Duration::from_secs(index as u64),
+            false,
         ));
     }
 
@@ -1096,6 +1126,7 @@ fn the_retention_bound_drops_finished_records_before_active_ones() {
             index,
             &complete,
             started_at + Duration::from_secs(index as u64),
+            true,
         ));
         let kept = application.deployments_without_environment.len();
         assert!(

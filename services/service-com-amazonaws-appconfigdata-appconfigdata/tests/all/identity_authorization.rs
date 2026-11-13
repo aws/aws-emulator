@@ -29,8 +29,10 @@
 //! services wrote.
 
 use std::sync::Arc;
+use std::time::{Duration, SystemTime};
 
 use serde_json::{json, Value};
+use service_com_amazonaws_appconfig_amazonappconfig::state::ComAmazonawsAppconfigAmazonappconfigState;
 use service_com_amazonaws_appconfigdata_appconfigdata::state::ComAmazonawsAppconfigdataAppconfigdataState;
 use smithy_server_runtime::MultiServiceRouter;
 
@@ -64,8 +66,8 @@ const ACCOUNT_KEY: &str = "AKIDEXAMPLE";
 /// assumed-role ARN a refusal names as the principal.
 const SESSION: &str = "probe";
 
-/// The predefined deployment strategy that reaches every target at once, so a deployment's
-/// rollout has begun the instant `StartDeployment` answers.
+/// The predefined deployment strategy that reaches every target in one growth interval, so
+/// a deployment's rollout has begun the instant `StartDeployment` answers.
 const ALL_AT_ONCE: &str = "AppConfig.AllAtOnce";
 
 /// The document the hierarchy below deploys, which an authorized poll must serve.
@@ -128,6 +130,30 @@ impl Emulator {
             .lock()
             .sessions
             .len()
+    }
+
+    /// Let the stages the clock owes the environment's deployments fall due.
+    ///
+    /// A rollout reaching its targets, the final bake and the completion are transitions
+    /// AppConfig performs AFTER the call that started the deployment, so a fixture that
+    /// needs the deployed configuration in force moves the start instant into the past and
+    /// brings the records up to what the clock then owes them — rather than sleeping for
+    /// the stages.
+    fn settle_deployments(&self, application_id: &str, environment_id: &str) {
+        let state = self
+            .engine
+            .state::<ComAmazonawsAppconfigAmazonappconfigState>();
+        let mut store = state.lock();
+        let Some(environment) = store
+            .application_mut(application_id)
+            .and_then(|application| application.environments.get_mut(environment_id))
+        else {
+            return;
+        };
+        for deployment in environment.deployments.values_mut() {
+            deployment.started_at -= Duration::from_secs(24 * 60 * 60);
+        }
+        environment.materialize(SystemTime::now());
     }
 
     /// One `restJson1` call to the service signing as `signing_name`, signed for [`REGION`]
@@ -424,6 +450,7 @@ async fn deploy(aws: &Emulator) -> Deployed {
         .expect("the request body serializes"),
     )
     .await;
+    aws.settle_deployments(&application, &environment);
     Deployed {
         application,
         environment,

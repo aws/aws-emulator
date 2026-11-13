@@ -59,16 +59,15 @@ const REACHED_BY: Duration = Duration::from_secs(120);
 /// How often the read under observation is repeated while waiting for that condition.
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
 
-/// The predefined deployment strategy that reaches every target at once: its rollout
-/// window is empty, so a deployment it paces is already monitoring its bake time when
-/// `StartDeployment` answers — the configuration it deployed is in force from that
-/// instant.
+/// The predefined deployment strategy that reaches every target in one growth interval:
+/// its rollout window is empty, so a deployment it paces reaches every target one span
+/// after it was started and then monitors its bake time.
 const ALL_AT_ONCE: &str = "AppConfig.AllAtOnce";
 
 /// A deployment strategy with no rollout window and no bake time, so each deployment it
-/// paces is `COMPLETE` the instant it starts and the next one into the same environment
-/// is not refused for conflicting with it — which is what a suite asserting a HISTORY of
-/// deployments needs.
+/// paces is over one growth interval after it started and the next one into the same
+/// environment is then not refused for conflicting with it — which is what a suite
+/// asserting a HISTORY of deployments needs.
 async fn create_instant_strategy(router: &MultiServiceRouter, case: &str) -> String {
     json_call(
         router,
@@ -225,6 +224,78 @@ async fn deploy(
         .get("DeploymentNumber")
         .and_then(Value::as_i64)
         .unwrap_or_else(|| panic!("case {case:?}: StartDeployment answered no DeploymentNumber"))
+}
+
+/// [`deploy`], waited out until the rollout it started has reached every target.
+///
+/// A rollout is a transition AppConfig performs after the call that asked for it, so a
+/// suite that needs the deployed version to be the one in force for every client waits for
+/// the CONDITION — `PercentageComplete` at 100 — rather than for a span of the clock.
+async fn deploy_to_every_target(
+    router: &MultiServiceRouter,
+    application: &str,
+    environment: &str,
+    profile: &str,
+    strategy: &str,
+    configuration_version: &str,
+    case: &str,
+) -> i64 {
+    let number = deploy(
+        router,
+        application,
+        environment,
+        profile,
+        strategy,
+        configuration_version,
+        case,
+    )
+    .await;
+    reached_every_target(router, application, environment, number, case).await;
+    number
+}
+
+/// Read the deployment until it reports every target reached.
+async fn reached_every_target(
+    router: &MultiServiceRouter,
+    application: &str,
+    environment: &str,
+    number: i64,
+    case: &str,
+) {
+    let deadline = Instant::now() + REACHED_BY;
+    loop {
+        let read = json_call(
+            router,
+            "GET",
+            &format!(
+                "/applications/{application}/environments/{environment}/deployments/{number}"
+            ),
+            &Value::Null,
+        )
+        .await;
+        assert_eq!(
+            read.status,
+            200,
+            "case {case:?}: GetDeployment must answer 200, got {} / {}",
+            read.status,
+            String::from_utf8_lossy(&read.body)
+        );
+        let document = read.json();
+        let reached = document
+            .get("PercentageComplete")
+            .and_then(Value::as_f64)
+            .unwrap_or_default();
+        if reached >= 100.0 {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "case {case:?}: deployment {number} reached only {reached}% of its targets within \
+             {}s, last read {document}",
+            REACHED_BY.as_secs()
+        );
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
 }
 
 /// `StopDeployment`, which withdraws the configuration a deployment put in service.
@@ -418,7 +489,7 @@ async fn the_configuration_in_force_is_served_for_every_spelling_of_the_triple()
             None,
         )
         .await;
-        deploy(
+        deploy_to_every_target(
             &router,
             &application,
             &environment,
@@ -557,7 +628,7 @@ async fn the_newest_deployment_still_in_force_decides_what_is_served() {
     );
 
     // The first deployment puts version 1 in service.
-    deploy(
+    deploy_to_every_target(
         &router,
         &application,
         &environment,
@@ -576,7 +647,7 @@ async fn the_newest_deployment_still_in_force_decides_what_is_served() {
     );
 
     // A second deployment supersedes it.
-    let second = deploy(
+    let second = deploy_to_every_target(
         &router,
         &application,
         &environment,
@@ -615,7 +686,7 @@ async fn the_newest_deployment_still_in_force_decides_what_is_served() {
 
     // A version deployed by its LABEL is the same stored version, so it is served under
     // its version number.
-    deploy(
+    deploy_to_every_target(
         &router,
         &application,
         &environment,
@@ -655,7 +726,7 @@ async fn client_configuration_version_decides_whether_the_content_is_sent() {
         )
         .await;
     }
-    deploy(
+    deploy_to_every_target(
         &router,
         &application,
         &environment,
@@ -825,10 +896,10 @@ async fn a_rolling_out_configuration_is_in_force_and_a_stop_withdraws_it() {
     .await;
 
     // A strategy that declares a rollout window and a bake time, so the deployment is
-    // still in flight throughout: its one growth step falls due at the end of that
-    // window (`state::stage_duration`), which is what makes both halves of the rule
-    // observable — nothing reached at the start instant, every target reached once the
-    // window has passed, and the deployment baking rather than complete either way.
+    // still in flight throughout: its one growth step falls due one span after the start
+    // (`state::STAGE_DURATION`), which is what makes both halves of the rule observable —
+    // nothing reached at the start instant, every target reached once that step has
+    // elapsed, and the deployment baking rather than complete either way.
     let strategy = json_call(
         &router,
         "POST",

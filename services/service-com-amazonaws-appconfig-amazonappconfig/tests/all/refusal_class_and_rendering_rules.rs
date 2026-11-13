@@ -822,7 +822,7 @@ async fn a_terminal_stop_states_the_verb_the_request_asked_for() {
     );
 
     // A strategy with no rollout window and no bake time, so each deployment it paces is
-    // COMPLETE when `StartDeployment` answers and the next one is not refused for
+    // over one growth interval after it started and the next one is then not refused for
     // conflicting with it.
     let strategy = json_call(
         &router,
@@ -894,6 +894,21 @@ async fn a_terminal_stop_states_the_verb_the_request_asked_for() {
         let number = started.json()["DeploymentNumber"]
             .as_i64()
             .unwrap_or_else(|| panic!("case {case:?}: StartDeployment answered no number"));
+
+        // The REVERTED row reverts a deployment that COMPLETED, and completing is a
+        // transition the clock owes, so the row waits for the condition; the ROLLED_BACK
+        // row stops a deployment that is still in flight, which it is from the start.
+        if *allow_revert {
+            crate::appconfig_workflow::deployment_in_state(
+                &router,
+                case,
+                &application,
+                &environment,
+                number,
+                &["COMPLETE"],
+            )
+            .await;
+        }
 
         let stopped = stop(&router, &application, &environment, number, *allow_revert).await;
         assert_eq!(

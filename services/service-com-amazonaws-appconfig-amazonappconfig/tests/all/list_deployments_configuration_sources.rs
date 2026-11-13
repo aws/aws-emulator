@@ -111,7 +111,7 @@ fn deployments_uri(application: &str, environment: &str) -> String {
 }
 
 /// A deployment strategy with no rollout window and no bake time, so a deployment it paces
-/// is terminal the instant it starts and the next row can start its own
+/// is over one growth interval after it started and the next row can then start its own
 /// (`StartDeployment` refuses a second deployment while one is still active).
 async fn instant_strategy(router: &MultiServiceRouter, name: &str) -> String {
     let answer = json_call(
@@ -293,6 +293,18 @@ async fn deploy_every_source(
                     answer.json()
                 )
             });
+        // The rollout is a transition AppConfig performs after the call that asked for it,
+        // and an environment holds one deployment at a time, so the next row waits for
+        // this deployment to be over — on the CONDITION rather than on a span.
+        crate::appconfig_workflow::deployment_in_state(
+            router,
+            source.case,
+            application,
+            environment,
+            deployment_number,
+            &["COMPLETE"],
+        )
+        .await;
         deployed.push(Deployed {
             case: source.case,
             location_uri: source.location_uri,

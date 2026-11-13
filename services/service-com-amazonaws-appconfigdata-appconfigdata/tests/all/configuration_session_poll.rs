@@ -295,6 +295,37 @@ impl Emulator {
         content_type: &str,
         version_label: Option<&str>,
     ) -> i64 {
+        self.start_a_deployment(hierarchy, profile_id, content, content_type, version_label, true)
+            .await
+    }
+
+    /// [`Self::deploy_numbered`] without letting the stages the clock owes fall due, so
+    /// the deployment it starts is one still IN FLIGHT: a rollout is a transition AppConfig
+    /// performs after the call that asked for it, which is the state a test about a
+    /// deployment in progress needs.
+    pub(crate) async fn deploy_in_flight(
+        &self,
+        hierarchy: &Hierarchy,
+        profile_id: &str,
+        content: &[u8],
+        content_type: &str,
+        version_label: Option<&str>,
+    ) -> i64 {
+        self.start_a_deployment(hierarchy, profile_id, content, content_type, version_label, false)
+            .await
+    }
+
+    /// Write a hosted configuration version and deploy it, letting the stages the clock
+    /// owes the deployment fall due when `settled`.
+    async fn start_a_deployment(
+        &self,
+        hierarchy: &Hierarchy,
+        profile_id: &str,
+        content: &[u8],
+        content_type: &str,
+        version_label: Option<&str>,
+        settled: bool,
+    ) -> i64 {
         let application_id = &hierarchy.application_id;
         let mut headers: Vec<(&str, &str)> = Vec::new();
         if let Some(label) = version_label {
@@ -352,6 +383,13 @@ impl Emulator {
             started.status,
             started.text()
         );
+        // Every stage of a deployment after the one the start answers is owed by the
+        // CLOCK: the rollout reaching its targets, the bake and the completion. A test
+        // that needs the deployed version to be the one in service lets those stages fall
+        // due the same way — see `settle_deployments` — rather than sleeping for them.
+        if settled {
+            self.settle_deployments(hierarchy);
+        }
         started.json()["DeploymentNumber"]
             .as_i64()
             .unwrap_or_else(|| panic!("no DeploymentNumber in {}", started.text()))

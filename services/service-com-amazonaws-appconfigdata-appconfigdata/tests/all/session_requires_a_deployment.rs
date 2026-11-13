@@ -364,18 +364,29 @@ async fn a_session_is_minted_for_any_deployment_the_environment_holds() {
         let hierarchy = emulator
             .create_hierarchy("MyApp", "Prod", TARGET_PROFILE)
             .await;
-        let number = emulator
-            .deploy_numbered(
-                &hierarchy,
-                &hierarchy.profile_id,
-                b"deployed once",
-                "text/plain",
-                None,
-            )
-            .await;
-        if case.settled {
-            emulator.settle_deployments(&hierarchy);
-        }
+        let number = if case.settled {
+            emulator
+                .deploy_numbered(
+                    &hierarchy,
+                    &hierarchy.profile_id,
+                    b"deployed once",
+                    "text/plain",
+                    None,
+                )
+                .await
+        } else {
+            // The row needs the deployment still in flight, which is what it is until the
+            // stages the clock owes it fall due.
+            emulator
+                .deploy_in_flight(
+                    &hierarchy,
+                    &hierarchy.profile_id,
+                    b"deployed once",
+                    "text/plain",
+                    None,
+                )
+                .await
+        };
         if case.stopped {
             emulator.stop_deployment(&hierarchy, number).await;
         }

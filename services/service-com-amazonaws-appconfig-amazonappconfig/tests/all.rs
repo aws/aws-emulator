@@ -51,6 +51,8 @@ mod delete_hosted_configuration_version;
 mod deployment_event_notifications_to_sqs;
 #[path = "all/deployment_not_found_message.rs"]
 mod deployment_not_found_message;
+#[path = "all/deployment_phases_follow_the_strategy.rs"]
+mod deployment_phases_follow_the_strategy;
 #[path = "all/deployment_settles_on_its_own.rs"]
 mod deployment_settles_on_its_own;
 #[path = "all/deployment_strategy_patch_paces_deployments.rs"]

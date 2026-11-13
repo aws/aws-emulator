@@ -772,8 +772,9 @@ async fn a_rollout_part_way_through_serves_both_versions_at_once() {
     host(&router, &application, &profile, VERSION_ONE).await;
     host(&router, &application, &profile, VERSION_TWO).await;
 
-    // Version 1 goes out with a strategy that has nothing to wait for, so it is in force
-    // for the whole fleet before the gradual rollout begins.
+    // Version 1 goes out with a strategy that declares no window at all, so it is in force
+    // for the whole fleet one growth interval after it was started — which the suite waits
+    // for, because reaching the targets is a transition of its own.
     let instant = create_strategy(&router, 0, &("all at once", 0, 100.0, "LINEAR", 0)).await;
     let first = deploy(
         &router,
@@ -785,11 +786,20 @@ async fn a_rollout_part_way_through_serves_both_versions_at_once() {
         "1",
     )
     .await;
+    let first = crate::appconfig_workflow::deployment_in_state(
+        &router,
+        case,
+        &application,
+        &environment,
+        i64::from(deployment_number(case, &first)),
+        &["COMPLETE"],
+    )
+    .await;
     assert_eq!(
         deployment_state(case, &first),
         "COMPLETE",
-        "case {case:?}: a strategy with no window and no bake has nothing left to wait for, got \
-         {first}"
+        "case {case:?}: a strategy with no window and no bake completes a span after it \
+         started, got {first}"
     );
     let before = sweep(&router, &application, &environment, &profile).await;
     assert_eq!(

@@ -39,6 +39,9 @@ use crate::ops::types::{
 };
 
 pub mod extension_actions;
+/// The extension and extension-association records an account holds, with the store
+/// methods every operation reaches them through.
+mod extension_store;
 pub mod feature_flags;
 pub mod rollout;
 pub mod treatment_assignments;
@@ -965,6 +968,10 @@ const DESCRIPTION_DEPLOYMENT_COMPLETED: &str = "Deployment completed";
 /// See [`DESCRIPTION_DEPLOYMENT_STARTED`]. A deployment whose completion falls due at the
 /// instant it was asked for took no time at all, which is what its event says.
 const DESCRIPTION_DEPLOYMENT_COMPLETED_INSTANTLY: &str = "Deployment completed instantly";
+/// See [`DESCRIPTION_DEPLOYMENT_STARTED`]: the event AppConfig logs when the final bake
+/// begins. It names no duration — the deployment's own `FinalBakeTimeInMinutes` member
+/// reports the bake time in force, and the recorded service's sentence is this bare one.
+const DESCRIPTION_BAKE_TIME_STARTED: &str = "Deployment bake time started";
 /// See [`DESCRIPTION_DEPLOYMENT_STARTED`]: the event the rollback AppConfig itself starts
 /// records when it begins.
 const DESCRIPTION_ROLLBACK_STARTED: &str = "Deployment rollback started";
@@ -1016,40 +1023,44 @@ pub const REVERT_WINDOW: Duration = Duration::from_secs(REVERT_WINDOW_HOURS * 60
 /// ([`Deployment::stop`]).
 const ROLLBACK_DURATION: Duration = Duration::from_millis(500);
 
-/// How long one stage of a deployment takes here, when the strategy pacing it declares a
-/// non-zero window for that stage.
+/// How long ONE growth interval of a deployment's rollout takes here.
 ///
 /// The EMULATOR's span, not a documented one. AppConfig paces a real rollout over the
-/// strategy's `DeploymentDurationInMinutes` and then monitors the result for its
-/// `FinalBakeTimeInMinutes`, which are minutes to hours of wall clock; the progression
-/// through them is owed by the CLOCK rather than by anybody calling, so each stage a
-/// strategy declares a non-zero window for falls due this one short span after the stage
-/// began instead. A caller reading the deployment straight after starting it still sees it
-/// rolling out — and, where the strategy bakes, baking — and the deployment reaches
-/// `COMPLETE` on its own without a caller waiting out the declared minutes. The declared
-/// minutes are a property of the strategy and are reported back unchanged: they pace a
-/// stage, they are not a value this record derives anything it reports from.
+/// strategy's `DeploymentDurationInMinutes`, which is minutes to hours of wall clock; the
+/// progression through it is owed by the CLOCK rather than by anybody calling, so each
+/// growth interval falls due this one short span after the previous one instead. A caller
+/// reading the deployment straight after starting it still sees it rolling out, and the
+/// rollout reaches every target without that caller waiting out the declared minutes. The
+/// declared minutes are a property of the strategy and are reported back unchanged: they
+/// pace the rollout, they are not a value this record derives anything it reports from.
 ///
-/// The ROLLOUT stage is made of one growth interval per step the strategy's growth factor
-/// takes to reach every target, and each interval is a transition of its own, so the
-/// rollout is paced by one of these spans PER interval
-/// ([`Deployment::rollout_duration`]).
+/// The rollout is made of one growth interval per step the strategy's growth factor takes
+/// to reach every target, and each interval is a transition of its own, so the rollout is
+/// paced by one of these spans PER interval ([`Deployment::rollout_duration`]) — including
+/// the single interval of a strategy that declares no rollout window but does declare a
+/// final bake time, whose rollout is a transition AppConfig performs after the call like
+/// any other.
 ///
-/// A stage the strategy declares NO window for is not paced by this and takes no time at
-/// all: see [`stage_duration`].
+/// The FINAL BAKE is not paced by this: it is a wait the caller asked for, and it keeps the
+/// value they asked for — see [`bake_duration`].
 pub const STAGE_DURATION: Duration = Duration::from_secs(3);
 
-/// The span a deployment stage whose strategy declares `minutes` for it takes.
+/// How long AppConfig monitors a deployment after its rollout, for a strategy that
+/// declares `minutes` of final bake time.
 ///
-/// Zero for a stage the strategy skips — a rollout window of 0 minutes reaches every
-/// target at the instant the deployment starts, and a final bake time of 0 minutes
-/// monitors nothing — and [`STAGE_DURATION`] for one it declares any window at all for.
-pub fn stage_duration(minutes: i32) -> Duration {
-    if minutes > 0 {
-        STAGE_DURATION
-    } else {
-        Duration::ZERO
-    }
+/// A DOCUMENTED wait, so it keeps its documented value: `FinalBakeTimeInMinutes` is "the
+/// amount of time that AppConfig monitors for Amazon CloudWatch alarms before considering
+/// the deployment to be complete and no longer eligible for automatic rollback"
+/// (`smithy_query(query="shape",shape="DeploymentStrategy")`), which is the window a
+/// caller asked the service to hold the deployment open for — the window its own
+/// `StopDeployment` can still roll the deployment back in, and for which a second
+/// deployment into the same environment is refused. Shortening it would answer a caller
+/// that declared a bake time with a deployment that had already stopped baking.
+///
+/// Zero minutes monitors NOTHING, so such a deployment has no bake stage at all: it never
+/// reports `BAKING` and logs no bake event.
+pub fn bake_duration(minutes: i32) -> Duration {
+    Duration::from_secs(60 * u64::try_from(minutes).unwrap_or_default())
 }
 
 /// The percentage of targets a finished rollout has reached, and the ceiling every growth
@@ -2579,12 +2590,18 @@ pub enum StopRefusal {
 impl Deployment {
     /// Start a deployment at `started_at`, paced by `strategy`.
     ///
-    /// The deployment begins at 0% of its targets with one `DEPLOYMENT_STARTED` event,
-    /// because nothing has rolled out yet at the instant it was asked for; every later
-    /// state, percentage and event is owed by the clock and materialised by
-    /// [`Deployment::materialize`], which is called once here so a strategy whose rollout
-    /// window and bake time are both zero — which has nothing left to wait for — is
-    /// already `COMPLETE` when `StartDeployment` answers.
+    /// The record begins `DEPLOYING` at 0% of its targets with one USER-triggered
+    /// `DEPLOYMENT_STARTED` event, because nothing has rolled out yet at the instant it was
+    /// asked for: reaching a share of the targets, entering the final bake and completing
+    /// are each transitions AppConfig performs AFTER this call, owed by the clock and
+    /// materialised by [`Deployment::materialize`] once the instant they fall due has
+    /// passed.
+    ///
+    /// [`Deployment::materialize`] is called once here, which moves nothing for a strategy
+    /// that paces a stage and performs the WHOLE deployment for one that paces none
+    /// ([`Self::paces_a_stage`]): a strategy with no rollout window and no final bake time
+    /// leaves AppConfig nothing to pace or monitor, and the recorded service answers such a
+    /// deployment already `COMPLETE`.
     pub fn start(new: NewDeployment, strategy: &DeploymentStrategy, started_at: SystemTime) -> Self {
         let mut deployment = Self {
             deployment_number: new.deployment_number,
@@ -2625,8 +2642,8 @@ impl Deployment {
             tags: new.tags,
         };
         // Whatever the clock already owes this deployment at the instant it started: for a
-        // strategy with a rollout window that is nothing at all, and for one with none it
-        // is the whole deployment.
+        // strategy that paces a stage that is nothing at all, and for one that paces none
+        // it is the whole deployment.
         deployment.materialize(started_at);
         deployment
     }
@@ -2807,8 +2824,8 @@ impl Deployment {
         }
     }
 
-    /// How long the rollout itself lasts: one stage span ([`stage_duration`]) for each
-    /// growth INTERVAL the strategy performs.
+    /// How long the rollout itself lasts: one growth interval ([`Self::growth_interval`])
+    /// for each interval the strategy performs.
     ///
     /// A growth interval is a transition the clock owes — it makes the configuration
     /// available to a further share of the targets, which is a share consumers are then
@@ -2819,27 +2836,50 @@ impl Deployment {
     /// reaches every target in ONE interval therefore lasts one span, and a 1%-per-interval
     /// rollout lasts a hundred.
     ///
-    /// Not floored: a strategy declaring a duration of 0 minutes (`AppConfig.AllAtOnce`,
-    /// or any created strategy with `DeploymentDurationInMinutes` 0) reaches every target
-    /// at the instant the deployment starts, which is what AppConfig answers for one —
-    /// with no bake time to follow, `StartDeployment` reports it `COMPLETE`.
+    /// Nothing at all for a strategy that paces NO stage ([`Self::paces_a_stage`]), whose
+    /// deployment the recorded service performs inside the `StartDeployment` call.
     ///
     /// `pub` because it is the span a test walks a deployment's schedule over.
     pub fn rollout_duration(&self) -> Duration {
         self.growth_interval() * u32::try_from(self.growth_grid().len()).unwrap_or(u32::MAX)
     }
 
-    /// How long ONE growth interval of this rollout takes: a stage span for a strategy
-    /// that declares a rollout window, and no time at all for one that declares none.
-    fn growth_interval(&self) -> Duration {
-        stage_duration(self.deployment_duration_in_minutes)
+    /// Whether this deployment's strategy paces a stage at all: a rollout window to grow
+    /// over, or a final bake time to monitor afterwards.
+    ///
+    /// A strategy that declares NEITHER leaves AppConfig nothing to pace and nothing to
+    /// monitor, and the recorded service answers such a deployment already `COMPLETE` from
+    /// the `StartDeployment` call that asked for it. A strategy that declares either one
+    /// pins the deployment to stages AppConfig performs AFTER that call, so the call
+    /// answers it at its first stage ([`Deployment::start`]).
+    fn paces_a_stage(&self) -> bool {
+        self.deployment_duration_in_minutes > 0 || self.final_bake_time_in_minutes > 0
+    }
+
+    /// How long ONE growth interval of this rollout takes: one stage span
+    /// ([`STAGE_DURATION`]) for a deployment whose strategy paces a stage, and no time at
+    /// all for one that paces none.
+    ///
+    /// Not derived from the declared rollout window: a strategy that declares no
+    /// window but a final bake time still reaches its targets AFTER the call that started
+    /// the deployment — the recorded service answers that deployment at 0% of its targets
+    /// and logs the share it reaches as an event of its own — so its one interval is a span
+    /// like any other.
+    ///
+    /// `pub` because it is the span a test walks a deployment's schedule over.
+    pub fn growth_interval(&self) -> Duration {
+        if self.paces_a_stage() {
+            STAGE_DURATION
+        } else {
+            Duration::ZERO
+        }
     }
 
     /// How long AppConfig monitors the deployment after the rollout before completing
-    /// it: one stage span for a strategy that declares a final bake time
-    /// ([`stage_duration`]), and no time at all for one that declares none.
+    /// it: the strategy's declared final bake time, which keeps its declared value — see
+    /// [`bake_duration`] — and no time at all for a strategy that declares none.
     fn bake_duration(&self) -> Duration {
-        stage_duration(self.final_bake_time_in_minutes)
+        bake_duration(self.final_bake_time_in_minutes)
     }
 
     /// The instant the rollout finishes and the final bake begins.
@@ -2950,15 +2990,20 @@ impl Deployment {
         }
 
         // A `PERCENTAGE_UPDATED` event records a growth interval that ELAPSED, so a step
-        // falling due at the start instant itself — every step of a strategy with no
-        // rollout window at all — records none.
+        // falling due at the start instant itself — every step of a strategy that paces no
+        // stage, whose whole deployment happens inside the call that asked for it — records
+        // none.
+        //
+        // The share is spelled to two decimals: `Percentage` is a float and AppConfig's
+        // own sentence renders it with the fraction, so a rollout that has reached every
+        // target reads `100.00%` rather than `100%`.
         for (due, reached) in self.rollout_schedule() {
             if due > self.started_at && due <= now && reached > self.percentage_complete {
                 self.percentage_complete = reached;
                 self.event_log.push(deployment_event(
                     EVENT_PERCENTAGE_UPDATED,
                     TRIGGERED_BY_APPCONFIG,
-                    format!("Configuration available to {reached}% of clients"),
+                    format!("Configuration available to {reached:.2}% of clients"),
                     due,
                 ));
             }
@@ -2967,7 +3012,8 @@ impl Deployment {
         let rollout_end = self.rollout_end();
         if now >= rollout_end {
             // The rollout window is over, so every target holds the configuration —
-            // including when the window was empty and no interval elapsed on the way.
+            // including when no interval elapsed on the way, which is the rollout of a
+            // strategy that paces no stage.
             self.percentage_complete = FULL_PERCENTAGE;
         }
         if self.state == DEPLOYMENT_DEPLOYING
@@ -2978,10 +3024,7 @@ impl Deployment {
             self.event_log.push(deployment_event(
                 EVENT_BAKE_TIME_STARTED,
                 TRIGGERED_BY_APPCONFIG,
-                format!(
-                    "Deployment bake time started for {} minute(s)",
-                    self.final_bake_time_in_minutes
-                ),
+                DESCRIPTION_BAKE_TIME_STARTED.to_string(),
                 rollout_end,
             ));
         }
@@ -3014,6 +3057,11 @@ impl Deployment {
 }
 
 /// One deployment event, as the model's `DeploymentEvent` shape.
+///
+/// `ActionInvocations` is "the list of extensions that were invoked as part of the
+/// deployment" — a LIST, which an event no extension action fired for has none of rather
+/// than not having at all, so it starts EMPTY and the invocations an action point records
+/// are added to it ([`extension_actions::drive_deployment`]).
 fn deployment_event(
     event_type: &str,
     triggered_by: &str,
@@ -3024,7 +3072,7 @@ fn deployment_event(
         event_type: Some(event_type.to_string()),
         triggered_by: Some(triggered_by.to_string()),
         description: Some(description),
-        action_invocations: None,
+        action_invocations: Some(Vec::new()),
         occurred_at: Some(to_date_time(occurred_at)),
     }
 }
@@ -3553,18 +3601,39 @@ fn next_token_not_issued(submitted: &str) -> String {
 /// `Message` for a deployment refused because the environment it targets is not in a
 /// state that accepts one.
 ///
-/// AppConfig attributes this conflict to the ENVIRONMENT rather than to the deployment
-/// holding it: the recorded refusal names the environment and the state it currently
-/// has, and nothing else — no deployment number. `state` is the `DeploymentState` of the
-/// deployment the service is still working on, which is the state the recorded refusal
-/// reports (the uppercase `DEPLOYING` / `BAKING` / `ROLLING_BACK` form, not
-/// `Environment$State`'s CamelCase wire value), so a retry loop keyed on the environment
-/// reads the subject AppConfig names.
-pub fn environment_not_ready_for_deployment(environment_id: &str, state: &str) -> String {
+/// AppConfig attributes this conflict to the ENVIRONMENT, and the state it reports is the
+/// ENVIRONMENT's own: the sentence's subject is the environment, and the state it names is
+/// one of `EnvironmentState`'s members (`READY_FOR_DEPLOYMENT`, `DEPLOYING`,
+/// `ROLLING_BACK`, …, `smithy_query(query="shape",shape="EnvironmentState")`) rather than
+/// one of the `DeploymentState` values of the deployment holding it — so an environment
+/// whose deployment is rolling out and one whose deployment is baking are both reported
+/// `DEPLOYING`, which is the only state `EnvironmentState` has for a deployment in flight.
+/// The member NAME is what the sentence carries, not `Environment$State`'s CamelCase wire
+/// value, so a retry loop keyed on the environment reads the subject AppConfig names.
+pub fn environment_not_ready_for_deployment(environment_id: &str, environment_state: &str) -> String {
+    let state = environment_state_member_name(environment_state);
     format!(
         "Environment {environment_id} currently has a state of {state}. The current deployment \
          must finish before a new deployment can be started."
     )
+}
+
+/// The `EnvironmentState` MEMBER NAME for the state this service stores on an environment.
+///
+/// The stored value is the CamelCase form `Environment$State` carries on the wire (see
+/// [`ENVIRONMENT_READY_FOR_DEPLOYMENT`]); a refusal that spells a state into a sentence
+/// spells the enum's member name instead, which is the form the model declares and the
+/// recorded refusals carry. Anything this service does not hold an environment in is
+/// reported as given, so a value added later is never silently renamed.
+fn environment_state_member_name(environment_state: &str) -> &str {
+    match environment_state {
+        ENVIRONMENT_READY_FOR_DEPLOYMENT => "READY_FOR_DEPLOYMENT",
+        ENVIRONMENT_DEPLOYING => "DEPLOYING",
+        ENVIRONMENT_ROLLING_BACK => "ROLLING_BACK",
+        ENVIRONMENT_ROLLED_BACK => "ROLLED_BACK",
+        ENVIRONMENT_REVERTED => "REVERTED",
+        other => other,
+    }
 }
 
 /// `Message` for a `CreateHostedConfigurationVersion` refused by its optimistic lock: the
@@ -4074,421 +4143,6 @@ impl ComAmazonawsAppconfigAmazonappconfigState {
             (&application.name, &application.id)
         })
         .map(|application| application.id.clone())
-    }
-
-    /// The extension `identifier` names, and the version number the identifier itself
-    /// pins, or `None` when no extension this account can see answers to it.
-    ///
-    /// `identifier` is "the name, the ID, or the Amazon Resource Name (ARN) of the
-    /// extension"
-    /// (`smithy_query(query="doc",shape="GetExtensionRequest",member="ExtensionIdentifier")`),
-    /// so all three forms resolve here and every operation that takes an
-    /// `ExtensionIdentifier` resolves it the same way. An ARN addresses ONE version, so
-    /// it pins that version number; an id or a name addresses the extension as a whole
-    /// and pins none.
-    ///
-    /// Both halves of the account's catalogue answer: an extension this account created,
-    /// and failing that one of AppConfig's AWS-authored extensions
-    /// ([`AWS_AUTHORED_EXTENSIONS`]), which every account can read without having created
-    /// it. A created extension cannot carry an authored name — `CreateExtension` refuses
-    /// one — so the two halves never answer for the same identifier.
-    pub fn resolve_extension(
-        &self,
-        identifier: &str,
-        region: &str,
-    ) -> Option<(Extension, Option<i32>)> {
-        if let Some(by_id) = self.extensions.get(identifier) {
-            return Some((by_id.clone(), None));
-        }
-        if let Some(TaggedResource::Extension {
-            extension_id,
-            version_number,
-        }) = parse_resource_arn(identifier)
-        {
-            if let Some(by_arn) = self.extensions.get(extension_id) {
-                return Some((by_arn.clone(), Some(version_number)));
-            }
-        }
-        if let Some(by_name) = self
-            .extensions
-            .values()
-            .find(|extension| extension.name == identifier)
-        {
-            return Some((by_name.clone(), None));
-        }
-        aws_authored_extension(identifier, region)
-    }
-
-    /// The extension stored under `extension_id`, for a caller that already holds the
-    /// minted id rather than a caller-supplied identifier.
-    pub fn extension(&self, extension_id: &str) -> Option<&Extension> {
-        self.extensions.get(extension_id)
-    }
-
-    /// The extension carrying `name`, or `None` when no extension does. Extension names
-    /// are unique per account ("Each extension name in your account must be unique", as
-    /// the model documents on `CreateExtension`'s `Name` member), so at most one answers.
-    pub fn extension_named(&self, name: &str) -> Option<&Extension> {
-        self.extensions
-            .values()
-            .find(|extension| extension.name == name)
-    }
-
-    /// Every extension this account created, for a reader that must report them without
-    /// reaching into the map.
-    pub fn created_extensions(&self) -> impl Iterator<Item = &Extension> {
-        self.extensions.values()
-    }
-
-    /// The whole extension catalogue this account can see, in `region`: AppConfig's
-    /// AWS-authored extensions ([`AWS_AUTHORED_EXTENSIONS`]) and every extension this
-    /// account created.
-    ///
-    /// This is [`resolve_extension`] read over the whole catalogue rather than for one
-    /// identifier, so a listing reports nothing a reader of it would then miss on, and
-    /// each extension exactly once: an authored name is reserved, so no created extension
-    /// can carry one. `ListExtensions`, which reports "all custom and Amazon Web Services
-    /// authored AppConfig extensions in the account", is the caller this exists for; the
-    /// order a listing reports them in is the listing's own.
-    ///
-    /// [`resolve_extension`]: ComAmazonawsAppconfigAmazonappconfigState::resolve_extension
-    pub fn all_extensions(&self, region: &str) -> Vec<Extension> {
-        AWS_AUTHORED_EXTENSIONS
-            .iter()
-            .map(|authored| Extension::aws_authored(authored, region))
-            .chain(self.created_extensions().cloned())
-            .collect()
-    }
-
-    /// Store a brand-new extension, holding its first version.
-    ///
-    /// Answers `false`, having stored nothing, when this service already holds
-    /// [`MAX_EXTENSIONS`] of them — the bound that keeps a loop of create calls from
-    /// growing the emulator's heap without limit. `CreateExtension` is the caller this
-    /// exists for, and answers that `false` with the `ServiceQuotaExceededException` it
-    /// models.
-    pub fn try_insert_extension(&mut self, extension: Extension) -> bool {
-        if self.extensions.len() >= MAX_EXTENSIONS {
-            return false;
-        }
-        self.extensions.insert(extension.id.clone(), extension);
-        true
-    }
-
-    /// Add one more version to the extension `extension_id` names.
-    ///
-    /// Answers `false`, having stored nothing, when that extension already holds
-    /// [`MAX_EXTENSION_VERSIONS`] versions, or when no extension answers to
-    /// `extension_id`.
-    pub fn try_insert_extension_version(
-        &mut self,
-        extension_id: &str,
-        version: ExtensionVersion,
-    ) -> bool {
-        let Some(extension) = self.extensions.get_mut(extension_id) else {
-            return false;
-        };
-        if extension.versions.len() >= MAX_EXTENSION_VERSIONS {
-            return false;
-        }
-        extension.versions.insert(version.version_number, version);
-        true
-    }
-
-    /// The stored version `version_number` of the extension `extension_id` names, for a
-    /// caller that EDITS that version in place rather than appending another one.
-    ///
-    /// `UpdateExtension` is the caller this exists for: it updates the extension version
-    /// a request names, so the version number, the ARN that names it and the tags it
-    /// carries all stay as they are and only the definition members the request carried
-    /// change. Answers `None` when no extension answers to `extension_id` or it holds no
-    /// such version.
-    pub fn extension_version_mut(
-        &mut self,
-        extension_id: &str,
-        version_number: i32,
-    ) -> Option<&mut ExtensionVersion> {
-        self.extensions
-            .get_mut(extension_id)?
-            .versions
-            .get_mut(&version_number)
-    }
-
-    /// Forget an extension this account created, with every version it holds.
-    /// `DeleteExtension` is the caller this exists for, and removing the record is what
-    /// frees its slot.
-    pub fn remove_extension(&mut self, extension_id: &str) -> Option<Extension> {
-        self.extensions.remove(extension_id)
-    }
-
-    /// Forget ONE version of an extension this account created, answering the version
-    /// that was removed, or `None` when no extension answers to `extension_id` or it
-    /// holds no such version.
-    ///
-    /// An extension exists only as its versions — the id and the name are properties of
-    /// the set, and the description, actions, parameters and tags belong to a version —
-    /// so an extension whose last version is removed is itself gone, and
-    /// [`Self::resolve_extension`] stops answering for it. That is the same bookkeeping
-    /// [`Self::remove_extension`] does, reached one version at a time, so a deleted
-    /// version never leaves an extension that answers with nothing.
-    pub fn remove_extension_version(
-        &mut self,
-        extension_id: &str,
-        version_number: i32,
-    ) -> Option<ExtensionVersion> {
-        let extension = self.extensions.get_mut(extension_id)?;
-        let removed = extension.versions.remove(&version_number)?;
-        if extension.versions.is_empty() {
-            self.extensions.remove(extension_id);
-        }
-        Some(removed)
-    }
-
-    /// The ARN of the AppConfig resource `identifier` names, as the record an extension
-    /// association reports it by, or `None` when it addresses nothing an extension may be
-    /// associated to.
-    ///
-    /// `ResourceIdentifier` is "the ARN of an application, configuration profile, or
-    /// environment"
-    /// (`smithy_query(query="doc",shape="CreateExtensionAssociationRequest",member="ResourceIdentifier")`),
-    /// so an ARN is resolved against the tree and answered only when the resource it
-    /// addresses exists. The ARN is rebuilt from the resolved record in `region` rather
-    /// than echoed back, so what the association stores is this service's own ARN for the
-    /// resource it found — not whatever partition or account the caller typed.
-    ///
-    /// The member's type is `Identifier`, the same shape every "ID or name" member of this
-    /// service targets, so an identifier that is not an ARN at all is resolved the way
-    /// every other `ApplicationIdentifier` is ([`Self::resolve_application_id`]): an
-    /// application is the one resource of the three that an id or a name addresses
-    /// unambiguously on its own.
-    pub fn resolve_association_resource(&self, identifier: &str, region: &str) -> Option<String> {
-        let resource = match parse_resource_arn(identifier) {
-            Some(resource) => resource,
-            // Not an ARN: an application id or name, which is the one form of the three
-            // that addresses a resource on its own.
-            None => {
-                let application_id = self.resolve_application_id(identifier)?;
-                return Some(::engine::emulator_arn(
-                    SERVICE_NAMESPACE,
-                    region,
-                    &format!("application/{application_id}"),
-                ));
-            }
-        };
-        let portion = match resource {
-            TaggedResource::Application { application_id } => {
-                let application = self.applications.get(application_id)?;
-                format!("application/{}", application.id)
-            }
-            TaggedResource::Environment {
-                application_id,
-                environment_id,
-            } => {
-                let environment = self
-                    .applications
-                    .get(application_id)?
-                    .environments
-                    .get(environment_id)?;
-                format!("application/{application_id}/environment/{}", environment.id)
-            }
-            TaggedResource::ConfigurationProfile {
-                application_id,
-                configuration_profile_id,
-            } => {
-                let profile = self
-                    .applications
-                    .get(application_id)?
-                    .profiles
-                    .get(configuration_profile_id)?;
-                configuration_profile_arn_portion(application_id, &profile.id)
-            }
-            // Every other AppConfig resource — a deployment, a deployment strategy, an
-            // extension, another association — is not one of the three an extension
-            // associates to.
-            _ => return None,
-        };
-        Some(::engine::emulator_arn(SERVICE_NAMESPACE, region, &portion))
-    }
-
-    /// The extension association `association_id` names, or `None` when this account
-    /// created none under that id. `GetExtensionAssociation` is the caller this exists for.
-    pub fn extension_association(&self, association_id: &str) -> Option<&ExtensionAssociation> {
-        self.extension_associations.get(association_id)
-    }
-
-    /// The extension association `association_id` names, for a caller that EDITS it in
-    /// place rather than creating another one.
-    ///
-    /// `UpdateExtensionAssociation` is the caller this exists for: the association keeps
-    /// the id and ARN its create minted, the extension version it binds and the resource
-    /// it is bound to, so only the members an update carries change.
-    pub fn extension_association_mut(
-        &mut self,
-        association_id: &str,
-    ) -> Option<&mut ExtensionAssociation> {
-        self.extension_associations.get_mut(association_id)
-    }
-
-    /// Every extension association this account created, for a reader that must report
-    /// them without reaching into the map. The order is the map's, which is no order at
-    /// all: a listing orders what it reports itself.
-    ///
-    /// `ListExtensionAssociations`, which reports "all AppConfig extension associations in
-    /// the account", is the caller this exists for.
-    pub fn extension_associations(&self) -> impl Iterator<Item = &ExtensionAssociation> {
-        self.extension_associations.values()
-    }
-
-    /// The extension associations in force for a deployment of
-    /// `configuration_profile_id` into `environment_id` of `application_id`, as the
-    /// `AppliedExtensions` that deployment records: "the extensions that were previously
-    /// associated to the configuration profile, environment, or the application when
-    /// `StartDeployment` was called"
-    /// (`smithy_query(query="doc",shape="Deployment",member="AppliedExtensions")`).
-    ///
-    /// An association binds ONE of the three, and a deployment runs all three levels, so
-    /// an association bound to any of them is applied to the deployment. The binding is
-    /// matched on the resource the association's ARN ADDRESSES rather than on the ARN text,
-    /// so an association created against one Region's ARN still applies to a deployment
-    /// started in another: this emulator holds one tree, not one per Region. The order is
-    /// by association id, so two reads of one deployment report the same list.
-    pub fn applied_extensions_for(
-        &self,
-        application_id: &str,
-        environment_id: &str,
-        configuration_profile_id: &str,
-    ) -> Vec<AppliedExtension> {
-        let scope = extension_actions::Scope {
-            application_id,
-            environment_id: Some(environment_id),
-            configuration_profile_id: Some(configuration_profile_id),
-        };
-        let mut applied: BTreeMap<&str, AppliedExtension> = BTreeMap::new();
-        for association in self.extension_associations.values() {
-            // The SAME binding the action-point dispatch resolves its targets through,
-            // so what a deployment reports as applied and what it actually invokes
-            // cannot disagree.
-            if !extension_actions::association_binds(&association.resource_arn, &scope) {
-                continue;
-            }
-            applied.insert(
-                association.id.as_str(),
-                AppliedExtension {
-                    extension_id: Some(association.extension_id.clone()),
-                    extension_association_id: Some(association.id.clone()),
-                    version_number: association.extension_version_number,
-                    parameters: Some(association.parameters.clone()),
-                    provided_identifier: Some(association.provided_identifier.clone()),
-                },
-            );
-        }
-        applied.into_values().collect()
-    }
-
-    /// How many associations bind the `version_number` version of the extension
-    /// `extension_id` names.
-    ///
-    /// "You must delete all associations to an extension before you delete the extension"
-    /// (`smithy_query(query="operation",operation="DeleteExtension")`), which this is what
-    /// `DeleteExtension` checks before removing a version: an association names ONE
-    /// version, so the associations that block a delete are the ones bound to the version
-    /// the delete would take away. The COUNT is what the refusal reports, so it is counted
-    /// here rather than being answered as a yes-or-no and counted again by the caller.
-    pub fn extension_version_association_count(
-        &self,
-        extension_id: &str,
-        version_number: i32,
-    ) -> usize {
-        self.extension_associations
-            .values()
-            .filter(|association| {
-                association.extension_id == extension_id
-                    && association.extension_version_number == version_number
-            })
-            .count()
-    }
-
-    /// Materialise the extension association AppConfig itself makes for a configuration
-    /// profile of type [`FEATURE_FLAGS_PROFILE_TYPE`], and answer the association's id.
-    ///
-    /// The feature-flag helper ([`FEATURE_FLAGS_EXTENSION_ID`]) is what checks a
-    /// feature-flag document as it is written and transforms it as it is served, so
-    /// AppConfig associates it to such a profile as the profile is created rather than
-    /// leaving it to a `CreateExtensionAssociation` call of the account's. What it
-    /// materialises is an association record like any other — the extension's only
-    /// published version, bound to the profile's own ARN, with no parameter values because
-    /// the helper declares no parameter — so every reader of an association reports it, and
-    /// a deployment of that profile reports it among its `AppliedExtensions`.
-    ///
-    /// IDEMPOTENT: an association already binding that extension to that profile IS this
-    /// association, so its id is answered and nothing is written. `None` means nothing is
-    /// associated: this account already holds [`MAX_EXTENSION_ASSOCIATIONS`] associations.
-    pub fn associate_feature_flags_extension(
-        &mut self,
-        application_id: &str,
-        configuration_profile_id: &str,
-        region: &str,
-    ) -> Option<String> {
-        let authored = aws_authored_extension_named(FEATURE_FLAGS_EXTENSION_ID)?;
-        let extension = Extension::aws_authored(authored, region);
-        let version = extension.latest_version()?;
-        let resource_arn =
-            configuration_profile_arn(region, application_id, configuration_profile_id);
-        if let Some(existing) = self.extension_associations.values().find(|association| {
-            association.extension_id == extension.id && association.resource_arn == resource_arn
-        }) {
-            return Some(existing.id.clone());
-        }
-        let id = self.mint_id();
-        let association = ExtensionAssociation {
-            arn: extension_association_arn(region, &id),
-            id: id.clone(),
-            extension_id: extension.id.clone(),
-            // AppConfig makes this association itself and names the extension by its
-            // published id, so that is the identifier it provided.
-            provided_identifier: extension.id.clone(),
-            extension_arn: version.arn.clone(),
-            extension_version_number: version.version_number,
-            resource_arn,
-            parameters: HashMap::new(),
-            tags: HashMap::new(),
-        };
-        self.try_insert_extension_association(association)
-            .then_some(id)
-    }
-
-    /// Store an extension association this account created.
-    ///
-    /// Answers `false`, having stored nothing, when this service already holds
-    /// [`MAX_EXTENSION_ASSOCIATIONS`] of them — the bound that keeps a loop of create
-    /// calls from growing the emulator's heap without limit.
-    /// `CreateExtensionAssociation` is the caller this exists for, and answers that
-    /// `false` with the `ServiceQuotaExceededException` it models.
-    pub fn try_insert_extension_association(
-        &mut self,
-        association: ExtensionAssociation,
-    ) -> bool {
-        if self.extension_associations.len() >= MAX_EXTENSION_ASSOCIATIONS {
-            return false;
-        }
-        self.extension_associations
-            .insert(association.id.clone(), association);
-        true
-    }
-
-    /// Forget the extension association `association_id` names, answering the record that
-    /// was removed, or `None` when this account created none under that id.
-    ///
-    /// `DeleteExtensionAssociation` is the caller this exists for. The association record
-    /// holds the binding and the tags that were assigned to it and nothing else, so taking
-    /// it out of the map takes both — and because the extension it bound is held in its own
-    /// map, removing the association leaves that extension and every version of it exactly
-    /// where it was. Removing the record also frees its slot and releases its id.
-    pub fn remove_extension_association(
-        &mut self,
-        association_id: &str,
-    ) -> Option<ExtensionAssociation> {
-        self.extension_associations.remove(association_id)
     }
 
     /// Resolve a deployment strategy id to the strategy it names: one this account

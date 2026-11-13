@@ -186,9 +186,9 @@ fn a_rollout_serves_exactly_the_targets_its_percentage_has_reached() {
         for (interval, reached) in schedule.grid.iter().enumerate() {
             let mut deployment = Deployment::start(new_deployment(1, "2"), &paced_by, started_at);
             // Each growth interval of the rollout is paced by one span
-            // (`state::stage_duration`), so the walk steps through the schedule in those
+            // (`state::STAGE_DURATION`), so the walk steps through the schedule in those
             // spans rather than in the strategy's declared minutes.
-            let elapsed = state::stage_duration(paced_by.deployment_duration_in_minutes)
+            let elapsed = state::STAGE_DURATION
                 * u32::try_from(interval + 1).expect("an interval index fits");
             deployment.materialize(started_at + elapsed + Duration::from_millis(1));
 
@@ -229,14 +229,18 @@ fn a_target_the_rollout_has_not_reached_stays_on_the_previous_deployment() {
         HashMap::new(),
     );
 
-    // Version 1 is deployed by a strategy with nothing to wait for, so it is COMPLETE and
-    // in force for every target.
+    // Version 1 is deployed by a strategy with no declared window: its one growth
+    // interval reaches every target a span after the deployment started, which is when the
+    // environment below is read.
     let all_at_once = strategy(state::GROWTH_LINEAR, 100.0, 0, 0);
     environment.record_deployment(Deployment::start(
         new_deployment(1, "1"),
         &all_at_once,
         started_at,
     ));
+    let one_interval = state::STAGE_DURATION;
+    let version_one_in_force = started_at + one_interval + Duration::from_millis(1);
+    environment.materialize(version_one_in_force);
     for probe in probes() {
         let target = RolloutBucket::at_percentile(f64::from(probe));
         assert_eq!(
@@ -255,10 +259,10 @@ fn a_target_the_rollout_has_not_reached_stays_on_the_previous_deployment() {
     environment.record_deployment(Deployment::start(
         new_deployment(2, "2"),
         &gradual,
-        started_at,
+        version_one_in_force,
     ));
-    let one_interval = state::stage_duration(gradual.deployment_duration_in_minutes);
-    environment.materialize(started_at + one_interval + Duration::from_millis(1));
+    let read_at = version_one_in_force + one_interval + Duration::from_millis(1);
+    environment.materialize(read_at);
     for probe in probes() {
         let target = RolloutBucket::at_percentile(f64::from(probe));
         let expected = if probe < 25.0 { "2" } else { "1" };
@@ -278,7 +282,7 @@ fn a_target_the_rollout_has_not_reached_stays_on_the_previous_deployment() {
         .deployments
         .get_mut(&2)
         .expect("the rolling-out deployment is held under its number")
-        .stop(false, started_at + one_interval + Duration::from_millis(2))
+        .stop(false, read_at + Duration::from_millis(1))
         .expect("an in-flight deployment is stoppable");
     for probe in probes() {
         let target = RolloutBucket::at_percentile(f64::from(probe));
@@ -320,7 +324,7 @@ fn an_undone_rollout_serves_no_target() {
             1,
             Undone::Stopped,
         ),
-        ("reverted after completing", 100.0, 0, 0, 0, Undone::Reverted),
+        ("reverted after completing", 100.0, 0, 0, 1, Undone::Reverted),
         (
             "rolled back by AppConfig part-way through",
             25.0,
@@ -335,7 +339,7 @@ fn an_undone_rollout_serves_no_target() {
         let paced_by = strategy(state::GROWTH_LINEAR, growth_factor, duration, bake);
         let mut deployment = Deployment::start(new_deployment(1, "2"), &paced_by, started_at);
         let reached_at = started_at
-            + state::stage_duration(duration) * elapsed_intervals
+            + state::STAGE_DURATION * elapsed_intervals
             + Duration::from_millis(1);
         deployment.materialize(reached_at);
         let reached = deployment.percentage_complete;
@@ -402,10 +406,20 @@ async fn clients_are_split_across_a_partial_rollout_and_a_stop_withdraws_it() {
     host_version(&router, &application, &profile, b"{\"tier\":\"one\"}").await;
     host_version(&router, &application, &profile, b"{\"tier\":\"two\"}").await;
 
-    // Version 1 goes out with a strategy that has nothing to wait for, so it is in force
-    // for every client before the gradual rollout begins.
+    // Version 1 goes out with a strategy that declares no window at all, so it is in force
+    // for every client one growth interval after it was started — which the suite waits
+    // for, because reaching the targets is a transition of its own.
     let instant = create_strategy(&router, "instant", 100.0, 0, 0).await;
-    deploy(&router, &application, &environment, &profile, &instant, "1").await;
+    let seeding = deploy(&router, &application, &environment, &profile, &instant, "1").await;
+    crate::appconfig_workflow::deployment_in_state(
+        &router,
+        "before the rollout",
+        &application,
+        &environment,
+        seeding,
+        &["COMPLETE"],
+    )
+    .await;
     let share = measure_share(&router, &application, &environment, &profile).await;
     assert_eq!(
         share.on_new, 0,

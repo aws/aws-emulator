@@ -24,7 +24,7 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 use smithy_server_runtime::MultiServiceRouter;
@@ -34,6 +34,19 @@ use crate::appconfig_workflow::{
 };
 use crate::extensions::create_extension;
 use crate::resource_tags::{arn, pct};
+
+/// How long the lifecycle suite waits for the tick invocations an in-flight deployment
+/// owes before failing.
+///
+/// A generous ceiling on the WAIT, not a statement about the interval between ticks: a
+/// deployment that has produced none by here is one nothing is ticking.
+const TICKS_BY: Duration = Duration::from_secs(60);
+
+/// How often the deployment under observation is re-read while waiting for that.
+///
+/// Reading it is also what gives the ticks the clock has made due somewhere to run, the way
+/// a client watching its own rollout does.
+const TICK_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 /// The Region every request below is signed for, which is also the Region of the queue a
 /// target ARN names.
@@ -645,8 +658,8 @@ async fn the_pre_start_deployment_action_is_handed_the_documented_event() {
                 "application/{application}/configurationprofile/{profile}"
             )),
         };
-        // A strategy that reaches every target at once and bakes for nothing, so the
-        // first deployment is finished before the second one starts.
+        // A strategy that paces no stage: each deployment is over when its start answers,
+        // so the first one does not block the second.
         let strategy = given_strategy(&router, "pre-start-instant", 0, 0).await;
         associate(
             &router,
@@ -1043,9 +1056,9 @@ async fn the_deployment_lifecycle_action_points_fire_as_the_deployment_reaches_e
     )
     .await;
 
-    // A strategy with no rollout window and no bake time has nothing left to wait for,
-    // so the deployment is complete the moment it starts: both of its lifecycle stages
-    // are owed by the time `StartDeployment` answers, and no tick is ever owed.
+    // A strategy with no rollout window and no bake time paces no stage, so the deployment
+    // is complete the moment it starts: both of its lifecycle stages are owed by the time
+    // `StartDeployment` answers, and no tick is ever owed.
     let instant = given_strategy(&router, "lifecycle-instant", 0, 0).await;
     let started = start_deployment(
         &router,
@@ -1086,7 +1099,8 @@ async fn the_deployment_lifecycle_action_points_fire_as_the_deployment_reaches_e
          happened, got {types:?}"
     );
 
-    // Reading the deployment again owes nothing: each stage happened once.
+    // Reading the deployment again owes nothing: each stage happened once, and a
+    // deployment the service has finished with has no tick due either.
     let read = get_deployment(&router, &application, &environment, 1).await;
     assert_eq!(
         read.status, 200,
@@ -1137,27 +1151,35 @@ async fn the_deployment_lifecycle_action_points_fire_as_the_deployment_reaches_e
         "case \"paced strategy\": expected only the start stage so far, got {start_types:?}"
     );
 
-    // Past the first tick's due instant: the tick is the one action point owed by an
-    // interval rather than by a stage.
-    tokio::time::sleep(Duration::from_millis(700)).await;
-    let read = get_deployment(&router, &application, &environment, 2).await;
-    assert_eq!(
-        read.status, 200,
-        "case \"paced strategy\": GetDeployment answered {}",
-        read.status
-    );
-    let ticks = drain(&router, &queue_url).await;
-    assert_eq!(
-        ticks
-            .iter()
+    // The first tick falls due one interval after the deployment started, and reading the
+    // deployment is what gives the ticks the clock has made due somewhere to run — so the
+    // suite re-reads until at least one has been invoked, rather than waiting a span out.
+    let deadline = Instant::now() + TICKS_BY;
+    let ticks: Vec<Value> = loop {
+        let read = get_deployment(&router, &application, &environment, 2).await;
+        assert_eq!(
+            read.status, 200,
+            "case \"paced strategy\": GetDeployment answered {}",
+            read.status
+        );
+        let delivered: Vec<Value> = drain(&router, &queue_url)
+            .await
+            .into_iter()
             .filter(|event| event["Type"] == json!("AtDeploymentTick"))
-            .count(),
-        1,
-        "case \"paced strategy\": expected one tick invocation, got {ticks:?}"
-    );
+            .collect();
+        if !delivered.is_empty() {
+            break delivered;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "case \"paced strategy\": the deployment owed a tick but none was invoked within \
+             {}s",
+            TICKS_BY.as_secs()
+        );
+        tokio::time::sleep(TICK_POLL_INTERVAL).await;
+    };
     let tick = ticks
-        .iter()
-        .find(|event| event["Type"] == json!("AtDeploymentTick"))
+        .first()
         .unwrap_or_else(|| panic!("case \"paced strategy\": no tick in {ticks:?}"));
     assert_eq!(
         tick["DeploymentNumber"],

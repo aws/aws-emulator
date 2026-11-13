@@ -96,8 +96,9 @@ async fn no_latest_deployment_number_refuses_a_deployment() {
     let profile = create_profile(&router, &application, "config").await;
     host_version(&router, &application, &profile).await;
 
-    // No rollout window and no bake time, so each deployment is COMPLETE when its start
-    // answers and the environment takes the next row's deployment.
+    // No rollout window and no bake time, so AppConfig has nothing to pace or monitor and
+    // each deployment is over when its start answers — which is what lets the next row
+    // deploy into the same environment.
     let row: Row = ("no rollout window, no bake", 0, 100.0, "LINEAR", 0);
     let strategy = create_strategy(&router, 0, &row).await;
     let environment = create_environment(&router, &application, "advisory").await;
@@ -151,7 +152,8 @@ async fn no_latest_deployment_number_refuses_a_deployment() {
         assert_eq!(
             member(&body, "State").as_str(),
             Some(state::DEPLOYMENT_COMPLETE),
-            "case {case:?}: this row's strategy has nothing left to wait for, got {}",
+            "case {case:?}: this row's strategy paces no stage, so its deployment is over \
+             when the start answers, got {}",
             member(&body, "State")
         );
 

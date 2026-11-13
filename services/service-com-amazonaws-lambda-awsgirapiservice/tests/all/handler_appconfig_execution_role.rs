@@ -194,6 +194,52 @@ impl Emulator {
             .to_string()
     }
 
+    /// Read one deployment through AppConfig's control plane until its rollout has reached
+    /// every target.
+    ///
+    /// Every stage of a deployment after the one `StartDeployment` answers — the rollout
+    /// reaching its targets, the final bake, the completion — is owed by the CLOCK, so this
+    /// looks again until the condition holds instead of sleeping for a fixed span. Reaching
+    /// every target is the condition a handler's read depends on: from then on the version
+    /// the deployment put in service is the one AppConfig serves every caller.
+    async fn await_rollout_reaching_every_target(
+        &self,
+        application: &str,
+        environment: &str,
+        number: i64,
+    ) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(60);
+        loop {
+            let (status, _headers, parsed) = self
+                .rest(
+                    "appconfig",
+                    "appconfig",
+                    "GET",
+                    &format!(
+                        "/applications/{application}/environments/{environment}\
+                         /deployments/{number}"
+                    ),
+                    "application/json",
+                    &[],
+                )
+                .await;
+            assert_eq!(
+                status, 200,
+                "setup GetDeployment: expected HTTP 200, got {status} ({parsed})"
+            );
+            let reached = parsed["PercentageComplete"].as_f64().unwrap_or_default();
+            if reached >= 100.0 {
+                return;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "setup GetDeployment: deployment {number} reached only {reached}% of its \
+                 targets, last read {parsed}"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
     /// One awsQuery call to IAM that must be served.
     async fn iam(&self, what: &str, action: &str, params: &[(&str, String)]) {
         let mut body = format!("Action={action}&Version=2010-05-08");
@@ -467,7 +513,7 @@ async fn deploy(emulator: &Emulator) -> Hierarchy {
             DEPLOYED.as_bytes(),
         )
         .await;
-    emulator
+    let started = emulator
         .appconfig(
             "StartDeployment",
             &format!("/applications/{application}/environments/{environment}/deployments"),
@@ -478,6 +524,16 @@ async fn deploy(emulator: &Emulator) -> Hierarchy {
                 "ConfigurationVersion": "1",
             }))
             .expect("the request body serializes"),
+        )
+        .await;
+    // The rollout is a transition AppConfig performs after the call that asked for it, so
+    // the fixture waits for it to reach every target — which is when the version it
+    // deployed is the one AppConfig serves every reader.
+    emulator
+        .await_rollout_reaching_every_target(
+            &application,
+            &environment,
+            started["DeploymentNumber"].as_i64().unwrap_or_default(),
         )
         .await;
     Hierarchy {

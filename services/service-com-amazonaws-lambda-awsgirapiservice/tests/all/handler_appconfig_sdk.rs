@@ -343,6 +343,17 @@ async fn deployed_hierarchy(router: &MultiServiceRouter) -> Hierarchy {
         started["DeploymentNumber"].as_i64().is_some(),
         "case {case:?}: expected StartDeployment to mint a deployment, got {started}"
     );
+    // The rollout is a transition AppConfig performs after the call that asked for it, so
+    // the fixture waits for the CONDITION — the rollout having reached every target, which
+    // is when the version it deployed is the one AppConfig serves — rather than for a span.
+    await_rollout_reaching_every_target(
+        router,
+        case,
+        &application_id,
+        &environment_id,
+        started["DeploymentNumber"].as_i64().unwrap_or_default(),
+    )
+    .await;
 
     Hierarchy {
         application_id,
@@ -350,6 +361,56 @@ async fn deployed_hierarchy(router: &MultiServiceRouter) -> Hierarchy {
         profile_id,
         deployed_version,
         binary_version,
+    }
+}
+
+/// Read one deployment through the control plane until AppConfig reports its rollout has
+/// reached every target.
+///
+/// Every stage of a deployment after the one `StartDeployment` answers — the rollout
+/// reaching its targets, the final bake, the completion — is owed by the CLOCK, so this
+/// looks again until the condition holds instead of sleeping for a fixed span. Reaching
+/// every target is the condition the handler's read depends on: from then on the version
+/// this deployment put in service is the one AppConfig serves every caller, whether the
+/// deployment is still monitoring its bake time or already complete.
+async fn await_rollout_reaching_every_target(
+    router: &MultiServiceRouter,
+    case: &str,
+    application_id: &str,
+    environment_id: &str,
+    number: i64,
+) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    loop {
+        let read = control_plane(
+            router,
+            "GET",
+            &format!(
+                "/applications/{application_id}/environments/{environment_id}/deployments/{number}"
+            ),
+            JSON_CONTENT_TYPE,
+            &[],
+            &[],
+        )
+        .await;
+        assert_eq!(
+            read.status,
+            200,
+            "case {case:?}: expected HTTP 200 from GetDeployment, got {} ({})",
+            read.status,
+            read.text()
+        );
+        let document = read.json();
+        let reached = document["PercentageComplete"].as_f64().unwrap_or_default();
+        if reached >= 100.0 {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "case {case:?}: deployment {number} reached only {reached}% of its targets, last \
+             read {document}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
 }
 

@@ -3,12 +3,12 @@
 //! A deployment SETTLES: nobody has to stop it for it to reach a terminal state.
 //!
 //! The rule under test: a deployment is paced by the strategy it was started with, and
-//! every stage that pacing schedules is owed by the CLOCK — so a deployment whose strategy
-//! declares a rollout window is in flight when `StartDeployment` answers, a deployment
-//! whose strategy also declares a final bake time bakes after that rollout, and either one
-//! reaches `COMPLETE` on its own a bounded span later, without a caller stopping it; a
-//! strategy that declares neither has nothing left to wait for, so its deployment is
-//! already `COMPLETE` when the start answers
+//! every stage that pacing schedules is owed by the CLOCK — so a strategy that paces any
+//! stage at all, a rollout window or a final bake time, leaves `StartDeployment` answering
+//! the deployment at its first stage, `DEPLOYING` at 0% of its targets; a strategy that
+//! paces NEITHER leaves AppConfig nothing to pace or monitor, so its deployment is already
+//! `COMPLETE` when the start answers; and every one of them reaches `COMPLETE` without a
+//! caller stopping it
 //! (`smithy_query(query="operation",operation="StartDeployment,GetDeployment")`: both
 //! report `State` as a `DeploymentState`, `PercentageComplete`, `CompletedAt` and the
 //! `EventLog` the stages write).
@@ -20,13 +20,17 @@
 //! assertion names its case and prints what it read.
 
 use std::collections::BTreeSet;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
+use service_com_amazonaws_appconfig_amazonappconfig::state::{
+    self, ComAmazonawsAppconfigAmazonappconfigState,
+};
 use smithy_server_runtime::MultiServiceRouter;
 
 use crate::appconfig_workflow::{
-    create_application, create_environment, create_profile, router,
+    create_application, create_environment, create_profile, deployment_in_state, router_on,
 };
 use crate::extension_action_points::{
     create_version, get_deployment, given_strategy, start_deployment,
@@ -46,20 +50,48 @@ const POLL_INTERVAL: Duration = Duration::from_millis(100);
 const TERMINAL_STATES: &[&str] = &["COMPLETE", "ROLLED_BACK", "REVERTED"];
 
 /// One row: the case, the strategy's declared rollout minutes and final bake minutes, the
-/// state `StartDeployment` must answer, and the deployment-event types the stages the
-/// strategy schedules must have logged by the time it settles.
+/// state and share of targets `StartDeployment` must answer, and the deployment-event
+/// types the stages the strategy schedules must have logged by the time it settles.
 struct Row {
     case: &'static str,
     duration_in_minutes: i32,
     bake_in_minutes: i32,
     state_at_start: &'static str,
+    percentage_at_start: f64,
     logged_events: &'static [&'static str],
+}
+
+/// Bring the end of the declared final bake time forward for every deployment the
+/// environment holds, by moving the instant each one started back by that bake.
+///
+/// The bake keeps the minutes the caller declared (`state::bake_duration`) — it is the
+/// window they asked AppConfig to monitor the deployment for — so a row about the
+/// deployment SETTLING drives the clock that transition is owed by instead of waiting out
+/// the declared minutes. The transition itself is still the service's: nothing here moves
+/// a state or writes an event.
+fn bring_the_bake_forward(
+    shared: &Arc<engine::InMemoryEngine>,
+    application_id: &str,
+    environment_id: &str,
+    bake_in_minutes: i32,
+) {
+    let held = shared.state::<ComAmazonawsAppconfigAmazonappconfigState>();
+    let mut store = held.lock();
+    let Some(environment) = store
+        .application_mut(application_id)
+        .and_then(|application| application.environments.get_mut(environment_id))
+    else {
+        panic!("the environment the deployment was started into must be held");
+    };
+    for deployment in environment.deployments.values_mut() {
+        deployment.started_at -= state::bake_duration(bake_in_minutes);
+    }
 }
 
 /// Poll `GetDeployment` until the deployment reports a terminal state, and answer the
 /// document that reported it. Fails the row — naming it and the last state read — when
 /// nothing settles within [`SETTLE_BY`].
-async fn settled(
+pub async fn settled(
     router: &MultiServiceRouter,
     case: &str,
     application: &str,
@@ -112,7 +144,11 @@ fn logged(document: &Value) -> BTreeSet<String> {
 
 #[tokio::test]
 async fn a_deployment_reaches_a_terminal_state_whatever_pacing_its_strategy_declares() {
-    let router = router();
+    // The engine behind the router, because a row whose strategy declares a final bake
+    // time drives the clock that bake is owed by (`bring_the_bake_forward`) instead of
+    // waiting out the declared minutes.
+    let shared: Arc<engine::InMemoryEngine> = Arc::new(engine::InMemoryEngine::new());
+    let router = router_on(&shared);
     let application = create_application(&router, "settling-app").await;
     let profile = create_profile(&router, &application, "settling-profile").await;
     let seeded = create_version(
@@ -136,7 +172,10 @@ async fn a_deployment_reaches_a_terminal_state_whatever_pacing_its_strategy_decl
             case: "neither a rollout window nor a bake time",
             duration_in_minutes: 0,
             bake_in_minutes: 0,
+            // Nothing to pace and nothing to monitor, so the deployment is over when the
+            // start answers.
             state_at_start: "COMPLETE",
+            percentage_at_start: 100.0,
             logged_events: &["DEPLOYMENT_STARTED", "DEPLOYMENT_COMPLETED"],
         },
         Row {
@@ -144,6 +183,7 @@ async fn a_deployment_reaches_a_terminal_state_whatever_pacing_its_strategy_decl
             duration_in_minutes: 1,
             bake_in_minutes: 0,
             state_at_start: "DEPLOYING",
+            percentage_at_start: 0.0,
             logged_events: &[
                 "DEPLOYMENT_STARTED",
                 "PERCENTAGE_UPDATED",
@@ -154,9 +194,13 @@ async fn a_deployment_reaches_a_terminal_state_whatever_pacing_its_strategy_decl
             case: "a bake time and no rollout window",
             duration_in_minutes: 0,
             bake_in_minutes: 1,
-            state_at_start: "BAKING",
+            // A bake time is a stage AppConfig monitors AFTER the rollout, so the rollout
+            // itself happens after the call too: the start answers 0% of targets reached.
+            state_at_start: "DEPLOYING",
+            percentage_at_start: 0.0,
             logged_events: &[
                 "DEPLOYMENT_STARTED",
+                "PERCENTAGE_UPDATED",
                 "BAKE_TIME_STARTED",
                 "DEPLOYMENT_COMPLETED",
             ],
@@ -166,6 +210,7 @@ async fn a_deployment_reaches_a_terminal_state_whatever_pacing_its_strategy_decl
             duration_in_minutes: 30,
             bake_in_minutes: 10,
             state_at_start: "DEPLOYING",
+            percentage_at_start: 0.0,
             logged_events: &[
                 "DEPLOYMENT_STARTED",
                 "PERCENTAGE_UPDATED",
@@ -178,6 +223,7 @@ async fn a_deployment_reaches_a_terminal_state_whatever_pacing_its_strategy_decl
             duration_in_minutes: 1440,
             bake_in_minutes: 1440,
             state_at_start: "DEPLOYING",
+            percentage_at_start: 0.0,
             logged_events: &[
                 "DEPLOYMENT_STARTED",
                 "PERCENTAGE_UPDATED",
@@ -218,12 +264,24 @@ async fn a_deployment_reaches_a_terminal_state_whatever_pacing_its_strategy_decl
             String::from_utf8_lossy(&started.body)
         );
         let start_document = started.json();
+        // The stages after the one the start answers are AppConfig's, not the caller's: a
+        // strategy that paces any stage leaves the deployment at its first one.
         assert_eq!(
             start_document.get("State").and_then(Value::as_str),
             Some(row.state_at_start),
             "case {:?}: expected State {:?} when the start answers, got {start_document}",
             row.case,
             row.state_at_start
+        );
+        assert_eq!(
+            start_document
+                .get("PercentageComplete")
+                .and_then(Value::as_f64),
+            Some(row.percentage_at_start),
+            "case {:?}: expected {}% of targets reached when the start answers, got \
+             {start_document}",
+            row.case,
+            row.percentage_at_start
         );
         // The declared minutes are the strategy's and are reported back as declared: the
         // pacing of a stage is not a value a reader of the deployment is told about.
@@ -253,6 +311,23 @@ async fn a_deployment_reaches_a_terminal_state_whatever_pacing_its_strategy_decl
                     row.case
                 )
             }) as i32;
+
+        // A row whose strategy declares a final bake time: the bake BEGINS on its own, one
+        // span after the rollout reached its targets, and lasts the minutes the caller
+        // declared — so the row waits for the bake to begin and then brings its end
+        // forward, rather than waiting those minutes out.
+        if row.bake_in_minutes > 0 {
+            deployment_in_state(
+                &router,
+                row.case,
+                &application,
+                &environment,
+                i64::from(number),
+                &["BAKING"],
+            )
+            .await;
+            bring_the_bake_forward(&shared, &application, &environment, row.bake_in_minutes);
+        }
 
         let document = settled(&router, row.case, &application, &environment, number).await;
         assert_eq!(

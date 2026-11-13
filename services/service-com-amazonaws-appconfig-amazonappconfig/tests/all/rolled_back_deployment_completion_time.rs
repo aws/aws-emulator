@@ -148,18 +148,27 @@ async fn a_completed_deployment_keeps_its_completion_time_through_a_revert() {
     let profile = create_profile(&router, &application, "config").await;
     host_version(&router, &application, &profile).await;
 
-    // No rollout window and no bake time: nothing is left to wait for, so the deployment
-    // is COMPLETE when the start answers — the one state a revert applies to.
+    // No rollout window and no bake time: the deployment has nothing to wait out but the
+    // one growth interval every rollout takes, so it completes a span after it started —
+    // COMPLETE being the one state a revert applies to.
     let row: Row = ("no rollout window, no bake", 0, 100.0, "LINEAR", 0);
     let strategy = create_strategy(&router, 0, &row).await;
     let environment = create_environment(&router, &application, "completing").await;
 
-    let started = start(&router, &application, &environment, &strategy, &profile).await;
-    let start_body = started.json();
+    start(&router, &application, &environment, &strategy, &profile).await;
+    let start_body = crate::appconfig_workflow::deployment_in_state(
+        &router,
+        row.0,
+        &application,
+        &environment,
+        1,
+        &[state::DEPLOYMENT_COMPLETE],
+    )
+    .await;
     assert_eq!(
         member(&start_body, "State").as_str(),
         Some(state::DEPLOYMENT_COMPLETE),
-        "a deployment with nothing left to wait for completes at once, got {}",
+        "a deployment nobody stopped completes on its own, got {}",
         member(&start_body, "State")
     );
     let completed_at = member(&start_body, "CompletedAt");
@@ -208,12 +217,13 @@ fn neither_rollback_path_records_a_completion() {
 
     // Rows differ along the pacing of the deployment being aborted and along how far into
     // it the abort arrives, including at the instant it started. Each row's instant is
-    // inside the stage its strategy declares, which this service paces as one short span
-    // per declared stage (`state::stage_duration`).
+    // inside a stage its strategy declares: the rollout's intervals are one short span each
+    // (`state::STAGE_DURATION`) and the bake keeps its declared minutes
+    // (`state::bake_duration`).
     let rows: [(&str, i32, &str, f32, i32, u64); 4] = [
         ("a second into the longest rollout", 1440, state::GROWTH_LINEAR, 100.0, 0, 1),
         ("at the instant it started", 60, state::GROWTH_EXPONENTIAL, 1.0, 10, 0),
-        ("while baking", 0, state::GROWTH_LINEAR, 100.0, 1440, 1),
+        ("while baking", 0, state::GROWTH_LINEAR, 100.0, 1440, 4),
         ("a second before a short rollout ends", 5, state::GROWTH_LINEAR, 10.0, 0, 2),
     ];
 

@@ -404,8 +404,9 @@ async fn a_completed_deployment_is_reverted_only_when_the_request_allows_it() {
     let profile = create_profile(&router, &application, "config").await;
     host_version(&router, &application, &profile).await;
 
-    // No rollout window and no bake time: nothing is left to wait for, so the deployment
-    // this paces is COMPLETE the moment it is started — the one state a revert applies to.
+    // No rollout window and no bake time: the deployment this paces has nothing to wait
+    // out but the one growth interval every rollout takes, so it completes a span after it
+    // was started — COMPLETE being the one state a revert applies to.
     let row: Row = ("all at once", 0, 100.0, "LINEAR", 0);
     let strategy = create_strategy(&router, 0, &row).await;
     let environment = create_environment(&router, &application, "reverted").await;
@@ -418,11 +419,19 @@ async fn a_completed_deployment_is_reverted_only_when_the_request_allows_it() {
         started.status,
         String::from_utf8_lossy(&started.body)
     );
-    let start_body = started.json();
+    let start_body = crate::appconfig_workflow::deployment_in_state(
+        &router,
+        "all at once",
+        &application,
+        &environment,
+        1,
+        &["COMPLETE"],
+    )
+    .await;
     assert_eq!(
         member(&start_body, "State").as_str(),
         Some("COMPLETE"),
-        "a strategy with no rollout window and no bake time completes at once, got {}",
+        "a deployment nobody stopped completes on its own, got {}",
         member(&start_body, "State")
     );
     let completed_at = member(&start_body, "CompletedAt");
@@ -430,7 +439,7 @@ async fn a_completed_deployment_is_reverted_only_when_the_request_allows_it() {
         !completed_at.is_null(),
         "a completed deployment carries the instant it completed, got {completed_at}"
     );
-    let log_at_start = event_types(&event_log("all at once", "StartDeployment", &start_body));
+    let log_at_start = event_types(&event_log("all at once", "GetDeployment", &start_body));
 
     // A stop that does not ask for a revert cannot touch a completed deployment, whether
     // the header is absent or explicitly false.
@@ -617,12 +626,13 @@ fn a_stop_settles_the_rollback_it_performs() {
     // Rows differ along the pacing of the deployment stopped — both published bounds of
     // `MinutesBetween0And24Hours` (range 0..1440) and both `GrowthType` values — and along
     // how far into the deployment the stop arrives, including at the instant it started.
-    // Each row's instant is inside the stage its strategy declares, which this service
-    // paces as one short span per declared stage (`state::stage_duration`).
+    // Each row's instant is inside a stage its strategy declares: the rollout's intervals
+    // are one short span each (`state::STAGE_DURATION`) and the bake keeps its declared
+    // minutes (`state::bake_duration`).
     let rows: [(&str, i32, &str, f32, i32, u64); 5] = [
         ("stopped a second into the longest rollout", 1440, state::GROWTH_LINEAR, 100.0, 0, 1),
         ("stopped at the instant it started", 60, state::GROWTH_EXPONENTIAL, 1.0, 10, 0),
-        ("stopped while baking", 0, state::GROWTH_LINEAR, 100.0, 1440, 1),
+        ("stopped while baking", 0, state::GROWTH_LINEAR, 100.0, 1440, 4),
         ("stopped mid-rollout with the longest bake", 1440, state::GROWTH_LINEAR, 50.0, 1440, 2),
         ("stopped a second before a short rollout ends", 5, state::GROWTH_LINEAR, 10.0, 0, 2),
     ];
@@ -741,7 +751,7 @@ fn the_clock_finishes_the_rollback_appconfig_starts() {
     let rows: [(&str, i32, &str, f32, i32, u64); 5] = [
         ("aborted a second into the longest rollout", 1440, state::GROWTH_LINEAR, 100.0, 0, 1),
         ("aborted at the instant it started", 60, state::GROWTH_EXPONENTIAL, 1.0, 10, 0),
-        ("aborted while baking", 0, state::GROWTH_LINEAR, 100.0, 1440, 1),
+        ("aborted while baking", 0, state::GROWTH_LINEAR, 100.0, 1440, 4),
         ("aborted mid-rollout with the longest bake", 1440, state::GROWTH_LINEAR, 50.0, 1440, 2),
         ("aborted a second before a short rollout ends", 5, state::GROWTH_LINEAR, 10.0, 0, 2),
     ];
@@ -871,10 +881,12 @@ fn a_completed_deployment_is_reverted_only_inside_the_documented_window() {
     ];
 
     for (case, elapsed, inside_window) in rows {
-        // No rollout window and no bake time, so the deployment is COMPLETE at once and
-        // the window is measured from an instant this test knows.
+        // No rollout window and no bake time, so the deployment completes one growth
+        // interval after it started and the window is measured from an instant this test
+        // knows.
         let strategy = strategy_of(0, state::GROWTH_LINEAR, 100.0, 0);
         let mut deployment = Deployment::start(new_deployment(), &strategy, started_at);
+        deployment.materialize(started_at + state::STAGE_DURATION);
         assert_eq!(
             deployment.state,
             state::DEPLOYMENT_COMPLETE,
@@ -1088,13 +1100,14 @@ fn an_environments_state_and_readiness_follow_the_deployment_it_holds() {
 #[test]
 fn an_environment_reports_the_revert_of_the_deployment_it_holds() {
     let started_at = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
-    // No rollout window and no bake time, so the deployment is COMPLETE at once, which is
-    // the state a revert applies to.
+    // No rollout window and no bake time, so the deployment completes one growth interval
+    // after it started, which is the state a revert applies to.
     let strategy = strategy_of(0, state::GROWTH_LINEAR, 100.0, 0);
     let mut environment = empty_environment();
     environment.record_deployment(Deployment::start(new_deployment(), &strategy, started_at));
+    let completed_at = started_at + state::STAGE_DURATION;
 
-    environment.materialize(started_at);
+    environment.materialize(completed_at);
     assert_eq!(
         environment.state,
         state::ENVIRONMENT_READY_FOR_DEPLOYMENT,
@@ -1108,12 +1121,12 @@ fn an_environment_reports_the_revert_of_the_deployment_it_holds() {
         .get_mut(&number)
         .expect("the recorded deployment is readable back");
     assert_eq!(
-        reverted.stop(true, started_at),
+        reverted.stop(true, completed_at),
         Ok(()),
         "a completed deployment can be reverted by a request that allows it"
     );
 
-    environment.materialize(started_at);
+    environment.materialize(completed_at);
     assert_eq!(
         environment.state,
         state::ENVIRONMENT_REVERTED,

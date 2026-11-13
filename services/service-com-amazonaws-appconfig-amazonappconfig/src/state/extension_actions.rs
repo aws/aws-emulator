@@ -1540,11 +1540,13 @@ mod tests {
                 super::super::DEPLOYMENT_ROLLING_BACK,
             ),
             (
+                // A strategy with no declared window still rolls out over one growth
+                // interval, so this row waits for the interval that completes it.
                 "a deployment that already completed",
                 0,
                 0,
                 None,
-                Duration::ZERO,
+                super::super::STAGE_DURATION,
                 false,
                 super::super::DEPLOYMENT_COMPLETE,
             ),

@@ -166,6 +166,69 @@ pub(crate) fn with_required_retrieval_role(mut body: serde_json::Value) -> serde
     body
 }
 
+/// The `DeploymentState` values a deployment stops at: "COMPLETE", a rollback that
+/// finished, and the revert of one that had completed. What [`deployment_in_state`] waits
+/// for when a caller is waiting for a deployment to be over.
+pub(crate) const TERMINAL_DEPLOYMENT_STATES: &[&str] = &["COMPLETE", "ROLLED_BACK", "REVERTED"];
+
+/// How long [`deployment_in_state`] waits for a deployment to reach the state it is
+/// polling for.
+///
+/// A generous ceiling on the WAIT rather than a statement about the span any stage takes:
+/// a deployment that has not got there by here is one nothing is moving.
+const DEPLOYMENT_STATE_BY: Duration = Duration::from_secs(60);
+
+/// How often [`deployment_in_state`] re-reads the deployment while waiting.
+const DEPLOYMENT_POLL_INTERVAL: Duration = Duration::from_millis(50);
+
+/// Poll `GetDeployment` until the deployment reports one of `states`, and answer the
+/// document that reported it.
+///
+/// Every stage of a deployment after the one `StartDeployment` answers is owed by the
+/// CLOCK, so a caller that needs a later stage waits for the CONDITION — this re-reads
+/// until the state holds instead of sleeping for a span. Fails the case, naming it and the
+/// last state read, when the deployment does not get there.
+pub(crate) async fn deployment_in_state(
+    router: &MultiServiceRouter,
+    case: &str,
+    application_id: &str,
+    environment_id: &str,
+    number: i64,
+    states: &[&str],
+) -> serde_json::Value {
+    let deadline = std::time::Instant::now() + DEPLOYMENT_STATE_BY;
+    loop {
+        let read = json_call(
+            router,
+            "GET",
+            &format!(
+                "/applications/{application_id}/environments/{environment_id}/deployments/{number}"
+            ),
+            &serde_json::Value::Null,
+        )
+        .await;
+        assert_eq!(
+            read.status,
+            200,
+            "case {case:?}: GetDeployment expected 200, got {} / {}",
+            read.status,
+            String::from_utf8_lossy(&read.body)
+        );
+        let document = read.json();
+        let state = read.string("State").unwrap_or_default();
+        if states.contains(&state.as_str()) {
+            return document;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "case {case:?}: deployment {number} did not report any of {states:?} within {}s; \
+             last state {state:?}",
+            DEPLOYMENT_STATE_BY.as_secs()
+        );
+        tokio::time::sleep(DEPLOYMENT_POLL_INTERVAL).await;
+    }
+}
+
 /// Create an application and return its minted id.
 pub(crate) async fn create_application(router: &MultiServiceRouter, name: &str) -> String {
     let answer = json_call(
@@ -1426,46 +1489,42 @@ async fn deployment_numbers_increase_per_environment() {
             started.string("EnvironmentId")
         );
 
-        // A strategy with no rollout window and no bake time has nothing left to wait
-        // for, so the start call itself answers a COMPLETE deployment — and the next
-        // deployment into the same environment is not blocked, with no caller asking for
-        // anything and no test sleeping.
+        // A strategy with no rollout window and no bake time paces no stage: AppConfig has
+        // nothing to roll out gradually and nothing to monitor, so the start call itself
+        // answers a COMPLETE deployment — and the next deployment into the same environment
+        // is not blocked, with no caller asking for anything and no test sleeping.
         assert_eq!(
             started.string("State").as_deref(),
             Some("COMPLETE"),
-            "case {case:?}: a deployment with no duration and no bake time completes at \
-             once, got {}",
+            "case {case:?}: a deployment whose strategy paces no stage is over when the \
+             start answers, got {}",
             started.json()
         );
 
-        let finished = json_call(
+        let finished = deployment_in_state(
             &router,
-            "GET",
-            &format!(
-                "/applications/{application}/environments/{first}/deployments/{expected_number}"
-            ),
-            &serde_json::Value::Null,
+            &case,
+            &application,
+            &first,
+            i64::from(expected_number),
+            &["COMPLETE"],
         )
         .await;
         assert_eq!(
-            finished.string("State").as_deref(),
+            finished.get("State").and_then(serde_json::Value::as_str),
             Some("COMPLETE"),
-            "case {case:?}: expected the deployment to have completed, got {}",
-            finished.json()
+            "case {case:?}: expected the deployment to have completed, got {finished}"
         );
         assert_eq!(
             finished
-                .json()
                 .get("PercentageComplete")
                 .and_then(serde_json::Value::as_f64),
             Some(100.0),
-            "case {case:?}: a completed deployment reached every target, got {}",
-            finished.json()
+            "case {case:?}: a completed deployment reached every target, got {finished}"
         );
         assert!(
-            finished.json().get("CompletedAt").is_some(),
-            "case {case:?}: a completed deployment reports CompletedAt, got {}",
-            finished.json()
+            finished.get("CompletedAt").is_some(),
+            "case {case:?}: a completed deployment reports CompletedAt, got {finished}"
         );
 
         // And the environment is ready for the next deployment again.
@@ -1679,34 +1738,25 @@ fn a_deployments_progress_follows_the_strategys_documented_schedule() {
             .unwrap_or_else(|| panic!("case {case:?}: a predefined strategy must resolve"));
         let new = new_deployment();
 
-        // Each stage the strategy declares a non-zero window for is paced by one span here
-        // (`state::stage_duration`), and the rollout stage by one span per growth INTERVAL
-        // the strategy takes to reach every target (`Deployment::rollout_duration`), so the
-        // schedule is walked in those spans rather than in the declared minutes.
+        // Each growth interval of the rollout is paced by one span here
+        // (`state::STAGE_DURATION`), and the final bake keeps the strategy's declared
+        // minutes (`state::bake_duration`), so the schedule is walked in those spans
+        // rather than in the rollout's declared minutes.
         let at_start = Deployment::start(new.clone(), &strategy, started_at);
         let rollout = at_start.rollout_duration();
-        let bake = state::stage_duration(predefined.final_bake_time_in_minutes);
+        let bake = state::bake_duration(predefined.final_bake_time_in_minutes);
 
-        // At the start instant: nothing has rolled out yet, so a strategy with a rollout
-        // window reports 0% of targets and is still DEPLOYING, while one with no window at
-        // all has already reached every target and is baking (every predefined strategy
-        // has a bake time, so none of them completes instantly).
-        let expected_at_start = if rollout.is_zero() {
-            state::DEPLOYMENT_BAKING
-        } else {
-            state::DEPLOYMENT_DEPLOYING
-        };
+        // At the start instant: nothing has rolled out yet, whatever window the strategy
+        // declares — reaching the targets is a transition of its own.
         assert_eq!(
-            at_start.state, expected_at_start,
-            "case {case:?}: a deployment starts in a non-terminal state, expected \
-             {expected_at_start}, got {:?}",
+            at_start.state,
+            state::DEPLOYMENT_DEPLOYING,
+            "case {case:?}: a deployment starts rolling out, got {:?}",
             at_start.state
         );
-        let expected_percentage_at_start = if rollout.is_zero() { 100.0 } else { 0.0 };
         assert_eq!(
-            at_start.percentage_complete, expected_percentage_at_start,
-            "case {case:?}: expected {expected_percentage_at_start}% of targets at the start \
-             instant, got {}",
+            at_start.percentage_complete, 0.0,
+            "case {case:?}: expected 0% of targets at the start instant, got {}",
             at_start.percentage_complete
         );
         assert!(
@@ -1795,15 +1845,22 @@ fn a_deployments_progress_follows_the_strategys_documented_schedule() {
             "case {case:?}: a second read must not move a completed deployment"
         );
 
-        // Halfway through the rollout, a multi-step strategy has reached part of its
-        // targets and no more.
+        // Halfway through the rollout, a rollout made of more than one growth interval has
+        // reached part of its targets and no more; one made of a single interval has
+        // reached none of them yet, because that interval has not elapsed.
+        let intervals = rollout.as_secs_f64() / at_start.growth_interval().as_secs_f64();
+        let floor_at_halfway = if intervals >= 2.0 {
+            predefined.growth_factor
+        } else {
+            0.0
+        };
         let mut halfway = Deployment::start(new.clone(), &strategy, started_at);
         halfway.materialize(started_at + rollout / 2);
         assert!(
-            halfway.percentage_complete >= predefined.growth_factor
+            halfway.percentage_complete >= floor_at_halfway
                 && halfway.percentage_complete <= 100.0,
-            "case {case:?}: halfway through the rollout expected between {} and 100, got {}",
-            predefined.growth_factor,
+            "case {case:?}: halfway through the rollout expected between {floor_at_halfway} \
+             and 100, got {}",
             halfway.percentage_complete
         );
         assert!(

@@ -230,8 +230,9 @@ async fn given_version(
         .unwrap_or_else(|| panic!("case {case:?}: no Version-Number was answered"))
 }
 
-/// A deployment strategy with nothing to wait for, so a deployment that is accepted is
-/// `COMPLETE` when `StartDeployment` answers. Answers its id.
+/// A deployment strategy with nothing to wait out but the one growth interval every
+/// rollout takes, so a deployment that is accepted is over a span after it started.
+/// Answers its id.
 async fn given_strategy(router: &MultiServiceRouter, name: &str) -> String {
     let created = json_call(
         router,
@@ -702,6 +703,19 @@ async fn a_validator_attached_after_a_version_is_stored_gates_the_next_deploymen
             first.status,
             String::from_utf8_lossy(&first.body)
         );
+        // The rollout is a transition AppConfig performs after the call that asked for it,
+        // so the row waits for the deployment to be over — on the CONDITION, not on a span
+        // — before reading what the data plane serves and before the environment is
+        // expected to be ready for the next deployment.
+        crate::appconfig_workflow::deployment_in_state(
+            &router,
+            case,
+            &application,
+            &environment,
+            1,
+            &["COMPLETE"],
+        )
+        .await;
         // The positive control: the data plane serves exactly the deployed bytes.
         let served = served_configuration(&router, &application, &environment, &profile).await;
         assert_eq!(

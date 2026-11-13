@@ -424,6 +424,11 @@ async fn deploy_through_a_custom_strategy(emulator: &Emulator, case: &PollRateCa
         .as_i64()
         .unwrap_or_else(|| panic!("no DeploymentNumber in {}", started.text()));
 
+    // Every stage of a deployment after the one the start answers is owed by the CLOCK —
+    // the rollout reaching its targets, and the completion that follows — so the stages
+    // are let fall due (`Emulator::settle_deployments`) rather than slept for.
+    emulator.settle_deployments(&hierarchy);
+
     let deployment = emulator
         .send(
             "GET",
