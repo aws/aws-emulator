@@ -257,7 +257,7 @@ impl StoredInstance {
             resource_type: Some(RESOURCE_TYPE_INSTANCE.to_string()),
             tags: Some(self.tags.clone()),
             blueprint_id: Some(self.blueprint_id.clone()),
-            blueprint_name: Some(blueprint_name(&self.blueprint_id)),
+            blueprint_name: Some(blueprint_display_name(&self.blueprint_id)),
             bundle_id: Some(self.bundle_id.clone()),
             add_ons: Some(add_ons_view(&self.add_ons, next_auto_snapshot_time_of_day)),
             is_static_ip: Some(self.is_static_ip),

@@ -41,8 +41,16 @@ pub struct BundleSpec {
     /// `Bundle$price` — "The price in US dollars of the bundle" — for the
     /// Linux/Unix plan of this size.
     pub price_usd_per_month: f32,
-    /// `Bundle$price` for the Windows plan of this size.
-    pub windows_price_usd_per_month: f32,
+    /// `Bundle$price` for the Windows plan of this size, and `None` where the
+    /// plan table publishes NO Windows plan of this size.
+    ///
+    /// A plan is published per platform: the plan table carries a Windows column
+    /// only up to the largest size Lightsail offers Windows Server on, while the
+    /// Linux/Unix column goes on past it. A size with no Windows price therefore
+    /// has no Windows bundle at all ([`bundles_from`]) rather than a Windows
+    /// bundle priced like its Linux/Unix twin, which would announce a plan the
+    /// service does not sell.
+    pub windows_price_usd_per_month: Option<f32>,
     /// `Bundle$isActive` — "A Boolean value indicating whether the bundle is
     /// active". A plan generation the service has retired stays in this table
     /// with `false` so an instance already running on it still resolves, while
@@ -64,15 +72,22 @@ pub struct BundleSpec {
 ///
 /// SOURCE: the Lightsail instance-plan table (the "Instances" plans of the
 /// Lightsail pricing page, which `GetBundles` answers from), at the generation
-/// [`BUNDLE_GENERATION`] publishes. Each step doubles RAM while the SSD size and
-/// the monthly data transfer follow the plan table; every plan up to and
-/// including the 8 GB one carries two vCPUs, after which the vCPU count doubles
-/// with the plan; the Linux/Unix monthly price is the plan table's, and the
-/// Windows plan of the same size costs more because it carries that platform's
-/// licence. The `power` values are the ones Lightsail publishes for its plans:
-/// 298 for the smallest, 500 for `micro` (the value the modelled
+/// [`BUNDLE_GENERATION`] publishes. Up to the 128 GB plan each step doubles RAM,
+/// while the SSD size and the monthly data transfer follow the plan table; every
+/// plan up to and including the 8 GB one carries two vCPUs, after which the vCPU
+/// count doubles with the plan; the Linux/Unix monthly price is the plan table's,
+/// and the Windows plan of the same size costs more because it carries that
+/// platform's licence. The `power` values are the ones Lightsail publishes for
+/// its plans: 298 for the smallest, 500 for `micro` (the value the modelled
 /// `Blueprint$minPower` documentation's own example names) and then a further
-/// 1000 per doubling step.
+/// 1000 per doubling step, 500 where a plan adds half a step of hardware.
+///
+/// The sizes ABOVE the 64 GB plan are Linux/Unix only: the plan table's Windows
+/// column ends at that plan, so those entries carry no Windows price (see
+/// [`BundleSpec::windows_price_usd_per_month`]). Above the 8 GB plan the hardware
+/// follows the plan's vCPU count — 4 GB of RAM and 80 GB of SSD per vCPU — while
+/// the monthly transfer grows by 1 TB per plan and the price is the table's own
+/// figure for that plan rather than a step computed from the plan below it.
 ///
 /// Lightsail has retired none of these sizes, so every entry is active.
 pub const BUNDLE_SPECS: &[BundleSpec] = &[
@@ -84,7 +99,7 @@ pub const BUNDLE_SPECS: &[BundleSpec] = &[
         transfer_gb_per_month: 1_024,
         power: 298,
         price_usd_per_month: 5.0,
-        windows_price_usd_per_month: 9.5,
+        windows_price_usd_per_month: Some(9.5),
         is_active: true,
         app_categories: &[],
     },
@@ -96,7 +111,7 @@ pub const BUNDLE_SPECS: &[BundleSpec] = &[
         transfer_gb_per_month: 2_048,
         power: 500,
         price_usd_per_month: 7.0,
-        windows_price_usd_per_month: 16.0,
+        windows_price_usd_per_month: Some(16.0),
         is_active: true,
         app_categories: &[],
     },
@@ -108,7 +123,7 @@ pub const BUNDLE_SPECS: &[BundleSpec] = &[
         transfer_gb_per_month: 3_072,
         power: 1_000,
         price_usd_per_month: 12.0,
-        windows_price_usd_per_month: 26.0,
+        windows_price_usd_per_month: Some(26.0),
         is_active: true,
         app_categories: &[],
     },
@@ -120,7 +135,7 @@ pub const BUNDLE_SPECS: &[BundleSpec] = &[
         transfer_gb_per_month: 4_096,
         power: 2_000,
         price_usd_per_month: 24.0,
-        windows_price_usd_per_month: 46.0,
+        windows_price_usd_per_month: Some(46.0),
         is_active: true,
         app_categories: &[],
     },
@@ -132,7 +147,7 @@ pub const BUNDLE_SPECS: &[BundleSpec] = &[
         transfer_gb_per_month: 5_120,
         power: 3_000,
         price_usd_per_month: 44.0,
-        windows_price_usd_per_month: 86.0,
+        windows_price_usd_per_month: Some(86.0),
         is_active: true,
         app_categories: &[],
     },
@@ -144,7 +159,7 @@ pub const BUNDLE_SPECS: &[BundleSpec] = &[
         transfer_gb_per_month: 6_144,
         power: 4_000,
         price_usd_per_month: 84.0,
-        windows_price_usd_per_month: 166.0,
+        windows_price_usd_per_month: Some(166.0),
         is_active: true,
         app_categories: &[],
     },
@@ -156,7 +171,7 @@ pub const BUNDLE_SPECS: &[BundleSpec] = &[
         transfer_gb_per_month: 7_168,
         power: 5_000,
         price_usd_per_month: 164.0,
-        windows_price_usd_per_month: 326.0,
+        windows_price_usd_per_month: Some(326.0),
         is_active: true,
         app_categories: &[],
     },
@@ -167,8 +182,44 @@ pub const BUNDLE_SPECS: &[BundleSpec] = &[
         disk_size_in_gb: 1_280,
         transfer_gb_per_month: 8_192,
         power: 6_000,
-        price_usd_per_month: 324.0,
-        windows_price_usd_per_month: 646.0,
+        price_usd_per_month: 384.0,
+        windows_price_usd_per_month: Some(646.0),
+        is_active: true,
+        app_categories: &[],
+    },
+    BundleSpec {
+        size: "8xlarge",
+        cpu_count: 32,
+        ram_size_in_gb: 128.0,
+        disk_size_in_gb: 2_560,
+        transfer_gb_per_month: 9_216,
+        power: 7_000,
+        price_usd_per_month: 884.0,
+        windows_price_usd_per_month: None,
+        is_active: true,
+        app_categories: &[],
+    },
+    BundleSpec {
+        size: "12xlarge",
+        cpu_count: 48,
+        ram_size_in_gb: 192.0,
+        disk_size_in_gb: 3_840,
+        transfer_gb_per_month: 10_240,
+        power: 7_500,
+        price_usd_per_month: 1_324.0,
+        windows_price_usd_per_month: None,
+        is_active: true,
+        app_categories: &[],
+    },
+    BundleSpec {
+        size: "16xlarge",
+        cpu_count: 64,
+        ram_size_in_gb: 256.0,
+        disk_size_in_gb: 5_120,
+        transfer_gb_per_month: 11_264,
+        power: 8_000,
+        price_usd_per_month: 1_764.0,
+        windows_price_usd_per_month: None,
         is_active: true,
         app_categories: &[],
     },
@@ -267,22 +318,31 @@ pub fn bundle_size_name(size: &str) -> String {
 
 impl BundleSpec {
     /// The monthly price of this plan on `platform`: the Windows price on
-    /// Windows, the Linux/Unix one otherwise.
-    pub fn price(&self, platform: &str) -> f32 {
+    /// Windows, the Linux/Unix one otherwise — and `None` where the plan table
+    /// publishes no plan of this size on that platform, which is the one
+    /// answer to "what does this size cost there" that cannot be invented.
+    pub fn price(&self, platform: &str) -> Option<f32> {
         if platform == PLATFORM_WINDOWS {
             self.windows_price_usd_per_month
         } else {
-            self.price_usd_per_month
+            Some(self.price_usd_per_month)
         }
     }
 
-    /// This plan on `platform` as the modelled `Bundle`.
-    pub fn view(&self, platform: &str) -> Bundle {
-        Bundle {
+    /// Whether the plan table publishes this size on `platform`.
+    pub fn is_published_on(&self, platform: &str) -> bool {
+        self.price(platform).is_some()
+    }
+
+    /// This plan on `platform` as the modelled `Bundle`, and `None` where the
+    /// table publishes no plan of this size on that platform.
+    pub fn view(&self, platform: &str) -> Option<Bundle> {
+        let price = self.price(platform)?;
+        Some(Bundle {
             bundle_id: Some(bundle_id(self.size, platform, BUNDLE_GENERATION)),
             instance_type: Some(self.size.to_string()),
             name: Some(bundle_size_name(self.size)),
-            price: Some(self.price(platform)),
+            price: Some(price),
             cpu_count: Some(self.cpu_count),
             ram_size_in_gb: Some(self.ram_size_in_gb),
             disk_size_in_gb: Some(self.disk_size_in_gb),
@@ -299,7 +359,7 @@ impl BundleSpec {
                     .collect()
             }),
             public_ipv4_address_count: Some(BUNDLE_PUBLIC_IPV4_ADDRESS_COUNT),
-        }
+        })
     }
 }
 
@@ -346,6 +406,10 @@ pub fn bundle_catalog(app_category: Option<&str>) -> &'static [BundleSpec] {
 /// order the catalog is published in. Two reads answer identically. Taking the
 /// catalog as an argument is what lets the slice rule be exercised against a
 /// catalog that holds a retired plan, which the published one does not.
+///
+/// A size is reported on a platform only where the plan table publishes it there
+/// ([`BundleSpec::price`]), so the Linux/Unix block carries every published size
+/// and the Windows block only the sizes Lightsail offers Windows Server on.
 pub fn bundles_from(specs: &[BundleSpec], include_inactive: bool) -> Vec<Bundle> {
     BUNDLE_PLATFORMS
         .iter()
@@ -353,7 +417,7 @@ pub fn bundles_from(specs: &[BundleSpec], include_inactive: bool) -> Vec<Bundle>
             specs
                 .iter()
                 .filter(|spec| include_inactive || spec.is_active)
-                .map(|spec| spec.view(platform))
+                .filter_map(|spec| spec.view(platform))
         })
         .collect()
 }

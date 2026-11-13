@@ -11,16 +11,19 @@
 //! requests rather than one recorded call:
 //!
 //! * every reported blueprint's members are its catalog entry's: the friendly
-//!   `name` is the id title-cased (the derivation `Instance$blueprintName`
-//!   reports, so an instance created from the blueprint carries the same name),
-//!   `group` is the family name the catalog publishes for the entry, `version` is
-//!   the id's version words joined with dots (absent when the id names none),
-//!   `platform` is `WINDOWS` for exactly the Windows images and `LINUX_UNIX`
-//!   otherwise, `minPower` is the power of the smallest plan the image runs on
-//!   (the `micro` plan's for a Windows image, 0 — "the blueprint runs on all
-//!   instance sizes" — for the others), `versionCode` is the published revision
-//!   of the image, and a vendor link the catalog publishes is reported as an
-//!   absolute `https` URL;
+//!   `name` is the catalog's own name for the image (the id title-cased where the
+//!   id's words spell it, the product's name where the catalog names the image
+//!   after the product it installs — the same name `Instance$blueprintName`
+//!   reports, so an instance created from the blueprint carries it too), `group`
+//!   is the family name the catalog publishes for the entry, `version` is the
+//!   publication date of the catalog generation and is therefore one and the same
+//!   on every entry, `platform` is `WINDOWS` for exactly the Windows images and
+//!   `LINUX_UNIX` otherwise, `minPower` is the power of the smallest plan the
+//!   image runs on (the floor the entry publishes, else its platform's: the
+//!   `micro` plan's for a Windows image, 0 — "the blueprint runs on all instance
+//!   sizes" — for the others), `versionCode` is the published revision of the
+//!   image, and a vendor link the catalog publishes is reported as an absolute
+//!   `https` URL;
 //! * `includeInactive` is what widens the answer from the active entries to every
 //!   published one, and an absent flag reports the active ones only;
 //! * `appCategory` selects the catalog: a request naming a category reports the
@@ -70,18 +73,16 @@ const PLATFORMS: &[&str] = &["LINUX_UNIX", "WINDOWS"];
 /// Source: the blueprint ids this service publishes (`state::BLUEPRINTS`, whose
 /// own source is the Lightsail instance-image list), chosen to span the class the
 /// rules generalise over: an operating system and an application stack, Windows
-/// images and Linux/Unix ones, an id whose version is one word, two words and
-/// three, an id carrying no version at all, a retired (inactive) entry, and both
-/// an entry whose vendor publishes product and licence links and entries that
-/// publish neither.
+/// images and Linux/Unix ones, an image the catalog names after its id's words
+/// and one it names after the product it installs, an image that runs on every
+/// plan and one that publishes a higher floor, a retired (inactive) entry, and
+/// both an entry whose vendor publishes product and licence links and entries
+/// that publish neither.
 struct Expected {
     blueprint_id: &'static str,
     blueprint_type: &'static str,
     name: &'static str,
     group: &'static str,
-    /// `None` where the id names no version, in which case the member must be
-    /// ABSENT rather than invented.
-    version: Option<&'static str>,
     platform: &'static str,
     is_active: bool,
     /// `Blueprint$minPower`: the power of the smallest instance plan the image
@@ -100,10 +101,20 @@ const EXPECTED: &[Expected] = &[
         blueprint_type: "os",
         name: "Windows Server 2025",
         group: "windows_2025",
-        version: Some("2025"),
         platform: "WINDOWS",
         is_active: true,
         min_power: 500,
+        publishes_product_url: true,
+        publishes_license_url: true,
+    },
+    Expected {
+        blueprint_id: "windows_server_2022_sql_2022_express",
+        blueprint_type: "app",
+        name: "SQL Server 2022 Express",
+        group: "windows_2022_sql_exp_2022",
+        platform: "WINDOWS",
+        is_active: true,
+        min_power: 2_000,
         publishes_product_url: true,
         publishes_license_url: true,
     },
@@ -112,7 +123,6 @@ const EXPECTED: &[Expected] = &[
         blueprint_type: "os",
         name: "Amazon Linux 2023",
         group: "amazon-linux",
-        version: Some("2023"),
         platform: "LINUX_UNIX",
         is_active: true,
         min_power: 0,
@@ -124,7 +134,6 @@ const EXPECTED: &[Expected] = &[
         blueprint_type: "os",
         name: "Centos Stream 9",
         group: "centos-stream",
-        version: Some("9"),
         platform: "LINUX_UNIX",
         is_active: true,
         min_power: 0,
@@ -136,7 +145,6 @@ const EXPECTED: &[Expected] = &[
         blueprint_type: "os",
         name: "Ubuntu 22 04",
         group: "ubuntu",
-        version: Some("22.04"),
         platform: "LINUX_UNIX",
         is_active: true,
         min_power: 0,
@@ -148,7 +156,6 @@ const EXPECTED: &[Expected] = &[
         blueprint_type: "os",
         name: "Ubuntu 18 04",
         group: "ubuntu",
-        version: Some("18.04"),
         platform: "LINUX_UNIX",
         is_active: false,
         min_power: 0,
@@ -160,7 +167,6 @@ const EXPECTED: &[Expected] = &[
         blueprint_type: "os",
         name: "Debian 10",
         group: "debian",
-        version: Some("10"),
         platform: "LINUX_UNIX",
         is_active: false,
         min_power: 0,
@@ -172,7 +178,6 @@ const EXPECTED: &[Expected] = &[
         blueprint_type: "os",
         name: "Windows Server 2019",
         group: "windows_2019",
-        version: Some("2019"),
         platform: "WINDOWS",
         is_active: true,
         min_power: 500,
@@ -184,7 +189,6 @@ const EXPECTED: &[Expected] = &[
         blueprint_type: "app",
         name: "Wordpress",
         group: "wordpress",
-        version: None,
         platform: "LINUX_UNIX",
         is_active: true,
         min_power: 0,
@@ -196,7 +200,6 @@ const EXPECTED: &[Expected] = &[
         blueprint_type: "app",
         name: "Lamp 8 Bitnami",
         group: "lamp-bitnami",
-        version: Some("8"),
         platform: "LINUX_UNIX",
         is_active: true,
         min_power: 0,
@@ -208,7 +211,6 @@ const EXPECTED: &[Expected] = &[
         blueprint_type: "app",
         name: "Plesk Ubuntu 18 0 35",
         group: "plesk-ubuntu",
-        version: Some("18.0.35"),
         platform: "LINUX_UNIX",
         is_active: true,
         min_power: 0,
@@ -220,7 +222,6 @@ const EXPECTED: &[Expected] = &[
         blueprint_type: "app",
         name: "Cpanel Whm Almalinux",
         group: "cpanel-whm-almalinux",
-        version: None,
         platform: "LINUX_UNIX",
         is_active: true,
         min_power: 0,
@@ -233,23 +234,42 @@ const EXPECTED: &[Expected] = &[
 // The derivations, restated here as the rule rather than read off the crate
 // ---------------------------------------------------------------------------
 
-/// Whether a word of a blueprint id names a version: one that begins with a
-/// digit.
-fn is_version_word(word: &str) -> bool {
-    word.starts_with(|first: char| first.is_ascii_digit())
+/// The powers the published plan catalog offers, which a blueprint's minimum is
+/// one of (or 0 — "the blueprint runs on all instance sizes").
+fn published_powers() -> Vec<i64> {
+    state::BUNDLE_SPECS
+        .iter()
+        .map(|spec| i64::from(spec.power))
+        .collect()
 }
 
-/// The version a blueprint id names: its version words, dot-joined, or `None`.
-fn want_version(blueprint_id: &str) -> Option<String> {
-    let version = blueprint_id
-        .split('_')
-        .filter(|word| is_version_word(word))
-        .collect::<Vec<_>>()
-        .join(".");
-    (!version.is_empty()).then_some(version)
+/// The power of the `micro` plan: the floor a Windows image cannot go below.
+fn micro_power() -> i64 {
+    i64::from(
+        state::BUNDLE_SPECS
+            .iter()
+            .find(|spec| spec.size == "micro")
+            .expect("the published plan catalog carries the micro plan")
+            .power,
+    )
 }
 
-/// The friendly name of a blueprint id: its words title-cased, space-joined.
+/// Whether `version` is a catalog version: the `YYYY.MM.DD` publication date of
+/// a catalog generation, which is what `Blueprint$version` carries (its own
+/// example, `2016.03.0`, is that dotted numeric form).
+fn is_catalog_version(version: &str) -> bool {
+    let components: Vec<&str> = version.split('.').collect();
+    components.len() == 3
+        && components
+            .iter()
+            .all(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_digit()))
+        && components[0].len() == 4
+}
+
+/// The friendly name of a blueprint the catalog names after its id: the id's
+/// words title-cased, space-joined. An image the catalog names after the product
+/// it installs carries that product's name instead, so this is the form a name
+/// takes only where the id's words spell it.
 fn want_name(blueprint_id: &str) -> String {
     blueprint_id
         .split('_')
@@ -274,18 +294,13 @@ fn want_platform(blueprint_id: &str) -> &'static str {
     }
 }
 
-/// The minimum bundle power an image of `platform` requires: a Windows image
-/// does not run on the smallest plan, so its floor is the power of the `micro`
-/// plan; every other published image runs on all sizes, which 0 states.
+/// The minimum bundle power an image of `platform` requires, where the catalog
+/// publishes no floor of its own for the image: a Windows image does not run on
+/// the smallest plan, so its floor is the power of the `micro` plan; every other
+/// published image runs on all sizes, which 0 states.
 fn want_min_power(platform: &str) -> i64 {
     if platform == "WINDOWS" {
-        i64::from(
-            state::BUNDLE_SPECS
-                .iter()
-                .find(|spec| spec.size == "micro")
-                .expect("the published plan catalog carries the micro plan")
-                .power,
-        )
+        micro_power()
     } else {
         0
     }
@@ -387,19 +402,38 @@ async fn every_reported_blueprint_derives_its_members_from_its_catalog_entry() {
             "case {case:?}: type must be one of {BLUEPRINT_TYPES:?}, got {blueprint_type:?}"
         );
 
-        assert_eq!(
-            member(blueprint, "name"),
-            want_name(&case),
-            "case {case:?}: name must be the id title-cased, got {blueprint:?}"
+        // The catalog's own name for the image: the id's words title-cased where
+        // the id spells the name, the product's name where the catalog names the
+        // image after the product it installs — never the raw id.
+        let name = member(blueprint, "name");
+        assert!(
+            !name.is_empty() && !name.contains('_'),
+            "case {case:?}: name must be the catalog's own name for the image, got {blueprint:?}"
         );
+        if name != want_name(&case) {
+            assert!(
+                EXPECTED.iter().any(|want| want.blueprint_id == case),
+                "case {case:?}: an image the catalog names after its product must be pinned by \
+                 name in this suite's table, got {name:?}"
+            );
+        }
         assert!(
             !member(blueprint, "group").is_empty(),
             "case {case:?}: group must name the entry's published family, got {blueprint:?}"
         );
+        // `version` is the CATALOG generation's publication date, so every entry
+        // of one listing carries the same one — it does not restate the image's
+        // own release.
+        let version = member(blueprint, "version");
+        assert!(
+            is_catalog_version(&version),
+            "case {case:?}: version must be the catalog generation's YYYY.MM.DD date, \
+             got {blueprint:?}"
+        );
         assert_eq!(
-            blueprint["version"].as_str().map(str::to_string),
-            want_version(&case),
-            "case {case:?}: version must be the id's version words joined with dots, \
+            version,
+            member(&blueprints[0], "version"),
+            "case {case:?}: every entry of a catalog generation carries one version, \
              got {blueprint:?}"
         );
 
@@ -419,18 +453,27 @@ async fn every_reported_blueprint_derives_its_members_from_its_catalog_entry() {
             blueprint["isActive"].is_boolean(),
             "case {case:?}: expected a boolean isActive, got {blueprint:?}"
         );
-        assert_eq!(
-            blueprint["minPower"],
-            json!(want_min_power(&platform)),
-            "case {case:?}: minPower must be the power of the smallest plan the image runs \
-             on, got {blueprint:?}"
+        // The minimum is a power the plan catalog offers — the floor the image's
+        // own entry publishes, or its platform's — so it names a plan a caller
+        // can actually select, and a Windows image never reports below the
+        // smallest plan Windows Server runs on.
+        let min_power = blueprint["minPower"]
+            .as_i64()
+            .unwrap_or_else(|| panic!("case {case:?}: expected a numeric minPower"));
+        assert!(
+            min_power == 0 || published_powers().contains(&min_power),
+            "case {case:?}: minPower must be the power of a published plan, got {min_power}"
+        );
+        assert!(
+            min_power >= want_min_power(&platform),
+            "case {case:?}: expected at least the floor of {platform}, got {min_power}"
         );
 
         // The description is derived from the entry's own name and type, so it
         // names the blueprint and says which kind of image it is.
         let description = member(blueprint, "description");
         assert!(
-            description.contains(&want_name(&case)),
+            description.contains(&name),
             "case {case:?}: expected the description to name the blueprint, got {description:?}"
         );
         let expected_kind = if blueprint_type == "app" {
@@ -495,11 +538,6 @@ async fn the_published_sample_entries_report_their_expected_members() {
             member(found, "group"),
             want.group,
             "case {case:?}: wrong group, got {found:?}"
-        );
-        assert_eq!(
-            found["version"].as_str(),
-            want.version,
-            "case {case:?}: wrong version, got {found:?}"
         );
         assert_eq!(
             member(found, "platform"),
@@ -810,10 +848,14 @@ async fn a_page_token_that_names_no_reported_blueprint_is_refused() {
 // ---------------------------------------------------------------------------
 
 /// A synthetic catalog: two active entries, a retired one between them and two
-/// more, so a page boundary can fall either side of the inactive entry.
+/// more, so a page boundary can fall either side of the inactive entry. One
+/// entry publishes its own name and power floor, as the application images the
+/// catalog names after their product do, so the slice carries both forms.
 const SYNTHETIC: &[state::BlueprintSpec] = &[
     state::BlueprintSpec {
         blueprint_id: "synthetic_os_1",
+        published_name: None,
+        published_min_power: None,
         group: "synthetic-os",
         blueprint_type: state::BLUEPRINT_TYPE_OS,
         is_active: true,
@@ -822,6 +864,8 @@ const SYNTHETIC: &[state::BlueprintSpec] = &[
     },
     state::BlueprintSpec {
         blueprint_id: "synthetic_os_2",
+        published_name: None,
+        published_min_power: None,
         group: "synthetic-os",
         blueprint_type: state::BLUEPRINT_TYPE_OS,
         is_active: false,
@@ -830,6 +874,8 @@ const SYNTHETIC: &[state::BlueprintSpec] = &[
     },
     state::BlueprintSpec {
         blueprint_id: "synthetic_app",
+        published_name: Some("Synthetic Product 4 Standard"),
+        published_min_power: Some(3_000),
         group: "synthetic-app",
         blueprint_type: state::BLUEPRINT_TYPE_APP,
         is_active: true,
@@ -838,6 +884,8 @@ const SYNTHETIC: &[state::BlueprintSpec] = &[
     },
     state::BlueprintSpec {
         blueprint_id: "windows_synthetic_2030",
+        published_name: None,
+        published_min_power: None,
         group: "windows_2030",
         blueprint_type: state::BLUEPRINT_TYPE_OS,
         is_active: true,
@@ -846,6 +894,8 @@ const SYNTHETIC: &[state::BlueprintSpec] = &[
     },
     state::BlueprintSpec {
         blueprint_id: "synthetic_retired_3",
+        published_name: None,
+        published_min_power: None,
         group: "synthetic-retired",
         blueprint_type: state::BLUEPRINT_TYPE_APP,
         is_active: false,

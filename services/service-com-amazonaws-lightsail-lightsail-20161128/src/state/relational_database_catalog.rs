@@ -131,7 +131,7 @@ pub const RELATIONAL_DATABASE_BLUEPRINTS: &[RelationalDatabaseBlueprintSpec] = &
         engine_display: "PostgreSQL",
         engine_description: "PostgreSQL",
         major_version: "18",
-        engine_version: "18.5",
+        engine_version: "18.6",
         engine_version_revision: POSTGRES_ENGINE_VERSION_REVISION,
         is_engine_default: true,
     },
@@ -310,11 +310,14 @@ pub struct RelationalDatabaseBundleSpec {
 /// SOURCE: the managed-database plan table of the Lightsail pricing page — a
 /// standard plan at $15 a month with 1 GB RAM, 2 vCPUs and 40 GB of SSD storage,
 /// $30 with 2 GB / 2 vCPUs / 80 GB, $60 with 4 GB / 2 vCPUs / 120 GB, $115 with
-/// 8 GB / 2 vCPUs / 240 GB, $230 with 16 GB / 4 vCPUs / 480 GB and $460 with
+/// 8 GB / 2 vCPUs / 240 GB, $245 with 16 GB / 4 vCPUs / 480 GB and $490 with
 /// 32 GB / 8 vCPUs / 960 GB, with 100 GB of data transfer included on the three
 /// smallest plans, 200 GB on the 8 GB plan, 300 GB on the 16 GB one and 400 GB
-/// on the largest — the price doubling with the plan above the 8 GB one — and
-/// the high-availability column of the same table, which offers the same
+/// on the largest. Each price is the TABLE's own figure for that plan rather
+/// than a step computed from the plan below it: the table doubles up to the 4 GB
+/// plan and then charges $115, $245 and $490, so a price derived by doubling
+/// would understate every plan from the 8 GB one up. Beside the standard column
+/// stands the high-availability column of the same table, which offers the same
 /// hardware with a standby in a second Availability Zone for twice the standard
 /// plan's price. Lightsail encrypts managed-database storage and its automatic
 /// snapshots at rest on every plan, so every entry is encrypted.
@@ -381,7 +384,7 @@ pub const RELATIONAL_DATABASE_BUNDLE_SPECS: &[RelationalDatabaseBundleSpec] = &[
         ram_size_in_gb: 16.0,
         disk_size_in_gb: 480,
         transfer_per_month_in_gb: 300,
-        price_usd_per_month: 230.0,
+        price_usd_per_month: 245.0,
         is_encrypted: true,
         is_active: true,
     },
@@ -392,7 +395,7 @@ pub const RELATIONAL_DATABASE_BUNDLE_SPECS: &[RelationalDatabaseBundleSpec] = &[
         ram_size_in_gb: 32.0,
         disk_size_in_gb: 960,
         transfer_per_month_in_gb: 400,
-        price_usd_per_month: 460.0,
+        price_usd_per_month: 490.0,
         is_encrypted: true,
         is_active: true,
     },
@@ -447,7 +450,7 @@ pub const RELATIONAL_DATABASE_BUNDLE_SPECS: &[RelationalDatabaseBundleSpec] = &[
         ram_size_in_gb: 16.0,
         disk_size_in_gb: 480,
         transfer_per_month_in_gb: 300,
-        price_usd_per_month: 460.0,
+        price_usd_per_month: 490.0,
         is_encrypted: true,
         is_active: true,
     },
@@ -458,7 +461,7 @@ pub const RELATIONAL_DATABASE_BUNDLE_SPECS: &[RelationalDatabaseBundleSpec] = &[
         ram_size_in_gb: 32.0,
         disk_size_in_gb: 960,
         transfer_per_month_in_gb: 400,
-        price_usd_per_month: 920.0,
+        price_usd_per_month: 980.0,
         is_encrypted: true,
         is_active: true,
     },

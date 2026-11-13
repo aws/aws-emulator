@@ -43,6 +43,13 @@ pub struct RegionSpec {
     pub display_name: &'static str,
     /// The area the Region is recommended for: the clause `Region$description`
     /// puts after "is recommended to serve users in".
+    ///
+    /// It is the WHOLE geography the Region is recommended for, as the catalog
+    /// words it — the place the Region sits in together with the wider area it
+    /// serves (`France and central Europe`) — not the Region's own territory
+    /// alone: the sentence is the only human-readable guidance in this response,
+    /// so a Region picker renders this clause to a caller choosing where to put a
+    /// resource.
     pub serves: &'static str,
     /// Whether this Region is an OPT-IN Region — one AWS leaves disabled until an
     /// account enables it, which every Region introduced after the opt-in
@@ -68,13 +75,24 @@ impl RegionSpec {
     /// documentation shows: what the Region is recommended for, opened by the
     /// opt-in clause where the Region is one an account must enable
     /// ([`Self::is_opt_in`]).
+    ///
+    /// An opt-in Region's sentence is PUNCTUATED — it closes with a period, which
+    /// the sentence of a Region that is enabled by default does not carry — so
+    /// the opt-in clause and the closing period travel together, as the recorded
+    /// opt-in entries report them.
     pub fn description(&self) -> String {
-        let opening = if self.is_opt_in {
-            "This opt-in Region (Region that is disabled by default)"
+        let (opening, closing) = if self.is_opt_in {
+            (
+                "This opt-in Region (Region that is disabled by default)",
+                ".",
+            )
         } else {
-            "This region"
+            ("This region", "")
         };
-        format!("{opening} is recommended to serve users in {}", self.serves)
+        format!(
+            "{opening} is recommended to serve users in {}{closing}",
+            self.serves
+        )
     }
 
     /// The Availability Zones this Region publishes, as `GetRegions` reports
@@ -160,7 +178,12 @@ impl RegionSpec {
 /// Region is recommended for — the clause after the sentence stem
 /// `Region$description` documents, as AWS's own answer gives it for that Region
 /// (`eu-west-1` and `eu-west-2` share one clause, and `eu-central-1`'s names a
-/// whole set of continents). `is_opt_in` marks the Regions AWS leaves disabled
+/// whole set of continents). The clause is the WHOLE geography — the Region's
+/// own territory together with the wider area it is recommended for (`France and
+/// central Europe`, `Austalia, New Zealand, and the South Pacific`, in the
+/// catalog's own spelling) — and is never shortened to the territory the display
+/// name already names: the wider area is what tells a caller which users the
+/// Region is for. `is_opt_in` marks the Regions AWS leaves disabled
 /// until an account enables them — the Regions introduced after the opt-in
 /// mechanism was published (`ap-east-1`, `ap-southeast-3`, `ap-southeast-5` and
 /// `eu-south-2` of this catalog) — whose description opens with the opt-in
@@ -196,7 +219,7 @@ pub const REGION_SPECS: &[RegionSpec] = &[
     RegionSpec {
         name: "ap-south-1",
         display_name: "Mumbai",
-        serves: "India",
+        serves: "India and southern Asia",
         is_opt_in: false,
         availability_zone_letters: "abc",
     },
@@ -210,14 +233,14 @@ pub const REGION_SPECS: &[RegionSpec] = &[
     RegionSpec {
         name: "ap-southeast-1",
         display_name: "Singapore",
-        serves: "Singapore and southeast Asia",
+        serves: "India and Southeast Asia",
         is_opt_in: false,
         availability_zone_letters: "abc",
     },
     RegionSpec {
         name: "ap-southeast-2",
         display_name: "Sydney",
-        serves: "Australia and New Zealand",
+        serves: "Austalia, New Zealand, and the South Pacific",
         is_opt_in: false,
         availability_zone_letters: "abc",
     },
@@ -231,7 +254,7 @@ pub const REGION_SPECS: &[RegionSpec] = &[
     RegionSpec {
         name: "ca-central-1",
         display_name: "Montreal",
-        serves: "Canada",
+        serves: "Canada and the northeastern United States",
         is_opt_in: false,
         availability_zone_letters: "ab",
     },
@@ -259,7 +282,7 @@ pub const REGION_SPECS: &[RegionSpec] = &[
     RegionSpec {
         name: "eu-west-3",
         display_name: "Paris",
-        serves: "France",
+        serves: "France and central Europe",
         is_opt_in: false,
         availability_zone_letters: "abc",
     },
@@ -273,35 +296,35 @@ pub const REGION_SPECS: &[RegionSpec] = &[
     RegionSpec {
         name: "sa-east-1",
         display_name: "Sao Paulo",
-        serves: "Brazil and eastern South America",
+        serves: "Brazil and South America",
         is_opt_in: false,
         availability_zone_letters: "abc",
     },
     RegionSpec {
         name: "ap-east-1",
         display_name: "Hong Kong",
-        serves: "Hong Kong",
+        serves: "Hong Kong and Asia",
         is_opt_in: true,
         availability_zone_letters: "abc",
     },
     RegionSpec {
         name: "eu-south-2",
         display_name: "Spain",
-        serves: "Spain",
+        serves: "Spain and South Europe",
         is_opt_in: true,
         availability_zone_letters: "abc",
     },
     RegionSpec {
         name: "ap-southeast-3",
         display_name: "Jakarta",
-        serves: "Indonesia",
+        serves: "Indonesia and Southeast Asia",
         is_opt_in: true,
         availability_zone_letters: "abc",
     },
     RegionSpec {
         name: "ap-southeast-5",
         display_name: "Malaysia",
-        serves: "Malaysia",
+        serves: "Malaysia and Southeast Asia",
         is_opt_in: true,
         availability_zone_letters: "abc",
     },

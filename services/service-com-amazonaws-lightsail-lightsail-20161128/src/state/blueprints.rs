@@ -49,6 +49,17 @@ pub fn blueprint_username(blueprint_id: &str) -> Option<&'static str> {
         .map(|(_, username)| *username)
 }
 
+/// The friendly name of the blueprint `blueprint_id`, as `Instance$blueprintName`
+/// reports it for an instance created from it: the name the catalog publishes for
+/// the image ([`BlueprintSpec::name`]) when this service publishes it, and the
+/// id's words title-cased ([`blueprint_name`]) for a blueprint the catalog does
+/// not hold — one name per blueprint, wherever it is reported.
+pub fn blueprint_display_name(blueprint_id: &str) -> String {
+    blueprint_spec(blueprint_id)
+        .map(|spec| spec.name())
+        .unwrap_or_else(|| blueprint_name(blueprint_id))
+}
+
 /// Whether `blueprint_id` is a Windows blueprint. Every Lightsail Windows
 /// blueprint id begins `windows_` (`windows_server_2022`); every other blueprint
 /// is a Linux/Unix one.
@@ -87,6 +98,21 @@ pub struct BlueprintSpec {
     /// `Blueprint$blueprintId`: the id a `CreateInstances` request names
     /// (`amazon_linux_2023`, `wordpress`).
     pub blueprint_id: &'static str,
+    /// `Blueprint$name` where the catalog's own name for the image is the name of
+    /// the PRODUCT it installs rather than the words of its id (`SQL Server 2022
+    /// Express` for `windows_server_2022_sql_2022_express`), and `None` where the
+    /// catalog's name is the id's words title-cased — the derivation
+    /// `Instance$blueprintName` reports ([`blueprint_name`]).
+    pub published_name: Option<&'static str>,
+    /// `Blueprint$minPower` where the image requires a LARGER plan than its
+    /// platform's own floor, and `None` where the floor is the platform's
+    /// ([`BlueprintSpec::min_power`]).
+    ///
+    /// The minimum is the image's own requirement, which is why the catalog
+    /// publishes it per entry: an application image that installs a database
+    /// engine beside the operating system does not run on the plans the bare
+    /// operating system runs on.
+    pub published_min_power: Option<i32>,
     /// `Blueprint$group` — "The group name of the blueprint (`amazon-linux`)".
     ///
     /// The group is PUBLISHED per entry rather than derived from the id: the
@@ -141,6 +167,24 @@ pub(super) const BITNAMI_LICENSE_URL: &str = "https://bitnami.com/agreement";
 /// recorded entries carry.
 pub const BLUEPRINT_VERSION_CODE: &str = "1";
 
+/// `Blueprint$version` — "The version number of the operating system,
+/// application, or stack (`2016.03.0`)" — of every entry of [`BLUEPRINTS`]: the
+/// publication date of the catalog generation these images belong to, in the
+/// `YYYY.MM.DD` form that example shows.
+///
+/// It is the CATALOG's version rather than the image's own upstream release: the
+/// recorded answer reports ONE version across entries of different releases — a
+/// Windows Server 2025 operating-system image and a SQL Server 2022 application
+/// image carry the same one — so the member pins the generation of the catalog a
+/// client read, not the year its image's software was published. Re-publishing
+/// the images moves this date, and moves it for every row at once.
+pub const BLUEPRINT_CATALOG_VERSION: &str = "2026.09.17";
+
+/// `Blueprint$minPower` of an application image that installs the Windows SQL
+/// Server database engine beside the operating system: it needs the 4 GB plan,
+/// so its floor is that plan's [`BundleSpec::power`].
+pub const WINDOWS_SQL_BLUEPRINT_MIN_POWER: i32 = 2_000;
+
 /// `Blueprint$minPower` of a Windows image — "The minimum bundle power required
 /// to run this blueprint".
 ///
@@ -177,6 +221,8 @@ pub const BLUEPRINTS: &[BlueprintSpec] = &[
     // Windows Server operating systems, newest release first.
     BlueprintSpec {
         blueprint_id: "windows_server_2025",
+        published_name: None,
+        published_min_power: None,
         group: "windows_2025",
         blueprint_type: BLUEPRINT_TYPE_OS,
         is_active: true,
@@ -185,6 +231,8 @@ pub const BLUEPRINTS: &[BlueprintSpec] = &[
     },
     BlueprintSpec {
         blueprint_id: "windows_server_2022",
+        published_name: None,
+        published_min_power: None,
         group: "windows_2022",
         blueprint_type: BLUEPRINT_TYPE_OS,
         is_active: true,
@@ -193,6 +241,8 @@ pub const BLUEPRINTS: &[BlueprintSpec] = &[
     },
     BlueprintSpec {
         blueprint_id: "windows_server_2019",
+        published_name: None,
+        published_min_power: None,
         group: "windows_2019",
         blueprint_type: BLUEPRINT_TYPE_OS,
         is_active: true,
@@ -201,8 +251,23 @@ pub const BLUEPRINTS: &[BlueprintSpec] = &[
     },
     BlueprintSpec {
         blueprint_id: "windows_server_2016",
+        published_name: None,
+        published_min_power: None,
         group: "windows_2016",
         blueprint_type: BLUEPRINT_TYPE_OS,
+        is_active: true,
+        product_url: WINDOWS_SERVER_PRODUCT_URL,
+        license_url: WINDOWS_SERVER_LICENSE_URL,
+    },
+    // The Windows SQL Server application images: an edition of the database
+    // engine preinstalled on a Windows Server image, which the catalog publishes
+    // after the bare Windows images and before the first Linux/Unix one.
+    BlueprintSpec {
+        blueprint_id: "windows_server_2022_sql_2022_express",
+        published_name: Some("SQL Server 2022 Express"),
+        published_min_power: Some(WINDOWS_SQL_BLUEPRINT_MIN_POWER),
+        group: "windows_2022_sql_exp_2022",
+        blueprint_type: BLUEPRINT_TYPE_APP,
         is_active: true,
         product_url: WINDOWS_SERVER_PRODUCT_URL,
         license_url: WINDOWS_SERVER_LICENSE_URL,
@@ -210,6 +275,8 @@ pub const BLUEPRINTS: &[BlueprintSpec] = &[
     // Linux/Unix operating systems.
     BlueprintSpec {
         blueprint_id: "amazon_linux_2023",
+        published_name: None,
+        published_min_power: None,
         group: "amazon-linux",
         blueprint_type: BLUEPRINT_TYPE_OS,
         is_active: true,
@@ -218,6 +285,8 @@ pub const BLUEPRINTS: &[BlueprintSpec] = &[
     },
     BlueprintSpec {
         blueprint_id: "amazon_linux_2",
+        published_name: None,
+        published_min_power: None,
         group: "amazon-linux",
         blueprint_type: BLUEPRINT_TYPE_OS,
         is_active: true,
@@ -226,6 +295,8 @@ pub const BLUEPRINTS: &[BlueprintSpec] = &[
     },
     BlueprintSpec {
         blueprint_id: "ubuntu_24_04",
+        published_name: None,
+        published_min_power: None,
         group: "ubuntu",
         blueprint_type: BLUEPRINT_TYPE_OS,
         is_active: true,
@@ -234,6 +305,8 @@ pub const BLUEPRINTS: &[BlueprintSpec] = &[
     },
     BlueprintSpec {
         blueprint_id: "ubuntu_22_04",
+        published_name: None,
+        published_min_power: None,
         group: "ubuntu",
         blueprint_type: BLUEPRINT_TYPE_OS,
         is_active: true,
@@ -242,6 +315,8 @@ pub const BLUEPRINTS: &[BlueprintSpec] = &[
     },
     BlueprintSpec {
         blueprint_id: "ubuntu_20_04",
+        published_name: None,
+        published_min_power: None,
         group: "ubuntu",
         blueprint_type: BLUEPRINT_TYPE_OS,
         is_active: true,
@@ -250,6 +325,8 @@ pub const BLUEPRINTS: &[BlueprintSpec] = &[
     },
     BlueprintSpec {
         blueprint_id: "ubuntu_18_04",
+        published_name: None,
+        published_min_power: None,
         group: "ubuntu",
         blueprint_type: BLUEPRINT_TYPE_OS,
         // Ubuntu 18.04 LTS is past its upstream end of standard support.
@@ -259,6 +336,8 @@ pub const BLUEPRINTS: &[BlueprintSpec] = &[
     },
     BlueprintSpec {
         blueprint_id: "debian_12",
+        published_name: None,
+        published_min_power: None,
         group: "debian",
         blueprint_type: BLUEPRINT_TYPE_OS,
         is_active: true,
@@ -267,6 +346,8 @@ pub const BLUEPRINTS: &[BlueprintSpec] = &[
     },
     BlueprintSpec {
         blueprint_id: "debian_11",
+        published_name: None,
+        published_min_power: None,
         group: "debian",
         blueprint_type: BLUEPRINT_TYPE_OS,
         is_active: true,
@@ -275,6 +356,8 @@ pub const BLUEPRINTS: &[BlueprintSpec] = &[
     },
     BlueprintSpec {
         blueprint_id: "debian_10",
+        published_name: None,
+        published_min_power: None,
         group: "debian",
         blueprint_type: BLUEPRINT_TYPE_OS,
         // Debian 10 is past its upstream end of life.
@@ -284,6 +367,8 @@ pub const BLUEPRINTS: &[BlueprintSpec] = &[
     },
     BlueprintSpec {
         blueprint_id: "almalinux_9",
+        published_name: None,
+        published_min_power: None,
         group: "almalinux",
         blueprint_type: BLUEPRINT_TYPE_OS,
         is_active: true,
@@ -292,6 +377,8 @@ pub const BLUEPRINTS: &[BlueprintSpec] = &[
     },
     BlueprintSpec {
         blueprint_id: "centos_stream_9",
+        published_name: None,
+        published_min_power: None,
         group: "centos-stream",
         blueprint_type: BLUEPRINT_TYPE_OS,
         is_active: true,
@@ -300,6 +387,8 @@ pub const BLUEPRINTS: &[BlueprintSpec] = &[
     },
     BlueprintSpec {
         blueprint_id: "freebsd_14",
+        published_name: None,
+        published_min_power: None,
         group: "freebsd",
         blueprint_type: BLUEPRINT_TYPE_OS,
         is_active: true,
@@ -308,6 +397,8 @@ pub const BLUEPRINTS: &[BlueprintSpec] = &[
     },
     BlueprintSpec {
         blueprint_id: "opensuse_15",
+        published_name: None,
+        published_min_power: None,
         group: "opensuse",
         blueprint_type: BLUEPRINT_TYPE_OS,
         is_active: true,
@@ -317,6 +408,8 @@ pub const BLUEPRINTS: &[BlueprintSpec] = &[
     // Application stacks.
     BlueprintSpec {
         blueprint_id: "wordpress",
+        published_name: None,
+        published_min_power: None,
         group: "wordpress",
         blueprint_type: BLUEPRINT_TYPE_APP,
         is_active: true,
@@ -325,6 +418,8 @@ pub const BLUEPRINTS: &[BlueprintSpec] = &[
     },
     BlueprintSpec {
         blueprint_id: "wordpress_multisite",
+        published_name: None,
+        published_min_power: None,
         group: "wordpress-multisite",
         blueprint_type: BLUEPRINT_TYPE_APP,
         is_active: true,
@@ -333,6 +428,8 @@ pub const BLUEPRINTS: &[BlueprintSpec] = &[
     },
     BlueprintSpec {
         blueprint_id: "lamp_8_bitnami",
+        published_name: None,
+        published_min_power: None,
         group: "lamp-bitnami",
         blueprint_type: BLUEPRINT_TYPE_APP,
         is_active: true,
@@ -341,6 +438,8 @@ pub const BLUEPRINTS: &[BlueprintSpec] = &[
     },
     BlueprintSpec {
         blueprint_id: "nodejs",
+        published_name: None,
+        published_min_power: None,
         group: "nodejs",
         blueprint_type: BLUEPRINT_TYPE_APP,
         is_active: true,
@@ -349,6 +448,8 @@ pub const BLUEPRINTS: &[BlueprintSpec] = &[
     },
     BlueprintSpec {
         blueprint_id: "joomla",
+        published_name: None,
+        published_min_power: None,
         group: "joomla",
         blueprint_type: BLUEPRINT_TYPE_APP,
         is_active: true,
@@ -357,6 +458,8 @@ pub const BLUEPRINTS: &[BlueprintSpec] = &[
     },
     BlueprintSpec {
         blueprint_id: "drupal",
+        published_name: None,
+        published_min_power: None,
         group: "drupal",
         blueprint_type: BLUEPRINT_TYPE_APP,
         is_active: true,
@@ -365,6 +468,8 @@ pub const BLUEPRINTS: &[BlueprintSpec] = &[
     },
     BlueprintSpec {
         blueprint_id: "magento",
+        published_name: None,
+        published_min_power: None,
         group: "magento",
         blueprint_type: BLUEPRINT_TYPE_APP,
         is_active: true,
@@ -373,6 +478,8 @@ pub const BLUEPRINTS: &[BlueprintSpec] = &[
     },
     BlueprintSpec {
         blueprint_id: "mean",
+        published_name: None,
+        published_min_power: None,
         group: "mean",
         blueprint_type: BLUEPRINT_TYPE_APP,
         is_active: true,
@@ -381,6 +488,8 @@ pub const BLUEPRINTS: &[BlueprintSpec] = &[
     },
     BlueprintSpec {
         blueprint_id: "ghost_bitnami",
+        published_name: None,
+        published_min_power: None,
         group: "ghost-bitnami",
         blueprint_type: BLUEPRINT_TYPE_APP,
         is_active: true,
@@ -389,6 +498,8 @@ pub const BLUEPRINTS: &[BlueprintSpec] = &[
     },
     BlueprintSpec {
         blueprint_id: "redmine",
+        published_name: None,
+        published_min_power: None,
         group: "redmine",
         blueprint_type: BLUEPRINT_TYPE_APP,
         is_active: true,
@@ -397,6 +508,8 @@ pub const BLUEPRINTS: &[BlueprintSpec] = &[
     },
     BlueprintSpec {
         blueprint_id: "nginx",
+        published_name: None,
+        published_min_power: None,
         group: "nginx",
         blueprint_type: BLUEPRINT_TYPE_APP,
         is_active: true,
@@ -405,6 +518,8 @@ pub const BLUEPRINTS: &[BlueprintSpec] = &[
     },
     BlueprintSpec {
         blueprint_id: "django",
+        published_name: None,
+        published_min_power: None,
         group: "django",
         blueprint_type: BLUEPRINT_TYPE_APP,
         is_active: true,
@@ -413,6 +528,8 @@ pub const BLUEPRINTS: &[BlueprintSpec] = &[
     },
     BlueprintSpec {
         blueprint_id: "gitlab",
+        published_name: None,
+        published_min_power: None,
         group: "gitlab",
         blueprint_type: BLUEPRINT_TYPE_APP,
         is_active: true,
@@ -421,6 +538,8 @@ pub const BLUEPRINTS: &[BlueprintSpec] = &[
     },
     BlueprintSpec {
         blueprint_id: "prestashop",
+        published_name: None,
+        published_min_power: None,
         group: "prestashop",
         blueprint_type: BLUEPRINT_TYPE_APP,
         is_active: true,
@@ -429,6 +548,8 @@ pub const BLUEPRINTS: &[BlueprintSpec] = &[
     },
     BlueprintSpec {
         blueprint_id: "cpanel_whm_almalinux",
+        published_name: None,
+        published_min_power: None,
         group: "cpanel-whm-almalinux",
         blueprint_type: BLUEPRINT_TYPE_APP,
         is_active: true,
@@ -437,6 +558,8 @@ pub const BLUEPRINTS: &[BlueprintSpec] = &[
     },
     BlueprintSpec {
         blueprint_id: "plesk_ubuntu_18_0_35",
+        published_name: None,
+        published_min_power: None,
         group: "plesk-ubuntu",
         blueprint_type: BLUEPRINT_TYPE_APP,
         is_active: true,
@@ -491,30 +614,18 @@ pub const LFR_BLUEPRINTS: &[BlueprintSpec] = &[];
 /// answers it — and the paging walk still holds for a catalog that outgrows it.
 pub const BLUEPRINT_PAGE_SIZE: usize = 50;
 
-/// Whether a word of a blueprint id names a version rather than the blueprint
-/// family: a version word begins with a digit (`ubuntu_22_04` -> `22`, `04`;
-/// `amazon_linux_2023` -> `2023`).
-pub(super) fn is_version_word(word: &str) -> bool {
-    word.starts_with(|first: char| first.is_ascii_digit())
-}
-
 impl BlueprintSpec {
-    /// `Blueprint$version` — "The version number of the operating system,
-    /// application, or stack (`2016.03.0`)".
-    ///
-    /// A Lightsail blueprint id spells that version in its own version words, so
-    /// the version is those words joined with dots (`ubuntu_22_04` -> `22.04`,
-    /// `plesk_ubuntu_18_0_35` -> `18.0.35`). A blueprint whose id names no
-    /// version reports NONE: the member is optional, and an invented version
-    /// number would say something the catalog does not know.
-    pub fn version(&self) -> Option<String> {
-        let version = self
-            .blueprint_id
-            .split('_')
-            .filter(|word| is_version_word(word))
-            .collect::<Vec<_>>()
-            .join(".");
-        (!version.is_empty()).then_some(version)
+    /// `Blueprint$name` — "The friendly name of the blueprint": the name the
+    /// catalog publishes for the image ([`Self::published_name`]), which for an
+    /// image the catalog names after its id's own words is those words
+    /// title-cased ([`blueprint_name`]) — the derivation
+    /// `Instance$blueprintName` reports, so the catalog's name for a blueprint is
+    /// the name an instance created from it carries.
+    pub fn name(&self) -> String {
+        match self.published_name {
+            Some(name) => name.to_string(),
+            None => blueprint_name(self.blueprint_id),
+        }
     }
 
     /// `Blueprint$platform` — "The operating system platform (either
@@ -537,7 +648,7 @@ impl BlueprintSpec {
     /// or an application stack preinstalled on one. A per-entry marketing
     /// paragraph is not something this catalog knows.
     pub fn description(&self) -> String {
-        let name = blueprint_name(self.blueprint_id);
+        let name = self.name();
         if self.blueprint_type == BLUEPRINT_TYPE_APP {
             format!("{name} application stack, preinstalled on a Lightsail instance.")
         } else {
@@ -548,12 +659,17 @@ impl BlueprintSpec {
     /// `Blueprint$minPower` — "The minimum bundle power required to run this
     /// blueprint".
     ///
-    /// The power of the smallest instance plan the image runs on: a Windows
+    /// The power of the smallest instance plan the image runs on: the floor the
+    /// catalog publishes for the image where it publishes one
+    /// ([`Self::published_min_power`]), otherwise its platform's — a Windows
     /// image does not run on the smallest plan
     /// ([`WINDOWS_BLUEPRINT_MIN_POWER`]), and a Linux/Unix image this catalog
     /// publishes runs on every plan, which `0` states
     /// ([`BLUEPRINT_MIN_POWER_ANY_SIZE`]).
     pub fn min_power(&self) -> i32 {
+        if let Some(min_power) = self.published_min_power {
+            return min_power;
+        }
         if self.platform() == PLATFORM_WINDOWS {
             WINDOWS_BLUEPRINT_MIN_POWER
         } else {
@@ -563,9 +679,9 @@ impl BlueprintSpec {
 
     /// This entry as the modelled `Blueprint`.
     ///
-    /// `name` is [`blueprint_name`], the same derivation `Instance$blueprintName`
-    /// reports, so the catalog's name for a blueprint is the name an instance
-    /// created from it carries.
+    /// `name` is the catalog's own name for the image ([`Self::name`]), and
+    /// `version` the catalog generation's ([`BLUEPRINT_CATALOG_VERSION`]), which
+    /// every entry of one generation carries.
     pub fn view(&self) -> Blueprint {
         // `productUrl` and `licenseUrl` are optional, and an entry whose vendor
         // publishes neither carries neither: an empty link in the catalog is
@@ -573,13 +689,13 @@ impl BlueprintSpec {
         let link = |url: &'static str| (!url.is_empty()).then(|| url.to_string());
         Blueprint {
             blueprint_id: Some(self.blueprint_id.to_string()),
-            name: Some(blueprint_name(self.blueprint_id)),
+            name: Some(self.name()),
             group: Some(self.group.to_string()),
             r#type: Some(self.blueprint_type.to_string()),
             description: Some(self.description()),
             is_active: Some(self.is_active),
             min_power: Some(self.min_power()),
-            version: self.version(),
+            version: Some(BLUEPRINT_CATALOG_VERSION.to_string()),
             version_code: Some(BLUEPRINT_VERSION_CODE.to_string()),
             product_url: link(self.product_url),
             license_url: link(self.license_url),

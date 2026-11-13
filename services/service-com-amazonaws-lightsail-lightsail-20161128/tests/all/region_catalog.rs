@@ -99,6 +99,16 @@ fn description_stem(name: &str) -> &'static str {
     }
 }
 
+/// The clause the description of `name` closes with: an opt-in Region's sentence
+/// is punctuated with a period, a default-enabled Region's is not.
+fn description_close(name: &str) -> &'static str {
+    if OPT_IN_REGIONS.contains(&name) {
+        "."
+    } else {
+        ""
+    }
+}
+
 /// The two zone list members of the modelled `Region`, with the request member
 /// that asks for each.
 const ZONE_LISTS: &[(&str, &str)] = &[
@@ -365,8 +375,8 @@ async fn every_reported_region_describes_itself() {
     }
 }
 
-/// The Regions whose description AWS's own answer gives: the clause is per
-/// Region, so these are pinned by value while the rest are pinned by form.
+/// The description AWS's own answer gives for each served Region: the clause is
+/// per Region, so every row is pinned by value as well as by form.
 #[tokio::test]
 async fn the_regions_with_a_known_description_report_it() {
     let emulator = Emulator::new();
@@ -376,12 +386,15 @@ async fn the_regions_with_a_known_description_report_it() {
 
     // (region, the clause AWS reports after the sentence stem)
     //
-    // SOURCE: AWS's own answers for these Regions. The two eastern US Regions
-    // share one clause, and so do the two Regions AWS recommends for Ireland,
-    // the United Kingdom and Iceland. The rows span a Region whose clause names
-    // a country, one naming a city and an area, one naming several continents,
-    // two Regions sharing one clause, and an opt-in Region, whose sentence opens
-    // with the opt-in clause instead.
+    // SOURCE: AWS's own answers for these Regions. The clause names the whole
+    // geography the Region is recommended for — the Region's own territory
+    // together with the wider area, in AWS's wording and AWS's spelling of
+    // `Austalia` — never the territory alone. The two eastern US Regions share
+    // one clause, and so do the two Regions AWS recommends for Ireland, the
+    // United Kingdom and Iceland. The rows are every served Region, so they span
+    // a clause naming a country, one naming a city and an area, one naming
+    // several continents, two Regions sharing one clause, and the opt-in Regions,
+    // whose sentence opens with the opt-in clause and closes with a period.
     let known: &[(&str, &str)] = &[
         ("us-east-1", "the eastern United States"),
         ("us-east-2", "the eastern United States"),
@@ -389,25 +402,59 @@ async fn the_regions_with_a_known_description_report_it() {
             "us-west-2",
             "the northwestern United States, Alaska, and western Canada",
         ),
+        ("ap-south-1", "India and southern Asia"),
         ("ap-northeast-1", "Japan"),
         ("ap-northeast-2", "South Korea"),
+        ("ap-southeast-1", "India and Southeast Asia"),
+        (
+            "ap-southeast-2",
+            "Austalia, New Zealand, and the South Pacific",
+        ),
+        ("ca-central-1", "Canada and the northeastern United States"),
         ("eu-central-1", "Europe, the Middle East, and Africa"),
         ("eu-west-1", "Ireland, the United Kingdom, and Iceland"),
         ("eu-west-2", "Ireland, the United Kingdom, and Iceland"),
+        ("eu-west-3", "France and central Europe"),
         ("eu-north-1", "Stockholm and north Europe"),
-        ("eu-south-2", "Spain"),
+        ("sa-east-1", "Brazil and South America"),
+        ("ap-east-1", "Hong Kong and Asia"),
+        ("eu-south-2", "Spain and South Europe"),
+        ("ap-southeast-3", "Indonesia and Southeast Asia"),
+        ("ap-southeast-5", "Malaysia and Southeast Asia"),
     ];
 
     for (name, serves) in known {
         let region = regions
             .get(*name)
             .unwrap_or_else(|| panic!("case {name}: expected this served region to be reported"));
-        let expected = format!("{}{serves}", description_stem(name));
+        let expected = format!(
+            "{}{serves}{}",
+            description_stem(name),
+            description_close(name)
+        );
         assert_eq!(
             region["description"].as_str(),
             Some(expected.as_str()),
             "case {name}: expected {expected:?}, got {:?}",
             region["description"]
+        );
+        // And the clause is the wider geography rather than the place the Region
+        // is named after: a description that only restated `displayName` would
+        // tell a caller nothing about which users the Region is for.
+        let display_name = region["displayName"].as_str().unwrap_or_default();
+        assert_ne!(
+            *serves, display_name,
+            "case {name}: the clause must name the geography the Region serves, not its \
+             display name, got {serves:?}"
+        );
+    }
+
+    // Every served Region is pinned above: a Region added to the catalog without
+    // AWS's own clause for it would otherwise go unchecked.
+    for name in regions.keys() {
+        assert!(
+            known.iter().any(|(pinned, _)| pinned == name),
+            "case {name}: expected every served Region's description to be pinned here"
         );
     }
 }

@@ -62,10 +62,11 @@ const BUNDLE_MEMBERS: &[&str] = &[
 /// SOURCE: the managed-database plan table of the Lightsail pricing page — a
 /// standard plan at $15 a month with 1 GB RAM, 2 vCPUs and 40 GB of SSD storage,
 /// $30 with 2 GB / 2 vCPUs / 80 GB, $60 with 4 GB / 2 vCPUs / 120 GB, $115 with
-/// 8 GB / 2 vCPUs / 240 GB, $230 with 16 GB / 4 vCPUs / 480 GB and $460 with
+/// 8 GB / 2 vCPUs / 240 GB, $245 with 16 GB / 4 vCPUs / 480 GB and $490 with
 /// 32 GB / 8 vCPUs / 960 GB, 100 GB of included data transfer on the three
 /// smallest plans, 200 GB on the 8 GB plan, 300 GB on the 16 GB one and 400 GB
-/// on the largest, the price doubling with the plan above the 8 GB one — beside
+/// on the largest, each price the table's own figure for that plan rather than a
+/// step computed from the plan below it — beside
 /// the high-availability column of the same table, which sells the same hardware
 /// with a standby in a second Availability Zone for twice the standard price. The plans are the `2_0` generation the service publishes;
 /// the superseded `1_0` generation is retired, so it is not reported unless a
@@ -140,7 +141,7 @@ const PUBLISHED_PLANS: &[Plan] = &[
         ram_size_in_gb: 16.0,
         disk_size_in_gb: 480,
         transfer_per_month_in_gb: 300,
-        price: 230.0,
+        price: 245.0,
     },
     Plan {
         bundle_id: "2xlarge_2_0",
@@ -151,7 +152,7 @@ const PUBLISHED_PLANS: &[Plan] = &[
         ram_size_in_gb: 32.0,
         disk_size_in_gb: 960,
         transfer_per_month_in_gb: 400,
-        price: 460.0,
+        price: 490.0,
     },
 ];
 

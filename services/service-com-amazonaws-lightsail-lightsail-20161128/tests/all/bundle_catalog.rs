@@ -68,8 +68,9 @@ const WINDOWS: &str = "WINDOWS";
 /// count is two up to the 8 GB plan and doubles with the plan above it, and the
 /// Windows plan of a size costs more because it carries an operating-system
 /// licence. The rows span what the rule generalises over: the smallest plan, a
-/// mid-sized one, the two largest (whose size token carries a multiplier) and
-/// Windows plans of two different sizes.
+/// mid-sized one, the two largest published on both platforms (whose size token
+/// carries a multiplier), the largest published on Linux/Unix alone, and Windows
+/// plans of two different sizes.
 struct Expected {
     bundle_id: &'static str,
     instance_type: &'static str,
@@ -130,7 +131,19 @@ const EXPECTED: &[Expected] = &[
         disk_size_in_gb: 1_280,
         transfer_per_month_in_gb: 8_192,
         power: 6_000,
-        price: 324.0,
+        price: 384.0,
+    },
+    Expected {
+        bundle_id: "16xlarge_3_0",
+        instance_type: "16xlarge",
+        name: "16Xlarge",
+        platform: LINUX_UNIX,
+        cpu_count: 64,
+        ram_size_in_gb: 256.0,
+        disk_size_in_gb: 5_120,
+        transfer_per_month_in_gb: 11_264,
+        power: 8_000,
+        price: 1_764.0,
     },
     Expected {
         bundle_id: "micro_win_3_0",
@@ -469,7 +482,8 @@ async fn the_published_sample_plans_report_their_published_figures() {
 }
 
 /// The Windows plan of a size provides the same hardware as its Linux/Unix plan
-/// and costs more: the licence is what the extra buys.
+/// and costs more: the licence is what the extra buys. A size the plan table
+/// publishes no Windows price for has no Windows plan at all.
 #[tokio::test]
 async fn the_windows_plan_of_a_size_costs_more_than_its_linux_plan() {
     let emulator = Emulator::new();
@@ -477,16 +491,27 @@ async fn the_windows_plan_of_a_size_costs_more_than_its_linux_plan() {
 
     for spec in state::BUNDLE_SPECS {
         let case = spec.size;
-        let of = |platform: &str| -> Value {
+        let of = |platform: &str| -> Option<Value> {
             let id = state::bundle_id(spec.size, platform, state::BUNDLE_GENERATION);
             bundles
                 .iter()
                 .find(|bundle| member(bundle, "bundleId") == id)
-                .unwrap_or_else(|| panic!("case {case}: expected the plan {id:?} to be reported"))
-                .clone()
+                .cloned()
         };
-        let linux = of(LINUX_UNIX);
-        let windows = of(WINDOWS);
+        let linux = of(LINUX_UNIX)
+            .unwrap_or_else(|| panic!("case {case}: every published size has a Linux/Unix plan"));
+        let Some(windows) = of(WINDOWS) else {
+            assert!(
+                !spec.is_published_on(WINDOWS),
+                "case {case}: the plan table prices this size on Windows, so it must be reported"
+            );
+            continue;
+        };
+        assert!(
+            spec.is_published_on(WINDOWS),
+            "case {case}: a Windows plan was reported for a size the table does not price there, \
+             got {windows:?}"
+        );
 
         for hardware in [
             "cpuCount",
@@ -737,7 +762,7 @@ fn synthetic(size: &'static str, is_active: bool) -> state::BundleSpec {
         transfer_gb_per_month: 2_048,
         power: 500,
         price_usd_per_month: 5.0,
-        windows_price_usd_per_month: 12.0,
+        windows_price_usd_per_month: Some(12.0),
         is_active,
         app_categories: &[],
     }

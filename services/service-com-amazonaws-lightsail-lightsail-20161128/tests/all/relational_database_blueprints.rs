@@ -128,8 +128,8 @@ const EXPECTED_CATALOG: &[Expected] = &[
         blueprint_id: "postgres_18",
         engine: "postgres",
         major_version: "18",
-        engine_version: "18.5",
-        engine_version_description: "PostgreSQL 18.5-R1",
+        engine_version: "18.6",
+        engine_version_description: "PostgreSQL 18.6-R1",
         is_engine_default: true,
     },
 ];

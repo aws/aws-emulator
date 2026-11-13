@@ -528,6 +528,14 @@ pub fn billed_resources(
         } else {
             crate::state::PLATFORM_LINUX_UNIX
         };
+        // The create resolved this plan against the published catalog, so a size
+        // the catalog does not price on the instance's own platform is a fault of
+        // this emulator: a $0 estimate would be indistinguishable from a resource
+        // priced by nothing.
+        let price = instance
+            .bundle
+            .price(platform)
+            .ok_or_else(|| unpriced(crate::state::RESOURCE_TYPE_INSTANCE, &instance.bundle_id))?;
         billed.push(BilledResource {
             name: instance.name.clone(),
             resource_type: crate::state::RESOURCE_TYPE_INSTANCE,
@@ -535,7 +543,7 @@ pub fn billed_resources(
             charges: vec![Charge::plan(
                 bundle_usage_type(&instance.bundle_id),
                 1.0,
-                f64::from(instance.bundle.price(platform)),
+                f64::from(price),
             )],
         });
     }
