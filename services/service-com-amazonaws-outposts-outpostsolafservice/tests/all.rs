@@ -101,6 +101,8 @@ mod outpost_deletion_cascade;
 mod outpost_hardware_installation;
 #[path = "all/outpost_hardware_type_change.rs"]
 mod outpost_hardware_type_change;
+#[path = "all/outpost_installed_hardware_facts.rs"]
+mod outpost_installed_hardware_facts;
 #[path = "all/outpost_order_driven_lifecycle.rs"]
 mod outpost_order_driven_lifecycle;
 #[path = "all/outpost_server_asset_kind.rs"]

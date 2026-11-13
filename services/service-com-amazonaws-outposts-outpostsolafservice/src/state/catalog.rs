@@ -889,6 +889,15 @@ pub struct CatalogItemRecord {
     /// which is what an Outpost ordered from this item has provisioned on it (see
     /// [`CatalogConfiguration::s3_capacity_bytes`]).
     pub s3_capacity_bytes: i64,
+    /// The `OutpostGeneration` of this item's hardware.
+    ///
+    /// Held BESIDE the projection for the reason [`Self::capacity_vcpus`] is: the
+    /// modelled `CatalogItem` carries neither the class nor the generation of a
+    /// configuration, only what they imply. It is the generation of the hardware an
+    /// Outpost ordered from this item is installed with, which is the generation that
+    /// Outpost then reports as its own (see
+    /// [`super::ComAmazonawsOutpostsOutpostsolafserviceState::installed_configuration`]).
+    pub generation: &'static str,
     /// The entry as a read of the catalog reports it.
     pub item: CatalogItem,
 }
@@ -1061,12 +1070,13 @@ pub fn catalog_item_catalog() -> Vec<CatalogItemRecord> {
         "a configuration carries S3 capacity exactly when it supports S3 storage"
     );
     let instance_types = instance_type_specifications();
-    let mut items: Vec<(i32, i64, CatalogItem)> = CATALOG_ITEMS
+    let mut items: Vec<(i32, i64, &'static str, CatalogItem)> = CATALOG_ITEMS
         .iter()
         .map(|config| {
             (
                 config.capacity_vcpus,
                 config.s3_capacity_bytes,
+                config.generation,
                 CatalogItem {
                     catalog_item_id: Some(sku_code(&config.sku_seed())),
                     item_status: Some(config.item_status.to_string()),
@@ -1105,17 +1115,18 @@ pub fn catalog_item_catalog() -> Vec<CatalogItemRecord> {
     debug_assert!(
         items
             .windows(2)
-            .all(|pair| pair[0].2.catalog_item_id != pair[1].2.catalog_item_id),
+            .all(|pair| pair[0].3.catalog_item_id != pair[1].3.catalog_item_id),
         "no two catalog configurations are published under one SkuCode"
     );
     items
         .into_iter()
         .enumerate()
         .map(
-            |(index, (capacity_vcpus, s3_capacity_bytes, item))| CatalogItemRecord {
+            |(index, (capacity_vcpus, s3_capacity_bytes, generation, item))| CatalogItemRecord {
                 sequence: u64::try_from(index).unwrap_or_default() + 1,
                 capacity_vcpus,
                 s3_capacity_bytes,
+                generation,
                 item,
             },
         )

@@ -37,6 +37,12 @@ impl ComAmazonawsOutpostsOutpostsolafserviceState {
     /// Outpost was owed by a later form factor
     /// ([`OutpostRecord::set_supported_hardware_type`]) places that form factor's
     /// hardware.
+    ///
+    /// An Outpost REPORTS the hardware it was installed with: `Outpost$Generation` is
+    /// "the Outpost generation" and `Outpost$RackScalingType` "the rack scaling type",
+    /// both facts of that hardware, so the install writes them from the published
+    /// configuration it placed ([`Self::installed_configuration`]) — and an Outpost
+    /// nothing has been installed on goes on reporting neither.
     pub fn settle_outposts(&mut self) {
         self.settle_orders();
         let now = std::time::Instant::now();
@@ -45,38 +51,56 @@ impl ComAmazonawsOutpostsOutpostsolafserviceState {
         // against the catalog first and applied after, because the hardware a unit runs
         // is read from the same specifications every other report of an instance type
         // of this service is read from.
-        let settled: Vec<(String, Vec<AssetInfo>)> = self
+        let settled: Vec<SettledInstall> = self
             .outposts
             .iter()
             .filter(|(_, record)| record.active_at.is_some_and(|due| now >= due))
             .map(|(outpost_id, record)| {
+                let form_factor = record.outpost.supported_hardware_type.as_deref();
                 let hardware = match record.assets.is_empty() {
                     true => installed_hardware(
                         record.sequence,
-                        record.outpost.supported_hardware_type.as_deref(),
+                        form_factor,
                         &self.instance_type_specifications,
                     ),
                     false => Vec::new(),
                 };
-                (outpost_id.clone(), hardware)
+                // The published configuration that hardware IS, which is what the
+                // Outpost reports the generation and the rack scaling type of.
+                let configuration = form_factor.and_then(|form_factor| {
+                    self.installed_configuration(&record.region, outpost_id, form_factor)
+                });
+                SettledInstall {
+                    outpost_id: outpost_id.clone(),
+                    hardware,
+                    generation: configuration.map(|record| record.generation.to_string()),
+                    rack_scaling_type: configuration
+                        .and_then(|record| record.item.rack_scaling_type.clone()),
+                }
             })
             .collect();
-        for (outpost_id, hardware) in settled {
+        for install in settled {
             // The install places hardware, so each unit it places takes its own
             // creation sequence out of the store's creation order the moment it is
             // placed (see [`OutpostRecord::asset_sequence_base`]).
-            let installed = match hardware.is_empty() {
+            let installed = match install.hardware.is_empty() {
                 true => None,
-                false => Some(self.reserve_sequences(hardware.len())),
+                false => Some(self.reserve_sequences(install.hardware.len())),
             };
-            let Some(record) = self.outposts.get_mut(&outpost_id) else {
+            let Some(record) = self.outposts.get_mut(&install.outpost_id) else {
                 continue;
             };
             record.outpost.life_cycle_status = Some(LIFE_CYCLE_STATUS_ACTIVE.to_string());
             record.active_at = None;
             if let Some(base) = installed {
                 record.asset_sequence_base = base;
-                record.assets = hardware;
+                record.assets = install.hardware;
+                // Written WITH the hardware they describe, so no Outpost ever reports
+                // the generation or the scaling type of a configuration it does not
+                // hold; hardware whose configuration this service publishes no facts
+                // for leaves both absent rather than carrying an invented value.
+                record.outpost.generation = install.generation;
+                record.outpost.rack_scaling_type = install.rack_scaling_type;
             }
         }
     }
@@ -309,4 +333,26 @@ impl ComAmazonawsOutpostsOutpostsolafserviceState {
             }
         }
     }
+}
+
+/// What ONE install an Outpost was owed puts on it — what
+/// [`ComAmazonawsOutpostsOutpostsolafserviceState::settle_outposts`] works out while it
+/// walks the Outposts and applies once it has, exactly as
+/// [`SettledConfiguration`] is for a capacity task.
+///
+/// The hardware and the published facts of it travel TOGETHER because they are one
+/// install: the units standing on the Outpost and the configuration those units are.
+#[derive(Debug, Clone)]
+struct SettledInstall {
+    /// The bare `OutpostId` of the Outpost the install is owed to.
+    outpost_id: String,
+    /// The units the install places, or none at all for an Outpost that already holds
+    /// its own hardware.
+    hardware: Vec<AssetInfo>,
+    /// The `OutpostGeneration` of the configuration that hardware is, or `None` where
+    /// this service publishes no configuration for it.
+    generation: Option<String>,
+    /// The `RackScalingType` of the same configuration, or `None` where it publishes
+    /// none — rack scaling does not apply to a single server.
+    rack_scaling_type: Option<String>,
 }

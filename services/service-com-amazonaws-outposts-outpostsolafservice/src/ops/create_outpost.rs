@@ -275,10 +275,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // default for it, so an Outpost the caller named none for reports
             // none rather than a guessed form factor.
             supported_hardware_type: crate::state::non_empty(input.supported_hardware_type),
-            // `Generation` and `RackScalingType` describe the hardware an order
-            // installs; `CreateOutpost` takes neither, and nothing in this slice
-            // places hardware, so the emulator reports no value rather than
-            // inventing one.
+            // `Generation` and `RackScalingType` are facts of the hardware installed
+            // on an Outpost, and `CreateOutpost` installs none: the hardware arrives
+            // with the fulfilment of an order placed on the Outpost, and the install
+            // that places it is what records the published generation and rack scaling
+            // type of the configuration it placed
+            // (`crate::state::ComAmazonawsOutpostsOutpostsolafserviceState::settle_outposts`).
+            // So a just-created Outpost reports neither, exactly as it reports no asset.
             generation: None,
             rack_scaling_type: None,
         };

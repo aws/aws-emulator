@@ -193,6 +193,40 @@ impl ComAmazonawsOutpostsOutpostsolafserviceState {
         names
     }
 
+    /// The published hardware configuration the hardware INSTALLED on the Outpost
+    /// `outpost_id` names in `region` came from, for an Outpost whose form factor names
+    /// `form_factor` — or `None` where this service publishes no configuration the
+    /// Outpost's orders named for that hardware.
+    ///
+    /// The hardware an Outpost holds is the configuration an order placed on it
+    /// delivered ([`installed_hardware`]), so every published FACT of that hardware is
+    /// read off the catalog entry those orders named rather than kept as a second copy
+    /// of the catalog beside it. Which orders delivered it is the same question
+    /// [`Self::subscribed_orders`] answers for every other report of what an Outpost's
+    /// orders bought, and the entry is the FIRST one their line items name, in the order
+    /// those orders were placed: it is the configuration the install placed, and a later
+    /// order delivers no second configuration for the hardware already standing there.
+    ///
+    /// Narrowed to the entries published in the class `form_factor` names, because the
+    /// facts reported have to be facts of the hardware the Outpost HOLDS: an entry of
+    /// another class describes hardware this Outpost was not installed with. A line item
+    /// naming a SKU this service publishes nothing under carries no published facts at
+    /// all, exactly as it contributes no capacity to
+    /// [`Self::subscribed_capacity_vcpus`].
+    pub fn installed_configuration(
+        &self,
+        region: &str,
+        outpost_id: &str,
+        form_factor: &str,
+    ) -> Option<&CatalogItemRecord> {
+        self.subscribed_orders(region, outpost_id)
+            .into_iter()
+            .flat_map(|record| record.order.line_items.iter().flatten())
+            .filter_map(|item| item.catalog_item_id.as_deref())
+            .filter_map(|catalog_item_id| self.catalog_item(catalog_item_id))
+            .find(|record| record.item.item_class.as_deref() == Some(form_factor))
+    }
+
     /// The EC2 capacity, in vCPUs, UNDER SUBSCRIPTION on the Outpost `outpost_id`
     /// names in `region`: for every order placed against that Outpost and not
     /// cancelled, the published capacity of each line item's catalog item times the

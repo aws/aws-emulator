@@ -667,6 +667,14 @@ impl OutpostRecord {
             return;
         }
         self.assets.clear();
+        // `Generation` and `RackScalingType` are facts of the hardware that just came
+        // out, so they come out with it: the newly named configuration's own are
+        // written when the install that places it falls due
+        // ([`ComAmazonawsOutpostsOutpostsolafserviceState::settle_outposts`]), and
+        // until then the Outpost reports the facts of no configuration at all, exactly
+        // as it reports no asset.
+        self.outpost.generation = None;
+        self.outpost.rack_scaling_type = None;
         self.active_at = Some(std::time::Instant::now() + OUTPOST_PROVISIONING);
     }
 }
