@@ -169,6 +169,8 @@ mod partiql_unsupported_operations;
 mod point_in_time_item_history;
 #[path = "all/probe.rs"]
 mod probe;
+#[path = "all/provisioned_capacity_metrics.rs"]
+mod provisioned_capacity_metrics;
 #[path = "all/provisioned_read_capacity.rs"]
 mod provisioned_read_capacity;
 #[path = "all/query_indexes_and_projections.rs"]

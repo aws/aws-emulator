@@ -2860,6 +2860,13 @@ pub struct CapacityQuotas {
 pub struct ComAmazonawsDynamodbDynamodb20120810State {
     /// Every table this emulator holds, keyed by region and then by table name.
     pub regions: HashMap<String, HashMap<String, Table>>,
+    /// What this service has already sampled of each table's PROVISIONED capacity, and when
+    /// ([`provisioned_capacity_metrics::Publisher`]).
+    ///
+    /// The schedule is the store's rather than any one table's, because the figures are read
+    /// off the tables themselves: this is only the record of what has been published, so a
+    /// sample the schedule has made due is taken once however many requests arrive in it.
+    pub provisioned_metrics: provisioned_capacity_metrics::Publisher,
     /// The transactions already applied under a `ClientRequestToken`, keyed by the
     /// REGION the call was signed for and that token — a table name resolves inside one
     /// region, so a token stands for the transaction it ran in that region and nowhere
@@ -4396,6 +4403,13 @@ pub mod consumed_capacity_metrics;
 pub use consumed_capacity_metrics::{
     charge_reported_capacity, charge_reported_ledger, publish_pending_consumed, Consumed,
 };
+
+/// The CloudWatch series this service samples a table's PROVISIONED throughput into, in their
+/// own file: they are about the capacity a table HOLDS rather than about the capacity its
+/// requests consume. Re-exported below, so every caller still names them `crate::state::…`.
+pub mod provisioned_capacity_metrics;
+
+pub use provisioned_capacity_metrics::publish_due_provisioned_capacity;
 
 // ===========================================================================
 // The PartiQL dialect `ExecuteStatement` runs

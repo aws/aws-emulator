@@ -105,6 +105,24 @@ pub enum Series {
     GlobalSecondaryIndex(String),
 }
 
+impl Series {
+    /// The dimension set DynamoDB publishes this series of `table` under.
+    ///
+    /// The table's own series is dimensioned by the table alone; an index's carries the index
+    /// BESIDE it, because the index dimension identifies an index WITHIN a table and a series
+    /// keyed by an index name alone is not one DynamoDB has. Shared with every other family a
+    /// table publishes, so the two cannot be published under different dimensions
+    /// ([`crate::state::provisioned_capacity_metrics`]).
+    pub fn dimensions(&self, table: &str) -> cloudwatch::state::DimensionSet {
+        let mut dimensions = cloudwatch::state::DimensionSet::new();
+        dimensions.insert(TABLE_NAME.to_string(), table.to_string());
+        if let Self::GlobalSecondaryIndex(index) = self {
+            dimensions.insert(GLOBAL_SECONDARY_INDEX_NAME.to_string(), index.clone());
+        }
+        dimensions
+    }
+}
+
 /// One charge against a table's throughput: how much, of which half, into which series, and
 /// when.
 #[derive(Debug, Clone)]
@@ -314,13 +332,7 @@ pub fn publish_pending_consumed<Eng: Send + Sync + 'static>(engine: &Eng) {
     };
     let mut store = metrics.lock();
     for (table_name, observation) in charged {
-        let mut dimensions = cloudwatch::state::DimensionSet::new();
-        dimensions.insert(TABLE_NAME.to_string(), table_name.clone());
-        if let Series::GlobalSecondaryIndex(index) = &observation.series {
-            // The index dimension identifies an index WITHIN a table, so it is published
-            // BESIDE the table's own dimension and never on its own.
-            dimensions.insert(GLOBAL_SECONDARY_INDEX_NAME.to_string(), index.clone());
-        }
+        let dimensions = observation.series.dimensions(&table_name);
         let key = cloudwatch::state::MetricKey {
             namespace: NAMESPACE.to_string(),
             metric_name: observation.consumed.metric_name().to_string(),

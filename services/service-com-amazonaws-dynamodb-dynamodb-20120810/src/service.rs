@@ -615,6 +615,10 @@ impl<Eng: Send + Sync + 'static> ErasedOperation for OperationScopedClauseForm<E
             // lock, and the series it belongs to is CloudWatch's own, so the publish happens
             // here, with that lock released and the request already served.
             crate::state::publish_pending_consumed(&*self.engine);
+            // And where the capacity a provisioned table HOLDS is sampled into its own
+            // series: a level the schedule has made a sample of due, taken with the store's
+            // lock released ([`crate::state::provisioned_capacity_metrics`]).
+            crate::state::publish_due_provisioned_capacity(&*self.engine);
             // And where the request itself is counted: a served table request is an
             // observation of its operation's latency on that table, published into the same
             // CloudWatch store.
