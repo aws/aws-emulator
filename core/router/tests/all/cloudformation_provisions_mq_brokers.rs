@@ -38,11 +38,26 @@ use smithy_server_runtime::MultiServiceRouter;
 // The same encoder escapes a value for a non-greedy URI label, which is what an SDK sends.
 use super::query_wire::{elements, form_encode, opt_element};
 
-/// Long enough for the stack's clock-owed span (`STATUS_TRANSITION_DELAY`, 500 ms) and the
-/// broker's own `CREATION_IN_PROGRESS` -> `RUNNING` span (`BROKER_PROVISIONING`, 500 ms) to
-/// come due, so the stack reports the template it deployed and Amazon MQ reports the broker
-/// ready.
-const PAST_BOTH_SPANS: Duration = Duration::from_millis(1_200);
+/// How long one poll waits before the next, and how many are made: every transition this
+/// suite waits for is owed on the emulator's own clock, so the suite waits for the CONDITION
+/// and never for a span. The budget is deliberately far longer than the spans themselves, so
+/// a loaded host does not decide the outcome.
+const POLL_INTERVAL: Duration = Duration::from_millis(25);
+/// See [`POLL_INTERVAL`].
+const POLLS: usize = 800;
+
+/// The `StackStatus` a create reports while it runs, and the one a completed create reports.
+const CREATE_IN_PROGRESS: &str = "CREATE_IN_PROGRESS";
+const CREATE_COMPLETE: &str = "CREATE_COMPLETE";
+
+/// The `BrokerState` Amazon MQ reports a broker in once it has finished coming up.
+///
+/// That service's `CreateBroker` is asynchronous, so the broker it mints is answered for in a
+/// non-terminal state and this one is owed on ITS own clock, measured from the create
+/// CloudFormation made for it — which is not the instant the stack's own span elapses. So this
+/// is a CONDITION to wait for ([`broker_once_it_is_running`]) and never something the stack's
+/// completion decides.
+const BROKER_RUNNING: &str = "RUNNING";
 
 /// The single account id this emulator mints every ARN under.
 const ACCOUNT: &str = "000000000000";
@@ -117,6 +132,88 @@ async fn mq(router: &MultiServiceRouter, region: &str, method: &str, path: &str)
     let status = response.status().as_u16();
     let payload: Value = serde_json::from_slice(response.body()).unwrap_or(Value::Null);
     (status, payload)
+}
+
+/// The `StackStatus` `stack` reports now, with the answer it was read from.
+async fn stack_status(router: &MultiServiceRouter, region: &str, stack: &str) -> (String, String) {
+    let (status, body) =
+        cloudformation(router, region, "DescribeStacks", &[("StackName", stack)]).await;
+    assert_eq!(
+        status, 200,
+        "DescribeStacks {stack:?}: expected HTTP 200, got {status} with body {body}"
+    );
+    (opt_element(&body, "StackStatus").unwrap_or_default(), body)
+}
+
+/// Poll `stack` until it reports a status the create has FINISHED in — anything other than the
+/// one it is still running in — and answer that status with the answer it was read from. Every
+/// transition on the way is owed on the stack's own clock, so this waits for the CONDITION
+/// rather than for a span.
+async fn wait_past_the_create(
+    router: &MultiServiceRouter,
+    region: &str,
+    stack: &str,
+) -> (String, String) {
+    let mut last = stack_status(router, region, stack).await;
+    for _ in 0..POLLS {
+        if last.0 != CREATE_IN_PROGRESS {
+            return last;
+        }
+        tokio::time::sleep(POLL_INTERVAL).await;
+        last = stack_status(router, region, stack).await;
+    }
+    last
+}
+
+/// The broker Amazon MQ holds for `broker_id`, read again until that service reports it has
+/// finished coming up ([`BROKER_RUNNING`]) — the state the broker's own clock owes it after
+/// the create, which the stack reaching its terminal status does not imply.
+///
+/// Waits for the CONDITION on the same budget as every other wait here ([`POLL_INTERVAL`],
+/// [`POLLS`]) and never for a span, and answers the LAST read either way, so the assertions on
+/// it report what Amazon MQ really said rather than how fast the host ran.
+async fn broker_once_it_is_running(
+    router: &MultiServiceRouter,
+    region: &str,
+    broker_id: &str,
+) -> (u16, Value) {
+    let uri = format!("/v1/brokers/{}", form_encode(broker_id));
+    let mut last = mq(router, region, "GET", &uri).await;
+    for _ in 0..POLLS {
+        // A read that is not answered at all is not a transient condition — the id came out of
+        // the stack's own outputs — so it is answered straight back for the assertions to
+        // report, rather than waited on.
+        if last.0 != 200 || last.1.get("brokerState").and_then(Value::as_str) == Some(BROKER_RUNNING)
+        {
+            return last;
+        }
+        tokio::time::sleep(POLL_INTERVAL).await;
+        last = mq(router, region, "GET", &uri).await;
+    }
+    last
+}
+
+/// The Amazon MQ read of the broker `broker_id`, repeated until that service no longer holds
+/// it — the condition the stack's deletion of the broker leaves behind.
+///
+/// Waited for rather than assumed to have happened by the instant the stack's own delete
+/// answered, for the reason [`broker_once_it_is_running`] waits: what that service does with a
+/// broker is owed on ITS clock, not on CloudFormation's.
+async fn broker_once_it_is_gone(
+    router: &MultiServiceRouter,
+    region: &str,
+    broker_id: &str,
+) -> (u16, Value) {
+    let uri = format!("/v1/brokers/{}", form_encode(broker_id));
+    let mut last = mq(router, region, "GET", &uri).await;
+    for _ in 0..POLLS {
+        if last.0 == 404 {
+            return last;
+        }
+        tokio::time::sleep(POLL_INTERVAL).await;
+        last = mq(router, region, "GET", &uri).await;
+    }
+    last
 }
 
 /// A `DescribeStacks` answer's `Outputs`, as the key/value map a client reads it as. Each
@@ -486,18 +583,10 @@ async fn a_stack_provisions_the_mq_broker_its_template_declares() {
         );
 
         // The stack reports the template it deployed once the create COMPLETES.
-        tokio::time::sleep(PAST_BOTH_SPANS).await;
-        let (status, described) =
-            cloudformation(&router, region, "DescribeStacks", &[("StackName", &stack_name)]).await;
+        let (reported, described) = wait_past_the_create(&router, region, &stack_name).await;
         assert_eq!(
-            status, 200,
-            "case {case:?}: expected HTTP 200 from DescribeStacks, got {status} with body \
-             {described}"
-        );
-        assert_eq!(
-            opt_element(&described, "StackStatus").as_deref(),
-            Some("CREATE_COMPLETE"),
-            "case {case:?}: expected the stack to reach CREATE_COMPLETE, got {described}"
+            reported, CREATE_COMPLETE,
+            "case {case:?}: expected the stack to reach {CREATE_COMPLETE}, got {described}"
         );
 
         // The physical resource id of the declared resource: what a client reads out of
@@ -561,8 +650,7 @@ async fn a_stack_provisions_the_mq_broker_its_template_declares() {
         }
 
         // And Amazon MQ itself resolves that id to the broker the template configured.
-        let read_uri = format!("/v1/brokers/{}", form_encode(&broker_id));
-        let (status, broker) = mq(&router, region, "GET", &read_uri).await;
+        let (status, broker) = broker_once_it_is_running(&router, region, &broker_id).await;
         assert_eq!(
             status, 200,
             "case {case:?}: expected HTTP 200 from the Amazon MQ read of the id the stack \
@@ -572,7 +660,7 @@ async fn a_stack_provisions_the_mq_broker_its_template_declares() {
             ("brokerId", broker_id.as_str()),
             ("brokerArn", broker_arn.as_str()),
             ("brokerName", row.expected_name),
-            ("brokerState", "RUNNING"),
+            ("brokerState", BROKER_RUNNING),
             ("engineType", row.expected_engine_type),
             ("deploymentMode", row.expected_deployment_mode),
             ("hostInstanceType", row.expected_host_instance_type),
@@ -794,7 +882,7 @@ async fn a_stack_provisions_the_mq_broker_its_template_declares() {
             status, 200,
             "case {case:?}: expected HTTP 200 from DeleteStack, got {status} with body {body}"
         );
-        let (status, gone) = mq(&router, region, "GET", &read_uri).await;
+        let (status, gone) = broker_once_it_is_gone(&router, region, &broker_id).await;
         assert_eq!(
             status, 404,
             "case {case:?}: expected HTTP 404 from the Amazon MQ read once the stack deleted \
@@ -849,15 +937,15 @@ async fn a_second_broker_of_one_name_fails_the_stack() {
             "case {case:?}: expected HTTP 200 from CreateStack for {stack}, got {status} with \
              body {body}"
         );
-        tokio::time::sleep(PAST_BOTH_SPANS).await;
+        wait_past_the_create(&router, region, stack).await;
     }
 
     let (_, first) =
         cloudformation(&router, region, "DescribeStacks", &[("StackName", "mq-first")]).await;
     assert_eq!(
         opt_element(&first, "StackStatus").as_deref(),
-        Some("CREATE_COMPLETE"),
-        "case {case:?}: expected the first stack to reach CREATE_COMPLETE, got {first}"
+        Some(CREATE_COMPLETE),
+        "case {case:?}: expected the first stack to reach {CREATE_COMPLETE}, got {first}"
     );
     let broker_id = outputs_of(&first)
         .remove("BrokerId")

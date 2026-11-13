@@ -54,6 +54,15 @@ const CREATE_COMPLETE: &str = "CREATE_COMPLETE";
 /// The `ResourceStatus` every resource of a completed create reports.
 const RESOURCE_CREATE_COMPLETE: &str = "CREATE_COMPLETE";
 
+/// The `BrokerState` Amazon MQ reports a broker in once it has finished coming up.
+///
+/// That service's `CreateBroker` is asynchronous, so the broker it mints is answered for in a
+/// non-terminal state and this one is owed on ITS own clock, measured from the create
+/// CloudFormation made for it — which is not the instant the stack's own span elapses. So this
+/// is a CONDITION to wait for ([`broker_once_it_is_running`]) and never something the stack's
+/// completion decides.
+const BROKER_RUNNING: &str = "RUNNING";
+
 /// The logical ids the template declares its five resources under.
 const SECRET: &str = "BrokerSecret";
 const BROKER: &str = "RabbitMqBroker";
@@ -326,6 +335,30 @@ async fn wait_past_the_create(router: &MultiServiceRouter, stack: &str) -> (Stri
     last
 }
 
+/// The broker Amazon MQ holds for `broker_id`, read again until that service reports it has
+/// finished coming up ([`BROKER_RUNNING`]) — the state the broker's own clock owes it after
+/// the create, which the stack reaching its terminal status does not imply.
+///
+/// Waits for the CONDITION on the same budget as every other wait here ([`POLL_INTERVAL`],
+/// [`POLLS`]) and never for a span, and answers the LAST read either way, so the assertions on
+/// it report what Amazon MQ really said rather than how fast the host ran.
+async fn broker_once_it_is_running(router: &MultiServiceRouter, broker_id: &str) -> (u16, Value) {
+    let uri = format!("/v1/brokers/{}", form_encode(broker_id));
+    let mut last = rest_json(router, "mq", "GET", &uri).await;
+    for _ in 0..POLLS {
+        // A read that is not answered at all is not a transient condition — the id came out of
+        // the stack's own outputs — so it is answered straight back for the assertions to
+        // report, rather than waited on.
+        if last.0 != 200 || last.1.get("brokerState").and_then(Value::as_str) == Some(BROKER_RUNNING)
+        {
+            return last;
+        }
+        tokio::time::sleep(POLL_INTERVAL).await;
+        last = rest_json(router, "mq", "GET", &uri).await;
+    }
+    last
+}
+
 /// Every `ResourceStatusReason` the stack has recorded, so a deployment that did not reach
 /// the status the rule states reports WHY rather than only that it did not.
 async fn failure_reasons(router: &MultiServiceRouter, stack: &str) -> Vec<String> {
@@ -402,13 +435,7 @@ async fn the_reference_rabbitmq_consumer_estate_deploys_in_one_stack() {
     // ---- The broker: the id the stack publishes is the one Amazon MQ answers to. ----
     let broker_id = output(&described, "BrokerId");
     let broker_arn = output(&described, "BrokerArn");
-    let (status, broker) = rest_json(
-        &router,
-        "mq",
-        "GET",
-        &format!("/v1/brokers/{}", form_encode(&broker_id)),
-    )
-    .await;
+    let (status, broker) = broker_once_it_is_running(&router, &broker_id).await;
     assert_eq!(
         status, 200,
         "case {case:?}: expected Amazon MQ to resolve the broker id {broker_id:?} the stack \
@@ -418,7 +445,7 @@ async fn the_reference_rabbitmq_consumer_estate_deploys_in_one_stack() {
         ("brokerId", broker_id.as_str()),
         ("brokerArn", broker_arn.as_str()),
         ("brokerName", BROKER_NAME),
-        ("brokerState", "RUNNING"),
+        ("brokerState", BROKER_RUNNING),
     ] {
         let answered = broker.get(member).and_then(Value::as_str);
         assert_eq!(

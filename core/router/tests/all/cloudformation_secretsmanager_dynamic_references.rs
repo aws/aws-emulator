@@ -56,6 +56,15 @@ const CREATE_IN_PROGRESS: &str = "CREATE_IN_PROGRESS";
 const CREATE_COMPLETE: &str = "CREATE_COMPLETE";
 const ROLLBACK: &str = "ROLLBACK";
 
+/// The `BrokerState` Amazon MQ reports a broker in once it has finished coming up.
+///
+/// That service's `CreateBroker` is asynchronous, so the broker it mints is answered for in a
+/// non-terminal state and this one is owed on ITS own clock, measured from the create
+/// CloudFormation made for it — which is not the instant the stack's own span elapses. So this
+/// is a CONDITION to wait for ([`described_running_broker`]) and never something the stack's
+/// completion decides.
+const BROKER_RUNNING: &str = "RUNNING";
+
 /// The logical ids the templates here declare their resources under.
 const SECRET_LOGICAL_ID: &str = "Secret";
 const TARGET_LOGICAL_ID: &str = "Target";
@@ -191,15 +200,17 @@ async fn described_broker(router: &MultiServiceRouter, broker_id: &str) -> (u16,
 }
 
 /// [`described_broker`], read again until the broker reports the state Amazon MQ owes a
-/// created one (`RUNNING`), or the polls run out.
+/// created one ([`BROKER_RUNNING`]), or the polls run out.
 ///
 /// The broker's own `CREATION_IN_PROGRESS` -> `RUNNING` move is owed on ITS clock, which the
 /// stack reaching `CREATE_COMPLETE` says nothing about: the condition is waited for rather
-/// than assumed to have happened by then.
+/// than assumed to have happened by then. A read that is not answered at all is no transient
+/// condition — the id came out of the stack's own outputs — so it is answered straight back
+/// for the assertions to report rather than waited on.
 async fn described_running_broker(router: &MultiServiceRouter, broker_id: &str) -> (u16, Value) {
     let mut last = described_broker(router, broker_id).await;
     for _ in 0..POLLS {
-        let running = last.1.get("brokerState").and_then(Value::as_str) == Some("RUNNING");
+        let running = last.1.get("brokerState").and_then(Value::as_str) == Some(BROKER_RUNNING);
         if last.0 != 200 || running {
             return last;
         }
@@ -873,7 +884,7 @@ async fn a_broker_is_created_with_the_password_its_reference_resolves_to() {
     );
     for (member, expected) in [
         ("brokerName", broker_name),
-        ("brokerState", "RUNNING"),
+        ("brokerState", BROKER_RUNNING),
         // `DescribeBroker` reports the engine by the name Amazon MQ publishes for it
         // (`EngineType`'s modelled value spelled as that service answers it), not by the
         // enum spelling the declaration states.
