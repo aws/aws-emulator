@@ -6,14 +6,19 @@
 //! An account has three readers of its management events. One is CloudTrail's own
 //! `LookupEvents`, which reads the log [`crate::management_events`] holds. The second is
 //! EventBridge: while a trail of the Region is logging management events, each call that
-//! trail logs is ALSO published onto the account's default event bus, under the
-//! `detail-type` [`API_CALL_DETAIL_TYPE`] with `source` `aws.<service>` and the CloudTrail
-//! record of the call as the event's `detail`. That is the only path a control-plane call
-//! of a service with no event source of its own has to an event-driven consumer, and it is
-//! what a rule like
+//! trail logs AND THAT CHANGED THE ACCOUNT is also published onto the account's default
+//! event bus, under the `detail-type` [`API_CALL_DETAIL_TYPE`] with `source`
+//! `aws.<service>` and the CloudTrail record of the call as the event's `detail`. That is
+//! the only path a control-plane call of a service with no event source of its own has to
+//! an event-driven consumer, and it is what a rule like
 //! `{"source":["aws.cloudfront"],"detail-type":["AWS API Call via CloudTrail"]}` matches.
 //! The third reads the trail's own bucket, which is [`crate::trail_log_files`]' leg of the
 //! same delivery and travels with the event here.
+//!
+//! A call that only REPORTED state reaches the first and the third reader and not this one:
+//! a read is recorded in event history and written into each logging trail's bucket, and no
+//! event is published for it ([`DeliveredApiCall::on_default_bus`]). So a consumer wired to
+//! this channel sees the calls that changed the account, never its own polling.
 //!
 //! The publication therefore hangs off the SAME seam the recording does
 //! ([`crate::audited_operation`]): the service that served the call records it, the log
@@ -84,17 +89,31 @@ pub struct DeliveredApiCall {
     /// ([`crate::trail_log_files`]). Empty when no logging trail of the account has a
     /// destination bucket.
     pub log_files: Vec<crate::trail_log_files::DeliveredLogFile>,
+    /// Whether this record is also PUBLISHED onto the account's default event bus.
+    ///
+    /// The fan-out carries the management calls that CHANGED the account. A call that only
+    /// reported state (`readOnly`) is logged and delivered to every logging trail's bucket
+    /// like any other, and no `AWS API Call via CloudTrail` event is published for it — so a
+    /// rule over a service's API-call events is driven by the writes made on its resources
+    /// and not by the reads a client or a console made while watching them.
+    pub on_default_bus: bool,
 }
 
 impl DeliveredApiCall {
-    /// Deliver this record everywhere the account's CloudTrail delivers it: onto the
-    /// account's default event bus, and into the bucket of each trail that logs the call.
+    /// Deliver this record everywhere the account's CloudTrail delivers it: into the bucket
+    /// of each trail that logs the call, and — for a call that changed the account
+    /// ([`Self::on_default_bus`]) — onto the account's default event bus.
     ///
     /// Nothing about the call that produced it changes: a failure is traced and the
     /// operation's own answer stands, for the reason the module docs give.
     pub async fn deliver(self, callback: &EmbeddedEmulator) {
         for log_file in self.log_files {
             log_file.deliver(callback).await;
+        }
+        if !self.on_default_bus {
+            // A reporting call is recorded and logged, and published nowhere: see
+            // [`Self::on_default_bus`].
+            return;
         }
         let client = crate::eventbridge_client::eventbridge_client(callback, &self.region);
         let entry = ::aws_sdk_eventbridge::types::PutEventsRequestEntry::builder()

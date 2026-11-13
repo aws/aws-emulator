@@ -46,9 +46,11 @@
 //! A management event has two readers, so the wrapper has two sinks for one record: the
 //! log CloudTrail's `LookupEvents` reads, and — while a trail of the Region is logging
 //! calls of this kind — the account's default EventBridge bus, which CloudTrail publishes
-//! each logged call onto as `AWS API Call via CloudTrail`
+//! each logged call that CHANGED the account onto as `AWS API Call via CloudTrail`
 //! ([`crate::api_call_events`]). The record is written once and the event published from
 //! that same record, so a rule matching the fan-out sees exactly what a lookup reports.
+//! A call of [`CallKind::Reporting`] is recorded and logged and published nowhere, so the
+//! reads a client makes while watching a resource drive no rule.
 //!
 //! # The calls of a service's DATA plane
 //!

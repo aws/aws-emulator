@@ -5,10 +5,10 @@
 //! account deliver it, EventBridge matches the rule and SQS holds what arrived.
 //!
 //! RULE: while a trail of the Region is logging management events, each management API call
-//! the account serves is ALSO published onto the account's DEFAULT event bus, with `source`
-//! `aws.<service>`, `detail-type` `AWS API Call via CloudTrail` and the CloudTrail record of
-//! the call as the event's `detail` — so a rule matching that pair, or reaching into the
-//! record, delivers to its targets. No trail logging, no publication.
+//! the account serves that CHANGED it is ALSO published onto the account's DEFAULT event bus,
+//! with `source` `aws.<service>`, `detail-type` `AWS API Call via CloudTrail` and the
+//! CloudTrail record of the call as the event's `detail` — so a rule matching that pair, or
+//! reaching into the record, delivers to its targets. No trail logging, no publication.
 //!
 //! Only a cross-service suite can pin this: the event is published by the service that
 //! SERVED the call (CloudFront, restXml), the delivery decision belongs to CloudTrail
@@ -19,9 +19,10 @@
 //!
 //! The rows span what the rule generalises over: which envelope field a pattern matches on
 //! (the source, the detail-type, a member reached inside the record), a near miss on each of
-//! those three, and the operation's read/write kind — a reporting call is a management event
-//! as much as a mutating one. One further row is the condition itself: with the trail
-//! stopped, the same call publishes nothing.
+//! those three, and the operation's read/write kind — a reporting call is logged like any
+//! other management call and published nowhere, so a pattern naming one delivers nothing.
+//! One further row is the condition itself: with the trail stopped, the same call publishes
+//! nothing.
 //!
 //! CloudFront is a GLOBAL service, so its records are filed in the partition's leader
 //! Region and a rule matching its API-call events has to live there; every request below is
@@ -359,13 +360,17 @@ fn rows() -> Vec<Row> {
             expects: Some("CreateDistribution"),
         },
         Row {
+            // A reporting call is recorded in event history and published nowhere, so a
+            // pattern naming one delivers nothing even though the call was served and
+            // logged: the fan-out carries the account's WRITES. The suite that pins the
+            // record of that same read is this crate's `cloudtrail_read_only_api_calls`.
             case: "a reporting call",
             pattern: json!({
                 "source": [CLOUDFRONT_EVENT_SOURCE],
                 "detail-type": [API_CALL_DETAIL_TYPE],
                 "detail": { "eventName": ["ListDistributions"] },
             }),
-            expects: Some("ListDistributions"),
+            expects: None,
         },
         Row {
             case: "a near miss on the event name",
@@ -731,19 +736,24 @@ struct Selectors {
     configuration: Value,
     /// Whether the WRITE call (`CreateDistribution`) must arrive.
     expects_write: bool,
-    /// Whether the READ call (`ListDistributions`) must arrive.
+    /// Whether the READ call (`ListDistributions`) must arrive — `false` in every row: the
+    /// channel carries the calls that changed the account, whatever the trail logs.
     expects_read: bool,
 }
 
-/// What a logging trail's own selectors admit is what is published: a trail logs the
-/// management events its `IncludeManagementEvents` admits, in the read/write class its
-/// `ReadWriteType` names — "By default, trails created without specific event selectors
-/// will be configured to log all read and write management events".
+/// What a logging trail's own selectors admit is what is LOGGED, and of what is logged the
+/// channel carries the calls that CHANGED the account: a trail logs the management events
+/// its `IncludeManagementEvents` admits, in the read/write class its `ReadWriteType` names
+/// — "By default, trails created without specific event selectors will be configured to log
+/// all read and write management events" — and the `AWS API Call via CloudTrail` fan-out
+/// publishes those of them that are not reads.
 ///
 /// The rows span the selector shapes that decide it: both classes, each class alone,
 /// management events excluded altogether, and the ADVANCED form, whose
 /// `eventCategory`/`readOnly` fields say the same two things — including one advanced
-/// selector that admits a category these calls are not in at all.
+/// selector that admits a category these calls are not in at all. No selector shape makes a
+/// READ reach the channel, a trail whose class is `ReadOnly` included: what its selectors
+/// decide is what the trail logs.
 #[tokio::test]
 async fn a_trails_own_selectors_decide_which_calls_are_published() {
     let rows = [
@@ -753,7 +763,7 @@ async fn a_trails_own_selectors_decide_which_calls_are_published() {
                 "EventSelectors": [{ "ReadWriteType": "All", "IncludeManagementEvents": true }],
             }),
             expects_write: true,
-            expects_read: true,
+            expects_read: false,
         },
         Selectors {
             case: "write-only management events",
@@ -775,7 +785,7 @@ async fn a_trails_own_selectors_decide_which_calls_are_published() {
                 }],
             }),
             expects_write: false,
-            expects_read: true,
+            expects_read: false,
         },
         Selectors {
             case: "management events excluded",
@@ -804,7 +814,7 @@ async fn a_trails_own_selectors_decide_which_calls_are_published() {
                 }],
             }),
             expects_write: true,
-            expects_read: true,
+            expects_read: false,
         },
         Selectors {
             case: "an advanced selector on the management category, writes only",

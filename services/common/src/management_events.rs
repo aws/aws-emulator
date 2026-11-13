@@ -30,11 +30,11 @@
 //! later lookup sees.
 //!
 //! The log is also where the account's OTHER reader of a management event is served from.
-//! While a trail of the Region is logging, CloudTrail publishes each call it logs onto the
-//! account's default EventBridge bus, so the log carries the one fact that decision needs —
-//! which trails are logging, projected here by CloudTrail ([`DeliveringTrail`]) — and
-//! [`ManagementEventLog::record_delivered`] answers the event to publish beside the record
-//! it just wrote. The channel itself is [`crate::api_call_events`].
+//! While a trail of the Region is logging, CloudTrail publishes each MUTATING call it logs
+//! onto the account's default EventBridge bus, so the log carries the one fact that decision
+//! needs — which trails are logging, projected here by CloudTrail ([`DeliveringTrail`]) —
+//! and [`ManagementEventLog::record_delivered`] answers the event to publish beside the
+//! record it just wrote. The channel itself is [`crate::api_call_events`].
 
 use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -1460,7 +1460,7 @@ impl ManagementEventLog {
     /// account's CloudTrail DELIVERS for it — or `None` when no trail of the account logs a
     /// call of this kind in this Region.
     ///
-    /// Two deliveries, one decision. The event a rule on the default bus matches and the
+    /// Two deliveries, one record. The event a rule on the default bus matches and the
     /// log file an audit pipeline reads are both the CloudTrail record of the call, so the
     /// document published and the documents written are the very document `LookupEvents`
     /// reports and none of them can disagree. What decides whether anything is delivered at
@@ -1468,6 +1468,11 @@ impl ManagementEventLog {
     /// delivery is CloudTrail's, so it runs while a trail of the Region is logging
     /// management events of the call's read/write class and not otherwise — one log file per
     /// such trail, into the bucket that trail was created with.
+    ///
+    /// The two legs part on ONE fact: the `AWS API Call via CloudTrail` fan-out carries the
+    /// calls that CHANGED the account, so a call that only reported state is logged and
+    /// written to every logging trail's bucket while no event is published for it
+    /// ([`crate::api_call_events::DeliveredApiCall::on_default_bus`]).
     ///
     /// Delivering is the CALLER's: a store holds no transport, and neither the publication
     /// nor the object write must happen under this lock
@@ -1519,6 +1524,9 @@ impl ManagementEventLog {
             time_millis: event.event_time_millis(),
             detail: record,
             log_files,
+            // The fan-out is the account's WRITES: a reporting call is logged and not
+            // published.
+            on_default_bus: !read_only,
         })
     }
 
@@ -1595,8 +1603,10 @@ impl ManagementEventLog {
         &self.delivering_trails
     }
 
-    /// Whether the account's CloudTrail delivers a management call served in `region`, of
-    /// the given read/write kind, onto the default event bus.
+    /// Whether the account's CloudTrail LOGS a management call served in `region`, of the
+    /// given read/write kind — the condition a delivery of any kind hangs off. Whether such
+    /// a call is also published onto the default event bus is its read/write kind again
+    /// ([`crate::api_call_events::DeliveredApiCall::on_default_bus`]).
     #[must_use]
     pub fn delivers(&self, region: &str, read_only: bool) -> bool {
         self.delivering_trails
@@ -1713,6 +1723,62 @@ mod tests {
             vec!["CreateTrail", "DeleteTrail"],
             "case two records: expected the served order, got {names:?}"
         );
+    }
+
+    /// One trail of the account, logging every management call of every Region into
+    /// `demo-trail`.
+    fn logging_trail() -> DeliveringTrail {
+        DeliveringTrail {
+            trail_arn: "arn:aws:cloudtrail:us-east-1:000000000000:trail/demo".to_string(),
+            home_region: "us-east-1".to_string(),
+            s3_bucket_name: "demo-trail".to_string(),
+            s3_key_prefix: None,
+            multi_region: true,
+            global_service_events: true,
+            management_events: true,
+            event_class: ManagementEventClass::All,
+            data_event_selectors: Vec::new(),
+        }
+    }
+
+    /// What a logged call's read/write kind decides is the BUS leg alone: a call that
+    /// changed the account is published onto the default event bus, a reporting call is
+    /// not — and either way the call is recorded in event history and written into the
+    /// logging trail's bucket.
+    #[test]
+    fn only_a_mutating_call_is_published_onto_the_default_bus() {
+        // The rows differ along the one fact the two legs part on.
+        for (case, read_only, on_default_bus) in [
+            ("a mutating call", false, true),
+            ("a reporting call", true, false),
+        ] {
+            let mut log = ManagementEventLog::default();
+            log.trails_delivering(vec![logging_trail()]);
+            let mut served = call("DescribeTrails");
+            served.read_only = read_only;
+            let delivered = log
+                .record_delivered(served, SystemTime::now(), "request-1".to_string())
+                .unwrap_or_else(|| {
+                    panic!("case {case:?}: a logging trail delivers the call, got nothing")
+                });
+            assert_eq!(
+                delivered.on_default_bus, on_default_bus,
+                "case {case:?}: expected on_default_bus {on_default_bus}, got {:?}",
+                delivered.on_default_bus
+            );
+            assert_eq!(
+                delivered.log_files.len(),
+                1,
+                "case {case:?}: expected the trail's own log file either way, got {:?}",
+                delivered.log_files
+            );
+            assert_eq!(
+                log.len(),
+                1,
+                "case {case:?}: expected the call recorded in event history either way, got {}",
+                log.len()
+            );
+        }
     }
 
     /// A minted id has the canonical UUID form: 8-4-4-4-12 lowercase hex, version 4,
