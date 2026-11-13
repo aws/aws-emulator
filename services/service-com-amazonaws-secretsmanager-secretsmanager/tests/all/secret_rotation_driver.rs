@@ -32,17 +32,22 @@
 //! `RotationLambdaARN` is (a function's ARN, a value that names no function), whether the
 //! call asks to rotate immediately, how the schedule is stated, and whether the rotation
 //! function completes every step.
+//!
+//! Every row waits for the STATE its outcome settles in rather than for a span to pass: the
+//! stamp of a rotation that finishes, the attempt a function that raises records before it
+//! does, and the `AWSPENDING` version a call that starts a rotation stakes while answering —
+//! so a row whose rotation cannot finish concludes as soon as its outcome is settled.
 
 use std::io::Write;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use base64::Engine as _;
 use serde_json::{json, Value};
 use service_com_amazonaws_lambda_awsgirapiservice::state::execution::{
     ABANDON_GRACE, HOST_WAIT_CEILING, INIT_PHASE_LIMIT, PERMIT_WAIT,
 };
-use service_com_amazonaws_lambda_awsgirapiservice::state::ACTIVATION_DELAY;
+use service_com_amazonaws_lambda_awsgirapiservice::state::{ACTIVATION_DELAY, STATE_ACTIVE};
 use service_com_amazonaws_secretsmanager_secretsmanager::state::rotation::ROTATION_STEPS;
 use smithy_server_runtime::MultiServiceRouter;
 
@@ -61,8 +66,8 @@ const ROLE: &str = "arn:aws:iam::000000000000:role/service-role/rotation-exec";
 /// The handler entry point the deployment package below declares.
 const HANDLER: &str = "lambda_function.lambda_handler";
 
-/// How long this suite waits for a rotation to finish before giving up on it, and how often
-/// it looks while waiting.
+/// How long this suite waits for a rotation to reach the state a row expects of it before
+/// giving up on it, and how often it looks while waiting.
 ///
 /// The ceiling is DERIVED rather than picked: a rotation finishes only once Secrets Manager
 /// has invoked the rotation function once per documented step, and Lambda may spend its own
@@ -78,6 +83,24 @@ const ROTATION_WAIT: Duration = PERMIT_WAIT
     .saturating_add(ABANDON_GRACE)
     .saturating_mul(ROTATION_STEPS.len() as u32);
 const LOOK_INTERVAL: Duration = Duration::from_millis(50);
+
+/// How long this suite waits for a function it created to report itself invocable.
+///
+/// Also a ceiling rather than a span to pass: the provisioning window Lambda opens on
+/// `CreateFunction` is [`ACTIVATION_DELAY`], and what a row waits for is the `State` the
+/// function reports at the end of it, so this only bounds the look-again loop.
+const ACTIVATION_WAIT: Duration = ACTIVATION_DELAY.saturating_mul(60);
+
+/// The staging label the version a secret currently serves carries.
+const CURRENT_STAGE: &str = "AWSCURRENT";
+
+/// The staging label a rotation stakes on the version it is creating.
+const PENDING_STAGE: &str = "AWSPENDING";
+
+/// The tag key [`FAILING_FUNCTION`] records its attempt under, which is the literal that
+/// function's own source writes — a rotation that cannot finish leaves nothing else behind,
+/// so this is what tells a caller the function RAN and raised.
+const ATTEMPTED_STEP_TAG: &str = "attempted-step";
 
 /// Secrets Manager and Lambda over ONE shared engine.
 fn router() -> MultiServiceRouter {
@@ -231,7 +254,33 @@ async fn create_function(
         status, 201,
         "case {case:?}: expected HTTP 201 from CreateFunction, got {status} with {created}"
     );
-    tokio::time::sleep(ACTIVATION_DELAY + Duration::from_millis(200)).await;
+    // "The State [...] field in the response from GetFunctionConfiguration indicate[s] when
+    // the function is ready to invoke": the row waits for that CONDITION rather than for the
+    // provisioning window to pass, so it goes on as soon as the function can be invoked.
+    let deadline = Instant::now() + ACTIVATION_WAIT;
+    loop {
+        let (status, configuration) = lambda(
+            router,
+            "GET",
+            &format!("/2015-03-31/functions/{name}/configuration"),
+            &Value::Null,
+        )
+        .await;
+        assert_eq!(
+            status, 200,
+            "case {case:?}: expected HTTP 200 from GetFunctionConfiguration, got {status} with \
+             {configuration}"
+        );
+        if configuration["State"].as_str() == Some(STATE_ACTIVE) {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "case {case:?}: the function {name:?} never reported {STATE_ACTIVE}, got \
+             {configuration}"
+        );
+        tokio::time::sleep(LOOK_INTERVAL).await;
+    }
     created["FunctionArn"]
         .as_str()
         .unwrap_or_else(|| panic!("case {case:?}: expected a FunctionArn, got {created}"))
@@ -328,8 +377,21 @@ def lambda_handler(event, context):
 
 /// A rotation function that raises on the step the event names, so a rotation driven through
 /// it stops there. `createSecret` is the step it fails, which is the first one.
+///
+/// It records the attempt before it raises — a tag under [`ATTEMPTED_STEP_TAG`] naming the
+/// step it was invoked for, written through this service's own operations — so that a
+/// rotation which ends unfinished is still something a caller can WAIT FOR: once the step
+/// that raises has run, the rotation cannot reach `finishSecret`, and what the secret holds
+/// is settled.
 const FAILING_FUNCTION: &str = r#"
+import boto3
+
+
 def lambda_handler(event, context):
+    boto3.client("secretsmanager").tag_resource(
+        SecretId=event["SecretId"],
+        Tags=[{"Key": "attempted-step", "Value": event["Step"]}],
+    )
     raise RuntimeError("this rotation function cannot rotate %s" % event["Step"])
 "#;
 
@@ -352,6 +414,59 @@ async fn rotated(router: &MultiServiceRouter, case: &str, secret_id: &str) -> Va
         tokio::time::sleep(LOOK_INTERVAL).await;
     }
     last
+}
+
+/// Wait until the rotation function has RUN for `secret_id` — its attempt recorded under
+/// [`ATTEMPTED_STEP_TAG`], which [`FAILING_FUNCTION`] writes before it raises — and answer
+/// the step it recorded beside what `DescribeSecret` reported last.
+///
+/// This waits for a CONDITION rather than for a span: a rotation whose function raises on a
+/// step cannot reach the last one, so once the attempt is on the secret the rotation's
+/// outcome is settled and the row can assert it at once instead of waiting a rotation's
+/// worth of invocations out.
+async fn attempted(router: &MultiServiceRouter, case: &str, secret_id: &str) -> (String, Value) {
+    let deadline = Instant::now() + ROTATION_WAIT;
+    loop {
+        let described = described(router, case, secret_id).await;
+        if let Some(step) = tag_value(&described, ATTEMPTED_STEP_TAG) {
+            return (step, described);
+        }
+        assert!(
+            Instant::now() < deadline,
+            "case {case:?}: the rotation function was never invoked, got {described}"
+        );
+        tokio::time::sleep(LOOK_INTERVAL).await;
+    }
+}
+
+/// The value of the tag `key` in a `DescribeSecret` answer, when it carries one.
+fn tag_value(described: &Value, key: &str) -> Option<String> {
+    described["Tags"].as_array()?.iter().find_map(|tag| {
+        (tag["Key"].as_str() == Some(key)).then(|| {
+            tag["Value"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string()
+        })
+    })
+}
+
+/// The versions a `DescribeSecret` answer reports the staging label `stage` on.
+fn staged_versions(described: &Value, stage: &str) -> Vec<String> {
+    described["VersionIdsToStages"]
+        .as_object()
+        .map(|versions| {
+            versions
+                .iter()
+                .filter(|(_, labels)| {
+                    labels
+                        .as_array()
+                        .is_some_and(|labels| labels.iter().any(|label| label == stage))
+                })
+                .map(|(version, _)| version.clone())
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// The value `GetSecretValue` serves for the staging label `stage`.
@@ -605,6 +720,24 @@ async fn a_rotation_runs_only_when_the_function_grants_it() {
     }
 }
 
+/// What a row's `RotateSecret` comes to, which is what the row then WAITS FOR: each outcome
+/// has a state of its own that settles it, so no row waits a rotation's worth of invocations
+/// out to conclude that nothing more will happen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Settles {
+    /// Every step returns, so the rotation finishes and the secret is stamped as rotated.
+    Finishes,
+    /// The rotation function raises on its first step, so the rotation ends there: the
+    /// attempt is recorded, `AWSPENDING` still names the version the rotation staked, and
+    /// nothing was stamped.
+    FailsOnItsFirstStep,
+    /// No rotation is started at all, so nothing is ever in flight: the call stakes no
+    /// `AWSPENDING` version, which is the state a rotation in flight is seen by.
+    StartsNothing,
+    /// The call itself is refused, with this error code.
+    Refused(&'static str),
+}
+
 /// One row of [`the_rotation_configuration_decides_what_a_rotation_does`].
 struct ConfigurationRow {
     case: &'static str,
@@ -614,10 +747,8 @@ struct ConfigurationRow {
     rotate_immediately: Option<bool>,
     /// The rotation function the row creates.
     source: &'static str,
-    /// The error code the call must be refused with, `None` for a call that must succeed.
-    refused_with: Option<&'static str>,
-    /// Whether a rotation must FINISH for this row.
-    finishes: bool,
+    /// What the call, and the rotation it does or does not start, comes to.
+    settles: Settles,
 }
 
 fn configuration_rows() -> Vec<ConfigurationRow> {
@@ -627,48 +758,42 @@ fn configuration_rows() -> Vec<ConfigurationRow> {
             lambda_arn: None,
             rotate_immediately: None,
             source: ROTATION_FUNCTION,
-            refused_with: None,
-            finishes: true,
+            settles: Settles::Finishes,
         },
         ConfigurationRow {
             case: "a function that raises on its first step leaves the rotation unfinished",
             lambda_arn: None,
             rotate_immediately: None,
             source: FAILING_FUNCTION,
-            refused_with: None,
-            finishes: false,
+            settles: Settles::FailsOnItsFirstStep,
         },
         ConfigurationRow {
             case: "RotateImmediately false configures rotation and rotates nothing",
             lambda_arn: None,
             rotate_immediately: Some(false),
             source: ROTATION_FUNCTION,
-            refused_with: None,
-            finishes: false,
+            settles: Settles::StartsNothing,
         },
         ConfigurationRow {
             case: "a RotationLambdaARN that is not an ARN at all",
             lambda_arn: Some("RotateMySecret"),
             rotate_immediately: None,
             source: ROTATION_FUNCTION,
-            refused_with: Some("InvalidRequestException"),
-            finishes: false,
+            settles: Settles::Refused("InvalidRequestException"),
         },
         ConfigurationRow {
             case: "a RotationLambdaARN naming another service's resource",
             lambda_arn: Some("arn:aws:sqs:us-west-2:000000000000:rotation-queue"),
             rotate_immediately: None,
             source: ROTATION_FUNCTION,
-            refused_with: Some("InvalidRequestException"),
-            finishes: false,
+            settles: Settles::Refused("InvalidRequestException"),
         },
         ConfigurationRow {
             case: "a RotationLambdaARN naming no function of Lambda's own",
             lambda_arn: Some("arn:aws:lambda:us-west-2:000000000000:layer:rotation"),
             rotate_immediately: None,
             source: ROTATION_FUNCTION,
-            refused_with: Some("InvalidRequestException"),
-            finishes: false,
+            settles: Settles::Refused("InvalidRequestException"),
         },
     ]
 }
@@ -703,9 +828,8 @@ async fn the_rotation_configuration_decides_what_a_rotation_does() {
         if let Some(immediately) = row.rotate_immediately {
             request["RotateImmediately"] = json!(immediately);
         }
-        if let Some(expected) = row.refused_with {
-            let (status, code, message) =
-                sm_err(&router, case, "RotateSecret", &request).await;
+        if let Settles::Refused(expected) = row.settles {
+            let (status, code, message) = sm_err(&router, case, "RotateSecret", &request).await;
             assert_eq!(
                 status, 400,
                 "case {case:?}: expected HTTP 400, got {status} with {code}"
@@ -717,24 +841,88 @@ async fn the_rotation_configuration_decides_what_a_rotation_does() {
             continue;
         }
 
-        sm_ok(&router, case, "RotateSecret", &request).await;
-        let settled = rotated(&router, case, &name).await;
-        assert_eq!(
-            settled.get("LastRotatedDate").is_some(),
-            row.finishes,
-            "case {case:?}: expected finishes={}, got {settled}",
-            row.finishes
-        );
+        let started = sm_ok(&router, case, "RotateSecret", &request).await;
+        let version_id = started["VersionId"]
+            .as_str()
+            .unwrap_or_else(|| panic!("case {case:?}: expected a VersionId, got {started}"))
+            .to_string();
+        let settled = match row.settles {
+            Settles::Finishes => {
+                let settled = rotated(&router, case, &name).await;
+                assert!(
+                    settled.get("LastRotatedDate").is_some(),
+                    "case {case:?}: expected the rotation to finish and stamp LastRotatedDate, \
+                     got {settled}"
+                );
+                settled
+            }
+            Settles::FailsOnItsFirstStep => {
+                // The step the function raised on is the FIRST of the documented four, and
+                // once it has run the rotation is over: there is no state left to wait for.
+                let (step, settled) = attempted(&router, case, &name).await;
+                assert_eq!(
+                    step, ROTATION_STEPS[0],
+                    "case {case:?}: expected the rotation to be driven from its first step, \
+                     got {step:?}"
+                );
+                // "When rotation is unsuccessful, the AWSPENDING staging label might be
+                // attached to an empty secret version": the label still names the version
+                // the rotation staked, that version holds no value, and nothing stamped the
+                // secret as rotated.
+                assert_eq!(
+                    staged_versions(&settled, PENDING_STAGE),
+                    vec![version_id.clone()],
+                    "case {case:?}: expected {PENDING_STAGE} still staked on {version_id}, got \
+                     {settled}"
+                );
+                assert_eq!(
+                    value_at(&router, case, &name, PENDING_STAGE).await,
+                    None,
+                    "case {case:?}: expected the staked version to hold no value, got {settled}"
+                );
+                assert!(
+                    settled.get("LastRotatedDate").is_none(),
+                    "case {case:?}: expected an unfinished rotation to leave LastRotatedDate \
+                     unset, got {settled}"
+                );
+                settled
+            }
+            Settles::StartsNothing => {
+                // A rotation that was STARTED is in flight from the call that answers, which
+                // is the state a second RotateSecret is refused for: it stakes AWSPENDING on
+                // the version the rotation will create. So a call that staked no such
+                // version started no rotation, and that is readable at once.
+                let settled = described(&router, case, &name).await;
+                assert_eq!(
+                    staged_versions(&settled, PENDING_STAGE),
+                    Vec::<String>::new(),
+                    "case {case:?}: expected no rotation in flight, got {settled}"
+                );
+                assert!(
+                    settled["VersionIdsToStages"].get(&version_id).is_none(),
+                    "case {case:?}: expected no version {version_id} to have been staked, got \
+                     {settled}"
+                );
+                assert!(
+                    settled.get("LastRotatedDate").is_none(),
+                    "case {case:?}: expected a secret that was not rotated to leave \
+                     LastRotatedDate unset, got {settled}"
+                );
+                settled
+            }
+            // The refused rows left the loop above.
+            Settles::Refused(_) => unreachable!("a refused row never reaches this point"),
+        };
         // Whatever the rotation came to, the value the secret serves is the function's own
         // work: the rotated one for a rotation that finished, and the one the create stored
         // for a rotation that did not.
-        let expected_value = if row.finishes {
+        let expected_value = if row.settles == Settles::Finishes {
             "initial-credential-rotated"
         } else {
             "initial-credential"
         };
         assert_eq!(
-            value_at(&router, case, &name, "AWSCURRENT").await,
+            value_at(&router, case, &name, CURRENT_STAGE).await,
             Some(expected_value.to_string()),
             "case {case:?}: expected the current value {expected_value:?}, got {settled}"
         );
