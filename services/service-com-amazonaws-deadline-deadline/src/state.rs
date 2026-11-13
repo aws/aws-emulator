@@ -1220,6 +1220,17 @@ impl ComAmazonawsDeadlineDeadlineState {
             .map(|queue| queue.queue_id.as_str())
             .min()
     }
+
+    /// The queue of `farm_id` that still has `limit_id` associated with it, lowest id
+    /// first so the answer does not depend on map order. `None` when no queue does.
+    pub fn queue_associated_with_limit(&self, farm_id: &str, limit_id: &str) -> Option<&str> {
+        let farm = self.farms.get(farm_id)?;
+        farm.queues
+            .values()
+            .filter(|queue| queue.limit_associations.contains_key(limit_id))
+            .map(|queue| queue.queue_id.as_str())
+            .min()
+    }
 }
 
 /// Scope a client token to the operation and the parent resource it was used on, so the
@@ -1394,6 +1405,38 @@ pub fn storage_profile_allowed_by_queue(
         message: format!(
             "The storage profile {storage_profile_id} can't be deleted because it is \
              associated with the queue {queue_id}."
+        ),
+        // From `smithy_query(query="shape", shape="ValidationExceptionReason")`:
+        // UNKNOWN_OPERATION, CANNOT_PARSE, FIELD_VALIDATION_FAILED, OTHER. Every member of
+        // the request satisfies its own constraints — what is refused is the state the
+        // deletion would leave behind — so no one field is at fault and the refusal
+        // carries no field list.
+        reason: "OTHER".to_string(),
+        field_list: None,
+        context: None,
+    }
+}
+
+/// The 400 this service answers when a limit a queue is still associated with is deleted.
+///
+/// `smithy_query(query="doc", shape="DeleteLimit")` states the precondition: "Before you
+/// delete a limit you must use the DeleteQueueLimitAssociation operation to remove the
+/// association with any queues." The association is a live reference to the limit — it is
+/// what `GetQueueLimitAssociation` resolves — so the limit is not deleted out from under
+/// the queue that holds it. Same rule as [`storage_profile_allowed_by_queue`], and
+/// answered through the only client-input error `DeleteLimit` models: it declares neither
+/// `ConflictException` nor `ResourceNotFoundException`, so its refusals go out as
+/// `ValidationException` (`smithy_query(query="operation", operation="DeleteLimit")`). The
+/// message names the queue that holds the association; `queue_id` is read from the store,
+/// never from the request.
+pub fn limit_associated_with_queue(
+    limit_id: &str,
+    queue_id: &str,
+) -> crate::ops::types::ValidationException {
+    crate::ops::types::ValidationException {
+        message: format!(
+            "The limit {limit_id} can't be deleted because it is associated with the \
+             queue {queue_id}."
         ),
         // From `smithy_query(query="shape", shape="ValidationExceptionReason")`:
         // UNKNOWN_OPERATION, CANNOT_PARSE, FIELD_VALIDATION_FAILED, OTHER. Every member of

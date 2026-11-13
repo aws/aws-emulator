@@ -21,6 +21,8 @@ mod create_queue_fleet_association;
 mod date_time_wire_form;
 #[path = "all/delete_fleet.rs"]
 mod delete_fleet;
+#[path = "all/delete_limit.rs"]
+mod delete_limit;
 #[path = "all/delete_storage_profile.rs"]
 mod delete_storage_profile;
 #[path = "all/farm_queue_job.rs"]
