@@ -77,6 +77,8 @@ mod scheduled_report_execution;
 mod scheduled_report_execution_events;
 #[path = "all/scheduled_report_execution_role.rs"]
 mod scheduled_report_execution_role;
+#[path = "all/scheduled_report_execution_role_permissions.rs"]
+mod scheduled_report_execution_role_permissions;
 #[path = "all/scheduled_report_health_derivation.rs"]
 mod scheduled_report_health_derivation;
 #[path = "all/scheduled_report_health_views.rs"]

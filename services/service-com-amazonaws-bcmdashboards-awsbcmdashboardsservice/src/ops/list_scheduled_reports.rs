@@ -151,17 +151,16 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        let _ = ctx;
         let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
             ListScheduledReportsErrorModeled::InternalServerException(InternalServerException {
                 message: "the dashboard store is unavailable".to_string(),
             })
         })?;
-        // The execution roles the account's IAM shows this service cannot assume, resolved
+        // What the account's IAM shows about this account's execution roles, resolved
         // ONCE for the whole page and BEFORE this service's store is read, so no two stores
         // are held at once and a listing costs one pass over the account's roles rather than
         // one per report.
-        let unassumable_roles = crate::state::UnassumableExecutionRoles::resolve(&*self.engine);
+        let role_faults = crate::state::ExecutionRoleFaults::resolve(&*self.engine, ctx);
         // A read: it walks the stored scheduled reports and writes nothing.
         let state = state.lock();
 
@@ -178,7 +177,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             input.next_token.as_deref(),
             input.max_results,
             crate::state::SCHEDULED_REPORT_RESOURCE_TYPE,
-            |record| state.scheduled_report_summary(record, &unassumable_roles),
+            |record| state.scheduled_report_summary(record, &role_faults),
         )
         .map_err(|refusal| {
             ListScheduledReportsErrorModeled::ValidationException(ValidationException {

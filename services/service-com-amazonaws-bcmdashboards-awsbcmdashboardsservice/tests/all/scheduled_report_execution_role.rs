@@ -21,6 +21,10 @@
 //! not named at all (another service, an account principal), and a role ARN the account's IAM
 //! holds nothing under — which is evidence about this emulator's store rather than about the
 //! role, and so leaves the health alone.
+//!
+//! The OTHER half of what a role has to allow — the work the execution does under it once it
+//! HAS been assumed — is `scheduled_report_execution_role_permissions`, which shares this
+//! suite's harness.
 
 use std::sync::Arc;
 
@@ -43,7 +47,7 @@ use super::scheduled_report_lifecycle::source_dashboard;
 const EXECUTION_ROLE_ASSUME_FAILED: &str = "EXECUTION_ROLE_ASSUME_FAILED";
 
 /// The Region every request below is signed for.
-const REGION: &str = "us-east-1";
+pub(crate) const REGION: &str = "us-east-1";
 
 /// A well-formed `ServiceRoleArn` the account's IAM holds no role under, so a report naming
 /// it is one this emulator knows nothing about rather than one with a broken role.
@@ -56,7 +60,7 @@ const UNHELD_ROLE_ARN: &str = "arn:aws:iam::123456789012:role/NoSuchReportRole";
 /// default event bus, so a report that IS executed is not reported unable to deliver it; IAM
 /// is there because the role a report executes as lives in IAM, and the health derivation
 /// reads the very records `CreateRole` and `UpdateAssumeRolePolicy` wrote.
-fn emulator() -> MultiServiceRouter {
+pub(crate) fn emulator() -> MultiServiceRouter {
     let engine: Arc<engine::InMemoryEngine> = Arc::new(engine::InMemoryEngine::new());
     let mut router = MultiServiceRouter::new();
     router.set_request_authentication(false);
@@ -88,7 +92,7 @@ fn form_encode(value: &str) -> String {
 
 /// One IAM call: IAM speaks `awsQuery`, so its parameters travel as a form body and its
 /// answer comes back as XML.
-async fn iam(
+pub(crate) async fn iam(
     router: &MultiServiceRouter,
     action: &str,
     params: &[(&str, &str)],
@@ -121,7 +125,7 @@ async fn iam(
 }
 
 /// The text of the first `<tag>` of an XML body.
-fn xml_text(xml: &str, tag: &str) -> Option<String> {
+pub(crate) fn xml_text(xml: &str, tag: &str) -> Option<String> {
     let open = format!("<{tag}>");
     let close = format!("</{tag}>");
     let start = xml.find(&open)? + open.len();
@@ -131,7 +135,7 @@ fn xml_text(xml: &str, tag: &str) -> Option<String> {
 
 /// A trust document whose one statement allows `principal` the plain `sts:AssumeRole`, as a
 /// client sends one.
-fn grant(principal: &str) -> Value {
+pub(crate) fn grant(principal: &str) -> Value {
     json!({
         "Version": "2012-10-17",
         "Statement": [{
@@ -143,7 +147,7 @@ fn grant(principal: &str) -> Value {
 }
 
 /// Create the role `name` with the trust document `trust`, and answer the ARN IAM persisted.
-async fn given_role_trusting(
+pub(crate) async fn given_role_trusting(
     router: &MultiServiceRouter,
     label: &str,
     name: &str,
@@ -182,7 +186,7 @@ async fn retrust_role(router: &MultiServiceRouter, label: &str, name: &str, trus
 /// Create a scheduled report on `dashboard_arn` that executes as `role_arn`, and answer its
 /// ARN. The sibling suites' `create_report` always names one fixed role, which is exactly
 /// what varies here.
-async fn create_report_on_role(
+pub(crate) async fn create_report_on_role(
     router: &MultiServiceRouter,
     dashboard_arn: &str,
     name: &str,
@@ -207,7 +211,7 @@ async fn create_report_on_role(
 }
 
 /// `ExecuteScheduledReport` with `dryRun` as asked, answered as `(http status, body)`.
-async fn execute(router: &MultiServiceRouter, arn: &str, dry_run: bool) -> (u16, Value) {
+pub(crate) async fn execute(router: &MultiServiceRouter, arn: &str, dry_run: bool) -> (u16, Value) {
     call(
         router,
         "ExecuteScheduledReport",
@@ -218,7 +222,13 @@ async fn execute(router: &MultiServiceRouter, arn: &str, dry_run: bool) -> (u16,
 
 /// Assert one `healthStatus` member: its code and its reasons (`None` for "the member must
 /// be absent", which is what a healthy status carries).
-fn assert_health(health: &Value, label: &str, view: &str, code: &str, reasons: Option<&[&str]>) {
+pub(crate) fn assert_health(
+    health: &Value,
+    label: &str,
+    view: &str,
+    code: &str,
+    reasons: Option<&[&str]>,
+) {
     assert_eq!(
         health.get("statusCode").and_then(Value::as_str),
         Some(code),
@@ -239,7 +249,7 @@ fn assert_health(health: &Value, label: &str, view: &str, code: &str, reasons: O
 
 /// Assert the health EVERY view of the report reports: the dry run, the detail reader and
 /// the listing.
-async fn assert_every_view(
+pub(crate) async fn assert_every_view(
     router: &MultiServiceRouter,
     label: &str,
     arn: &str,
