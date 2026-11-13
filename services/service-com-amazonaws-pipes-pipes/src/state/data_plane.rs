@@ -43,9 +43,12 @@
 //!   `Invoke` takes one payload which can be the array itself, so the same batch becomes
 //!   ONE invocation carrying every event, which is what makes the source's `BatchSize` the
 //!   count of invocations a backlog comes to. A function target is invoked synchronously or
-//!   asynchronously as its `InvocationType` says ([`deliver_batch`]). A queue parameter's
-//!   value is used as configured unless it is a JSON path into the event (`$.…`), which is
-//!   resolved against each event delivered, so the value can be the record's own.
+//!   asynchronously as its `InvocationType` says ([`deliver_batch`]); an EventBridge event
+//!   bus takes up to ten events per `PutEvents`, each as one entry under the members its
+//!   `PipeTargetEventBridgeEventBusParameters` configure ([`event_bus`]). A target
+//!   parameter's value is used as configured unless it is a JSON path into the event
+//!   (`$.…`), which is resolved against each event delivered, so the value can be the
+//!   record's own.
 //!
 //! Either of those last two stages may be handed something OTHER than the event: an
 //! `InputTemplate` is what that stage receives instead, rendered per event from the
@@ -143,6 +146,7 @@ use super::{pipe_state, ComAmazonawsPipesPipesState, PipeRecord};
 use crate::ops::types::PipeTargetParameters;
 
 mod dead_letter;
+mod event_bus;
 mod kinesis_source;
 
 /// How long the poller waits before looking at an idle source again. Short enough that
@@ -240,11 +244,13 @@ const MAX_FILTER_STEPS_PER_BATCH: u64 =
 const SQS_EVENT_SOURCE: &str = "aws:sqs";
 
 /// The ARN service namespaces the stages below address: an SQS queue, a DynamoDB table's
-/// stream, a Kinesis data stream, a Lambda function and a Step Functions state machine
-/// (`states`, the namespace Step Functions signs and publishes its endpoint under).
+/// stream, a Kinesis data stream, an EventBridge event bus, a Lambda function and a Step
+/// Functions state machine (`states`, the namespace Step Functions signs and publishes its
+/// endpoint under).
 const SQS_NAMESPACE: &str = "sqs";
 const DYNAMODB_NAMESPACE: &str = "dynamodb";
 const KINESIS_NAMESPACE: &str = "kinesis";
+const EVENTS_NAMESPACE: &str = "events";
 const LAMBDA_NAMESPACE: &str = "lambda";
 const STATES_NAMESPACE: &str = "states";
 
@@ -2886,6 +2892,14 @@ async fn deliver_batch(
             }
             Ok(::service_common::batch_item_failures::BatchReport::WholeBatchProcessed)
         }
+        Target::EventBus(bus) => {
+            // `PutEvents` answers one result per ENTRY — the event it published, not the
+            // source record it was derived from — so it reports nothing about the records of
+            // the batch: a call every entry of which was taken is the whole batch processed,
+            // and one entry the bus refused fails the attempt ([`event_bus::publish`]).
+            event_bus::publish(callback, clients, bus, payloads).await?;
+            Ok(::service_common::batch_item_failures::BatchReport::WholeBatchProcessed)
+        }
         Target::Function {
             arn,
             region,
@@ -3307,6 +3321,9 @@ enum Target {
         message_group_id: Option<String>,
         message_deduplication_id: Option<String>,
     },
+    /// An EventBridge event bus: the events are PUT on it, up to ten per call
+    /// ([`event_bus`]).
+    EventBus(event_bus::Bus),
     /// A Lambda function: ONE `Invoke` carrying the whole batch.
     Function {
         arn: String,
@@ -3325,6 +3342,7 @@ impl Target {
     fn delivery_action(&self) -> &'static str {
         match self {
             Self::Queue { .. } => SEND_MESSAGE_ACTION,
+            Self::EventBus(_) => event_bus::PUT_EVENTS_ACTION,
             Self::Function { .. } => INVOKE_FUNCTION_ACTION,
         }
     }
@@ -3603,6 +3621,13 @@ fn resolve_target(
                     .filter(|token| !token.is_empty()),
             })
         }
+        (EVENTS_NAMESPACE, event_bus::EVENT_BUS_RESOURCE) => Ok(Target::EventBus(
+            event_bus::resolve(
+                arn,
+                parsed.region,
+                parameters.and_then(|p| p.event_bridge_event_bus_parameters.as_ref()),
+            ),
+        )),
         (LAMBDA_NAMESPACE, FUNCTION_RESOURCE) => Ok(Target::Function {
             arn: arn.to_string(),
             region: parsed.region.to_string(),
@@ -3614,8 +3639,9 @@ fn resolve_target(
                 .is_none_or(|configured| configured != FIRE_AND_FORGET_INVOCATION),
         }),
         (vendor, _) => Err(format!(
-            "its Target names a {vendor} resource, and only an Amazon SQS queue or a Lambda \
-             function target is delivered to by this emulator"
+            "its Target names a {vendor} resource, and only an Amazon SQS queue, an \
+             EventBridge event bus or a Lambda function target is delivered to by this \
+             emulator"
         )),
     }
 }
@@ -3733,6 +3759,7 @@ fn queue_url(region: &str, account: &str, name: &str) -> String {
 #[derive(Default)]
 struct Clients {
     sqs: Option<(String, ::aws_sdk_sqs::Client)>,
+    eventbridge: Option<(String, ::aws_sdk_eventbridge::Client)>,
     lambda: Option<(String, ::aws_sdk_lambda::Client)>,
     sfn: Option<(String, ::aws_sdk_sfn::Client)>,
     dynamodbstreams: Option<(String, ::aws_sdk_dynamodbstreams::Client)>,
@@ -3789,6 +3816,8 @@ macro_rules! callback_client {
 
 impl Clients {
     callback_client!(sqs, aws_sdk_sqs, "sqs");
+    // EventBridge publishes its endpoint and signs under `events`.
+    callback_client!(eventbridge, aws_sdk_eventbridge, "events");
     callback_client!(lambda, aws_sdk_lambda, "lambda");
     // Step Functions publishes its endpoint and signs under `states`.
     callback_client!(sfn, aws_sdk_sfn, "states");

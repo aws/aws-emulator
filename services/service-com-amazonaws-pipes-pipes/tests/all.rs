@@ -33,6 +33,8 @@ mod pipe_description;
 mod pipe_desired_state;
 #[path = "all/pipe_dynamodb_stream_source.rs"]
 mod pipe_dynamodb_stream_source;
+#[path = "all/pipe_event_bus_target.rs"]
+mod pipe_event_bus_target;
 #[path = "all/pipe_execution_role.rs"]
 mod pipe_execution_role;
 #[path = "all/pipe_filter_body_format.rs"]

@@ -36,6 +36,9 @@ service-common = { path = "../common" }
 # Functions Express workflow (`StartSyncExecution`). Only the generated clients are
 # needed: the emulator supplies the transport, so the SDK's own HTTPS stack is left out.
 aws-sdk-sqs = { version = "1", default-features = false }
+# The EventBridge surface a pipe whose target is an event bus delivers through: `PutEvents`
+# with the configured `EventBridgeEventBusParameters` and the record as the event detail.
+aws-sdk-eventbridge = { version = "1", default-features = false }
 aws-sdk-lambda = { version = "1", default-features = false }
 aws-sdk-sfn = { version = "1", default-features = false }
 # The DynamoDB Streams surface a stream-sourced pipe reads its records through:
@@ -87,6 +90,11 @@ service-com-amazonaws-dynamodbstreams-dynamodbstreams-20120810 = { workspace = t
 # Kinesis service is mounted beside pipes in that suite and the records are put the way a
 # client puts them.
 service-com-amazonaws-kinesis-kinesis-20131202 = { workspace = true }
+# A pipe whose target is an EventBridge event bus is asserted where a client sees the
+# publication: on the sink queue a rule on that bus forwards to, so EventBridge is mounted
+# beside pipes in that suite and the bus, its rule and its target are created the way a
+# client creates them.
+service-com-amazonaws-eventbridge-awsevents = { workspace = true }
 # The role a pipe's stages act as lives in IAM, and the metrics a running pipe publishes
 # about its executions are read back through CloudWatch, so both are mounted beside pipes
 # on one engine in the metrics suite.
