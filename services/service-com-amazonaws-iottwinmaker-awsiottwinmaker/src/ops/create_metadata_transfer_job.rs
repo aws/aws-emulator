@@ -34,6 +34,12 @@
 //! * the account already holds [`crate::state::MAX_METADATA_TRANSFER_JOBS`]
 //!   jobs — a `ServiceQuotaExceededException`.
 //!
+//! The first two name what the request carried — a workspace ARN, or the `type`
+//! an end declared — and both are modelled as widely as, or more widely than,
+//! the member a reason travels on, so they are stated through [`invalid`] and
+//! [`not_found`], which bring the reason within that member's own maximum as
+//! every other refusal of this service does.
+//!
 //! Two deliberate gaps. An Amazon S3 `location` is stored WITHOUT checking that
 //! the object or prefix it names exists: whether the store holds it is the
 //! RUN's business, and a source it holds nothing at is the job's own failure
@@ -240,21 +246,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // which one a given `type` requires.
             for (index, source) in input.sources.iter().enumerate() {
                 if let Some(message) = source_configuration_error(index, source) {
-                    return Err(CreateMetadataTransferJobErrorModeled::ValidationException(
-                        ValidationException {
-                            message: Some(message),
-                        },
-                    )
-                    .into());
+                    return Err(invalid(message));
                 }
             }
             if let Some(message) = destination_configuration_error(&input.destination) {
-                return Err(CreateMetadataTransferJobErrorModeled::ValidationException(
-                    ValidationException {
-                        message: Some(message),
-                    },
-                )
-                .into());
+                return Err(invalid(message));
             }
 
             // Every IoT TwinMaker end of the transfer names a workspace by ARN,
@@ -264,16 +260,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // refuses with a `ValidationException`).
             for workspace in referenced_workspaces(&input) {
                 if state.resolve_workspace_id(workspace).is_none() {
-                    return Err(
-                        CreateMetadataTransferJobErrorModeled::ResourceNotFoundException(
-                            ResourceNotFoundException {
-                                message: Some(crate::state::workspace_not_found_message(
-                                    workspace,
-                                )),
-                            },
-                        )
-                        .into(),
-                    );
+                    return Err(not_found(crate::state::workspace_not_found_message(
+                        workspace,
+                    )));
                 }
             }
 
@@ -383,6 +372,38 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             status,
         })
     }
+}
+
+/// Refuse the request, naming what about it cannot be served.
+///
+/// The reason is built from the REQUEST — the member at fault, the `type` it
+/// carries and the configuration that type requires — and is stated within the
+/// maximum of the member it travels on ([`crate::state::clamped_message`]), so
+/// no text the request chose can carry the reason past that bound. A `type`
+/// outside its modelled value list is additionally resolved by the boundary
+/// validator before this handler runs, so the branches naming one are this
+/// handler's own defence rather than what answers such a request on the wire.
+fn invalid(message: String) -> CreateMetadataTransferJobError {
+    CreateMetadataTransferJobErrorModeled::ValidationException(ValidationException {
+        message: Some(crate::state::clamped_message(
+            message,
+            crate::state::ERROR_MESSAGE_MAX_CHARS,
+        )),
+    })
+    .into()
+}
+
+/// Answer that something the request named does not exist, within the maximum of
+/// the member the reason travels on ([`invalid`]): a workspace is named here by
+/// ARN, whose `TwinMakerArn` is bounded as widely as that member itself.
+fn not_found(message: String) -> CreateMetadataTransferJobError {
+    CreateMetadataTransferJobErrorModeled::ResourceNotFoundException(ResourceNotFoundException {
+        message: Some(crate::state::clamped_message(
+            message,
+            crate::state::ERROR_MESSAGE_MAX_CHARS,
+        )),
+    })
+    .into()
 }
 
 /// The `SourceType` / `DestinationType` values the model admits

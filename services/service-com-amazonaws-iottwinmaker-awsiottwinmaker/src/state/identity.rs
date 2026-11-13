@@ -59,8 +59,17 @@ pub fn clamped_message(message: String, max_chars: usize) -> String {
 /// Built from the request, naming the ARN that was looked for — the same
 /// construction as [`entity_not_found_message`], one level up from an id to
 /// the ARN the tagging operations address a resource by.
+///
+/// The ARN is a `TwinMakerArn`, which the model bounds as widely as the member
+/// every refusal of this service states its reason on, so the message is brought
+/// within that bound HERE ([`clamped_message`]) rather than at each reader of
+/// it: the bound then holds for every caller of this construction, including one
+/// added later.
 pub fn resource_not_found_message(resource_arn: &str) -> String {
-    format!("Resource {resource_arn} not found.")
+    clamped_message(
+        format!("Resource {resource_arn} not found."),
+        ERROR_MESSAGE_MAX_CHARS,
+    )
 }
 
 /// The message for an entity the workspace the request named does not hold.
@@ -188,8 +197,16 @@ pub const SYNC_JOB_NOT_FOUND_MESSAGE: &str = "Provided Sync Job does not exist!"
 /// given, while the workspace's own UPDATE path reports the account-scoped form
 /// [`workspace_does_not_exist_message`] builds. Every operation that resolves a
 /// workspace in order to read or write something it contains uses this one.
+///
+/// A workspace is addressed by an id on most of those paths and by a
+/// `TwinMakerArn` on the metadata-transfer one, and that ARN is bounded as
+/// widely as the member the reason travels on, so the message is brought within
+/// that bound HERE ([`clamped_message`]) rather than at each reader of it.
 pub fn workspace_not_found_message(workspace_id: &str) -> String {
-    format!("Unable to find workspace for id: {workspace_id}")
+    clamped_message(
+        format!("Unable to find workspace for id: {workspace_id}"),
+        ERROR_MESSAGE_MAX_CHARS,
+    )
 }
 
 /// The message the workspace UPDATE path reports for a workspace this service

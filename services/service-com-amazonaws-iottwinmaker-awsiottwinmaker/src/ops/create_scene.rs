@@ -184,7 +184,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         );
         // The reserved tag-key namespace is AWS's own: a create may no more put a
         // key under it on the new resource than `TagResource` may add one later,
-        // so a request naming one is refused whole and nothing is created.
+        // so a request naming one is refused whole and nothing is created. The
+        // reason names the keys at fault, as many as the request carried, and the
+        // construction that builds it is what states it within the bound of the
+        // member it travels on.
         if let Some(message) = crate::state::reserved_tag_keys_violation(
             "tags",
             input

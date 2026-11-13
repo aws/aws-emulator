@@ -208,7 +208,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let state = state.region(&region);
 
         // The outcome is recorded where the refusal is BUILT, so one record
-        // covers every refusal this handler owns and says which one it was.
+        // covers every refusal this handler owns and says which one it was. The
+        // reason is stated within the maximum of the member it travels on
+        // ([`crate::state::clamped_message`]), whatever text of the request it
+        // names.
         let invalid = |message: String| {
             ::tracing::info!(
                 operation = "ListSyncResources",
@@ -217,7 +220,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 "refusing a request"
             );
             ListSyncResourcesErrorModeled::ValidationException(ValidationException {
-                message: Some(message),
+                message: Some(crate::state::clamped_message(
+                    message,
+                    crate::state::ERROR_MESSAGE_MAX_CHARS,
+                )),
             })
         };
 
@@ -253,12 +259,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             ))
             .into());
         }
-        // `state` and `resourceType` are modelled enumerations, whose value
-        // lists the boundary validator does not enforce (the same reason
-        // `ListMetadataTransferJobs` checks its own filter's state here), so a
-        // value outside them is refused rather than quietly selecting no
+        // `state` and `resourceType` are modelled enumerations, so a value
+        // outside their value lists is refused rather than quietly selecting no
         // resource. The message is built from the request: it names the member,
-        // the value and the values the model admits.
+        // the value and the values the model admits. The boundary validator
+        // resolves a modelled value list itself, so this check is the handler's
+        // own defence and is not what answers such a request on the wire.
         for filter in filters {
             let (member, wanted, admitted) = match filter {
                 SyncResourceFilter::State(wanted) => ("state", wanted, SYNC_RESOURCE_STATE_VALUES),

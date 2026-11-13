@@ -195,7 +195,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         );
         // The reserved tag-key namespace is AWS's own: a create may no more put a
         // key under it on the new resource than `TagResource` may add one later,
-        // so a request naming one is refused whole and nothing is created.
+        // so a request naming one is refused whole and nothing is created. The
+        // reason names the keys at fault, as many as the request carried, and the
+        // construction that builds it is what states it within the bound of the
+        // member it travels on.
         if let Some(message) = crate::state::reserved_tag_keys_violation(
             "tags",
             input
@@ -247,14 +250,19 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // documentation can and does ("Currently the only supported syncSource
         // is SITEWISE"), so a create naming any other source is refused with
         // the `ValidationException` this operation models, naming the member
-        // and the value the service accepts.
+        // and the value the service accepts. The model gives that label no
+        // `@length` at all, so the reason is stated within the maximum of the
+        // member it travels on ([`crate::state::clamped_message`]).
         if input.sync_source != crate::state::SYNC_SOURCE_SITEWISE {
             return Err(CreateSyncJobErrorModeled::ValidationException(
                 ValidationException {
-                    message: Some(format!(
-                        "syncSource {} is not supported; the only supported syncSource is {}",
-                        input.sync_source,
-                        crate::state::SYNC_SOURCE_SITEWISE
+                    message: Some(crate::state::clamped_message(
+                        format!(
+                            "syncSource {} is not supported; the only supported syncSource is {}",
+                            input.sync_source,
+                            crate::state::SYNC_SOURCE_SITEWISE
+                        ),
+                        crate::state::ERROR_MESSAGE_MAX_CHARS,
                     )),
                 },
             )
@@ -286,9 +294,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         if workspace.sync_jobs.contains_key(&input.sync_source) {
             return Err(CreateSyncJobErrorModeled::ConflictException(
                 ConflictException {
-                    message: Some(format!(
-                        "workspace {} already has a sync job for sync source {}",
-                        input.workspace_id, input.sync_source
+                    message: Some(crate::state::clamped_message(
+                        format!(
+                            "workspace {} already has a sync job for sync source {}",
+                            input.workspace_id, input.sync_source
+                        ),
+                        crate::state::ERROR_MESSAGE_MAX_CHARS,
                     )),
                 },
             )

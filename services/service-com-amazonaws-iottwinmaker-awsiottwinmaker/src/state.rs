@@ -374,6 +374,12 @@ pub fn is_reserved_tag_key(key: &str) -> bool {
 /// operations and every create that takes a `tags` map — refuses the whole
 /// request before touching the store: a request mixing a legal key with a
 /// reserved one applies neither.
+///
+/// The reason names as many keys as the request carried, which the model bounds
+/// one at a time (50 of them, of 128 characters each) and not as the set a
+/// reason renders, so the message is brought within the bound of the member it
+/// is reported on HERE ([`clamped_message`]) rather than at each writer that
+/// reports it.
 pub fn reserved_tag_keys_violation<'a, I>(member: &str, keys: I) -> Option<String>
 where
     I: IntoIterator<Item = &'a str>,
@@ -387,12 +393,15 @@ where
     }
     reserved.sort_unstable();
     reserved.dedup();
-    Some(format!(
-        "{member} names the tag {} {} in the {RESERVED_TAG_KEY_PREFIX} namespace, which is \
-         reserved for the tags Amazon Web Services applies itself: such a key cannot be \
-         created, changed or removed by a caller.",
-        if reserved.len() == 1 { "key" } else { "keys" },
-        reserved.join(", "),
+    Some(clamped_message(
+        format!(
+            "{member} names the tag {} {} in the {RESERVED_TAG_KEY_PREFIX} namespace, which is \
+             reserved for the tags Amazon Web Services applies itself: such a key cannot be \
+             created, changed or removed by a caller.",
+            if reserved.len() == 1 { "key" } else { "keys" },
+            reserved.join(", "),
+        ),
+        ERROR_MESSAGE_MAX_CHARS,
     ))
 }
 

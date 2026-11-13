@@ -171,7 +171,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // A key in the reserved namespace is AWS's own: a caller may no more
         // delete one than create it. Decided on the request alone, before the
         // store is reached, and over the whole list, so a request mixing a legal
-        // key with a reserved one removes neither.
+        // key with a reserved one removes neither. The reason names the keys at
+        // fault, as many as the request carried, and the construction that builds
+        // it is what states it within the bound of the member it travels on — as
+        // the miss below is, which names a resource by an ARN the model bounds as
+        // widely as that member itself.
         if let Some(message) = crate::state::reserved_tag_keys_violation(
             "tagKeys",
             input.tag_keys.iter().map(String::as_str),

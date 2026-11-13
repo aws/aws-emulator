@@ -210,7 +210,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let state = state.region_mut(&region);
 
         // The outcome is recorded where the refusal is BUILT, so one record
-        // covers every refusal this handler owns and says which one it was.
+        // covers every refusal this handler owns and says which one it was. The
+        // reason is stated within the maximum of the member it travels on
+        // ([`crate::state::clamped_message`]), whatever text of the request it
+        // names.
         let invalid = |message: String| {
             ::tracing::info!(
                 operation = "ListMetadataTransferJobs",
@@ -219,16 +222,21 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 "refusing a request"
             );
             ListMetadataTransferJobsErrorModeled::ValidationException(ValidationException {
-                message: Some(message),
+                message: Some(crate::state::clamped_message(
+                    message,
+                    crate::state::ERROR_MESSAGE_MAX_CHARS,
+                )),
             })
         };
 
-        // The ends the listing is taken over. Both are modelled enumerations,
-        // whose value lists the boundary validator does not enforce (the same
-        // reason `UpdatePricingPlan` checks its `pricingMode` here), so a value
-        // outside them is refused rather than quietly selecting no job. The
-        // message is built from the request: it names the value and the values
-        // the model admits.
+        // The ends the listing is taken over. Both are modelled enumerations, so
+        // a value outside their value lists is refused rather than quietly
+        // selecting no job — the message is built from the request, naming the
+        // value and the values the model admits. The boundary validator resolves
+        // a modelled value list itself, so this check is the handler's own
+        // defence and is not what answers such a request on the wire; the
+        // reason it builds is stated within the bound of the member it travels
+        // on all the same.
         if !SOURCE_TYPE_VALUES.contains(&input.source_type.as_str()) {
             return Err(invalid(format!(
                 "sourceType is {}, which is not one of {}",

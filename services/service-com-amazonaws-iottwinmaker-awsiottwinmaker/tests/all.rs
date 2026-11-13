@@ -272,6 +272,9 @@ mod time_series_property_values;
 #[path = "all/unassumable_role_message.rs"]
 mod unassumable_role_message;
 
+#[path = "all/unbounded_refusal_message_bounds.rs"]
+mod unbounded_refusal_message_bounds;
+
 #[path = "all/workspace_built_in_component_types.rs"]
 mod workspace_built_in_component_types;
 

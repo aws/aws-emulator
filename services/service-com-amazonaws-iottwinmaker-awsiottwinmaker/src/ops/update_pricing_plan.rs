@@ -217,7 +217,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let region = crate::state::request_region(ctx.parts());
 
         // Every refusal is decided BEFORE the store is touched, so a refused
-        // request leaves the account on the plan it was already on.
+        // request leaves the account on the plan it was already on. The
+        // `pricingMode` check is the handler's own defence: the mode is a
+        // modelled enumeration, whose value list the boundary validator resolves
+        // before this runs.
         if !PRICING_MODE_VALUES.contains(&input.pricing_mode.as_str()) {
             return Err(validation(format!(
                 "pricingMode must be one of {}, got {:?}",
@@ -310,10 +313,15 @@ const MAX_PRICING_BUNDLES: usize = 10;
 /// `message`.
 ///
 /// The model declares the error for this operation, so the refusal goes out as
-/// the service's own shape rather than through the scaffold's synthetic one.
+/// the service's own shape rather than through the scaffold's synthetic one, and
+/// the reason is stated within the maximum of the member it travels on
+/// ([`crate::state::clamped_message`]), whatever text of the request it names.
 fn validation(message: String) -> UpdatePricingPlanError {
     UpdatePricingPlanErrorModeled::ValidationException(ValidationException {
-        message: Some(message),
+        message: Some(crate::state::clamped_message(
+            message,
+            crate::state::ERROR_MESSAGE_MAX_CHARS,
+        )),
     })
     .into()
 }

@@ -184,6 +184,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         let resource_arn = &input.resource_arn;
         let Some(tags) = state.tags_for_resource(resource_arn) else {
+            // A resource is named here by ARN, which the model bounds as widely
+            // as the member the reason travels on; the construction that builds
+            // the reason is what states it within that bound.
             return Err(ListTagsForResourceErrorModeled::ResourceNotFoundException(
                 ResourceNotFoundException {
                     message: Some(crate::state::resource_not_found_message(resource_arn)),
