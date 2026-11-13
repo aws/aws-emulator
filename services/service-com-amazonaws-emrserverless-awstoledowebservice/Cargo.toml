@@ -52,6 +52,9 @@ emulator-core-build-support = { workspace = true }
 # finished job run publishes its log artifacts there — what the assembled emulator does —
 # and reads them back through the object store's own `ListObjectsV2` / `GetObject`.
 service-com-amazonaws-s3-amazons3 = { workspace = true }
+# ... and CloudWatch Logs beside it, for the other destination a monitoring configuration
+# names: the suite reads the delivered records back through `GetLogEvents`.
+service-com-amazonaws-cloudwatchlogs-logs-20140328 = { workspace = true }
 
 [lints]
 workspace = true

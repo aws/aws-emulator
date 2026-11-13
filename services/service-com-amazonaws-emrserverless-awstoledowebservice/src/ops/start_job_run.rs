@@ -331,6 +331,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     record.application.monitoring_configuration.as_ref(),
                     configuration_overrides.as_ref(),
                 ),
+                // ... and the CloudWatch Logs destination the same configuration names,
+                // resolved by the same precedence: a monitoring configuration names
+                // destinations, and a finished run publishes to each of them.
+                cloud_watch_destination:
+                    crate::state::job_run_logs::cloud_watch::cloud_watch_destination(
+                        record.application.monitoring_configuration.as_ref(),
+                        configuration_overrides.as_ref(),
+                    ),
                 log_events: Vec::new(),
                 log_publication_due: false,
             },

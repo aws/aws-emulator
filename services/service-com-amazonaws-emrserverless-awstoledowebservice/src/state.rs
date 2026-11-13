@@ -29,11 +29,11 @@
 //! re-deriving anything from a request.
 //!
 //! One thing a record owes beyond its own members is the LOG ARTIFACTS a finished job run
-//! publishes to the Amazon S3 destination its monitoring configuration names, which the
-//! clock owes at the instant the run finished: [`job_run_logs`] states what is written,
-//! where, and which call writes it.
+//! publishes to the destinations its monitoring configuration names — the Amazon S3
+//! destination and the CloudWatch Logs group — which the clock owes at the instant the run
+//! finished: [`job_run_logs`] states what is written, where, and which call writes it.
 
-/// The log artifacts a finished job run publishes into the destination its
+/// The log artifacts a finished job run publishes into the destinations its
 /// `monitoringConfiguration` names, and the publication every call that settles this store
 /// drains.
 pub mod job_run_logs;
@@ -736,6 +736,10 @@ pub struct JobRunRecord {
     /// carried resolved it ([`job_run_logs::log_destination`]), or `None` when neither
     /// the application nor the run named an Amazon S3 destination.
     pub log_destination: Option<job_run_logs::LogDestination>,
+    /// The same, for the CloudWatch Logs destination the submit's configuration named
+    /// ([`job_run_logs::cloud_watch::cloud_watch_destination`]), or `None` where logging
+    /// there was not enabled for the run.
+    pub cloud_watch_destination: Option<job_run_logs::cloud_watch::CloudWatchDestination>,
     /// The lifecycle this run's driver log reports: the submit, and every state the clock
     /// or a cancel moved it to since. Bounded by
     /// [`job_run_logs::MAX_JOB_RUN_LOG_EVENTS`].
@@ -787,10 +791,11 @@ impl JobRunRecord {
                 self.job_run.ended_at = Some(at);
                 self.pending.clear();
                 finished_at = Some(pending.due);
-                // The artifacts a finished run leaves in its configured destination are
+                // The artifacts a finished run leaves in its configured destinations are
                 // owed from THIS instant, whether or not anybody was reading: see
                 // [`job_run_logs`] for what is written and which call writes it.
-                self.log_publication_due = self.log_destination.is_some();
+                self.log_publication_due =
+                    self.log_destination.is_some() || self.cloud_watch_destination.is_some();
             }
         }
         finished_at

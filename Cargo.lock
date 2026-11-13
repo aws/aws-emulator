@@ -13004,6 +13004,7 @@ dependencies = [
  "http",
  "percent-encoding",
  "serde_json",
+ "service-com-amazonaws-cloudwatchlogs-logs-20140328",
  "service-com-amazonaws-s3-amazons3",
  "service-common",
  "sha2 0.10.9",

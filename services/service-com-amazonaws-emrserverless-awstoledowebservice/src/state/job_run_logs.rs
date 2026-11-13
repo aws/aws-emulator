@@ -1,22 +1,26 @@
 // SPDX-License-Identifier: CC0-1.0
 
-//! LOG PUBLICATION: the artifacts a job run writes into the Amazon S3 destination its
-//! monitoring configuration names.
+//! LOG PUBLICATION: the artifacts a job run writes into the destinations its monitoring
+//! configuration names.
 //!
 //! An application may carry a `monitoringConfiguration` whose
 //! `s3MonitoringConfiguration.logUri` is "The Amazon S3 destination URI for log
-//! publishing", and a job run may override it through
+//! publishing" and whose `cloudWatchLoggingConfiguration` is "The Amazon CloudWatch
+//! configuration for monitoring logs", and a job run may override either through
 //! `configurationOverrides.monitoringConfiguration` ("The override configurations for
-//! monitoring"). Configuring that destination is not a value to echo back: it makes the
-//! run's log content EXIST under the configured URI, so a client that reads the
-//! destination once the run has finished finds the run's driver log there — for a run
+//! monitoring"). Configuring a destination is not a value to echo back: it makes the
+//! run's log content EXIST in that destination, so a client that reads it
+//! once the run has finished finds the run's driver log there — for a run
 //! that ended in the modelled failure state exactly as for one that succeeded, since the
 //! log is how a terminal state is diagnosed at all.
 //!
 //! # What is published, and what is not
 //!
-//! ONE artifact per finished run: the DRIVER's standard error, gzipped, under the worker
-//! type the run's engine drives ([`driver_worker_type`]). The key layout
+//! ONE artifact per finished run and destination: the DRIVER's standard error, under the
+//! worker type the run's engine drives ([`driver_worker_type`]) — gzipped as one object in
+//! Amazon S3, and as the stream of its own lines in CloudWatch Logs, which holds log events
+//! rather than objects ([`cloud_watch`] states that destination's keying and which artifacts
+//! it asks for). The Amazon S3 key layout
 //! (`applications/<applicationId>/jobs/<jobRunId>/<WORKER_TYPE>/stderr.gz` under the
 //! configured URI) is RECORDED behaviour — this service's Smithy model states no key
 //! scheme — and it is written here once, for the publication that produces it and for
@@ -49,10 +53,16 @@
 //! Publication is BEST EFFORT, as it is for the real service: a destination that does not
 //! resolve (no such bucket) or refuses the write loses the artifact and is reported in
 //! this service's own tracing — it never fails the call that happened to drain it, which
-//! asked for none of this. Amazon S3 is reached the way any emulated service reaches
+//! asked for none of this. Each destination is reached the way any emulated service reaches
 //! another, through the in-process callback with the one shared client builder
-//! ([`service_common::s3_client`]): the object lands in the very store `s3:ListObjectsV2`
-//! and `s3:GetObject` read, and no connection leaves this process.
+//! ([`service_common::s3_client`]) or the one shared vended-logs write
+//! ([`service_common::cloudwatch_logs::delivered`]): the artifact lands in the very store
+//! `s3:ListObjectsV2` / `s3:GetObject` and `logs:GetLogEvents` read, and no connection
+//! leaves this process.
+
+/// The CloudWatch Logs destination of the same artifacts: which group and stream they are
+/// delivered to, and which of them a configuration asks for.
+pub mod cloud_watch;
 
 use std::io::Write;
 use std::time::SystemTime;
@@ -162,18 +172,42 @@ pub struct JobRunLogEvent {
     pub state_details: Option<String>,
 }
 
-/// One artifact the clock owes a destination, taken out of the store as an owned value so
-/// the state guard is released before anything is written.
+/// What the clock owes one finished run's destinations, taken out of the store as an owned
+/// value so the state guard is released before anything is written.
+///
+/// A run may be configured with either destination, both or neither: each half is present
+/// only when the run's own configuration named it.
 #[derive(Debug, Clone)]
 pub struct PendingPublication {
-    /// The job run the artifact belongs to, for the tracing of a failed write.
+    /// The job run the artifacts belong to, for the tracing of a failed write.
     pub job_run_id: String,
+    /// The object the Amazon S3 destination is owed, when one is configured.
+    pub object: Option<PublishedObject>,
+    /// The log events the CloudWatch Logs destination is owed, when one is configured and
+    /// asks for the artifact this service has ([`cloud_watch::delivery`]).
+    pub stream: Option<PublishedStream>,
+}
+
+/// One object an Amazon S3 destination is owed.
+#[derive(Debug, Clone)]
+pub struct PublishedObject {
     /// The bucket the configuration named.
     pub bucket: String,
     /// The key the artifact is written under ([`driver_log_key`]).
     pub key: String,
     /// The object's bytes: the driver log, gzipped.
     pub body: Vec<u8>,
+}
+
+/// The log events one CloudWatch Logs destination is owed.
+#[derive(Debug, Clone)]
+pub struct PublishedStream {
+    /// The group the records are delivered to.
+    pub log_group: String,
+    /// The stream inside it ([`cloud_watch::log_stream`]).
+    pub log_stream: String,
+    /// The records themselves: the driver log's lines, in the order they were recorded.
+    pub records: Vec<String>,
 }
 
 /// The destination a run submitted with these configurations publishes to, or `None` when
@@ -305,24 +339,33 @@ pub fn gzipped(text: &str) -> Option<Vec<u8>> {
     encoder.finish().ok()
 }
 
-/// The artifact a finished run owes its destination, or `None` when the run has no
-/// destination configured or its framing failed.
+/// The artifacts a finished run owes its destinations, or `None` when it owes none — no
+/// destination was configured, or neither takes the artifact this service has.
 #[must_use]
 pub fn publication(record: &JobRunRecord) -> Option<PendingPublication> {
-    let destination = record.log_destination.as_ref()?;
-    let run = &record.job_run;
-    let key = driver_log_key(
-        destination,
-        &run.application_id,
-        &run.job_run_id,
-        driver_worker_type(&record.job_run_type),
-    );
-    let body = gzipped(&driver_log_text(record))?;
+    let object = record.log_destination.as_ref().and_then(|destination| {
+        let run = &record.job_run;
+        let key = driver_log_key(
+            destination,
+            &run.application_id,
+            &run.job_run_id,
+            driver_worker_type(&record.job_run_type),
+        );
+        let body = gzipped(&driver_log_text(record))?;
+        Some(PublishedObject {
+            bucket: destination.bucket.clone(),
+            key,
+            body,
+        })
+    });
+    let stream = cloud_watch::delivery(record);
+    if object.is_none() && stream.is_none() {
+        return None;
+    }
     Some(PendingPublication {
-        job_run_id: run.job_run_id.clone(),
-        bucket: destination.bucket.clone(),
-        key,
-        body,
+        job_run_id: record.job_run.job_run_id.clone(),
+        object,
+        stream,
     })
 }
 
@@ -353,24 +396,44 @@ pub async fn publish_due<Eng: Send + Sync + 'static>(
     let region = request_region(ctx.parts());
     let client = ::service_common::s3_client::s3_client(ctx.callback(), &region);
     for publication in publications {
-        if let Err(error) = client
-            .put_object()
-            .bucket(&publication.bucket)
-            .key(&publication.key)
-            .content_type(LOG_OBJECT_MEDIA_TYPE)
-            .body(::aws_sdk_s3::primitives::ByteStream::from(
-                publication.body.clone(),
-            ))
-            .send()
-            .await
-        {
-            ::tracing::warn!(
-                job_run_id = %publication.job_run_id,
-                bucket = %publication.bucket,
-                key = %publication.key,
-                error = %::aws_smithy_types::error::display::DisplayErrorContext(&error),
-                "a job run's log artifact could not be published to Amazon S3"
-            );
+        if let Some(object) = publication.object.as_ref() {
+            if let Err(error) = client
+                .put_object()
+                .bucket(&object.bucket)
+                .key(&object.key)
+                .content_type(LOG_OBJECT_MEDIA_TYPE)
+                .body(::aws_sdk_s3::primitives::ByteStream::from(
+                    object.body.clone(),
+                ))
+                .send()
+                .await
+            {
+                ::tracing::warn!(
+                    job_run_id = %publication.job_run_id,
+                    bucket = %object.bucket,
+                    key = %object.key,
+                    error = %::aws_smithy_types::error::display::DisplayErrorContext(&error),
+                    "a job run's log artifact could not be published to Amazon S3"
+                );
+            }
+        }
+        if let Some(stream) = publication.stream.as_ref() {
+            let delivered = ::service_common::cloudwatch_logs::delivered(
+                ctx,
+                &region,
+                &stream.log_group,
+                &stream.log_stream,
+                &stream.records,
+            )
+            .await;
+            if !delivered {
+                ::tracing::warn!(
+                    job_run_id = %publication.job_run_id,
+                    log_group = %stream.log_group,
+                    log_stream = %stream.log_stream,
+                    "a job run's log artifact could not be delivered to CloudWatch Logs"
+                );
+            }
         }
     }
 }
