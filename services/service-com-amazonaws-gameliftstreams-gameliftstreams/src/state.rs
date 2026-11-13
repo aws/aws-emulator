@@ -21,7 +21,10 @@
 //! * [`resolved_arn`] / [`resolved_stream_session_arn`] resolve the identifier a
 //!   request passed to the full ARN of the resource it names, and
 //!   [`resource_not_found`] / [`stream_session_not_found`] are the ONE place the
-//!   service's `ResourceNotFoundException` message is built from it.
+//!   service's `ResourceNotFoundException` message is built from it. The wording is
+//!   chosen by the class of resource the operation ADDRESSES, so an operation whose
+//!   class the service reports without quoting the request — the stream URLs, see
+//!   [`stream_url_not_found`] — has its own builder beside them.
 //! * [`with_internal_id`] appends the per-request `" (Internal ID: <uuid>)"` suffix
 //!   every message this service's HANDLERS answer with carries, so no handler words
 //!   that suffix itself.
@@ -2162,17 +2165,6 @@ pub fn resolved_stream_session_arn(
     )
 }
 
-/// The composite stream URL ARN the two path labels of a stream-URL operation
-/// resolve to: `…:streamurl/<stream group id>/<stream URL id>`, by the same rule
-/// [`resolved_stream_session_arn`] resolves a session's.
-pub fn resolved_stream_url_arn(
-    region: &str,
-    group_identifier: &str,
-    url_identifier: &str,
-) -> String {
-    resolved_child_arn(region, STREAM_URL_RESOURCE, group_identifier, url_identifier)
-}
-
 /// The composite ARN a stream-group-scoped resource's two identifiers resolve to.
 fn resolved_child_arn(
     region: &str,
@@ -2212,6 +2204,22 @@ pub fn resource_not_found(arn: &str) -> ResourceNotFoundException {
 /// the caller addressed — even when it is the enclosing stream group that is absent.
 pub fn stream_session_not_found(arn: &str) -> ResourceNotFoundException {
     not_found("Stream session", arn)
+}
+
+/// The service's `ResourceNotFoundException` for the stream-URL operations
+/// (`GetStreamUrl`, `RevokeStreamUrl`), whose addressed resource is the stream URL
+/// the two path labels name.
+///
+/// A stream URL is a secret a caller distributes to end users ("Treat the stream URL
+/// as a secret" — the `StreamUrl` member's documentation), so this class of miss is
+/// reported as a bare sentence: it names NO identifier and NO ARN, and carries only
+/// the per-request correlation id [`with_internal_id`] appends. Nothing about the
+/// request is quoted back, which is why it is worded here rather than through
+/// [`not_found`].
+pub fn stream_url_not_found() -> ResourceNotFoundException {
+    ResourceNotFoundException {
+        message: with_internal_id("Stream URL not found"),
+    }
 }
 
 /// `<subject> '<arn>' does not exist (Internal ID: <uuid>)`, through the one

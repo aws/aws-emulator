@@ -177,16 +177,16 @@ type Refusal = (
 );
 
 /// One read of a stream URL that is not there: the case, the method, the two path
-/// labels, the status, and the resolved ARN the message must name (`None` for a
-/// label that names no stream URL at all, which is refused before the store is
-/// read).
+/// labels, the status, and whether the answer is the service's missing-stream-URL
+/// refusal (`false` for a label that names no stream URL at all, which is refused
+/// as a bad value before the store is read).
 type MissingRead = (
     &'static str,
     &'static str,
     String,
     String,
     u16,
-    Option<String>,
+    bool,
 );
 
 #[tokio::test]
@@ -810,20 +810,18 @@ async fn a_create_that_breaks_a_rule_is_refused_and_persists_nothing() {
 }
 
 #[tokio::test]
-async fn a_read_of_a_stream_url_that_is_not_there_names_the_resolved_arn() {
+async fn a_read_of_a_stream_url_that_is_not_there_reports_the_stream_url_sentence() {
     let router = emulator();
     let (_, app_arn) = ready_application(&router, "missing-url-app").await;
     let (group_id, group_arn) =
         active_stream_group(&router, "missing-url-group", &app_arn, &[REGION]).await;
 
-    let in_group =
+    let url_arn_in_group =
         format!("arn:aws:gameliftstreams:{REGION}:{ACCOUNT}:streamurl/{group_id}/su-gone");
-    let in_missing_group =
-        format!("arn:aws:gameliftstreams:{REGION}:{ACCOUNT}:streamurl/sg-gone/su-gone");
 
     // The rows differ along the operation, the form of each identifier, and whether
     // it is the stream group or the stream URL that is absent: the stream URL is the
-    // resource the call addresses either way.
+    // resource the call addresses either way, so one sentence answers them all.
     let rows: Vec<MissingRead> = vec![
         (
             "GetStreamUrl, bare ids",
@@ -831,7 +829,7 @@ async fn a_read_of_a_stream_url_that_is_not_there_names_the_resolved_arn() {
             group_id.clone(),
             "su-gone".to_string(),
             404,
-            Some(in_group.clone()),
+            true,
         ),
         (
             "GetStreamUrl with the stream group by ARN",
@@ -839,15 +837,15 @@ async fn a_read_of_a_stream_url_that_is_not_there_names_the_resolved_arn() {
             as_label(&group_arn),
             "su-gone".to_string(),
             404,
-            Some(in_group.clone()),
+            true,
         ),
         (
             "GetStreamUrl with the stream URL by ARN",
             "GET",
             group_id.clone(),
-            as_label(&in_group),
+            as_label(&url_arn_in_group),
             404,
-            Some(in_group.clone()),
+            true,
         ),
         (
             "GetStreamUrl in a stream group that is not there",
@@ -855,7 +853,7 @@ async fn a_read_of_a_stream_url_that_is_not_there_names_the_resolved_arn() {
             "sg-gone".to_string(),
             "su-gone".to_string(),
             404,
-            Some(in_missing_group.clone()),
+            true,
         ),
         (
             "RevokeStreamUrl, bare ids",
@@ -863,7 +861,7 @@ async fn a_read_of_a_stream_url_that_is_not_there_names_the_resolved_arn() {
             group_id.clone(),
             "su-gone".to_string(),
             404,
-            Some(in_group.clone()),
+            true,
         ),
         (
             "RevokeStreamUrl in a stream group that is not there",
@@ -871,7 +869,7 @@ async fn a_read_of_a_stream_url_that_is_not_there_names_the_resolved_arn() {
             "sg-gone".to_string(),
             "su-gone".to_string(),
             404,
-            Some(in_missing_group.clone()),
+            true,
         ),
         (
             // An identifier that names another KIND of resource is a bad value for
@@ -881,11 +879,11 @@ async fn a_read_of_a_stream_url_that_is_not_there_names_the_resolved_arn() {
             group_id.clone(),
             as_label(&app_arn),
             400,
-            None,
+            false,
         ),
     ];
 
-    for (case, method, group_label, url_label, expected_status, expected_arn) in rows {
+    for (case, method, group_label, url_label, expected_status, expect_not_found) in rows {
         let path = if method == "POST" {
             format!("/streamgroups/{group_label}/streamurls/{url_label}/revoke")
         } else {
@@ -896,25 +894,24 @@ async fn a_read_of_a_stream_url_that_is_not_there_names_the_resolved_arn() {
             status, expected_status,
             "case {case:?}: expected {expected_status}, got {status} {refused}"
         );
-        match expected_arn {
-            Some(arn) => {
-                assert_eq!(
-                    error_code(&refused),
-                    "ResourceNotFoundException",
-                    "case {case:?}: expected a ResourceNotFoundException, got {refused}"
-                );
-                assert_eq!(
-                    without_internal_id(&text(&refused, "/Message", case)),
-                    format!("Resource '{arn}' does not exist"),
-                    "case {case:?}: the message names the ARN the request resolves to, \
-                     got {refused}"
-                );
-            }
-            None => assert_eq!(
+        if expect_not_found {
+            assert_eq!(
+                error_code(&refused),
+                "ResourceNotFoundException",
+                "case {case:?}: expected a ResourceNotFoundException, got {refused}"
+            );
+            assert_eq!(
+                without_internal_id(&text(&refused, "/Message", case)),
+                "Stream URL not found",
+                "case {case:?}: expected the service's missing-stream-URL sentence, \
+                 got {refused}"
+            );
+        } else {
+            assert_eq!(
                 error_code(&refused),
                 "ValidationException",
                 "case {case:?}: expected the modelled ValidationException, got {refused}"
-            ),
+            );
         }
     }
 }

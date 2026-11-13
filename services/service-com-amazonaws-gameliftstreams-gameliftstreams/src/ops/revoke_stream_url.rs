@@ -202,7 +202,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         ) {
             return Err(RevokeStreamUrlErrorModeled::ValidationException(refusal).into());
         }
-        let region = crate::state::region_of(ctx.parts());
+        let _ = ctx;
         let Some(state) = crate::state::service_state(&*self.engine) else {
             return Err(RevokeStreamUrlErrorModeled::InternalServerException(
                 InternalServerException {
@@ -219,17 +219,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         // The resource this call addresses is the stream URL its two labels name, so
         // an absent stream group and an absent stream URL are the SAME miss, reported
-        // against the composite stream URL ARN.
+        // with the wording the service uses for a missing stream URL — which quotes
+        // neither label back (`crate::state::stream_url_not_found`).
         if state
             .stream_url(&input.identifier, &input.stream_url_identifier)
             .is_none()
         {
             return Err(RevokeStreamUrlErrorModeled::ResourceNotFoundException(
-                crate::state::resource_not_found(&crate::state::resolved_stream_url_arn(
-                    &region,
-                    &input.identifier,
-                    &input.stream_url_identifier,
-                )),
+                crate::state::stream_url_not_found(),
             )
             .into());
         }

@@ -35,6 +35,8 @@ mod stream_group_locations;
 mod stream_session_admin_shell;
 #[path = "all/stream_session_placement.rs"]
 mod stream_session_placement;
+#[path = "all/stream_url_not_found.rs"]
+mod stream_url_not_found;
 #[path = "all/stream_urls.rs"]
 mod stream_urls;
 #[path = "all/stream_workflow.rs"]
