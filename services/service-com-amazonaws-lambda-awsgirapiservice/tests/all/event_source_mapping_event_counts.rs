@@ -31,13 +31,15 @@
 //! `BatchSize` they are polled in, and which `EventSourceMappingMetric` values the
 //! `MetricsConfig` selects.
 //!
-//! The counting table waits for CONDITIONS and never for a span: every barrier of a row — a
-//! count published, a queue drained, a mapping removed — is looked for again until it holds
-//! or the generous ceiling [`BUDGET`] passes, nothing asserts on how long it took, the four
-//! counts the invariants relate are read as ONE answer ([`family_sums`]), and the row retires
-//! its mapping once it is read ([`retire_mapping`]) — so one wake-up of the single poll loop
-//! serving the engine does the work of the row that is running and not also the work of every
-//! mapping an earlier row left polling.
+//! The counting table makes the poll passes of its own mapping
+//! ([`crate::event_source_mappings::DrivenPolling`]) and awaits each of them, so the counts it
+//! reads are the ones those passes published; the other tables wait for CONDITIONS and never
+//! for a span: every barrier of a row — a count published, a queue drained, a mapping removed
+//! — is looked for again until it holds or the generous ceiling [`BUDGET`] passes, nothing
+//! asserts on how long it took, the four counts the invariants relate are read as ONE answer
+//! ([`family_sums`]), and the row retires its mapping once it is read ([`retire_mapping`]) —
+//! so one wake-up of the single poll loop serving the engine does the work of the row that is
+//! running and not also the work of every mapping an earlier row left polling.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -52,7 +54,7 @@ use smithy_server_runtime::MultiServiceRouter;
 
 use crate::event_source_mappings::{
     call, call_sqs, create_mapping, create_queue, create_timed_function, get_mapping,
-    queue_attribute, queue_held, router_on, IN_FLIGHT_MESSAGES, MAPPINGS_URI,
+    queue_attribute, queue_held, router_on, DrivenPolling, IN_FLIGHT_MESSAGES, MAPPINGS_URI,
 };
 
 /// The region every call below signs for.
@@ -120,6 +122,25 @@ fn emulator() -> MultiServiceRouter {
         ),
     );
     router
+}
+
+/// The same three services, with the poll passes of the engine's mappings the suite's own
+/// ([`DrivenPolling`]): the counting table makes each pass itself and awaits it, so the
+/// counts it reads are the ones the passes it made published rather than whatever the
+/// background loop had got to by the instant the table looked.
+fn driven_emulator() -> (MultiServiceRouter, DrivenPolling) {
+    let engine: Arc<engine::InMemoryEngine> = Arc::new(engine::InMemoryEngine::new());
+    let mut router = router_on(&engine);
+    router.register_service(service_com_amazonaws_sqs_amazonsqs::EmulatedService::new(
+        Arc::clone(&engine),
+    ));
+    router.register_service(
+        service_com_amazonaws_cloudwatch_graniteserviceversion20100801::EmulatedService::new(
+            Arc::clone(&engine),
+        ),
+    );
+    let driven = DrivenPolling::claiming(&engine, &router);
+    (router, driven)
 }
 
 /// One CloudWatch call, the way a client makes it.
@@ -377,6 +398,54 @@ async fn wait_for_enabled(router: &MultiServiceRouter, case: &str, uuid: &str) {
     }
 }
 
+/// Make poll passes until the series `metric` of the mapping `uuid` names sums to at least
+/// `wanted`, answering what it sums to.
+///
+/// Each pass is awaited and publishes what it did before it answers, so the loop turns once
+/// per pass rather than once per span of wall clock, and [`BUDGET`] is a backstop against a
+/// mapping that polls nothing at all.
+async fn poll_until_sum(
+    router: &MultiServiceRouter,
+    driven: &mut DrivenPolling,
+    case: &str,
+    metric: &str,
+    uuid: &str,
+    wanted: f64,
+) -> f64 {
+    let deadline = Instant::now() + BUDGET;
+    loop {
+        let summed = metric_sum(router, case, metric, uuid).await;
+        if summed >= wanted || Instant::now() >= deadline {
+            return summed;
+        }
+        driven.poll_once().await;
+    }
+}
+
+/// Make poll passes until the queue `url` addresses holds `wanted` messages, answering what
+/// it holds.
+///
+/// Each pass is awaited, so the loop turns once per pass the mapping makes rather than once
+/// per span of wall clock, and [`BUDGET`] is a backstop against a mapping that polls nothing
+/// at all. A message whose hold lapsed between two passes is polled again by the next one,
+/// which is the poller's own answer to it.
+async fn poll_until_held(
+    router: &MultiServiceRouter,
+    driven: &mut DrivenPolling,
+    case: &str,
+    url: &str,
+    wanted: u32,
+) -> u32 {
+    let deadline = Instant::now() + BUDGET;
+    loop {
+        let holding = queue_held(router, case, url).await;
+        if holding == wanted || Instant::now() >= deadline {
+            return holding;
+        }
+        driven.poll_once().await;
+    }
+}
+
 /// A queue and a function for one row, and the mapping between them: its UUID and the
 /// queue's url.
 async fn given_mapping(
@@ -515,7 +584,7 @@ fn count_rows() -> Vec<CountRow> {
 /// rejected it or because an invocation accepted it.
 #[tokio::test]
 async fn the_event_count_family_reports_what_each_poll_did() {
-    let router = emulator();
+    let (router, mut driven) = driven_emulator();
     for (index, row) in count_rows().iter().enumerate() {
         let case = row.case;
         let filters: Vec<Value> = row
@@ -540,10 +609,11 @@ async fn the_event_count_family_reports_what_each_poll_did() {
         let admitted = u32::try_from(row.bodies.iter().filter(|(_, keep)| *keep).count())
             .unwrap_or(u32::MAX);
         let rejected = sent - admitted;
-        // The first barrier: every message that was sent has been polled. The poller takes
-        // the batch out of the queue, so this is the measurement the rest is read against.
-        let polled = wait_for_sum(
+        // The first barrier: passes are made until every message that was sent has been
+        // polled, each pass publishing what it did before it answers.
+        let polled = poll_until_sum(
             &router,
+            &mut driven,
             case,
             POLLED_EVENT_COUNT_METRIC,
             &uuid,
@@ -555,9 +625,10 @@ async fn the_event_count_family_reports_what_each_poll_did() {
             "case {case:?}: every one of the {sent} messages sent must be counted as polled, \
              got a {POLLED_EVENT_COUNT_METRIC} of {polled}"
         );
-        // A message the filter rejected leaves the queue, so the queue is left holding
-        // exactly the messages the filter admitted.
-        let holding = wait_for_held(&router, case, &url, admitted).await;
+        // And until the filter has decided every one of them: a message the filter rejected
+        // leaves the queue — nothing else would — so the queue is left holding exactly the
+        // messages the filter admitted.
+        let holding = poll_until_held(&router, &mut driven, case, &url, admitted).await;
         assert_eq!(
             holding, admitted,
             "case {case:?}: the queue must be left holding only the {admitted} messages the \
@@ -567,7 +638,7 @@ async fn the_event_count_family_reports_what_each_poll_did() {
         // Every series of the family is published, a zero included: a client cannot tell a
         // poller that filtered nothing out from one that is not publishing otherwise.
         for metric in EVENT_COUNT_FAMILY {
-            let points = wait_for_datapoints(&router, case, metric, &uuid).await;
+            let points = datapoints(&router, case, metric, &uuid).await;
             assert!(
                 !points.is_empty(),
                 "case {case:?}: {metric} must be published for this mapping, got no datapoints"

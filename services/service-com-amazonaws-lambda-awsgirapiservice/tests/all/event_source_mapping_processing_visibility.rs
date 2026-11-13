@@ -30,20 +30,31 @@
 //! queue that hides a delivery for no time at all), how many messages are waiting and how
 //! many of them one batch may hold.
 //!
+//! The POLL PASSES are this suite's own ([`crate::event_source_mappings::DrivenPolling`]):
+//! each row takes the store's poll claim and then makes one pass per batch, awaiting it. So
+//! what a row reads is the state the pass it just made left behind, rather than whatever the
+//! background loop had got to by the instant the row happened to look — and the HOLD itself
+//! is read as the instant the queue recorded it until, which is the decision the rule is
+//! about, instead of being inferred from message counts watched for a span of wall clock. No
+//! row sleeps, and nothing any row asserts depends on how fast the host runs: handing a batch
+//! over goes through `Invoke`, whose wait for this process's run capacity is not a span this
+//! suite chooses, and every row simply waits for it.
+//!
 //! Nothing here runs a deployment package, so no batch is ever processed: that is the
 //! invocation this emulator refuses, and it is why these rows assert where the messages ARE
 //! rather than what a function returned.
 
-use std::time::{Duration, Instant};
+use std::collections::BTreeMap;
+use std::time::{Duration, Instant, SystemTime};
 
 use serde_json::json;
 use service_com_amazonaws_lambda_awsgirapiservice::state::LAST_PROCESSING_RESULT_FUNCTION_CALL_FAILED;
 use smithy_server_runtime::MultiServiceRouter;
 
 use crate::event_source_mappings::{
-    call, call_sqs, create_mapping, create_queue, create_timed_function, get_mapping,
-    processing_result_within_budget, queue_attribute, router_with_queues, set_visibility_timeout,
-    CLOCK_BUDGET, MAPPINGS_URI,
+    await_mapping_state, call, create_mapping, create_queue, create_timed_function,
+    driven_router_with_queues, get_mapping, held_until, queue_attribute, send_message,
+    set_visibility_timeout, CLOCK_BUDGET, LOOK_AGAIN, MAPPINGS_URI,
 };
 
 /// The `State` a mapping reports once it is polling its event source.
@@ -52,20 +63,6 @@ const STATE_ENABLED: &str = "Enabled";
 /// The `State` a mapping reports when its `Enabled` setting is false: "when false, Lambda
 /// pauses polling and invocation."
 const STATE_DISABLED: &str = "Disabled";
-
-/// How long a row waits for work the mapping owes — settling into `Enabled`, taking the
-/// waiting messages out of the queue — before it is a failure. Well above the poller's own
-/// wake-up interval and the state-settle span, so a row fails only when the work was not
-/// done at all.
-const DEADLINE: Duration = Duration::from_secs(20);
-
-/// How often a row re-reads while it waits.
-const LOOK_AGAIN: Duration = Duration::from_millis(50);
-
-/// How far past the SHORTER of the two spans a row looks at its queue: long enough that a
-/// hold cut to that span has demonstrably lapsed, and short enough to be well inside the
-/// longer span the rule holds the batch for.
-const SLACK: Duration = Duration::from_millis(700);
 
 /// The `(visible, in flight)` message counts the queue `url` addresses reports.
 async fn depths(
@@ -79,33 +76,24 @@ async fn depths(
     (visible, in_flight)
 }
 
-/// Wait until the queue `url` addresses reports `expected` as its `(visible, in flight)`
-/// message counts, answering the LAST reading taken — which is the reading at the deadline
-/// when the counts never came to that pair, so the caller's own assertion is the one that
-/// reports the failure.
+/// Which of the messages the queue `arn` names HOLDS it is hiding at `at`, and until when.
 ///
-/// A hold LAPSING is work the clock owes, and the instant it is owed at is not one a caller
-/// controls: it falls a hold span after the attempt the batch was handed to was decided, and
-/// an attempt also waits for its share of this emulator's run capacity, so how long a loaded
-/// host takes over it moves that instant. So a row that is waiting for a lapse looks again
-/// until the queue reports it, inside the budget this suite gives every other piece of work
-/// the clock owes, rather than sleeping for a span of its own choosing and reading once.
-async fn depths_within_budget(
-    router: &MultiServiceRouter,
-    case: &str,
-    url: &str,
-    expected: (&str, &str),
-) -> (Option<String>, Option<String>) {
-    let deadline = Instant::now() + CLOCK_BUDGET;
-    loop {
-        let (visible, in_flight) = depths(router, case, url).await;
-        let settled =
-            (visible.as_deref(), in_flight.as_deref()) == (Some(expected.0), Some(expected.1));
-        if settled || Instant::now() >= deadline {
-            return (visible, in_flight);
-        }
-        tokio::time::sleep(LOOK_AGAIN).await;
-    }
+/// The queue's own bookkeeping, read through
+/// [`crate::event_source_mappings::held_until`]: a message with no recorded instant, or one
+/// already past, is the queue's to hand over again.
+fn hidden(
+    engine: &std::sync::Arc<engine::InMemoryEngine>,
+    arn: &str,
+    at: SystemTime,
+) -> BTreeMap<String, SystemTime> {
+    held_until(engine, arn)
+        .into_iter()
+        .filter_map(|(body, until)| {
+            until
+                .filter(|until| *until > at)
+                .map(|until| (body, until))
+        })
+        .collect()
 }
 
 /// One row: the queue's `VisibilityTimeout` while it is being polled, the mapped function's
@@ -115,7 +103,7 @@ struct Row {
     visibility_timeout: i64,
     function_timeout: i64,
     messages: usize,
-    batch_size: i64,
+    batch_size: usize,
 }
 
 impl Row {
@@ -125,12 +113,17 @@ impl Row {
         self.visibility_timeout.max(self.function_timeout)
     }
 
-    /// The shorter of the two spans — the instant a hold cut to only one of them would have
-    /// handed the batch back at, which is why a row looks just past it.
-    fn probe_after(&self) -> Duration {
-        Duration::from_secs(
-            u64::try_from(self.visibility_timeout.min(self.function_timeout)).unwrap_or(0),
-        ) + SLACK
+    /// That span as a duration, which is what a recorded hold is measured against.
+    fn hold_span(&self) -> Duration {
+        Duration::from_secs(u64::try_from(self.hold()).unwrap_or(0))
+    }
+
+    /// How many passes it takes to get every waiting message out of the queue: one batch per
+    /// pass, each at most `BatchSize` messages, so a row whose ceiling is below what is
+    /// waiting takes several — and no row takes more than that, which is the ceiling itself
+    /// being honoured.
+    fn passes(&self) -> usize {
+        self.messages.div_ceil(self.batch_size.max(1))
     }
 }
 
@@ -174,7 +167,7 @@ fn rows() -> Vec<Row> {
 async fn a_polled_batch_stays_in_flight_for_as_long_as_its_attempt_may_last() {
     for (index, row) in rows().iter().enumerate() {
         let case = row.case;
-        let router = router_with_queues();
+        let (router, mut driven) = driven_router_with_queues();
         let function = format!("esm-hold-fn-{index}");
         // The pair is created the way Lambda accepts one — a queue that outlasts its
         // function — and the timeout under test is set afterwards, which is the only way a
@@ -208,83 +201,110 @@ async fn a_polled_batch_stays_in_flight_for_as_long_as_its_attempt_may_last() {
             .string("UUID")
             .unwrap_or_else(|| panic!("case {case:?}: no UUID in {}", created.text()));
 
-        // The mapping polls from the moment it reports `Enabled`, so the queue is given the
-        // timeout under test before anything is waiting on it.
-        let deadline = Instant::now() + DEADLINE;
-        let mut state = None;
-        while Instant::now() < deadline {
-            state = get_mapping(&router, &uuid).await.string("State");
-            if state.as_deref() == Some(STATE_ENABLED) {
-                break;
-            }
-            tokio::time::sleep(LOOK_AGAIN).await;
-        }
-        assert_eq!(
-            state.as_deref(),
-            Some(STATE_ENABLED),
-            "case {case:?}: the mapping must settle into {STATE_ENABLED} before it polls, \
-             got {state:?}"
-        );
+        // A mapping polls from the moment it reports `Enabled` — a move the clock owes, which
+        // every read of the mapping materializes — so the queue is given the timeout under
+        // test before anything is waiting on it.
+        await_mapping_state(&router, case, &uuid, STATE_ENABLED).await;
         set_visibility_timeout(&router, case, &url, row.visibility_timeout).await;
 
         for message in 0..row.messages {
-            let (status, sent) = call_sqs(
-                &router,
-                "SendMessage",
-                &json!({ "QueueUrl": url, "MessageBody": format!("held-{index}-{message}") }),
-            )
-            .await;
-            assert_eq!(
-                status, 200,
-                "case {case:?}: expected SendMessage to answer 200, got {status} {sent}"
-            );
-        }
-
-        // Every waiting message is taken out of the queue by the poller. A batch ceiling
-        // below what is waiting takes several passes to get through them, and nothing is
-        // deleted, so the wait is for all of them to be in flight at once.
-        let waiting = row.messages.to_string();
-        let deadline = Instant::now() + DEADLINE;
-        let mut in_flight = None;
-        while Instant::now() < deadline {
-            in_flight = queue_attribute(
+            send_message(
                 &router,
                 case,
                 &url,
-                "ApproximateNumberOfMessagesNotVisible",
+                &format!("held-{index}-{message}"),
+                None,
             )
             .await;
-            if in_flight.as_deref() == Some(waiting.as_str()) {
-                break;
+        }
+
+        // One pass per batch, each awaited: when a pass answers, the batch it took is out of
+        // the queue and the attempt it was handed to has been decided. Every message that
+        // pass took is then hidden for the LONGER of the two spans, counted from the pass —
+        // which is the rule, read off the instant the queue recorded rather than guessed at
+        // from a count read later.
+        let mut taken = 0usize;
+        for pass in 0..row.passes() {
+            let before = SystemTime::now();
+            let hidden_before = hidden(driven.engine(), &arn, before);
+            driven.poll_once().await;
+            let after = SystemTime::now();
+            let spent = after.duration_since(before).unwrap_or_default();
+            let fresh: Vec<(String, SystemTime)> = hidden(driven.engine(), &arn, after)
+                .into_iter()
+                .filter(|(body, _)| !hidden_before.contains_key(body))
+                .collect();
+            assert!(
+                !fresh.is_empty() && fresh.len() <= row.batch_size,
+                "case {case:?}: pass {pass} must take a batch of at most the {} message(s) \
+                 its BatchSize allows out of the queue, and it took {}",
+                row.batch_size,
+                fresh.len()
+            );
+            taken += fresh.len();
+            for (body, until) in fresh {
+                let measured = until.duration_since(before).unwrap_or_default();
+                assert!(
+                    measured >= row.hold_span() && measured <= row.hold_span() + spent,
+                    "case {case:?}: the message {body:?} must stay out of its queue for the \
+                     longer of the queue's {}s VisibilityTimeout and the function's {}s \
+                     Timeout — {:?} from the pass that polled it — and the queue hides it \
+                     for {measured:?} (the pass itself took {spent:?})",
+                    row.visibility_timeout,
+                    row.function_timeout,
+                    row.hold_span()
+                );
             }
-            tokio::time::sleep(LOOK_AGAIN).await;
         }
         assert_eq!(
-            in_flight.as_deref(),
-            Some(waiting.as_str()),
-            "case {case:?}: the mapping's poller must take all {} waiting message(s) out of \
-             the queue, got {in_flight:?} in flight",
+            taken, row.messages,
+            "case {case:?}: the {} pass(es) a BatchSize of {} takes must get all {} waiting \
+             message(s) out of the queue, and they took {taken}",
+            row.passes(),
+            row.batch_size,
             row.messages
         );
 
-        // Past the shorter of the two spans, and well inside the longer one the rule holds
-        // the batch for: nothing has come back, so nothing can have been handed to a second
-        // consumer while the attempt it was handed to may still be running.
-        tokio::time::sleep(row.probe_after()).await;
-        let (visible, in_flight) = depths(&router, case, &url).await;
+        // Nothing was deleted: a message leaves a queue only once the attempt it was handed
+        // to processed it, and no deployment package ran here.
+        let held = held_until(driven.engine(), &arn);
         assert_eq!(
-            (visible.as_deref(), in_flight.as_deref()),
-            (Some("0"), Some(waiting.as_str())),
-            "case {case:?}: {} second(s) into an attempt a {} second function may take, all \
-             {} message(s) must still be in flight with the poller and none visible, got \
-             {visible:?} visible and {in_flight:?} in flight",
-            row.probe_after().as_secs_f32(),
-            row.function_timeout,
+            held.len(),
+            row.messages,
+            "case {case:?}: no attempt processed anything, so the queue must still hold all \
+             {} message(s), and it holds {held:?}",
             row.messages
+        );
+
+        // The same fact through the queue's own API: nothing visible and every message in
+        // flight with the poller. A hold that lapsed between two passes is polled again by
+        // the next pass — which is the rule's own answer to it — so the reading is taken
+        // after a pass that leaves every message held at once.
+        let waiting = row.messages.to_string();
+        let deadline = Instant::now() + CLOCK_BUDGET;
+        let counts = loop {
+            let counts = depths(&router, case, &url).await;
+            if (counts.0.as_deref(), counts.1.as_deref()) == (Some("0"), Some(waiting.as_str()))
+                || Instant::now() >= deadline
+            {
+                break counts;
+            }
+            driven.poll_once().await;
+        };
+        assert_eq!(
+            (counts.0.as_deref(), counts.1.as_deref()),
+            (Some("0"), Some(waiting.as_str())),
+            "case {case:?}: while an attempt on them may still be running, all {} message(s) \
+             must be in flight with the poller and none visible, got {:?} visible and {:?} in \
+             flight",
+            row.messages,
+            counts.0,
+            counts.1
         );
 
         // And the mapping is still the one that holds them: it reports what it polled for,
-        // and the attempt it made on the batch.
+        // and the attempt it made on the batch — which the pass recorded before it answered,
+        // so this is read once rather than waited for.
         let reading = get_mapping(&router, &uuid).await;
         assert_eq!(
             (reading.status, reading.string("State")),
@@ -293,17 +313,12 @@ async fn a_polled_batch_stays_in_flight_for_as_long_as_its_attempt_may_last() {
             reading.status,
             reading.text()
         );
-        // The batch going out of the queue is the attempt STARTING: what it came to is
-        // reported once the invocation it was handed to has been decided, so it is waited
-        // for rather than read at the instant the hold was probed at.
-        let result = processing_result_within_budget(&router, case, &uuid)
-            .await
-            .unwrap_or_default();
         assert_eq!(
-            result, LAST_PROCESSING_RESULT_FUNCTION_CALL_FAILED,
+            reading.string("LastProcessingResult").as_deref(),
+            Some(LAST_PROCESSING_RESULT_FUNCTION_CALL_FAILED),
             "case {case:?}: nothing here runs a deployment package, so the attempt this \
              mapping made on its batch must be reported as the unsuccessful one it was, got \
-             {result:?} in {}",
+             {}",
             reading.text()
         );
     }
@@ -319,7 +334,9 @@ async fn the_hold_lapses_once_the_attempt_can_no_longer_be_running() {
     let case = "a queue that hides nothing, a three second function, paused mid-hold";
     let visibility_timeout = 0;
     let function_timeout = 3;
-    let router = router_with_queues();
+    let hold = Duration::from_secs(u64::try_from(function_timeout).unwrap_or(0));
+    let body = "held-then-released";
+    let (router, mut driven) = driven_router_with_queues();
     let (url, arn) = create_queue(
         &router,
         case,
@@ -344,54 +361,27 @@ async fn the_hold_lapses_once_the_attempt_can_no_longer_be_running() {
         .string("UUID")
         .unwrap_or_else(|| panic!("case {case:?}: no UUID in {}", created.text()));
 
-    let deadline = Instant::now() + DEADLINE;
-    let mut state = None;
-    while Instant::now() < deadline {
-        state = get_mapping(&router, &uuid).await.string("State");
-        if state.as_deref() == Some(STATE_ENABLED) {
-            break;
-        }
-        tokio::time::sleep(LOOK_AGAIN).await;
-    }
-    assert_eq!(
-        state.as_deref(),
-        Some(STATE_ENABLED),
-        "case {case:?}: the mapping must settle into {STATE_ENABLED} before it polls, got \
-         {state:?}"
-    );
+    await_mapping_state(&router, case, &uuid, STATE_ENABLED).await;
     set_visibility_timeout(&router, case, &url, visibility_timeout).await;
+    send_message(&router, case, &url, body, None).await;
 
-    let (status, sent) = call_sqs(
-        &router,
-        "SendMessage",
-        &json!({ "QueueUrl": url, "MessageBody": "held-then-released" }),
-    )
-    .await;
-    assert_eq!(
-        status, 200,
-        "case {case:?}: expected SendMessage to answer 200, got {status} {sent}"
-    );
-
-    let deadline = Instant::now() + DEADLINE;
-    let mut in_flight = None;
-    while Instant::now() < deadline {
-        in_flight = queue_attribute(
-            &router,
-            case,
-            &url,
-            "ApproximateNumberOfMessagesNotVisible",
-        )
-        .await;
-        if in_flight.as_deref() == Some("1") {
-            break;
-        }
-        tokio::time::sleep(LOOK_AGAIN).await;
-    }
-    assert_eq!(
-        in_flight.as_deref(),
-        Some("1"),
-        "case {case:?}: the mapping's poller must take the message out of the queue, got \
-         {in_flight:?} in flight"
+    // The pass takes the message out of the queue, and the hold it leaves on it is the span
+    // the attempt may last and NO MORE: that bound is what the lapse below follows from.
+    let before = SystemTime::now();
+    driven.poll_once().await;
+    let spent = SystemTime::now().duration_since(before).unwrap_or_default();
+    let until = *hidden(driven.engine(), &arn, SystemTime::now())
+        .get(body)
+        .unwrap_or_else(|| {
+            panic!("case {case:?}: the pass must take the message out of the queue, and the \
+                    queue is hiding {:?}", held_until(driven.engine(), &arn))
+        });
+    let measured = until.duration_since(before).unwrap_or_default();
+    assert!(
+        measured <= hold + spent,
+        "case {case:?}: the hold on a polled batch is the span one attempt at it may last \
+         ({hold:?}) and no more, and the queue hides the message for {measured:?} (the pass \
+         itself took {spent:?})"
     );
 
     let paused = call(
@@ -408,31 +398,45 @@ async fn the_hold_lapses_once_the_attempt_can_no_longer_be_running() {
         paused.status,
         paused.text()
     );
-    let deadline = Instant::now() + DEADLINE;
-    let mut state = None;
-    while Instant::now() < deadline {
-        state = get_mapping(&router, &uuid).await.string("State");
-        if state.as_deref() == Some(STATE_DISABLED) {
-            break;
-        }
-        tokio::time::sleep(LOOK_AGAIN).await;
-    }
-    assert_eq!(
-        state.as_deref(),
-        Some(STATE_DISABLED),
-        "case {case:?}: the paused mapping must settle into {STATE_DISABLED}, got {state:?}"
-    );
+    await_mapping_state(&router, case, &uuid, STATE_DISABLED).await;
 
     // Once the span the attempt could have lasted is up: the message is the queue's again,
-    // and nothing deleted it, because no deployment package ran. That lapse is waited FOR —
-    // see [`depths_within_budget`] — rather than waited OUT, because the instant it falls at
-    // depends on how long the attempt the batch was handed to took to be decided, which is
-    // not this test's to choose.
-    let (visible, in_flight) = depths_within_budget(&router, case, &url, ("1", "0")).await;
+    // and nothing deleted it, because no deployment package ran. The lapse is work the CLOCK
+    // owes at the instant the hold above runs out at, so it is looked for again until the
+    // queue reports it, inside a deadline taken from that very instant.
+    let deadline = Instant::now()
+        + until
+            .duration_since(SystemTime::now())
+            .unwrap_or_default()
+        + CLOCK_BUDGET;
+    let counts = loop {
+        let counts = depths(&router, case, &url).await;
+        if (counts.0.as_deref(), counts.1.as_deref()) == (Some("1"), Some("0"))
+            || Instant::now() >= deadline
+        {
+            break counts;
+        }
+        tokio::time::sleep(LOOK_AGAIN).await;
+    };
     assert_eq!(
-        (visible.as_deref(), in_flight.as_deref()),
+        (counts.0.as_deref(), counts.1.as_deref()),
         (Some("1"), Some("0")),
         "case {case:?}: once no attempt can still be running the message must be visible on \
-         its queue again, got {visible:?} visible and {in_flight:?} in flight"
+         its queue again, got {:?} visible and {:?} in flight",
+        counts.0,
+        counts.1
+    );
+
+    // And it stays the queue's: the paused mapping "pauses polling and invocation", so a
+    // pass made while it rests takes nothing back.
+    driven.poll_once().await;
+    let counts = depths(&router, case, &url).await;
+    assert_eq!(
+        (counts.0.as_deref(), counts.1.as_deref()),
+        (Some("1"), Some("0")),
+        "case {case:?}: a paused mapping polls nothing, so the message it let go must still \
+         be visible on its queue, got {:?} visible and {:?} in flight",
+        counts.0,
+        counts.1
     );
 }

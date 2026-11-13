@@ -50,10 +50,15 @@ use service_com_amazonaws_lambda_awsgirapiservice::state::execution::{
     HOST_WAIT_CEILING, INIT_PHASE_LIMIT, PERMIT_WAIT,
 };
 use service_com_amazonaws_lambda_awsgirapiservice::state::{
-    ASYNC_DELIVERY_DELAY, ASYNC_RETRY_DELAY, MAX_ASYNC_DELIVERY_ATTEMPTS,
+    AsyncInvocationOutcome, ASYNC_DELIVERY_DELAY, ASYNC_RETRY_DELAY, MAX_ASYNC_DELIVERY_ATTEMPTS,
 };
 use smithy_server_runtime::MultiServiceRouter;
 
+// Waiting for an accepted asynchronous invocation to have been DELIVERED is the same wait the
+// suite over that plane makes, so this one makes it with the helper that suite publishes: it
+// looks at the entry the accepting call queued until the delivery attempt has settled, and
+// waits on the delivery making progress rather than on a span of wall clock.
+use crate::asynchronous_invoke_run::settled_newest;
 use crate::function_lifecycle::{make_activation_due, send, Answer, ROLE};
 use crate::kinesis_event_source_delivery::cloudwatch;
 use crate::synchronous_invoke_run::package;
@@ -109,9 +114,10 @@ const RESERVED_REASON: &str = "ReservedFunctionConcurrentInvocationLimitExceeded
 /// The `x-amzn-errortype` a throttled invocation carries.
 const THROTTLE_ERROR: &str = "TooManyRequestsException";
 
-/// How long an asynchronous delivery is waited for: the delivery happens off the response
-/// path, so the datapoint about it appears once that delivery has happened rather than during
-/// the accepting call.
+/// How long the series is waited for ONCE the delivery it measures has happened: the run
+/// publishes its measurements before the attempt that made it settles, so this is a backstop
+/// and not a wait on the delivery itself ([`settled_newest`] is that wait, and it bounds
+/// nothing but the emulator going quiet about the event).
 ///
 /// A ceiling on PATIENCE, never a span anything here counts on, and taken from what the
 /// EMULATOR itself allows that work rather than picked here: the event waits its queueing
@@ -818,10 +824,25 @@ async fn an_asynchronous_invocation_publishes_its_run_once_it_has_been_delivered
         String::from_utf8_lossy(&accepted.body)
     );
 
-    // Polled rather than slept on: the delivery is the runtime's own work, and the datapoint
-    // appears when the run it measures has happened. The wait is for that CONDITION — the
-    // series holding a measurement — looked at again until it holds or [`DELIVERY_BUDGET`]
-    // passes, so a host that takes longer over the delivery is waited for rather than failed.
+    // The DELIVERY is waited for first, on the entry the accepting call queued: that is the
+    // work the measurements are about, and the emulator's own record of it says when it has
+    // happened — so the series below is read once the run it measures has really run, rather
+    // than after a span of wall clock in which it may or may not have.
+    let delivered = settled_newest(&engine, case, FUNCTION).await;
+    assert_eq!(
+        delivered.outcome,
+        AsyncInvocationOutcome::Delivered {
+            function_error: None
+        },
+        "case {case:?}: the accepted event must be delivered to the function and its handler \
+         must return, got {:?}",
+        delivered.outcome
+    );
+
+    // Polled rather than slept on: the datapoint appears when the run it measures has
+    // happened, which the wait above is for. The wait is for that CONDITION — the series
+    // holding a measurement — looked at again until it holds or [`DELIVERY_BUDGET`] passes,
+    // so a host that takes longer over the publication is waited for rather than failed.
     let deadline = Instant::now() + DELIVERY_BUDGET;
     let durations = loop {
         let durations = datapoints(

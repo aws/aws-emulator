@@ -22,8 +22,6 @@
 //! emulator has no in-process runtime for a deployment package: no message is consumed on
 //! the strength of a report no invocation produced.
 
-use std::time::Duration;
-
 use serde_json::json;
 use service_com_amazonaws_lambda_awsgirapiservice::state::{
     processed_records, read_batch_item_failures, reports_batch_item_failures, BatchReport,
@@ -32,13 +30,10 @@ use service_com_amazonaws_lambda_awsgirapiservice::state::{
 use smithy_server_runtime::MultiServiceRouter;
 
 use crate::event_source_mappings::{
-    call_sqs, create_mapping, create_queue, create_timed_function, get_mapping, messages_held,
-    processing_result_within_budget, queue_message_counts, router_with_queues,
+    await_mapping_state, call_sqs, create_mapping, create_queue, create_timed_function,
+    driven_router_with_queues, get_mapping, messages_held, queue_message_counts,
+    router_with_queues, STATE_ENABLED,
 };
-
-/// Several of the one-second visibility windows these queues hand a message over for: long
-/// enough that a poller which was going to consume anything has had the chance to.
-const VISIBILITY_WINDOWS: Duration = Duration::from_secs(3);
 
 /// `SendMessage` of `body` to the queue `url` addresses, answering the `MessageId` Amazon SQS
 /// minted for it — the identifier a report of a queue batch names a record by.
@@ -183,7 +178,7 @@ struct Row {
     response_types: serde_json::Value,
     /// `BatchSize`: "the maximum number of records in each batch that Lambda pulls from your
     /// stream or queue".
-    batch_size: i64,
+    batch_size: usize,
     /// The bodies waiting on the source queue.
     bodies: &'static [&'static str],
 }
@@ -217,7 +212,10 @@ async fn no_message_is_consumed_on_a_report_no_invocation_produced() {
     ];
     for (index, row) in rows.iter().enumerate() {
         let case = row.case;
-        let router = router_with_queues();
+        // The poll passes are this suite's own, awaited one per batch: a row then reads the
+        // state the passes it made left behind, rather than a span of wall clock after
+        // which the background loop may or may not have got to the work.
+        let (router, mut driven) = driven_router_with_queues();
         let function = format!("esm-report-fn-{index}");
         let (url, arn) = create_queue(
             &router,
@@ -250,13 +248,20 @@ async fn no_message_is_consumed_on_a_report_no_invocation_produced() {
             .string("UUID")
             .unwrap_or_else(|| panic!("case {case:?}: no UUID in {}", created.text()));
 
+        // A mapping polls from the moment it reports `Enabled`, a move the clock owes that
+        // every read of the mapping materializes.
+        await_mapping_state(&router, case, &uuid, STATE_ENABLED).await;
+
         for body in row.bodies {
             send_message(&router, case, &url, body).await;
         }
 
-        // Several visibility windows: the mapping settles into `Enabled`, polls its queue,
-        // hands each batch over and is refused, and every message it took comes back.
-        tokio::time::sleep(VISIBILITY_WINDOWS).await;
+        // One pass per batch the messages waiting take, each awaited: when a pass answers,
+        // the batch it took has been handed to the function and refused, and what the attempt
+        // came to is recorded.
+        for _ in 0..row.bodies.len().div_ceil(row.batch_size.max(1)) {
+            driven.poll_once().await;
+        }
 
         // The queue still holds everything that was sent: a message leaves a queue only once
         // the attempt it was handed to processed it.
@@ -269,17 +274,15 @@ async fn no_message_is_consumed_on_a_report_no_invocation_produced() {
             row.bodies.len()
         );
         // And the mapping made the attempt: "the result of the event source mapping's last
-        // processing attempt" is reported, so the batch really was handed over. The report
-        // follows the invocation the batch was handed to, so it is waited for rather than
-        // read at one instant.
-        let result = processing_result_within_budget(&router, case, &uuid)
-            .await
-            .unwrap_or_default();
+        // processing attempt" is reported, so the batch really was handed over. The pass
+        // recorded it before it answered, so this is read once.
+        let reading = get_mapping(&router, &uuid).await;
+        let result = reading.string("LastProcessingResult").unwrap_or_default();
         assert!(
             !result.is_empty(),
             "case {case:?}: a mapping that handed a batch to its function must report what \
              that attempt came to, got {}",
-            get_mapping(&router, &uuid).await.text()
+            reading.text()
         );
     }
 }

@@ -21,13 +21,16 @@
 //! invocation, what the event carried, which qualifier the call addressed (the unpublished
 //! version, a published version, an alias), and what the function's runtime is.
 //!
-//! Every wait here is for a CONDITION, looked at again until it holds or a generous deadline
-//! passes — the function reporting `Active`, the delivery attempt having settled — and every
-//! limit no row is about is far above what the work takes: the `Timeout` a handler is given,
-//! and the ceiling on a row's own wait, which is DERIVED from the bounds the emulator itself
-//! puts on a delivery attempt rather than picked by hand, so it cannot be tighter than the
-//! work it waits for. So how fast the host runs decides nothing a row asserts: a slow host is
-//! waited for, and only a delivery that never arrives fails a row.
+//! Every wait here is for a CONDITION, looked at again until it holds — the function
+//! reporting `Active`, the delivery attempt having settled — and no row bounds the delivery
+//! as a whole by a span: an attempt that found no capacity to run the function ran nothing, so
+//! the event is attempted AGAIN for as long as it is retained, and how many such attempts a
+//! loaded host costs an event is not a row's to bound. What a row bounds is the emulator going
+//! quiet about the event ([`NO_PROGRESS_CEILING`], derived from the bounds the emulator itself
+//! puts on one attempt and on the wait between two), and every limit no row is about — the
+//! `Timeout` a handler is given above all — is far above what the work takes. So how fast the
+//! host runs decides nothing a row asserts: a slow host is waited for, and only a delivery
+//! nothing is working on fails a row.
 
 use std::io::Write as _;
 use std::sync::Arc;
@@ -40,7 +43,7 @@ use service_com_amazonaws_lambda_awsgirapiservice::state::execution::{
 };
 use service_com_amazonaws_lambda_awsgirapiservice::state::{
     AsyncInvocationOutcome, AsyncInvocationRecord, ComAmazonawsLambdaAwsgirapiserviceState,
-    ASYNC_DELIVERY_DELAY, ASYNC_RETRY_DELAY, MAX_ASYNC_DELIVERY_ATTEMPTS,
+    ASYNC_DELIVERY_DELAY, ASYNC_RETRY_DELAY, THROTTLED_MAX_RETRY,
 };
 use service_com_amazonaws_lambda_awsgirapiservice::EmulatedService;
 use smithy_server_runtime::MultiServiceRouter;
@@ -74,21 +77,25 @@ const ONE_ATTEMPT_CEILING: Duration = PERMIT_WAIT
     .saturating_add(HOST_WAIT_CEILING)
     .saturating_add(ABANDON_GRACE);
 
-/// How long a row waits for the delivery attempt it accepted to settle.
+/// How long a row waits with NOTHING HAPPENING to the delivery it accepted before it is a
+/// failure.
 ///
-/// A ceiling, never a span anything here counts on — and not a span picked by hand either,
-/// because a hand-picked one is a bet on how fast the host runs: it is DERIVED from the
-/// bounds the emulator puts on the very work this waits for, so it cannot be tighter than
-/// that work's own worst case. An attempt that errored is made again after a wait of its own,
-/// so a row whose handler raises settles only once the attempts the retry policy has for it
-/// are spent, each of them bounded by [`ONE_ATTEMPT_CEILING`]; the extra round is for a host
-/// whose capacity an attempt has to wait for before it can even start. Only a delivery that
-/// never settles at all fails a row here.
-const DELIVERY_BUDGET: Duration = ASYNC_DELIVERY_DELAY.saturating_add(
-    ONE_ATTEMPT_CEILING
-        .saturating_add(ASYNC_RETRY_DELAY)
-        .saturating_mul(MAX_ASYNC_DELIVERY_ATTEMPTS + 1),
-);
+/// Not a budget for the delivery as a whole, because the emulator does not bound one: an
+/// attempt that found no capacity to run the function RAN nothing, so "Lambda returns the
+/// event to the queue and attempts to run the function again" for as long as the event is
+/// retained — six hours by default — and how many such attempts a loaded host costs one event
+/// is not a row's to bound. What a row CAN bound is the emulator going QUIET about the event:
+/// one attempt is bounded by [`ONE_ATTEMPT_CEILING`], the waits the retry policy puts between
+/// two attempts of one event reach [`THROTTLED_MAX_RETRY`] and no further, and the first
+/// attempt falls due [`ASYNC_DELIVERY_DELAY`] after the accepting call. So an event that
+/// neither settles nor has another attempt made for it inside this span is one nothing is
+/// working on — which is the only thing a row here can call a failure, and is what
+/// [`settled_newest`] waits on. A row whose attempts keep being made is waited for however
+/// many of them the host costs it.
+const NO_PROGRESS_CEILING: Duration = ASYNC_DELIVERY_DELAY
+    .saturating_add(ONE_ATTEMPT_CEILING)
+    .saturating_add(ASYNC_RETRY_DELAY)
+    .saturating_add(THROTTLED_MAX_RETRY);
 
 /// The `Timeout` every function below is created with: the longest a handler of it may run.
 ///
@@ -300,31 +307,113 @@ pub(crate) fn held(engine: &Arc<engine::InMemoryEngine>, name: &str) -> Vec<Asyn
         .unwrap_or_default()
 }
 
+/// A deadline that starts again every time the delivery it watches makes PROGRESS.
+///
+/// The emulator bounds one delivery ATTEMPT and the wait between two of them, and nothing
+/// else: an attempt that found no capacity to run the function is made again for as long as
+/// the event is retained, so the only failure a row can state is the emulator going quiet
+/// about the event. This is that statement: each look hands in how far the delivery has got,
+/// and the ceiling runs from the last look that saw it further on than the one before.
+struct NoProgress {
+    /// How far the delivery had got when it was last seen to move.
+    reached: Option<String>,
+    /// When nothing having happened since becomes a failure.
+    deadline: Instant,
+}
+
+impl NoProgress {
+    fn new() -> Self {
+        Self {
+            reached: None,
+            deadline: Instant::now() + NO_PROGRESS_CEILING,
+        }
+    }
+
+    /// Record how far the delivery has got, and answer whether the wait may go on: `false`
+    /// once nothing has happened to it for [`NO_PROGRESS_CEILING`].
+    fn still_going(&mut self, reached: String) -> bool {
+        if self.reached.as_ref() != Some(&reached) {
+            self.reached = Some(reached);
+            self.deadline = Instant::now() + NO_PROGRESS_CEILING;
+        }
+        Instant::now() < self.deadline
+    }
+}
+
+/// Whether the delivery attempt of `event` has been decided, which is when the entry carries
+/// what became of the event rather than where it is in the queue.
+fn has_settled(event: &AsyncInvocationRecord) -> bool {
+    !matches!(
+        event.outcome,
+        AsyncInvocationOutcome::Queued | AsyncInvocationOutcome::Delivering
+    )
+}
+
+/// How far the delivery of `event` has got: the attempts made for it and the outcome its
+/// entry carries, which is the whole of what one look can see change.
+fn reached(event: &AsyncInvocationRecord) -> String {
+    format!("{} attempt(s), {:?}", event.attempts, event.outcome)
+}
+
 /// The newest event held for `name`, waited for until its delivery attempt has settled.
+///
+/// The wait is for the delivery to make PROGRESS, not for a span of wall clock
+/// ([`NoProgress`]): an event whose attempts keep being made is waited for however many of
+/// them a loaded host costs it, and only an event nothing is working on fails a row. That is
+/// what makes this wait independent of how fast the host runs — the spans a delivery spends
+/// waiting for this process's run capacity, and the attempts a throttled event is made again
+/// for, are the emulator's to choose and are simply waited for.
 pub(crate) async fn settled_newest(
     engine: &Arc<engine::InMemoryEngine>,
     case: &str,
     name: &str,
 ) -> AsyncInvocationRecord {
-    let deadline = Instant::now() + DELIVERY_BUDGET;
+    let mut progress = NoProgress::new();
     loop {
         let newest = held(engine, name).into_iter().next_back();
-        match newest {
-            Some(event)
-                if !matches!(
-                    event.outcome,
-                    AsyncInvocationOutcome::Queued | AsyncInvocationOutcome::Delivering
-                ) =>
-            {
-                return event
-            }
-            other => assert!(
-                Instant::now() < deadline,
-                "case {case:?}: the delivery attempt never settled within \
-                 {DELIVERY_BUDGET:?}, last seen {:?}",
-                other.map(|event| event.outcome)
-            ),
+        if let Some(event) = newest.as_ref().filter(|event| has_settled(event)) {
+            return event.clone();
         }
+        let standing = newest
+            .as_ref()
+            .map_or_else(|| "no entry at all".to_string(), reached);
+        assert!(
+            progress.still_going(standing.clone()),
+            "case {case:?}: nothing happened to the delivery of this event for \
+             {NO_PROGRESS_CEILING:?} — no attempt was made for it and it did not settle — \
+             and it stands at {standing}"
+        );
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
+}
+
+/// Every event held for `name` once `wanted` of them are there and the delivery attempt of
+/// each has settled, in the order they were accepted.
+///
+/// The same progress-aware wait as [`settled_newest`], over the whole of a function's queue.
+pub(crate) async fn settled_all(
+    engine: &Arc<engine::InMemoryEngine>,
+    case: &str,
+    name: &str,
+    wanted: usize,
+) -> Vec<AsyncInvocationRecord> {
+    let mut progress = NoProgress::new();
+    loop {
+        let entries = held(engine, name);
+        if entries.len() == wanted && entries.iter().all(has_settled) {
+            return entries;
+        }
+        let standing = entries
+            .iter()
+            .map(reached)
+            .collect::<Vec<_>>()
+            .join("; ");
+        assert!(
+            progress.still_going(standing.clone()),
+            "case {case:?}: nothing happened to the {wanted} deliveries of this function for \
+             {NO_PROGRESS_CEILING:?} — no attempt was made for any of them and none settled — \
+             and they stand at [{standing}]"
+        );
         tokio::time::sleep(POLL_INTERVAL).await;
     }
 }
@@ -632,29 +721,7 @@ async fn each_accepted_event_is_delivered_once_and_on_its_own() {
     }
 
     // Both attempts settle, each on its own entry and in the order the events were accepted.
-    let deadline = Instant::now() + DELIVERY_BUDGET;
-    let settled = loop {
-        let entries = held(&engine, "async-each");
-        if entries.len() == events.len()
-            && entries.iter().all(|entry| {
-                !matches!(
-                    entry.outcome,
-                    AsyncInvocationOutcome::Queued | AsyncInvocationOutcome::Delivering
-                )
-            })
-        {
-            break entries;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "both delivery attempts must settle within {DELIVERY_BUDGET:?}, got {:?}",
-            entries
-                .iter()
-                .map(|entry| entry.outcome.clone())
-                .collect::<Vec<_>>()
-        );
-        tokio::time::sleep(POLL_INTERVAL).await;
-    };
+    let settled = settled_all(&engine, "two events accepted back to back", "async-each", events.len()).await;
 
     for (entry, (case, event, expected)) in settled.iter().zip(events) {
         assert!(

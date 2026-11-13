@@ -45,8 +45,8 @@ use crate::event_source_mappings::{
     send_message,
 };
 use crate::event_source_poll_authorization::{
-    emulator_with_queues, emulator_with_streams, given_enabled_mapping, polled_within_budget,
-    wait_until_active, BLOCKED_WINDOW, LOOK_AGAIN, SHARD_READS, STATE_ENABLED,
+    driven_emulator_with_queues, emulator_with_streams, given_enabled_mapping, wait_until_active,
+    BLOCKED_PASSES, BLOCKED_WINDOW, LOOK_AGAIN, SHARD_READS, STATE_ENABLED,
 };
 use crate::kinesis_event_source_delivery::{given_stream, kinesis, put_records};
 
@@ -284,7 +284,9 @@ async fn set_stream_policy(
 async fn a_queue_mapping_polls_only_while_the_queue_s_own_policy_lets_the_poller_read_it() {
     for (index, row) in rows().into_iter().enumerate() {
         let case = row.case;
-        let router = emulator_with_queues();
+        // The poll passes are this row's own and are awaited, so what the row reads is what
+        // the pass it just made did — see [`driven_emulator_with_queues`].
+        let (router, mut driven) = driven_emulator_with_queues();
         let (url, arn) = create_queue(
             &router,
             case,
@@ -332,27 +334,30 @@ async fn a_queue_mapping_polls_only_while_the_queue_s_own_policy_lets_the_poller
         send_message(&router, case, &url, &format!("{case} payload"), None).await;
 
         if row.polls {
-            assert!(
-                polled_within_budget(&router, case, &url).await,
+            driven.poll_once().await;
+            let counts = queue_message_counts(&router, case, &url).await;
+            assert_eq!(
+                counts,
+                (0, 1, 0),
                 "case {case:?}: nothing in force withholds a read the poller makes, so the \
-                 message must be taken out of the queue, and it stayed visible: {:?}",
-                queue_message_counts(&router, case, &url).await
+                 message must be taken out of the queue, got {counts:?} as (visible, in \
+                 flight, delayed)"
             );
             continue;
         }
         // The complement: a read the queue's own document denies is one the pass does not
-        // make, so the message is still the queue's own for the whole window — and no attempt
+        // make, so the message is still the queue's own after every pass — and no attempt
         // at a batch is reported, because no batch was polled.
-        let watch_until = Instant::now() + BLOCKED_WINDOW;
-        while Instant::now() < watch_until {
+        for pass in 0..BLOCKED_PASSES {
+            driven.poll_once().await;
             let counts = queue_message_counts(&router, case, &url).await;
             assert_eq!(
                 counts,
                 (1, 0, 0),
                 "case {case:?}: the queue's own policy denies one of the reads its poller \
-                 makes, so the message must stay visible on the queue, got {counts:?}"
+                 makes, so pass {pass} must leave the message visible on the queue, got \
+                 {counts:?}"
             );
-            tokio::time::sleep(LOOK_AGAIN).await;
         }
         let reading = get_mapping(&router, &uuid).await;
         assert_eq!(
@@ -451,7 +456,7 @@ async fn a_queue_backlog_left_while_the_queue_denied_the_read_is_polled_once_the
     // queue" means.
     let case = "two messages sent while the queue's policy denies the poller's receive";
     let messages = 2;
-    let router = emulator_with_queues();
+    let (router, mut driven) = driven_emulator_with_queues();
     let (url, arn) = create_queue(&router, case, "source-policy-resumes-queue", &json!({})).await;
     let role = given_role(
         &router,
@@ -483,16 +488,15 @@ async fn a_queue_backlog_left_while_the_queue_denied_the_read_is_polled_once_the
     for index in 0..messages {
         send_message(&router, case, &url, &format!("{case}-{index}"), None).await;
     }
-    let watch_until = Instant::now() + BLOCKED_WINDOW;
-    while Instant::now() < watch_until {
+    for pass in 0..BLOCKED_PASSES {
+        driven.poll_once().await;
         let counts = queue_message_counts(&router, case, &url).await;
         assert_eq!(
             counts,
             (u32::try_from(messages).unwrap_or(0), 0, 0),
-            "case {case:?}: while the queue's own policy denies the receive, every message \
-             must stay visible on the queue, got {counts:?}"
+            "case {case:?}: while the queue's own policy denies the receive, pass {pass} must \
+             leave every message visible on the queue, got {counts:?}"
         );
-        tokio::time::sleep(LOOK_AGAIN).await;
     }
 
     // And cleared: "you can remove the Policy attribute by setting it to an empty string",
@@ -508,11 +512,13 @@ async fn a_queue_backlog_left_while_the_queue_denied_the_read_is_polled_once_the
         status, 200,
         "case {case:?}: clearing the queue's policy must answer 200, got {status} {cleared}"
     );
-    assert!(
-        polled_within_budget(&router, case, &url).await,
-        "case {case:?}: once the deny is cleared the mapping must poll the backlog it left, \
-         and the queue still reports {:?}",
-        queue_message_counts(&router, case, &url).await
+    driven.poll_once().await;
+    let counts = queue_message_counts(&router, case, &url).await;
+    assert_eq!(
+        counts,
+        (0, u32::try_from(messages).unwrap_or(0), 0),
+        "case {case:?}: once the deny is cleared the mapping must poll the backlog it left, and \
+         the queue reports {counts:?} as (visible, in flight, delayed)"
     );
 }
 
@@ -525,7 +531,7 @@ async fn a_queue_s_own_grant_is_enough_for_a_role_whose_documents_grant_no_read(
     // grant to the queue's document rather than to anything the role carries.
     let denied = "a role granted no read of the queue, and no policy on the queue";
     let granted = "a role granted no read of the queue, which the queue's own policy grants";
-    let router = emulator_with_queues();
+    let (router, mut driven) = driven_emulator_with_queues();
     let (url, arn) = create_queue(&router, denied, "source-policy-grant-queue", &json!({})).await;
     // The role carries the log writes every execution role carries and nothing else: it is
     // granted no read of the queue at all.
@@ -568,10 +574,13 @@ async fn a_queue_s_own_grant_is_enough_for_a_role_whose_documents_grant_no_read(
     )
     .await;
     send_message(&router, granted, &url, "granted by the queue itself", None).await;
-    assert!(
-        polled_within_budget(&router, granted, &url).await,
-        "case {granted:?}: the queue's own policy grants the role every read its poller \
-         makes, so the message must be taken out of the queue, and it stayed visible: {:?}",
-        queue_message_counts(&router, granted, &url).await
+    driven.poll_once().await;
+    let counts = queue_message_counts(&router, granted, &url).await;
+    assert_eq!(
+        counts,
+        (0, 1, 0),
+        "case {granted:?}: the queue's own policy grants the role every read its poller makes, \
+         so the message must be taken out of the queue, got {counts:?} as (visible, in flight, \
+         delayed)"
     );
 }

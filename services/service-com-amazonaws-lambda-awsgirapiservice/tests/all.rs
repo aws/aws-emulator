@@ -155,6 +155,8 @@ mod error_fault_class;
 mod event_source_mappings;
 #[path = "all/event_source_poll_authorization.rs"]
 mod event_source_poll_authorization;
+#[path = "all/event_source_poll_passes.rs"]
+mod event_source_poll_passes;
 #[path = "all/event_source_poll_resource_policy.rs"]
 mod event_source_poll_resource_policy;
 // The file name is the one this suite was first written under; the layout check binds the

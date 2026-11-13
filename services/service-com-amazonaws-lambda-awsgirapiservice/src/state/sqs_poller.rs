@@ -83,6 +83,9 @@
 //! and the store holds at most [`super::MAX_EVENT_SOURCE_MAPPINGS`] mappings. With no async
 //! runtime to spawn onto there is no task, and [`poll_due`] — which is the whole of one
 //! wake-up's work and takes the instant it is working at — can be awaited directly instead.
+//! A caller that wants the passes to be ITS OWN, made when it says so rather than on the
+//! loop's interval, takes the store's poll claim ([`claim_poll_passes`]) and then makes each
+//! pass with [`poll_passes_once`]: the same work, awaited rather than raced.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -308,6 +311,42 @@ pub fn drive_sqs_pollers<Eng: Send + Sync + 'static>(
     });
     // The handle is kept so the loop it replaces is aborted rather than merely forgotten.
     set_poller(&mut claimed.lock(), generation, handle);
+}
+
+/// Take the one poll claim of `engine`'s store, so the passes of its queue mappings are the
+/// CALLER's to make: `true` when this call took it, `false` when a loop already holds it.
+///
+/// [`drive_sqs_pollers`] starts a background loop only for a store whose claim is free, so
+/// while this claim is held nothing but the caller polls that store: each pass is one
+/// [`poll_passes_once`] call, made at the instant the caller chooses rather than on a wake-up
+/// interval. That is what lets a host advance a mapping's data plane IN STEP with the calls
+/// it makes — the same work, every rule this module states, awaited instead of raced — which
+/// is otherwise impossible to do, since nothing a caller can read says whether a pass has
+/// happened yet. The claim is kept for as long as the store lives: a caller that has taken
+/// over the passes keeps making them, and no loop takes over behind it.
+pub fn claim_poll_passes<Eng: Send + Sync + 'static>(engine: &Arc<Eng>) -> bool {
+    service_state(&**engine).is_some_and(|state| claim_poller(&mut state.lock()).is_some())
+}
+
+/// ONE pass over every queue mapping of `engine`'s store, at `now`, for a caller that makes
+/// the passes itself ([`claim_poll_passes`]).
+///
+/// The whole of one wake-up's work ([`poll_due`]), with the CloudWatch store the pass
+/// publishes to resolved for the caller, so a caller driving the passes names only what it
+/// already holds. It ANSWERS once the pass is done — every batch this pass took has been
+/// handed to its function and what the attempt came to is recorded — so a caller needs no
+/// span of its own to know the pass has happened.
+///
+/// `session` is the bookkeeping one pass carries to the next ([`PollSession`]), so a caller
+/// making a series of passes keeps one across them, exactly as the loop does.
+pub async fn poll_passes_once<Eng: Send + Sync + 'static>(
+    callback: &smithy_server_runtime::EmbeddedEmulator,
+    session: &mut PollSession,
+    engine: &Arc<Eng>,
+    now: SystemTime,
+) {
+    let metrics = FunctionMetrics::new(super::metrics::cloudwatch_state(&**engine));
+    poll_due(callback, session, &**engine, &metrics, now).await;
 }
 
 /// One wake-up's work: poll every enabled queue mapping this engine holds, at `now`.

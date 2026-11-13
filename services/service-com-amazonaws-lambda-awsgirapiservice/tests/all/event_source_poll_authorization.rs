@@ -42,7 +42,7 @@ use crate::event_source_mapping_role_access::{
 };
 use crate::event_source_mappings::{
     call, call_sqs, create_mapping, create_queue, get_mapping, processing_result_within_budget,
-    queue_message_counts, router_on,
+    queue_message_counts, router_on, DrivenPolling,
 };
 // The stream fixture and the Kinesis calls are the ones the shard-source suites already
 // publish, so every suite over that surface drives the same wire.
@@ -77,10 +77,22 @@ pub(crate) const BLOCKED_WINDOW: Duration = Duration::from_secs(3);
 /// `State`.
 const FUNCTIONS_URI: &str = "/2015-03-31/functions";
 
-/// Lambda, IAM and Amazon SQS on ONE engine: the role is written where IAM holds it, the
-/// queue where Amazon SQS holds it, and the mapping polls both in-process — the shape
-/// `core/router` assembles.
-pub(crate) fn emulator_with_queues() -> MultiServiceRouter {
+/// How many poll passes a row gives a mapping that may read NOTHING, before it reads what
+/// the source still holds: several, so a mapping that was going to poll has had more than one
+/// pass in which to do it.
+pub(crate) const BLOCKED_PASSES: usize = 3;
+
+/// Lambda, IAM and Amazon SQS on ONE engine — the role is written where IAM holds it, the
+/// queue where Amazon SQS holds it, and the mapping polls both in-process, the shape
+/// `core/router` assembles — with
+/// the poll passes of its mappings the suite's own ([`DrivenPolling`]).
+///
+/// A pass is background work, and nothing a caller can read says whether one has happened
+/// yet, so a row that waited a span of its own choosing for one would be betting on how fast
+/// the host runs — handing a batch over goes through `Invoke`, whose wait for this process's
+/// run capacity is not a span this suite chooses. A row makes each pass itself and awaits it
+/// instead, and then reads what that pass did.
+pub(crate) fn driven_emulator_with_queues() -> (MultiServiceRouter, DrivenPolling) {
     let engine: Arc<engine::InMemoryEngine> = Arc::new(engine::InMemoryEngine::new());
     let mut router = router_on(&engine);
     router.register_service(service_com_amazonaws_sqs_amazonsqs::EmulatedService::new(
@@ -91,7 +103,8 @@ pub(crate) fn emulator_with_queues() -> MultiServiceRouter {
             &engine,
         )),
     );
-    router
+    let driven = DrivenPolling::claiming(&engine, &router);
+    (router, driven)
 }
 
 /// The same, with Amazon Kinesis in place of Amazon SQS, for the shard-source rows.
@@ -222,27 +235,6 @@ async fn send_message(router: &MultiServiceRouter, case: &str, url: &str, body: 
     );
 }
 
-/// Wait until the queue `url` addresses holds no VISIBLE message, answering whether it got
-/// there: the mapping's pass hides every message it takes for the length of the attempt it
-/// hands it to, so "nothing visible" is what a poll of this queue looks like from outside.
-pub(crate) async fn polled_within_budget(
-    router: &MultiServiceRouter,
-    case: &str,
-    url: &str,
-) -> bool {
-    let deadline = Instant::now() + BUDGET;
-    loop {
-        let (visible, _, _) = queue_message_counts(router, case, url).await;
-        if visible == 0 {
-            return true;
-        }
-        if Instant::now() >= deadline {
-            return false;
-        }
-        tokio::time::sleep(LOOK_AGAIN).await;
-    }
-}
-
 /// Which of the queue's reads the role carries when the message arrives, and how the grant
 /// names them.
 enum Grant {
@@ -350,7 +342,7 @@ fn rows(reads: &[&'static str]) -> Vec<Row> {
 async fn a_queue_mapping_polls_only_while_its_execution_role_may_read_the_queue() {
     for (index, row) in rows(&QUEUE_READS).into_iter().enumerate() {
         let case = row.case.as_str();
-        let router = emulator_with_queues();
+        let (router, mut driven) = driven_emulator_with_queues();
         let (url, arn) = create_queue(
             &router,
             case,
@@ -398,40 +390,42 @@ async fn a_queue_mapping_polls_only_while_its_execution_role_may_read_the_queue(
         send_message(&router, case, &url, &format!("{case} payload")).await;
 
         if row.polls {
-            assert!(
-                polled_within_budget(&router, case, &url).await,
-                "case {case:?}: the mapping's role may make every read its poller makes, so \
-                 the message must be taken out of the queue, and it stayed visible: {:?}",
-                queue_message_counts(&router, case, &url).await
-            );
-            // The batch leaving the queue is the attempt STARTING, so what the attempt came
-            // to is waited for rather than read at that instant.
-            let result = processing_result_within_budget(&router, case, &uuid)
-                .await
-                .unwrap_or_default();
+            // ONE pass, awaited: it reads the queue as the role, takes the batch, hands it to
+            // the function and records what the attempt came to, all before it answers.
+            driven.poll_once().await;
+            let counts = queue_message_counts(&router, case, &url).await;
             assert_eq!(
-                result, LAST_PROCESSING_RESULT_FUNCTION_CALL_FAILED,
+                counts,
+                (0, 1, 0),
+                "case {case:?}: the mapping's role may make every read its poller makes, so \
+                 the message must be taken out of the queue, got {counts:?} as (visible, in \
+                 flight, delayed)"
+            );
+            let reading = get_mapping(&router, &uuid).await;
+            assert_eq!(
+                reading.string("LastProcessingResult").as_deref(),
+                Some(LAST_PROCESSING_RESULT_FUNCTION_CALL_FAILED),
                 "case {case:?}: nothing here runs a deployment package, so the attempt the \
                  pass made on the batch it polled must be reported as the unsuccessful one \
-                 it was, got {result:?} in {}",
-                get_mapping(&router, &uuid).await.text()
+                 it was, got {}",
+                reading.text()
             );
             continue;
         }
 
         // The complement: a read the role may not make is one the pass does not make, so
-        // the message is still the queue's own for the whole window — and no attempt at a
+        // the message is still the queue's own after every pass — and no attempt at a
         // batch is reported, because no batch was polled.
-        let watch_until = Instant::now() + BLOCKED_WINDOW;
-        while Instant::now() < watch_until {
+        for pass in 0..BLOCKED_PASSES {
+            driven.poll_once().await;
             let counts = queue_message_counts(&router, case, &url).await;
             assert_eq!(
                 counts,
                 (1, 0, 0),
                 "case {case:?}: the mapping's role may not make one of the reads its poller \
-                 makes, so the message must stay visible on the queue, got {counts:?}"
+                 makes, so pass {pass} must leave the message visible on the queue, got \
+                 {counts:?}"
             );
-            tokio::time::sleep(LOOK_AGAIN).await;
         }
         let reading = get_mapping(&router, &uuid).await;
         assert_eq!(
@@ -456,7 +450,7 @@ async fn a_queue_backlog_a_blocked_mapping_left_is_polled_once_the_grant_is_back
     // back resumes the polling — with everything the blocked passes left on the queue.
     let case = "three messages sent while the role may not receive, then the grant restored";
     let messages = 3;
-    let router = emulator_with_queues();
+    let (router, mut driven) = driven_emulator_with_queues();
     let (url, arn) = create_queue(&router, case, "poll-auth-resumes-queue", &json!({})).await;
     let role_name = "poll-auth-resumes-role";
     let role = given_role(
@@ -484,19 +478,19 @@ async fn a_queue_backlog_a_blocked_mapping_left_is_polled_once_the_grant_is_back
     for index in 0..messages {
         send_message(&router, case, &url, &format!("{case}-{index}")).await;
     }
-    let watch_until = Instant::now() + BLOCKED_WINDOW;
-    while Instant::now() < watch_until {
+    for pass in 0..BLOCKED_PASSES {
+        driven.poll_once().await;
         let counts = queue_message_counts(&router, case, &url).await;
         assert_eq!(
             counts,
             (u32::try_from(messages).unwrap_or(0), 0, 0),
-            "case {case:?}: while the role may not receive, every message must stay visible \
-             on the queue, got {counts:?}"
+            "case {case:?}: while the role may not receive, pass {pass} must leave every \
+             message visible on the queue, got {counts:?}"
         );
-        tokio::time::sleep(LOOK_AGAIN).await;
     }
 
-    // And back: the same role, granted the same reads again, polls the whole backlog.
+    // And back: the same role, granted the same reads again, polls the whole backlog — one
+    // pass, since the mapping's `BatchSize` is the whole of it.
     write_policy(
         &router,
         case,
@@ -504,11 +498,13 @@ async fn a_queue_backlog_a_blocked_mapping_left_is_polled_once_the_grant_is_back
         Some(json!([logs_only(), allow("sqs", &QUEUE_READS, &arn)])),
     )
     .await;
-    assert!(
-        polled_within_budget(&router, case, &url).await,
-        "case {case:?}: once the grant is back the mapping must poll the backlog it left, \
-         and the queue still reports {:?}",
-        queue_message_counts(&router, case, &url).await
+    driven.poll_once().await;
+    let counts = queue_message_counts(&router, case, &url).await;
+    assert_eq!(
+        counts,
+        (0, u32::try_from(messages).unwrap_or(0), 0),
+        "case {case:?}: once the grant is back the mapping must poll the backlog it left, and \
+         the queue reports {counts:?} as (visible, in flight, delayed)"
     );
 }
 

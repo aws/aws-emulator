@@ -27,10 +27,13 @@
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use base64::Engine as _;
 use serde_json::{json, Map, Value};
+use service_com_amazonaws_lambda_awsgirapiservice::state::{
+    claim_poll_passes, poll_passes_once, PollSession,
+};
 use service_com_amazonaws_lambda_awsgirapiservice::EmulatedService;
 use smithy_server_runtime::MultiServiceRouter;
 
@@ -571,6 +574,116 @@ pub(crate) fn router_with_queues() -> MultiServiceRouter {
         Arc::clone(&engine),
     ));
     router
+}
+
+/// A suite that makes the poll passes of its queue mappings ITSELF.
+///
+/// A mapping's poller is background work: the production loop polls, hands the runtime back
+/// and polls again, and NOTHING a caller can read says whether a pass has happened yet. A
+/// suite that waited a span of its own choosing for one would be betting on how fast the host
+/// runs — and every span a pass may take is the emulator's, not the suite's: handing a batch
+/// to a function goes through `Invoke`, which waits for this process's run and mount capacity
+/// (`crate::state::execution::PERMIT_WAIT`) before the handler is even started, and that
+/// capacity is shared with every other test running beside this one.
+///
+/// So a suite over what a pass DOES takes the store's poll claim instead
+/// ([`claim_poll_passes`], which also keeps the production loop from starting for that store)
+/// and then makes each pass with [`Self::poll_once`], which answers once the pass is done.
+/// What the suite then reads is the state that pass left, at an instant that is no longer a
+/// race: no sleep, no budget, and no assertion that depends on the host's speed.
+pub(crate) struct DrivenPolling {
+    /// The engine whose store's passes are this suite's.
+    engine: Arc<engine::InMemoryEngine>,
+    /// The way a pass reaches the emulator it is polling inside — the queue's own API and the
+    /// function's `Invoke` — which is what the production loop is handed by its operation's
+    /// context.
+    callback: smithy_server_runtime::EmbeddedEmulator,
+    /// The bookkeeping one pass carries to the next, kept across them exactly as the loop
+    /// keeps it.
+    session: PollSession,
+}
+
+impl DrivenPolling {
+    /// Take the poll claim of `engine`'s store, so its passes are made by `poll_once` and by
+    /// nothing else, with `router` as the emulator each pass reaches.
+    ///
+    /// Call it BEFORE the first mapping is made: the claim is what keeps the production loop
+    /// from starting, and a loop already running would be a second poller beside these
+    /// passes.
+    pub(crate) fn claiming(
+        engine: &Arc<engine::InMemoryEngine>,
+        router: &MultiServiceRouter,
+    ) -> Self {
+        assert!(
+            claim_poll_passes(engine),
+            "the poll passes of this engine must be this suite's to make, and the claim on \
+             them was already taken"
+        );
+        Self {
+            engine: Arc::clone(engine),
+            callback: smithy_server_runtime::EmbeddedEmulator::from_router(router.clone()),
+            session: PollSession::default(),
+        }
+    }
+
+    /// The engine the passes are made on, for a suite that reads a store directly.
+    pub(crate) fn engine(&self) -> &Arc<engine::InMemoryEngine> {
+        &self.engine
+    }
+
+    /// Make ONE pass over every queue mapping of the store, and answer once it is done: every
+    /// batch it took has been handed to its function and what the attempt came to is
+    /// recorded.
+    pub(crate) async fn poll_once(&mut self) {
+        poll_passes_once(
+            &self.callback,
+            &mut self.session,
+            &self.engine,
+            SystemTime::now(),
+        )
+        .await;
+    }
+}
+
+/// Lambda over the same engine as Amazon SQS, as [`router_with_queues`] assembles them, with
+/// the poll passes of its mappings the suite's own ([`DrivenPolling`]).
+pub(crate) fn driven_router_with_queues() -> (MultiServiceRouter, DrivenPolling) {
+    let engine: Arc<engine::InMemoryEngine> = Arc::new(engine::InMemoryEngine::new());
+    let mut router = router_on(&engine);
+    router.register_service(service_com_amazonaws_sqs_amazonsqs::EmulatedService::new(
+        Arc::clone(&engine),
+    ));
+    let driven = DrivenPolling::claiming(&engine, &router);
+    (router, driven)
+}
+
+/// What the queue `arn` names hides each of the messages it still HOLDS until, keyed by
+/// message body: the instant the queue itself recorded, and `None` for a message it is not
+/// hiding at all.
+///
+/// The hold a delivery takes is a DECISION the queue records — `now` plus the span the
+/// delivery hides the message for — not a span of wall clock a reader has to catch the
+/// message inside. So a suite over how long a poller holds a batch reads that instant, which
+/// says the same thing at every instant it is read, instead of watching the message counts a
+/// client reads (the same fact rendered at the instant of the read) and betting on when it
+/// looked.
+pub(crate) fn held_until(
+    engine: &Arc<engine::InMemoryEngine>,
+    arn: &str,
+) -> std::collections::BTreeMap<String, Option<SystemTime>> {
+    let state = engine
+        .state::<service_com_amazonaws_sqs_amazonsqs::state::ComAmazonawsSqsAmazonsqsState>();
+    let store = state.lock();
+    store
+        .queue_by_arn(arn)
+        .map(|queue| {
+            queue
+                .messages
+                .iter()
+                .map(|message| (message.body.clone(), message.invisible_until))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Call one Amazon SQS operation (`POST /` with `X-Amz-Target: AmazonSQS.<Operation>`), the
