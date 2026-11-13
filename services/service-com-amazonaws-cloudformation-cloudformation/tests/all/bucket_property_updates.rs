@@ -246,7 +246,10 @@ async fn a_changed_bucket_declaration_is_applied_to_the_bucket_that_exists() {
 /// bucket name is taken from whoever holds it anywhere: a name no stack of the Region manages
 /// is the case the provider's own message is reported for, while a name one of this Region's
 /// stacks manages is reported as CloudFormation's own collision instead
-/// (`cross_stack_name_collision.rs`).
+/// (`cross_stack_name_collision.rs`). Such a create reaches the provider only with the
+/// pre-deployment validations OFF — with them on, the existence check fails it before the
+/// bucket is asked for (`state::early_validation`) — so the request below states
+/// `DisableValidation`.
 ///
 /// The collision is deployed in a Region other than the one Amazon S3 answers a re-create of
 /// your own bucket with 200 in ("for legacy compatibility, if you re-create an existing bucket
@@ -284,6 +287,7 @@ async fn a_bucket_name_already_in_use_names_the_bucket_it_asked_for() {
             // Keep the failed state, so the event the failure wrote is read rather than the
             // rollback's.
             member("OnFailure", "DO_NOTHING"),
+            member("DisableValidation", "true"),
         ],
     )
     .await;

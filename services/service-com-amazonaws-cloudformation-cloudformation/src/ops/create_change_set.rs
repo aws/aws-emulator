@@ -1235,15 +1235,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     now,
                     &conflicting.logical_id,
                     &conflicting.resource_type,
-                    crate::state::StoredValidationFailure {
-                        name: early_validation::NAME_CONFLICT_VALIDATION.to_string(),
-                        status: early_validation::VALIDATION_FAILED.to_string(),
-                        reason: early_validation::already_exists(
-                            &conflicting.resource_type,
-                            &conflicting.physical_resource_id,
-                        ),
-                        path: early_validation::resource_path(&conflicting.logical_id),
-                    },
+                    early_validation::name_conflict_failure(conflicting),
                     Some(operation_id.clone()),
                     input.client_token.clone(),
                 );

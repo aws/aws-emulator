@@ -48,6 +48,7 @@ use bytes::Bytes;
 use serde_json::{json, Value};
 use smithy_server_runtime::MultiServiceRouter;
 
+use crate::cloudformation_stack_clock::settle_the_stacks;
 use crate::query_wire::{element, form_encode, opt_element, outputs_of, physical_ids_of};
 
 /// Long enough for the stack's clock-owed span (`STATUS_TRANSITION_DELAY`, 500 ms) to come
@@ -84,6 +85,13 @@ const STACK_TAG: (&str, &str) = ("Stack", "glue-job-suite");
 /// suite here; the in-process callback CloudFormation makes signs its request either way
 /// (the credential scope is what routes it).
 pub(crate) fn build_router() -> MultiServiceRouter {
+    build_router_and_engine().0
+}
+
+/// [`build_router`] with the engine it was mounted on, for a case that drives the stack's own
+/// CLOCK rather than waiting for it
+/// ([`crate::cloudformation_stack_clock::settle_the_stacks`]).
+pub(crate) fn build_router_and_engine() -> (MultiServiceRouter, Arc<engine::InMemoryEngine>) {
     let engine: Arc<engine::InMemoryEngine> = Arc::new(engine::InMemoryEngine::new());
     let mut router = MultiServiceRouter::new();
     router.set_request_authentication(false);
@@ -98,9 +106,9 @@ pub(crate) fn build_router() -> MultiServiceRouter {
         )),
     );
     router.register_service(service_com_amazonaws_glue_awsglue::EmulatedService::new(
-        engine,
+        Arc::clone(&engine),
     ));
-    router
+    (router, engine)
 }
 
 /// A SigV4 `Authorization` header whose credential scope names `service` in `region`, which
@@ -723,7 +731,7 @@ async fn a_stack_provisions_the_glue_job_its_template_declares() {
 /// holds a job under in that Region.
 #[tokio::test]
 async fn a_glue_job_declaration_the_owning_service_refuses_fails_the_stack() {
-    let router = build_router();
+    let (router, engine) = build_router_and_engine();
     let region = "us-east-2";
 
     // The job a client already holds, which the last row's template re-declares.
@@ -815,6 +823,11 @@ async fn a_glue_job_declaration_the_owning_service_refuses_fails_the_stack() {
                 ("StackName", &stack_name),
                 ("TemplateBody", &template),
                 ("Capabilities.member.1", "CAPABILITY_IAM"),
+                // The refusal these rows are about is the OWNING SERVICE's, so the create has
+                // to reach it: with the pre-deployment validations on, CloudFormation's own
+                // existence check fails a create whose declared name that service already
+                // holds before any resource is asked for.
+                ("DisableValidation", "true"),
             ],
         )
         .await;
@@ -822,7 +835,11 @@ async fn a_glue_job_declaration_the_owning_service_refuses_fails_the_stack() {
             status, 200,
             "case {case:?}: expected HTTP 200 from CreateStack, got {status} with body {body}"
         );
-        tokio::time::sleep(PAST_STACK_SPAN).await;
+        // The create failed, so the stack is being rolled back. Both transitions it owes are
+        // on the stack's own clock, so the case drives that clock rather than waiting for it
+        // ([`crate::cloudformation_stack_clock::settle_the_stacks`]).
+        settle_the_stacks(&router, &engine, case).await;
+        settle_the_stacks(&router, &engine, case).await;
 
         let (_, described) =
             cloudformation(&router, region, "DescribeStacks", &[("StackName", &stack_name)]).await;

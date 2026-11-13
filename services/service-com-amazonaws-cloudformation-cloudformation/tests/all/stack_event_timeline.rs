@@ -363,7 +363,17 @@ async fn a_refused_deployments_events_keep_the_order_of_the_walk_that_was_cut_sh
     const CASE: &str = "a deployment an owning service refused part way down the walk";
     let stack = "timeline-refused";
     let router = router();
-    let (status_code, created) = create_stack(&router, stack, REFUSED_CHAIN, &[]).await;
+    let (status_code, created) = create_stack(
+        &router,
+        stack,
+        REFUSED_CHAIN,
+        // The refusal this case needs is the OWNING SERVICE's, part way down the walk: with
+        // the pre-deployment validations on, the existence check fails a create whose
+        // declared name is already held before the walk starts at all
+        // (`state::early_validation`), and there is no walk to read.
+        &[member("DisableValidation", "true")],
+    )
+    .await;
     assert_eq!(
         status_code, 200,
         "case {CASE:?}: CreateStack must answer 200, got {status_code} {created}"

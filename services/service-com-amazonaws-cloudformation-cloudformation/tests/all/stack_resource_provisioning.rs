@@ -276,6 +276,10 @@ async fn a_bucket_a_stack_declares_exists_in_s3_once_the_stack_reports_it_create
 /// us-east-1 Region, Amazon S3 returns 200 OK" (`CreateBucket`), which is the Region these
 /// cases are signed for — so the create is not a refusal there, and what the rule forbids
 /// is the deployment re-creating or clearing what is already in that bucket.
+///
+/// Read with the pre-deployment validations OFF, since that answer is Amazon S3's: with them
+/// on, the existence check fails a create whose declared name the owning service already
+/// holds before that service is asked at all (`state::early_validation`).
 #[tokio::test]
 async fn a_bucket_name_the_caller_already_owns_is_neither_re_created_nor_cleared() {
     let router = router();
@@ -301,7 +305,13 @@ async fn a_bucket_name_the_caller_already_owns_is_neither_re_created_nor_cleared
 
     let template = r#"{"Resources":{"Data":{"Type":"AWS::S3::Bucket",
          "Properties":{"BucketName":"already-taken-bucket"}}}}"#;
-    let (status, created) = create_stack(&router, "collides", template, &[]).await;
+    let (status, created) = create_stack(
+        &router,
+        "collides",
+        template,
+        &[member("DisableValidation", "true")],
+    )
+    .await;
     assert_eq!(
         status, 200,
         "CreateStack still answers 200 — the creation starts, and the stack reports the \

@@ -698,6 +698,11 @@ async fn a_failed_operation_reports_its_failure_and_the_filter_selects_it() {
         &acknowledging_iam(&[
             member("StackName", stack),
             member("TemplateBody", &refused_resource("refused", role)),
+            // The refusal this case is about is the OWNING SERVICE's, so the create has to
+            // reach it: with the pre-deployment validations on, the existence check fails a
+            // create whose declared name is already held before any resource is asked for
+            // (`state::early_validation`).
+            member("DisableValidation", "true"),
         ]),
     )
     .await;

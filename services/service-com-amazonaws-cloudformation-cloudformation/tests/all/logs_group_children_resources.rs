@@ -36,7 +36,11 @@ const LOGS_TARGET_PREFIX: &str = "Logs_20140328";
 
 /// Call one CloudWatch Logs operation through the same router, signed for `logs` the way a
 /// client's SDK signs it: the status and the parsed answer document.
-async fn logs(router: &MultiServiceRouter, operation: &str, request: &Value) -> (u16, Value) {
+pub(crate) async fn logs(
+    router: &MultiServiceRouter,
+    operation: &str,
+    request: &Value,
+) -> (u16, Value) {
     let http_request = http::Request::builder()
         .method("POST")
         .uri(format!("https://logs.{REGION}.amazonaws.com/"))
@@ -110,7 +114,7 @@ async fn stream_names(router: &MultiServiceRouter, group: &str) -> Vec<String> {
 }
 
 /// Whether CloudWatch Logs holds a log group under `name`.
-async fn group_exists(router: &MultiServiceRouter, name: &str) -> bool {
+pub(crate) async fn group_exists(router: &MultiServiceRouter, name: &str) -> bool {
     let (status, document) = logs(
         router,
         "DescribeLogGroups",

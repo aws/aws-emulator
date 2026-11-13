@@ -326,7 +326,11 @@ async fn a_resource_the_walk_never_reached_is_owned_by_nobody_and_records_no_tea
         &router,
         stack,
         REFUSED_BEFORE_A_DECLARED_ONLY_RESOURCE,
-        &[],
+        // The refusal this case is about is Amazon RDS's, part way down the walk: with the
+        // pre-deployment validations on, the existence check fails a create whose declared
+        // name the owning service already holds before the walk starts
+        // (`state::early_validation`).
+        &[member("DisableValidation", "true")],
     )
     .await;
     assert_eq!(

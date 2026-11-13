@@ -75,6 +75,10 @@ use crate::state::StoredEvent;
 /// run. `ResourceProperties` ("BLOB of the properties used to create the resource") is the
 /// properties document of the resource the event is about, which the stack's own events do
 /// not carry: a stack is not a resource the template declared properties for.
+///
+/// `DetailedStatus` is the one decision every reader of an event shares
+/// ([`crate::state::detailed_status_of`]): `VALIDATION_FAILED` on the event of an operation
+/// a pre-deployment validation failed, whose `ResourceStatusReason` is what failed it.
 fn stack_event_view(stored: &StoredEvent) -> StackEvent {
     StackEvent {
         stack_id: stored.stack_id.clone(),
@@ -95,7 +99,7 @@ fn stack_event_view(stored: &StoredEvent) -> StackEvent {
         hook_invocation_point: None,
         hook_invocation_id: None,
         hook_failure_mode: None,
-        detailed_status: None,
+        detailed_status: crate::state::detailed_status_of(stored).map(str::to_string),
     }
 }
 
@@ -217,15 +221,16 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // resource events after that transition had already fallen due. A stable sort, so
         // events sharing an instant keep the reverse-append order.
         //
-        // An event reporting a PRE-DEPLOYMENT VALIDATION failure is not one of them: nothing
+        // An event reporting a PRE-DEPLOYMENT VALIDATION RESULT is not one of them: nothing
         // was done to the resource, so it reports no `ResourceStatus` at all, and what it
         // does report are the validation members only `DescribeEvents` carries
-        // (`crate::state::early_validation`).
+        // (`crate::state::early_validation`). The STATUS such a failure left the stack in is
+        // a transition like any other and is reported here, carrying that detailed status.
         let mut newest_first: Vec<&StoredEvent> = stack
             .events
             .iter()
             .rev()
-            .filter(|event| event.validation.is_none())
+            .filter(|event| !event.resource_status.is_empty())
             .collect();
         newest_first.sort_by_key(|event| ::std::cmp::Reverse(event.timestamp));
         let newest_first: Vec<StackEvent> =

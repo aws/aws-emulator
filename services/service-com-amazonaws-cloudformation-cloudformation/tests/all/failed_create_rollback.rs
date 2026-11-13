@@ -14,7 +14,11 @@
 //! The collision used here is an IAM role NAME, because IAM names are unique across the
 //! whole account while a stack name is unique only within a Region: a template whose role
 //! name is not Region-qualified therefore cannot be deployed twice, and the second deploy
-//! has to fail loudly rather than quietly share the first deploy's role.
+//! has to fail loudly rather than quietly share the first deploy's role. The clash is one no
+//! stack of the deploying Region manages, so the create reaches IAM at all only with the
+//! pre-deployment validations OFF — with them on, the existence check fails the create
+//! before any resource is asked for and there is no refused resource to unwind
+//! (`state::early_validation`) — and every request below states `DisableValidation`.
 //!
 //! The rows differ along what the rule generalises over: every documented `OnFailure`
 //! value plus `DisableRollback`, and where the clash comes from — another Region's stack
@@ -222,6 +226,7 @@ async fn a_create_whose_resource_is_refused_is_unwound_as_on_failure_says() {
             &row.extra
                 .iter()
                 .map(|(key, value)| member(key, value))
+                .chain([member("DisableValidation", "true")])
                 .collect::<Vec<_>>(),
         );
         let (status, created) =
@@ -367,7 +372,7 @@ async fn a_rolled_back_create_keeps_its_resource_records_and_holds_no_resources(
         &router,
         "rolled-back-stack",
         &template("rolled-back-bucket", role),
-        &acknowledging_iam(&[]),
+        &acknowledging_iam(&[member("DisableValidation", "true")]),
     )
     .await;
     assert_eq!(status, 200, "CreateStack must answer 200, got {status} {created}");

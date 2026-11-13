@@ -451,6 +451,8 @@ mod stack_identifier_refusals;
 mod stack_input_contracts;
 #[path = "all/stack_lifecycle.rs"]
 mod stack_lifecycle;
+#[path = "all/stack_name_conflict_validation.rs"]
+mod stack_name_conflict_validation;
 #[path = "all/stack_not_found_wording.rs"]
 mod stack_not_found_wording;
 #[path = "all/stack_output_reads.rs"]

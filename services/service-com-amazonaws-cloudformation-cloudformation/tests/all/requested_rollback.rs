@@ -249,7 +249,11 @@ async fn a_requested_rollback_puts_a_failed_stack_back_to_its_last_known_stable_
                 row.case
             );
             // The template declares an IAM resource with a name of its own, which the
-            // request has to acknowledge.
+            // request has to acknowledge — and the refusal this row is about is IAM's own
+            // answer to a name it already holds, which the create reaches only with the
+            // pre-deployment validations off: with them on, the existence check fails the
+            // create before any resource is asked for (`state::early_validation`).
+            extra.push(member("DisableValidation", "true"));
             extra = acknowledging_iam(&extra);
         }
 

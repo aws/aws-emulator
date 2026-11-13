@@ -1754,6 +1754,10 @@ pub struct StoredEvent {
     /// ([`StoredValidationFailure`]); `None` for every event that reports a resource or
     /// stack transition.
     pub validation: Option<StoredValidationFailure>,
+    /// Whether the status this event reports was reached because a PRE-DEPLOYMENT VALIDATION
+    /// failed the operation — the stack's own failure event for a stage that ran before any
+    /// resource was asked for, which is the only event that can report it.
+    pub failed_validation: bool,
     /// Whether this event still OWES a notification, and to which topic list: the digest of
     /// the stack's `NotificationARNs` as they stood when the event was recorded
     /// ([`stack_notifications::topics_digest`]), taken off the event as the notification is
@@ -1775,14 +1779,13 @@ pub const DETAILED_STATUS_VALIDATION_FAILED: &str = "VALIDATION_FAILED";
 /// `StackEvent$DetailedStatus` and `OperationEvent$DetailedStatus`, "an optional field that
 /// contains information about the detailed status of the stack event".
 ///
-/// Stated ONCE for every reader of an event: the `DescribeEvents` view and the Amazon SNS
-/// notification a stack's `NotificationARNs` receive ([`stack_notifications::body_of`])
-/// report the same event's detailed status rather than deciding it twice.
+/// Stated ONCE for every reader of an event: the `DescribeStackEvents` and `DescribeEvents`
+/// views and the Amazon SNS notification a stack's `NotificationARNs` receive
+/// ([`stack_notifications::body_of`]) report the same event's detailed status rather than
+/// deciding it three times.
 pub fn detailed_status_of(event: &StoredEvent) -> Option<&'static str> {
-    event
-        .validation
-        .as_ref()
-        .map(|_| DETAILED_STATUS_VALIDATION_FAILED)
+    (event.validation.is_some() || event.failed_validation)
+        .then_some(DETAILED_STATUS_VALIDATION_FAILED)
 }
 
 /// The bytes of one event that a CALLER sized: its `ResourceProperties` document. Every

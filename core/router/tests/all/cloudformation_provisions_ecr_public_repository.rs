@@ -517,13 +517,15 @@ fn a_stack_whose_repository_cannot_be_created_fails_and_says_which_one() {
 
             // A stack declaring that same repository cannot create it, so the stack does
             // not complete: it fails, and says which resource failed and what the owning
-            // service answered.
+            // service answered. The pre-deployment validations are OFF because this case is
+            // about what the OWNING SERVICE answers: with them on, CloudFormation's own
+            // existence check fails the create before the registry is asked at all.
             let (status, reason) = create_stack_and_settle(
                 &router,
                 &runtime,
                 "cfn-taken",
                 &json_template("Repo", "taken-repo"),
-                &[],
+                &[("DisableValidation", "true")],
             );
             assert_eq!(
                 status, "ROLLBACK_COMPLETE",

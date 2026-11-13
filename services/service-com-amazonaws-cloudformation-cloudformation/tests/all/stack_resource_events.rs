@@ -244,8 +244,17 @@ async fn every_resource_a_stack_operation_acts_on_records_its_own_events() {
 
     for case in &cases {
         let router = router();
+        // A case whose deployment is REFUSED is refused by the service that owns the
+        // resource, which the create reaches only with the pre-deployment validations off:
+        // with them on, the existence check fails a create whose declared name that service
+        // already holds before any resource is asked for (`state::early_validation`).
+        let extra: Vec<(String, String)> = if case.rolled_back {
+            vec![member("DisableValidation", "true")]
+        } else {
+            Vec::new()
+        };
         let (status_code, created) =
-            create_stack(&router, case.stack_name, case.template, &[]).await;
+            create_stack(&router, case.stack_name, case.template, &extra).await;
         assert_eq!(
             status_code, 200,
             "case {:?}: CreateStack must answer 200, got {status_code} {created}",
@@ -621,7 +630,15 @@ async fn a_rollback_that_keeps_re_asking_records_one_opening_and_one_terminal() 
         "SubnetGroup":{"Type":"AWS::RDS::DBSubnetGroup","DependsOn":"Bucket",
           "Properties":{"DBSubnetGroupDescription":"a group over values that name no subnet",
             "SubnetIds":["not-a-subnet-id","also-not-a-subnet-id"]}}}}"#;
-    let (status_code, created) = create_stack(&router, "events-held", template, &[]).await;
+    let (status_code, created) = create_stack(
+        &router,
+        "events-held",
+        template,
+        // The create TAKES OVER the bucket seeded above, which it reaches only with the
+        // pre-deployment validations off (`state::early_validation`).
+        &[member("DisableValidation", "true")],
+    )
+    .await;
     assert_eq!(
         status_code, 200,
         "CreateStack must answer 200, got {status_code} {created}"

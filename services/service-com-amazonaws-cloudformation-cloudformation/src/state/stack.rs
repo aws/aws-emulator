@@ -1038,6 +1038,9 @@ impl StoredStack {
             client_request_token,
             // A transition, not a validation result ([`Self::record_validation_failure`]).
             validation: None,
+            // ...and one no pre-deployment validation failed: a failure of that stage is
+            // reported by [`Self::fail_transition_on_validation`], which marks its event.
+            failed_validation: false,
             // Filled by [`Self::push_event`], from the topics the stack carries now.
             owed_notification: None,
         });
@@ -1075,6 +1078,9 @@ impl StoredStack {
             resource_properties: None,
             client_request_token,
             validation: Some(validation),
+            // The detailed status this event reports follows from the validation it carries
+            // ([`super::detailed_status_of`]), so nothing else marks it.
+            failed_validation: false,
             owed_notification: None,
         });
     }
@@ -3141,6 +3147,12 @@ enum FailureReport {
     Rested,
     /// A rollback or a removal supersedes it at the same instant: no event of its own.
     Superseded,
+    /// A PRE-DEPLOYMENT VALIDATION failed the operation: that stage ran before anything was
+    /// asked of any owning service, so NO resource has an event that could carry the
+    /// failure and the stack's own event is the one report of it — whether or not the
+    /// rollback it owes begins at this instant. `rests` is whether the stack stays in the
+    /// failed status, as it is for the two reports above.
+    FailedValidation { rests: bool },
 }
 
 impl StoredStack {
@@ -3188,7 +3200,35 @@ impl StoredStack {
         self.record_failure(now, failed_status, reason, FailureReport::Superseded);
     }
 
-    /// The one writer of a failed transition, for both of the reports above.
+    /// Record a failure of the operation in flight that a PRE-DEPLOYMENT VALIDATION reached:
+    /// the stage runs before anything is asked of any owning service, so no resource of this
+    /// stack has an event that could carry the failure and the stack's own event is the one
+    /// report of it.
+    ///
+    /// Everything the two reports above record is recorded, and `rests` says which of them
+    /// this is: a stack that keeps its failed state (`DisableRollback`,
+    /// `OnFailure=DO_NOTHING`) rests in the failed status, and one whose rollback begins at
+    /// this instant does not. Either way the event is recorded, carrying the detailed status
+    /// the model gives a validation failure (`VALIDATION_FAILED`, "template validation failed
+    /// because of invalid properties in the template", whose `ResourceStatusReason` is what
+    /// failed it) — and the validation's own detail stays on the result event
+    /// `DescribeEvents` reports ([`Self::record_validation_failure`]).
+    pub fn fail_transition_on_validation(
+        &mut self,
+        now: SystemTime,
+        failed_status: &str,
+        reason: String,
+        rests: bool,
+    ) {
+        self.record_failure(
+            now,
+            failed_status,
+            reason,
+            FailureReport::FailedValidation { rests },
+        );
+    }
+
+    /// The one writer of a failed transition, for every one of the reports above.
     fn record_failure(
         &mut self,
         now: SystemTime,
@@ -3196,11 +3236,17 @@ impl StoredStack {
         reason: String,
         report: FailureReport,
     ) {
+        // Whether the stack STAYS in the failed status, which is what decides the resources
+        // it goes on reporting, and whether an event of its own reports that status.
+        let rests = matches!(
+            report,
+            FailureReport::Rested | FailureReport::FailedValidation { rests: true }
+        );
         // A CREATE whose failed state the stack RESTS in goes on reporting the resources it
         // had made ([`Self::keep_failed_resources`]), and what the walk left each of them in
         // is read off that walk — BEFORE the flush below retires it.
         let creating = self.status == status::CREATE_IN_PROGRESS;
-        let walked = if creating && report == FailureReport::Rested {
+        let walked = if creating && rests {
             self.walked_transitions()
         } else {
             Vec::new()
@@ -3221,7 +3267,7 @@ impl StoredStack {
         // resources the create had already made go on being reported, each in the status
         // the walk left it. A create whose rollback begins at this instant installs nothing,
         // because that rollback removes what it had made.
-        if creating && report == FailureReport::Rested {
+        if creating && rests {
             self.keep_failed_resources(&walked, now);
         }
         if report == FailureReport::Superseded {
@@ -3234,6 +3280,14 @@ impl StoredStack {
             operation_id,
             pending.and_then(|p| p.client_request_token),
         );
+        // ...and where the PRE-DEPLOYMENT VALIDATION stage is what failed the operation, the
+        // event just recorded is the one that reports it: it carries that detailed status
+        // ([`super::detailed_status_of`]).
+        if matches!(report, FailureReport::FailedValidation { .. }) {
+            if let Some(recorded) = self.events.back_mut() {
+                recorded.failed_validation = true;
+            }
+        }
     }
 
     /// Install the resources a FAILED create made, for a create whose failed state the

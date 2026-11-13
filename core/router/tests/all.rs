@@ -1467,6 +1467,11 @@ mod s3_access_point_policy_denial;
 // a bucket a stack created carries, which CloudFormation stamps and Amazon S3 reports.
 #[path = "all/cloudformation_stamps_s3_bucket_stack_provenance.rs"]
 mod cloudformation_stamps_s3_bucket_stack_provenance;
+// The stack CLOCK the suites above drive instead of waiting for it: one helper, because
+// `settle` is global over the CloudFormation store, so every suite that asserts a settled
+// stack pulls the due instants into the past the same way.
+#[path = "all/cloudformation_stack_clock.rs"]
+mod cloudformation_stack_clock;
 // outputs of a stack whose deployment COMPLETED — the create and the revision that swaps
 // which role its deployed domain allows — each carrying the value the owning service holds.
 #[path = "all/cloudformation_updated_stack_outputs.rs"]

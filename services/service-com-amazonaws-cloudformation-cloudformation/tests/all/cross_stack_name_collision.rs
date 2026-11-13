@@ -10,7 +10,10 @@
 //! wrapper around it, because WHICH STACK holds the name is the actionable half of the failure
 //! and the only half the owning service cannot report. A name no stack of that Region manages
 //! — one a client took outside any stack, one only another Region's stacks hold — is nothing
-//! CloudFormation can add to, so that service's own report stands.
+//! CloudFormation can add to, so that service's own report stands: such a create reaches that
+//! service only with the pre-deployment validations OFF, since with them on the existence
+//! check stops it before anything is asked (`state::early_validation`), so the rows about it
+//! state `DisableValidation`.
 //!
 //! The rows differ along what the rule generalises over: the resource type whose namespace the
 //! name is in; who holds the name (another stack of the Region, a client outside any stack,
@@ -245,14 +248,14 @@ async fn a_name_another_stack_of_the_region_manages_fails_the_create_in_cloudfor
             "a parameter name a client holds outside any stack",
             "collide-unmanaged",
             parameter_template("/unmanaged/param", "mine"),
-            Vec::new(),
+            vec![member("DisableValidation", "true")],
             Expected::TheOwningServices,
         ),
         (
             "a role name only another Region's stack manages",
             "collide-elsewhere",
             role_template("elsewhere-role"),
-            acknowledging_iam(&[]),
+            acknowledging_iam(&[member("DisableValidation", "true")]),
             Expected::TheOwningServices,
         ),
         (

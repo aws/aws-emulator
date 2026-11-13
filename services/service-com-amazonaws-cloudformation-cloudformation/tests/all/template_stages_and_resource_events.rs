@@ -2183,6 +2183,11 @@ async fn a_create_that_failed_reports_no_resource_as_created() {
             &template_whose_second_resource_is_refused(&format!("{stack}-param"), &role),
         ));
         members.push(member("ClientRequestToken", &format!("{stack}-token")));
+        // The refusal this rule is about is the OWNING SERVICE's, so the create has to reach
+        // it: with the pre-deployment validations on, the existence check fails a create
+        // whose declared name that service already holds before any resource is asked for
+        // (`state::early_validation`).
+        members.push(member("DisableValidation", "true"));
         let (status, body) = call(&router, "CreateStack", &members).await;
         assert_eq!(
             status, 200,

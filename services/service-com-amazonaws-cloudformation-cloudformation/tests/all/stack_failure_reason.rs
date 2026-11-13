@@ -39,8 +39,22 @@ use service_com_amazonaws_cloudformation_cloudformation::state::{
 /// `OnFailure=DO_NOTHING` keeps the failed state and whatever the create had already made,
 /// so the stack stays in `CREATE_FAILED` with the reason the failure gave it: the reason is
 /// read where a caller reads it rather than after a rollback has moved the stack on.
-fn do_nothing() -> Vec<(String, String)> {
-    acknowledging_iam(&[member("OnFailure", "DO_NOTHING")])
+fn do_nothing(given: &Given) -> Vec<(String, String)> {
+    let mut members = vec![member("OnFailure", "DO_NOTHING")];
+    members.extend(deferring_the_conflict(given));
+    acknowledging_iam(&members)
+}
+
+/// What a row whose refusal is the OWNING SERVICE's answer to a name it already holds has to
+/// ask for: the pre-deployment validations OFF. With them on, the resource existence check
+/// fails such a create before that service is asked at all, so nothing of its own wording
+/// could be read — `DisableValidation` is what defers the conflict to provisioning
+/// (`state::early_validation`).
+fn deferring_the_conflict(given: &Given) -> Vec<(String, String)> {
+    match given {
+        Given::ARole(_) => vec![member("DisableValidation", "true")],
+        Given::Nothing => Vec::new(),
+    }
 }
 
 /// A trust policy IAM accepts: a policy document carrying a `Statement`.
@@ -154,7 +168,8 @@ async fn a_failed_create_reports_the_summary_sentence_alone() {
         let router = router();
         given(&router, row.case, &row.given).await;
 
-        let (code, body) = create_stack(&router, row.stack, &row.template, &do_nothing()).await;
+        let (code, body) =
+            create_stack(&router, row.stack, &row.template, &do_nothing(&row.given)).await;
         assert_eq!(
             code, 200,
             "case {:?}: CreateStack must be accepted — the stack reports the outcome — got \
@@ -316,8 +331,13 @@ async fn a_rolled_back_create_reports_the_rollback_clause_on_its_event() {
 
         // No `OnFailure` at all: "ROLLBACK — Roll back the stack creation. This is the
         // default."
-        let (code, body) =
-            create_stack(&router, row.stack, &row.template, &acknowledging_iam(&[])).await;
+        let (code, body) = create_stack(
+            &router,
+            row.stack,
+            &row.template,
+            &acknowledging_iam(&deferring_the_conflict(&row.given)),
+        )
+        .await;
         assert_eq!(
             code, 200,
             "case {:?}: CreateStack must be accepted — the stack reports the outcome — got \

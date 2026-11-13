@@ -33,6 +33,7 @@ use smithy_server_runtime::MultiServiceRouter;
 // The awsQuery encoder and the XML/Outputs readers this suite needs already exist in the
 // test binary's shared modules; they are shared rather than copied.
 use crate::cloudformation_provisions_stack_resources::{outputs_of, xml_text};
+use crate::cloudformation_stack_clock::settle_the_stacks;
 use crate::query_wire::{elements, form_encode};
 use service_com_amazonaws_cloudformation_cloudformation::state::{
     failed_action, resource_failure_summary,
@@ -53,6 +54,13 @@ const PAST_STACK_SPAN: Duration = Duration::from_millis(900);
 /// The emulator with the two services this suite exercises, mounted on ONE engine exactly
 /// as `core/router/src/lib.rs` mounts them.
 fn build_router() -> MultiServiceRouter {
+    build_router_and_engine().0
+}
+
+/// [`build_router`] with the engine it was mounted on, for a case that drives the stack's own
+/// CLOCK rather than waiting for it
+/// ([`crate::cloudformation_stack_clock::settle_the_stacks`]).
+fn build_router_and_engine() -> (MultiServiceRouter, Arc<engine::InMemoryEngine>) {
     let engine: Arc<engine::InMemoryEngine> = Arc::new(engine::InMemoryEngine::new());
     let mut router = MultiServiceRouter::new();
     router.set_request_authentication(false);
@@ -62,9 +70,9 @@ fn build_router() -> MultiServiceRouter {
         )),
     );
     router.register_service(
-        service_com_amazonaws_sagemaker_sagemaker::EmulatedService::new(engine),
+        service_com_amazonaws_sagemaker_sagemaker::EmulatedService::new(Arc::clone(&engine)),
     );
-    router
+    (router, engine)
 }
 
 /// A SigV4 `Authorization` header whose credential scope names `service`, which is what
@@ -130,7 +138,7 @@ async fn create_stack(
     template: &str,
     parameters: &[(&str, &str)],
 ) -> String {
-    let mut members: Vec<(&str, &str)> =
+    let mut request: Vec<(&str, &str)> =
         vec![("StackName", stack_name), ("TemplateBody", template)];
     // `Parameters.member.N.ParameterKey` / `.ParameterValue`, as an SDK flattens the list.
     let flattened: Vec<(String, String)> = parameters
@@ -151,9 +159,9 @@ async fn create_stack(
         })
         .collect();
     for (key, value) in &flattened {
-        members.push((key.as_str(), value.as_str()));
+        request.push((key.as_str(), value.as_str()));
     }
-    let (status, body) = cloudformation(router, "CreateStack", &members).await;
+    let (status, body) = cloudformation(router, "CreateStack", &request).await;
     assert_eq!(
         status, 200,
         "case {case:?}: expected HTTP 200 from CreateStack, got {status} with body {body}"
@@ -452,7 +460,7 @@ async fn a_stack_provisions_the_model_package_group_and_its_policy() {
 /// the refusal the owning service gave, and what a client already had is untouched.
 #[tokio::test]
 async fn a_group_the_owning_service_refuses_fails_the_stack() {
-    let router = build_router();
+    let (router, engine) = build_router_and_engine();
 
     // Rows: a name a client already took (SageMaker's own uniqueness rule), and a name
     // outside the modelled `EntityName` pattern (`^[a-zA-Z0-9](-*[a-zA-Z0-9]){0,62}$`).
@@ -498,10 +506,29 @@ async fn a_group_the_owning_service_refuses_fails_the_stack() {
             "Outputs": { "GroupName": { "Value": { "Ref": "Registry" } } }
         });
         let stack_name = format!("doomed-registry-{}", group_name.replace(' ', "-"));
-        create_stack(&router, case, &stack_name, &template.to_string(), &[]).await;
-        // The create failed, so the stack is being rolled back: that unwind is on the
-        // stack's own clock, like every other transition this suite waits out.
-        tokio::time::sleep(PAST_STACK_SPAN).await;
+        let (status, created) = cloudformation(
+            &router,
+            "CreateStack",
+            &[
+                ("StackName", &stack_name),
+                ("TemplateBody", &template.to_string()),
+                // The refusal these rows are about is the OWNING SERVICE's, so the create has
+                // to reach it: with the pre-deployment validations on, CloudFormation's own
+                // existence check fails a create whose declared name that service already
+                // holds before any resource is asked for.
+                ("DisableValidation", "true"),
+            ],
+        )
+        .await;
+        assert_eq!(
+            status, 200,
+            "case {case:?}: expected HTTP 200 from CreateStack, got {status} with body {created}"
+        );
+        // The create failed, so the stack is being rolled back. Both transitions it owes are
+        // on the stack's own clock, so the case drives that clock rather than waiting for it
+        // ([`crate::cloudformation_stack_clock::settle_the_stacks`]).
+        settle_the_stacks(&router, &engine, case).await;
+        settle_the_stacks(&router, &engine, case).await;
 
         let body = describe_stack(&router, case, &stack_name).await;
         assert_eq!(

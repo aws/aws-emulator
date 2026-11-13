@@ -163,12 +163,15 @@ async fn a_delete_the_owning_service_refuses_reports_its_sdk_exception() {
 
     // The create takes the bucket over: "if you re-create an existing bucket that you
     // already own in the us-east-1 Region, Amazon S3 returns 200 OK", so the stack records
-    // it as a resource it manages.
+    // it as a resource it manages. The pre-deployment validations are OFF because this case
+    // is about what the OWNING SERVICE answers: with them on, the existence check fails a
+    // create whose declared name is already held before S3 is asked at all
+    // (`state::early_validation`).
     let (code, body) = create_stack(
         &router,
         "refused-delete",
         &bucket_template("refused-delete-bucket"),
-        &[],
+        &[member("DisableValidation", "true")],
     )
     .await;
     assert_eq!(
@@ -227,7 +230,13 @@ async fn a_rollback_the_owning_service_refuses_reports_the_same_exception() {
         "SubnetGroup":{"Type":"AWS::RDS::DBSubnetGroup","DependsOn":"Bucket",
           "Properties":{"DBSubnetGroupDescription":"a group over values that name no subnet",
             "SubnetIds":["not-a-subnet-id","also-not-a-subnet-id"]}}}}"#;
-    let (code, body) = create_stack(&router, "refused-rollback", template, &[]).await;
+    let (code, body) = create_stack(
+        &router,
+        "refused-rollback",
+        template,
+        &[member("DisableValidation", "true")],
+    )
+    .await;
     assert_eq!(
         code, 200,
         "case {case:?}: CreateStack must answer 200, got {code} {body}"

@@ -643,7 +643,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // the update computes from the request and the stack's previous values needs no
         // lock, and the calls that create or delete the stack's resources must not run
         // under one.
-        let previous = {
+        let (previous, managed_names) = {
             let mut store = state.lock();
             store.settle(now);
 
@@ -696,7 +696,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             if let Some(message) = fix_forward_refusal(previous, disables_rollback(&input)) {
                 return Err(crate::scaffolded::Scaffolded::validation_error(message));
             }
-            PreviousValues::of(previous)
+            let values = PreviousValues::of(previous);
+            // ...and which names the live stacks of the Region already manage: a name one of
+            // them holds is CloudFormation's own to report on the resource rather than the
+            // existence check's to fail
+            // ([`crate::state::early_validation::named_additions`]). The index the WALK is
+            // held to is read again under the writing lock below, since that is the one it
+            // must be current with.
+            (values, store.managed_physical_names(&request_region))
         };
 
         let template_body = match submitted {
@@ -1043,6 +1050,45 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             });
         }
 
+        // The pre-deployment EXISTENCE check, the stage a create runs too: a resource this
+        // update would CREATE under a physical name the service that owns the type ALREADY
+        // holds cannot be created, so the update fails at that stage with nothing
+        // provisioned and CloudFormation's own reason. A resource the stack already manages
+        // is no addition — it exists because the stack has it — so only the declarations
+        // this update brings are asked about. Each question reaches the service that owns
+        // the type, so they are put HERE, with no store lock held
+        // ([`crate::state::early_validation`]). A template this service could not process,
+        // and an update that turned the validations off, are not asked at all.
+        let name_conflict = if input.disable_validation == Some(true)
+            || transform_failure.is_some()
+        {
+            None
+        } else {
+            let already_managed: Vec<String> = previous
+                .deployed
+                .iter()
+                .map(|deployed| deployed.resource.logical_id.clone())
+                .collect();
+            let candidates = crate::state::early_validation::named_additions(
+                processed_template.body(&included_body),
+                crate::state::template::StackScope {
+                    region: &request_region,
+                    stack_name: &previous.stack_name,
+                    stack_id: &previous.stack_id,
+                    // The topics this update puts in force: what a name built from
+                    // `AWS::NotificationARNs` would resolve to under it.
+                    notification_arns: &notification_arns,
+                },
+                &parameter_values,
+                &already_managed,
+                &managed_names,
+            );
+            crate::state::early_validation::taken_names(ctx, &request_region, &candidates)
+                .await
+                .into_iter()
+                .next()
+        };
+
         // The store lock is taken for the write and RELEASED at the end of this block: the
         // calls that create or delete the stack's resources run after it, and each of
         // those reaches another service's own handler, which takes that service's lock.
@@ -1050,7 +1096,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // The preconditions are re-asserted HERE, under the writing lock, rather than
         // trusted from the read above: between the two, another request may have deleted
         // the stack or started an operation on it, and only one update may be in flight.
-        let (stack_id, region, declared, previous_resources, provenance, refused_deployment) = {
+        let (
+            stack_id,
+            region,
+            declared,
+            previous_resources,
+            provenance,
+            refused_deployment,
+            refused_by_validation,
+        ) = {
             let mut store = state.lock();
             // What a `Fn::ImportValue` in the submitted template resolves against: the
             // exported output values in force in the Region this request is signed for,
@@ -1254,13 +1308,44 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     stack.client_request_token.clone(),
                 );
             }
+            // ...and so is the existence check's own failure, about the resource whose
+            // identifier the owning service already holds. A deployment CloudFormation has
+            // already refused is not reported as failing this stage too: the first refusal
+            // is its one diagnostic.
+            let name_conflict = name_conflict.filter(|_| {
+                withdraws_an_export_in_use.is_none()
+                    && unresolved_cross_stack.is_none()
+                    && property_failure.is_none()
+            });
+            if let Some(conflicting) = &name_conflict {
+                stack.record_validation_failure(
+                    ::std::time::SystemTime::now(),
+                    &conflicting.logical_id,
+                    &conflicting.resource_type,
+                    crate::state::early_validation::name_conflict_failure(conflicting),
+                    Some(operation_id.clone()),
+                    stack.client_request_token.clone(),
+                );
+            }
+            // What a failed pre-deployment validation refuses the deployment with: the
+            // validation's own reason, which is what the stack then reports it failed for.
+            let failed_validation = property_failure
+                .as_ref()
+                .map(|failure| failure.reason.clone())
+                .or_else(|| {
+                    name_conflict.as_ref().map(|conflicting| {
+                        crate::state::early_validation::name_conflict_failure(conflicting).reason
+                    })
+                });
+            // ...and whether that stage is what refused THIS deployment, known here rather
+            // than re-derived from the reason text below: a refusal reached before it stands
+            // instead.
+            let refused_by_validation = withdraws_an_export_in_use.is_none()
+                && unresolved_cross_stack.is_none()
+                && failed_validation.is_some();
             let refused_deployment = withdraws_an_export_in_use
                 .or(unresolved_cross_stack)
-                .or_else(|| {
-                    property_failure
-                        .as_ref()
-                        .map(|failure| failure.reason.clone())
-                });
+                .or(failed_validation);
             (
                 stack.stack_id.clone(),
                 stack.region.clone(),
@@ -1281,6 +1366,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     ..stack.provenance()
                 },
                 refused_deployment,
+                refused_by_validation,
             )
         };
 
@@ -1388,15 +1474,37 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 // `RollbackStack` is the call that clears it up and the plan is the only
                 // record of what the failed update changed in the owning services. Only that
                 // stack rests in the failed status, and only it carries a stack-level event
-                // for it ([`crate::state::StoredStack::fail_transition_superseded`]).
+                // for it ([`crate::state::StoredStack::fail_transition_superseded`]) — the
+                // one exception being a failure the PRE-DEPLOYMENT VALIDATION stage reached,
+                // which no resource's event could carry because nothing was asked of any
+                // owning service, so the stack's own event reports it either way
+                // ([`crate::state::StoredStack::fail_transition_on_validation`]).
                 if stack.disable_rollback {
-                    stack.fail_transition(failed_at, status::UPDATE_FAILED, failure);
+                    if refused_by_validation {
+                        stack.fail_transition_on_validation(
+                            failed_at,
+                            status::UPDATE_FAILED,
+                            failure,
+                            true,
+                        );
+                    } else {
+                        stack.fail_transition(failed_at, status::UPDATE_FAILED, failure);
+                    }
                 } else {
-                    stack.fail_transition_superseded(
-                        failed_at,
-                        status::UPDATE_FAILED,
-                        failure.clone(),
-                    );
+                    if refused_by_validation {
+                        stack.fail_transition_on_validation(
+                            failed_at,
+                            status::UPDATE_FAILED,
+                            failure.clone(),
+                            false,
+                        );
+                    } else {
+                        stack.fail_transition_superseded(
+                            failed_at,
+                            status::UPDATE_FAILED,
+                            failure.clone(),
+                        );
+                    }
                     stack.begin_owed_update_rollback(failed_at, failure);
                 }
                 // A failed update is not an update that did nothing: every resource it acted

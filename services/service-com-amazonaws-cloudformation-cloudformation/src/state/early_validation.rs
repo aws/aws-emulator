@@ -1,18 +1,21 @@
 // SPDX-License-Identifier: CC0-1.0
 
-//! The PRE-DEPLOYMENT validation a change set is held to before it is offered for
-//! execution — CloudFormation's "early validation".
+//! The PRE-DEPLOYMENT validation a stack operation is held to before anything is
+//! provisioned — CloudFormation's "early validation".
 //!
 //! ## The rule this module implements
 //!
-//! A change set is a plan a caller reviews and then executes, and CloudFormation validates
-//! that plan WHILE CREATING IT rather than leaving every problem to the deployment: a
-//! validation the plan does not pass fails the change set itself, which settles `FAILED`
-//! with `ExecutionStatus` `UNAVAILABLE` and a `StatusReason` naming the validations that
-//! failed ([`failed_reason`]) — so nothing is offered for execution that CloudFormation
-//! already knows cannot be deployed. `DisableValidation` is what turns that stage off, and a
-//! change set created with it carries the plan unvalidated, leaving the same problem to
-//! surface at execution time.
+//! Every operation that deploys a template runs it, and a change set is the caller that runs
+//! it EARLIEST: a change set is a plan a caller reviews and then executes, and CloudFormation
+//! validates that plan WHILE CREATING IT rather than leaving every problem to the
+//! deployment: a validation the plan does not pass fails the change set itself, which settles
+//! `FAILED` with `ExecutionStatus` `UNAVAILABLE` and a `StatusReason` naming the validations
+//! that failed ([`failed_reason`]) — so nothing is offered for execution that CloudFormation
+//! already knows cannot be deployed. `CreateStack` and `UpdateStack` run the same stage over
+//! the resources they would create ([`named_additions`]), before anything is asked of any
+//! owning service. `DisableValidation` is what turns that stage off, and an operation that
+//! states it carries the template unvalidated, leaving the same problem to surface at
+//! deployment time.
 //!
 //! The validation this module performs is the EXISTENCE check
 //! ([`RESOURCE_EXISTENCE_CHECK`]): a resource the plan would CREATE under a physical name the
@@ -29,6 +32,13 @@
 //! ([`super::provisioning::Owner::actual_configuration`]), so a name is reported taken only
 //! when that service really holds a resource under it; a type with no owning provisioner
 //! here, and a service whose read is not served, report nothing and so fail nothing.
+//!
+//! Nor is a name a live stack of the account and Region MANAGES this stage's to fail:
+//! CloudFormation keeps its own record of which stack holds which name, and a deployment that
+//! would take one fails ON THE RESOURCE, naming that stack ([`super::physical_name`]). What
+//! this stage establishes is a name held OUTSIDE CloudFormation — an object a client created,
+//! one another service made of its own accord — which no record of CloudFormation's own could
+//! report ([`named_additions`]).
 //!
 //! The names are read off the submitted template ([`named_resources`]) and asked about with
 //! the store unlocked ([`taken_names`]); which of them the change set would really CREATE is
@@ -92,6 +102,25 @@ const RESOURCES_SECTION: &str = "Resources";
 /// that file is split.
 pub fn already_exists(resource_type: &str, identifier: &str) -> String {
     format!("Resource of type '{resource_type}' with identifier '{identifier}' already exists.")
+}
+
+/// The validation RESULT a failed existence check records about `conflicting`: which
+/// validation failed, that it FAILED, what is wrong with the resource and where the
+/// validation was applied.
+///
+/// The one place that shape is stated, for every operation the stage runs on
+/// (`CreateChangeSet`, `CreateStack`, `UpdateStack`): the result a client reads through
+/// `DescribeEvents` is the same whichever call put the question.
+pub fn name_conflict_failure(conflicting: &NamedResource) -> super::StoredValidationFailure {
+    super::StoredValidationFailure {
+        name: NAME_CONFLICT_VALIDATION.to_string(),
+        status: VALIDATION_FAILED.to_string(),
+        reason: already_exists(
+            &conflicting.resource_type,
+            &conflicting.physical_resource_id,
+        ),
+        path: resource_path(&conflicting.logical_id),
+    }
 }
 
 /// The converse sentence, for a resource that is NOT there: what a resource handler reports
@@ -199,6 +228,55 @@ fn states_its_name(template: &Template, provisioned: &StoredResource) -> bool {
         })
 }
 
+/// The resources a DEPLOYMENT would CREATE whose physical name its template STATES: what
+/// the existence check asks the owning services about for a stack operation
+/// (`CreateStack`, `UpdateStack`) that deploys `stage_body`, as [`named_resources`] is for
+/// the plan a change set carries.
+///
+/// `stage_body` is the PROCESSED stage of the template the operation deploys — the document
+/// CloudFormation really provisions from — and `None` (a stack with no template, or a stage
+/// this service could not compute) has no declaration to ask about.
+///
+/// `already_managed` are the logical ids the stack manages BEFORE this deployment: such a
+/// resource is not one the deployment would create — it exists because the stack has it — so
+/// the name it holds is no collision. A create manages none of them yet and passes none. The
+/// exclusion is by LOGICAL ID, which is what CloudFormation identifies a declaration by: a
+/// declaration the stack already manages that this deployment RENAMES is a replacement, and
+/// the create half of that replacement is left to the owning service to refuse — this stage
+/// asks about the names the operation ADDS.
+///
+/// `managed_names` is CloudFormation's own record of which name each live stack of the
+/// account and Region holds ([`super::physical_name`]). A candidate whose name is in it is
+/// NOT one this stage is about: CloudFormation knows which stack manages that name, and a
+/// create that would take it fails ON THE RESOURCE, naming that stack. What this stage
+/// establishes is a name held OUTSIDE CloudFormation — an object a client created, one
+/// another service made of its own accord — which no record of CloudFormation's own reports.
+pub fn named_additions(
+    stage_body: Option<&str>,
+    stack: template::StackScope<'_>,
+    parameters: &BTreeMap<String, String>,
+    already_managed: &[String],
+    managed_names: &[super::physical_name::ManagedName],
+) -> Vec<NamedResource> {
+    let Some(declared) = stage_body.and_then(super::declared_template) else {
+        return Vec::new();
+    };
+    named_resources(&declared, stack, parameters)
+        .into_iter()
+        .filter(|candidate| {
+            !already_managed
+                .iter()
+                .any(|logical_id| logical_id == &candidate.logical_id)
+        })
+        .filter(|candidate| {
+            !managed_names.iter().any(|held| {
+                held.resource_type == candidate.resource_type
+                    && held.physical_resource_id == candidate.physical_resource_id
+            })
+        })
+        .collect()
+}
+
 /// Those of `candidates` whose identifier the owning service already holds a resource under.
 ///
 /// The calls are made with no store lock held (the caller is what releases it), one candidate
@@ -228,10 +306,14 @@ pub async fn taken_names(
             materialised: true,
             deletion_policy: None,
         };
-        if matches!(
-            owner.actual_configuration(ctx, region, &existing).await,
-            Ok(Some(_))
-        ) {
+        // The read is BOXED: one owning service's read is a call into that service's own
+        // handler, whose future is as large as every arm of it, and this stage runs inside a
+        // deploying operation that holds the whole walk's future as well. Keeping it on the
+        // heap keeps the caller's own future the size of the operation rather than the size of
+        // the deepest read it makes.
+        let answered = ::std::boxed::Box::pin(owner.actual_configuration(ctx, region, &existing))
+            .await;
+        if matches!(answered, Ok(Some(_))) {
             taken.push(candidate.clone());
         }
     }

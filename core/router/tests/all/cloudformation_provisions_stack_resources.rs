@@ -34,6 +34,8 @@ use service_com_amazonaws_cloudformation_cloudformation::state::{
 };
 use smithy_server_runtime::MultiServiceRouter;
 
+use crate::cloudformation_stack_clock::settle_the_stacks;
+
 /// The region every request here is signed for, and so the region the stack's resources
 /// and their ARNs belong to.
 const REGION: &str = "us-east-1";
@@ -56,6 +58,13 @@ const PAST_BOTH_SPANS: Duration = Duration::from_millis(3_900);
 /// beside each stream — resource types CloudFormation provisions too, so the services
 /// that own them have to be reachable for the stack to complete.
 fn build_router() -> MultiServiceRouter {
+    build_router_and_engine().0
+}
+
+/// [`build_router`] with the engine it was mounted on, for a case that drives the stack's
+/// own CLOCK rather than waiting for it
+/// ([`crate::cloudformation_stack_clock::settle_the_stacks`]).
+fn build_router_and_engine() -> (MultiServiceRouter, Arc<engine::InMemoryEngine>) {
     let engine: Arc<engine::InMemoryEngine> = Arc::new(engine::InMemoryEngine::new());
     let mut router = MultiServiceRouter::new();
     router.set_request_authentication(false);
@@ -73,9 +82,11 @@ fn build_router() -> MultiServiceRouter {
         Arc::clone(&engine),
     ));
     router.register_service(
-        service_com_amazonaws_iam_awsidentitymanagementv20100508::EmulatedService::new(engine),
+        service_com_amazonaws_iam_awsidentitymanagementv20100508::EmulatedService::new(Arc::clone(
+            &engine,
+        )),
     );
-    router
+    (router, engine)
 }
 
 /// A SigV4 `Authorization` header whose credential scope names `service`, which is what
@@ -236,7 +247,7 @@ async fn create_stack(
     template: &str,
     parameters: &[(&str, &str)],
 ) -> String {
-    let mut members: Vec<(&str, &str)> = vec![
+    let mut request: Vec<(&str, &str)> = vec![
         ("StackName", stack_name),
         ("TemplateBody", template),
         // A row's template declares the IAM role its stream writes as, so the request
@@ -263,9 +274,9 @@ async fn create_stack(
         })
         .collect();
     for (key, value) in &flattened {
-        members.push((key.as_str(), value.as_str()));
+        request.push((key.as_str(), value.as_str()));
     }
-    let (status, body) = cloudformation(router, "CreateStack", &members).await;
+    let (status, body) = cloudformation(router, "CreateStack", &request).await;
     assert_eq!(
         status, 200,
         "case {case:?}: expected HTTP 200 from CreateStack, got {status} with body {body}"
@@ -870,7 +881,7 @@ async fn a_stack_provisions_the_firehose_stream_its_template_declares() {
 /// pointing a template at a stream a client already created.
 #[tokio::test]
 async fn a_resource_the_owning_service_refuses_fails_the_stack() {
-    let router = build_router();
+    let (router, engine) = build_router_and_engine();
     let case = "a template naming a stream that already exists";
     let stream_name = "already-taken-stream";
     given_delivery_role(&router, case, "some-role").await;
@@ -909,10 +920,33 @@ async fn a_resource_the_owning_service_refuses_fails_the_stack() {
         "Outputs": { "StreamName": { "Value": { "Ref": "Stream" } } }
     });
     let stack_name = "doomed-stack";
-    create_stack(&router, case, stack_name, &template.to_string(), &[]).await;
-    // The create failed, so the stack is being rolled back: that unwind is on the stack's
-    // own clock, like every other transition this suite waits out.
-    tokio::time::sleep(PAST_BOTH_SPANS).await;
+    // The refusal this case is about is the OWNING SERVICE's, so the create has to reach it:
+    // with the pre-deployment validations on, CloudFormation's own existence check fails a
+    // create whose declared name that service already holds before any resource is asked for.
+    let (status, body) = cloudformation(
+        &router,
+        "CreateStack",
+        &[
+            ("StackName", stack_name),
+            ("TemplateBody", &template.to_string()),
+            // The refusal this case is about is the OWNING SERVICE's, so the create has to
+            // reach it: with the pre-deployment validations on, CloudFormation's own
+            // existence check fails a create whose declared name that service already holds
+            // before any resource is asked for.
+            ("DisableValidation", "true"),
+        ],
+    )
+    .await;
+    assert_eq!(
+        status, 200,
+        "case {case:?}: expected HTTP 200 from CreateStack, got {status} with body {body}"
+    );
+    // The create failed, so the stack is being rolled back. Both transitions it owes are on
+    // the stack's own clock, so the case drives that clock rather than waiting for it
+    // ([`crate::cloudformation_stack_clock::settle_the_stacks`]): once for the create's own
+    // conclusion, once for the unwind.
+    settle_the_stacks(&router, &engine, case).await;
+    settle_the_stacks(&router, &engine, case).await;
 
     let body = describe_stack(&router, case, stack_name).await;
     assert_eq!(
