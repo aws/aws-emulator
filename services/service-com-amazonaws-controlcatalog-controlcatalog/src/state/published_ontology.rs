@@ -30,12 +30,20 @@
 //! each domain, and the common controls each objective is met by.
 //!
 //! The opaque 25-character identifier inside a catalog ARN is assigned by Amazon Web
-//! Services and is derivable from nothing in the request, so this emulator mints its
-//! own deterministically from each entry's `slug` (see `super::catalog_id`): stable
-//! across processes and runs, in the character class the modeled `DomainArn` /
-//! `ObjectiveArn` / `CommonControlArn` patterns allow. The slug is internal — it never
-//! appears on the wire — and is the hash input precisely so that editing an entry's
-//! wording does not change the ARN a client already holds.
+//! Services and is derivable from nothing in the request, yet it is part of the entry's
+//! published identity: the library is account-independent, so one ARN names the domain or
+//! objective for every caller, in every partition and on every run. An entry whose
+//! published identifier is recorded in [`PUBLISHED_CATALOG_IDENTIFIERS`] is therefore
+//! served under it; for an entry that table does not name, this emulator mints one
+//! deterministically from the entry's `slug` (see `super::catalog_id`): stable across
+//! processes and runs, in the character class the modeled `DomainArn` / `ObjectiveArn` /
+//! `CommonControlArn` patterns allow. The slug is internal — it never appears on the wire
+//! — and is the hash input precisely so that editing an entry's wording does not change
+//! the ARN a client already holds.
+//!
+//! The instant the library was published is recorded once, in
+//! [`LIBRARY_PUBLICATION_TIME`], because the library is published as a whole rather than
+//! entry by entry.
 
 /// One common control the catalog publishes under an objective:
 /// `(slug, name, description)`.
@@ -84,11 +92,6 @@ pub(super) const PUBLISHED_ONTOLOGY: &[DomainSeed] = &[
                         "Assign each inventoried asset an owner who is accountable for protecting it.",
                     ),
                     (
-                        "asset-classification",
-                        "Asset classification",
-                        "Classify each asset by the sensitivity of the data it holds or the service it provides.",
-                    ),
-                    (
                         "unauthorized-asset-detection",
                         "Unauthorized asset detection",
                         "Detect assets that are connected to the environment but absent from the inventory.",
@@ -97,6 +100,23 @@ pub(super) const PUBLISHED_ONTOLOGY: &[DomainSeed] = &[
                         "asset-inventory-reconciliation",
                         "Asset inventory reconciliation",
                         "Reconcile the asset inventory against discovered assets on a defined schedule.",
+                    ),
+                ],
+            ),
+            // The catalog publishes classification as an OBJECTIVE of its own (its
+            // published ARN is recorded in PUBLISHED_CATALOG_IDENTIFIERS below), not as a
+            // common control under the inventory objective. The entry below is the one
+            // this table already held, moved under the objective it belongs to with its
+            // wording unchanged: nothing is added here that the catalog does not publish.
+            (
+                "asset-classification",
+                "Asset classification",
+                "Classify each asset by the sensitivity of the data it holds or the service it provides.",
+                &[
+                    (
+                        "asset-classification",
+                        "Asset classification",
+                        "Classify each asset by the sensitivity of the data it holds or the service it provides.",
                     ),
                 ],
             ),
@@ -1150,3 +1170,106 @@ pub(super) const PUBLISHED_ONTOLOGY: &[DomainSeed] = &[
         ],
     ),
 ];
+
+/// The instant the Control Catalog published the common-control library, in seconds
+/// since the Unix epoch.
+///
+/// Every entry of the library carries it as both `CreateTime` ("[t]he time when the
+/// domain was created") and `LastUpdateTime` ("[t]he time when the domain was most
+/// recently updated", equal to the creation instant until a revision moves it)
+/// (`smithy_query(query="shape", shape="DomainSummary,ObjectiveSummary",
+/// model_path="services/service-com-amazonaws-controlcatalog-controlcatalog/smithy-model/com-amazonaws-controlcatalog-controlcatalog.json")`):
+/// the library is published as a WHOLE — one publication, one instant for the domains,
+/// the objectives under them and the common controls under those — so an entry is not
+/// dated by its position in the table, and two entries published together cannot be
+/// dated a day apart.
+pub(super) const LIBRARY_PUBLICATION_TIME: i64 = 1_710_288_000;
+
+/// The opaque identifier the catalog's published ARN carries for an ontology entry:
+/// `(kind, slug, identifier)`, where `kind` is the resource segment of the entry's ARN
+/// (`domain`, `objective` or `common-control`), so an entry is recorded for the kind it
+/// is published as and two kinds that share a slug cannot take each other's identifier.
+///
+/// Source: the Control Catalog's own published ontology, which names every domain by
+/// `arn:{PARTITION}:controlcatalog:::domain/{identifier}` and every objective by
+/// `arn:{PARTITION}:controlcatalog:::objective/{identifier}`. The identifier is assigned
+/// by Amazon Web Services and derivable from nothing in the request, yet it is part of
+/// the entry's published identity rather than a per-run value: the library is
+/// account-independent and read-only, so one identifier names the domain or objective for
+/// every caller, in every partition and on every run — a client harvests it from
+/// `ListDomains` / `ListObjectives` and feeds it back as an `ObjectiveFilter.Domains` or
+/// `CommonControlFilter.Objectives` entry, so an identifier of this emulator's own making
+/// resolves nowhere for a client holding the published one.
+///
+/// An entry this table does not name is served under an identifier minted from its slug
+/// (see `super::catalog_id`), which is all an entry whose published identifier is not
+/// recorded here can be served under.
+const PUBLISHED_CATALOG_IDENTIFIERS: &[(&str, &str, &str)] = &[
+    (DOMAIN, "asset-management", "d4msesd9vvmzmmuvlv06m92uq"),
+    (
+        DOMAIN,
+        "business-continuity-and-recovery",
+        "33mjpzadrlwo1by3c1012ai5i",
+    ),
+    (DOMAIN, "data-protection", "884eyhr622uy73h6i1mjb9lfb"),
+    (
+        DOMAIN,
+        "identity-and-access-management",
+        "avh1ncrx6oyndrbsv0rfywvat",
+    ),
+    (
+        OBJECTIVE,
+        "asset-inventory-management",
+        "ad11p1961s8erra9m185wa1nn",
+    ),
+    (OBJECTIVE, "asset-classification", "90gifwthorhxhxq7m0rtss98u"),
+    (OBJECTIVE, "asset-maintenance", "3frxxgl64u9kzttiuheywykf7"),
+    (OBJECTIVE, "change-management", "14qj3s9axkdma059lhktc14dx"),
+];
+
+/// The resource segment a domain's ARN carries, as the modeled `DomainArn` pattern
+/// spells it.
+pub(super) const DOMAIN: &str = "domain";
+/// The resource segment an objective's ARN carries, as the modeled `ObjectiveArn`
+/// pattern spells it.
+pub(super) const OBJECTIVE: &str = "objective";
+/// The resource segment a common control's ARN carries, as the modeled
+/// `CommonControlArn` pattern spells it.
+pub(super) const COMMON_CONTROL: &str = "common-control";
+
+/// The opaque identifier the catalog publishes for the entry of `kind` that `slug` names,
+/// or `None` when this module records none for it.
+pub(super) fn published_catalog_identifier(kind: &str, slug: &str) -> Option<&'static str> {
+    PUBLISHED_CATALOG_IDENTIFIERS
+        .iter()
+        .find(|(entry_kind, entry_slug, _)| *entry_kind == kind && *entry_slug == slug)
+        .map(|(_, _, identifier)| *identifier)
+}
+
+/// Does the published ontology hold an entry of `kind` named by `slug`?
+///
+/// What the seed checks every recorded published identifier against, so a slug this
+/// module renames cannot leave its entry served under a minted identifier unnoticed.
+pub(super) fn publishes(kind: &str, slug: &str) -> bool {
+    PUBLISHED_ONTOLOGY.iter().any(
+        |(domain_slug, _, _, objectives)| match kind {
+            DOMAIN => *domain_slug == slug,
+            OBJECTIVE => objectives
+                .iter()
+                .any(|(objective_slug, _, _, _)| *objective_slug == slug),
+            COMMON_CONTROL => objectives.iter().any(|(_, _, _, common_controls)| {
+                common_controls
+                    .iter()
+                    .any(|(control_slug, _, _)| *control_slug == slug)
+            }),
+            _ => false,
+        },
+    )
+}
+
+/// Every recorded published identifier names an entry of the kind it is recorded for.
+pub(super) fn every_published_identifier_names_an_entry() -> bool {
+    PUBLISHED_CATALOG_IDENTIFIERS
+        .iter()
+        .all(|(kind, slug, _)| publishes(kind, slug))
+}

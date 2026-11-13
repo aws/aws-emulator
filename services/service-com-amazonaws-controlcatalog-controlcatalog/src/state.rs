@@ -485,18 +485,33 @@ fn catalog_id(slug: &str) -> String {
     hex::encode(digest)[..CATALOG_ID_LEN].to_string()
 }
 
-/// The opaque identifier the catalog's control ARN carries for the published control
-/// `slug` names.
+/// The opaque identifier the catalog's ARN carries for one published entry: the
+/// catalog's own published identifier, where this crate records one for the entry, and
+/// otherwise one minted from the entry's slug ([`catalog_id`]).
 ///
-/// The catalog's own published identifier for the control
-/// (`published_controls::published_catalog_identifier`), where the control table records
-/// it: the catalog is account-independent and read-only, so that identifier names the
-/// control for every caller and a client holds it across sessions. For a control the
-/// table records none for, the identifier is minted from the slug exactly as the
-/// ontology's are ([`catalog_id`]).
+/// The catalog is account-independent and read-only, so a published identifier names the
+/// entry for every caller, in every partition and on every run — which is what lets a
+/// client hold an ARN across sessions and feed it to a filter or to `GetControl`. The
+/// rule is the same for every kind the catalog publishes, so it is stated once here and
+/// read through the two functions below.
+fn published_or_minted_identifier(published: Option<&'static str>, slug: &str) -> String {
+    published.map_or_else(|| catalog_id(slug), str::to_string)
+}
+
+/// The opaque identifier the catalog's control ARN carries for the published control
+/// `slug` names (`published_controls::published_catalog_identifier`).
 fn control_identifier(slug: &str) -> String {
-    published_controls::published_catalog_identifier(slug)
-        .map_or_else(|| catalog_id(slug), str::to_string)
+    published_or_minted_identifier(published_controls::published_catalog_identifier(slug), slug)
+}
+
+/// The opaque identifier the catalog's ARN carries for the ontology entry of `kind` that
+/// `slug` names — a domain, an objective or a common control
+/// (`published_ontology::published_catalog_identifier`).
+fn ontology_identifier(kind: &str, slug: &str) -> String {
+    published_or_minted_identifier(
+        published_ontology::published_catalog_identifier(kind, slug),
+        slug,
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -960,15 +975,28 @@ fn seed_catalog() -> ComAmazonawsControlcatalogControlcatalogState {
     // common control the ontology publishes is reachable through the filter that
     // narrows to its parent.
     //
-    // Timestamps are positional and fixed (see CATALOG_EPOCH), so the catalog a client
-    // reads is identical in every process and on every run.
-    let mut objective_position: i64 = 0;
-    let mut common_control_position: i64 = 0;
-    for (domain_position, (domain_slug, domain_name, domain_description, domain_objectives)) in
-        published_ontology::PUBLISHED_ONTOLOGY.iter().enumerate()
+    // Each entry's ARN carries the catalog's own published identifier for it, where this
+    // crate records one, and otherwise one minted from its slug (see
+    // `ontology_identifier`), and every entry is dated with the instant the catalog
+    // published the library it belongs to (`published_ontology::LIBRARY_PUBLICATION_TIME`
+    // — the library is published as a whole, so its entries are not dated by their
+    // position in it). Both are fixed, so the catalog a client reads is identical in
+    // every process and on every run.
+    // Every recorded published identifier names an entry of the kind it is recorded for:
+    // a renamed slug would otherwise leave its entry served under a minted identifier
+    // with no signal, which is the defect this record exists to close.
+    debug_assert!(
+        published_ontology::every_published_identifier_names_an_entry(),
+        "a published catalog identifier must name a published ontology entry of its kind"
+    );
+    let create_time = published_ontology::LIBRARY_PUBLICATION_TIME;
+    for (domain_slug, domain_name, domain_description, domain_objectives) in
+        published_ontology::PUBLISHED_ONTOLOGY
     {
-        let domain_arn = catalog_arn("domain", &catalog_id(domain_slug));
-        let create_time = CATALOG_EPOCH + (domain_position as i64) * DAY;
+        let domain_arn = catalog_arn(
+            published_ontology::DOMAIN,
+            &ontology_identifier(published_ontology::DOMAIN, domain_slug),
+        );
         domains.insert(
             domain_arn.clone(),
             Domain {
@@ -983,9 +1011,10 @@ fn seed_catalog() -> ComAmazonawsControlcatalogControlcatalogState {
         for (objective_slug, objective_name, objective_description, objective_common_controls) in
             *domain_objectives
         {
-            let objective_arn = catalog_arn("objective", &catalog_id(objective_slug));
-            let create_time = CATALOG_EPOCH + objective_position * DAY;
-            objective_position += 1;
+            let objective_arn = catalog_arn(
+                published_ontology::OBJECTIVE,
+                &ontology_identifier(published_ontology::OBJECTIVE, objective_slug),
+            );
             objectives.insert(
                 objective_arn.clone(),
                 Objective {
@@ -999,9 +1028,10 @@ fn seed_catalog() -> ComAmazonawsControlcatalogControlcatalogState {
                 },
             );
             for (slug, name, description) in *objective_common_controls {
-                let arn = catalog_arn("common-control", &catalog_id(slug));
-                let create_time = CATALOG_EPOCH + common_control_position * DAY;
-                common_control_position += 1;
+                let arn = catalog_arn(
+                    published_ontology::COMMON_CONTROL,
+                    &ontology_identifier(published_ontology::COMMON_CONTROL, slug),
+                );
                 common_controls.insert(
                     arn.clone(),
                     CommonControl {
@@ -1018,7 +1048,12 @@ fn seed_catalog() -> ComAmazonawsControlcatalogControlcatalogState {
             }
         }
     }
-    let common_control_arn = |slug: &str| catalog_arn("common-control", &catalog_id(slug));
+    let common_control_arn = |slug: &str| {
+        catalog_arn(
+            published_ontology::COMMON_CONTROL,
+            &ontology_identifier(published_ontology::COMMON_CONTROL, slug),
+        )
+    };
     let control_arn = |slug: &str| catalog_arn("control", &control_identifier(slug));
 
     // --- controls ----------------------------------------------------------

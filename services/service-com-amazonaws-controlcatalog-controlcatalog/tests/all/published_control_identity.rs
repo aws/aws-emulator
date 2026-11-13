@@ -57,11 +57,15 @@ struct PublishedControl {
 /// The AWS Config implementation type, as the catalog spells it.
 const CONFIG_RULE: &str = "AWS::Config::ConfigRule";
 
-/// Controls whose published catalog identity the catalog records, spanning both
-/// designator families the Config side of the catalog uses, every severity the rows
-/// carry, both parameter summaries an AWS Config-implemented control can have, an empty
-/// and a non-empty governed-resource list, and both members of each pair of controls
-/// that share one Config rule.
+/// The Security Hub implementation type, as the catalog spells it.
+const SECURITY_HUB_CONTROL: &str = "AWS::SecurityHub::SecurityControl";
+
+/// Controls whose published catalog identity the catalog records, spanning the
+/// designator families the catalog publishes controls under (`CONFIG.…`, `AWS-GR_…` and
+/// `SH.…`), both implementation surfaces behind them, every severity the rows carry,
+/// both parameter summaries an AWS Config-implemented control can have, an empty and a
+/// non-empty governed-resource list, and both members of each pair of controls that
+/// share one Config rule.
 const PUBLISHED_CONTROLS: &[PublishedControl] = &[
     PublishedControl {
         alias: "CONFIG.CLOUDTRAIL.DT.10",
@@ -157,6 +161,36 @@ const PUBLISHED_CONTROLS: &[PublishedControl] = &[
         parameter_requirement_summary: "OPTIONAL",
         governed_resources: &["AWS::RDS::DBInstance"],
         implementation: (CONFIG_RULE, "RDS_STORAGE_ENCRYPTED"),
+    },
+    PublishedControl {
+        alias: "SH.CloudTrail.1",
+        identifier: "435u8u4w5bsf02tkxga5jisbc",
+        name: "CloudTrail should be enabled and configured with at least one multi-Region \
+               trail that includes read and write management events",
+        severity: "HIGH",
+        parameter_requirement_summary: "NONE",
+        governed_resources: &["AWS::CloudTrail::Trail"],
+        implementation: (SECURITY_HUB_CONTROL, "CloudTrail.1"),
+    },
+    PublishedControl {
+        alias: "SH.IAM.4",
+        identifier: "ezfflnh8xgshxb78grtt5sjc5",
+        name: "IAM root user access key should not exist",
+        severity: "CRITICAL",
+        parameter_requirement_summary: "NONE",
+        // What this control governs — the account's own root user credentials — no
+        // available resource type represents, so the catalog publishes the list empty.
+        governed_resources: &[],
+        implementation: (SECURITY_HUB_CONTROL, "IAM.4"),
+    },
+    PublishedControl {
+        alias: "SH.IAM.5",
+        identifier: "6g3gbim493yofkc9eg6vvnahm",
+        name: "MFA should be enabled for all IAM users that have a console password",
+        severity: "MEDIUM",
+        parameter_requirement_summary: "NONE",
+        governed_resources: &["AWS::IAM::User"],
+        implementation: (SECURITY_HUB_CONTROL, "IAM.5"),
     },
 ];
 

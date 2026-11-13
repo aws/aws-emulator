@@ -105,8 +105,10 @@ const PREVENTIVE: &str = "PREVENTIVE";
 /// `ControlBehavior`: the control rejects a non-compliant deployment before it runs.
 const PROACTIVE: &str = "PROACTIVE";
 
-/// `ControlSeverity` values, as the modeled enum spells them.
-const LOW: &str = "LOW";
+/// The `ControlSeverity` values this table's controls are published with, as the modeled
+/// enum spells them. The enum also declares `LOW`, which no control published here
+/// carries: a control's severity is the one the catalog publishes for it, not a value
+/// chosen to cover the enum.
 const MEDIUM: &str = "MEDIUM";
 const HIGH: &str = "HIGH";
 const CRITICAL: &str = "CRITICAL";
@@ -850,9 +852,8 @@ pub(super) const PUBLISHED_CONTROLS: &[ControlSeed] = &[
         slug: "securityhub-cloudtrail-1",
         name: "CloudTrail should be enabled and configured with at least one multi-Region \
                trail that includes read and write management events",
-        description: "Checks whether an account has a multi-Region CloudTrail trail \
-                      recording read and write management events, and reports the finding \
-                      in Security Hub.",
+        description: "This AWS control checks that there is at least one multi-region AWS \
+                      CloudTrail trail includes read and write management events.",
         behavior: DETECTIVE,
         severity: HIGH,
         implementation_type: SECURITY_HUB_CONTROL,
@@ -886,7 +887,12 @@ pub(super) const PUBLISHED_CONTROLS: &[ControlSeed] = &[
         scope: GLOBAL,
         deployable_regions: NO_REGIONS,
         parameters: NO_PARAMETERS,
-        governed_resources: &["AWS::IAM::AccessKey"],
+        // What this control governs is the Amazon Web Services account's own root user
+        // credentials, which no available resource type represents, so the catalog
+        // publishes the list empty: "If GovernedResources cannot be represented by
+        // available resource types, it’s returned as an empty list"
+        // (`smithy_query(query="shape", shape="ControlSummary")`).
+        governed_resources: NO_GOVERNED_RESOURCES,
         governed_providers: AWS,
         implements: "privileged-access-approval",
         frameworks: &[
@@ -902,7 +908,7 @@ pub(super) const PUBLISHED_CONTROLS: &[ControlSeed] = &[
         description: "Checks whether every identity with a console password also has \
                       multi-factor authentication enabled.",
         behavior: DETECTIVE,
-        severity: LOW,
+        severity: MEDIUM,
         implementation_type: SECURITY_HUB_CONTROL,
         implementation_identifier: Some("IAM.5"),
         control_tower_identifier: None,
@@ -964,7 +970,9 @@ pub(super) const PUBLISHED_CONTROLS: &[ControlSeed] = &[
         scope: GLOBAL,
         deployable_regions: NO_REGIONS,
         parameters: &[(EXEMPTED_PRINCIPAL_ARNS, OPTIONAL)],
-        governed_resources: &["AWS::IAM::AccessKey"],
+        // The root user's own credentials, which no available resource type represents;
+        // see the Security Hub control over the same subject above.
+        governed_resources: NO_GOVERNED_RESOURCES,
         governed_providers: AWS,
         implements: "privileged-access-approval",
         frameworks: &[
@@ -1185,6 +1193,28 @@ pub(super) const PUBLISHED_CATALOG_RECORDS: &[PublishedCatalogRecord] = &[
         slug: "rds-storage-encrypted",
         identifier: "e34kieahgkm0lggs5g0s412jt",
         release_time: 1_564_444_800,
+    },
+    // The Security Hub-implemented controls the catalog publishes under their `SH.`
+    // designators: the instant recorded here is the one the catalog publishes as the
+    // release time of the `SH.CloudTrail.1` control. This catalog holds no separate
+    // record of the other two controls' release instants, and dates them with the same
+    // one because the catalog publishes Security Hub's control identifiers as one
+    // release and dates controls it released together with a single instant (see the
+    // pairs above) — not because a record of each was read.
+    PublishedCatalogRecord {
+        slug: "securityhub-cloudtrail-1",
+        identifier: "435u8u4w5bsf02tkxga5jisbc",
+        release_time: 1_669_593_600,
+    },
+    PublishedCatalogRecord {
+        slug: "securityhub-iam-4",
+        identifier: "ezfflnh8xgshxb78grtt5sjc5",
+        release_time: 1_669_593_600,
+    },
+    PublishedCatalogRecord {
+        slug: "securityhub-iam-5",
+        identifier: "6g3gbim493yofkc9eg6vvnahm",
+        release_time: 1_669_593_600,
     },
 ];
 

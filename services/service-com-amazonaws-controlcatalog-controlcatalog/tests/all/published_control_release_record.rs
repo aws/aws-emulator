@@ -44,10 +44,11 @@ struct PublishedRecord {
     release_time: i64,
 }
 
-/// Controls whose published record the catalog records, spanning both publishing
-/// surfaces: a control Control Tower publishes carries Control Tower's own control
-/// description, and a control published over an AWS Config managed rule carries that
-/// rule's own title and description.
+/// Controls whose published record the catalog records, spanning the publishing surfaces
+/// the catalog serves: a control Control Tower publishes carries Control Tower's own
+/// control description, a control published over an AWS Config managed rule carries that
+/// rule's own title and description, and a control Security Hub implements carries the
+/// text Security Hub publishes for it.
 const PUBLISHED_RECORDS: &[PublishedRecord] = &[
     PublishedRecord {
         identifier: "d5kdbugbadk3r481vtwnvoynv",
@@ -126,6 +127,14 @@ const PUBLISHED_RECORDS: &[PublishedRecord] = &[
                       underlying storage for database instances and their automated \
                       backups, Read Replicas, and snapshots.",
         release_time: 1_564_444_800,
+    },
+    PublishedRecord {
+        identifier: "435u8u4w5bsf02tkxga5jisbc",
+        name: "CloudTrail should be enabled and configured with at least one multi-Region \
+               trail that includes read and write management events",
+        description: "This AWS control checks that there is at least one multi-region AWS \
+                      CloudTrail trail includes read and write management events.",
+        release_time: 1_669_593_600,
     },
 ];
 
