@@ -636,21 +636,15 @@ pub const RUNNING_REASON: &str = "Experiment is running.";
 /// while it was running. Chosen here for the same reason [`STOPPED_BY_REQUEST`] is.
 pub const STOPPED_BY_SAFETY_LEVER: &str = "Stopped by the safety lever";
 
-/// The `state.reason` an experiment carries once one of its STOP CONDITIONS halted it,
-/// followed by the ARN of the alarm that was in its alarming state.
+/// The `state.reason` an experiment carries once one of its STOP CONDITIONS halted it.
 ///
-/// FIS documents no wording for `ExperimentState$reason`, so — like
-/// [`STOPPED_BY_SAFETY_LEVER`] — the text is this emulator's own; what the contract
-/// requires is the terminal status `stopped` and a reason beside it that says which
-/// guardrail ended the run. The alarm comes from the experiment's own stop conditions, so
-/// a client can tell WHICH condition halted it.
-pub const STOPPED_BY_STOP_CONDITION: &str = "Stopped by the stop condition monitoring";
-
-/// The `state.reason` of a run one of its stop conditions halted: see
-/// [`STOPPED_BY_STOP_CONDITION`].
-pub fn stop_condition_reason(alarm_arn: &str) -> String {
-    clipped_reason(format!("{STOPPED_BY_STOP_CONDITION} {alarm_arn}"))
-}
+/// FIS's own sentence for that halt, and the WHOLE of it: the reason a run ended names the
+/// cause the service recognises and carries no value from the request, the template or the
+/// resource it watched — no alarm name, no ARN, no account and no Region is substituted
+/// into it — so a client comparing the reason it was given against the one FIS emits for
+/// this cause matches it exactly. Which condition was breached stays readable where the
+/// experiment reports its conditions (`stopConditions`), not in prose.
+pub const STOPPED_BY_STOP_CONDITION: &str = "Experiment halted by stop condition.";
 
 /// The resource segment of a safety lever's ARN
 /// (`arn:aws:fis:<region>:<account>:safety-lever/<id>`).
@@ -1909,17 +1903,17 @@ impl ExperimentRecord {
     /// that state at an instant of its own and FIS's watch of it was owed from then, so the
     /// stop was owed at `now` whether or not anybody called. It goes through the same
     /// `stopping` -> `stopped` span a `StopExperiment` puts an experiment on, under the
-    /// reason that names the condition ([`stop_condition_reason`]), so a caller sees the
+    /// reason FIS halts a run for ([`STOPPED_BY_STOP_CONDITION`]), so a caller sees the
     /// transient status exactly as it would for a requested stop.
     pub fn settle(&mut self, now: SystemTime, breaches: &stop_conditions::AlarmBreaches) {
         self.settle_clock(now);
         // Judged on the SETTLED record: a run whose own end had already fallen due ended
         // then, before this read saw the alarm, so a breach observed now cannot reach back
         // and take a terminal status away from it.
-        if self.status == ExperimentStatus::Running {
-            if let Some(alarm_arn) = breaches.breached_alarm(&self.stop_conditions) {
-                self.request_stop_for(now, &stop_condition_reason(alarm_arn));
-            }
+        if self.status == ExperimentStatus::Running
+            && breaches.breached_alarm(&self.stop_conditions).is_some()
+        {
+            self.request_stop_for(now, STOPPED_BY_STOP_CONDITION);
         }
         // Each action's own state, from the run's plan and the status just settled, so one
         // read reports the experiment and its actions as of the same instant.

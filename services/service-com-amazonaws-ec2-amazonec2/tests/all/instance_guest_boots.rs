@@ -31,9 +31,10 @@ use super::ec2_query::{as_timestamp, call, described_instance_state, elements, m
 /// The Region every call here is signed for; it only selects the ec2Query envelope.
 const REGION: &str = "us-west-2";
 
-/// The width of a console line's label column, as the service's own console renders it.
-/// Spelled out here rather than imported, so a changed rendering fails this suite.
-const CONSOLE_LABEL_WIDTH: usize = 20;
+/// The marker a guest's init system writes the facts it discovered about its machine under,
+/// which is where a client reads one. Spelled out here rather than imported, so a changed
+/// rendering fails this suite.
+const CI_INFO_MARKER: &str = "ci-info: ";
 
 /// A `(key, value)` request parameter.
 fn p(key: &str, value: impl Into<String>) -> (String, String) {
@@ -93,6 +94,9 @@ async fn launch(router: &MultiServiceRouter, case: &str, image_id: &str, count: 
 }
 
 /// One instance's console as text, beside the instant the response says it was last updated.
+///
+/// The text is empty for an instance whose guest has written nothing yet, which is an
+/// instance that carries no `output` member at all.
 async fn console(router: &MultiServiceRouter, case: &str, instance_id: &str) -> (String, f64) {
     let (status, body) = api(
         router,
@@ -104,32 +108,33 @@ async fn console(router: &MultiServiceRouter, case: &str, instance_id: &str) -> 
         status, 200,
         "case {case:?}: GetConsoleOutput must succeed, got {status}: {body}"
     );
-    let encoded = member(&body, "output")
-        .unwrap_or_else(|| panic!("case {case:?}: the response must carry output: {body}"));
-    let bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &encoded)
-        .unwrap_or_else(|error| panic!("case {case:?}: output must be base64 ({error})"));
-    let text = String::from_utf8(bytes)
-        .unwrap_or_else(|error| panic!("case {case:?}: the console text must be UTF-8: {error}"));
+    let text = match member(&body, "output") {
+        Some(encoded) => {
+            let bytes =
+                base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &encoded)
+                    .unwrap_or_else(|error| {
+                        panic!("case {case:?}: output must be base64 ({error})")
+                    });
+            String::from_utf8(bytes).unwrap_or_else(|error| {
+                panic!("case {case:?}: the console text must be UTF-8: {error}")
+            })
+        }
+        None => String::new(),
+    };
     let timestamp = member(&body, "timestamp")
         .and_then(|value| as_timestamp(&value))
         .unwrap_or_else(|| panic!("case {case:?}: the response must carry a timestamp: {body}"));
     (text, timestamp)
 }
 
-/// Every console line of `text` the label `label` names, in the order the console wrote
-/// them. A line is `<label><padding><value>`, split at the label column so a label that is
-/// the prefix of another cannot be read for it.
+/// Every value of `text` the guest published the fact `label` under, in the order the
+/// console carries them: a guest's init system writes one as `ci-info: <name>: <value>`, so
+/// a name that is the prefix of another cannot be read for it.
 fn console_values(text: &str, label: &str) -> Vec<String> {
+    let marker = format!("{CI_INFO_MARKER}{label}: ");
     text.lines()
-        .filter(|line| line.len() > CONSOLE_LABEL_WIDTH)
-        .map(|line| {
-            (
-                line[..CONSOLE_LABEL_WIDTH].trim(),
-                line[CONSOLE_LABEL_WIDTH..].trim(),
-            )
-        })
-        .filter(|(found, _)| *found == label)
-        .map(|(_, value)| value.to_string())
+        .filter_map(|line| line.split_once(&marker))
+        .map(|(_, value)| value.trim().to_string())
         .collect()
 }
 

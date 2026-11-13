@@ -994,6 +994,10 @@ mod snapshot_imports;
 mod import_task_cancellation;
 #[path = "all/instance_connect_endpoints.rs"]
 mod instance_connect_endpoints;
+// The status checks every instance reports, the states they apply in, and the filters and
+// pages `DescribeInstanceStatus` answers them through.
+#[path = "all/describe_instance_status.rs"]
+mod describe_instance_status;
 // The fixed detail every instance reports, and the monitoring state a caller moves.
 #[path = "all/instance_detail.rs"]
 mod instance_detail;
@@ -1007,6 +1011,10 @@ mod instance_event_windows;
 // queued reboot taking effect — as a BOOT of its own, appended to the console it writes.
 #[path = "all/instance_guest_boots.rs"]
 mod instance_guest_boots;
+// What the guest DOES with the instance's own user data: the init system runs it when the
+// guest comes up, and what it writes to the console device is on that instance's console.
+#[path = "all/instance_guest_console_user_data.rs"]
+mod instance_guest_console_user_data;
 #[path = "all/instance_lifecycle.rs"]
 mod instance_lifecycle;
 #[path = "all/instance_metadata_defaults.rs"]

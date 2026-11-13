@@ -482,6 +482,13 @@ pub mod jsonata;
 /// program, a notebook instance's lifecycle hook — so the catalog it performs, what it
 /// fails closed on and the bounds that confine it are stated once rather than per service.
 pub mod posix_shell_session;
+/// The value of one ARITHMETIC expansion of that session (`$((…))`), evaluated over the
+/// session's own variables and nothing else.
+pub mod posix_shell_arithmetic;
+/// The in-memory TREE that session reads and writes when the caller-supplied program is the
+/// program of a MACHINE the emulator holds — its files, its sealed values and its devices,
+/// all bounded, with no host path behind any of them.
+pub mod posix_shell_volume;
 pub mod lex;
 pub mod management_events;
 /// The ONE construction of the in-process EventBridge client a service publishing an event

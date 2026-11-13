@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op DescribeInstanceStatus
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `DescribeInstanceStatus`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
+//! IMPLEMENTED: reports the status of the instances the request names — each instance's
+//! state, the zone it is in and its two STATUS CHECKS, the system's and the instance's own
+//! ([`crate::state::instance_status_checks`]) — filtered, paged, and by default over the
+//! running instances only. This is the ONLY file to touch for this operation.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`DescribeInstanceStatus::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! A check is owed to the CLOCK: an instance whose guest has just come up is still
+//! `initializing` and passes a span later, whether or not anybody polls, so a client that
+//! waits for ('ok', 'ok') after a launch or a reboot sees the same settling the real service
+//! reports. Reading a status writes nothing beyond the transitions the clock already owed.
 //!
 //! ## Shape of an operation
 //!
@@ -177,18 +177,235 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `DescribeInstanceStatus` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(DescribeInstanceStatusErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("DescribeInstanceStatus"))
+        use crate::scaffolded::Scaffolded;
+        use crate::state::{
+            decode_page_token, instance_region, instance_status_filter_supported,
+            instance_status_filter_values, max_results_below_published_minimum, page_from_cursor,
+            request_region, require_decoded_instance_record, require_service_state, CompiledFilter,
+            InstanceStateName, MatchBudget, PageTokenRule, MAX_FILTERS, MAX_FILTER_MATCH_STEPS,
+            MAX_FILTER_VALUES, MAX_FILTER_VALUE_BYTES, MAX_PAGE_SIZE, MAX_RESOURCE_IDS,
+        };
+
+        // EC2 is a REGIONAL service: "describes the status of the specified instances or all
+        // of your instances" means the ones of the Region the caller is asking in, so the
+        // Region this request was signed for is what the store is read through below.
+        let region = request_region(ctx.parts());
+
+        // "Constraints: Maximum 100 explicitly specified instance IDs" (`$InstanceIds`), the
+        // bound every id list of this service is held to.
+        let requested_ids = input.instance_ids.clone().unwrap_or_default();
+        if requested_ids.len() > MAX_RESOURCE_IDS {
+            return Err(Scaffolded::invalid_parameter_value(format!(
+                "InstanceIds carries {} ids, above the maximum of {MAX_RESOURCE_IDS}",
+                requested_ids.len()
+            )));
+        }
+        // "You cannot specify this parameter and the instance IDs parameter in the same
+        // request" (`$MaxResults`), refused through the one template this service words that
+        // pair with, naming the two parameters the way this operation's wire form spells
+        // them.
+        if !requested_ids.is_empty() && input.max_results.is_some() {
+            return Err(crate::state::parameters_cannot_be_combined(
+                "instancesSet",
+                "maxResults",
+            ));
+        }
+
+        // Matching cost is filters x values x stored instances and the model bounds none of
+        // them, so the two request-controlled factors are capped here, before any work
+        // proportional to them is done — exactly as `DescribeInstances` caps them.
+        let supplied_filters = input.filters.as_ref().map_or(0, Vec::len);
+        if supplied_filters > MAX_FILTERS {
+            return Err(Scaffolded::invalid_parameter_value(format!(
+                "The request carries {supplied_filters} filters, above the maximum \
+                 of {MAX_FILTERS}"
+            )));
+        }
+        let mut filters: Vec<CompiledFilter> = Vec::new();
+        for filter in input.filters.iter().flatten() {
+            // A filter name this operation does not document is refused, never silently
+            // ignored: ignoring it would answer a wider set than the caller asked for. The
+            // refusal is the one every describe of this service words, with the name taken
+            // from the request — and an entry naming NO filter is reported by the name EC2
+            // has for an absent one.
+            let name = filter
+                .name
+                .clone()
+                .unwrap_or_else(|| crate::state::UNNAMED_FILTER.to_string());
+            if !instance_status_filter_supported(&name) {
+                return Err(Scaffolded::invalid_parameter_value(format!(
+                    "The filter '{name}' is invalid"
+                )));
+            }
+            let values = filter.values.clone().unwrap_or_default();
+            if values.len() > MAX_FILTER_VALUES {
+                return Err(Scaffolded::invalid_parameter_value(format!(
+                    "The filter '{name}' carries {} values, above the maximum of \
+                     {MAX_FILTER_VALUES}",
+                    values.len()
+                )));
+            }
+            if let Some(oversize) = values
+                .iter()
+                .find(|value| value.len() > MAX_FILTER_VALUE_BYTES)
+            {
+                return Err(Scaffolded::invalid_parameter_value(format!(
+                    "A value of the filter '{name}' carries {} bytes, above the \
+                     maximum of {MAX_FILTER_VALUE_BYTES}",
+                    oversize.len()
+                )));
+            }
+            filters.push(CompiledFilter::new(name, values));
+        }
+        if input
+            .max_results
+            .is_some_and(|max_results| max_results < MIN_MAX_RESULTS)
+        {
+            // A page size below the smallest this operation pages with is refused rather
+            // than served, through the one constructor every hand-enforced page-size floor
+            // of this crate uses. Asked AFTER the filter names, so a request that gets both
+            // wrong is told about the filter — the order this service's describes answer in.
+            return Err(max_results_below_published_minimum(
+                input.max_results.unwrap_or_default(),
+                MIN_MAX_RESULTS,
+            ));
+        }
+
+        let state = require_service_state(&*self.engine)?;
+        let mut store = state.lock();
+        // Which status an instance is in is a question about the CURRENT state, so the
+        // transitions the clock already owed are materialised before it is read: an instance
+        // whose launch settled a moment ago is running and its guest has booted, and both
+        // were due at that instant whether or not anybody called. This is the only write
+        // this reporting operation causes, and it is the clock's.
+        store.materialize_due_transitions();
+        let now = ::std::time::SystemTime::now();
+
+        for instance_id in &requested_ids {
+            // A long-form id this service never issued is one it cannot decode, which is the
+            // malformed half; a short-form id it holds no instance for is the not-found half.
+            let instance = require_decoded_instance_record(&store, instance_id)?;
+            // And an instance of ANOTHER Region is not one this request can name: EC2 is
+            // reached through a regional endpoint, so the id names no instance here.
+            if instance_region(instance) != region {
+                return Err(Scaffolded::invalid_instance_id_not_found(instance_id));
+            }
+        }
+
+        // DryRun sits AFTER every parameter has been validated and every named instance
+        // resolved: the flag asks whether the request WOULD have succeeded, so one that
+        // would have been refused is refused with that reason instead.
+        if input.dry_run == Some(true) {
+            return Err(Scaffolded::dry_run_operation());
+        }
+
+        // "Indicates whether to include managed resources in the output"
+        // (`$IncludeManagedResources`): this emulator holds no instance managed by another
+        // Amazon Web Services service, so the whole set is the same either way.
+        let _ = input.include_managed_resources;
+
+        // "When true, includes the health status for all instances. When false, includes the
+        // health status for running instances only. Default: false" — so an instance that is
+        // not running is reported only when the request asks for all of them, whether it was
+        // named by id or reached by a filter.
+        let include_all = input.include_all_instances == Some(true);
+        let wanted_ids: ::std::collections::HashSet<&str> =
+            requested_ids.iter().map(String::as_str).collect();
+
+        // Every comparison is charged to one budget, so the PRODUCT of stored instances,
+        // filters, values and value length is bounded however the caller combines them —
+        // which is also what bounds how long this holds the lock.
+        let mut budget = MatchBudget::new(MAX_FILTER_MATCH_STEPS);
+        let mut selected: Vec<InstanceStatus> = Vec::new();
+        for (instance_id, instance) in &store.instances {
+            if budget.exhausted() {
+                break;
+            }
+            if !budget.spend() {
+                break;
+            }
+            if !wanted_ids.is_empty() && !wanted_ids.contains(instance_id.as_str()) {
+                continue;
+            }
+            if instance_region(instance) != region {
+                continue;
+            }
+            if !include_all && instance.state != InstanceStateName::Running {
+                continue;
+            }
+            let status = store.instance_status_view(instance, now);
+            let matches = filters.iter().all(|filter| {
+                let Some(held) = instance_status_filter_values(&status, &filter.name) else {
+                    return false;
+                };
+                filter
+                    .patterns
+                    .iter()
+                    .any(|pattern| held.iter().any(|value| pattern.matches_within(value, &mut budget)))
+            });
+            if matches {
+                selected.push(status);
+            }
+        }
+        // A spent budget means the answer is INCOMPLETE, which is not something to report as
+        // a result: the request asked for more filtering than one call will do, and is told
+        // so.
+        if budget.exhausted() {
+            return Err(Scaffolded::request_limit_exceeded(format!(
+                "The request's filters would take more than {MAX_FILTER_MATCH_STEPS} \
+                 comparisons to evaluate; narrow them or page with MaxResults"
+            )));
+        }
+        // Id order is the order the page cursor names a position in — an instance id is hex
+        // digits of a counter that only grows — and the store holds its instances by id in a
+        // map whose iteration order is not that order, so the selected set is sorted into it
+        // before it is paged.
+        selected.sort_by(|left, right| left.instance_id.cmp(&right.instance_id));
+
+        // "The maximum number of items to return for this request" caps the statuses one
+        // page reports; the token carries, opaquely, the id of the instance the page ends at,
+        // so a caller cannot assemble one. A request that names no page size gets the
+        // documented maximum rather than the whole store.
+        let page_size = input
+            .max_results
+            .and_then(|max_results| usize::try_from(max_results).ok())
+            .unwrap_or(MAX_PAGE_SIZE)
+            .clamp(1, MAX_PAGE_SIZE);
+        let start_at = match input.next_token.as_deref() {
+            None => None,
+            // A token this service did not mint is refused with EC2's own code and sentence
+            // for an unusable pagination token, which names the token the request sent — the
+            // one definition every paged describe of this service answers it through.
+            Some(token) => Some(
+                decode_page_token(token)
+                    .ok_or_else(|| crate::state::invalid_pagination_token_for(token))?,
+            ),
+        };
+        // The store holds its instances by id, and an instance id is hex digits of a counter
+        // that only grows, so the set assembled above is sorted into the order the cursor
+        // names a position in. Paged through the one definition of EC2 paging.
+        let (page, next_token) = page_from_cursor(
+            &selected,
+            start_at.as_deref(),
+            Some(page_size),
+            PageTokenRule::WhenAnotherItemFollows,
+            |status| status.instance_id.as_deref().unwrap_or_default(),
+        );
+
+        Ok(DescribeInstanceStatusOutput {
+            instance_statuses: Some(page.to_vec()),
+            next_token,
+        })
     }
 }
+
+/// The smallest `MaxResults` this operation pages with.
+///
+/// The model declares no `@range` on `DescribeInstanceStatusRequest$MaxResults`, so the bound
+/// comes from what AWS publishes for the member in the EC2 API Reference ("Valid Range:
+/// Minimum value of 5. Maximum value of 1000."): a page size below it is refused rather than
+/// served, so a paginating client that mis-sizes its page is told its value is wrong instead
+/// of reading an empty answer as an empty account. The MAXIMUM is
+/// [`crate::state::MAX_PAGE_SIZE`], which the handler clamps to rather than refuses, because
+/// a larger page is served as that page with a token for the rest.
+const MIN_MAX_RESULTS: i32 = 5;

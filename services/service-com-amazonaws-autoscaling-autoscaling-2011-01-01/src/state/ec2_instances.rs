@@ -198,6 +198,9 @@ pub fn launch<Eng: Send + Sync + 'static>(
             // finishes starting, the same instant the `pending` -> `running` move above
             // falls due.
             boots: Vec::new(),
+            // The guest's own storage starts empty: what is on it is what the instance's
+            // user-data program puts there, boot by boot.
+            guest_files: ::std::collections::BTreeMap::new(),
             boot_due: Some(launch_time + ec2::TRANSITION_DELAY),
             launch_time,
             // One instance per reservation, so it is that reservation's first.

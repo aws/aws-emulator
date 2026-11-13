@@ -62,6 +62,14 @@ hmac = "0.12"
 # The civil-calendar arithmetic the Athena integration template's daily partitions are laid
 # out on: the days a partition range covers, and their year/month/day prefixes.
 chrono = { version = "0.4", default-features = false, features = ["std"] }
+# The `#cloud-config` user data an instance's guest runs at boot is YAML, and its `bootcmd`
+# and `runcmd` are what the boot performs; yaml-rust2 is the pure-Rust YAML 1.2
+# implementation the other services that read caller-supplied YAML use.
+yaml-rust2 = { version = "0.10", default-features = false }
+# A cloud-config command written as an ARGUMENT VECTOR is run without a shell, so the words
+# are quoted back into the one command line that stands for that vector rather than joined by
+# hand; shell-words is the maintained POSIX word quoter.
+shell-words = "1.1"
 # The `application/x-www-form-urlencoded` parameter list an ec2Query request's body is,
 # read by the authorization gate to learn the resources the request addresses.
 form_urlencoded = "1"

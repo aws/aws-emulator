@@ -7,11 +7,12 @@
 //!
 //! 1. the operation SERVES THE NAMED INSTANCE'S CONSOLE AS TEXT, base64-encoded ("the
 //!    console output, base64-encoded", `GetConsoleOutputResult$Output`), beside that
-//!    instance's own id and the instant the output was last updated: the text is DERIVED
-//!    FROM THE STORED INSTANCE — one labelled line per fact the service holds about it, the
-//!    same facts `DescribeInstances` reports — so no two instances share a console;
-//! 2. the console reports the instance's CURRENT state, so one instance read either side of
-//!    the clock-owed transition its launch started answers two different texts;
+//!    instance's own id and the instant the output was last updated: the text is what that
+//!    instance's own GUEST WROTE while it came up — a Linux guest's log, printk-timestamped
+//!    kernel lines and init-system lines, carrying the stored instance's own facts, the same
+//!    facts `DescribeInstances` reports — so no two instances share a console;
+//! 2. a console carries what was WRITTEN to it, so an instance whose guest has not come up
+//!    yet has no console output at all, and one whose guest has carries that boot's log;
 //! 3. every instance id this operation cannot resolve is refused
 //!    `InvalidInstanceID.Malformed`, whether or not the value reads like a form EC2 issues:
 //!    the two console readers take the strict reading of an instance id, where a well-formed
@@ -153,17 +154,36 @@ fn decoded_output(case: &str, body: &str) -> String {
         .unwrap_or_else(|error| panic!("case {case:?}: the console text must be UTF-8: {error}"))
 }
 
-/// The value of the console line `label` names, or `None` when the console carries no such
-/// line. A line is `<label><padding><value>`, so the value is what follows the label.
+/// The value of the console line reporting the instance fact `label`, or `None` when the
+/// console carries no such line.
+///
+/// A guest publishes the facts it discovered about the machine it is on through its init
+/// system, as `ci-info: <name>: <value>` — so that is where a client reads one.
 fn console_value(text: &str, label: &str) -> Option<String> {
+    let marker = format!("ci-info: {label}: ");
     text.lines()
-        .find(|line| line.starts_with(label))
-        .map(|line| line[label.len()..].trim().to_string())
+        .find_map(|line| line.split_once(&marker))
+        .map(|(_, value)| value.trim().to_string())
+}
+
+/// Whether `line` carries the printk timestamp a kernel prefixes a console line with, as
+/// `[    6.096338]`.
+fn printk_stamped(line: &str) -> bool {
+    let Some(stamp) = line.strip_prefix('[').and_then(|rest| rest.split_once(']')) else {
+        return false;
+    };
+    let Some((seconds, micros)) = stamp.0.trim().split_once('.') else {
+        return false;
+    };
+    !seconds.is_empty()
+        && seconds.chars().all(|character| character.is_ascii_digit())
+        && micros.len() == 6
+        && micros.chars().all(|character| character.is_ascii_digit())
 }
 
 /// What `DescribeInstances` reports about one instance, as the facts the console is read
-/// against: its type, its Availability Zone, its private address and its state.
-async fn described_facts(router: &MultiServiceRouter, instance_id: &str) -> [(String, String); 4] {
+/// against: its type, its Availability Zone and its private address.
+async fn described_facts(router: &MultiServiceRouter, instance_id: &str) -> [(String, String); 3] {
     let (status, body) = api(
         router,
         "DescribeInstances",
@@ -182,15 +202,12 @@ async fn described_facts(router: &MultiServiceRouter, instance_id: &str) -> [(St
         ("instance-type".to_string(), read("instanceType")),
         ("availability-zone".to_string(), read("availabilityZone")),
         ("private-ip-address".to_string(), read("privateIpAddress")),
-        (
-            "instance-state".to_string(),
-            super::ec2_query::described_instance_state(router, REGION, instance_id).await,
-        ),
     ]
 }
 
-/// RULE 1: the console text is the stored instance's own facts, labelled, and the response
-/// carries the instance's id and the instant the output was last updated.
+/// RULE 1: the console text is what the instance's own guest wrote while it came up — a
+/// Linux guest's log reporting the stored instance's own facts — and the response carries
+/// the instance's id and the instant that output was written.
 #[tokio::test]
 async fn the_console_output_is_the_stored_instance() {
     // Rows differ in the instance type and in how many instances share one launch — two
@@ -205,6 +222,9 @@ async fn the_console_output_is_the_stored_instance() {
     for (case, instance_type, count) in cases {
         let (router, image_id) = emulator();
         let ids = launch(&router, &image_id, instance_type, count).await;
+        // The guest comes up as the launch finishes starting the instance, so the console it
+        // wrote is there once that move has fallen due.
+        past_the_transition().await;
 
         let mut texts: Vec<String> = Vec::new();
         for instance_id in &ids {
@@ -221,7 +241,7 @@ async fn the_console_output_is_the_stored_instance() {
                 assert_eq!(
                     console_value(&text, &label).as_deref(),
                     Some(expected.as_str()),
-                    "case {case:?}: expected the console line {label:?} to read \
+                    "case {case:?}: expected the console to report {label:?} as \
                      {expected:?}, got {text:?}"
                 );
             }
@@ -229,17 +249,29 @@ async fn the_console_output_is_the_stored_instance() {
                 console_value(&text, "launch-time").is_some(),
                 "case {case:?}: the console must report the launch time, got {text:?}"
             );
+            // A console carries the GUEST's log, so the kernel's own lines are on it, each
+            // with the printk timestamp a kernel writes.
+            let stamped = text.lines().filter(|line| printk_stamped(line)).count();
+            assert!(
+                stamped >= 20,
+                "case {case:?}: expected the guest's kernel lines on the console, got \
+                 {stamped} printk-stamped line(s) of {text:?}"
+            );
+            assert!(
+                text.lines().any(|line| line.contains("cloud-init[")),
+                "case {case:?}: expected the init system's own lines, got {text:?}"
+            );
 
-            // "The time at which the output was last updated" (`$Timestamp`): the instance
-            // wrote its console when it booted, so the instant is its launch time.
+            // "The time at which the output was last updated" (`$Timestamp`): the guest
+            // wrote its console when it BOOTED, which is the instant that boot reports.
             let timestamp = member(&body, "timestamp")
                 .unwrap_or_else(|| panic!("case {case:?}: expected a timestamp in {body}"));
-            let launch_time = console_value(&text, "launch-time").unwrap_or_default();
+            let boot_time = console_value(&text, "boot-time").unwrap_or_default();
             assert_eq!(
                 as_timestamp(&timestamp),
-                as_timestamp(&launch_time),
-                "case {case:?}: expected the timestamp to be the launch time \
-                 {launch_time:?}, got {timestamp:?}"
+                as_timestamp(&boot_time),
+                "case {case:?}: expected the timestamp to be when the guest came up \
+                 {boot_time:?}, got {timestamp:?}"
             );
             texts.push(text);
         }
@@ -255,31 +287,27 @@ async fn the_console_output_is_the_stored_instance() {
     }
 }
 
-/// RULE 2: the console reports the state the instance is in NOW, so the same instance reads
-/// differently either side of the transition its launch owes the clock.
+/// RULE 2: a console carries what was WRITTEN to it, so an instance whose guest has not come
+/// up yet has no console output at all, and one whose guest has carries that boot's log.
 #[tokio::test]
-async fn the_console_reports_the_current_state() {
+async fn a_console_carries_what_the_guest_wrote() {
     let (router, image_id) = emulator();
     let ids = launch(&router, &image_id, "t3.micro", 1).await;
     let instance_id = &ids[0];
 
-    let pending = console_text(&router, "straight after the launch", instance_id).await;
+    let body = output_body(&router, "straight after the launch", instance_id, &[]).await;
     assert_eq!(
-        console_value(&pending, "instance-state").as_deref(),
-        Some("pending"),
-        "straight after the launch: expected a pending instance, got {pending:?}"
+        member(&body, "output"),
+        None,
+        "straight after the launch the guest has written nothing, so there must be no \
+         output to report, got {body}"
     );
 
     past_the_transition().await;
     let running = console_text(&router, "once the launch has settled", instance_id).await;
-    assert_eq!(
-        console_value(&running, "instance-state").as_deref(),
-        Some("running"),
-        "once the launch has settled: expected a running instance, got {running:?}"
-    );
-    assert_ne!(
-        pending, running,
-        "the console must change when the instance's state does"
+    assert!(
+        running.contains("Linux version"),
+        "once the launch has settled: expected the boot's own log, got {running:?}"
     );
 }
 
@@ -435,17 +463,14 @@ async fn a_dry_run_answers_the_probe_whatever_the_id_names() {
         );
     }
 
-    // `DryRun=false` is not a probe: the console is served.
+    // `DryRun=false` is not a probe: the console the guest wrote is served.
+    past_the_transition().await;
     let body = output_body(&router, "DryRun=false", &known, &[p("DryRun", "false")]).await;
     assert!(
         !decoded_output("DryRun=false", &body).is_empty(),
         "DryRun=false must serve the console, got {body}"
     );
 }
-
-/// The width of a console line's label column, as the service's own console renders it.
-/// Spelled out here rather than imported, so a changed rendering fails this suite.
-const CONSOLE_LABEL_WIDTH: usize = 20;
 
 /// How long a wait for something the CLOCK owes may take before this suite gives up.
 /// Generous on purpose: the condition is what is waited for, so a loaded host cannot fail a
@@ -455,15 +480,18 @@ const POLL_DEADLINE: Duration = Duration::from_secs(60);
 /// How long to leave between two polls of a condition the clock owes.
 const POLL_INTERVAL: Duration = Duration::from_millis(25);
 
-/// Every value the console line `label` names, in the order the console wrote them.
+/// Every value the guest published the fact `label` under, in the order the console carries
+/// them.
 ///
-/// A line is the label padded out to the console's own label column, then the value — so the
-/// label is matched on the WHOLE column, and `boot` never reads a `boot-id` line.
+/// A guest's init system writes a fact it discovered about its machine as
+/// `ci-info: <name>: <value>`, so the name is matched whole and `boot` never reads a
+/// `boot-id` line. Spelled out here rather than imported, so a changed rendering fails this
+/// suite.
 fn console_column(text: &str, label: &str) -> Vec<String> {
+    let marker = format!("ci-info: {label}: ");
     text.lines()
-        .filter(|line| line.len() > CONSOLE_LABEL_WIDTH)
-        .filter(|line| line[..CONSOLE_LABEL_WIDTH].trim() == label)
-        .map(|line| line[CONSOLE_LABEL_WIDTH..].trim().to_string())
+        .filter_map(|line| line.split_once(&marker))
+        .map(|(_, value)| value.trim().to_string())
         .collect()
 }
 
@@ -485,9 +513,16 @@ fn observed_boots(seen: &Observation) -> usize {
 /// together: the instant reported as "the time at which the output was last updated" IS the
 /// latest instant the output served beside it shows it was written at — the instance's
 /// `launch-time`, and the `boot-time` of each boot its guest has had.
+///
+/// An instance whose guest has not come up yet has written NOTHING to its console, so there
+/// is no output to serve and no instant on it: the answer then carries only the instant the
+/// response reports, and that is what the first read of a launch observes.
 async fn observe(router: &MultiServiceRouter, case: &str, instance_id: &str) -> Observation {
     let body = output_body(router, case, instance_id, &[]).await;
-    let text = decoded_output(case, &body);
+    let text = match member(&body, "output") {
+        Some(_) => decoded_output(case, &body),
+        None => String::new(),
+    };
     let reported = member(&body, "timestamp")
         .unwrap_or_else(|| panic!("case {case:?}: the response must carry a timestamp: {body}"));
     let at = as_timestamp(&reported).unwrap_or_else(|| {
@@ -507,16 +542,22 @@ async fn observe(router: &MultiServiceRouter, case: &str, instance_id: &str) -> 
     let latest = written
         .iter()
         .max_by(|left, right| left.1.total_cmp(&right.1))
-        .map(|(line, _)| line.clone())
-        .unwrap_or_else(|| {
-            panic!("case {case:?}: the console must say when it was written, got {text:?}")
-        });
-    assert_eq!(
-        reported.as_str(),
-        latest.as_str(),
-        "case {case:?}: expected the latest instant the output itself shows, {latest:?}, got \
-         {reported:?} for console {text:?}"
-    );
+        .map(|(line, _)| line.clone());
+    match latest {
+        Some(latest) => assert_eq!(
+            reported.as_str(),
+            latest.as_str(),
+            "case {case:?}: expected the latest instant the output itself shows, {latest:?}, \
+             got {reported:?} for console {text:?}"
+        ),
+        // Nothing has been written to this console, so it shows no instant to compare the
+        // reported one against: what must hold is that there is no output at all.
+        None => assert!(
+            text.is_empty(),
+            "case {case:?}: a console that names no instant must be one nothing has written, \
+             got {text:?}"
+        ),
+    }
     Observation { text, reported, at }
 }
 

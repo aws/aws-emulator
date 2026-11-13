@@ -513,6 +513,12 @@ pub struct InstanceRecord {
     /// from `stopped`, and each queued reboot that took effect. See
     /// [`crate::state::instance_boots`] — the console is what reports them.
     pub boots: Vec<InstanceBoot>,
+    /// The files this instance's GUEST keeps on its own storage, by absolute path — what the
+    /// instance's user-data program wrote on an earlier boot and reads on the next one, the
+    /// way a root volume keeps what the guest put on it across a reboot. Written only by
+    /// that program, inside the bounded tree it runs in
+    /// ([`crate::state::guest_console::boot_console`]).
+    pub guest_files: BTreeMap<String, String>,
     /// When the guest is owed its next BOOT, or `None` when it is owed none: the instant a
     /// launch, a start or a queued reboot made the operating system due to come up. Spent by
     /// [`ComAmazonawsEc2Amazonec2State::boot_due_instance_guests`], exactly as

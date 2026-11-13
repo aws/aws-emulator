@@ -26,7 +26,9 @@
 
 use std::time::SystemTime;
 
-use super::{iso8601_utc, ComAmazonawsEc2Amazonec2State, InstanceRecord, InstanceStateName};
+use super::guest_console::boot_console;
+use super::guest_user_data::guest_program;
+use super::{ComAmazonawsEc2Amazonec2State, InstanceRecord, InstanceStateName};
 
 /// One boot of one instance's guest.
 ///
@@ -44,6 +46,15 @@ pub struct InstanceBoot {
     /// When the guest came up. STORED rather than re-derived, so two reads of one console
     /// answer the same bytes.
     pub booted_at: SystemTime,
+    /// What the guest WROTE to the console while it came up, in the order it wrote it: the
+    /// kernel's and the init system's own lines, and the output of the instance's user-data
+    /// program, which the boot ran ([`super::guest_console::boot_console`]).
+    ///
+    /// Stored by the boot that wrote it rather than derived on each read, because a console
+    /// is a buffer of what was written: two reads answer the same bytes, the program runs
+    /// once per boot rather than once per reader, and what an earlier boot wrote is still
+    /// there, unchanged, after a reboot.
+    pub console: Vec<String>,
 }
 
 /// How many of one guest's boots the console keeps.
@@ -52,17 +63,7 @@ pub struct InstanceBoot {
 /// byte an instance ever wrote — so an instance that is rebooted without end keeps the most
 /// recent boots and drops the oldest, which is what bounds the bytes one instance's boot
 /// history can hold in this process.
-pub const MAX_RETAINED_BOOTS: usize = 32;
-
-/// The console label the boot NUMBER is reported under. See
-/// [`super::CONSOLE_LABEL_WIDTH`] for the column the values line up at.
-pub const CONSOLE_LABEL_BOOT: &str = "boot";
-
-/// The console label this boot's own identity is reported under.
-pub const CONSOLE_LABEL_BOOT_ID: &str = "boot-id";
-
-/// The console label the instant the guest came up is reported under.
-pub const CONSOLE_LABEL_BOOT_TIME: &str = "boot-time";
+pub const MAX_RETAINED_BOOTS: usize = 8;
 
 impl ComAmazonawsEc2Amazonec2State {
     /// Record one boot of the guest of the instance `instance_id` names, as of `at`.
@@ -77,12 +78,16 @@ impl ComAmazonawsEc2Amazonec2State {
     /// instance moves — a boot restarts the operating system, so the instance keeps its id,
     /// its launch time and the state it was in.
     pub fn record_instance_boot(&mut self, instance_id: &str, at: SystemTime) {
-        if !self.instances.contains_key(instance_id) {
+        let Some(instance) = self.instances.get(instance_id) else {
             return;
-        }
-        // Minted before the instance is borrowed, since the mint draws on the store's own
-        // counter; the id above is already known to resolve, so no counter is spent for an
-        // instance that is not there.
+        };
+        // The machine the guest comes up on, read before the instance is borrowed mutably:
+        // what the rendered half of its console reports is a fact of the instance, its
+        // image and its instance type.
+        let machine = self.guest_machine(instance);
+        // Minted after that read, since the mint draws on the store's own counter; the id is
+        // already known to resolve, so no counter is spent for an instance that is not
+        // there.
         let boot_id = self.mint_uuid_suffixed_id("");
         let Some(instance) = self.instances.get_mut(instance_id) else {
             return;
@@ -92,10 +97,23 @@ impl ComAmazonawsEc2Amazonec2State {
             .last()
             .map_or(0, |boot| boot.number)
             .saturating_add(1);
+        // The guest RUNS the instance's user data when it comes up, against the storage this
+        // instance's earlier boots left behind.
+        let program = guest_program(instance.user_data.as_deref());
+        let written = boot_console(
+            &machine,
+            number,
+            &boot_id,
+            at,
+            &program,
+            &instance.guest_files,
+        );
+        instance.guest_files = written.files;
         instance.boots.push(InstanceBoot {
             number,
             boot_id,
             booted_at: at,
+            console: written.lines,
         });
         if instance.boots.len() > MAX_RETAINED_BOOTS {
             instance.boots.remove(0);
@@ -160,21 +178,13 @@ impl ComAmazonawsEc2Amazonec2State {
     }
 }
 
-/// The console lines one guest BOOT shows: which boot it is, its own identity and when it
-/// came up, labelled on the same column as every other console line.
+/// The console lines one guest BOOT wrote, in the order it wrote them.
 ///
-/// Appended to the instance's own facts by [`super::instance_console_lines`], one block per
-/// boot in the order the guest had them, so a client reading the console of an instance that
-/// restarted finds the earlier boot's lines unchanged and the new boot's after them.
-pub fn instance_boot_lines(boot: &InstanceBoot) -> Vec<(String, String)> {
-    vec![
-        (CONSOLE_LABEL_BOOT.to_string(), boot.number.to_string()),
-        (CONSOLE_LABEL_BOOT_ID.to_string(), boot.boot_id.clone()),
-        (
-            CONSOLE_LABEL_BOOT_TIME.to_string(),
-            iso8601_utc(boot.booted_at),
-        ),
-    ]
+/// Concatenated by [`super::instance_console_lines`], one block per boot in the order the
+/// guest had them, so a client reading the console of an instance that restarted finds the
+/// earlier boot's lines unchanged and the new boot's after them.
+pub fn instance_boot_lines(boot: &InstanceBoot) -> &[String] {
+    &boot.console
 }
 
 /// The boots the instance `instance` has had, oldest first — what its console carries.

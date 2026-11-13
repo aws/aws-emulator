@@ -62,9 +62,10 @@ const BOOT_BUDGET: Duration = Duration::from_secs(10);
 /// the rows are started in groups of.
 const ACTIVE_EXPERIMENTS_QUOTA: usize = 5;
 
-/// The width of a console line's label column, as `ec2`'s own console renders it. Spelled
-/// out here rather than imported, so a changed rendering fails this suite.
-const CONSOLE_LABEL_WIDTH: usize = 20;
+/// The marker a guest's init system writes the facts it discovered about its machine under,
+/// as `ec2`'s own console renders them — `ci-info: <name>: <value>`. Spelled out here rather
+/// than imported, so a changed rendering fails this suite.
+const CI_INFO_MARKER: &str = "ci-info: ";
 
 /// One emulator carrying FIS and EC2 over ONE shared engine, exactly as the production
 /// router builds them. The engine is handed back so the suite can seed the AMI a launch
@@ -172,17 +173,17 @@ fn instance_arn(instance_id: &str) -> String {
     format!("arn:aws:ec2:{FALLBACK_REGION}:{ACCOUNT_ID}:instance/{instance_id}")
 }
 
-/// One console line, split at the label column: `(label, value)`.
+/// One console line reporting a machine fact, as the guest's init system writes one:
+/// `(name, value)`.
 fn console_line(line: &str) -> Option<(String, String)> {
-    (line.len() > CONSOLE_LABEL_WIDTH).then(|| {
-        (
-            line[..CONSOLE_LABEL_WIDTH].trim().to_string(),
-            line[CONSOLE_LABEL_WIDTH..].trim().to_string(),
-        )
-    })
+    let (_, fact) = line.split_once(CI_INFO_MARKER)?;
+    let (name, value) = fact.split_once(':')?;
+    Some((name.trim().to_string(), value.trim().to_string()))
 }
 
-/// One instance's console as text, through the real `GetConsoleOutput`.
+/// One instance's console as text, through the real `GetConsoleOutput` — empty for an
+/// instance whose guest has written nothing to it yet, which carries no `output` member at
+/// all.
 async fn console_text(router: &MultiServiceRouter, case: &str, instance_id: &str) -> String {
     let (status, body) = ec2_call(
         router,
@@ -194,9 +195,9 @@ async fn console_text(router: &MultiServiceRouter, case: &str, instance_id: &str
         status, 200,
         "case {case:?}: GetConsoleOutput for {instance_id} must succeed, got {status}: {body}"
     );
-    let encoded = xml_elements(&body, "output")
-        .pop()
-        .unwrap_or_else(|| panic!("case {case:?}: the response must carry output: {body}"));
+    let Some(encoded) = xml_elements(&body, "output").pop() else {
+        return String::new();
+    };
     let bytes = ::base64::Engine::decode(&::base64::engine::general_purpose::STANDARD, &encoded)
         .unwrap_or_else(|error| panic!("case {case:?}: output must be base64 ({error})"));
     String::from_utf8(bytes)

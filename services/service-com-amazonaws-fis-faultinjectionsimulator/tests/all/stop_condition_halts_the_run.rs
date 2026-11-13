@@ -2,10 +2,12 @@
 
 //! RULE: while an experiment runs, FIS watches the CloudWatch alarms its `stopConditions`
 //! name and ends the run ITSELF — terminal status `stopped`, with no `StopExperiment` call
-//! from the caller — as soon as one of those alarms is in the `ALARM` state. A condition
-//! that names no alarm (`source: none`, FIS's own "specify `none` if there is no stop
-//! condition"), an alarm in any other state, and an alarm this account holds none of all
-//! halt nothing: the run then reaches the terminal status its actions earned.
+//! from the caller — as soon as one of those alarms is in the `ALARM` state, and it reports
+//! that halt in its OWN fixed sentence: a state reason names the cause FIS recognises and
+//! carries no value of the condition, the alarm or the account. A condition that names no
+//! alarm (`source: none`, FIS's own "specify `none` if there is no stop condition"), an
+//! alarm in any other state, and an alarm this account holds none of all halt nothing: the
+//! run then reaches the terminal status its actions earned.
 //!
 //! `ExperimentStopCondition` is modelled as `{source, value}` and `ExperimentStatus`
 //! includes `stopped` (`smithy_query(query="shape",shape="ExperimentStopCondition")`), but
@@ -63,6 +65,15 @@ const ACTIVE_EXPERIMENTS_QUOTA: usize = 5;
 /// An alarm ARN of this account and Region for an alarm nothing created, built the way
 /// CloudWatch builds one.
 const ABSENT_ALARM_ARN: &str = "arn:aws:cloudwatch:us-east-1:000000000000:alarm:fis-no-such-alarm";
+
+/// The `state.reason` of an experiment one of its stop conditions halted — the whole of it,
+/// as the recorded service reports it. Spelled out here rather than imported, so a changed
+/// wording fails this suite.
+const HALTED_BY_STOP_CONDITION: &str = "Experiment halted by stop condition.";
+
+/// The `state.reason` of the ACTION that was under way when that halt reached it. See
+/// [`HALTED_BY_STOP_CONDITION`].
+const ACTION_WAS_STOPPED: &str = "Action was stopped.";
 
 /// One emulator carrying FIS and CloudWatch over ONE shared engine, as the production
 /// router builds them.
@@ -366,18 +377,30 @@ async fn an_alarming_stop_condition_halts_the_run_and_nothing_else_does() {
             );
             let reason = experiment["state"]["reason"].as_str().unwrap_or_default();
             if row.expected == "stopped" {
-                // The reason names the alarm that was breached, which is what tells one
-                // halted run from another.
-                let breached = alarm_arns
-                    .iter()
-                    .zip(row.drive_into)
-                    .find(|(_, state)| **state == "ALARM")
-                    .map(|(arn, _)| arn.clone())
-                    .unwrap_or_else(|| panic!("case {:?}: the row drives no alarm", row.case));
-                assert!(
-                    reason.contains(&breached),
-                    "case {:?}: expected the stop reason to name the breached alarm \
-                     {breached:?}, got {reason:?}",
+                // FIS's own sentence for a run one of its stop conditions halted: the WHOLE
+                // of the reason, with nothing of the condition, the alarm or the account in
+                // it — so every row that is halted reads exactly the same, however its
+                // alarms are named and however many conditions it carries.
+                assert_eq!(
+                    reason, HALTED_BY_STOP_CONDITION,
+                    "case {:?}: expected the halted run's reason to be \
+                     {HALTED_BY_STOP_CONDITION:?}, got {reason:?}",
+                    row.case
+                );
+                // The action that was under way when the halt reached it reports the halt
+                // the same way: FIS's own sentence for a stopped action.
+                let action = experiment["actions"]["wait"].clone();
+                assert_eq!(
+                    action["state"]["status"].as_str().unwrap_or_default(),
+                    "stopped",
+                    "case {:?}: expected the action under way to be stopped, got {action:?}",
+                    row.case
+                );
+                assert_eq!(
+                    action["state"]["reason"].as_str().unwrap_or_default(),
+                    ACTION_WAS_STOPPED,
+                    "case {:?}: expected the stopped action's reason to be \
+                     {ACTION_WAS_STOPPED:?}, got {action:?}",
                     row.case
                 );
             } else {
@@ -386,14 +409,29 @@ async fn an_alarming_stop_condition_halts_the_run_and_nothing_else_does() {
                     "case {:?}: a run that ended says why, got {experiment:?}",
                     row.case
                 );
-                for arn in &alarm_arns {
-                    assert!(
-                        !reason.contains(arn),
-                        "case {:?}: a run no condition halted must not name an alarm, \
-                         got {reason:?}",
-                        row.case
-                    );
-                }
+                assert_ne!(
+                    reason, HALTED_BY_STOP_CONDITION,
+                    "case {:?}: a run no condition halted must not report a halt, got \
+                     {reason:?}",
+                    row.case
+                );
+            }
+            // Whatever ended the run, its reason carries no identity of an alarm: a state
+            // reason is FIS's own sentence, not a report of the resource it watched.
+            for arn in &alarm_arns {
+                assert!(
+                    !reason.contains(arn),
+                    "case {:?}: a state reason must name no alarm, got {reason:?}",
+                    row.case
+                );
+            }
+            for arn in alarm_arns.iter().chain([&ABSENT_ALARM_ARN.to_string()]) {
+                let named = arn.rsplit(':').next().unwrap_or_default();
+                assert!(
+                    !named.is_empty() && !reason.contains(named),
+                    "case {:?}: a state reason must name no alarm, got {reason:?}",
+                    row.case
+                );
             }
         }
     }

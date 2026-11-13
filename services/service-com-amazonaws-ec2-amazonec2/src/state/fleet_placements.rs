@@ -454,6 +454,9 @@ impl ComAmazonawsEc2Amazonec2State {
             // The guest's FIRST boot: the operating system comes up as the instance finishes
             // starting, the same instant the `pending` -> `running` move above falls due.
             boots: Vec::new(),
+            // The guest's own storage starts empty: what is on it is what the instance's
+            // user-data program puts there, boot by boot.
+            guest_files: ::std::collections::BTreeMap::new(),
             boot_due: Some(at + TRANSITION_DELAY),
             // The instance was launched when the placement fell due, not when somebody next
             // asked about it.

@@ -2419,6 +2419,24 @@ pub use instance_console::*;
 pub mod instance_boots;
 pub use instance_boots::*;
 
+/// The PROGRAM an instance's own user data gives its guest to run at boot — the commands
+/// cloud-init runs on every boot and the ones it runs once. A SUBMODULE for the same reason
+/// [`image_usage_reports`] is one.
+pub mod guest_user_data;
+pub use guest_user_data::*;
+
+/// The STATUS CHECKS one instance reports — the system's and the instance's own, each owed to
+/// the clock after its guest came up. A SUBMODULE for the same reason [`image_usage_reports`]
+/// is one.
+pub mod instance_status_checks;
+pub use instance_status_checks::*;
+
+/// What ONE boot of one instance's guest writes to that instance's console: the kernel's and
+/// the init system's own lines, and the output of the user-data program the boot RUNS. A
+/// SUBMODULE for the same reason [`image_usage_reports`] is one.
+pub mod guest_console;
+pub use guest_console::*;
+
 /// Which capacity resources each of Capacity Manager's metrics measures, and the DIMENSION
 /// VALUES each of those resources carries — the one reading every operation that answers
 /// along Capacity Manager's dimensions shares, so the report of the available dimensions and

@@ -604,6 +604,9 @@ pub fn launch_host_instance<Eng: Send + Sync + 'static>(
         // The host's FIRST boot: its operating system comes up as the instance finishes
         // starting, the same instant the `pending` -> `running` move above falls due.
         boots: Vec::new(),
+        // The guest's own storage starts empty: what is on it is what the instance's
+        // user-data program puts there, boot by boot.
+        guest_files: ::std::collections::BTreeMap::new(),
         boot_due: Some(::std::time::SystemTime::now() + ec2::TRANSITION_DELAY),
         launch_time: ::std::time::SystemTime::now(),
         ami_launch_index: 0,

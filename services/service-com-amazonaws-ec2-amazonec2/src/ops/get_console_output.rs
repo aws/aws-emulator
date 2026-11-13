@@ -1,16 +1,17 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op GetConsoleOutput
-//! IMPLEMENTED: serves the console output of the instance the request names — the lines that
-//! instance's console shows, base64-encoded, with the instant they were last written. This is
-//! the ONLY file to touch for this operation.
+//! IMPLEMENTED: serves the console output of the instance the request names — what that
+//! instance's GUEST wrote to its console, base64-encoded, with the instant it was written.
+//! This is the ONLY file to touch for this operation.
 //!
-//! A console is a device of the INSTANCE, so what it shows is derived from the stored
-//! instance on every call ([`crate::state::instance_console_text`], the one definition
-//! `GetConsoleScreenshot` draws as an image), and the instant it reports as last updated is
-//! derived from that same console ([`crate::state::instance_console_updated_at`]): two reads
-//! of an instance nothing has moved answer exactly the same bytes and the same instant, and
-//! reading a console writes nothing.
+//! A console is a device of the INSTANCE, and what is on it is what was WRITTEN to it: the
+//! lines each boot of that instance's guest wrote ([`crate::state::instance_console_text`],
+//! the one definition `GetConsoleScreenshot` draws as an image), kept by the boot that wrote
+//! them, and the instant it reports as last updated is derived from that same console
+//! ([`crate::state::instance_console_updated_at`]). So two reads of an instance nothing has
+//! booted since answer exactly the same bytes and the same instant, reading a console writes
+//! nothing, and an instance whose guest has not come up yet has no console output at all.
 //!
 //! ## Shape of an operation
 //!
@@ -196,15 +197,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // of an instance nothing has moved answer the same instant.
         let updated_at = instance_console_updated_at(instance);
 
+        let console = instance_console_text(instance);
+
         Ok(GetConsoleOutputOutput {
             // The id read back off the stored record rather than echoed from the request, so
             // the response names the instance the service resolved.
             instance_id: Some(instance.instance_id.clone()),
             // "The console output, base64-encoded. If you are using a command line tool, the
-            // tool decodes the output for you" (`$Output`).
-            output: Some(
-                ::base64::engine::general_purpose::STANDARD.encode(instance_console_text(instance)),
-            ),
+            // tool decodes the output for you" (`$Output`) — and NO output member at all for
+            // an instance whose guest has written nothing to its console yet, because there
+            // is no output to report rather than an empty one.
+            output: (!console.is_empty())
+                .then(|| ::base64::engine::general_purpose::STANDARD.encode(console)),
             timestamp: Some(system_time_to_date_time(updated_at)),
         })
     }

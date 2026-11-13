@@ -12493,11 +12493,13 @@ dependencies = [
  "service-common",
  "sha1 0.10.7",
  "sha2 0.10.9",
+ "shell-words",
  "spki 0.7.3",
  "ssh-encoding",
  "ssh-key",
  "tokio",
  "tracing",
+ "yaml-rust2",
  "zune-jpeg 0.4.21",
 ]
 

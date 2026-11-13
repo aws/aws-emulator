@@ -97,6 +97,11 @@ const EC2_INSTANCE_ARN_RESOURCE: &str = "instance";
 /// more than a fixed amount of it.
 pub const MAX_ACTION_EFFECT_RESOURCES: usize = 32;
 
+/// The `ExperimentActionState$reason` of an action a stop of its experiment ended while it
+/// was under way: FIS's own sentence for that cause, fixed text with no value of the
+/// experiment, the action or its resources in it.
+pub const ACTION_WAS_STOPPED: &str = "Action was stopped.";
+
 /// How far one action of a run has got.
 ///
 /// The values are `ExperimentActionStatus`'s (modelled
@@ -174,10 +179,13 @@ pub struct ActionRun {
 impl ActionRun {
     /// The `ExperimentActionState` this action reports.
     ///
-    /// FIS documents no WORDING for `ExperimentActionState$reason` ("the reason for the
-    /// state"), so the text is an explanatory string of this emulator's own — the same
-    /// choice [`super::ActionSkip::to_state`] makes — while the status is the modelled
-    /// value.
+    /// The reason of an action a STOP ended is FIS's own sentence for that cause
+    /// ([`ACTION_WAS_STOPPED`]) — fixed text, with nothing of the experiment, the action or
+    /// the resources substituted into it, exactly as the experiment's own halt reason is
+    /// ([`super::STOPPED_BY_STOP_CONDITION`]). FIS documents no wording for the other
+    /// statuses of `ExperimentActionState$reason` ("the reason for the state") and none is
+    /// recorded, so those stay explanatory strings of this emulator's own — the same choice
+    /// [`super::ActionSkip::to_state`] makes — while the status is the modelled value.
     pub fn to_state(&self) -> ExperimentActionState {
         ExperimentActionState {
             status: Some(self.status.as_wire().to_string()),
@@ -186,9 +194,7 @@ impl ActionRun {
                     ActionRunStatus::Pending => "The action has not started yet",
                     ActionRunStatus::Running => "The action is running",
                     ActionRunStatus::Completed => "The action was completed",
-                    ActionRunStatus::Stopped => {
-                        "The action was stopped because the experiment was stopped"
-                    }
+                    ActionRunStatus::Stopped => ACTION_WAS_STOPPED,
                     ActionRunStatus::Cancelled => {
                         "The action was cancelled because the experiment was stopped before it \
                          started"

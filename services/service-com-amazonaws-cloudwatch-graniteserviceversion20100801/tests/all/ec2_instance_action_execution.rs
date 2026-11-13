@@ -125,7 +125,8 @@ async fn instance_state(emulator: &Emulator, instance_id: &str) -> String {
 /// The boot identities one instance's console carries, oldest first: a guest writes its own
 /// to the console on every boot, so a second one is a guest that restarted.
 ///
-/// A console line is `<label><padding><value>`, so the label is the line's first token.
+/// A guest's init system publishes the facts it discovered about its machine as
+/// `ci-info: <name>: <value>`, so that is where the identity is read from.
 async fn console_boot_ids(emulator: &Emulator, instance_id: &str) -> Vec<String> {
     let body = ec2_api(
         emulator,
@@ -139,11 +140,8 @@ async fn console_boot_ids(emulator: &Emulator, instance_id: &str) -> Vec<String>
     let text = String::from_utf8(bytes)
         .unwrap_or_else(|error| panic!("the console text must be UTF-8 ({error})"));
     text.lines()
-        .filter_map(|line| {
-            let mut tokens = line.split_whitespace();
-            (tokens.next() == Some("boot-id"))
-                .then(|| tokens.next().unwrap_or_default().to_string())
-        })
+        .filter_map(|line| line.split_once("ci-info: boot-id: "))
+        .map(|(_, value)| value.trim().to_string())
         .collect()
 }
 

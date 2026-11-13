@@ -9,13 +9,14 @@
 //! encodes the text, the other draws it. Neither can then report one instance's console
 //! differently.
 //!
-//! Every line is read off the stored instance: the console of an instance this emulator
-//! holds reports the facts that instance actually has, and an instance the record carries no
-//! value for gets no line at all rather than a line with a placeholder in it.
+//! Every line is one the instance's own GUEST wrote while it came up: the kernel's and the
+//! init system's lines, and the output of the instance's user data, which the boot ran
+//! ([`super::guest_console`]). An instance whose guest has not come up yet has nothing on
+//! its console at all.
 
 use std::time::SystemTime;
 
-use super::{InstanceRecord, iso8601_utc};
+use super::InstanceRecord;
 
 /// Resolve the instance whose CONSOLE a request asks for, or refuse the id: HTTP 400
 /// `InvalidInstanceID.Malformed`, in one of the two wordings that code carries.
@@ -55,46 +56,26 @@ pub fn require_console_instance<'store, E>(
         .ok_or_else(|| crate::scaffolded::Scaffolded::instance_id_is_malformed(instance_id))
 }
 
-/// How wide the label column of a console line is, in characters.
+/// The lines of text one instance's console shows: what that instance's GUEST wrote to its
+/// console, one block per BOOT it has had.
 ///
-/// A console is a fixed-pitch device, so the value is reported on a column boundary; the
-/// width is CHOSEN, which nothing in the API publishes.
-pub const CONSOLE_LABEL_WIDTH: usize = 20;
-
-/// The lines of text one instance's console shows: the facts this service holds about that
-/// instance, one per line, labelled — and then one block per BOOT its guest has had.
+/// "For Linux instances, the instance console output displays the exact console output that
+/// would normally be displayed on a physical monitor attached to a computer"
+/// (`GetConsoleOutput`), so every line here is a line the guest wrote while it came up — the
+/// kernel's and the init system's own lines, and the output of the instance's user data,
+/// which the boot ran ([`super::guest_console`]). Nothing about the API's own view of the
+/// instance is written here: a console is a device of the guest, not a report of the record.
 ///
-/// A fact the record does not carry gets no line at all, rather than a line with a
-/// placeholder in it: an instance with no public address has nothing to report there.
-///
-/// The boot blocks come after the facts, in the order the guest had them
-/// ([`super::instance_boot_lines`]): a console is APPENDED to, so an instance that has
-/// restarted shows what the earlier boots wrote with the new boot's lines after them, and
-/// an instance whose guest has not come up yet shows no boot block at all.
+/// The blocks are in the order the guest had its boots ([`super::instance_boot_lines`]): a
+/// console is APPENDED to, so an instance that has restarted shows what the earlier boots
+/// wrote with the new boot's lines after them, and an instance whose guest has not come up
+/// yet shows NOTHING — which is what a console of an instance that is still starting has on
+/// it.
 pub fn instance_console_lines(instance: &InstanceRecord) -> Vec<String> {
-    let mut lines: Vec<String> = Vec::new();
-    let mut line = |label: &str, value: &str| {
-        lines.push(format!("{label:<width$}{value}", width = CONSOLE_LABEL_WIDTH));
-    };
-    line("instance-id", &instance.instance_id);
-    line("instance-state", instance.state.as_str());
-    line("instance-type", &instance.instance_type);
-    if let Some(image_id) = &instance.image_id {
-        line("image-id", image_id);
-    }
-    line("availability-zone", &instance.placement_az);
-    line("private-ip-address", &instance.private_ip);
-    line("private-dns-name", &instance.private_dns_name);
-    if let Some(public_ip) = &instance.public_ip {
-        line("public-ip-address", public_ip);
-    }
-    line("launch-time", &iso8601_utc(instance.launch_time));
-    for boot in super::instance_boots(instance) {
-        for (label, value) in super::instance_boot_lines(boot) {
-            line(&label, &value);
-        }
-    }
-    lines
+    super::instance_boots(instance)
+        .iter()
+        .flat_map(|boot| super::instance_boot_lines(boot).iter().cloned())
+        .collect()
 }
 
 /// One instance's console as TEXT: [`instance_console_lines`], one per line, each ended by a

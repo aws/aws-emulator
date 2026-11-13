@@ -9,12 +9,13 @@
 //!    base64-encoded ("Retrieve a JPG-format screenshot … The returned content is
 //!    Base64-encoded", `GetConsoleScreenshot`), beside the instance's own id: `imageData`
 //!    decodes as base64, those bytes decode as a JPEG of the screen's geometry, and the
-//!    screen is DERIVED FROM THE STORED RECORD — one text line per fact the service holds
-//!    about the instance, its first line reading that instance's own id cell for cell
-//!    against the console font, so no two instances share a screen;
-//! 2. the screen reports the instance's CURRENT state, so the same instance screenshotted
-//!    either side of the clock-owed transition its launch started answers two different
-//!    images;
+//!    screen is THE INSTANCE'S OWN CONSOLE DRAWN — the lines that instance's guest wrote,
+//!    its first line reading that console's own first line cell for cell against the console
+//!    font, so no two instances share a screen and an instance whose guest has written
+//!    nothing has an unlit screen;
+//! 2. the screen reports what is on the console NOW, so the same instance screenshotted
+//!    either side of the clock-owed transition its launch started — before and after its
+//!    guest came up and wrote to the console — answers two different images;
 //! 3. EVERY instance id this operation cannot resolve is refused
 //!    `InvalidInstanceID.Malformed`, whether or not the value reads like the long id form:
 //!    EC2's per-operation validators disagree about an unresolvable instance id, and this
@@ -37,7 +38,7 @@ use std::collections::BTreeSet;
 use std::time::Duration;
 
 use ec2::ops::get_console_screenshot::{
-    CELL_PIXELS, SCREEN_HEIGHT, SCREEN_ROWS, SCREEN_WIDTH,
+    CELL_PIXELS, SCREEN_COLUMNS, SCREEN_HEIGHT, SCREEN_ROWS, SCREEN_WIDTH,
 };
 use ec2::state::{ComAmazonawsEc2Amazonec2State as Ec2State, ImageSpec, TRANSITION_DELAY};
 use service_com_amazonaws_ec2_amazonec2 as ec2;
@@ -54,9 +55,8 @@ const REGION: &str = "us-west-2";
 /// threshold survives the encoder being lossy.
 const LIT: u8 = 0x60;
 
-/// The fewest text lines any instance's screen carries: the facts every stored instance
-/// has — its id, state, type, image, zone, private address, private DNS name and launch
-/// time. An instance with a public address carries one more.
+/// The fewest text lines the screen of an instance whose guest has COME UP carries: a guest
+/// writes its kernel's and its init system's own lines as it boots, far more than this.
 const FEWEST_TEXT_LINES: usize = 8;
 
 /// How bright a pixel has to be to count as the ink of a glyph, read per cell rather than
@@ -65,10 +65,6 @@ const INK: u8 = 0x80;
 
 /// How many bright pixels a cell needs before it counts as inked.
 const INKED_CELL_PIXELS: usize = 3;
-
-/// How wide the label column of a screen line is, in characters — the layout the screen's
-/// lines are written in, which the first-line assertion reads against.
-const LABEL_COLUMN: usize = 20;
 
 /// A `(key, value)` request parameter.
 fn p(key: &str, value: impl Into<String>) -> (String, String) {
@@ -238,10 +234,35 @@ fn inked_cells(width: usize, pixels: &[u8], row: usize, columns: usize) -> Vec<b
         .collect()
 }
 
-/// The text the screen's FIRST line reads: the `instance-id` label in the screen's label
-/// column, then the instance's own id.
-fn first_line(instance_id: &str) -> String {
-    format!("{:<width$}{instance_id}", "instance-id", width = LABEL_COLUMN)
+/// The text the screen's FIRST line reads: the first line of the very console
+/// `GetConsoleOutput` serves for that instance, which is what the screen draws — clipped to
+/// the columns the screen has, since a longer line does not fit on it.
+///
+/// Empty for an instance whose guest has written nothing to its console yet.
+async fn first_line(router: &MultiServiceRouter, case: &str, instance_id: &str) -> String {
+    let (status, body) = api(
+        router,
+        "GetConsoleOutput",
+        &[p("InstanceId", instance_id)],
+    )
+    .await;
+    assert_eq!(
+        status, 200,
+        "case {case:?}: GetConsoleOutput must succeed, got {status}: {body}"
+    );
+    let Some(encoded) = member(&body, "output") else {
+        return String::new();
+    };
+    let bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &encoded)
+        .unwrap_or_else(|error| panic!("case {case:?}: output must be base64 ({error})"));
+    let text = String::from_utf8(bytes)
+        .unwrap_or_else(|error| panic!("case {case:?}: the console text must be UTF-8: {error}"));
+    text.lines()
+        .next()
+        .unwrap_or_default()
+        .chars()
+        .take(SCREEN_COLUMNS)
+        .collect()
 }
 
 /// Rule 1: whatever the instance, the screenshot is a base64 JPEG of the console screen's
@@ -269,17 +290,21 @@ async fn a_screenshot_is_a_jpeg_of_the_instance_console_screen() {
     // is still `pending` when its screen is captured.
     let fresh = launch(&router, &image_id, "t3.micro", 1).await;
 
-    // (what the row covers, the instance, the state it is meant to be in)
-    let cases: [(&str, &str, &str); 5] = [
-        ("the first instance of a two-instance launch", &shared[0], "running"),
-        ("the second instance of a two-instance launch", &shared[1], "running"),
-        ("an instance of a larger type", &larger[0], "running"),
-        ("a stopped instance", &to_stop[0], "stopped"),
-        ("an instance still pending", &fresh[0], "pending"),
+    // (what the row covers, the instance, the state it is meant to be in, whether its guest
+    // has come up and written to the console)
+    //
+    // The freshly launched instance comes FIRST, so its screen is read while the clock-owed
+    // move its launch started — the one its guest comes up on — is still outstanding.
+    let cases: [(&str, &str, &str, bool); 5] = [
+        ("an instance still pending", &fresh[0], "pending", false),
+        ("the first instance of a two-instance launch", &shared[0], "running", true),
+        ("the second instance of a two-instance launch", &shared[1], "running", true),
+        ("an instance of a larger type", &larger[0], "running", true),
+        ("a stopped instance", &to_stop[0], "stopped", true),
     ];
 
     let mut screens: BTreeSet<String> = BTreeSet::new();
-    for (case, instance_id, expected_state) in cases {
+    for (case, instance_id, expected_state, booted) in cases {
         let image_data = screenshot(&router, case, instance_id).await;
         let bytes = decoded(case, &image_data);
         let (width, height, pixels) = decode_jpeg(case, &bytes);
@@ -290,9 +315,23 @@ async fn a_screenshot_is_a_jpeg_of_the_instance_console_screen() {
              {width}x{height}"
         );
 
-        // One text line per fact, drawn from the top of the screen down: a contiguous band
-        // of character rows starting at the first, and an unlit screen below it.
+        // The console's lines, drawn from the top of the screen down: a contiguous band of
+        // character rows starting at the first, and an unlit screen below it — and nothing
+        // lit at all for a guest that has written nothing yet.
         let rows = text_rows(case, width, height, &pixels);
+        if !booted {
+            assert!(
+                rows.is_empty(),
+                "case {case:?}: a guest that has written nothing to its console must leave \
+                 the screen unlit, got {rows:?}"
+            );
+            assert!(
+                screens.insert(image_data),
+                "case {case:?}: a screen drawn from one instance's own console cannot be \
+                 byte-identical to another instance's"
+            );
+            continue;
+        }
         assert!(
             rows.len() >= FEWEST_TEXT_LINES,
             "case {case:?}: the screen must carry at least {FEWEST_TEXT_LINES} lines of \
@@ -308,10 +347,10 @@ async fn a_screenshot_is_a_jpeg_of_the_instance_console_screen() {
              the middle, got {rows:?}"
         );
 
-        // The screen's content, not only its shape: the first line must read the
-        // `instance-id` label and THIS instance's id, cell for cell, so the screen is the
-        // stored record's own facts rather than an image that merely differs per instance.
-        let expected = first_line(instance_id);
+        // The screen's content, not only its shape: its first line must read the first line
+        // of the console this very instance serves as TEXT, cell for cell, so the screen is
+        // that console drawn rather than an image that merely differs per instance.
+        let expected = first_line(&router, case, instance_id).await;
         let inked = inked_cells(width, &pixels, 0, expected.chars().count());
         let wanted: Vec<bool> = expected.chars().map(glyph_has_ink).collect();
         assert_eq!(
@@ -339,14 +378,14 @@ async fn a_screenshot_is_a_jpeg_of_the_instance_console_screen() {
 
         assert!(
             screens.insert(image_data),
-            "case {case:?}: a screen drawn from one instance's own record cannot be \
+            "case {case:?}: a screen drawn from one instance's own console cannot be \
              byte-identical to another instance's"
         );
     }
 }
 
-/// Rule 2: the screen reports the state the instance is in NOW, so the clock-owed move a
-/// launch starts changes it.
+/// Rule 2: the screen reports what is on the console NOW, so the clock-owed move a launch
+/// starts — the one its guest comes up on, and writes to the console on — changes it.
 #[tokio::test]
 async fn the_screen_follows_the_instance_state() {
     let (router, image_id) = emulator();

@@ -283,8 +283,7 @@ const JPEG_QUALITY: u8 = 90;
 // shows, whichever way it is read: `crate::state::instance_console_lines`, the ONE definition
 // `GetConsoleOutput` serves as text, so the two readers of one console cannot report it
 // differently — as is the instance id reading they share
-// (`crate::state::require_console_instance`). Their label column is
-// `crate::state::CONSOLE_LABEL_WIDTH` wide.
+// (`crate::state::require_console_instance`).
 
 /// Draw `lines` into the console screen and encode it as a baseline JPEG, or say why the
 /// screen could not be encoded.
