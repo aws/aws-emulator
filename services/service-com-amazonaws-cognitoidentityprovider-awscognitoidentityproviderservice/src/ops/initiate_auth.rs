@@ -738,7 +738,7 @@ async fn password_sign_in(
             // stage, and the pre-token-generation trigger gates them: "called after user
             // authentication flows have completed" is this generation's own documented
             // trigger source.
-            crate::state::lambda_triggers::fire_pre_token_generation(
+            let overrides = crate::state::lambda_triggers::fire_pre_token_generation(
                 ctx,
                 store,
                 &user_pool_id,
@@ -759,6 +759,7 @@ async fn password_sign_in(
                     now,
                     ctx.credential_store(),
                     ctx.parts(),
+                    &overrides,
                 )
                 .ok_or_else(internal_error)?;
             // The sign-in is complete, so the device it came from is now part of
@@ -1110,7 +1111,7 @@ async fn refresh_sign_in(
         (user_pool_id, user.username.clone())
     };
 
-    crate::state::lambda_triggers::fire_pre_token_generation(
+    let overrides = crate::state::lambda_triggers::fire_pre_token_generation(
         ctx,
         store,
         &user_pool_id,
@@ -1131,6 +1132,7 @@ async fn refresh_sign_in(
             now,
             refresh_token,
             ctx.parts(),
+            &overrides,
         )
         .ok_or_else(internal_error)?;
     Ok(authenticated(authentication_result))

@@ -45,9 +45,15 @@ pub mod custom_email;
 /// The encrypted message a custom sender's code travels in.
 pub mod esdk;
 
+/// What a pre-token-generation function's answer changes about the tokens that generation
+/// mints: the claims, the scopes and the group configuration it asked them to carry.
+pub mod token_overrides;
+
 /// The migrate-user trigger, which a pool that configures one resolves a username it does
 /// not hold through before the request naming it is refused.
 pub mod user_migration;
+
+pub use token_overrides::TokenOverrides;
 
 /// This service's state, as the operation that fires a trigger holds it under the lock.
 type State = super::ComAmazonawsCognitoidentityproviderAwscognitoidentityproviderserviceState;
@@ -571,6 +577,12 @@ pub async fn fire_pre_authentication(
 /// Fire the pre-token-generation trigger of the token `generation` for `username` in
 /// `user_pool_id`, and report what it leaves the generating operation to answer.
 ///
+/// What a RETURNING function answered is what the tokens of that generation carry: the
+/// trigger sits before the triple it can "modify the outcome of" (`LambdaConfigType`), so
+/// its answer is handed back as the overrides the minting applies ([`TokenOverrides`]) —
+/// and a generation that invoked nothing, because the pool configures no such function,
+/// overrides nothing.
+///
 /// Locks exactly as [`fire_pre_authentication`] does, and for the same reason.
 pub async fn fire_pre_token_generation(
     ctx: &::smithy_server_runtime::OperationContext<'_>,
@@ -580,7 +592,7 @@ pub async fn fire_pre_token_generation(
     generation: TokenGeneration,
     caller: Caller<'_>,
     client_metadata: Option<&HashMap<String, String>>,
-) -> Result<(), Failure> {
+) -> Result<TokenOverrides, Failure> {
     let dispatch = pre_token_generation(
         &store.lock(),
         user_pool_id,
@@ -590,8 +602,10 @@ pub async fn fire_pre_token_generation(
         client_metadata,
     );
     match dispatch {
-        Some(dispatch) => invoke_gating(ctx, &dispatch).await.map(|_| ()),
-        None => Ok(()),
+        Some(dispatch) => invoke_gating(ctx, &dispatch)
+            .await
+            .map(|answered| TokenOverrides::read(&answered)),
+        None => Ok(TokenOverrides::none()),
     }
 }
 

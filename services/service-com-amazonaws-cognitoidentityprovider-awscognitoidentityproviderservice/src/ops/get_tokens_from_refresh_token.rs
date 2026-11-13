@@ -262,7 +262,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> GetTokensFromRefr
         // The tokens this refresh answers with are the next stage, and the pool's
         // pre-token-generation trigger gates them: "called when a user tries to refresh the
         // identity and access tokens" is this generation's own documented trigger source.
-        crate::state::lambda_triggers::fire_pre_token_generation(
+        let overrides = crate::state::lambda_triggers::fire_pre_token_generation(
             ctx,
             &state,
             &user_pool_id,
@@ -297,6 +297,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> GetTokensFromRefr
                         &input.refresh_token,
                         ctx.credential_store(),
                         ctx.parts(),
+                        &overrides,
                     )
                     .ok_or_else(internal_error)?
             }
@@ -308,6 +309,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> GetTokensFromRefr
                     now,
                     &input.refresh_token,
                     ctx.parts(),
+                    &overrides,
                 )
                 .ok_or_else(internal_error)?,
         };

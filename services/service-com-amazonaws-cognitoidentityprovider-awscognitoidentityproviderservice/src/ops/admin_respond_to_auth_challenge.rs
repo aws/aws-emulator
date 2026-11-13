@@ -606,7 +606,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> AdminRespondToAut
         // stage, and the pool's pre-token-generation trigger gates them: "called after the
         // user is created by an admin. This flow is invoked when the user has to change a
         // temporary password" is this generation's own documented trigger source.
-        crate::state::lambda_triggers::fire_pre_token_generation(
+        let overrides = crate::state::lambda_triggers::fire_pre_token_generation(
             ctx,
             &state,
             &input.user_pool_id,
@@ -629,6 +629,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> AdminRespondToAut
                 now,
                 ctx.credential_store(),
                 ctx.parts(),
+                &overrides,
             )
             .ok_or_else(internal_error)?;
         Ok(AdminRespondToAuthChallengeOutput {

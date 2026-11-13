@@ -191,6 +191,8 @@ mod pool_plan_and_csv_header;
 mod pool_well_known_documents;
 #[path = "all/post_confirmation_trigger.rs"]
 mod post_confirmation_trigger;
+#[path = "all/pre_token_generation_overrides.rs"]
+mod pre_token_generation_overrides;
 #[path = "all/provider_link_source_user_claim.rs"]
 mod provider_link_source_user_claim;
 #[path = "all/provisioned_limits.rs"]

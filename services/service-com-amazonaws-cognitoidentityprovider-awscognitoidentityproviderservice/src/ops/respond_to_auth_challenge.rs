@@ -548,7 +548,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> RespondToAuthChal
         // are the next stage, and the pool's pre-token-generation trigger gates them:
         // "called after user authentication flows have completed" is this generation's own
         // documented trigger source.
-        crate::state::lambda_triggers::fire_pre_token_generation(
+        let overrides = crate::state::lambda_triggers::fire_pre_token_generation(
             ctx,
             &state,
             &user_pool_id,
@@ -569,6 +569,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> RespondToAuthChal
                 now,
                 ctx.credential_store(),
                 ctx.parts(),
+                &overrides,
             )
             .ok_or_else(internal_error)?;
         Ok(RespondToAuthChallengeOutput {

@@ -2061,7 +2061,9 @@ impl ComAmazonawsCognitoidentityproviderAwscognitoidentityproviderserviceState {
     /// to, `client_id` from the stored app client, the issuer from the endpoint
     /// this request is served on and the stored pool's id
     /// ([`UserPool::issuer`]), and each lifetime from the app client's validity
-    /// settings. The
+    /// settings — each of them as the pool's pre-token-generation function left it
+    /// (`overrides`, which is what that function answered and
+    /// [`lambda_triggers::TokenOverrides::none`] for a generation that invoked none). The
     /// access and id tokens are signed with the POOL's key pair, so a verifier
     /// can check them against the key set that pool publishes; the refresh token
     /// is an OPAQUE credential ([`mint_refresh_token`]), sealed under this
@@ -2073,6 +2075,7 @@ impl ComAmazonawsCognitoidentityproviderAwscognitoidentityproviderserviceState {
     /// Tokens the clock has already expired are swept first, and the oldest are
     /// evicted if the store is still at [`MAX_ISSUED_TOKENS`], so repeated
     /// sign-ins cannot grow this map without limit.
+    #[allow(clippy::too_many_arguments)]
     pub fn issue_tokens(
         &mut self,
         user_pool_id: &str,
@@ -2081,6 +2084,7 @@ impl ComAmazonawsCognitoidentityproviderAwscognitoidentityproviderserviceState {
         now: SystemTime,
         credentials: &::emulator_server::CredentialStore,
         parts: &::http::request::Parts,
+        overrides: &lambda_triggers::TokenOverrides,
     ) -> Option<AuthenticationResultType> {
         let refresh_token = mint_refresh_token(credentials, self.refresh_token_key())?;
         self.mint_tokens(
@@ -2091,6 +2095,7 @@ impl ComAmazonawsCognitoidentityproviderAwscognitoidentityproviderserviceState {
             Some(refresh_token),
             None,
             parts,
+            overrides,
         )
     }
 
@@ -2110,6 +2115,7 @@ impl ComAmazonawsCognitoidentityproviderAwscognitoidentityproviderserviceState {
         presented_refresh_token: &str,
         credentials: &::emulator_server::CredentialStore,
         parts: &::http::request::Parts,
+        overrides: &lambda_triggers::TokenOverrides,
     ) -> Option<AuthenticationResultType> {
         let lineage = self.token_lineage(presented_refresh_token);
         let refresh_token = mint_refresh_token(credentials, self.refresh_token_key())?;
@@ -2121,6 +2127,7 @@ impl ComAmazonawsCognitoidentityproviderAwscognitoidentityproviderserviceState {
             Some(refresh_token),
             lineage,
             parts,
+            overrides,
         )
     }
 
@@ -2133,6 +2140,7 @@ impl ComAmazonawsCognitoidentityproviderAwscognitoidentityproviderserviceState {
     /// stays the one the caller already holds, so none is minted and the result carries
     /// no `RefreshToken` member. Otherwise identical to [`issue_tokens`], whose claim
     /// building it shares.
+    #[allow(clippy::too_many_arguments)]
     pub fn refresh_tokens(
         &mut self,
         user_pool_id: &str,
@@ -2141,9 +2149,19 @@ impl ComAmazonawsCognitoidentityproviderAwscognitoidentityproviderserviceState {
         now: SystemTime,
         presented_refresh_token: &str,
         parts: &::http::request::Parts,
+        overrides: &lambda_triggers::TokenOverrides,
     ) -> Option<AuthenticationResultType> {
         let lineage = self.token_lineage(presented_refresh_token);
-        self.mint_tokens(user_pool_id, client_id, username, now, None, lineage, parts)
+        self.mint_tokens(
+            user_pool_id,
+            client_id,
+            username,
+            now,
+            None,
+            lineage,
+            parts,
+            overrides,
+        )
     }
 
     /// The sign-in lineage ([`TokenRecord::origin`]) of the token `token`, or
@@ -2292,6 +2310,7 @@ impl ComAmazonawsCognitoidentityproviderAwscognitoidentityproviderserviceState {
         refresh_token: Option<String>,
         lineage: Option<String>,
         parts: &::http::request::Parts,
+        overrides: &lambda_triggers::TokenOverrides,
     ) -> Option<AuthenticationResultType> {
         let TokenInputs {
             issuer,
@@ -2322,6 +2341,13 @@ impl ComAmazonawsCognitoidentityproviderAwscognitoidentityproviderserviceState {
             }
         };
 
+        // What the pool's pre-token-generation function asked these tokens to carry, where
+        // one ran and answered: the group configuration it replaced the user's stored
+        // memberships with, the scopes it added to or took out of the access token's grant,
+        // and (below, once every computed claim is in place) the claims it gave values for
+        // or suppressed. A generation that invoked no function overrides none of it.
+        let (groups, role_claims) = overrides.group_claims(groups, role_claims);
+
         let issued_at = unix_seconds(now);
         let origin_jti = lineage.unwrap_or_else(new_uuid);
 
@@ -2339,7 +2365,7 @@ impl ComAmazonawsCognitoidentityproviderAwscognitoidentityproviderserviceState {
         // An access token of a sign-in authorizes the user self-service
         // operations, so it carries the one scope those operations require, and
         // the claim and the record read it from the same place.
-        let access_scopes = vec![USER_ADMIN_SCOPE.to_string()];
+        let access_scopes = overrides.access_scopes(vec![USER_ADMIN_SCOPE.to_string()]);
         let mut access_claims = serde_json::json!({
             "sub": sub,
             "iss": issuer,
@@ -2368,13 +2394,26 @@ impl ComAmazonawsCognitoidentityproviderAwscognitoidentityproviderserviceState {
         if let (Some(email), Some(members)) = (email, id_claims.as_object_mut()) {
             members.insert("email".to_string(), serde_json::Value::String(email));
         }
+        // An access token a pre-token-generation function suppressed every scope of is
+        // authorized for none, and the claim states the scopes a token IS authorized for
+        // ("a list of space-delimited, case-sensitive strings", RFC 6749 §3.3), so it
+        // carries no `scope` claim rather than an empty one — the same answer the group
+        // claim below gives for a generation left with no group.
+        if access_scopes.is_empty() {
+            if let Some(members) = access_claims.as_object_mut() {
+                members.remove("scope");
+            }
+        }
 
         // `AdminAddUserToGroup`: "A user who is in a group ... populates a
         // `cognito:groups` claim to their access and identity tokens" (this
         // service's model), so the claim is carried by both of those two tokens
-        // and by neither the refresh token. A user in no group carries no claim
-        // rather than an empty list. The model documents no order for the list,
-        // so it is rendered in the stored order, which is stable across reads.
+        // and by neither the refresh token. The groups are the ones this generation
+        // carries — the user's stored memberships, or the configuration a
+        // pre-token-generation function replaced them with. A generation with no group
+        // at all carries no claim rather than an empty list. The model documents no order
+        // for the list, so it is rendered in the stored order, which is stable across
+        // reads.
         if !groups.is_empty() {
             let claim = serde_json::Value::Array(
                 groups
@@ -2417,6 +2456,12 @@ impl ComAmazonawsCognitoidentityproviderAwscognitoidentityproviderserviceState {
                 );
             }
         }
+
+        // Last of all, what the pre-token-generation function asked each token's own claims
+        // to be: it customises what the state computed above, so it is applied once every
+        // computed claim is in place and before anything is signed.
+        overrides.apply_to_id_token(&mut id_claims);
+        overrides.apply_to_access_token(&mut access_claims);
 
         // Each token is signed with the pool key of ITS OWN kind, so the access
         // token and the identity token of one sign-in name different keys of the
