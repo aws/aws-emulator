@@ -53,7 +53,7 @@ use ::serde_json::Value;
 
 use super::change_action;
 use super::change_plan::StoredResourceChange;
-use super::provisioning::owner_for;
+use super::provisioning::{owner_for, ActualConfiguration};
 use super::template::{self, Template};
 use super::StoredResource;
 
@@ -313,7 +313,10 @@ pub async fn taken_names(
         // the deepest read it makes.
         let answered = ::std::boxed::Box::pin(owner.actual_configuration(ctx, region, &existing))
             .await;
-        if matches!(answered, Ok(Some(_))) {
+        // Only a configuration that was REPORTED says the name is taken: a read the owning
+        // service answered not-found on, and a type no read is served for, each establish
+        // nothing about the name.
+        if matches!(answered, Ok(ActualConfiguration::Reported(_))) {
             taken.push(candidate.clone());
         }
     }

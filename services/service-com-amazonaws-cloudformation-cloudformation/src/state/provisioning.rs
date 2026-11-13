@@ -789,6 +789,39 @@ pub(super) enum Removal {
     Pending(String),
 }
 
+/// What asking the service that OWNS a resource for that resource's configuration
+/// established about it — the ACTUAL side of the comparison [`super::drift`] carries out.
+///
+/// The two ways a read answers with no configuration are different answers, and only one of
+/// them says anything about the resource: a read that ANSWERED that the service no longer
+/// holds the resource found it gone, while a type no configuration read is served for here
+/// was never asked anything at all, so nothing about that resource was established and its
+/// configuration is UNCHECKED. Collapsing the two would report a resource its owning service
+/// still holds as deleted, and so its stack as drifted, on every check.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum ActualConfiguration {
+    /// The configuration that service reports the resource in now.
+    Reported(Value),
+    /// That service answered that it no longer holds the resource — judged on its own
+    /// not-found code, never on a message.
+    Gone,
+    /// Nothing was asked of any service: no read of this type's configuration is served
+    /// here, so there is nothing to compare the declaration against.
+    Unchecked,
+}
+
+impl ActualConfiguration {
+    /// One owning-service READ as this answer, in the convention every per-type arm answers
+    /// in ([`super::provisioner::Provisioner::actual_configuration`]): `None` is that
+    /// service answering that it no longer holds the resource.
+    pub(super) fn read(reported: Option<Value>) -> Self {
+        match reported {
+            Some(configuration) => Self::Reported(configuration),
+            None => Self::Gone,
+        }
+    }
+}
+
 /// WHO owns a template resource type — the one question this algorithm asks before it
 /// creates, updates, re-tags or deletes a resource, and the only thing it needs to know
 /// about a type.

@@ -31,7 +31,8 @@
 //!   reports under the same name.
 //! * `IN_SYNC` — the resource is there and no declared property it reports differs.
 //! * `NOT_CHECKED` — nothing was asked of any service for it (declared-only resource, a
-//!   type with no provisioner, or an owning service whose read is still a scaffold stub).
+//!   type with no provisioner, a type whose configuration no read here reports, or an owning
+//!   service whose read is still a scaffold stub).
 //!   It is the outcome of a check that never happened, so it is never REPORTED in a
 //!   `StackResourceDrift` ("CloudFormation does not currently return this value"): a
 //!   whole-stack detection holds no record for such a resource, and a request for that ONE
@@ -70,7 +71,7 @@
 
 use serde_json::Value;
 
-use super::provisioning::owner_for;
+use super::provisioning::{owner_for, ActualConfiguration};
 use super::{resource_drift_status, StoredResource, DRIFT_STATUS_DRIFTED, DRIFT_STATUS_IN_SYNC, DRIFT_STATUS_UNKNOWN};
 
 /// The error code an owning service answers when the read this module needs is still one
@@ -244,14 +245,21 @@ pub async fn detect(
             // configuration to compare: the type does not support drift detection here.
             Some(provisioner) if resource.materialised => {
                 match provisioner.actual_configuration(ctx, region, resource).await {
+                    // Nothing was asked of any service for this resource, because no read of
+                    // its type's configuration is served here: no comparison was carried
+                    // out, which is what `NOT_CHECKED` states — and is NOT the resource
+                    // having been deleted, which only that service's own answer establishes.
+                    Ok(ActualConfiguration::Unchecked) => {
+                        (resource_drift_status::NOT_CHECKED.to_string(), None)
+                    }
                     // "For resources whose StackResourceDriftStatus is DELETED", neither
                     // property structure "will be present": there is no configuration left
                     // to report, and none was compared.
-                    Ok(None) => (
+                    Ok(ActualConfiguration::Gone) => (
                         resource_drift_status::DELETED.to_string(),
                         Some(ResourceDriftDetail::default()),
                     ),
-                    Ok(Some(actual)) => {
+                    Ok(ActualConfiguration::Reported(actual)) => {
                         let differences = resource_differences(resource, &actual);
                         let status = if differences.is_empty() {
                             resource_drift_status::IN_SYNC
@@ -377,7 +385,8 @@ pub async fn drifted(
         if !resource.materialised {
             continue;
         }
-        let Ok(Some(actual)) = provisioner.actual_configuration(ctx, region, resource).await
+        let Ok(ActualConfiguration::Reported(actual)) =
+            provisioner.actual_configuration(ctx, region, resource).await
         else {
             continue;
         };

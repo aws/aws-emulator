@@ -895,35 +895,44 @@ impl Owner {
     /// The resource's configuration as its owning service reports it, for drift detection —
     /// see
     /// [`Provisioner::actual_configuration`](super::provisioner::Provisioner::actual_configuration).
+    ///
+    /// Every arm below that READS the owning service answers in that convention, where
+    /// `None` is that service answering that it no longer holds the resource
+    /// ([`ActualConfiguration::read`]). An arm for a type whose configuration no read here
+    /// reports answers [`ActualConfiguration::Unchecked`] instead: nothing was asked of any
+    /// service for such a resource, which says nothing about it — and is a different answer
+    /// from the resource being gone.
     pub(crate) async fn actual_configuration(
         self,
         ctx: &smithy_server_runtime::OperationContext<'_>,
         region: &str,
         resource: &StoredResource,
-    ) -> Result<Option<Value>, Refusal> {
-        match self {
+    ) -> Result<ActualConfiguration, Refusal> {
+        let reported = match self {
             Self::Builtin(provisioner) => {
                 // Boxed for the reason [`Self::create`]'s arm records.
-                Box::pin(provisioner.actual_configuration(ctx, region, resource)).await
+                Box::pin(provisioner.actual_configuration(ctx, region, resource)).await?
             }
             // A table reports no configuration of its own to compare yet: this arm reads
-            // nothing back for drift detection, so nothing of it is reported as drifted
-            // rather than guessed at.
-            Self::DynamodbTable => Ok(None),
+            // nothing back for drift detection, so its configuration is unchecked rather
+            // than guessed at.
+            Self::DynamodbTable => return Ok(ActualConfiguration::Unchecked),
             // An embedded policy reports no configuration of its own to compare: the
             // document is read by the entity's own drift read, as a policy statement's is.
-            Self::IamPolicy(_) => Ok(None),
-            Self::LambdaAlias => lambda_alias::actual_configuration(ctx, region, resource).await,
+            Self::IamPolicy(_) => return Ok(ActualConfiguration::Unchecked),
+            Self::LambdaAlias => {
+                lambda_alias::actual_configuration(ctx, region, resource).await?
+            }
             // A published version is immutable, so nothing of it can have drifted from its
             // declaration.
-            Self::LambdaVersion => Ok(None),
+            Self::LambdaVersion => return Ok(ActualConfiguration::Unchecked),
             Self::LambdaEventSourceMapping => {
                 lambda_event_source_mapping::actual_configuration(
                     ctx,
                     region,
                     &resource.physical_resource_id,
                 )
-                .await
+                .await?
             }
             Self::LambdaFunction => {
                 lambda_function::actual_configuration(
@@ -931,54 +940,58 @@ impl Owner {
                     region,
                     &resource.physical_resource_id,
                 )
-                .await
+                .await?
             }
             // A published layer version is immutable — every property of the type requires
             // the resource to be replaced, and Lambda publishes no call that edits one — so
             // nothing of it can have drifted from its declaration; and the policy a
             // statement belongs to is read by the function's own drift read, so a statement
             // reports no configuration of its own to compare either.
-            Self::LambdaLayerVersion | Self::LambdaPermission => Ok(None),
+            Self::LambdaLayerVersion | Self::LambdaPermission => {
+                return Ok(ActualConfiguration::Unchecked)
+            }
             Self::LogsResource(kind) => {
-                logs_resources::actual_configuration(ctx, region, kind, resource).await
+                logs_resources::actual_configuration(ctx, region, kind, resource).await?
             }
             Self::IotAuthorizer => {
-                iot_authorizer::actual_configuration(ctx, region, resource).await
+                iot_authorizer::actual_configuration(ctx, region, resource).await?
             }
             // Neither CloudFront type reports a configuration of its own to compare yet: this
-            // arm reads nothing back for drift detection, so nothing of either is reported as
-            // drifted rather than guessed at.
-            Self::CloudFrontResource(_) => Ok(None),
+            // arm reads nothing back for drift detection, so neither one's configuration is
+            // guessed at.
+            Self::CloudFrontResource(_) => return Ok(ActualConfiguration::Unchecked),
             // A task-definition revision is immutable — every property of the type requires
             // the resource to be replaced, and Amazon ECS publishes no call that edits one —
             // so nothing of it can have drifted from its declaration.
-            Self::EcsTaskDefinition => Ok(None),
-            // These types report no configuration of their own to compare either: every
-            // property each one has is part of its identity or of the call that made it, so
-            // there is no member a later read could find changed. An INSTANCE's are the same
-            // case here: the launch is what set every one of them, and no call this emulator
-            // serves can change one on the instance that exists.
-            Self::Ec2VpcNetwork(_) | Self::Ec2Instance => Ok(None),
+            Self::EcsTaskDefinition => return Ok(ActualConfiguration::Unchecked),
+            // No read of either type's configuration is served here, so nothing is asked of
+            // any service for one: the VPC-network types' every property is part of their
+            // identity or of the call that made them, and an INSTANCE's were all set by the
+            // launch, so neither has an arm that reports a configuration to compare.
+            Self::Ec2VpcNetwork(_) | Self::Ec2Instance => {
+                return Ok(ActualConfiguration::Unchecked)
+            }
             Self::CognitoIdentityPool(kind) => {
-                cognito_identity_pool::actual_configuration(ctx, region, kind, resource).await
+                cognito_identity_pool::actual_configuration(ctx, region, kind, resource).await?
             }
             Self::CognitoUserPool(kind) => {
-                cognito_user_pool::actual_configuration(ctx, region, kind, resource).await
+                cognito_user_pool::actual_configuration(ctx, region, kind, resource).await?
             }
             // A nested stack's own configuration is its TEMPLATE, and the drift of a nested
             // stack is detected by running a detection against that stack itself ("perform
             // DetectStackDrift directly on the nested stack"), so this arm reads nothing
             // back for the parent's resource rather than guessing at it.
-            Self::NestedStack => Ok(None),
+            Self::NestedStack => return Ok(ActualConfiguration::Unchecked),
             Self::SecretsManagerRotationSchedule => {
                 secretsmanager_rotation_schedule::actual_configuration(ctx, region, resource)
-                    .await
+                    .await?
             }
             Self::SecretsManagerResourcePolicy => {
-                secretsmanager_resource_policy::actual_configuration(ctx, region, resource).await
+                secretsmanager_resource_policy::actual_configuration(ctx, region, resource)
+                    .await?
             }
             Self::SecretsManagerSecret => {
-                secretsmanager_secret::actual_configuration(ctx, region, resource).await
+                secretsmanager_secret::actual_configuration(ctx, region, resource).await?
             }
             Self::StepFunctionsStateMachine => {
                 step_functions_state_machine::actual_configuration(
@@ -986,22 +999,23 @@ impl Owner {
                     region,
                     &resource.physical_resource_id,
                 )
-                .await
+                .await?
             }
             Self::ApiGatewayRestApi(kind) => {
-                apigateway_rest_api::actual_configuration(ctx, region, kind, resource).await
+                apigateway_rest_api::actual_configuration(ctx, region, kind, resource).await?
             }
             // A target and a policy report no configuration of their own to compare yet: this
-            // arm reads nothing back for drift detection, so nothing of either is reported as
-            // drifted rather than guessed at.
-            Self::ApplicationAutoScaling(_) => Ok(None),
+            // arm reads nothing back for drift detection, so neither one's configuration is
+            // guessed at.
+            Self::ApplicationAutoScaling(_) => return Ok(ActualConfiguration::Unchecked),
             Self::AppConfigResource(kind) => {
-                appconfig_resources::actual_configuration(ctx, region, kind, resource).await
+                appconfig_resources::actual_configuration(ctx, region, kind, resource).await?
             }
             Self::ElasticLoadBalancing(kind) => {
-                elastic_load_balancing::actual_configuration(ctx, region, kind, resource).await
+                elastic_load_balancing::actual_configuration(ctx, region, kind, resource).await?
             }
-        }
+        };
+        Ok(ActualConfiguration::read(reported))
     }
 
     /// How this type's provider words a refusal it classified — see

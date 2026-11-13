@@ -1037,7 +1037,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // the rollback further down, which is the same stack's work.
         let role =
             crate::state::service_role::ServiceRole::of(&*self.engine, input.role_arn.as_deref());
-        let materialised = crate::state::service_role::acting_as(
+        // The whole walk is BOXED: one owning service's create is a call into that service's
+        // own handler, and the walk holds a future as large as the deepest of them while this
+        // handler holds the walk's — so keeping it on the heap keeps this operation's own
+        // future the size of the operation rather than the size of the deployment under it.
+        let materialised = ::std::boxed::Box::pin(crate::state::service_role::acting_as(
             ::std::sync::Arc::clone(&role),
             crate::state::provisioning::reconcile(
                 ctx,
@@ -1051,7 +1055,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 // request asked for.
                 crate::state::provisioning::Policies::Honoured,
             ),
-        )
+        ))
         .await;
 
         let output = CreateStackOutput {

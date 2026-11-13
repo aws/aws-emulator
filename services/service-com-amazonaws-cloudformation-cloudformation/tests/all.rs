@@ -135,6 +135,8 @@ mod dynamodb_table_resources;
 mod dynamodb_table_settings;
 #[path = "all/ec2_network_identifiers_feed_rds.rs"]
 mod ec2_network_identifiers_feed_rds;
+#[path = "all/ec2_network_stack_drift.rs"]
+mod ec2_network_stack_drift;
 #[path = "all/ec2_network_stack_resources.rs"]
 mod ec2_network_stack_resources;
 #[path = "all/ec2_refused_resource_sdk_diagnostic.rs"]
