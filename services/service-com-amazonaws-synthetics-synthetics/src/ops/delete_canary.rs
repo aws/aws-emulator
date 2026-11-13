@@ -79,7 +79,9 @@
 use super::types::*;
 use std::time::SystemTime;
 
-use crate::state::{CanaryState, CANARY_NOT_FOUND, STORE_UNAVAILABLE};
+use crate::state::{
+    canary_state_conflict, CanaryState, CanaryTransition, CANARY_NOT_FOUND, STORE_UNAVAILABLE,
+};
 
 // `#[operation_error]` below expands to an invocation of the LOCAL declarative
 // `smithy!` macro, which this line is what emits into the module. Without it the
@@ -183,10 +185,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // flight conflicts with that operation.
         if canary.state == CanaryState::Running || canary.state.operation_in_progress() {
             return Err(DeleteCanaryErrorModeled::ConflictException(ConflictException {
-                message: Some(format!(
-                    "Canary {} cannot be deleted while it is in state {}",
-                    canary.name,
-                    canary.state.as_wire()
+                message: Some(canary_state_conflict(
+                    CanaryTransition::Deleted,
+                    canary.state,
                 )),
             })
             .into());

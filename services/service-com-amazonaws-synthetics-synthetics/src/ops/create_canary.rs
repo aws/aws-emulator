@@ -374,6 +374,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             state_reason: None,
             state_reason_code: Some(CREATE_IN_PROGRESS_REASON_CODE.to_string()),
             ready_due: Some(now + PROVISIONING_SETTLE),
+            // Nothing is owed a canary that is not running.
+            stop_due: None,
             created: now,
             last_modified: now,
             last_started: None,

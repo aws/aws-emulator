@@ -12,8 +12,9 @@
 //!   group-addressing member — "You can specify the group name, the ARN, or the group ID as
 //!   the `GroupIdentifier`" — and all three reach the ONE stored group.
 //! * `AssociateResource` makes one canary a member of one group: both sides must already
-//!   exist (404 `ResourceNotFoundException` otherwise), membership is a set (so repeating
-//!   the call changes nothing), and the documented group quotas — "Each group can contain as
+//!   exist (404 `ResourceNotFoundException` otherwise), membership is a set that is written
+//!   ONCE (so a canary already in the group is refused with 409 `ConflictException`), and
+//!   the documented group quotas — "Each group can contain as
 //!   many as 10 canaries … Any single canary can be a member of up to 10 groups"
 //!   (`smithy_query(query="doc",shape="CreateGroup")`) — are refused with
 //!   `ServiceQuotaExceededException` (HTTP 402).
@@ -23,11 +24,10 @@
 //! boots, through the harness the lifecycle suite defines.
 
 use std::collections::BTreeSet;
-use std::time::Duration;
 
 use serde_json::{json, Value};
 
-use crate::canary_lifecycle::{create_body, Answer, Synthetics};
+use crate::canary_lifecycle::{create_body, poll_until, Answer, Synthetics};
 
 /// The sentence a group lookup whose wording is RECORDED answers with for a
 /// `GroupIdentifier` it cannot resolve, naming the identifier the request supplied:
@@ -63,11 +63,6 @@ pub(crate) const MAX_CANARIES_PER_GROUP: usize = 10;
 
 /// "Any single canary can be a member of up to 10 groups." — same source.
 pub(crate) const MAX_GROUPS_PER_CANARY: usize = 10;
-
-/// Comfortably longer than the provisioning span the emulator owes a freshly created
-/// canary, so a canary created at the start of a step is out of `CREATING` — and therefore
-/// deletable — by the next one.
-const PAST_PROVISIONING: Duration = Duration::from_millis(900);
 
 /// A canary's ARN, written out from `CanaryArn`'s modelled pattern
 /// (`^arn:(aws[a-zA-Z-]*)?:synthetics:…:\d{12}:canary:[0-9a-z_\-]{1,255}$`) rather than
@@ -439,10 +434,11 @@ async fn associate_resource_reports_a_missing_group_or_canary_as_not_found() {
     );
 }
 
-/// Membership is a SET and it names a resource that exists: associating the same canary
-/// again changes nothing, and deleting the canary ends the association.
+/// Membership is a SET and it names a resource that exists: a canary that is already a
+/// member is REFUSED rather than associated twice, whichever identifier form the repeat
+/// uses, and deleting the canary ends the association.
 #[tokio::test]
-async fn membership_is_a_set_and_does_not_outlive_the_canary() {
+async fn a_duplicate_membership_is_refused_and_does_not_outlive_the_canary() {
     let region = "ap-south-1";
     let aws = Synthetics::new(region);
 
@@ -452,16 +448,27 @@ async fn membership_is_a_set_and_does_not_outlive_the_canary() {
         create_group(&aws, json!({ "Name": "repeats" })).await,
     );
     let id = group.string_at("Group.Id");
+    let group_arn = group.string_at("Group.Arn");
 
-    // Repeating the call is idempotent, whichever identifier form it uses.
+    // The first association is made.
+    ok("associate/first", associate(&aws, &id, &arn).await);
+
+    // Every repeat is refused with the modelled conflict, whichever of the three
+    // identifier forms addresses the group — the membership is one relation, so the form
+    // the repeat uses cannot make it a second one.
     for (case, identifier) in [
-        ("first/by-id", id.clone()),
-        ("second/by-id", id.clone()),
-        ("third/by-name", "repeats".to_string()),
+        ("by-id", id.clone()),
+        ("by-name", "repeats".to_string()),
+        ("by-arn", group_arn.clone()),
     ] {
-        ok(
-            &format!("associate/{case}"),
-            associate(&aws, &identifier, &arn).await,
+        let answer = associate(&aws, &identifier, &arn).await;
+        let message = error_of(&format!("associate/{case}"), &answer, 409, "ConflictException")
+            .unwrap_or_else(|| panic!("case associate/{case}: expected a Message, got {:?}", answer.body));
+        assert_eq!(
+            message,
+            format!("Canary {arn} already exists in group repeats"),
+            "case associate/{case}: expected the duplicate-membership sentence naming the \
+             canary ARN and the group's name, got {message:?}"
         );
         let listed = ok(
             &format!("list/{case}"),
@@ -470,15 +477,42 @@ async fn membership_is_a_set_and_does_not_outlive_the_canary() {
         assert_eq!(
             resources_of(&format!("list/{case}"), &listed),
             vec![arn.clone()],
-            "case list/{case}: expected exactly one membership however often the \
-             association was repeated"
+            "case list/{case}: expected the one membership the refused repeats left alone"
         );
     }
 
+    // The membership can be made again once it has been removed: what the refusal reports
+    // is the membership that exists, not the canary.
+    ok(
+        "disassociate",
+        aws.call(
+            "PATCH",
+            &format!("/group/{id}/disassociate"),
+            Some(json!({ "ResourceArn": arn })),
+        )
+        .await,
+    );
+    ok("associate/again", associate(&aws, &id, &arn).await);
+    assert_eq!(
+        resources_of(
+            "list/after-re-associate",
+            &ok(
+                "list/after-re-associate",
+                list_resources(&aws, &id, json!({})).await
+            )
+        ),
+        vec![arn.clone()],
+        "case list/after-re-associate: expected the membership to be back"
+    );
+
     // The canary goes away, and with it the association: a membership can only name a
-    // canary that exists. A canary still being provisioned cannot be deleted, so the
-    // clock's own transition out of `CREATING` has to have come due first.
-    tokio::time::sleep(PAST_PROVISIONING).await;
+    // canary that exists. A canary still being provisioned cannot be deleted, so the delete
+    // waits for the CONDITION the clock owes — the canary out of `CREATING` — rather than
+    // for a span of its own.
+    poll_until("canary/provisioned", || aws.get("repeat-canary"), |answer| {
+        answer.string_at("Canary.Status.State") != "CREATING"
+    })
+    .await;
     ok("delete-canary", aws.delete("repeat-canary").await);
     let listed = ok(
         "list/after-delete",

@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op StartCanary
-//! Starts the canary's schedule and opens a run record for it.
+//! Starts the canary's schedule, performs the run it opens
+//! ([`crate::state::canary_run`]) and records the verdict that work produced.
 //!
 //! ## Shape of an operation
 //!
@@ -62,8 +63,8 @@ use super::types::*;
 use std::time::SystemTime;
 
 use crate::state::{
-    new_uuid, CanaryRunState, CanaryState, StoredRun, CANARY_NOT_FOUND, RUN_SETTLE,
-    STORE_UNAVAILABLE,
+    canary_run::RunWork, canary_state_conflict, new_uuid, CanaryRunState, CanaryState,
+    CanaryTransition, RunningBound, StoredRun, CANARY_NOT_FOUND, RUN_SETTLE, STORE_UNAVAILABLE,
 };
 
 // `#[operation_error]` below expands to an invocation of the LOCAL declarative
@@ -137,7 +138,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        let _ = ctx;
         let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
             StartCanaryError::from(StartCanaryErrorModeled::InternalServerException(
                 InternalServerException {
@@ -147,50 +147,89 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         })?;
 
         let now = SystemTime::now();
+        let run_id = new_uuid();
+        // The transition is decided under the lock; the WORK the run performs is done with
+        // the lock RELEASED, because it awaits — and nothing about the canary is written
+        // before it, so a start that never finishes leaves the record exactly as it was.
+        //
+        // That work stays inside this process. It is two calls into this same emulator's own
+        // IAM and Amazon S3, made the way the framework documents a handler reaching another
+        // emulated service ([`smithy_server_runtime::OperationContext::callback`]): the AWS
+        // SDK driven over the emulator's in-process transport, which opens no socket,
+        // resolves no name and can reach nothing outside this process. No host credential and
+        // no caller credential is used or forwarded, and no part of a request is a network
+        // destination — the client's endpoint is built from the Region alone, as addressing
+        // for that transport (`crate::state::canary_run`).
+        let work = {
+            let mut guard = state.lock();
+            guard.settle(now);
+            let canary = guard.canaries.get(&input.name).ok_or_else(not_found)?;
+
+            // A canary that is already running has nothing to start, and one with an
+            // operation still in flight (it is still being provisioned, started, stopped,
+            // updated or deleted) conflicts with that operation.
+            if canary.state == CanaryState::Running || canary.state.operation_in_progress() {
+                return Err(state_conflict(canary.state));
+            }
+            RunWork {
+                canary_name: canary.name.clone(),
+                run_id: run_id.clone(),
+                execution_role_arn: canary.execution_role_arn.clone(),
+                artifact_s3_location: canary.artifact_s3_location.clone(),
+                region: canary.region.clone(),
+            }
+        };
+
+        // What the run actually did: its artifacts written at the canary's artifact
+        // location, under the permissions the canary's execution role carries. The verdict
+        // is that work's outcome and is recorded with the run below — the clock owes it to
+        // the run, so a caller reading immediately still sees the run open.
+        let outcome = crate::state::canary_run::perform(ctx, &work).await;
+
+        let settled = SystemTime::now();
         let mut guard = state.lock();
-        guard.settle(now);
-        let canary = guard.canaries.get_mut(&input.name).ok_or_else(|| {
-            StartCanaryError::from(StartCanaryErrorModeled::ResourceNotFoundException(
-                ResourceNotFoundException {
-                    // The missing-canary message is a fixed sentence, not built from
-                    // the lookup key: see `state::CANARY_NOT_FOUND`.
-                    message: Some(CANARY_NOT_FOUND.to_string()),
-                },
-            ))
-        })?;
-
-        // A canary that is already running has nothing to start, and one with an
-        // operation still in flight (it is still being provisioned, started, stopped,
-        // updated or deleted) conflicts with that operation.
+        guard.settle(settled);
+        let canary = guard.canaries.get_mut(&input.name).ok_or_else(not_found)?;
+        // The lock was released while the run did its work, so the state the start was
+        // decided on has to STILL admit it: a concurrent start, stop, update or delete that
+        // moved the canary meanwhile wins, and this call is refused with the same conflict
+        // it would have got had it arrived now. The write below therefore happens under one
+        // lock with the check that admits it, which is what makes concurrent starts of one
+        // canary resolve to a single winner.
         if canary.state == CanaryState::Running || canary.state.operation_in_progress() {
-            return Err(StartCanaryErrorModeled::ConflictException(ConflictException {
-                message: Some(format!(
-                    "Canary {} cannot be started while it is in state {}",
-                    canary.name,
-                    canary.state.as_wire()
-                )),
-            })
-            .into());
+            return Err(state_conflict(canary.state));
         }
-
         canary.state = CanaryState::Running;
         canary.state_reason = None;
         canary.state_reason_code = None;
-        canary.last_started = Some(now);
+        canary.last_started = Some(settled);
         // The record observably changed, so its modification instant advances with it.
-        canary.last_modified = now;
+        canary.last_modified = settled;
+        let outcome_due = settled + RUN_SETTLE;
+        // How long the canary keeps running is its own schedule's business: a run-once
+        // schedule is done when its single run is, a bounded one when its duration has
+        // passed, and an unbounded one holds `RUNNING` until `StopCanary`. The due instant
+        // is CHECKED arithmetic: the duration comes from a stored request value, and an
+        // instant that cannot be represented bounds nothing, so the canary runs until it is
+        // stopped rather than the addition failing.
+        canary.stop_due = match canary.schedule.running_bound() {
+            RunningBound::SingleRun => Some(outcome_due),
+            RunningBound::For(duration) => settled.checked_add(duration),
+            RunningBound::UntilStopped => None,
+        };
         // Newest run first, the order the run history is reported in; the history is kept
         // within its retained-run bound.
         let run = StoredRun {
-            id: new_uuid(),
+            id: run_id,
             name: canary.name.clone(),
             state: CanaryRunState::Running,
             state_reason: None,
             state_reason_code: None,
-            started: now,
+            started: settled,
             completed: None,
             // The run's outcome is owed by the clock, not by another call.
-            outcome_due: Some(now + RUN_SETTLE),
+            outcome_due: Some(outcome_due),
+            outcome: Some(outcome),
             artifact_s3_location: canary.artifact_s3_location.clone(),
             // A run of the canary itself, not of one of its dry-run configurations.
             dry_run_id: None,
@@ -199,4 +238,23 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         Ok(StartCanaryOutput {})
     }
+}
+
+/// The modelled 404 for a canary this store does not hold. The missing-canary message is a
+/// fixed sentence, not built from the lookup key: see `state::CANARY_NOT_FOUND`.
+fn not_found() -> StartCanaryError {
+    StartCanaryErrorModeled::ResourceNotFoundException(ResourceNotFoundException {
+        message: Some(CANARY_NOT_FOUND.to_string()),
+    })
+    .into()
+}
+
+/// The modelled 409 for a canary whose current state does not admit a start, worded by the
+/// one construction every state-transition refusal of this service shares
+/// (`state::canary_state_conflict`).
+fn state_conflict(state: CanaryState) -> StartCanaryError {
+    StartCanaryErrorModeled::ConflictException(ConflictException {
+        message: Some(canary_state_conflict(CanaryTransition::Started, state)),
+    })
+    .into()
 }

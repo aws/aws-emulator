@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use serde_json::{json, Value};
-use smithy_server_runtime::MultiServiceRouter;
+use smithy_server_runtime::{EmbeddedEmulator, MultiServiceRouter};
 
 /// Comfortably longer than the provisioning span the emulator owes, so a canary created
 /// at the start of a step is `READY` by the next one.
@@ -77,6 +77,48 @@ impl Synthetics {
             router,
             region: region.to_string(),
         }
+    }
+
+    /// This service mounted beside the OWNERS of the resources a canary RUN uses — IAM,
+    /// which holds the execution role whose policies decide whether a run may write its
+    /// artifacts, and Amazon S3, which holds the bucket they are written to — on ONE shared
+    /// engine, plus an SDK client for each over the router's own in-process callback: the
+    /// very seam a run reaches them through.
+    ///
+    /// Nothing in a suite using this reaches into either store: a role exists only because
+    /// IAM answered for it, and an artifact only because Amazon S3 serves it back.
+    pub(crate) fn with_account_services(
+        region: &str,
+    ) -> (Self, ::aws_sdk_iam::Client, ::aws_sdk_s3::Client) {
+        let engine: Arc<engine::InMemoryEngine> = Arc::new(engine::InMemoryEngine::new());
+        let mut router = MultiServiceRouter::new();
+        router.set_request_authentication(false);
+        router.register_service(
+            service_com_amazonaws_synthetics_synthetics::EmulatedService::new(Arc::clone(&engine)),
+        );
+        router.register_service(
+            service_com_amazonaws_iam_awsidentitymanagementv20100508::EmulatedService::new(
+                Arc::clone(&engine),
+            ),
+        );
+        router.register_service(service_com_amazonaws_s3_amazons3::EmulatedService::new(
+            Arc::clone(&engine),
+        ));
+        let callback = EmbeddedEmulator::from_router(router.clone());
+        // The clients are the tree's OWN constructions of these two hops
+        // (`service_common::iam_client` / `s3_client`), which is the very seam a canary run
+        // reaches IAM and Amazon S3 through — so the harness drives the services exactly as
+        // the handler does rather than carrying a second copy of that configuration.
+        let iam = ::service_common::iam_client::iam_client_through(&callback, region);
+        let s3 = ::service_common::s3_client::s3_client(&callback, region);
+        (
+            Self {
+                router,
+                region: region.to_string(),
+            },
+            iam,
+            s3,
+        )
     }
 
     pub(crate) async fn call(&self, method: &str, path: &str, body: Option<Value>) -> Answer {
@@ -176,6 +218,49 @@ pub(crate) fn create_body(name: &str) -> Value {
         "Schedule": { "Expression": "rate(5 minutes)" },
         "RuntimeVersion": "syn-nodejs-puppeteer-9.0",
     })
+}
+
+/// How long a poll waits for a transition the clock owes before giving up. Deliberately far
+/// longer than the spans this emulator owes (half a second each), so a loaded machine waits
+/// for the CONDITION rather than failing on a budget.
+pub(crate) const POLL_DEADLINE: Duration = Duration::from_secs(30);
+
+/// How long a poll pauses between looks.
+const POLL_INTERVAL: Duration = Duration::from_millis(20);
+
+/// Look again until `settled` holds of the answer, or [`POLL_DEADLINE`] passes.
+///
+/// The ONE wait this target makes on a transition the clock owes: a transition is waited OUT
+/// rather than slept for, so the loop asks for the condition and stops as soon as it holds
+/// and no suite depends on how fast the host runs.
+pub(crate) async fn poll_until<Call, Fut, Settled>(
+    case: &str,
+    mut call: Call,
+    settled: Settled,
+) -> Answer
+where
+    Call: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Answer>,
+    Settled: Fn(&Answer) -> bool,
+{
+    let deadline = std::time::Instant::now() + POLL_DEADLINE;
+    loop {
+        let answer = call().await;
+        assert_eq!(
+            answer.status, 200,
+            "case {case}: expected 200 while polling, got {} ({:?})",
+            answer.status, answer.body
+        );
+        if settled(&answer) {
+            return answer;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "case {case}: the condition never held, last answer {:?}",
+            answer.body
+        );
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
 }
 
 /// The `@pattern` the model declares for `shape`, read out of the model this crate ships.
@@ -880,10 +965,12 @@ async fn an_unknown_canary_is_not_found_on_every_operation() {
 /// The run history `StartCanary` opens and `StopCanary` closes, read back through
 /// `GetCanaryRuns`.
 ///
-/// This emulator has no canary runtime and makes no outbound connection, so nothing
-/// executes the canary's script: a run it starts therefore ends in the service's own
-/// modelled FAILED state with an EXECUTION_FAILURE reason code saying so, rather than
-/// reporting a PASSED verdict for work that never happened.
+/// This harness mounts Synthetics alone, so the object store a run's artifacts belong to is
+/// not there to take them: a run started here therefore ends in the service's own modelled
+/// FAILED state with the EXECUTION_FAILURE reason code the model documents for artifacts
+/// that could not be saved, and a run cut short by `StopCanary` ends the same way. What a
+/// run reports when its artifacts CAN be stored is asserted beside the services that own
+/// them (`canary_run_outcomes`).
 #[tokio::test]
 async fn a_started_run_is_recorded_and_reported_without_a_fabricated_verdict() {
     let aws = Synthetics::new("us-east-1");

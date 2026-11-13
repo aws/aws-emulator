@@ -17,6 +17,8 @@ mod associated_groups;
 mod canary_dry_runs;
 #[path = "all/canary_lifecycle.rs"]
 mod canary_lifecycle;
+#[path = "all/canary_run_outcomes.rs"]
+mod canary_run_outcomes;
 #[path = "all/client_error_message_wording.rs"]
 mod client_error_message_wording;
 #[path = "all/group_deletion.rs"]

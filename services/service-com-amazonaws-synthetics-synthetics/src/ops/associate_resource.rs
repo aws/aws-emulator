@@ -67,8 +67,8 @@ use super::types::*;
 use std::time::SystemTime;
 
 use crate::state::{
-    canary_not_found, group_not_found, MAX_CANARIES_PER_GROUP, MAX_GROUPS_PER_CANARY,
-    STORE_UNAVAILABLE,
+    canary_already_in_group, canary_not_found, group_not_found, MAX_CANARIES_PER_GROUP,
+    MAX_GROUPS_PER_CANARY, STORE_UNAVAILABLE,
 };
 
 // `#[operation_error]` below expands to an invocation of the LOCAL declarative
@@ -165,15 +165,20 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             return Err(not_found(canary_not_found(&input.resource_arn)));
         }
 
-        // Membership is a set: a canary already in the group is already associated, so
-        // repeating the call succeeds and changes nothing — including the quotas below,
-        // which only a new membership can push past.
+        // Membership is a set, and an association is not idempotent: a canary already in
+        // the group is refused rather than associated twice, so exactly one of a set of
+        // concurrent associates of the same pair wins. The lock held here is the
+        // serialization point — the membership is read and written under it, so the loser
+        // of a race sees the winner's write.
         let already_associated = guard
             .groups
             .get(&group_key)
             .is_some_and(|group| group.resources.contains(&input.resource_arn));
         if already_associated {
-            return Ok(AssociateResourceOutput {});
+            return Err(conflict(canary_already_in_group(
+                &input.resource_arn,
+                &group_key,
+            )));
         }
 
         // "Each group can contain as many as 10 canaries … Any single canary can be a
@@ -220,6 +225,15 @@ fn not_found(message: String) -> AssociateResourceError {
 /// The modelled 402 for a documented group quota the request would push past.
 fn quota_exceeded(message: String) -> AssociateResourceError {
     AssociateResourceErrorModeled::ServiceQuotaExceededException(ServiceQuotaExceededException {
+        message: Some(message),
+    })
+    .into()
+}
+
+/// The modelled 409 for an association this group already holds. The message is the
+/// sentence the service answers that refusal with (`state::canary_already_in_group`).
+fn conflict(message: String) -> AssociateResourceError {
+    AssociateResourceErrorModeled::ConflictException(ConflictException {
         message: Some(message),
     })
     .into()

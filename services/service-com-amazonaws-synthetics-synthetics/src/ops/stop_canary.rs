@@ -62,7 +62,9 @@
 use super::types::*;
 use std::time::SystemTime;
 
-use crate::state::{CanaryState, CANARY_NOT_FOUND, STORE_UNAVAILABLE};
+use crate::state::{
+    canary_state_conflict, CanaryState, CanaryTransition, CANARY_NOT_FOUND, STORE_UNAVAILABLE,
+};
 
 // `#[operation_error]` below expands to an invocation of the LOCAL declarative
 // `smithy!` macro, which this line is what emits into the module. Without it the
@@ -159,12 +161,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         // Only a running canary has a schedule to stop.
         if canary.state != CanaryState::Running {
+            let state = canary.state;
             return Err(StopCanaryErrorModeled::ConflictException(ConflictException {
-                message: Some(format!(
-                    "Canary {} cannot be stopped while it is in state {}",
-                    canary.name,
-                    canary.state.as_wire()
-                )),
+                message: Some(canary_state_conflict(CanaryTransition::Stopped, state)),
             })
             .into());
         }
@@ -173,6 +172,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         canary.state_reason = None;
         canary.state_reason_code = None;
         canary.last_stopped = Some(now);
+        // Nothing is owed to a canary that has been stopped: the clock's own stop is what
+        // this call just did.
+        canary.stop_due = None;
         // The record observably changed, so its modification instant advances with it.
         canary.last_modified = now;
         canary.close_open_run(now);

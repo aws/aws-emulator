@@ -24,7 +24,19 @@ tracing = { workspace = true }
 # `validation::unanchored`: this tree's ONE rendering of a `@pattern` as the expression a
 # service publishes (the whole-value `^`/`$` pair a model writes around it dropped), which
 # `src/service.rs` states every constraint refusal's pattern clause through.
+# `iam_role::role_withholds_action`: the ONE reading of what a role's policies permit, which
+# a canary run asks about its execution role before it writes its artifacts.
+# `s3_client`: the ONE construction of the in-process Amazon S3 client a run's artifacts are
+# written through.
 service-common = { path = "../common" }
+# Amazon S3 client a canary run writes its artifacts through (src/state/canary_run.rs). The
+# client itself is built by `service-common`, over the in-process callback into this same
+# emulator; this declaration is for the request and body types that write names. No network
+# client feature is enabled: the transport is the emulator's own.
+aws-sdk-s3 = { version = "1", default-features = false, features = [
+    "rt-tokio",
+    "behavior-version-latest",
+] }
 # `Canary$Id` and `CanaryRun$Id` are modelled as UUIDs. The hash and the hex codec the
 # id minting in `src/state.rs` needs, rather than hand-written ones; both are already
 # locked for this package, so no entry is added to Cargo.lock.
@@ -37,6 +49,19 @@ emulator-core-build-support = { workspace = true }
 [dev-dependencies]
 # `tokio::time::sleep` lets a test step past a transition the clock owes.
 tokio = { workspace = true, features = ["time"] }
+# The AWS SDKs the test harness CREATES the resources a canary run needs with — the
+# execution role whose policies decide whether the run may write, and the artifact bucket it
+# writes to — over the same in-process callback the run reaches them through.
+aws-sdk-iam = { version = "1", default-features = false }
+aws-sdk-s3 = { version = "1", default-features = false, features = [
+    "rt-tokio",
+    "behavior-version-latest",
+] }
+# The OWNERS of those resources, mounted beside this service in the run-outcome harness: a
+# role exists only because IAM answered for it, and an artifact only because Amazon S3 holds
+# it. DEV-ONLY: this crate depends on no other service's crate outside its tests.
+service-com-amazonaws-iam-awsidentitymanagementv20100508 = { workspace = true }
+service-com-amazonaws-s3-amazons3 = { workspace = true }
 
 [lints]
 workspace = true

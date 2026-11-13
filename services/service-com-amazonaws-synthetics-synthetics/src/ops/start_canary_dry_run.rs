@@ -129,8 +129,9 @@ use super::types::*;
 use std::time::SystemTime;
 
 use crate::state::{
-    is_published_runtime_version, is_s3_artifact_location, new_uuid, source_location_arn,
-    unknown_runtime_version, CanaryRunState, StoredArtifactConfig, StoredCode, StoredDependency,
+    canary_run::RunWork, canary_state_conflict, is_published_runtime_version,
+    is_s3_artifact_location, new_uuid, source_location_arn, unknown_runtime_version,
+    CanaryRunState, CanaryTransition, StoredArtifactConfig, StoredCode, StoredDependency,
     StoredDryRun, StoredRun, StoredRunConfig, StoredVpcConfig, ARTIFACT_S3_LOCATION_MALFORMED,
     CANARY_NOT_FOUND, RUN_SETTLE, STORE_UNAVAILABLE,
 };
@@ -207,9 +208,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The canary's own record carries the Region its resources live in, so nothing
-        // about this request's metadata is read here.
-        let _ = ctx;
         let state = crate::state::service_state(&*self.engine).ok_or_else(internal_error)?;
         let now = SystemTime::now();
 
@@ -245,40 +243,35 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             return Err(validation(VISUAL_MONITORING_UNSUPPORTED));
         }
 
-        let mut guard = state.lock();
-        // Only what the clock already owed at this instant (a canary that finished
-        // provisioning, a run whose outcome came due).
-        guard.settle(now);
-        let canary = guard.canaries.get_mut(&input.name).ok_or_else(|| {
-            StartCanaryDryRunError::from(StartCanaryDryRunErrorModeled::ResourceNotFoundException(
-                ResourceNotFoundException {
-                    // The missing-canary message is a fixed sentence, not built from the
-                    // lookup key: see `state::CANARY_NOT_FOUND`.
-                    message: Some(CANARY_NOT_FOUND.to_string()),
-                },
-            ))
-        })?;
+        // The canary's own settled configuration, copied out under the lock: what the dry
+        // run overrides is a SNAPSHOT of it, and the work the dry run performs below is done
+        // with the lock released.
+        let (dry_run_id, mut config) = {
+            let mut guard = state.lock();
+            // Only what the clock already owed at this instant (a canary that finished
+            // provisioning, a run whose outcome came due).
+            guard.settle(now);
+            let canary = guard.canaries.get(&input.name).ok_or_else(not_found)?;
 
-        // A canary with an operation still in flight (it is being provisioned, started,
-        // stopped, updated or deleted) has no settled configuration to dry run against,
-        // which is exactly `ConflictException`'s documented "a conflicting operation is
-        // already in progress". A canary that is merely RUNNING is NOT a conflict: a dry
-        // run exercises its own configuration independently of the canary's schedule.
-        if canary.state.operation_in_progress() {
-            return Err(StartCanaryDryRunErrorModeled::ConflictException(ConflictException {
-                message: Some(format!(
-                    "Canary {} cannot be dry run while it is in state {}",
-                    canary.name,
-                    canary.state.as_wire()
-                )),
-            })
-            .into());
-        }
+            // A canary with an operation still in flight (it is being provisioned, started,
+            // stopped, updated or deleted) has no settled configuration to dry run against,
+            // which is exactly `ConflictException`'s documented "a conflicting operation is
+            // already in progress". A canary that is merely RUNNING is NOT a conflict: a dry
+            // run exercises its own configuration independently of the canary's schedule.
+            if canary.state.operation_in_progress() {
+                let state = canary.state;
+                return Err(
+                    StartCanaryDryRunErrorModeled::ConflictException(ConflictException {
+                        message: Some(canary_state_conflict(CanaryTransition::DryRun, state)),
+                    })
+                    .into(),
+                );
+            }
+            (new_uuid(), canary.clone())
+        };
 
-        let dry_run_id = new_uuid();
         // The dry run's configuration is the canary's with this request's overrides
         // applied: an omitted member means "dry run with what the canary already has".
-        let mut config = canary.clone();
         // A configuration carries no history: the runs and the dry runs belong to the
         // canary record, not to one of the configurations it has been run with.
         config.runs.clear();
@@ -372,18 +365,60 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         // The run this dry run starts, against the dry run's own artifact location. Its
         // outcome is owed by the clock, not by another call, exactly as a canary run's is.
+        let run_id = new_uuid();
+        // What the dry run's run actually did: its artifacts written at the configuration's
+        // artifact location, under the permissions the configuration's execution role
+        // carries. The verdict is that work's outcome, carried by the run below.
+        //
+        // The work stays inside this process: two calls into this same emulator's own IAM
+        // and Amazon S3 over the framework's in-process callback transport, which opens no
+        // socket, resolves no name and reaches nothing outside it — see
+        // `crate::state::canary_run`.
+        let outcome = crate::state::canary_run::perform(
+            ctx,
+            &RunWork {
+                canary_name: config.name.clone(),
+                run_id: run_id.clone(),
+                execution_role_arn: config.execution_role_arn.clone(),
+                artifact_s3_location: config.artifact_s3_location.clone(),
+                region: config.region.clone(),
+            },
+        )
+        .await;
+        // The run began when its work did, so its outcome comes due that span after THIS
+        // instant rather than after the one the request arrived at — a caller reading
+        // straight after the answer still sees the run open.
+        let started = SystemTime::now();
         let run = StoredRun {
-            id: new_uuid(),
+            id: run_id,
             name: config.name.clone(),
             state: CanaryRunState::Running,
             state_reason: None,
             state_reason_code: None,
-            started: now,
+            started,
             completed: None,
-            outcome_due: Some(now + RUN_SETTLE),
+            outcome_due: Some(started + RUN_SETTLE),
+            outcome: Some(outcome),
             artifact_s3_location: config.artifact_s3_location.clone(),
             dry_run_id: Some(dry_run_id.clone()),
         };
+
+        let mut guard = state.lock();
+        guard.settle(started);
+        let canary = guard.canaries.get_mut(&input.name).ok_or_else(not_found)?;
+        // The lock was released while the run did its work, so the state the dry run was
+        // admitted on has to STILL admit it: a concurrent operation that put the canary into
+        // a transition meanwhile wins, and this call is refused with the same conflict it
+        // would have got had it arrived now.
+        if canary.state.operation_in_progress() {
+            let state = canary.state;
+            return Err(
+                StartCanaryDryRunErrorModeled::ConflictException(ConflictException {
+                    message: Some(canary_state_conflict(CanaryTransition::DryRun, state)),
+                })
+                .into(),
+            );
+        }
         canary.begin_dry_run(
             StoredDryRun {
                 id: dry_run_id.clone(),
@@ -399,6 +434,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             dry_run_config: Some(canary.dry_run_config_output(dry_run)),
         })
     }
+}
+
+/// The modelled 404 for a canary this store does not hold. The missing-canary message is a
+/// fixed sentence, not built from the lookup key: see `state::CANARY_NOT_FOUND`.
+fn not_found() -> StartCanaryDryRunError {
+    StartCanaryDryRunErrorModeled::ResourceNotFoundException(ResourceNotFoundException {
+        message: Some(CANARY_NOT_FOUND.to_string()),
+    })
+    .into()
 }
 
 /// `ValidationException$Message` for the two visual-reference members: this emulator

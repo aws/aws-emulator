@@ -24,6 +24,11 @@ use crate::ops::types::{
     RetryConfigOutput, RuntimeVersion, S3EncryptionConfig, VpcConfigOutput,
 };
 
+/// The WORK one canary run performs, and the verdict that work produces: the run's
+/// artifacts written to the canary's artifact location, under the permissions its execution
+/// role carries.
+pub mod canary_run;
+
 /// Mint a fresh identifier for a canary or a canary run.
 ///
 /// `Canary$Id` and `CanaryRun$Id` are modelled as `UUID`
@@ -168,20 +173,29 @@ pub const PROVISIONING_SETTLE: Duration = Duration::from_millis(500);
 /// outcome. Same contract as [`PROVISIONING_SETTLE`].
 pub const RUN_SETTLE: Duration = Duration::from_millis(500);
 
-/// Why a run this emulator started cannot pass.
+/// The `CanaryRunStateReasonCode` a run carries when the artifacts it produces could not
+/// be stored.
 ///
-/// A canary run executes customer Node.js/Python browser automation against an endpoint.
-/// This emulator has no canary runtime and makes no outbound connection, so nothing runs:
-/// the run therefore ends in the service's own modelled failure state with a reason that
-/// says why, rather than reporting a result for work that never happened.
-pub const RUN_NOT_EXECUTED_REASON: &str =
-    "This emulator has no canary runtime, so the canary script was not executed and the run \
-     produced no result.";
+/// `CanaryRunStatus$StateReasonCode`: "If this value is `EXECUTION_FAILURE`, a non-critical
+/// failure occurred such as failing to save generated debug artifacts (for example,
+/// screenshots or har files)"
+/// (`smithy_query(query="doc",shape="CanaryRunStatus",member="StateReasonCode")`). That is
+/// the failure [`canary_run::perform`] reports: the run's artifacts could not be written to
+/// the canary's artifact location.
+pub const RUN_EXECUTION_FAILURE_REASON_CODE: &str = "EXECUTION_FAILURE";
 
-/// `CanaryRunStateReasonCode` member used for [`RUN_NOT_EXECUTED_REASON`]: the run failed
-/// before the script produced a verdict, which is an execution failure rather than a
-/// canary (assertion) failure.
-pub const RUN_NOT_EXECUTED_REASON_CODE: &str = "EXECUTION_FAILURE";
+/// Why a run that was still open when the canary was stopped has no verdict: its schedule
+/// was stopped before the run finished, so the run never produced the artifacts a verdict
+/// is read from.
+pub const RUN_INTERRUPTED_REASON: &str =
+    "The canary was stopped before this run completed, so the run produced no result.";
+
+/// Why a run whose outcome came due carries no verdict: nothing recorded the outcome of the
+/// work the run performs, so there is no result to report. The call that opens a run records
+/// its outcome before it answers ([`canary_run::perform`]), so this is the state of a run
+/// whose opening call did not finish.
+pub const RUN_UNRECORDED_REASON: &str =
+    "The outcome of this run was never recorded, so the run produced no result.";
 
 /// `CanaryStateReasonCode` reported while a freshly created canary is still `CREATING`.
 pub const CREATE_IN_PROGRESS_REASON_CODE: &str = "CREATE_IN_PROGRESS";
@@ -218,6 +232,65 @@ pub const CANARY_NOT_FOUND: &str = "Canary not found.";
 /// (`tests/all/client_error_message_wording.rs`).
 pub fn canary_not_found(identifier: &str) -> String {
     format!("Canary does not exist: {identifier}")
+}
+
+/// Which transition a state-transition operation would have made, as the refusal below
+/// names it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CanaryTransition {
+    /// `StartCanary`.
+    Started,
+    /// `StopCanary`.
+    Stopped,
+    /// `DeleteCanary`.
+    Deleted,
+    /// `StartCanaryDryRun`.
+    DryRun,
+}
+
+impl CanaryTransition {
+    /// How the refusal names this transition.
+    pub fn as_refused(self) -> &'static str {
+        match self {
+            Self::Started => "started",
+            Self::Stopped => "stopped",
+            Self::Deleted => "deleted",
+            Self::DryRun => "dry run",
+        }
+    }
+}
+
+/// `ConflictException$Message` for a canary whose current state does not admit the
+/// transition a call asked for.
+///
+/// The recorded service words this class of refusal as one fixed sentence naming the
+/// transition it will not make, followed by the canary's current `CanaryState` wire value as
+/// this store holds it: `Canary is in a state that can't be stopped: READY` for a
+/// `StopCanary` of a canary that is not running, and `Canary is in a state that can't be
+/// deleted: RUNNING` for a `DeleteCanary` of one that is. The canary's NAME is no part of it
+/// — this class of message reports the state that refused the call and no identifier.
+///
+/// ONE construction for every state-transition operation ([`CanaryTransition`]), so
+/// `StartCanary`, `StopCanary`, `DeleteCanary` and `StartCanaryDryRun` cannot drift apart.
+pub fn canary_state_conflict(transition: CanaryTransition, state: CanaryState) -> String {
+    format!(
+        "Canary is in a state that can't be {}: {}",
+        transition.as_refused(),
+        state.as_wire()
+    )
+}
+
+/// `ConflictException$Message` for an `AssociateResource` whose canary is ALREADY a member
+/// of the group it names.
+///
+/// Membership is a set and an association is not idempotent: the recorded service refuses
+/// the second association of one (group, canary) pair rather than answering it as a success
+/// that changed nothing. The sentence is fixed and its variable parts are the request's own
+/// `ResourceArn` and the NAME of the group its `GroupIdentifier` resolved to — the group may
+/// have been addressed by name, ARN or id, and the message reports the one name the group is
+/// held under.
+pub fn canary_already_in_group(resource_arn: &str, group_name: &str) -> String {
+    format!("Canary {resource_arn} already exists in group {group_name}")
 }
 
 /// `ResourceNotFoundException$Message` for a dry run that does not exist, by the same
@@ -387,6 +460,38 @@ pub struct StoredSchedule {
     pub max_retries: Option<i32>,
 }
 
+/// How long a started canary keeps running, as its OWN schedule bounds it — which is what
+/// decides whether the clock owes it a move back out of [`CanaryState::Running`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunningBound {
+    /// The schedule runs the canary once. `CanaryScheduleInput$Expression`: "Specifying
+    /// `rate(0 minute)` or `rate(0 hour)` is a special value that causes the canary to run
+    /// only once when it is started", so the canary is done once that single run is.
+    SingleRun,
+    /// The schedule keeps running the canary for this long.
+    /// `CanaryScheduleInput$DurationInSeconds`: "How long, in seconds, for the canary to
+    /// continue making regular runs according to the schedule in the `Expression` value."
+    For(Duration),
+    /// Nothing about the schedule bounds it: "If you specify 0, the canary continues making
+    /// runs until you stop it."
+    UntilStopped,
+}
+
+impl StoredSchedule {
+    /// The bound this schedule puts on how long the canary runs, read from the two members
+    /// that carry one. A run-once expression bounds it however long the duration says,
+    /// because there is only one run to make.
+    pub fn running_bound(&self) -> RunningBound {
+        if is_run_once_schedule(&self.expression) {
+            return RunningBound::SingleRun;
+        }
+        match u64::try_from(self.duration_in_seconds) {
+            Ok(0) | Err(_) => RunningBound::UntilStopped,
+            Ok(seconds) => RunningBound::For(Duration::from_secs(seconds)),
+        }
+    }
+}
+
 /// Per-run configuration. `environment_variables` is stored but never reported:
 /// `CanaryRunConfigOutput` models no member for it, because the real service does not
 /// echo canary environment variables back.
@@ -416,6 +521,42 @@ pub struct StoredVpcConfig {
     pub ipv6_allowed_for_dual_stack: Option<bool>,
 }
 
+/// What one canary run's work produced: the state the run ends in, and the reason it
+/// carries when that state is a failure.
+///
+/// Recorded by the call that opens the run, once the work the run performs has been done
+/// ([`canary_run::perform`]), and materialised onto the run by [`StoredCanary::settle`] when
+/// the clock owes the run its outcome — so the verdict a client reads is the outcome of work
+/// that was actually attempted, never a value chosen when the run began.
+#[derive(Debug, Clone)]
+pub struct RunOutcome {
+    pub state: CanaryRunState,
+    pub state_reason: Option<String>,
+    pub state_reason_code: Option<String>,
+}
+
+impl RunOutcome {
+    /// The run did the work it is judged by: its artifacts were stored. A passing run
+    /// carries no reason — there is no failure to explain.
+    pub fn passed() -> Self {
+        Self {
+            state: CanaryRunState::Passed,
+            state_reason: None,
+            state_reason_code: None,
+        }
+    }
+
+    /// The run could not store its artifacts, which is what
+    /// [`RUN_EXECUTION_FAILURE_REASON_CODE`] reports, with `reason` saying what stopped it.
+    pub fn execution_failure(reason: impl Into<String>) -> Self {
+        Self {
+            state: CanaryRunState::Failed,
+            state_reason: Some(reason.into()),
+            state_reason_code: Some(RUN_EXECUTION_FAILURE_REASON_CODE.to_string()),
+        }
+    }
+}
+
 /// One recorded run of a canary.
 #[derive(Debug, Clone)]
 pub struct StoredRun {
@@ -428,6 +569,8 @@ pub struct StoredRun {
     pub completed: Option<SystemTime>,
     /// The instant at which the clock owes this run's outcome, while it is `RUNNING`.
     pub outcome_due: Option<SystemTime>,
+    /// The verdict the run's own work produced, waiting for that instant.
+    pub outcome: Option<RunOutcome>,
     pub artifact_s3_location: String,
     /// The dry run this run belongs to, when it is one.
     ///
@@ -504,6 +647,11 @@ pub struct StoredCanary {
     pub state_reason_code: Option<String>,
     /// The instant at which the clock owes the move out of [`CanaryState::Creating`].
     pub ready_due: Option<SystemTime>,
+    /// The instant at which the clock owes the move out of [`CanaryState::Running`],
+    /// because the canary's own schedule bounds how long it keeps running
+    /// ([`StoredSchedule::running_bound`]). `None` for a schedule that runs until
+    /// `StopCanary` is called.
+    pub stop_due: Option<SystemTime>,
     pub created: SystemTime,
     pub last_modified: SystemTime,
     pub last_started: Option<SystemTime>,
@@ -543,16 +691,43 @@ impl StoredCanary {
             if run.state == CanaryRunState::Running
                 && run.outcome_due.is_some_and(|due| now >= due)
             {
-                // Nothing executed the script, so the run cannot have a verdict: it ends
-                // in the modelled failure state with the reason why.
-                run.state = CanaryRunState::Failed;
-                run.state_reason = Some(RUN_NOT_EXECUTED_REASON.to_string());
-                run.state_reason_code = Some(RUN_NOT_EXECUTED_REASON_CODE.to_string());
+                // The verdict is the one the run's own work produced, recorded by the call
+                // that opened the run; a run whose outcome nobody recorded reports that it
+                // has no result rather than a verdict nothing established.
+                let outcome = run
+                    .outcome
+                    .take()
+                    .unwrap_or_else(|| RunOutcome::execution_failure(RUN_UNRECORDED_REASON));
+                run.state = outcome.state;
+                run.state_reason = outcome.state_reason;
+                run.state_reason_code = outcome.state_reason_code;
                 run.completed = Some(run.outcome_due.unwrap_or(now));
                 run.outcome_due = None;
             }
         }
+        // A canary whose schedule bounds how long it runs stops on its own once that bound
+        // has passed and the runs it started are finished: `rate(0 …)` "causes the canary to
+        // run only once when it is started", and a non-zero `DurationInSeconds` is how long
+        // "the canary [continues] making regular runs according to the schedule".
+        if self.state == CanaryState::Running
+            && self.stop_due.is_some_and(|due| now >= due)
+            && !self.has_open_canary_run()
+        {
+            self.last_stopped = Some(self.stop_due.unwrap_or(now));
+            self.state = CanaryState::Stopped;
+            self.state_reason = None;
+            self.state_reason_code = None;
+            self.stop_due = None;
+        }
         self.expire_runs(now);
+    }
+
+    /// Whether a run of the canary's own schedule is still open. A dry run is not one: it
+    /// exercises its own configuration independently of the schedule.
+    fn has_open_canary_run(&self) -> bool {
+        self.runs
+            .iter()
+            .any(|run| run.state == CanaryRunState::Running && run.dry_run_id.is_none())
     }
 
     /// Drop every finished run the canary's retention period no longer covers.
@@ -651,9 +826,12 @@ impl StoredCanary {
     pub fn close_open_run(&mut self, now: SystemTime) {
         for run in &mut self.runs {
             if run.state == CanaryRunState::Running && run.dry_run_id.is_none() {
+                // The run was cut short, so whatever its own work established is not what
+                // happened to it: the stop is.
+                run.outcome = None;
                 run.state = CanaryRunState::Failed;
-                run.state_reason = Some(RUN_NOT_EXECUTED_REASON.to_string());
-                run.state_reason_code = Some(RUN_NOT_EXECUTED_REASON_CODE.to_string());
+                run.state_reason = Some(RUN_INTERRUPTED_REASON.to_string());
+                run.state_reason_code = Some(RUN_EXECUTION_FAILURE_REASON_CODE.to_string());
                 run.completed = Some(now);
                 run.outcome_due = None;
             }
@@ -765,9 +943,10 @@ pub struct StoredGroup {
     /// writes and `ListGroupResources` reports.
     ///
     /// A SET, because a canary is either a member or it is not — associating one twice
-    /// cannot make it a member twice — and an ordered one, because `ListGroupResources`
-    /// pages over this collection and a tokenised page boundary needs a total, stable
-    /// order.
+    /// cannot make it a member twice, which is why a second association of one pair is
+    /// REFUSED rather than made ([`canary_already_in_group`]) — and an ordered one, because
+    /// `ListGroupResources` pages over this collection and a tokenised page boundary needs a
+    /// total, stable order.
     pub resources: BTreeSet<String>,
 }
 
@@ -1646,14 +1825,8 @@ pub fn unknown_runtime_version(requested: &str) -> String {
 /// as the special "run once" value — which has no frequency, hence `None`. A `cron(...)`
 /// expression also yields `None` here: its frequency is not a single interval.
 pub fn schedule_frequency_in_seconds(expression: &str) -> Option<i64> {
-    let body = expression
-        .trim()
-        .strip_prefix("rate(")
-        .and_then(|rest| rest.strip_suffix(')'))?;
-    let mut fields = body.split_whitespace();
-    let count: i64 = fields.next()?.parse().ok()?;
-    let unit = fields.next()?;
-    if fields.next().is_some() || count == 0 {
+    let (count, unit) = rate_expression(expression)?;
+    if count == 0 {
         return None;
     }
     let seconds_per_unit = match unit {
@@ -1662,6 +1835,32 @@ pub fn schedule_frequency_in_seconds(expression: &str) -> Option<i64> {
         _ => return None,
     };
     count.checked_mul(seconds_per_unit)
+}
+
+/// Whether `expression` is the schedule that runs the canary ONCE.
+///
+/// `CanaryScheduleInput$Expression`: "Specifying `rate(0 minute)` or `rate(0 hour)` is a
+/// special value that causes the canary to run only once when it is started." The count is
+/// what makes it that value, so any unit the rate form admits spells it.
+pub fn is_run_once_schedule(expression: &str) -> bool {
+    rate_expression(expression).is_some_and(|(count, _unit)| count == 0)
+}
+
+/// The `<number>` and `<unit>` of a `rate(<number> <unit>)` expression, when `expression` is
+/// one. The ONE parse of that form, so the frequency and the run-once readings above cannot
+/// disagree about which values are rate expressions.
+fn rate_expression(expression: &str) -> Option<(i64, &str)> {
+    let body = expression
+        .trim()
+        .strip_prefix("rate(")
+        .and_then(|rest| rest.strip_suffix(')'))?;
+    let mut fields = body.split_whitespace();
+    let count: i64 = fields.next()?.parse().ok()?;
+    let unit = fields.next()?;
+    if fields.next().is_some() {
+        return None;
+    }
+    Some((count, unit))
 }
 
 /// The `TimeoutInSeconds` a canary gets when `RunConfig.TimeoutInSeconds` is omitted.
@@ -1690,4 +1889,69 @@ pub fn service_state<Eng: Send + Sync + 'static>(
     (engine as &dyn ::std::any::Any)
         .downcast_ref::<::engine::InMemoryEngine>()
         .map(::engine::InMemoryEngine::state::<ComAmazonawsSyntheticsSyntheticsState>)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// RULE: how long a started canary keeps running is what its own schedule bounds — the
+    /// run-once expression bounds it to its single run, a non-zero `DurationInSeconds`
+    /// bounds it to that span, and a schedule with neither runs until it is stopped.
+    ///
+    /// The `For` rows are what an end-to-end assertion cannot reach: the member's range is
+    /// `0..31622400` seconds (`smithy_query(query="shape",shape="CanaryScheduleInput")`), so
+    /// the shortest bound a client can ask for is a second, and both published ends of that
+    /// range are rows here.
+    #[test]
+    fn a_schedules_running_bound_is_read_from_its_own_members() {
+        let rows: &[(&str, &str, i64, RunningBound)] = &[
+            ("run once, minutes", "rate(0 minute)", 0, RunningBound::SingleRun),
+            ("run once, hours", "rate(0 hour)", 0, RunningBound::SingleRun),
+            (
+                "run once, with a duration that cannot apply",
+                "rate(0 minute)",
+                600,
+                RunningBound::SingleRun,
+            ),
+            ("every minute, no duration", "rate(1 minute)", 0, RunningBound::UntilStopped),
+            ("a cron schedule, no duration", "cron(0 * * * ? *)", 0, RunningBound::UntilStopped),
+            (
+                "every minute, for the shortest duration the member admits",
+                "rate(1 minute)",
+                1,
+                RunningBound::For(Duration::from_secs(1)),
+            ),
+            (
+                "every hour, for an hour",
+                "rate(1 hour)",
+                3600,
+                RunningBound::For(Duration::from_secs(3600)),
+            ),
+            (
+                "a cron schedule, for the longest duration the member admits",
+                "cron(0 * * * ? *)",
+                31_622_400,
+                RunningBound::For(Duration::from_secs(31_622_400)),
+            ),
+            (
+                "a duration no member could carry",
+                "rate(1 minute)",
+                -1,
+                RunningBound::UntilStopped,
+            ),
+        ];
+        for (case, expression, duration_in_seconds, expected) in rows {
+            let schedule = StoredSchedule {
+                expression: (*expression).to_string(),
+                duration_in_seconds: *duration_in_seconds,
+                max_retries: None,
+            };
+            let actual = schedule.running_bound();
+            assert_eq!(
+                actual, *expected,
+                "case {case:?}: expected {expected:?}, got {actual:?}"
+            );
+        }
+    }
 }
