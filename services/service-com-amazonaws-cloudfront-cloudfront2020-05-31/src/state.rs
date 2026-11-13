@@ -3882,6 +3882,14 @@ pub use distributions::*;
 mod tenant_parameters;
 pub use tenant_parameters::*;
 
+/// The EXECUTION ROLE behind a Lambda@Edge association: which role Lambda reports for the
+/// function version a cache behaviour names, and whether the trust policy this account's IAM
+/// holds for that role lets the edge invoke the function under it. A SUBMODULE for the same
+/// reason [`functions`] is one; `pub use` keeps every name reachable as
+/// `crate::state::<name>`.
+mod lambda_edge_execution_role;
+pub use lambda_edge_execution_role::*;
+
 /// The ADDRESS a distribution's edge is reached at: the loopback listener the core opens for
 /// each distribution that serves traffic of its own, and the leg that hands a viewer request
 /// it accepts to this service's own data plane. A SUBMODULE for the same reason [`functions`]

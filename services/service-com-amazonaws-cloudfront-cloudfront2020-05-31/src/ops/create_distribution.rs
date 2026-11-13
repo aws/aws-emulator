@@ -451,6 +451,30 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         if state.lock().at_distribution_capacity() {
             return Err(create_refusal(crate::state::too_many_distributions()));
         }
+        // The refusals the submitted configuration carries BY ITSELF — the quantity
+        // agreements and the per-list quotas, through the one reading the shared create path
+        // takes of them — are answered BEFORE the associations below are resolved against
+        // the services that hold them, so a create this operation was going to refuse anyway
+        // reads nothing of another service's records.
+        if let Some(refusal) =
+            crate::state::config_refusal_without_state(&input.distribution_config)
+        {
+            return Err(create_refusal(refusal));
+        }
+        // A Lambda@Edge association fires only where the function's execution role admits
+        // the assume the edge makes of it, so a configuration naming a role this emulator's
+        // records show it could not be invoked under is refused BEFORE a distribution — or
+        // the socket its edge would be served on — exists. The ARN rule answers first (an
+        // association that names no published version has no role to resolve), and the
+        // resolution is a bounded number of reads of other services' records, taken before
+        // the store is locked.
+        if let Some(message) =
+            crate::state::edge_association_role_refusal(ctx, &input.distribution_config).await
+        {
+            return Err(create_refusal(
+                crate::state::CreateRefusal::InvalidLambdaFunctionAssociation(message),
+            ));
+        }
         let edge_endpoint = if crate::state::is_multi_tenant(&input.distribution_config) {
             None
         } else {

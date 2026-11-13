@@ -617,6 +617,23 @@ pub fn names_a_certificate(
         || names_custom_certificate(distribution_certificate)
 }
 
+/// The refusal a submitted configuration carries BY ITSELF, with nothing of the store or of
+/// another service read: the quantity agreements ([`config_quantity_mismatch`]) and then the
+/// per-list quotas ([`config_limit_exceeded`]), in that order.
+///
+/// The ONE reading of those two, so the shared create path
+/// ([`ComAmazonawsCloudfrontCloudfront20200531State::create_distribution`]) and a handler
+/// that answers them BEFORE it resolves the configuration's Lambda@Edge associations against
+/// the services that hold the function and its execution role
+/// ([`super::edge_association_role_refusal`]) cannot order or word them differently. A
+/// request refused here costs nothing but this walk of its own body.
+pub fn config_refusal_without_state(config: &DistributionConfig) -> Option<CreateRefusal> {
+    if let Some(message) = config_quantity_mismatch(config) {
+        return Some(CreateRefusal::InconsistentQuantities(message));
+    }
+    config_limit_exceeded(config).map(CreateRefusal::ConfigLimit)
+}
+
 /// A count in a submitted configuration that exceeds what this service stores, and the
 /// message that says so. Each variant names the modelled error the handler answers with.
 #[derive(Debug, Clone, PartialEq, Eq)]

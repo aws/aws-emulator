@@ -1325,17 +1325,13 @@ impl ComAmazonawsCloudfrontCloudfront20200531State {
         now: SystemTime,
         edge_endpoint: Option<EdgeEndpoint>,
     ) -> Result<CreatedDistribution, CreateRefusal> {
-        // "The value of Quantity and the size of Items don't match." A malformed
-        // configuration is refused before any id or caller reference is claimed for it.
-        if let Some(message) = config_quantity_mismatch(&config) {
-            return Err(CreateRefusal::InconsistentQuantities(message));
-        }
-
-        // A configuration is walked on every payload that reports it, so the counts that
-        // drive that walk are bounded by CloudFront's published quotas on the way IN,
-        // each refused with the error the model names for it.
-        if let Some(limit) = config_limit_exceeded(&config) {
-            return Err(CreateRefusal::ConfigLimit(limit));
+        // "The value of Quantity and the size of Items don't match", and then the published
+        // per-list quotas: the refusals a configuration carries BY ITSELF, read through the
+        // one statement of them a handler answers first as well, so a malformed or oversized
+        // configuration is refused before any id or caller reference is claimed for it and
+        // before anything of it is resolved against another service.
+        if let Some(refusal) = config_refusal_without_state(&config) {
+            return Err(refusal);
         }
 
         // An alternate domain name is served only under a certificate that validates it,

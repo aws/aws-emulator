@@ -82,6 +82,11 @@ rquickjs = "0.14"
 # (`state::ca_certificates_bundle`). Only the generated client is needed — the emulator
 # supplies the transport.
 aws-sdk-s3 = { version = "1", default-features = false }
+# The function version a Lambda@Edge association names: `GetFunctionConfiguration` reports the
+# EXECUTION ROLE the edge would have to assume to invoke it, read over the in-process callback
+# from the Lambda this emulator mounts (`state::lambda_edge_execution_role`). Only the
+# generated client is needed — the emulator supplies the transport.
+aws-sdk-lambda = { version = "1", default-features = false }
 # Splits a CA certificates bundle into its PEM blocks, so the bundle's structure is read by
 # the crate that owns the format rather than by scanning text.
 pem = "3"
@@ -107,9 +112,16 @@ base64 = "0.22"
 # The Kinesis data stream the real-time log suite creates and polls, mounted on the same
 # router: the record the edge delivers is read back through Kinesis itself. TEST-ONLY.
 service-com-amazonaws-kinesis-kinesis-20131202 = { workspace = true }
-# The IAM roles the real-time log suite hands its endpoints, mounted on the same router:
-# whether a delivery role may put a record on its stream is IAM's decision. TEST-ONLY.
+# The IAM roles the real-time log suite hands its endpoints, and the roles the Lambda@Edge
+# suite stages its execution roles as, mounted on the same router: whether a delivery role may
+# put a record on its stream, and what a role's trust policy says, are IAM's decisions.
+# TEST-ONLY.
 service-com-amazonaws-iam-awsidentitymanagementv20100508 = { workspace = true }
+# The Lambda@Edge suite stages the function a cache behaviour associates, and the IAM role it
+# runs as, through the SERVICES' own APIs on the same router — so the execution role the
+# handler resolves is one a client really created. TEST-ONLY.
+aws-sdk-iam = { version = "1", default-features = false }
+service-com-amazonaws-lambda-awsgirapiservice = { workspace = true }
 # DECODE the two content codings the edge compresses an answer under, so the edge suite reads
 # the bytes it served and proves they really are that coding's rather than mislabelled.
 brotli = "9"

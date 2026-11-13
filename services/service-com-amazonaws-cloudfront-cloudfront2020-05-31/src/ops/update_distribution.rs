@@ -322,6 +322,47 @@ impl From<UpdateDistributionErrorModeled> for UpdateDistributionError {
     }
 }
 
+/// The stored distribution this update would land on, as the two reads of it below share one
+/// reading: the caller reference it holds and the connection mode it declares, or the
+/// modelled refusal that says the update cannot land at all — the store holds no
+/// distribution under that id, or the precondition does not match the version it holds.
+///
+/// Read TWICE. Once BEFORE the submitted configuration's Lambda@Edge associations are
+/// resolved against the services that hold the function and its execution role
+/// ([`crate::state::edge_association_role_refusal`]), so an update this operation was going
+/// to refuse anyway reads nothing of another service's records; and once under the lock the
+/// write is made with, because the record could have changed while those reads were in
+/// flight and an update still only lands on the version its caller read.
+fn current_record(
+    store: &crate::state::ComAmazonawsCloudfrontCloudfront20200531State,
+    id: &str,
+    if_match: Option<&str>,
+) -> Result<(String, &'static str), UpdateDistributionError> {
+    let Some((etag, caller_reference, connection_mode)) = store.distribution(id).map(|stored| {
+        (
+            stored.etag.clone(),
+            stored.config.caller_reference.clone(),
+            crate::state::connection_mode_declared(&stored.config),
+        )
+    }) else {
+        return Err(UpdateDistributionErrorModeled::NoSuchDistribution(
+            crate::state::no_such_distribution(),
+        )
+        .into());
+    };
+    match crate::state::check_if_match(&etag, if_match) {
+        IfMatch::Current => Ok((caller_reference, connection_mode)),
+        IfMatch::Invalid => Err(UpdateDistributionErrorModeled::InvalidIfMatchVersion(
+            crate::state::invalid_if_match_version(),
+        )
+        .into()),
+        IfMatch::Stale => Err(UpdateDistributionErrorModeled::PreconditionFailed(
+            crate::state::precondition_failed(),
+        )
+        .into()),
+    }
+}
+
 /// The `UpdateDistribution` operation.
 ///
 /// Owns the shared engine (the constructor seam) and implements
@@ -361,42 +402,17 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let Some(state) = crate::state::service_state(&*self.engine) else {
             return Err(crate::state::store_unavailable());
         };
-        let _ = ctx;
         let now = SystemTime::now();
-        let mut store = state.lock();
-        store.settle(now);
-
-        let Some(current) = store.distribution(&input.id).map(|stored| {
-            (
-                stored.etag.clone(),
-                stored.config.caller_reference.clone(),
-                crate::state::connection_mode_declared(&stored.config),
-            )
-        }) else {
-            return Err(UpdateDistributionErrorModeled::NoSuchDistribution(
-                crate::state::no_such_distribution(),
-            )
-            .into());
+        // Everything that can be refused WITHOUT reading another service's records is
+        // answered first, so an update this operation was going to refuse anyway pays for
+        // none of those reads: the stored record and its precondition, under a lock taken
+        // and released for that read alone, and then the refusals the submitted
+        // configuration carries by itself.
+        let (current_caller_reference, current_connection_mode) = {
+            let mut store = state.lock();
+            store.settle(now);
+            current_record(&store, &input.id, input.if_match.as_deref())?
         };
-        let (current_etag, current_caller_reference, current_connection_mode) = current;
-
-        // The precondition is checked against the stored version, so an update only
-        // lands on the configuration its caller actually read.
-        match crate::state::check_if_match(&current_etag, input.if_match.as_deref()) {
-            IfMatch::Current => {}
-            IfMatch::Invalid => {
-                return Err(UpdateDistributionErrorModeled::InvalidIfMatchVersion(
-                    crate::state::invalid_if_match_version(),
-                )
-                .into());
-            }
-            IfMatch::Stale => {
-                return Err(UpdateDistributionErrorModeled::PreconditionFailed(
-                    crate::state::precondition_failed(),
-                )
-                .into());
-            }
-        }
 
         // "The value of Quantity and the size of Items don't match."
         if let Some(message) = crate::state::config_quantity_mismatch(&input.distribution_config) {
@@ -484,6 +500,34 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 .into(),
             );
         }
+
+        // The same rule the create path applies: a Lambda@Edge association fires only where
+        // the function's execution role admits the assume the edge makes of it, so an update
+        // cannot leave a distribution carrying an association that could never fire either.
+        // This is the first refusal of this operation that reads another service's records
+        // (a bounded number of them — see `crate::state::edge_association_role_refusal`), so
+        // it is reached only once every refusal above has been answered, and it is made with
+        // no lock held.
+        if let Some(message) =
+            crate::state::edge_association_role_refusal(ctx, &input.distribution_config).await
+        {
+            return Err(
+                UpdateDistributionErrorModeled::InvalidLambdaFunctionAssociation(
+                    InvalidLambdaFunctionAssociation {
+                        message: Some(message),
+                    },
+                )
+                .into(),
+            );
+        }
+
+        // The write, and the refusals that read this service's own store. The record is read
+        // again through the one reading above, because it could have changed while the reads
+        // of the configuration's associations were in flight: an update still lands only on
+        // the version its caller read.
+        let mut store = state.lock();
+        store.settle(now);
+        current_record(&store, &input.id, input.if_match.as_deref())?;
 
         // The same rule the create path applies: a cache behaviour runs the code a
         // CloudFront function's `LIVE` stage holds, so an update cannot leave a
