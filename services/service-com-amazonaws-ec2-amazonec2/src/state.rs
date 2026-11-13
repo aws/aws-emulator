@@ -2542,6 +2542,16 @@ mod client_vpn;
 
 pub use client_vpn::*;
 
+/// The client connections of those endpoints: the store's record, the status codes one moves
+/// through, the refusals for a connection or a user an endpoint does not have, and the one
+/// writer of a termination — in a file of its own rather than as more lines here, because a
+/// connection is a resource of its own beside the endpoint it belongs to. Everything it
+/// declares is re-exported below, so a handler reaches it as
+/// `crate::state::client_vpn_connection` like any helper of this module.
+mod client_vpn_connections;
+
+pub use client_vpn_connections::*;
+
 /// The IAM roles each ACM certificate is associated with for ACM for Nitro Enclaves: the
 /// store's record, the form of the two ARNs the surface takes, the refusals for a value that
 /// is neither, and the projection every report of an association reads — in a file of their

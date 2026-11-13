@@ -1573,6 +1573,20 @@ pub struct ComAmazonawsEc2Amazonec2State {
     /// [`ComAmazonawsEc2Amazonec2State::insert_client_vpn_route`] is the one way a route is
     /// stored.
     pub client_vpn_routes: BTreeMap<ClientVpnRouteKey, ClientVpnRouteRecord>,
+    /// Every client connection those endpoints hold, by its own `ConnectionId`, as the
+    /// modelled [`crate::ops::types::ClientVpnConnection`] shape plus the move the clock owes
+    /// it ([`ClientVpnConnectionRecord`]).
+    ///
+    /// One map keyed by connection id rather than one per endpoint: a connection is named by
+    /// its own id by the operation that terminates one, and the endpoint it belongs to is a
+    /// member of the record, so a report of an endpoint's connections narrows this map by
+    /// that member. The key order is the order a report of them pages over.
+    ///
+    /// Starts EMPTY, and stays empty until something records a connection: a client
+    /// connection is established over the endpoint's own VPN data plane rather than by any
+    /// EC2 call, so [`ComAmazonawsEc2Amazonec2State::insert_client_vpn_connection`] is the
+    /// one way one enters this map.
+    pub client_vpn_connections: BTreeMap<String, ClientVpnConnectionRecord>,
     /// A `CreateClientVpnRoute` `ClientToken` and the route that request added, so a repeat
     /// of the same request answers with that route instead of refusing it as a duplicate —
     /// "Unique, case-sensitive identifier that you provide to ensure the idempotency of the
@@ -3403,6 +3417,8 @@ impl Default for ComAmazonawsEc2Amazonec2State {
             client_vpn_target_networks: BTreeMap::new(),
             // No endpoint, so no route table of one holds a route either.
             client_vpn_routes: BTreeMap::new(),
+            // No endpoint, so no client has connected to one either.
+            client_vpn_connections: BTreeMap::new(),
             client_vpn_route_client_tokens: HashMap::new(),
             client_vpn_target_network_client_tokens: HashMap::new(),
             // A fresh account has associated no IAM role with an ACM certificate, so no

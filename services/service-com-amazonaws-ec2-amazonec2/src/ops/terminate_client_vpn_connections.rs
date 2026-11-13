@@ -1,15 +1,13 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op TerminateClientVpnConnections
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `TerminateClientVpnConnections`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
+//! IMPLEMENTED: terminates the client connections of a stored Client VPN endpoint — the one
+//! named by its `ConnectionId`, or every active connection a named user holds — stamps each
+//! with the instant it ended, answers it `terminating` (the clock owes it `terminated` a
+//! transition span later), and reports the status each connection held before the call
+//! beside the one it holds after it.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`TerminateClientVpnConnections::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! This is the ONLY file to touch for this operation.
 //!
 //! ## Shape of an operation
 //!
@@ -106,6 +104,18 @@ impl From<TerminateClientVpnConnectionsErrorModeled> for TerminateClientVpnConne
     }
 }
 
+/// What the request names to terminate: the two mutually exclusive ways
+/// `TerminateClientVpnConnections` selects connections, read off the request before anything
+/// is resolved so the handler's resolution has no "neither was named" case left in it.
+enum Selected {
+    /// "The ID of the client connection to be terminated" (`ConnectionId`): the one
+    /// connection that id names on the endpoint.
+    Connection(String),
+    /// "The name of the user who initiated the connection" (`Username`): every active
+    /// connection that user holds on the endpoint.
+    User(String),
+}
+
 /// The `TerminateClientVpnConnections` operation.
 ///
 /// Owns the shared engine (the constructor seam) and implements
@@ -142,18 +152,141 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `TerminateClientVpnConnections` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(TerminateClientVpnConnectionsErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("TerminateClientVpnConnections"))
+        // `ctx` carries request metadata only; the endpoint and the connections to terminate
+        // are each named by the request, and the store is reached through the engine on
+        // `self`.
+        let _ = ctx;
+        use crate::state;
+
+        // "The ID of the Client VPN endpoint to which the client is connected"
+        // (`ClientVpnEndpointId`) is `@required` but modelled `clientOptional`, so a request
+        // that left it out reaches this handler as an empty string rather than being refused
+        // at the boundary. A parameter the request did not carry is EC2's `MissingParameter`.
+        if input.client_vpn_endpoint_id.is_empty() {
+            return Err(state::missing_parameter(
+                "The request must contain the parameter clientVpnEndpointId",
+            ));
+        }
+
+        // Which connections to terminate: "this action can be used to terminate a specific
+        // client connection, OR up to five connections established by a specific user"
+        // (`TerminateClientVpnConnections`). A value the request left out arrives as no
+        // member at all, and one it sent empty names no connection and no user either, so
+        // both read as unnamed.
+        let named = |value: &Option<String>| {
+            value
+                .as_deref()
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+        };
+        let selected = match (named(&input.connection_id), named(&input.username)) {
+            (Some(connection_id), None) => Selected::Connection(connection_id),
+            (None, Some(username)) => Selected::User(username),
+            // Neither names anything to terminate, so the request carries neither of the two
+            // parameters one of which it must: EC2's `MissingParameter`, naming the pair the
+            // way it names an either-or pair.
+            (None, None) => {
+                return Err(state::missing_parameter(
+                    "The request must contain the parameter connectionId or username",
+                ));
+            }
+            // The two select mutually exclusively — one connection, or a user's connections —
+            // so a request naming both is refused with the ONE sentence EC2 refuses a pair
+            // that cannot be combined with, rather than having one of them silently ignored.
+            (Some(_), Some(_)) => {
+                return Err(state::parameters_cannot_be_combined(
+                    "connectionId",
+                    "username",
+                ));
+            }
+        };
+
+        // "Checks whether you have the required permissions for the action, WITHOUT
+        // ACTUALLY MAKING THE REQUEST, and provides an error response. If you have the
+        // required permissions, the error response is DryRunOperation. Otherwise, it is
+        // UnauthorizedOperation" (`DryRun`): a question about the CALLER, answered once the
+        // request's own form has been read and before anything is resolved or written.
+        if input.dry_run.unwrap_or(false) {
+            return Err(state::dry_run_operation());
+        }
+
+        let handle = state::require_service_state(&*self.engine)?;
+        let mut store = handle.lock();
+        // A move the clock already owes a record of this store fell due whether or not
+        // anybody called, so those moves are applied before this call reads it — which is
+        // what makes the status this call reports as PREVIOUS the one a reader would have
+        // seen at this instant.
+        store.materialize_due_transitions();
+
+        // The endpoint the connections belong to, resolved by the ONE lookup every operation
+        // taking a `ClientVpnEndpointId` resolves it through: an id this account holds no
+        // endpoint for has no connections to terminate.
+        let endpoint_id = input.client_vpn_endpoint_id.as_str();
+        state::require_known_client_vpn_endpoint(&store, endpoint_id)?;
+
+        // The connections this call terminates, and the user it reports as the one who
+        // established them. Both forms resolve against the endpoint's OWN connections, so a
+        // connection or a user of another endpoint is not one of this endpoint's.
+        let (doomed, reported_username) = match selected {
+            Selected::Connection(connection_id) => {
+                // "The ID of the client connection to be terminated" (`ConnectionId`): one
+                // connection, refused the way this surface refuses a Client VPN resource it
+                // cannot resolve when the endpoint holds none under that id.
+                let Some(record) = store.client_vpn_connection(endpoint_id, &connection_id) else {
+                    return Err(state::invalid_client_vpn_connection_id_not_found(
+                        &connection_id,
+                    ));
+                };
+                // "The user who established the terminated client connections"
+                // (`TerminateClientVpnConnectionsResult$Username`): the connection's own
+                // user, which a connection authenticated by certificate rather than by
+                // Active Directory does not have — so that one reports no user at all.
+                let established_by = record.view.username.clone();
+                (vec![connection_id], established_by)
+            }
+            Selected::User(username) => {
+                // "The name of the user who initiated the connection. Use this option to
+                // terminate ALL ACTIVE CONNECTIONS for the specified user" (`Username`): the
+                // user's active connections, refused when the endpoint holds none for that
+                // user. The sentence that follows it — "this option can only be used if the
+                // user has established up to five connections" — says when the option
+                // applies rather than naming a refusal, and AWS's EC2 error catalogue
+                // documents no code for exceeding it, so every active connection the user
+                // holds is terminated rather than some bound being invented here.
+                let active = store.active_client_vpn_connections_for_user(endpoint_id, &username);
+                if active.is_empty() {
+                    return Err(state::invalid_client_vpn_connection_user_not_found(
+                        &username,
+                    ));
+                }
+                (active, Some(username))
+            }
+        };
+
+        // The termination itself: the ONE writer of a connection's move to `terminating`,
+        // which also stamps the connection with the instant it ended and records the
+        // `terminated` the clock owes it. Terminating a connection that is already
+        // terminating or terminated reports it unchanged, so a repeated call neither moves a
+        // terminal status back nor reports a move nothing made.
+        let now = ::std::time::SystemTime::now();
+        let mut connection_statuses: Vec<TerminateConnectionStatus> = Vec::new();
+        for connection_id in doomed {
+            let Some((previous, current)) =
+                store.terminate_client_vpn_connection(&connection_id, now)
+            else {
+                continue;
+            };
+            connection_statuses.push(TerminateConnectionStatus {
+                connection_id: Some(connection_id),
+                previous_status: Some(previous),
+                current_status: Some(current),
+            });
+        }
+
+        Ok(TerminateClientVpnConnectionsOutput {
+            client_vpn_endpoint_id: Some(input.client_vpn_endpoint_id.clone()),
+            username: reported_username,
+            connection_statuses: Some(connection_statuses),
+        })
     }
 }

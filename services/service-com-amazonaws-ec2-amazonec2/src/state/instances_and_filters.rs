@@ -718,6 +718,10 @@ impl ComAmazonawsEc2Amazonec2State {
         // instant has passed, whether or not anybody called again — the same contract as the
         // target network association above.
         self.materialize_due_client_vpn_routes(now);
+        // A client connection `TerminateClientVpnConnections` answered as `terminating` is
+        // `terminated` once its due instant has passed, whether or not anybody called again —
+        // the same contract as the route above.
+        self.materialize_due_client_vpn_connections(now);
         // An IPAM pool `CreateIpamPool` answered as `create-in-progress` reaches
         // `create-complete` once its due instant has passed, whether or not anybody called —
         // the same contract as the `pending` VPC above, and the reason the pool's due

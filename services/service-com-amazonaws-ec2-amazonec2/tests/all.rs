@@ -2022,6 +2022,13 @@ mod describe_tags;
 // read back through `DescribeVpcs`, beside what it refuses and what it leaves alone. Declared
 #[path = "all/modify_vpc_tenancy.rs"]
 mod modify_vpc_tenancy;
+// `TerminateClientVpnConnections`: the client connections of a Client VPN endpoint a
+// terminate moves out of `active` — the one its `ConnectionId` names, or every active
+// connection its `Username` names — the terminal status the clock then owes each, and the
+// endpoints, selectors, connections and users it refuses without touching a stored record.
+// Declared at the tail of this file, which is where every new ec2 suite lands.
+#[path = "all/terminate_client_vpn_connections.rs"]
+mod terminate_client_vpn_connections;
 // `CreateVpnConnection`: the Site-to-Site VPN connection a create makes between a customer
 // gateway and one Amazon-side gateway — its two tunnels, their addresses, inside blocks and
 // pre-shared keys, the options at their published defaults, the configuration document, and
