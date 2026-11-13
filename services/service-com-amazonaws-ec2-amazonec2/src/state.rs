@@ -2558,6 +2558,13 @@ mod fleet_placements;
 mod fleet_deletion;
 mod network_insights;
 mod nat_gateways_and_vpn_connections;
+/// What MAKING a Site-to-Site VPN connection consists of — the two tunnels it is brought up
+/// with, the options and defaults the model publishes for one, the values this service mints
+/// for a tunnel, the configuration document a connection hands its network administrator, and
+/// the one write path that stores the result — in a file of its own rather than as more lines
+/// beside the connection record. Everything it declares is re-exported below, so a handler
+/// reaches it as `crate::state::VpnConnectionSpec` like any primitive of this module.
+mod vpn_connection_creation;
 mod spot_fleets;
 mod spot_instance_requests;
 mod store_image_tasks_and_route_servers;
@@ -2679,6 +2686,7 @@ pub use route_server_propagations::*;
 pub use spot_instance_requests::*;
 pub use spot_fleets::*;
 pub use nat_gateways_and_vpn_connections::*;
+pub use vpn_connection_creation::*;
 pub use network_insights::*;
 pub use fleets::*;
 pub use fleet_placements::*;

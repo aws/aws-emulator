@@ -994,10 +994,6 @@ mod snapshot_imports;
 mod import_task_cancellation;
 #[path = "all/instance_connect_endpoints.rs"]
 mod instance_connect_endpoints;
-// The status checks every instance reports, the states they apply in, and the filters and
-// pages `DescribeInstanceStatus` answers them through.
-#[path = "all/describe_instance_status.rs"]
-mod describe_instance_status;
 // The fixed detail every instance reports, and the monitoring state a caller moves.
 #[path = "all/instance_detail.rs"]
 mod instance_detail;
@@ -1011,10 +1007,6 @@ mod instance_event_windows;
 // queued reboot taking effect — as a BOOT of its own, appended to the console it writes.
 #[path = "all/instance_guest_boots.rs"]
 mod instance_guest_boots;
-// What the guest DOES with the instance's own user data: the init system runs it when the
-// guest comes up, and what it writes to the console device is on that instance's console.
-#[path = "all/instance_guest_console_user_data.rs"]
-mod instance_guest_console_user_data;
 #[path = "all/instance_lifecycle.rs"]
 mod instance_lifecycle;
 #[path = "all/instance_metadata_defaults.rs"]
@@ -2011,7 +2003,6 @@ mod describe_launch_templates_after_delete;
 // The endpoint-type rule `CreateVpcEndpoint` holds a request to: the `VpcEndpointType` asked
 // for has to be one of the types the endpoint service it names is available through, whichever
 // source that service came from — declared at the tail of this file, which is where every new
-// ec2 suite lands.
 #[path = "all/vpc_endpoint_type_matches_service.rs"]
 mod vpc_endpoint_type_matches_service;
 // `DescribeTags`: the tags of every taggable resource the store holds, the filters that
@@ -2023,10 +2014,24 @@ mod describe_tags;
 // read back through `DescribeVpcs`, beside what it refuses and what it leaves alone. Declared
 #[path = "all/modify_vpc_tenancy.rs"]
 mod modify_vpc_tenancy;
+// `CreateVpnConnection`: the Site-to-Site VPN connection a create makes between a customer
+// gateway and one Amazon-side gateway — its two tunnels, their addresses, inside blocks and
+// pre-shared keys, the options at their published defaults, the configuration document, and
+// what it refuses — declared at the tail of this file, which is where every new ec2 suite
+// lands.
+#[path = "all/create_vpn_connection.rs"]
+mod create_vpn_connection;
+// The status checks every instance reports, the states they apply in, and the filters and
+// pages `DescribeInstanceStatus` answers them through.
+#[path = "all/describe_instance_status.rs"]
+mod describe_instance_status;
+// What the guest DOES with the instance's own user data: the init system runs it when the
+// guest comes up, and what it writes to the console device is on that instance's console.
+#[path = "all/instance_guest_console_user_data.rs"]
+mod instance_guest_console_user_data;
 // `UpdateSecurityGroupRuleDescriptionsEgress`: the description it writes onto each outbound
 // rule a request names — by rule id or by the rule's own properties — read back through
 // `DescribeSecurityGroupRules` and `DescribeSecurityGroups`, beside what it refuses and what
 // it leaves alone. Declared at the tail of this file, which is where every new ec2 suite
-// lands.
 #[path = "all/update_security_group_rule_descriptions_egress.rs"]
 mod update_security_group_rule_descriptions_egress;

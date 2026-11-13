@@ -650,6 +650,16 @@ impl ComAmazonawsEc2Amazonec2State {
                 .and_then(|owed| owed.due_by(now))
                 .map(str::to_string)
             {
+                // A connection that has finished coming up has finished associating with the
+                // Amazon-side gateway it terminates on: the association was made as the
+                // connection came up, so it reaches `associated` at the same instant.
+                if state == VPN_STATE_AVAILABLE
+                    && view.gateway_association_state.as_deref()
+                        == Some(GATEWAY_ASSOCIATION_STATE_ASSOCIATING)
+                {
+                    view.gateway_association_state =
+                        Some(GATEWAY_ASSOCIATION_STATE_ASSOCIATED.to_string());
+                }
                 view.state = Some(state);
                 *connection_move = None;
             }

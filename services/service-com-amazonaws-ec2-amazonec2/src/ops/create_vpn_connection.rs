@@ -1,15 +1,16 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op CreateVpnConnection
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `CreateVpnConnection`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
+//! IMPLEMENTED: creates the Site-to-Site VPN connection the request describes — between the
+//! customer gateway it names and the ONE Amazon-side gateway it names — with the two tunnels
+//! a connection is brought up with, each carrying the outside address, inside CIDR block and
+//! pre-shared key this service assigns it or the ones the request asked for, the
+//! connection-level options at the defaults the model publishes, the telemetry of each
+//! tunnel and the customer gateway configuration document built out of all of it, in the
+//! non-terminal `pending` state the clock then owes `available`; it reports the connection
+//! as it was stored, which is what `DescribeVpnConnections` then reports.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`CreateVpnConnection::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! This is the ONLY file to touch for this operation.
 //!
 //! ## Shape of an operation
 //!
@@ -160,9 +161,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let _ = ctx;
         use crate::state;
 
-        // Both `@required` members are modelled `clientOptional`, so a request that left one
-        // out reaches this handler as an empty string rather than being refused at the
-        // boundary. A parameter the request did not carry is EC2's `MissingParameter`.
+        // Both `@required` members are modelled `clientOptional`, so a request that sent one
+        // EMPTY reaches this handler with an empty string rather than being refused at the
+        // boundary. A parameter with no value is a parameter the request did not give, which
+        // is EC2's `MissingParameter`.
         for (parameter, value) in [
             ("customerGatewayId", input.customer_gateway_id.as_str()),
             ("type", input.r#type.as_str()),
@@ -209,11 +211,46 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // specify the resource type to tag, otherwise the request will fail"
         // (`TagSpecification`), and the only type this action tags is the connection it
         // creates.
-        let _tags: Vec<Tag> = state::tags_from_specifications(
+        let tags: Vec<Tag> = state::tags_from_specifications(
             input.tag_specifications.as_deref(),
-            RESOURCE_TYPE_VPN_CONNECTION,
+            state::RESOURCE_TYPE_VPN_CONNECTION,
             Self::NAME,
         )?;
+
+        // "The options for the VPN connection" (`Options`): the connection-level ones at the
+        // defaults their own documentation publishes for the members the request left out,
+        // and then one entry per tunnel the connection is brought up with — each held to the
+        // constraints its member publishes, with the three values this service owns (a
+        // tunnel's outside address, and the inside block and pre-shared key of a tunnel the
+        // request named none for) left for the store to mint.
+        let options = state::vpn_connection_options(input.options.as_ref())?;
+        let tunnels = state::requested_tunnel_options(
+            input
+                .options
+                .as_ref()
+                .and_then(|options| options.tunnel_options.as_deref()),
+            options
+                .tunnel_inside_ip_version
+                .as_deref()
+                .unwrap_or(state::TUNNEL_INSIDE_IP_VERSION_IPV4),
+        )?;
+
+        // "Specifies the storage mode for the pre-shared key (PSK). Valid values are
+        // `Standard` (stored in the Site-to-Site VPN service) or `SecretsManager` (stored in
+        // Amazon Web Services Secrets Manager)" (`PreSharedKeyStorage`). The keys this
+        // service mints are held in its own state and reported on the connection's tunnel
+        // options, which IS the `Standard` mode; it holds no Secrets Manager secret to name in
+        // `VpnConnection$PreSharedKeyArn`, so a request asking for the other mode is refused
+        // rather than answered with a connection whose keys are not where it asked for them.
+        if let Some(storage) = input.pre_shared_key_storage.as_deref() {
+            if storage != state::PRE_SHARED_KEY_STORAGE_STANDARD {
+                return Err(state::invalid_vpn_option_value(
+                    "preSharedKeyStorage",
+                    &storage,
+                    state::PRE_SHARED_KEY_STORAGE_STANDARD,
+                ));
+            }
+        }
 
         // "Checks whether you have the required permissions for the action, WITHOUT
         // ACTUALLY MAKING THE REQUEST, and provides an error response. If you have the
@@ -257,12 +294,130 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             }
         }
 
-        // Making the connection itself — the tunnels, their endpoints and their
-        // pre-shared keys — is still unwritten, so the operation answers the scaffold's 501
-        // rather than a success it cannot back with state. Every refusal the request earns is
-        // minted above, before this point, so a client learns that its input is wrong from
-        // the code the real service answers rather than from this.
-        Err(crate::scaffolded::Scaffolded::not_implemented(Self::NAME))
+        // "The ID of the VPN concentrator to associate with the VPN connection"
+        // (`VpnConcentratorId`), resolved the same way: a connection cannot be associated
+        // with a concentrator this account does not hold.
+        if let Some(vpn_concentrator_id) = input.vpn_concentrator_id.as_deref() {
+            store.require_vpn_concentrator(vpn_concentrator_id)?;
+        }
+
+        // "This is an idempotent operation. If you perform the operation more than once,
+        // Amazon EC2 doesn't return an error" (`CreateVpnConnection`): what identifies a
+        // connection is the pair of endpoints it runs between, so a request naming a pair a
+        // connection already runs between is answered with that connection — written once, in
+        // `crate::state`.
+        if let Some(held) = store.vpn_connection_between(
+            &input.customer_gateway_id,
+            input.vpn_gateway_id.as_deref(),
+            input.transit_gateway_id.as_deref(),
+        ) {
+            return Ok(CreateVpnConnectionOutput {
+                vpn_connection: Some(held.view.clone()),
+            });
+        }
+
+        // "Any specified CIDR blocks must be unique across all VPN connections that use the
+        // same virtual private gateway" (`VpnTunnelOptionsSpecification$TunnelInsideCidr`):
+        // an inside block another tunnel of the account already holds, or one this request
+        // names for both of its own tunnels, is refused rather than given to two tunnels.
+        let held = store.tunnel_inside_blocks_in_use();
+        let mut asked: Vec<&str> = Vec::new();
+        for tunnel in &tunnels {
+            for (parameter, block) in [
+                ("tunnelInsideCidr", tunnel.tunnel_inside_cidr.as_deref()),
+                (
+                    "tunnelInsideIpv6Cidr",
+                    tunnel.tunnel_inside_ipv6_cidr.as_deref(),
+                ),
+            ] {
+                let Some(block) = block else { continue };
+                if held.contains(block) || asked.contains(&block) {
+                    return Err(state::tunnel_inside_cidr_in_use(parameter, block));
+                }
+                asked.push(block);
+            }
+        }
+
+        // Where each tunnel's outside address comes from, which is what `OutsideIpAddressType`
+        // decides. A private one is addressed out of the transport attachment's own network,
+        // so that attachment and the VPC it attaches are resolved here — the request names an
+        // attachment this account has to hold, and the address then comes out of that VPC's
+        // block.
+        let outside_address_source = match options.outside_ip_address_type.as_deref() {
+            Some(state::OUTSIDE_IP_ADDRESS_TYPE_IPV6) => {
+                state::TunnelOutsideAddressSource::AmazonIpv6
+            }
+            Some(state::OUTSIDE_IP_ADDRESS_TYPE_PRIVATE_IPV4) => {
+                let attachment_id = options
+                    .transport_transit_gateway_attachment_id
+                    .clone()
+                    .unwrap_or_default();
+                let vpc_id = store
+                    .transit_gateway_attachments
+                    .get(&attachment_id)
+                    .and_then(|record| record.view.resource_id())
+                    .map(str::to_string)
+                    .ok_or_else(|| {
+                        state::invalid_transit_gateway_attachment_id_not_found(&attachment_id)
+                    })?;
+                let cidr_block = store
+                    .vpcs
+                    .get(&vpc_id)
+                    .and_then(|vpc| vpc.cidr_block.clone())
+                    .ok_or_else(|| state::invalid_vpc_id_not_found(&vpc_id))?;
+                state::TunnelOutsideAddressSource::VpcPrivateIpv4(cidr_block)
+            }
+            _ => state::TunnelOutsideAddressSource::AmazonPublicIpv4,
+        };
+
+        let spec = state::VpnConnectionSpec {
+            customer_gateway_id: input.customer_gateway_id,
+            connection_type: input.r#type,
+            vpn_gateway_id: input.vpn_gateway_id,
+            transit_gateway_id: input.transit_gateway_id,
+            vpn_concentrator_id: input.vpn_concentrator_id,
+            options,
+            tunnels,
+            outside_address_source,
+            tags,
+        };
+        // The bytes this connection would add to the store, charged against the crate's one
+        // byte budget below so the store is bounded in bytes and not only in records.
+        let payload_bytes = state::vpn_connection_payload_bytes(&spec);
+
+        // A count ceiling first, then the byte budget: a record count on its own admits
+        // gigabytes, because each record holds strings the caller chose the length of.
+        if !store.has_vpn_connection_capacity() {
+            return Err(state::vpn_connection_limit_exceeded());
+        }
+        if store.would_exceed_stored_bytes(payload_bytes) {
+            return Err(crate::scaffolded::Scaffolded::tag_limit_exceeded(format!(
+                "This emulator holds {held} of at most {max} bytes of caller-supplied \
+                 data, so it cannot store {payload_bytes} more",
+                held = store.stored_bytes(),
+                max = state::MAX_STORED_BYTES,
+            )));
+        }
+
+        // The record itself, written the one way this crate writes a created VPN connection
+        // — the id, the tunnels' addresses, keys and telemetry, the configuration document
+        // and the clock-owed `available` move all come from the store, never from the request.
+        // Nothing was stored when it answers nothing, which is a store with no address left
+        // to bring the tunnels up on.
+        let Some(vpn_connection_id) = store.insert_created_vpn_connection(spec) else {
+            return Err(crate::scaffolded::Scaffolded::insufficient_free_addresses());
+        };
+
+        // The answer is the record as it was stored, so `CreateVpnConnection` and
+        // `DescribeVpnConnections` cannot drift apart.
+        let Some(record) = store.vpn_connection(&vpn_connection_id) else {
+            return Err(state::internal_error(
+                "the VPN connection just created could not be read back",
+            ));
+        };
+        Ok(CreateVpnConnectionOutput {
+            vpn_connection: Some(record.view.clone()),
+        })
     }
 }
 
@@ -270,8 +425,3 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 /// `CreateVpnConnectionRequest$Type` publishes it ("The type of VPN connection … The only
 /// supported connection type is `ipsec.1`").
 const VPN_CONNECTION_TYPE_IPSEC_1: &str = "ipsec.1";
-
-/// The `ResourceType` a `TagSpecification` of this action may name: the VPN connection it
-/// creates, as the `ResourceType` enum spells it
-/// (`smithy_query(query="shape",shape="ResourceType")`).
-const RESOURCE_TYPE_VPN_CONNECTION: &str = "vpn-connection";
