@@ -9,7 +9,10 @@
 //! the secret's text, or the one key of the JSON document it holds that the reference names,
 //! read as the resource is created, so a reference may name a secret the same deployment
 //! creates.** A reference the store cannot satisfy has no value, so that resource fails
-//! carrying the diagnostic and nothing is passed off as created.
+//! carrying the diagnostic and nothing is passed off as created — and a reference the store
+//! CAN satisfy whose value the owning service will not hold fails that resource on that
+//! service's own refusal, which is equally not a resource reported created
+//! ([`a_resolved_value_the_owning_service_refuses_fails_its_resource`]).
 //!
 //! Three crates have to agree for that to hold — CloudFormation resolves the reference and
 //! makes the call, Secrets Manager holds the secret, and the service that owns the resource
@@ -21,12 +24,24 @@
 //! secret text, whether the optional `secret-string` and `version-stage` fields are written
 //! out or left empty, whether the key's value is written in the document as a string or as a
 //! number, whether the secret's own value is the template's or one Secrets Manager generated,
-//! and whether the reference stands alone or inside a longer property value.
+//! whether that value carries the punctuation the template language and the reference syntax
+//! are written with, and whether the reference stands alone or inside a longer property value.
 //!
 //! Every expected value is computed from what the secret really holds — read through Secrets
 //! Manager's own `GetSecretValue` — rather than read back out of the answer being checked;
 //! for a generated password that is the only possible source, since the value is that
 //! service's to draw.
+//!
+//! A row whose secret value Secrets Manager GENERATES states the characters that service must
+//! leave out, because the service the resolved value is then passed to holds it to a character
+//! rule of its own: a drawn password carrying one of them is a value that service will not
+//! hold, so the resource fails and nothing of the rule under test is observed. Which
+//! characters those are is read off the CONSUMING service's own documentation
+//! ([`SSM_EXCLUDED_CHARACTERS`], [`MQ_EXCLUDED_CHARACTERS`]) rather than guessed, and what the
+//! store really drew is checked against what the declaration asked for
+//! ([`a_reference_reaches_the_owning_service_as_the_value_the_secret_holds`]), so the outcome
+//! of a row is the same on every run instead of depending on which characters one draw
+//! happened to fall on.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -77,6 +92,19 @@ const CURRENT_STAGE: &str = "AWSCURRENT";
 
 /// The head of the diagnostic a reference that cannot be honoured fails its resource with.
 const UNRESOLVED: &str = "Unable to resolve the dynamic reference";
+
+/// The two stable halves of the refusal the OWNING SERVICE answers a resolved value it will
+/// not hold with, as the resource's failure reason carries it: the call CloudFormation made
+/// for the resource, and the `PutParameter$Value` rule that value broke ("You can't include
+/// values wrapped in double brackets"). The `RequestToken` the reason also carries is minted
+/// per run, so it is no part of what is asserted.
+const PUT_PARAMETER: &str = "PutParameter";
+/// See [`PUT_PARAMETER`].
+const WRAPPED_IN_DOUBLE_BRACKETS: &str = "wrapped in double brackets";
+
+/// The refusal Systems Manager models for a read of a name it holds no parameter under, which
+/// is what says nothing was created for a resource that failed.
+const PARAMETER_NOT_FOUND: &str = "ParameterNotFound";
 
 /// The emulator with the services this rule spans, mounted on ONE engine exactly as
 /// `core/router/src/lib.rs` mounts them. Request authentication is off, as in every other
@@ -181,6 +209,14 @@ async fn secretsmanager(
 /// Call one AWS Systems Manager operation.
 async fn ssm(router: &MultiServiceRouter, operation: &str, request: &Value) -> (u16, Value) {
     json_rpc(router, "ssm", "AmazonSSM", operation, request).await
+}
+
+/// The error code an awsJson answer carries, as a client branches on it.
+fn error_code(body: &Value) -> String {
+    body.get("__type")
+        .and_then(Value::as_str)
+        .map(|code| code.rsplit('#').next().unwrap_or(code).to_string())
+        .unwrap_or_default()
 }
 
 /// Read one Amazon MQ broker over that service's restJson1 wire: `GET /v1/brokers/{id}`.
@@ -289,6 +325,15 @@ fn output(case: &str, described: &str, key: &str) -> String {
     outputs_of(described)
         .remove(key)
         .unwrap_or_else(|| panic!("case {case:?}: no {key:?} output in {described}"))
+}
+
+/// The value Secrets Manager DREW for a row whose declaration asked it to generate one: the
+/// `key` member of the document the secret holds, which that service writes as a string.
+fn drawn_value(case: &str, held: &str, key: &str) -> String {
+    match json_member(case, held, key) {
+        Value::String(text) => text,
+        other => panic!("case {case:?}: expected the drawn {key:?} to be a string, got {other}"),
+    }
 }
 
 /// How a template states the secret's own value.
@@ -401,20 +446,30 @@ impl Reference {
     fn expected(&self, case: &str, held: &str) -> String {
         let value = match self.json_key {
             None => held.to_string(),
-            Some(json_key) => {
-                let document: Value = serde_json::from_str(held).unwrap_or_else(|_| {
-                    panic!("case {case:?}: the secret does not hold a JSON document: {held:?}")
-                });
-                match document.get(json_key) {
-                    Some(Value::String(text)) => text.clone(),
-                    Some(other) => other.to_string(),
-                    None => panic!("case {case:?}: the secret holds no {json_key:?}: {held:?}"),
-                }
-            }
+            // A key whose value the document writes as a string resolves to that string; one
+            // written as a number or a boolean resolves to how the document writes it, since a
+            // property carries text either way.
+            Some(json_key) => match json_member(case, held, json_key) {
+                Value::String(text) => text,
+                other => other.to_string(),
+            },
         };
         let (before, after) = self.around;
         format!("{before}{value}{after}")
     }
+}
+
+/// The `key` member of the JSON document a secret holds — what a reference naming a `json-key`
+/// resolves against — read the way every other reader here reads one: panicking, quoting the
+/// secret, rather than standing in a value of its own.
+fn json_member(case: &str, held: &str, key: &str) -> Value {
+    let document: Value = serde_json::from_str(held).unwrap_or_else(|_| {
+        panic!("case {case:?}: the secret does not hold a JSON document: {held:?}")
+    });
+    document
+        .get(key)
+        .cloned()
+        .unwrap_or_else(|| panic!("case {case:?}: the secret holds no {key:?}: {held:?}"))
 }
 
 /// One row of the table: the secret a stack declares, and the reference the resource beside it
@@ -443,6 +498,28 @@ const GENERATED_TEMPLATE: &str = r#"{"username":"admin"}"#;
 /// signs (,:=)".
 const MQ_EXCLUDED_CHARACTERS: &str = ",:=";
 
+/// The characters a Systems Manager parameter's VALUE may not carry, from that service's own
+/// documentation of `PutParameter$Value`: "Parameters can't be referenced or nested in the
+/// values of other parameters. You can't include values wrapped in double brackets `{{}}` or
+/// `{{ssm:parameter-name}}` in a parameter value" — so the braces that form is written with
+/// are what a password this suite has that service hold is drawn without.
+///
+/// Every row whose value Parameter Store ends up holding and whose password Secrets Manager
+/// DRAWS states these, for the reason the module docs give: a draw that fell on two braces in
+/// a row is a value `PutParameter` refuses, which would fail the resource on some runs and not
+/// on others.
+const SSM_EXCLUDED_CHARACTERS: &str = "{}";
+
+/// A credential document the template itself writes whose password carries the punctuation a
+/// generated one may draw — a brace of each kind, a dollar sign, and a quote the document
+/// escapes — and not the `{{` Parameter Store will not hold.
+///
+/// It is how the resolution of an awkward value is checked without drawing one: `$` and `{`
+/// are what `Fn::Sub` and the reference syntax are written with, so a row carrying them pins
+/// that a resolved value is substituted byte for byte and never read as template text.
+const AWKWARD_DOCUMENT: &str =
+    r#"{"username":"admin","password":"Example-p{a}s$s\"1","port":5671}"#;
+
 const ROWS: &[Row] = &[
     Row {
         // The recorded shape: a password Secrets Manager generated into a document, named by
@@ -454,7 +531,7 @@ const ROWS: &[Row] = &[
             document: GENERATED_TEMPLATE,
             key: "password",
             length: 24,
-            excluded: None,
+            excluded: Some(SSM_EXCLUDED_CHARACTERS),
         },
         reference: Reference {
             by_arn: true,
@@ -473,7 +550,7 @@ const ROWS: &[Row] = &[
             document: GENERATED_TEMPLATE,
             key: "password",
             length: 32,
-            excluded: None,
+            excluded: Some(SSM_EXCLUDED_CHARACTERS),
         },
         reference: Reference {
             by_arn: false,
@@ -551,7 +628,7 @@ const ROWS: &[Row] = &[
             document: GENERATED_TEMPLATE,
             key: "password",
             length: 16,
-            excluded: None,
+            excluded: Some(SSM_EXCLUDED_CHARACTERS),
         },
         reference: Reference {
             by_arn: true,
@@ -571,7 +648,7 @@ const ROWS: &[Row] = &[
             document: GENERATED_TEMPLATE,
             key: "password",
             length: 20,
-            excluded: None,
+            excluded: Some(SSM_EXCLUDED_CHARACTERS),
         },
         reference: Reference {
             by_arn: true,
@@ -579,6 +656,24 @@ const ROWS: &[Row] = &[
             json_key: Some("password"),
             version_stage: None,
             around: ("user=admin;password=", ";host=broker.example"),
+        },
+    },
+    Row {
+        // A value the TEMPLATE wrote that carries the punctuation a drawn password may fall
+        // on: a brace of each kind, a dollar sign and a quote the document escapes. The
+        // reference names the secret by its ARN, so the property goes through `Fn::Sub` as
+        // well — which is what makes this row say that the value a store answered is
+        // substituted and never evaluated as template text of its own.
+        case: "a key whose value carries braces, a dollar sign and a quote",
+        secret_name: "cfn-dynref-awkward-value",
+        parameter_name: "/probe/cfn-dynref/awkward-value",
+        held: Held::Written(AWKWARD_DOCUMENT),
+        reference: Reference {
+            by_arn: true,
+            states_secret_string: true,
+            json_key: Some("password"),
+            version_stage: None,
+            around: ("", ""),
         },
     },
 ];
@@ -681,6 +776,35 @@ async fn a_reference_reaches_the_owning_service_as_the_value_the_secret_holds() 
         // value being that service's to draw.
         let secret_arn = output(case, &described, "SecretArn");
         let held = held_secret_string(&router, case, &secret_arn).await;
+        // A declaration that asks the store to leave characters out asks because the service
+        // the resolved value is passed to will not hold one that carries them, so what the
+        // store DREW is held to what the declaration asked for: a row whose outcome depended
+        // on which characters one draw fell on would pass on some runs and fail on others.
+        if let Held::Generated {
+            key,
+            length,
+            excluded: Some(excluded),
+            ..
+        } = &row.held
+        {
+            let drawn = drawn_value(case, &held, key);
+            let carried: String = drawn
+                .chars()
+                .filter(|character| excluded.contains(*character))
+                .collect();
+            assert!(
+                carried.is_empty(),
+                "case {case:?}: expected the generated password to carry none of the excluded \
+                 characters {excluded:?}, got {carried:?} in {drawn:?}"
+            );
+            let drawn_length =
+                u64::try_from(drawn.chars().count()).expect("a password length fits in u64");
+            assert_eq!(
+                drawn_length, *length,
+                "case {case:?}: expected the generated password to be the {length} characters \
+                 the declaration asked for, got {drawn_length} in {drawn:?}"
+            );
+        }
         let expected = row.reference.expected(case, &held);
         let actual = parameter_value(&router, case, row.parameter_name).await;
         assert_eq!(
@@ -788,6 +912,152 @@ async fn a_reference_nothing_can_honour_fails_its_resource_with_the_diagnostic()
         assert_ne!(
             status, 200,
             "case {case:?}: expected Systems Manager to hold no parameter {:?}, got {answer}",
+            row.parameter_name
+        );
+    }
+}
+
+/// The document a row whose RESOLVED value the owning service refuses declares: a password
+/// carrying the `{{` a Systems Manager parameter value may not hold
+/// ([`SSM_EXCLUDED_CHARACTERS`] is what keeps a GENERATED password from falling on it).
+const REFUSED_DOCUMENT: &str = r#"{"username":"admin","password":"Example-a{{b"}"#;
+
+/// The whole secret text of the row that resolves to one, for the same reason.
+const REFUSED_TEXT: &str = "example-plain{{text";
+
+/// The document of the row whose value carries the WHOLE form that rule is written about —
+/// "values wrapped in double brackets `{{}}` or `{{ssm:parameter-name}}`" — so the table rests
+/// on the documented wording and not only on the two characters it begins with.
+const REFUSED_NESTED_REFERENCE_DOCUMENT: &str =
+    r#"{"username":"admin","password":"{{ssm:/probe/cfn-dynref/nested}}"}"#;
+
+/// One row of the table of resolved values the OWNING SERVICE will not hold: the reference
+/// resolves — the secret is there and holds what the reference names — and the service asked
+/// for the resource with what it resolved to refuses THAT value.
+struct Refused {
+    case: &'static str,
+    secret_name: &'static str,
+    parameter_name: &'static str,
+    held: Held,
+    /// The `json-key` the reference names, or `None` for one resolving to the whole secret
+    /// text.
+    json_key: Option<&'static str>,
+    /// What the property writes around the reference.
+    around: (&'static str, &'static str),
+}
+
+const REFUSED: &[Refused] = &[
+    Refused {
+        // The shape the generated rows would be in on the draw that falls on two braces: the
+        // reference resolves to a key of the document the secret holds, and the value it
+        // resolves to is one `PutParameter` will not take.
+        case: "a json key whose value the parameter store will not hold",
+        secret_name: "cfn-dynref-refused-key",
+        parameter_name: "/probe/cfn-dynref/refused-key",
+        held: Held::Written(REFUSED_DOCUMENT),
+        json_key: Some("password"),
+        around: ("", ""),
+    },
+    Refused {
+        // The same refusal where the reference resolves to the WHOLE secret text and the
+        // property composes a longer value around it, so what reaches the owning service is
+        // the template's text with the refused value inside it.
+        case: "a whole secret text the parameter store will not hold, inside a longer value",
+        secret_name: "cfn-dynref-refused-text",
+        parameter_name: "/probe/cfn-dynref/refused-text",
+        held: Held::Written(REFUSED_TEXT),
+        json_key: None,
+        around: ("user=admin;password=", ";host=broker.example"),
+    },
+    Refused {
+        // The documented form in full: a value that IS a nested parameter reference, which is
+        // what the rule the other two rows' values begin the form of is written about.
+        case: "a json key whose value is a nested parameter reference",
+        secret_name: "cfn-dynref-refused-nested",
+        parameter_name: "/probe/cfn-dynref/refused-nested",
+        held: Held::Written(REFUSED_NESTED_REFERENCE_DOCUMENT),
+        json_key: Some("password"),
+        around: ("", ""),
+    },
+];
+
+/// Every row: a reference the store CAN satisfy, whose value the service that owns the
+/// resource will not hold, fails that resource rather than being passed off as created — and
+/// the failure is that service's refusal, not the resolver's diagnostic.
+///
+/// It is the rule the generated rows' `ExcludeCharacters` stands on
+/// ([`SSM_EXCLUDED_CHARACTERS`]): a value outside what the consuming service holds fails the
+/// deployment, so a password DRAWN with one of those characters would decide a row's outcome
+/// by the draw.
+#[tokio::test]
+async fn a_resolved_value_the_owning_service_refuses_fails_its_resource() {
+    let router = build_router();
+
+    for (index, row) in REFUSED.iter().enumerate() {
+        let case = row.case;
+        let stack = format!("cfn-dynref-refused-{index}");
+        let reference = Reference {
+            by_arn: false,
+            states_secret_string: row.json_key.is_some(),
+            json_key: row.json_key,
+            version_stage: None,
+            around: row.around,
+        };
+        let body = template(
+            vec![
+                (
+                    SECRET_LOGICAL_ID,
+                    declared_secret(row.secret_name, &row.held),
+                ),
+                (
+                    TARGET_LOGICAL_ID,
+                    json!({
+                        "Type": "AWS::SSM::Parameter",
+                        "DependsOn": SECRET_LOGICAL_ID,
+                        "Properties": {
+                            "Name": row.parameter_name,
+                            "Type": "String",
+                            "Value": reference.declared(row.secret_name),
+                        },
+                    }),
+                ),
+            ],
+            Vec::new(),
+        );
+        create_stack(&router, case, &stack, &body).await;
+
+        let (status, described) = wait_past_the_create(&router, &stack).await;
+        let reasons = failure_reasons(&router, &stack).await;
+        assert!(
+            status.starts_with(ROLLBACK),
+            "case {case:?}: expected the stack to roll back rather than report {status:?}, with \
+             {described} and resource failures {reasons:?}"
+        );
+        // The reference itself WAS honoured: the secret is there and holds what the reference
+        // names, so the failure recorded is the owning service's refusal of the value and
+        // never the resolver's own diagnostic.
+        assert!(
+            reasons.iter().any(|reason| reason.contains(PUT_PARAMETER)
+                && reason.contains(WRAPPED_IN_DOUBLE_BRACKETS)),
+            "case {case:?}: expected a resource failure carrying the owning service's own \
+             refusal of the value — {PUT_PARAMETER} and {WRAPPED_IN_DOUBLE_BRACKETS:?} — got \
+             {reasons:?}"
+        );
+        assert!(
+            reasons.iter().all(|reason| !reason.contains(UNRESOLVED)),
+            "case {case:?}: expected no {UNRESOLVED:?} diagnostic, the reference itself having \
+             resolved, got {reasons:?}"
+        );
+        // ...and nothing was created for it: the parameter the declaration asked for is not
+        // one Systems Manager holds, which that service says in the refusal it models for a
+        // name it has no parameter under.
+        let (status, answer) = ssm(&router, "GetParameter", &json!({ "Name": row.parameter_name }))
+            .await;
+        assert_eq!(
+            (status, error_code(&answer).as_str()),
+            (400, PARAMETER_NOT_FOUND),
+            "case {case:?}: expected GetParameter to answer 400 {PARAMETER_NOT_FOUND} for {:?}, \
+             got {status} with body {answer}",
             row.parameter_name
         );
     }
