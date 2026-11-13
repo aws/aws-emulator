@@ -1,15 +1,11 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op CreateNamedQuery
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `CreateNamedQuery`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
-//!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`CreateNamedQuery::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! IMPLEMENTED: saves the query in the workgroup the request named — the account's default
+//! workgroup when it named none — and answers with the `NamedQueryId` it minted, which
+//! `GetNamedQuery` reads that same record back by. A named query is one of the contents a
+//! workgroup holds, so `DeleteWorkGroup` is refused while the workgroup still holds it
+//! unless the delete asked for its contents too.
 //!
 //! ## Shape of an operation
 //!
@@ -154,18 +150,115 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `CreateNamedQuery` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(CreateNamedQueryErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("CreateNamedQuery"))
+        // The workgroup the saved query belongs to: the one the request named, or Athena's
+        // own default workgroup, which every account has and whose saved queries are the
+        // ones `ListNamedQueries` reports for a request that names no workgroup.
+        let work_group = input
+            .work_group
+            .unwrap_or_else(|| crate::state::DEFAULT_WORK_GROUP.to_string());
+        // "Creates a named query in the specified workgroup. Requires that you have access
+        // to the workgroup": the workgroup is the IAM resource this action is scoped by, so
+        // the create is authorized against THAT workgroup's ARN before anything is read or
+        // written. See `crate::state::authorization`.
+        crate::state::authorization::authorize(
+            &*self.engine,
+            ctx,
+            Self::NAME,
+            &crate::state::authorization::work_group_arn(ctx, &work_group),
+        )
+        .map_err(CreateNamedQueryError::AccessDenied)?;
+
+        // Measured before any lock is taken: a create that is going to be refused for its
+        // size never walks the registry.
+        let query_bytes = crate::state::named_query_bytes(
+            &input.name,
+            &input.database,
+            &input.query_string,
+            input.description.as_deref(),
+        );
+
+        let Some(state) = crate::state::service_state(&*self.engine) else {
+            return Err(CreateNamedQueryErrorModeled::InternalServerException(
+                InternalServerException {
+                    message: Some("Athena state is not reachable on this engine".to_string()),
+                },
+            )
+            .into());
+        };
+        let mut store = state.lock();
+
+        // A named query BELONGS to a workgroup, so a create naming one this account does
+        // not hold has nowhere to put it.
+        if !store.holds_work_group(&work_group) {
+            return Err(invalid_request(crate::state::WORK_GROUP_NOT_FOUND));
+        }
+
+        // "If another CreateNamedQuery request is received, the same response is returned
+        // and another query is not created. If a parameter has changed, for example, the
+        // QueryString, an error is returned." The answer comes from the token the earlier
+        // call stored, so no second query is saved — and a token reused under changed
+        // parameters is refused rather than answered with an id that stands for other SQL.
+        if let Some(token) = input.client_request_token.as_deref() {
+            if let Some(existing) = store.named_queries.query_of_token(token) {
+                if existing.name != input.name
+                    || existing.database != input.database
+                    || existing.query_string != input.query_string
+                    || existing.description != input.description
+                    || existing.work_group != work_group
+                {
+                    return Err(invalid_request(
+                        crate::state::IDEMPOTENT_PARAMETERS_DO_NOT_MATCH,
+                    ));
+                }
+                return Ok(CreateNamedQueryOutput {
+                    named_query_id: Some(existing.id.clone()),
+                });
+            }
+        }
+
+        // Both bounds are checked before the registry grows: the queries one workgroup
+        // holds and the bytes of them this account holds.
+        if store.named_queries.len_in(&work_group)
+            >= crate::state::MAX_NAMED_QUERIES_PER_WORK_GROUP
+        {
+            return Err(invalid_request(crate::state::too_many_named_queries(
+                &work_group,
+            )));
+        }
+        if store.named_queries.would_exceed_stored_bytes(query_bytes) {
+            return Err(invalid_request(crate::state::named_queries_too_large()));
+        }
+
+        let id = crate::state::new_named_query_id();
+        store.named_queries.insert(
+            crate::state::NamedQueryRecord {
+                id: id.clone(),
+                name: input.name,
+                // Stored as the caller gave it: a create that carried no description
+                // leaves the query with none, which is what keeps an absent description
+                // absent on the way back out.
+                description: input.description,
+                database: input.database,
+                query_string: input.query_string,
+                work_group,
+            },
+            input.client_request_token,
+        );
+
+        Ok(CreateNamedQueryOutput {
+            named_query_id: Some(id),
+        })
     }
+}
+
+/// The operation's own client error (HTTP 400), carrying `message`.
+///
+/// Every refusal above is a bad request rather than an unwritten operation, and
+/// `InvalidRequestException` is the client error this operation models: "Indicates that
+/// something is wrong with the input to the request." Each one is caused by the request
+/// itself — a workgroup this account does not hold, a token reused for another query, a
+/// create past what this account can hold — which is the class
+/// [`crate::state::ERROR_CODE_INVALID_INPUT`] names.
+fn invalid_request(message: impl Into<String>) -> CreateNamedQueryError {
+    CreateNamedQueryError::invalid_request(crate::state::ERROR_CODE_INVALID_INPUT, message)
 }

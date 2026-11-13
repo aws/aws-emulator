@@ -140,6 +140,35 @@ impl NotebookRegistry {
         self.notebooks.len()
     }
 
+    /// How many notebooks `work_group` holds — the count a delete of that workgroup
+    /// weighs, a notebook belonging to the workgroup it was imported into.
+    pub fn len_in(&self, work_group: &str) -> usize {
+        self.notebooks
+            .values()
+            .filter(|record| record.work_group == work_group)
+            .count()
+    }
+
+    /// Remove every notebook `work_group` holds, as a recursive delete of that workgroup
+    /// does, and answer with how many were removed.
+    ///
+    /// Any import token that named one goes with it: a token whose notebook is gone cannot
+    /// answer with the same id, so it is not kept pointing at nothing.
+    pub fn remove_work_group(&mut self, work_group: &str) -> usize {
+        let removed: Vec<String> = self
+            .notebooks
+            .values()
+            .filter(|record| record.work_group == work_group)
+            .map(|record| record.id.clone())
+            .collect();
+        for id in &removed {
+            self.notebooks.remove(id);
+        }
+        self.import_tokens
+            .retain(|_, minted| !removed.iter().any(|id| id == minted));
+        removed.len()
+    }
+
     /// Whether no notebook is held at all.
     pub fn is_empty(&self) -> bool {
         self.notebooks.is_empty()

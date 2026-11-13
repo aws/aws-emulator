@@ -71,6 +71,9 @@ mod table_metadata;
 #[path = "all/work_group_authorization.rs"]
 mod work_group_authorization;
 
+#[path = "all/work_group_delete.rs"]
+mod work_group_delete;
+
 #[path = "all/work_group_lifecycle.rs"]
 mod work_group_lifecycle;
 

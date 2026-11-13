@@ -50,6 +50,15 @@
 //! address that same record, so a read reports what a write persisted. A statement has no
 //! lifecycle the clock owes — a create hands back one a query can already name.
 //!
+//! NAMED QUERIES live in the [`NamedQueryRegistry`] of
+//! [`ComAmazonawsAthenaAmazonathenaState::named_queries`], each belonging to the workgroup
+//! its create named: `CreateNamedQuery` writes a [`NamedQueryRecord`] there and
+//! `GetNamedQuery` answers out of that same record. A named query has no lifecycle the
+//! clock owes either, and it lives exactly as long as its workgroup does — deleting the
+//! workgroup takes its contents with it
+//! ([`ComAmazonawsAthenaAmazonathenaState::delete_work_group`]), and a workgroup that still
+//! holds contents is not deleted by a request that did not ask for them ([`WorkGroupContents`]).
+//!
 //! CAPACITY RESERVATIONS live in the [`CapacityReservationRegistry`] of
 //! [`ComAmazonawsAthenaAmazonathenaState::capacity_reservations`], and they have a
 //! lifecycle the clock owes as well: a create stores when the requested data processing
@@ -85,6 +94,14 @@ pub use resource_tags::*;
 /// The prepared statements each workgroup holds, and the query string of each.
 mod prepared_statements;
 pub use prepared_statements::*;
+
+/// The named (saved) queries each workgroup holds, and the statements of each.
+mod named_queries;
+pub use named_queries::*;
+
+/// What a workgroup holds, and what deleting the workgroup removes with it.
+mod work_group_deletion;
+pub use work_group_deletion::*;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::{Duration, SystemTime};
@@ -1781,6 +1798,10 @@ pub struct ComAmazonawsAthenaAmazonathenaState {
     /// `CreatePreparedStatement` writes it and `GetPreparedStatement` reads it; see
     /// [`PreparedStatementRegistry`].
     pub prepared_statements: PreparedStatementRegistry,
+    /// Every named query this account holds, each belonging to one workgroup.
+    /// `CreateNamedQuery` writes it and `GetNamedQuery` reads it; see
+    /// [`NamedQueryRegistry`].
+    pub named_queries: NamedQueryRegistry,
     /// The secret this store's page tokens are authenticated under, so a `NextToken`
     /// this store did not mint names no page. Drawn from the system's randomness when
     /// the store is created and never reported.
@@ -1803,6 +1824,7 @@ impl Default for ComAmazonawsAthenaAmazonathenaState {
             notebooks: NotebookRegistry::default(),
             capacity_reservations: CapacityReservationRegistry::default(),
             prepared_statements: PreparedStatementRegistry::default(),
+            named_queries: NamedQueryRegistry::default(),
             page_token_key: PageTokenKey::new(),
         }
     }

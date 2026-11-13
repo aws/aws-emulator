@@ -263,6 +263,19 @@ impl PreparedStatementRegistry {
         }
         removed
     }
+
+    /// Remove every statement `work_group` holds, as deleting that workgroup does, and
+    /// answer with how many were removed.
+    ///
+    /// A statement is addressed by its name TOGETHER WITH its workgroup, so one whose
+    /// workgroup this account no longer holds could never be read, listed or deleted
+    /// again.
+    pub fn remove_work_group(&mut self, work_group: &str) -> usize {
+        self.by_work_group
+            .remove(work_group)
+            .map(|statements| statements.len())
+            .unwrap_or_default()
+    }
 }
 
 /// The refusal message a READ of a prepared statement the named workgroup does not hold

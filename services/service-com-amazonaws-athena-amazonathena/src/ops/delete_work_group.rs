@@ -1,15 +1,11 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op DeleteWorkGroup
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `DeleteWorkGroup`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
-//!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`DeleteWorkGroup::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! IMPLEMENTED: removes the named workgroup, and everything addressed to it, from this
+//! service's registries — so a later `GetWorkGroup` of that name is refused and a listing
+//! stops reporting it. The account's default workgroup cannot be deleted, and a workgroup
+//! that still holds contents is deleted only by a request that asked for its contents to
+//! go with it.
 //!
 //! ## Shape of an operation
 //!
@@ -138,18 +134,83 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `DeleteWorkGroup` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(DeleteWorkGroupErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("DeleteWorkGroup"))
+        // A workgroup is an IAM resource and this request addresses one, so the delete is
+        // authorized against that name's ARN before anything is read or written: a caller
+        // whose policies cover one workgroup deletes no other, and a refused call removes
+        // nothing. See `crate::state::authorization`.
+        crate::state::authorization::authorize(
+            &*self.engine,
+            ctx,
+            Self::NAME,
+            &crate::state::authorization::work_group_arn(ctx, &input.work_group),
+        )
+        .map_err(DeleteWorkGroupError::AccessDenied)?;
+
+        // "The primary workgroup cannot be deleted": the account's default workgroup is
+        // there before any `CreateWorkGroup` call and is the workgroup a query that names
+        // none runs in, so it is refused by NAME — whether or not this account's registry
+        // happens to hold a record for it, which a tag write materialises.
+        if input.work_group == crate::state::DEFAULT_WORK_GROUP {
+            return Err(invalid_request(
+                crate::state::PRIMARY_WORK_GROUP_NOT_DELETABLE,
+            ));
+        }
+
+        let Some(state) = crate::state::service_state(&*self.engine) else {
+            return Err(DeleteWorkGroupErrorModeled::InternalServerException(
+                InternalServerException {
+                    message: Some("Athena state is not reachable on this engine".to_string()),
+                },
+            )
+            .into());
+        };
+        // Weighing the contents and removing the workgroup share ONE critical section, so
+        // nothing can be written INTO the workgroup between the count that lets the delete
+        // proceed and the removal that carries it out, and two deletes of the same
+        // workgroup cannot both remove it: whichever takes the lock second finds the
+        // registry no longer holding that name and is refused below.
+        let mut store = state.lock();
+
+        // Athena models no not-found error for this operation; naming a workgroup this
+        // account does not hold is "something wrong with the input to the request", which
+        // is what `InvalidRequestException` (HTTP 400) reports. The sentence is the one
+        // every operation of this service states a workgroup miss with.
+        if !store.work_groups.contains_key(&input.work_group) {
+            return Err(invalid_request(crate::state::WORK_GROUP_NOT_FOUND));
+        }
+
+        // `RecursiveDeleteOption` is "the option to delete the workgroup and its contents
+        // even if the workgroup contains any named queries, query executions, or
+        // notebooks" — so a workgroup still holding any of those is deleted only by a
+        // request that asked for them to go with it, and is refused otherwise rather than
+        // leaving them addressed to a workgroup this account no longer holds.
+        let recursive = input.recursive_delete_option.unwrap_or(false);
+        if !recursive && !store.work_group_contents(&input.work_group).is_empty() {
+            return Err(invalid_request(crate::state::work_group_not_empty(
+                &input.work_group,
+            )));
+        }
+
+        // The registry stops holding the workgroup here, and its contents go with it.
+        store.delete_work_group(&input.work_group);
+
+        // `DeleteWorkGroupOutput` models no members: that the workgroup is gone is read
+        // back through `GetWorkGroup` and `ListWorkGroups`.
+        Ok(DeleteWorkGroupOutput {})
     }
+}
+
+/// The operation's own client error: HTTP 400 `InvalidRequestException` of the class a
+/// refusal the caller's own input caused belongs to.
+///
+/// Every refusal above is a bad request rather than an unwritten operation, and
+/// `InvalidRequestException` is the client error this operation models: "Indicates that
+/// something is wrong with the input to the request." Each one is caused by the request
+/// itself — a workgroup this account does not hold, the one workgroup that cannot be
+/// deleted, a delete that did not ask for the contents the workgroup still holds — which
+/// is the class [`crate::state::ERROR_CODE_INVALID_INPUT`] names. Raised through the
+/// service's own refusal channel, which is what carries the code under both names the wire
+/// gives it.
+fn invalid_request(message: impl Into<String>) -> DeleteWorkGroupError {
+    DeleteWorkGroupError::invalid_request(crate::state::ERROR_CODE_INVALID_INPUT, message)
 }

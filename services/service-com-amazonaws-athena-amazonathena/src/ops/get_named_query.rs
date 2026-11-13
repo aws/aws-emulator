@@ -1,15 +1,9 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op GetNamedQuery
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `GetNamedQuery`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
-//!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`GetNamedQuery::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! IMPLEMENTED: answers with the saved query the request's `NamedQueryId` names, out of the
+//! record `CreateNamedQuery` wrote, and refuses an id this account minted no query under —
+//! including one whose workgroup has since been deleted with its contents.
 //!
 //! ## Shape of an operation
 //!
@@ -138,20 +132,33 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
     async fn handle(
         &self,
         input: Self::Input,
-        ctx: &smithy_server_runtime::OperationContext<'_>,
+        _ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `GetNamedQuery` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(GetNamedQueryErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("GetNamedQuery"))
+        let Some(state) = crate::state::service_state(&*self.engine) else {
+            return Err(GetNamedQueryErrorModeled::InternalServerException(
+                InternalServerException {
+                    message: Some("Athena state is not reachable on this engine".to_string()),
+                },
+            )
+            .into());
+        };
+        // A read: the store is never written below, so what the next caller sees is
+        // exactly what it saw before this call.
+        let store = state.lock();
+
+        let Some(record) = store.named_queries.query(&input.named_query_id) else {
+            // Athena models no not-found error for this operation; naming a query this
+            // account holds none of is "something wrong with the input to the request",
+            // which is what `InvalidRequestException` (HTTP 400) reports, under the code
+            // for a refusal the request itself caused.
+            return Err(GetNamedQueryError::invalid_request(
+                crate::state::ERROR_CODE_INVALID_INPUT,
+                crate::state::named_query_not_found(&input.named_query_id),
+            ));
+        };
+
+        Ok(GetNamedQueryOutput {
+            named_query: Some(record.to_named_query()),
+        })
     }
 }
