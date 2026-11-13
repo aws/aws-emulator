@@ -806,6 +806,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // finished object": the Object Lock this initiation named is held with the upload
             // and stored on the version the completion writes.
             object_lock: requested_lock.clone(),
+            // WHO initiated it: the principal this request signed for, recorded here so
+            // every later reader of the upload reports the identity that really started it
+            // ("container element that identifies who initiated the multipart upload",
+            // `MultipartUpload$Initiator`) rather than one derived at read time.
+            initiator: crate::state::UploadInitiator::of_principal(&caller.arn),
         };
 
         // The store reports what the initiation did, because it may refuse: a bucket this

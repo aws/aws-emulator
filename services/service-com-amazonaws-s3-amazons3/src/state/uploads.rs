@@ -84,6 +84,9 @@ pub struct MultipartUpload {
     /// mode, retain-until date and legal hold are three of those options, so they are held
     /// with the upload until the completion stores them on the version it writes.
     pub object_lock: RequestedObjectLock,
+    /// WHO initiated the upload: the principal the initiating request signed for, as every
+    /// reader of the upload reports it — see [`UploadInitiator`].
+    pub initiator: UploadInitiator,
 }
 
 impl MultipartUpload {
@@ -1728,6 +1731,73 @@ pub fn canonical_user_id() -> String {
     digest.update(::engine::emulator_account_id().as_bytes());
     // 32 digest bytes render as the 64 lowercase hex digits a canonical user id carries.
     ::hex::encode(digest.finalize())
+}
+
+/// WHO initiated one multipart upload — the principal every reader of the upload reports
+/// as its `Initiator`.
+///
+/// "Container element that identifies who initiated the multipart upload" (`Initiator`),
+/// whose `ID` is read off the PRINCIPAL: "if the principal is an Amazon Web Services
+/// account, it provides the Canonical User ID. If the principal is an IAM User, it provides
+/// a user ARN value" (`Initiator$ID`), with the principal's friendly name beside it
+/// (`Initiator$DisplayName`). So this is recorded by the initiation, from the credential
+/// that signed it, rather than derived by a reader: the two readers of an upload
+/// (`ListMultipartUploads` and `ListParts`) report the principal that really started it,
+/// and the answer does not move when another principal reads the upload.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UploadInitiator {
+    /// What `Initiator$ID` carries for this principal: its user ARN when it is an IAM
+    /// identity of the account, and the account's canonical user id when the principal is
+    /// the account itself.
+    pub id: String,
+    /// The principal's friendly name, as `Initiator$DisplayName` carries it — `None` for a
+    /// principal that has none (the account itself), where S3 has no name to report.
+    pub display_name: Option<String>,
+}
+
+impl UploadInitiator {
+    /// The initiator an upload initiated by the principal `principal_arn` speaks for,
+    /// which is the ARN `sts:GetCallerIdentity` reports for the credential that signed the
+    /// initiation ([`crate::service::request_authorization::request_caller`] resolves it).
+    ///
+    /// An IAM identity is reported BY that ARN, which is what `Initiator$ID` says; the
+    /// account itself — its root, or a credential that names no identity at all — is
+    /// reported by the account's canonical user id ([`canonical_user_id`]), the same id
+    /// every `Owner` of this account is reported by.
+    pub fn of_principal(principal_arn: &str) -> Self {
+        match principal_display_name(principal_arn) {
+            Some(display_name) => Self {
+                id: principal_arn.to_string(),
+                display_name: Some(display_name),
+            },
+            None => Self {
+                id: canonical_user_id(),
+                display_name: None,
+            },
+        }
+    }
+}
+
+/// The friendly name of the principal `principal_arn` names, or `None` when it names no
+/// identity that has one.
+///
+/// An IAM identity's ARN ends in its resource field, `<entity type>/<path…>/<name>` — a
+/// user's `user/<path>/<name>`, an assumed-role session's
+/// `assumed-role/<role name>/<session name>` — and the LAST segment of that path is the
+/// name the identity is known by, which is what a response reports as its display name.
+/// Everything else has no such name: the account's own root (`…:root`, a resource field with
+/// no `/` at all), a principal that is not an ARN, and the empty ARN of a credential that
+/// speaks for nobody.
+///
+/// The ARN itself is read through the one parse this tree reads an ARN with
+/// ([`::service_common::arn::resource`]), so this does not split the value its own way.
+fn principal_display_name(principal_arn: &str) -> Option<String> {
+    let resource = ::service_common::arn::resource(principal_arn)?;
+    let name = resource
+        .split('/')
+        .next_back()
+        .filter(|name| !name.is_empty())?;
+    (name != resource).then(|| name.to_string())
 }
 
 /// The version id a write into a versioning-enabled bucket is stored under.

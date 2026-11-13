@@ -223,6 +223,8 @@ mod multipart_upload_event_notifications;
 mod multipart_upload_initiation;
 #[path = "all/multipart_upload_initiation_order.rs"]
 mod multipart_upload_initiation_order;
+#[path = "all/multipart_upload_initiator_identity.rs"]
+mod multipart_upload_initiator_identity;
 #[path = "all/multipart_upload_listing.rs"]
 mod multipart_upload_listing;
 #[path = "all/multipart_upload_resume_position.rs"]

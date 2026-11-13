@@ -525,17 +525,20 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     checksum_algorithm: upload.checksum_algorithm.clone(),
                     checksum_type: upload.checksum_type.clone(),
                     // "Specifies the owner of the object that is part of the multipart
-                    // upload" and "Identifies who initiated the multipart upload": this
-                    // emulator serves one account, so both are that account's canonical
-                    // user id — the id every S3 reader here reports an owner by, and the
-                    // same pair `ListParts` reports for one upload.
+                    // upload": this emulator serves one account, which owns every object it
+                    // holds, so the owner is that account's canonical user id — the id
+                    // every S3 reader here reports an owner by. The INITIATOR is a
+                    // principal rather than the account: it is the one the initiation
+                    // recorded (`crate::state::UploadInitiator`), reported by its user ARN
+                    // with its name beside it, which is what `Initiator$ID` and
+                    // `$DisplayName` carry for an IAM identity.
                     owner: Some(Owner {
                         id: Some(crate::state::canonical_user_id()),
                         display_name: None,
                     }),
                     initiator: Some(Initiator {
-                        id: Some(crate::state::canonical_user_id()),
-                        display_name: None,
+                        id: Some(upload.initiator.id.clone()),
+                        display_name: upload.initiator.display_name.clone(),
                     }),
                 });
             }

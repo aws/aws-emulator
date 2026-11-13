@@ -181,6 +181,20 @@ impl UploadListing {
             .collect()
     }
 
+    /// Every reported upload's `name` element, in response order — a member of the nested
+    /// `Owner` or `Initiator` container under its container-qualified name (`Initiator.ID`),
+    /// and the empty string for an entry that carries none.
+    ///
+    /// `pub(crate)`: the suite that pins WHO a listing reports as an upload's initiator
+    /// ([`super::multipart_upload_initiator_identity`]) reads those members through this one
+    /// reader rather than slicing the document a second way.
+    pub(crate) fn reported(&self, name: &str) -> Vec<String> {
+        self.uploads
+            .iter()
+            .map(|entry| Self::entry(entry, name))
+            .collect()
+    }
+
     /// Every reported upload as `(key, upload id, Initiated)`, in response order.
     ///
     /// `pub(crate)`: the initiation-order suite
@@ -513,21 +527,35 @@ async fn every_upload_in_progress_reads_back_in_key_then_initiation_order() {
             initiated.contains('T') && initiated.ends_with('Z'),
             "case {case:?}: expected an ISO 8601 Initiated instant, got {initiated:?}"
         );
-        // "If the principal is an Amazon Web Services account, it provides the Canonical
-        // User ID" (`Initiator$ID`) — "a 64-digit hexadecimal encoded, 256-bit value" (AWS
-        // General Reference, *AWS account identifiers*) — and this emulator serves one
-        // account, so the owner and the initiator are the same principal.
+        // The OWNER of the object the upload completes into is the account that holds the
+        // bucket, named by its canonical user id — "a 64-digit hexadecimal encoded,
+        // 256-bit value" (AWS General Reference, *AWS account identifiers*). The INITIATOR
+        // is the principal that signed the initiation: "if the principal is an IAM User, it
+        // provides a user ARN value" (`Initiator$ID`), with that identity's own name beside
+        // it (`Initiator$DisplayName`) — here the identity this emulator's published
+        // credential speaks for.
         let owner = UploadListing::entry(entry, "Owner.ID");
-        let initiator = UploadListing::entry(entry, "Initiator.ID");
-        assert_eq!(
-            owner, initiator,
-            "case {case:?}: expected one account as owner and initiator, got {owner:?} and \
-             {initiator:?}"
-        );
         assert!(
             owner.len() == 64 && owner.chars().all(|digit| digit.is_ascii_hexdigit()),
             "case {case:?}: expected a 64-digit hexadecimal canonical user id, got {owner:?}"
         );
+        for (element, wanted) in [
+            (
+                "Initiator.ID",
+                service_common::caller_principal::ambient_user_arn(),
+            ),
+            (
+                "Initiator.DisplayName",
+                service_common::caller_principal::AMBIENT_USER_NAME.to_string(),
+            ),
+        ] {
+            assert_eq!(
+                UploadListing::entry(entry, element),
+                wanted,
+                "case {case:?}: expected {element} {wanted:?}, got {:?}",
+                UploadListing::entry(entry, element)
+            );
+        }
     }
 }
 

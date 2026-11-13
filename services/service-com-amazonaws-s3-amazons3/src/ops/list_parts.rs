@@ -435,14 +435,16 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             next_part_number_marker: next_marker,
             is_truncated: Some(truncated),
             parts: Some(parts),
-            // "Container element that identifies who initiated the multipart upload. If
-            // the initiator is an Amazon Web Services account, this element provides the
-            // same information as the Owner element": this emulator serves one account, so
-            // the initiator and the owner are both that account's canonical user id — the
-            // id every S3 reader here reports an owner by.
+            // "Container element that identifies who initiated the multipart upload"
+            // (`ListPartsOutput$Initiator`): the principal the INITIATION recorded
+            // (`crate::state::UploadInitiator`), reported by its user ARN with its name
+            // beside it, which is the same pair `ListMultipartUploads` reports for this
+            // upload. The OWNER is the account that owns the object the upload completes
+            // into, reported by its canonical user id — the id every S3 reader here reports
+            // an owner by.
             initiator: Some(Initiator {
-                id: Some(crate::state::canonical_user_id()),
-                display_name: None,
+                id: Some(upload.initiator.id.clone()),
+                display_name: upload.initiator.display_name.clone(),
             }),
             owner: Some(Owner {
                 id: Some(crate::state::canonical_user_id()),
