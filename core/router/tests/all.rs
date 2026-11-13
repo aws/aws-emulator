@@ -29,7 +29,6 @@ mod cloudwatch_alarm_ssm_ops_item_action;
 // crate's test target can deploy the pipeline and then read the objects it delivered.
 #[path = "all/cloudformation_metric_stream_filter_update.rs"]
 mod cloudformation_metric_stream_filter_update;
-// Declared here, in this same head region, for the reason the entry above records: what a
 // Lambda handler run as the work of a Step Functions task writes with the SDK the managed
 // runtime supplies it spans Step Functions, IAM, Lambda, Amazon S3 and DynamoDB at once, so no
 // single service crate's test target can run the chain and then read each write back.
@@ -1854,7 +1853,6 @@ mod logs_vended_group_lambda_subscriber_permission;
 // at once, which declared each of them a second time and compiled neither.
 #[path = "all/cloudformation_provisions_cloudfront_resources.rs"]
 mod cloudformation_provisions_cloudfront_resources;
-// `cloudformation_monitored_alb_search_estate` and `cloudformation_domain_endpoint_outputs`
 // are declared ONCE, in the head region above beside the other `cloudformation_…` suites.
 // Two branches each re-declared the pair in this tail, which compiles neither: a suite is
 // declared in exactly one place.
@@ -1867,3 +1865,12 @@ mod cloudformation_provisions_cloudfront_resources;
 // the same duplicated pair, which compiles them nowhere.
 // (`cloudformation_monitored_alb_search_estate` and `cloudformation_domain_endpoint_outputs`
 // are declared in the head region above: a module may be declared only once.)
+// are declared further up this tail already: a module may be declared only once.)
+// Declared in the appended tail, which is where every new suite inserts its lines: a vector
+// knowledge base built on an index created through the collection's OWN published endpoint
+// spans OpenSearch Serverless (which serves that endpoint's OpenSearch REST data plane), the
+// Bedrock Agent build-time plane (the knowledge base, the custom data source and the
+// ingestion) and the Bedrock Agent runtime plane (the retrieval) at once, so no single
+// service crate's test target can create the index and then read the document back out.
+#[path = "all/bedrock_knowledge_base_over_an_aoss_collection.rs"]
+mod bedrock_knowledge_base_over_an_aoss_collection;
