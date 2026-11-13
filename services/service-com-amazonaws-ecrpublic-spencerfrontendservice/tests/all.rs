@@ -39,6 +39,8 @@ mod layer_upload_convergence;
 mod layer_upload_refusal_messages;
 #[path = "all/layer_upload_sessions.rs"]
 mod layer_upload_sessions;
+#[path = "all/logo_blob_constraints.rs"]
+mod logo_blob_constraints;
 #[path = "all/pagination_filter_exclusion.rs"]
 mod pagination_filter_exclusion;
 #[path = "all/pagination_token_refusal.rs"]

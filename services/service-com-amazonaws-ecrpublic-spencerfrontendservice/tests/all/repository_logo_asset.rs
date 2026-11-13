@@ -28,20 +28,20 @@ use crate::repository_image_lifecycle::{call, logo_url, ok, refused, service, te
 /// The refusal a payload below the pixel floor is answered with: the member at fault and
 /// the rule it failed, and neither the rejected dimensions nor the byte cap (the size rule
 /// is a different constraint with its own clause).
-const INVALID_DIMENSIONS: &str =
+pub(crate) const INVALID_DIMENSIONS: &str =
     "Invalid parameter at 'logoImageBlob' failed to satisfy constraint: 'Invalid image \
      dimensions.'";
 
 /// The smallest logo this registry publishes, per axis. Source: the recorded boundary of
 /// the service's own dimension rule, which is exact and per-axis — the crate states it as
 /// `state::logo_asset::MIN_LOGO_PIXELS`.
-const MIN_PIXELS: u32 = 60;
+pub(crate) const MIN_PIXELS: u32 = 60;
 
 /// A header-valid PNG whose IHDR states `width` x `height` (ISO 15948 §5.2 signature,
 /// then the 13-byte IHDR chunk the dimensions are read out of). The pixel data is not what
 /// either rule reads, so the payload stays small whatever size it declares — which is also
 /// what lets one table cover a 2048-pixel logo and a 59-pixel one.
-fn png(width: u32, height: u32) -> Vec<u8> {
+pub(crate) fn png(width: u32, height: u32) -> Vec<u8> {
     let mut bytes = vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
     bytes.extend_from_slice(&13u32.to_be_bytes());
     bytes.extend_from_slice(b"IHDR");
@@ -55,7 +55,7 @@ fn png(width: u32, height: u32) -> Vec<u8> {
 
 /// A header-valid GIF whose screen descriptor states `width` x `height` (GIF89a, the
 /// two little-endian 16-bit fields that follow the signature).
-fn gif(width: u16, height: u16) -> Vec<u8> {
+pub(crate) fn gif(width: u16, height: u16) -> Vec<u8> {
     let mut bytes = b"GIF89a".to_vec();
     bytes.extend_from_slice(&width.to_le_bytes());
     bytes.extend_from_slice(&height.to_le_bytes());
@@ -65,7 +65,7 @@ fn gif(width: u16, height: u16) -> Vec<u8> {
 
 /// A header-valid BMP whose info header states `width` x `height` (the 14-byte file
 /// header, then the two 32-bit little-endian fields of a `BITMAPINFOHEADER`).
-fn bmp(width: i32, height: i32) -> Vec<u8> {
+pub(crate) fn bmp(width: i32, height: i32) -> Vec<u8> {
     let mut bytes = b"BM".to_vec();
     bytes.extend_from_slice(&[0; 12]);
     bytes.extend_from_slice(&40u32.to_le_bytes());
@@ -76,7 +76,7 @@ fn bmp(width: i32, height: i32) -> Vec<u8> {
 }
 
 /// A `logoImageBlob` as awsJson1_1 carries a blob: base64 of the raw bytes.
-fn blob_member(blob: &[u8]) -> Value {
+pub(crate) fn blob_member(blob: &[u8]) -> Value {
     json!(aws_smithy_types::base64::encode(blob))
 }
 
