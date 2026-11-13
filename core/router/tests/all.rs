@@ -17,6 +17,12 @@
 // else appends to.
 #[path = "all/cloudformation_fifo_resource_generated_names.rs"]
 mod cloudformation_fifo_resource_generated_names;
+// Declared here, in this same head region, for the reason the entry above records: what a
+// Lambda handler run as the work of a Step Functions task writes with the SDK the managed
+// runtime supplies it spans Step Functions, IAM, Lambda, Amazon S3 and DynamoDB at once, so no
+// single service crate's test target can run the chain and then read each write back.
+#[path = "all/sfn_lambda_task_handler_writes_objects.rs"]
+mod sfn_lambda_task_handler_writes_objects;
 // Declared here, in this same head region, for the reason the entry above records: a stack
 // that declares a private container registry and the task definition running an image out of
 // it is only deployed if CloudFormation, Amazon ECR and Amazon ECS all agree, so no single
