@@ -67,8 +67,12 @@ mod router_filters;
 mod routers;
 mod gateways;
 mod flows;
+mod source_report_preconditions;
+mod vpc_interface_role;
 mod vpc_placement;
 pub use flows::*;
+pub use source_report_preconditions::*;
+pub use vpc_interface_role::*;
 pub use gateways::*;
 pub use router_filters::*;
 pub use routers::*;
@@ -78,13 +82,19 @@ pub use vpc_placement::*;
 
 /// The `Status` enum the model declares for a flow
 /// (`smithy_query(query="shape",shape="Status")`: STANDBY | ACTIVE | UPDATING | DELETING
-/// | STARTING | STOPPING | ERROR). Only the five a flow's lifecycle reaches are named
-/// here; the rest belong to operations that are still scaffolded.
+/// | STARTING | STOPPING | ERROR). Only the ones a flow's lifecycle reaches, and the one a
+/// documented precondition names ([`STATUS_UPDATING`]), are named here; the rest belong to
+/// operations that are still scaffolded.
 pub const STATUS_STANDBY: &str = "STANDBY";
 /// See [`STATUS_STANDBY`].
 pub const STATUS_STARTING: &str = "STARTING";
 /// See [`STATUS_STANDBY`].
 pub const STATUS_ACTIVE: &str = "ACTIVE";
+/// See [`STATUS_STANDBY`]. No lifecycle call of this service puts a flow in it, but a
+/// precondition names it beside [`STATUS_ACTIVE`] as a status a source report is served in
+/// (see [`flow_source_thumbnail_refusal`]), so the value the model declares is named here
+/// rather than spelled out there.
+pub const STATUS_UPDATING: &str = "UPDATING";
 /// See [`STATUS_STANDBY`].
 pub const STATUS_STOPPING: &str = "STOPPING";
 /// See [`STATUS_STANDBY`].

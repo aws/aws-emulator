@@ -115,6 +115,16 @@ fn bad_request(detail: impl Into<String>) -> CreateFlowError {
     .into()
 }
 
+/// Refuse the request with `BadRequestException` (HTTP 400) whose `message` is ALREADY the
+/// whole envelope the refusal carries, rather than a detail to be wrapped: the form the role
+/// refusal below arrives in ([`crate::state::unassumable_vpc_interface_role`]), which words
+/// itself through this service's other 400 envelope — the semantic one a request refused by
+/// what it NAMES carries ([`crate::state::bad_request_message`]) rather than the validation
+/// one [`bad_request`] builds.
+fn bad_request_worded(message: String) -> CreateFlowError {
+    CreateFlowErrorModeled::BadRequestException(BadRequestException { message }).into()
+}
+
 /// Refuse the request with `CreateFlow420Exception` (HTTP 420), the error the model
 /// declares for a flow this service will not create — here because the flow store is at
 /// its bound (see [`crate::state::MAX_FLOWS`]). The 420 is declared on CreateFlow alone,
@@ -489,6 +499,21 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // for the field) rather than taken as given; a value outside it names no Region of
         // this account, so there is nothing to resolve against and nothing to refuse on.
         if let Some(label) = ::service_common::arn::region_label(&region) {
+            // The ROLE comes first, for the reason AddFlowVpcInterfaces states: the network
+            // interface is created AS the role the entry names, so a role this service cannot
+            // assume is a request that could never be carried out whatever network the entry
+            // names. Both operations ask through the one place this crate asks it
+            // (`crate::state::unassumable_vpc_interface_role`), so neither can store a VPC
+            // interface the other would refuse.
+            if let Some(message) = crate::state::unassumable_vpc_interface_role(
+                ctx,
+                label,
+                input.vpc_interfaces.as_deref().unwrap_or_default(),
+            )
+            .await
+            {
+                return Err(bad_request_worded(message));
+            }
             if let Some(detail) = crate::state::unresolved_vpc_interface_placements(
                 ctx,
                 label,

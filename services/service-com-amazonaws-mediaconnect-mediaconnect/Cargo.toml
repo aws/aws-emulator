@@ -42,6 +42,13 @@ hex = { workspace = true }
 # can only be driven end to end with it on the same engine.
 # DEV-ONLY: this crate depends on no other service's crate outside its tests.
 service-com-amazonaws-ec2-amazonec2 = { workspace = true }
+# The OWNER of the roles a flow's VPC interfaces are created under, mounted the same way:
+# `tests/all/vpc_interface_role_assumption.rs` creates each role with a real `CreateRole`,
+# so the resolution under test answers out of IAM's own records.
+service-com-amazonaws-iam-awsidentitymanagementv20100508 = { workspace = true }
+# IAM's protocol is form-encoded, so that suite builds its `CreateRole` body with the one
+# `application/x-www-form-urlencoded` serializer rather than a hand-rolled encoder.
+form_urlencoded = "1"
 
 [lints]
 workspace = true

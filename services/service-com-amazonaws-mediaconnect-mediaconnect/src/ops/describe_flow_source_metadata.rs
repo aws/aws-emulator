@@ -6,6 +6,13 @@
 //! from [`crate::state`], so the flow it reports on is the one CreateFlow stored, and a
 //! label the store does not hold is refused `NotFoundException`.
 //!
+//! ## What the report is gated on
+//!
+//! Source metadata describes the transport stream a flow is RECEIVING, so the call is
+//! answered only while the flow is running: a flow in any other status is refused the
+//! modelled `BadRequestException` (HTTP 400) before anything is projected, through the one
+//! place this crate states that gate ([`crate::state::flow_source_metadata_refusal`]).
+//!
 //! ## What there is to report, and what there is not
 //!
 //! `TransportMediaInfo` is "information about the flow's transport media" — the transport
@@ -24,8 +31,8 @@
 //! What the operation CAN report is the status of that absence, which is what `Messages`
 //! is for ("provides a status code and message regarding issues found with the flow source
 //! metadata"): one entry per source the stored flow holds, naming the source in
-//! `MessageDetail$ResourceName` and stating why no metadata is available — the flow is not
-//! running, or it is running and no content has arrived. `NdiInfo` is reported only for a
+//! `MessageDetail$ResourceName` and stating why no metadata is available: the flow is
+//! running and no content has arrived. `NdiInfo` is reported only for a
 //! flow NDI applies to (see [`ndi_source_metadata_info`]) and reports an empty discovery,
 //! because this emulator runs no NDI discovery and no NDI sender can connect to it.
 //!
@@ -225,6 +232,23 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             );
         };
 
+        // Source metadata exists only for a flow that is RECEIVING a transport stream, so
+        // the precondition on the flow's own status is answered BEFORE anything is
+        // projected: a flow that is not running is refused the modelled
+        // `BadRequestException`, worded through the one place this crate states the
+        // preconditions a flow's source reports are gated on
+        // (`crate::state::flow_source_metadata_refusal`). The status it is judged on is the
+        // one the clock has just settled above, so the answer is the flow's state at this
+        // instant and not a stale one.
+        if let Some(message) = crate::state::flow_source_metadata_refusal(flow) {
+            return Err(
+                DescribeFlowSourceMetadataErrorModeled::BadRequestException(
+                    BadRequestException { message },
+                )
+                .into(),
+            );
+        }
+
         Ok(DescribeFlowSourceMetadataOutput {
             // "The ARN of the flow that DescribeFlowSourceMetadata was performed on": the
             // ARN the STORED flow carries, which is the identity the label resolved to.
@@ -240,14 +264,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
     }
 }
 
-/// `MessageDetail$Code` for a source of a flow that is not running: MediaConnect reports
-/// source metadata from the content a RUNNING flow receives, so a flow that is not
-/// [`crate::state::STATUS_ACTIVE`] has no source metadata for any of its sources.
-const CODE_FLOW_NOT_RUNNING: &str = "FLOW_NOT_RUNNING";
-
 /// `MessageDetail$Code` for a source of a running flow that no content has arrived on.
 /// Nothing listens on a source's ingest endpoint in this emulator, so this is the
-/// condition every source of a running flow is in.
+/// condition every source of a flow this operation reports on is in — a flow that is not
+/// running is refused the call altogether
+/// (`crate::state::flow_source_metadata_refusal`), so there is no code for one.
 const CODE_NO_SOURCE_METADATA: &str = "NO_SOURCE_METADATA";
 
 /// `MessageDetail$Code` for the NDI block of a flow NDI applies to: no NDI sender has
@@ -259,35 +280,21 @@ const CODE_NO_NDI_SENDER_DISCOVERED: &str = "NO_NDI_SENDER_DISCOVERED";
 /// holds them, each naming its source in `MessageDetail$ResourceName` ("the name of the
 /// resource").
 ///
-/// The condition is read from the flow's own stored status: a flow that is not running
-/// receives nothing, and a running flow of this emulator receives nothing either, because
-/// no media is ingested (see the module docs). So the list is exactly as long as the
-/// flow's source list, and both the code and the wording (which names the status the flow
-/// is in) follow the stored status — never the shape of the request that asked.
+/// The condition is the one every source of a reported-on flow is in: the flow is running
+/// (that is the precondition of this report) and a running flow of this emulator receives
+/// nothing, because no media is ingested (see the module docs). So the list is exactly as
+/// long as the flow's source list, and the wording names the status the flow is stored in —
+/// never the shape of the request that asked.
 fn source_metadata_messages(flow: &crate::state::StoredFlow) -> Vec<MessageDetail> {
-    let running = flow.status == crate::state::STATUS_ACTIVE;
     flow.sources
         .iter()
         .map(|source| MessageDetail {
-            code: if running {
-                CODE_NO_SOURCE_METADATA.to_string()
-            } else {
-                CODE_FLOW_NOT_RUNNING.to_string()
-            },
-            message: if running {
-                format!(
-                    "The flow is {}, and no content has been received on this source, so \
-                     its source metadata is not available yet.",
-                    flow.status
-                )
-            } else {
-                format!(
-                    "The flow is {}; source metadata is reported only while the flow is {} \
-                     and receiving content.",
-                    flow.status,
-                    crate::state::STATUS_ACTIVE
-                )
-            },
+            code: CODE_NO_SOURCE_METADATA.to_string(),
+            message: format!(
+                "The flow is {}, and no content has been received on this source, so its \
+                 source metadata is not available yet.",
+                flow.status
+            ),
             resource_name: Some(source.name.clone()),
         })
         .collect()

@@ -6,6 +6,11 @@
 //! interface is materialised into the flow's record — with the elastic network interface
 //! the service creates for it — so DescribeFlow reports exactly what this operation wrote.
 //!
+//! Nothing is stored for a request this service could not carry out: each entry names the
+//! role the network interface is created AS, which is resolved against IAM, and the EC2
+//! network it is created IN, which is resolved against EC2 — both before the store is
+//! touched, so a refused request leaves the flow exactly as it was.
+//!
 //! ## Shape of an operation
 //!
 //! Each operation is a struct that owns the shared engine and implements
@@ -90,6 +95,16 @@ fn bad_request(detail: impl Into<String>) -> AddFlowVpcInterfacesError {
         message: crate::state::validation_failed_message(&detail.into()),
     })
     .into()
+}
+
+/// Refuse the request with `BadRequestException` (HTTP 400) whose `message` is ALREADY the
+/// whole envelope the refusal carries, rather than a detail to be wrapped: the form the role
+/// refusal below arrives in ([`crate::state::unassumable_vpc_interface_role`]), which words
+/// itself through this service's other 400 envelope — the semantic one a request refused by
+/// what it NAMES carries ([`crate::state::bad_request_message`]) rather than the validation
+/// one [`bad_request`] builds.
+fn bad_request_worded(message: String) -> AddFlowVpcInterfacesError {
+    AddFlowVpcInterfacesErrorModeled::BadRequestException(BadRequestException { message }).into()
 }
 
 /// Refuse the request with `NotFoundException` (HTTP 404): "one or more of the resources
@@ -245,6 +260,24 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let region = ::service_common::arn::region_of(&input.flow_arn, crate::state::SERVICE_NAMESPACE)
             .or_else(|| ::service_common::arn::region_label(&signing_region));
         if let Some(region) = region {
+            // The ROLE comes first: a VPC interface is an elastic network interface this
+            // service creates in the caller's account AS the role the entry names
+            // (`VpcInterface$RoleArn`: "a role Arn MediaConnect can assume to create ENIs in
+            // your account"), so a role it cannot assume is a request that could never be
+            // carried out, whatever network the entry names — resolved through the one place
+            // this crate asks that question, which CreateFlow's own `VpcInterfaces` ask
+            // through too (`crate::state::unassumable_vpc_interface_role`). The refusal is
+            // grounded in what IAM ANSWERED over the same in-process callback, and carries
+            // its own envelope, so it is returned as worded.
+            if let Some(message) = crate::state::unassumable_vpc_interface_role(
+                ctx,
+                region,
+                &input.vpc_interfaces,
+            )
+            .await
+            {
+                return Err(bad_request_worded(message));
+            }
             if let Some(detail) = crate::state::unresolved_vpc_interface_placements(
                 ctx,
                 region,

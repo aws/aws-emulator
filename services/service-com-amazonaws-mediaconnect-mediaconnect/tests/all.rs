@@ -263,3 +263,7 @@ mod flow_ndi_machine_name;
 mod vpc_placement_resolution;
 #[path = "all/update_bridge_declared_output_bound.rs"]
 mod update_bridge_declared_output_bound;
+#[path = "all/flow_source_report_preconditions.rs"]
+mod flow_source_report_preconditions;
+#[path = "all/vpc_interface_role_assumption.rs"]
+mod vpc_interface_role_assumption;

@@ -4,12 +4,14 @@
 //!
 //! The rule under test: the operation REPORTS the source metadata this service holds for
 //! the flow its `{FlowArn}` label resolves to in the store — so it answers
-//! `NotFoundException` for a label the store does not hold, and for a flow it does hold it
-//! answers the stored flow's ARN plus one `messages` entry per STORED source, coded from
-//! the flow's STORED status, with `ndiInfo` exactly for a flow NDI is associated with.
-//! Nothing in this emulator ingests media, so no transport stream has ever been observed:
-//! `transportMediaInfo` and `timestamp` are absent for every flow, and the NDI block
-//! reports an empty discovery rather than an invented sender.
+//! `NotFoundException` for a label the store does not hold, and for a RUNNING flow it holds
+//! it answers the stored flow's ARN plus one `messages` entry per STORED source, with
+//! `ndiInfo` exactly for a flow NDI is associated with. A flow that is not running is
+//! refused instead, which is the subject of
+//! `tests/all/flow_source_report_preconditions.rs`; the fixtures here are therefore started
+//! before they are read. Nothing in this emulator ingests media, so no transport stream has
+//! ever been observed: `transportMediaInfo` and `timestamp` are absent for every flow, and
+//! the NDI block reports an empty discovery rather than an invented sender.
 //!
 //! Each rule is asserted over a TABLE whose rows differ along what it generalises over —
 //! how many sources the flow holds, what they are named, which protocol they use, whether
@@ -19,23 +21,21 @@
 //! serialization) through the harness [`crate::flow_lifecycle::Emulator`], so what these
 //! tests assert is what a MediaConnect client sees on the wire.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 
 use crate::flow_lifecycle::{Emulator, REGION};
+use crate::flow_source_report_preconditions::METADATA_REFUSAL;
 
 /// The `MessageDetail$Code` values this operation reports, written out here rather than
 /// read from the crate so that a change to the handler's constants cannot quietly move
 /// what these tests assert.
 ///
-/// `FLOW_NOT_RUNNING` is the code for a source of a flow that is not `ACTIVE`,
-/// `NO_SOURCE_METADATA` the code for a source of a running flow nothing has arrived on,
+/// `NO_SOURCE_METADATA` is the code for a source of a running flow nothing has arrived on,
 /// and `NO_NDI_SENDER_DISCOVERED` the code of the NDI block's own message.
-const CODE_FLOW_NOT_RUNNING: &str = "FLOW_NOT_RUNNING";
-/// See [`CODE_FLOW_NOT_RUNNING`].
 const CODE_NO_SOURCE_METADATA: &str = "NO_SOURCE_METADATA";
-/// See [`CODE_FLOW_NOT_RUNNING`].
+/// See [`CODE_NO_SOURCE_METADATA`].
 const CODE_NO_NDI_SENDER_DISCOVERED: &str = "NO_NDI_SENDER_DISCOVERED";
 
 /// The status a created flow waits in, and the one a started flow settles into
@@ -44,17 +44,71 @@ const STATUS_STANDBY: &str = "STANDBY";
 /// See [`STATUS_STANDBY`].
 const STATUS_ACTIVE: &str = "ACTIVE";
 
-/// Longer than the span the clock settles a flow's status over, so a read after it sees
-/// the settled status.
-const SETTLE_WAIT: Duration = Duration::from_millis(900);
-
 /// Call DescribeFlowSourceMetadata through its modelled HTTP binding
 /// (`smithy_query(query="operation",operation="DescribeFlowSourceMetadata")`: GET
 /// `/v1/flows/{FlowArn}/source-metadata`).
-async fn source_metadata(emulator: &Emulator, flow_arn: &str) -> (u16, Option<String>, Value) {
+///
+/// `pub(crate)` because the precondition suite drives the same binding.
+pub(crate) async fn source_metadata(
+    emulator: &Emulator,
+    flow_arn: &str,
+) -> (u16, Option<String>, Value) {
     emulator
         .send("GET", &format!("/v1/flows/{flow_arn}/source-metadata"), None)
         .await
+}
+
+/// How long a poll loop below may run before it gives up. Generous: every transition it
+/// waits for is due one transition span after the call that started it, and this only bounds
+/// a loop that would otherwise never end.
+pub(crate) const POLL_DEADLINE: Duration = Duration::from_secs(120);
+
+/// How long a poll loop waits before looking again.
+pub(crate) const BETWEEN_READS: Duration = Duration::from_millis(25);
+
+/// Start the flow and wait for the CONDITION the source reports are gated on: the clock has
+/// settled it into `ACTIVE`. Polls DescribeFlow rather than sleeping a span, so the fixture
+/// is ready whatever the host's speed.
+///
+/// `pub(crate)` because every suite that reads a flow's source reports needs a running one.
+pub(crate) async fn start_and_settle(emulator: &Emulator, case: &str, flow_arn: &str) {
+    let (status, code, body) = emulator
+        .send("POST", &format!("/v1/flows/start/{flow_arn}"), None)
+        .await;
+    assert_eq!(
+        (status, code.as_deref()),
+        (202, None),
+        "case {case:?}: StartFlow expected 202, got {status} {code:?}: {body}"
+    );
+    settled_status(emulator, case, flow_arn, STATUS_ACTIVE).await;
+}
+
+/// Poll DescribeFlow until it reports `expected` as the flow's status, or [`POLL_DEADLINE`]
+/// passes — the condition, not a span of time.
+pub(crate) async fn settled_status(
+    emulator: &Emulator,
+    case: &str,
+    flow_arn: &str,
+    expected: &str,
+) {
+    let started = Instant::now();
+    loop {
+        let (status, code, described) = emulator.describe_flow(flow_arn).await;
+        assert_eq!(
+            (status, code.as_deref()),
+            (200, None),
+            "case {case:?}: DescribeFlow must answer 200, got {status} {code:?}: {described}"
+        );
+        if described["flow"]["status"].as_str() == Some(expected) {
+            return;
+        }
+        assert!(
+            started.elapsed() < POLL_DEADLINE,
+            "case {case:?}: the clock must settle the flow into {expected}, last read \
+             {described}"
+        );
+        tokio::time::sleep(BETWEEN_READS).await;
+    }
 }
 
 /// Create a flow and return `(FlowArn, the source names DescribeFlow reports for it)`.
@@ -258,6 +312,10 @@ fn report_cases() -> Vec<ReportCase> {
 /// stored source naming that source, `ndiInfo` exactly for a flow NDI is associated with,
 /// and no transport media or metadata timestamp for any flow — because nothing has been
 /// ingested.
+///
+/// Every fixture is STARTED first: the report is gated on the flow running (see
+/// `tests/all/flow_source_report_preconditions.rs`), so a running flow is what this rule is
+/// about.
 #[tokio::test]
 async fn source_metadata_reports_the_stored_flow_and_its_sources() {
     let emulator = Emulator::new();
@@ -268,6 +326,7 @@ async fn source_metadata_reports_the_stored_flow_and_its_sources() {
             !source_names.is_empty(),
             "case {case:?}: the fixture flow must hold at least one source"
         );
+        start_and_settle(&emulator, case, &flow_arn).await;
 
         let (status, code, body) = source_metadata(&emulator, &flow_arn).await;
         assert_eq!(
@@ -282,10 +341,10 @@ async fn source_metadata_reports_the_stored_flow_and_its_sources() {
         );
 
         // One message per stored source, in the flow's own source order, each naming its
-        // source and coded for a flow that is not running (a created flow is in STANDBY).
+        // source and coded for a running flow nothing has arrived on.
         let expected: Vec<(String, String)> = source_names
             .iter()
-            .map(|name| (CODE_FLOW_NOT_RUNNING.to_string(), name.clone()))
+            .map(|name| (CODE_NO_SOURCE_METADATA.to_string(), name.clone()))
             .collect();
         assert_eq!(
             coded(&body["messages"]),
@@ -374,6 +433,7 @@ async fn source_metadata_is_a_report_that_changes_nothing() {
         }),
     )
     .await;
+    start_and_settle(&emulator, case, &flow_arn).await;
 
     let (_, _, first) = source_metadata(&emulator, &flow_arn).await;
     let (_, _, second) = source_metadata(&emulator, &flow_arn).await;
@@ -391,7 +451,7 @@ async fn source_metadata_is_a_report_that_changes_nothing() {
     );
     assert_eq!(
         described["flow"]["status"].as_str(),
-        Some(STATUS_STANDBY),
+        Some(STATUS_ACTIVE),
         "case {case:?}: reading the metadata did not move the flow's status, got {}",
         described["flow"]["status"]
     );
@@ -409,17 +469,16 @@ async fn source_metadata_is_a_report_that_changes_nothing() {
     );
 }
 
-/// Both the code and the wording of each message follow the flow's STORED status: a status
-/// that is not `ACTIVE` — including the transient one the clock has not settled yet — is
-/// reported as "not running", a running flow as having no metadata yet, and in either case
-/// the message names the status the flow is in.
+/// The read is served EXACTLY while the flow is running: refused as created, refused for
+/// every instant of the start that has not settled yet, served once the flow is `ACTIVE`,
+/// and refused again once the stop has taken it out of `ACTIVE` — each time with the status
+/// and the code that go with the state the flow is in.
 ///
-/// A step read inside a transition admits BOTH the transient status and the one the clock
-/// may have settled already, so the assertion is on the response's own self-consistency
-/// (code paired with the status its wording names) rather than on the test winning a race
-/// with the clock.
+/// A step inside a transition is not raced: the loops below poll until the answer FLIPS and
+/// assert that every answer before the flip is the one the earlier state requires, so what
+/// is pinned is the pairing of state with answer rather than the test's luck with the clock.
 #[tokio::test]
-async fn message_codes_follow_the_stored_flow_status() {
+async fn the_read_is_served_exactly_while_the_flow_is_running() {
     let emulator = Emulator::new();
     let case = "a flow driven through its lifecycle";
     let (flow_arn, source_names) = create(
@@ -432,145 +491,122 @@ async fn message_codes_follow_the_stored_flow_status() {
     )
     .await;
 
-    /// What the suite expects at one point of the flow's lifecycle.
-    struct Step {
-        case: &'static str,
-        /// The lifecycle call to make before reading (the verb of `POST
-        /// /v1/flows/{verb}/{FlowArn}`), or `None` to read the flow as it stands.
-        call: Option<&'static str>,
-        /// Whether to wait the clock out after that call, so the status it owes has
-        /// settled.
-        settle: bool,
-        /// The status DescribeFlow must report, for a step at which the clock owes no
-        /// change, or `None` for one read inside a transition.
-        stable_status: Option<&'static str>,
-        /// The `(code, the status the message must name)` pairs this step admits: one for
-        /// a settled step, two where the clock may already have settled the transition.
-        admitted: &'static [(&'static str, &'static str)],
-    }
+    // As created the flow waits in STANDBY, which is not a status this report is served in.
+    let (status, code, body) = source_metadata(&emulator, &flow_arn).await;
+    assert_refusal("a created flow waits in STANDBY", status, code.as_deref(), &body);
+    let (_, _, described) = emulator.describe_flow(&flow_arn).await;
+    assert_eq!(
+        described["flow"]["status"].as_str(),
+        Some(STATUS_STANDBY),
+        "case {case:?}: a created flow waits in {STATUS_STANDBY}, got {}",
+        described["flow"]["status"]
+    );
 
-    let steps = [
-        Step {
-            case: "a created flow waits in STANDBY",
-            call: None,
-            settle: false,
-            stable_status: Some(STATUS_STANDBY),
-            admitted: &[(CODE_FLOW_NOT_RUNNING, STATUS_STANDBY)],
-        },
-        Step {
-            case: "a started flow is STARTING until the clock settles it into ACTIVE",
-            call: Some("start"),
-            settle: false,
-            stable_status: None,
-            admitted: &[
-                (CODE_FLOW_NOT_RUNNING, "STARTING"),
-                (CODE_NO_SOURCE_METADATA, STATUS_ACTIVE),
-            ],
-        },
-        Step {
-            case: "the started flow has settled into ACTIVE",
-            call: None,
-            settle: true,
-            stable_status: Some(STATUS_ACTIVE),
-            admitted: &[(CODE_NO_SOURCE_METADATA, STATUS_ACTIVE)],
-        },
-        Step {
-            case: "a stopped flow is STOPPING until the clock settles it into STANDBY",
-            call: Some("stop"),
-            settle: false,
-            stable_status: None,
-            admitted: &[
-                (CODE_FLOW_NOT_RUNNING, "STOPPING"),
-                (CODE_FLOW_NOT_RUNNING, STATUS_STANDBY),
-            ],
-        },
-        Step {
-            case: "the stopped flow has settled back into STANDBY",
-            call: None,
-            settle: true,
-            stable_status: Some(STATUS_STANDBY),
-            admitted: &[(CODE_FLOW_NOT_RUNNING, STATUS_STANDBY)],
-        },
-    ];
-
-    for Step {
-        case,
-        call,
-        settle,
-        stable_status,
-        admitted,
-    } in steps
-    {
-        if let Some(verb) = call {
-            let (http_status, error, body) = emulator
-                .send("POST", &format!("/v1/flows/{verb}/{flow_arn}"), None)
-                .await;
-            assert_eq!(
-                (http_status, error.as_deref()),
-                (202, None),
-                "case {case:?}: {verb} expected 202, got {http_status} {error:?}: {body}"
-            );
-        }
-        if settle {
-            tokio::time::sleep(SETTLE_WAIT).await;
-        }
-
-        let (http_status, error, body) = source_metadata(&emulator, &flow_arn).await;
-        assert_eq!(
-            (http_status, error.as_deref()),
-            (200, None),
-            "case {case:?}: expected 200 with no error, got {http_status} {error:?}: {body}"
-        );
-
-        // ONE response, read once: the pair the step is about is (the code every message
-        // carries, the status the wording names), and the admitted pairs are the states
-        // the flow can be in at this point of its lifecycle.
-        let reported = body["messages"][0]["code"]
+    // Started: STARTING until the clock settles it ACTIVE. Every answer before the flow is
+    // ACTIVE is the refusal, and the first served answer is the running report.
+    let (status, code, body) = emulator
+        .send("POST", &format!("/v1/flows/start/{flow_arn}"), None)
+        .await;
+    assert_eq!(
+        (status, code.as_deref()),
+        (202, None),
+        "case {case:?}: StartFlow expected 202, got {status} {code:?}: {body}"
+    );
+    let served = poll_until_served(&emulator, "a started flow", &flow_arn).await;
+    let expected: Vec<(String, String)> = source_names
+        .iter()
+        .map(|name| (CODE_NO_SOURCE_METADATA.to_string(), name.clone()))
+        .collect();
+    assert_eq!(
+        coded(&served["messages"]),
+        expected,
+        "case {case:?}: a running flow reports one running message per source, expected \
+         {expected:?}, got {}",
+        served["messages"]
+    );
+    assert!(
+        served["messages"][0]["message"]
             .as_str()
-            .unwrap_or_default()
-            .to_string();
-        let wording = body["messages"][0]["message"]
-            .as_str()
-            .unwrap_or_default()
-            .to_string();
-        let matched = admitted
-            .iter()
-            .find(|(code, status)| *code == reported && wording.contains(status));
-        assert!(
-            matched.is_some(),
-            "case {case:?}: expected one of {admitted:?}, got code {reported:?} worded \
-             {wording:?}"
-        );
+            .is_some_and(|wording| wording.contains(STATUS_ACTIVE)),
+        "case {case:?}: the wording names the status the flow is in, got {}",
+        served["messages"][0]["message"]
+    );
+    // Never any media: a running flow of this emulator receives nothing either.
+    assert!(
+        served["transportMediaInfo"].is_null() && served["timestamp"].is_null(),
+        "case {case:?}: no transport media info and no metadata timestamp, got {served}"
+    );
 
-        // Whatever the state, there is exactly one message per stored source, naming it,
-        // and every message of one read carries the same code.
-        let expected: Vec<(String, String)> = source_names
-            .iter()
-            .map(|name| (reported.clone(), name.clone()))
-            .collect();
-        assert_eq!(
-            coded(&body["messages"]),
-            expected,
-            "case {case:?}: expected {expected:?}, got {}",
-            body["messages"]
-        );
+    // Stopped: STOPPING until the clock settles it STANDBY. Every answer before it leaves
+    // ACTIVE is still the served report, and from then on it is the refusal.
+    let (status, code, body) = emulator
+        .send("POST", &format!("/v1/flows/stop/{flow_arn}"), None)
+        .await;
+    assert_eq!(
+        (status, code.as_deref()),
+        (202, None),
+        "case {case:?}: StopFlow expected 202, got {status} {code:?}: {body}"
+    );
+    poll_until_refused(&emulator, "a stopped flow", &flow_arn).await;
+    settled_status(&emulator, case, &flow_arn, STATUS_STANDBY).await;
+}
 
-        if let Some(status) = stable_status {
-            let (_, _, described) = emulator.describe_flow(&flow_arn).await;
-            assert_eq!(
-                described["flow"]["status"].as_str(),
-                Some(status),
-                "case {case:?}: the fixture must be in {status}, got {}",
-                described["flow"]["status"]
+/// Poll the read until it is SERVED, asserting that every answer before that is the modelled
+/// refusal — so the loop waits for the condition and still pins what a flow that is not
+/// running yet is answered with. Returns the first served body.
+async fn poll_until_served(emulator: &Emulator, case: &str, flow_arn: &str) -> Value {
+    let started = Instant::now();
+    loop {
+        let (status, code, body) = source_metadata(emulator, flow_arn).await;
+        if status == 200 {
+            assert!(
+                code.is_none(),
+                "case {case:?}: a served read carries no error type, got {code:?}: {body}"
             );
+            return body;
         }
-
-        // Never any media: a running flow of this emulator receives nothing either.
+        assert_refusal(case, status, code.as_deref(), &body);
         assert!(
-            body["transportMediaInfo"].is_null() && body["timestamp"].is_null(),
-            "case {case:?}: no transport media info and no metadata timestamp, got {body}"
+            started.elapsed() < POLL_DEADLINE,
+            "case {case:?}: the read must be served once the flow is running, last answer \
+             {status} {code:?}: {body}"
         );
+        tokio::time::sleep(BETWEEN_READS).await;
     }
+}
+
+/// Poll the read until it is REFUSED, asserting that every answer before that is a served
+/// 200 — the mirror of [`poll_until_served`].
+async fn poll_until_refused(emulator: &Emulator, case: &str, flow_arn: &str) {
+    let started = Instant::now();
+    loop {
+        let (status, code, body) = source_metadata(emulator, flow_arn).await;
+        if status != 200 {
+            assert_refusal(case, status, code.as_deref(), &body);
+            return;
+        }
+        assert!(
+            started.elapsed() < POLL_DEADLINE,
+            "case {case:?}: the read must be refused once the flow stops running, last \
+             answer {status} {code:?}: {body}"
+        );
+        tokio::time::sleep(BETWEEN_READS).await;
+    }
+}
+
+/// Assert one answer is the modelled refusal this report is gated by, worded as AWS words
+/// it ([`METADATA_REFUSAL`]).
+fn assert_refusal(case: &str, status: u16, code: Option<&str>, body: &Value) {
+    assert_eq!(
+        (status, code),
+        (400, Some("BadRequestException")),
+        "case {case:?}: expected 400 BadRequestException, got {status} {code:?}: {body}"
+    );
+    assert_eq!(
+        body["message"].as_str(),
+        Some(METADATA_REFUSAL),
+        "case {case:?}: the refusal carries AWS's message for this class, got {body}"
+    );
 }
 
 /// The `{FlowArn}` label is resolved against the STORE once it satisfies the constraint

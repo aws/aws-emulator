@@ -7,6 +7,17 @@
 //! UpdateFlow has since changed it), and a label the store does not hold is refused
 //! `NotFoundException`.
 //!
+//! ## What the report is gated on
+//!
+//! A thumbnail is a still decoded out of the content a flow is receiving, and it is decoded
+//! only for a flow thumbnails are turned on for, so the call is answered only for a flow
+//! that satisfies BOTH preconditions: a status that admits the read, and
+//! `MonitoringConfig$ThumbnailState` enabled in its stored source monitoring configuration.
+//! A flow that fails either is refused the modelled `BadRequestException` (HTTP 400) before
+//! anything is projected, with every unmet precondition reported in the one answer, through
+//! the one place this crate states that gate
+//! ([`crate::state::flow_source_thumbnail_refusal`]).
+//!
 //! ## What there is to report, and what there is not
 //!
 //! `ThumbnailDetails$Thumbnail` is a "thumbnail Base64 string" — a still image decoded out
@@ -20,9 +31,8 @@
 //! What the operation CAN report is the flow the label resolved to and the STATUS of that
 //! absence, which is what `ThumbnailMessages` is for ("status code and messages about the
 //! flow source thumbnail"): one entry per source the stored flow holds, naming the source in
-//! `MessageDetail$ResourceName` and stating why no thumbnail is available — thumbnails are
-//! turned off in the flow's stored source monitoring configuration, the flow is not running,
-//! or it is running and no content has arrived.
+//! `MessageDetail$ResourceName` and stating why no thumbnail is available: the flow is
+//! running with thumbnails enabled and no content has arrived.
 //!
 //! AWS publishes no catalog of `MessageDetail$Code` values for this operation (the model
 //! says only "the error code"), so the codes below are this emulator's own, chosen to
@@ -208,6 +218,23 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             );
         };
 
+        // A thumbnail is decoded out of the content a running flow receives, and only for a
+        // flow thumbnails are turned on for, so both preconditions are answered BEFORE
+        // anything is projected: a flow that fails either is refused the modelled
+        // `BadRequestException`, worded through the one place this crate states the
+        // preconditions a flow's source reports are gated on
+        // (`crate::state::flow_source_thumbnail_refusal`), which reports every unmet one in
+        // the single answer. The status it is judged on is the one the clock has just
+        // settled above, and the configuration is the flow's own stored one.
+        if let Some(message) = crate::state::flow_source_thumbnail_refusal(flow) {
+            return Err(
+                DescribeFlowSourceThumbnailErrorModeled::BadRequestException(
+                    BadRequestException { message },
+                )
+                .into(),
+            );
+        }
+
         Ok(DescribeFlowSourceThumbnailOutput {
             thumbnail_details: Some(ThumbnailDetails {
                 // "The ARN of the flow that DescribeFlowSourceThumbnail was performed on":
@@ -226,78 +253,33 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
     }
 }
 
-/// `MessageDetail$Code` for a source of a flow whose stored source monitoring configuration
-/// turns thumbnails OFF (`MonitoringConfig$ThumbnailState` — "indicates whether thumbnails
-/// are enabled or disabled" — is [`crate::state::STATE_DISABLED`]): a flow that is not
-/// having thumbnails taken has none for any of its sources, whatever it is receiving.
-const CODE_THUMBNAIL_DISABLED: &str = "THUMBNAIL_DISABLED";
-
-/// `MessageDetail$Code` for a source of a flow that is not running: MediaConnect decodes a
-/// thumbnail out of the content a RUNNING flow receives, so a flow that is not
-/// [`crate::state::STATUS_ACTIVE`] has no thumbnail for any of its sources.
-const CODE_FLOW_NOT_RUNNING: &str = "FLOW_NOT_RUNNING";
-
-/// `MessageDetail$Code` for a source of a running flow that no content has arrived on.
+/// `MessageDetail$Code` for a source of a reported-on flow that no content has arrived on.
 /// Nothing listens on a source's ingest endpoint in this emulator, so this is the condition
-/// every source of a running flow is in.
+/// every source of a flow this operation reports on is in — a flow that is not running, or
+/// that is not having thumbnails taken, is refused the call altogether
+/// (`crate::state::flow_source_thumbnail_refusal`), so there is no code for either.
 const CODE_NO_THUMBNAIL_AVAILABLE: &str = "NO_THUMBNAIL_AVAILABLE";
 
 /// `ThumbnailMessages`: "status code and messages about the flow source thumbnail" — ONE
 /// entry per source the stored flow holds, in the order the flow holds them, each naming its
 /// source in `MessageDetail$ResourceName` ("the name of the resource").
 ///
-/// The condition is read from the flow's OWN STORED record, never from the request that
-/// asked: whether its stored `SourceMonitoringConfig` turns thumbnails off, and the status
-/// it is stored in. A flow with thumbnails off has none; a flow that is not running receives
-/// nothing to take one from; and a running flow of this emulator receives nothing either,
-/// because no media is ingested (see the module docs). So the list is exactly as long as the
-/// flow's source list.
-///
-/// `MonitoringConfig$ThumbnailState` is reported DISABLED only where the stored
-/// configuration says so: the model declares no default for that member and AWS documents
-/// none, so a flow whose configuration does not mention thumbnails is reported on by its
-/// status alone rather than by an invented default.
+/// The condition is the one every source of a reported-on flow is in: the flow is running
+/// with thumbnails enabled (those are this report's preconditions, checked above) and a
+/// running flow of this emulator receives nothing either, because no media is ingested (see
+/// the module docs). So the list is exactly as long as the flow's source list, and the
+/// wording names the status the flow is STORED in — never the shape of the request that
+/// asked.
 fn thumbnail_messages(flow: &crate::state::StoredFlow) -> Vec<MessageDetail> {
-    let disabled = flow
-        .source_monitoring_config
-        .as_ref()
-        .and_then(|config| config.thumbnail_state.as_deref())
-        == Some(crate::state::STATE_DISABLED);
-    let running = flow.status == crate::state::STATUS_ACTIVE;
-    let (code, message) = if disabled {
-        (
-            CODE_THUMBNAIL_DISABLED,
-            format!(
-                "Thumbnails are {} in this flow's source monitoring configuration, so no \
-                 source thumbnail is taken for it.",
-                crate::state::STATE_DISABLED
-            ),
-        )
-    } else if running {
-        (
-            CODE_NO_THUMBNAIL_AVAILABLE,
-            format!(
+    flow.sources
+        .iter()
+        .map(|source| MessageDetail {
+            code: CODE_NO_THUMBNAIL_AVAILABLE.to_string(),
+            message: format!(
                 "The flow is {}, and no content has been received on this source, so no \
                  thumbnail has been generated for it yet.",
                 flow.status
             ),
-        )
-    } else {
-        (
-            CODE_FLOW_NOT_RUNNING,
-            format!(
-                "The flow is {}; a source thumbnail is generated only while the flow is {} \
-                 and receiving content.",
-                flow.status,
-                crate::state::STATUS_ACTIVE
-            ),
-        )
-    };
-    flow.sources
-        .iter()
-        .map(|source| MessageDetail {
-            code: code.to_string(),
-            message: message.clone(),
             resource_name: Some(source.name.clone()),
         })
         .collect()
