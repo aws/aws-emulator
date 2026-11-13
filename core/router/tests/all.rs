@@ -17,6 +17,12 @@
 // else appends to.
 #[path = "all/cloudformation_fifo_resource_generated_names.rs"]
 mod cloudformation_fifo_resource_generated_names;
+// Declared in this same head region, for the reason the entry above records: the
+// delivery-status record a stack-deployed SNS feedback role leaves for a delivery spans
+// CloudFormation, IAM, Amazon SNS, Amazon SQS and CloudWatch Logs at once, so no single
+// service crate's test target can deploy the stack and then read the log.
+#[path = "all/cloudformation_sns_delivery_status_logging.rs"]
+mod cloudformation_sns_delivery_status_logging;
 // Declared in this same head region, for the reason the entry above records: an EventBridge
 // replay's redelivery has to be observed where a client observes it — on the SQS queue the
 // destination bus's rule targets — so neither crate's own test target can mount both sides of
