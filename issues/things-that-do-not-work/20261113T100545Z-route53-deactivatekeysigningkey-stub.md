@@ -1,0 +1,35 @@
+Issue-Severity: HIGH
+Issue-Corpus: simparity-behavioral-aws-v1
+Issue-Corpus-Kind: behavioral
+Issue-Trace-Ids: route53.ksk-deactivate-last-active-key-rejected
+Issue-Shape-Id: com.amazonaws.route53#AWSDnsV20130401
+Issue-Key: route53.ksk-deactivate-last-active-key-rejected|run#11|AssertionError|assert code == "KeySigningKeyInUse", f"expected KeySigningKeyInUse, got {code!r}: {message!r}"
+Issue-Commit: a1ec1c78d82f4b31ace8b5486cc3f03e8393d01c
+
+# Implement route53 DeactivateKeySigningKey: unimplemented scaffold stub
+
+> _Note: this issue was identified against the code base at commit `a1ec1c78d82f4b31ace8b5486cc3f03e8393d01c`. If you are an issue fixer working on this, the code base you are currently working in can have drifted, so you might need to trace the issue back to the current code base._
+
+## Operation
+DeactivateKeySigningKey
+
+## Description
+`DeactivateKeySigningKey` is an unmodified scaffold stub, so it answers HTTP 501 and persists nothing. Implement it in `services/service-com-amazonaws-route53-awsdnsv20130401/src/ops/deactivate_key_signing_key.rs`: replace the `Err(crate::scaffolded::Scaffolded::not_implemented(..))` with a real handler that reads and writes the service's state, then DELETE that file's `//! SCAFFOLDED, NOT IMPLEMENTED:` header line.
+
+That header line is the stub census — the one record of which operations are still scaffolds. Deleting it without implementing the handler, or leaving it in place on a handler you did implement, corrupts that record rather than closing this issue. A stub's 501 is also CORRECT for a stub: this issue asks you to implement the operation, never to change the error it returns while unimplemented.
+
+1 recorded unit(s) fail on their `DeactivateKeySigningKey` call, so each one unblocks only when `DeactivateKeySigningKey` works: `route53.ksk-deactivate-last-active-key-rejected`.
+
+## Evidence
+The handler carries the scaffold marker `//! SCAFFOLDED, NOT IMPLEMENTED:` at the top of `services/service-com-amazonaws-route53-awsdnsv20130401/src/ops/deactivate_key_signing_key.rs`. Replaying the corpus, the emulator refused the `DeactivateKeySigningKey` call: File "run.py", line 445, in <lambda>
+    body = calls.in_phase(calls.BODY, lambda: fn(ctx))
+                                              ^^^^^^^
+  File "check_route53_ksk_deactivate_last_active_key_rejected.py", line 40, in run
+    assert code == "KeySigningKeyInUse", f"expected KeySigningKeyInUse, got {code!r}: {message!r}"
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: expected KeySigningKeyInUse, got 'NotImplemented': 'operation DeactivateKeySigningKey is scaffolded but not implemented in this emulator'
+
+## Steps to Reproduce
+Boot the route53 emulator
+Call DeactivateKeySigningKey and observe HTTP 501 with no state persisted
+Replay any of the blocked units above and observe it fail on that refusal
