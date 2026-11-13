@@ -29,7 +29,7 @@ use std::collections::BTreeSet;
 
 use serde_json::{json, Value};
 
-use super::resource_group_lifecycle::{error_code, static_group, Emulator};
+use super::resource_group_lifecycle::{application_group, error_code, Emulator};
 
 /// Resource ARNs spanning the forms the modelled `ResourceArn` pattern admits: a
 /// `type/id` resource, a `type:id` resource, a region-less and account-less global
@@ -71,13 +71,17 @@ where
 
 /// Create `name` as a group that holds static memberships, and record `arns` in it.
 ///
+/// The group is created as an APPLICATION group: it both holds static memberships and
+/// is the target `ListGroupingStatuses` reports on, which these suites read the
+/// recorded actions back through.
+///
 /// Returns the group's own stored ARN.
 pub(crate) async fn group_with_members(
     emulator: &Emulator,
     name: &str,
     arns: &[String],
 ) -> String {
-    let created = emulator.ok("/groups", &static_group(name)).await;
+    let created = emulator.ok("/groups", &application_group(name)).await;
     let group_arn = created["Group"]["GroupArn"]
         .as_str()
         .unwrap_or_else(|| panic!("CreateGroup must answer a GroupArn, got {created}"))
@@ -473,7 +477,7 @@ async fn an_identifier_that_names_no_group_of_the_region_is_not_found() {
     // A group of another region, addressed through this one: created in us-west-2,
     // so no identifier of it resolves in us-east-1.
     emulator
-        .ok_in("us-west-2", "/groups", &static_group("elsewhere"))
+        .ok_in("us-west-2", "/groups", &application_group("elsewhere"))
         .await;
 
     for (label, identifier) in [

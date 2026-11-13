@@ -21,7 +21,7 @@ use serde_json::{json, Value};
 use service_com_amazonaws_resourcegroups_ardi::state::{check_filters, MAX_FILTERS};
 
 use super::page_size_rule::{listings, page_ids, page_request, Listing, MEMBER_GROUP, TASK_GROUP};
-use super::resource_group_lifecycle::{error_code, static_group, Emulator};
+use super::resource_group_lifecycle::{application_group, error_code, Emulator};
 use super::tag_sync_tasks::{group_arn, role_arn};
 
 /// The region every request of this suite is signed for, and so the region the
@@ -56,12 +56,15 @@ fn filtering(label: &str) -> Filtering {
     let arns = member_arns();
     match label {
         // `configuration-type` selects the groups whose service configuration
-        // declares one of the values; only the static-membership group does.
+        // declares one of the values; only the application group does.
         "ListGroups" => Filtering {
-            entry: json!({ "Name": "configuration-type", "Values": ["AWS::EC2::HostManagement"] }),
+            entry: json!({
+                "Name": "configuration-type",
+                "Values": ["AWS::ResourceGroups::ApplicationGroup"],
+            }),
             alt: json!({
                 "Name": "configuration-type",
-                "Values": ["AWS::EC2::HostManagement", "AWS::ResourceGroups::Generic"],
+                "Values": ["AWS::ResourceGroups::ApplicationGroup", "AWS::ResourceGroups::Generic"],
             }),
         },
         // `resource-type` selects the memberships of the named type: the two
@@ -146,8 +149,8 @@ fn message(case: &str, body: &Value) -> String {
 async fn populated() -> (Emulator, Vec<Vec<String>>) {
     let emulator = Emulator::new();
     // The group the memberships and the grouping statuses are recorded on, created
-    // with the configuration a static-membership call serves.
-    emulator.ok("/groups", &static_group(MEMBER_GROUP)).await;
+    // as the application group both of those listings serve.
+    emulator.ok("/groups", &application_group(MEMBER_GROUP)).await;
     // The group the tag-sync task is started on, with no service configuration, so
     // the `configuration-type` filter above does not select it.
     emulator.ok("/groups", &json!({ "Name": TASK_GROUP })).await;

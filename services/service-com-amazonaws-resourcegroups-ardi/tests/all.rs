@@ -15,6 +15,10 @@
 mod account_settings;
 #[path = "all/application_group_identity.rs"]
 mod application_group_identity;
+#[path = "all/application_group_target.rs"]
+mod application_group_target;
+#[path = "all/boundary_refusal_message.rs"]
+mod boundary_refusal_message;
 #[path = "all/cancel_tag_sync_task.rs"]
 mod cancel_tag_sync_task;
 #[path = "all/delete_group_protection.rs"]

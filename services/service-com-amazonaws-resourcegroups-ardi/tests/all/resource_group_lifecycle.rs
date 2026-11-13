@@ -78,6 +78,19 @@ impl Emulator {
         path: &str,
         body: Option<&Value>,
     ) -> (u16, Value) {
+        let (status, parsed, _) = self.dispatch_in(region, method, path, body).await;
+        (status, parsed)
+    }
+
+    /// `request_in`, also answering the `x-amzn-errortype` header — the header restJson1
+    /// resolves an error SHAPE from, which a client reads before the body.
+    pub(crate) async fn dispatch_in(
+        &self,
+        region: &str,
+        method: &str,
+        path: &str,
+        body: Option<&Value>,
+    ) -> (u16, Value, Option<String>) {
         let payload = match body {
             Some(value) => serde_json::to_vec(value).expect("serializable body"),
             None => Vec::new(),
@@ -98,6 +111,11 @@ impl Emulator {
             .expect("valid request");
         let response = self.router.dispatch(request).await;
         let status = response.status().as_u16();
+        let error_type = response
+            .headers()
+            .get("x-amzn-errortype")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string);
         let parsed = if response.body().is_empty() {
             Value::Null
         } else {
@@ -108,7 +126,17 @@ impl Emulator {
                 )
             })
         };
-        (status, parsed)
+        (status, parsed, error_type)
+    }
+
+    /// `POST <path>` in `us-east-1`, answering the status, the body and the
+    /// `x-amzn-errortype` header.
+    pub(crate) async fn call_reporting_error_type(
+        &self,
+        path: &str,
+        body: &Value,
+    ) -> (u16, Value, Option<String>) {
+        self.dispatch_in("us-east-1", "POST", path, Some(body)).await
     }
 
     /// `call_in` in `us-east-1`.
@@ -143,6 +171,22 @@ impl Emulator {
 /// `group_resources_supported_configuration` suite.
 pub(crate) fn static_group(name: &str) -> Value {
     json!({ "Name": name, "Configuration": [{ "Type": "AWS::EC2::HostManagement" }] })
+}
+
+/// A `CreateGroup` request for `name` whose service configuration makes the group
+/// an APPLICATION group.
+///
+/// `AWS::ResourceGroups::ApplicationGroup` is the configuration type that declares
+/// one (`smithy_query(query="doc",shape="Group",member="ApplicationTag")`), and it
+/// is also one of the three types `GroupResources` documents, so a group created
+/// this way both holds static memberships and is the target an operation documented
+/// to act on the application group serves. Shared with every suite that drives such
+/// an operation.
+pub(crate) fn application_group(name: &str) -> Value {
+    json!({
+        "Name": name,
+        "Configuration": [{ "Type": "AWS::ResourceGroups::ApplicationGroup" }]
+    })
 }
 
 /// The error code (`__type`) a failure response carries.

@@ -188,9 +188,11 @@ struct ForeignCall {
     /// with — a bare name or a group ARN.
     body: fn(&Value) -> Value,
     /// The status and `__type` the operation answers for a group it cannot resolve.
-    /// Every operation here models `NotFoundException` except `ListGroupingStatuses`,
-    /// which models none and refuses with `BadRequestException`
-    /// (`smithy_query(query="operation",operation="ListGroupingStatuses")`).
+    /// Every operation here answers this service's one not-found class,
+    /// `NotFoundException` (404) — including `ListGroupingStatuses`, whose own error
+    /// list does not name the shape and which widens it in, because an identifier
+    /// that names no stored group is a resource that does not exist and not a
+    /// malformed request.
     refusal: (u16, &'static str),
 }
 
@@ -236,7 +238,7 @@ fn foreign_calls() -> Vec<ForeignCall> {
         ForeignCall {
             path: "/list-grouping-statuses",
             body: |id| json!({ "Group": id }),
-            refusal: (400, "BadRequestException"),
+            refusal: (404, "NotFoundException"),
         },
         // Last, because a delete that WERE served would take the group with it.
         ForeignCall {

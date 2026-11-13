@@ -21,7 +21,7 @@ use std::collections::BTreeMap;
 use serde_json::{json, Value};
 
 use super::page_size_rule::{listings, page_ids, page_request, Listing, MEMBER_GROUP, TASK_GROUP};
-use super::resource_group_lifecycle::{error_code, static_group, Emulator, ACCOUNT};
+use super::resource_group_lifecycle::{application_group, error_code, Emulator, ACCOUNT};
 use super::tag_sync_tasks::role_arn;
 
 /// The regions the rule is asserted over, spanning the forms the modelled region
@@ -60,7 +60,7 @@ async fn populated() -> (Emulator, BTreeMap<&'static str, Vec<Vec<String>>>) {
         // same name in every region, so a group name is no more unique across
         // regions here than it is in the service.
         emulator
-            .ok_in(region, "/groups", &static_group(MEMBER_GROUP))
+            .ok_in(region, "/groups", &application_group(MEMBER_GROUP))
             .await;
         emulator
             .ok_in(region, "/groups", &json!({ "Name": TASK_GROUP }))

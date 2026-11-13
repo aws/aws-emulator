@@ -322,8 +322,8 @@ async fn a_put_that_adds_deletion_protection_is_lifted_by_emptying_the_group() {
     let held = members(2);
     let group_arn = group_with_members(&emulator, name, &held).await;
     assert!(
-        group_arn.ends_with(name),
-        "expected the created group's ARN to name it, got {group_arn:?}",
+        group_arn.contains(&format!("group/{name}")),
+        "expected the created group's ARN to name it in its resource segment, got {group_arn:?}",
     );
     // The put leaves a configuration that serves no static membership AND protects a
     // group that still contains resources.

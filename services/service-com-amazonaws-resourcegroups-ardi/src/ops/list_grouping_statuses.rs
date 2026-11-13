@@ -8,6 +8,12 @@
 //! resource ARN, narrowed by the request's `Filters`, and paged through `MaxResults` and
 //! an opaque `NextToken`. A reporting operation: it writes nothing.
 //!
+//! The target this operation reports on is the APPLICATION group — an identifier that
+//! resolves to no stored group of the region the request addressed is
+//! `NotFoundException` (404), and a stored group whose configuration does not declare it
+//! an application group is `BadRequestException` (400), both judged before any record is
+//! read.
+//!
 //! ## Shape of an operation
 //!
 //! Each operation is a struct that owns the shared engine and implements
@@ -89,6 +95,8 @@
 //!   the request. Try again later.
 //! * `MethodNotAllowedException` (HTTP 405) — The request uses an HTTP method that isn't
 //!   allowed for the specified resource.
+//! * `NotFoundException` (HTTP 404) — widened in through `extra_errors` (see below): One or
+//!   more of the specified resources don't exist.
 //! * `TooManyRequestsException` (HTTP 429) — You've exceeded throttling limits by making too
 //!   many requests in a period of time.
 
@@ -106,13 +114,23 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-resourcegroups-ardi.jso
 // here — hence the `ListGroupingStatusesError` alias below. An operation that models no errors
 // generates an UNINHABITED enum here, which is correct and expected: there is nothing
 // to construct until the model says otherwise.
-#[smithy_macros::operation_error("com.amazonaws.resourcegroups#ListGroupingStatuses")]
+// `NotFoundException` is widened in through `extra_errors`: this SERVICE models the
+// shape — every other operation that addresses one group declares it, and it is the one
+// class this service answers for an identifier that names no stored group — while this
+// operation's own error list does not name it. Widening it in is what lets this handler
+// answer the not-found class with the status (404) its shape declares, instead of
+// reporting a group that is gone as a malformed request.
+#[smithy_macros::operation_error(
+    "com.amazonaws.resourcegroups#ListGroupingStatuses",
+    extra_errors = ["NotFoundException"]
+)]
 #[derive(Debug)]
 pub enum ListGroupingStatusesErrorModeled {
     BadRequestException(BadRequestException),
     ForbiddenException(ForbiddenException),
     InternalServerErrorException(InternalServerErrorException),
     MethodNotAllowedException(MethodNotAllowedException),
+    NotFoundException(NotFoundException),
     TooManyRequestsException(TooManyRequestsException),
 }
 
@@ -233,13 +251,29 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // `Group` is the only identifier this operation models, and it carries either
         // a bare group name or a group ARN; `lookup` resolves both, within the region
         // the request addressed, since a group of another region is another region's
-        // resource. This operation models no `NotFoundException`, so an identifier
-        // that resolves to no stored group is refused with the modelled
-        // `BadRequestException`.
-        let not_found = || bad_request(crate::state::GROUP_NOT_FOUND_MESSAGE);
+        // resource. An identifier that resolves to no stored group names a resource
+        // that does not exist, which is this service's one not-found class (404) —
+        // the same class and sentence every other operation addressing one group
+        // answers.
+        let not_found = || {
+            ListGroupingStatusesError::from(ListGroupingStatusesErrorModeled::NotFoundException(
+                NotFoundException {
+                    message: Some(crate::state::GROUP_NOT_FOUND_MESSAGE.to_string()),
+                },
+            ))
+        };
         let region = crate::state::request_region(ctx.parts());
         let key = store.lookup(&region, input.group.as_str()).ok_or_else(not_found)?;
         let group = store.groups.get(&key).ok_or_else(not_found)?;
+        // The target this operation reports on is the APPLICATION group (the modelled
+        // documentation of both the operation and its `Group` member), so a stored
+        // group that is not one is refused — before any record of it is read, since a
+        // listing of a target this operation does not serve is not an answer the
+        // caller asked for. The eligibility rule is the service's own
+        // ([`crate::state::check_application_group_target`]), so every operation whose
+        // target the model documents that way refuses the same groups with the same
+        // sentence.
+        crate::state::check_application_group_target(group).map_err(bad_request)?;
 
         // The token is this service's own opaque encoding of the resource ARN the
         // previous page stopped at, scoped to THIS listing of THIS group — the group

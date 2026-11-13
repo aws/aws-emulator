@@ -18,7 +18,7 @@
 use serde_json::{json, Value};
 
 use super::resource_group_lifecycle::{
-    error_code, is_modelled_token, query_encode, static_group, Emulator,
+    application_group, error_code, is_modelled_token, query_encode, Emulator,
 };
 use super::tag_sync_tasks::role_arn;
 
@@ -36,8 +36,9 @@ const MAX_PAGE_SIZE: usize = 50;
 /// `NextToken`.
 const ITEMS: usize = MAX_PAGE_SIZE + 1;
 
-/// The group the memberships and the grouping statuses are recorded on. Created
-/// with a configuration that admits static memberships (see `static_group`).
+/// The group the memberships and the grouping statuses are recorded on. Created as
+/// an APPLICATION group, which both admits static memberships and is the target
+/// `ListGroupingStatuses` reports on (see `application_group`).
 ///
 /// Shared with the sibling suites of this target that drive the same listings, so
 /// one set of fixtures names the group every table row addresses.
@@ -128,7 +129,7 @@ async fn populated() -> (Emulator, Vec<Vec<String>>) {
     for index in 0..ITEMS {
         let name = format!("page-{index:02}");
         let body = if name == MEMBER_GROUP {
-            static_group(&name)
+            application_group(&name)
         } else {
             json!({ "Name": name })
         };

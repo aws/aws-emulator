@@ -21,6 +21,10 @@ bytes = { workspace = true }
 http = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
+# `service-common` carries the workspace's ONE AWS wording of a constraint-violation
+# refusal and the ONE renaming of the member a JSON error body reports its text in, so
+# this service states only which of its shapes and which constraint classes they apply to.
+service-common = { path = "../common" }
 # ULIDs: the 26-character lowercase ids this service's modelled ARNs qualify a
 # group's name and a tag-sync task with.
 ulid = "1"

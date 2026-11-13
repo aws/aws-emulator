@@ -22,15 +22,16 @@
 //!   accepted only by the listing that issued it;
 //! * reporting changes nothing: a second call answers the same records with the
 //!   same timestamps;
-//! * a request that names no stored group, or that violates a validation rule, is
-//!   `BadRequestException` (400) — the only client-input error this operation
-//!   models.
+//! * a request that violates a validation rule is `BadRequestException` (400), a group
+//!   that is not an application group is `BadRequestException` (400) with the one fixed
+//!   sentence for that target, and an identifier that names no stored group of the
+//!   region is `NotFoundException` (404).
 
 use std::collections::BTreeSet;
 
 use serde_json::{json, Value};
 
-use super::resource_group_lifecycle::{error_code, is_modelled_token, static_group, Emulator};
+use super::resource_group_lifecycle::{application_group, error_code, is_modelled_token, Emulator};
 
 /// Every value the modelled `GroupingStatus` enum declares — the domain of the
 /// `status` filter.
@@ -84,11 +85,12 @@ fn item_arns(page: &Value) -> Vec<String> {
 
 /// Create `name` and record `arns` as its members. Returns the group's ARN.
 ///
-/// The group is created with the service configuration a static-membership
-/// operation serves (see `static_group`), since `GroupResources` is the only way
-/// a grouping status is recorded.
+/// The group is created as an APPLICATION group (see `application_group`): that is
+/// the target this operation reports on, and its configuration is also one a
+/// static-membership operation serves, since `GroupResources` is the only way a
+/// grouping status is recorded.
 async fn group_with_members(emulator: &Emulator, name: &str, arns: &[&str]) -> String {
-    let created = emulator.ok("/groups", &static_group(name)).await;
+    let created = emulator.ok("/groups", &application_group(name)).await;
     let group_arn = created["Group"]["GroupArn"]
         .as_str()
         .unwrap_or_else(|| panic!("CreateGroup must answer a GroupArn, got {created}"))
@@ -199,7 +201,7 @@ async fn a_group_with_no_recorded_action_reports_an_empty_listing() {
     let emulator = Emulator::new();
     let arns = sample_arns();
     group_with_members(&emulator, "with-members", &arns[..2]).await;
-    emulator.ok("/groups", &json!({ "Name": "untouched" })).await;
+    emulator.ok("/groups", &application_group("untouched")).await;
 
     // (the group, the ARNs it must report)
     let cases: Vec<(&str, Vec<String>)> = vec![
@@ -446,9 +448,10 @@ async fn reporting_is_repeatable_and_a_repeated_grouping_keeps_one_record_per_re
     );
 }
 
-/// Every request this operation refuses is `BadRequestException` (400) — the only
-/// client-input error it models, so an identifier that names no stored group is one
-/// too.
+/// A request that violates a validation rule is `BadRequestException` (400), while an
+/// identifier that names no stored group of the region is the service's one not-found
+/// class — asserted in `application_group_target`, which crosses both refusals with
+/// every form of identifier.
 #[tokio::test]
 async fn invalid_requests_are_refused_as_bad_request() {
     let emulator = Emulator::new();
@@ -483,14 +486,6 @@ async fn invalid_requests_are_refused_as_bad_request() {
         (
             "no Group at all".to_string(),
             json!({}),
-        ),
-        (
-            "a group name that names no stored group".to_string(),
-            json!({ "Group": "absent" }),
-        ),
-        (
-            "a group ARN whose account is not this emulator's".to_string(),
-            json!({ "Group": "arn:aws:resource-groups:us-east-1:999999999999:group/refusals" }),
         ),
         (
             "a filter name the model does not declare".to_string(),

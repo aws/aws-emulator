@@ -2144,6 +2144,34 @@ fn is_arn_region(region: &str) -> bool {
 /// 404 text.
 pub const GROUP_NOT_FOUND_MESSAGE: &str = "The specified group does not exist";
 
+/// The message this service answers when an operation whose modelled target is
+/// THE APPLICATION GROUP is applied to a stored group that is not one.
+///
+/// One FIXED sentence for that refusal class, carrying nothing the caller sent:
+/// the request already names the group, and which kinds of group this emulator
+/// holds is its own state rather than something a refusal reports.
+pub const APPLICATION_GROUP_TARGET_MESSAGE: &str = "The target must be an application group";
+
+/// Whether `group` is a target an operation documented to act on the APPLICATION
+/// group may be applied to, else the one sentence that refusal carries
+/// ([`APPLICATION_GROUP_TARGET_MESSAGE`]).
+///
+/// The ONE place this service judges that eligibility, so every operation whose
+/// target the model documents as the application group — `ListGroupingStatuses`
+/// reports "the status of the last grouping or ungrouping action for each resource
+/// in the specified application group"
+/// (`smithy_query(query="doc",shape="ListGroupingStatuses")`) — refuses the same
+/// targets with the same sentence. Judged on the group's EFFECTIVE configuration
+/// through [`GroupRecord::is_application_group`], so a configuration change that
+/// the clock has already made due is what decides it, and reading it writes
+/// nothing.
+pub fn check_application_group_target(group: &GroupRecord) -> Result<(), String> {
+    if group.is_application_group() {
+        return Ok(());
+    }
+    Err(APPLICATION_GROUP_TARGET_MESSAGE.to_string())
+}
+
 /// The ARN of the group named `name` in `region`, in the form every operation of
 /// this service reports for a group whose name is not qualified by an id:
 /// `arn:aws:resource-groups:<region>:<account>:group/<name>`.
