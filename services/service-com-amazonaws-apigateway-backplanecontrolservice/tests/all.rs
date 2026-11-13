@@ -544,11 +544,6 @@ mod stage_internal_error_class;
 // other answer omits, beside the status a call that earned no decision reports.
 #[path = "all/test_invoke_authorizer_cognito_claims.rs"]
 mod test_invoke_authorizer_cognito_claims;
-// Appended for the reason the note above gives: the sentences a THROTTLE limit and a TAG
-// outside its contract are refused with — one fixed sentence per setting class, carrying
-// neither the patch path nor the rejected value.
-#[path = "all/throttle_and_tag_contract_sentences.rs"]
-mod throttle_and_tag_contract_sentences;
 // Appended for the reason the note above gives: the GRANT of a remaining quota — what
 // `UpdateUsage` writes into the metering period of one `(usage plan, API key)` pair, and what
 // the data plane then admits against it.
@@ -559,6 +554,17 @@ mod usage_plan_quota_extension;
 // call of it answers inside the request, and each outcome it drives is observable.
 #[path = "all/stage_logging_role_sequence.rs"]
 mod stage_logging_role_sequence;
+// Appended for the reason the note above gives: the invoke ADDRESS the artifacts of a
+// deployed stage advertise — the export's `host`/`basePath` and `servers[].url` and the
+// endpoint a generated SDK is bound to, each asserted to be an address this emulator serves
+// the stage on.
+#[path = "all/stage_export_invoke_address.rs"]
+mod stage_export_invoke_address;
+// Appended for the reason the note above gives: the sentences a THROTTLE limit and a TAG
+// outside its contract are refused with — one fixed sentence per setting class, carrying
+// neither the patch path nor the rejected value.
+#[path = "all/throttle_and_tag_contract_sentences.rs"]
+mod throttle_and_tag_contract_sentences;
 // Appended for the reason the note above gives: the CONTAINERS an exported OpenAPI 3.0
 // document carries in every serialization — its Components Object and each Response
 // Object's `content` map.

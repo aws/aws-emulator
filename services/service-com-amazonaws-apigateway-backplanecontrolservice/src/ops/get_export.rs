@@ -17,8 +17,10 @@
 //! policy the `x-amazon-apigateway-security-policy` extension, the API's binary media
 //! types the `x-amazon-apigateway-binary-media-types` extension, the gateway responses
 //! configured on the API the `x-amazon-apigateway-gateway-responses` extension, and the
-//! api id + region
-//! + stage name the invoke endpoint the dialect renders in its own place (`host`/
+//! address this emulator ANNOUNCES for the stage
+//! (`crate::service::invoke::announced_invoke_address`, the endpoint the request reached,
+//! else the api's own `execute-api` host) + the stage name the invoke endpoint the dialect
+//! renders in its own place (`host`/
 //! `basePath`/`schemes` for 2.0, `servers` for 3.0). The vendor extensions that describe
 //! a CONFIGURATION a caller made — an integration, an authorizer, a customized gateway
 //! response, a documentation snapshot — are rendered only when the request's `parameters`
@@ -133,6 +135,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use serde_json::{Map, Value};
 
+use crate::service::invoke::AnnouncedInvokeAddress;
 use crate::state::{
     AuthorizerEntry, DeploymentEntry, DocumentationPartEntry, MethodEntry, ResourceEntry,
     RestApiEntry, StageEntry,
@@ -772,27 +775,20 @@ fn content_disposition(
     )
 }
 
-/// The default invoke host of `api_id` in `region`:
-/// `{api-id}.execute-api.{region}.amazonaws.com`, from
-/// `RestApi$disableExecuteApiEndpoint`. Built from the same label the data plane claims a
-/// request on ([`crate::service::invoke::EXECUTE_API_LABEL`]), so the endpoint this
-/// document names is the endpoint the emulator answers.
-///
-/// `pub(crate)` for [`super::get_sdk`], which generates a client bound to that same
-/// endpoint: a generated SDK and an exported definition must name one invoke URL.
-pub(crate) fn invoke_host(api_id: &str, region: &str) -> String {
-    format!(
-        "{api_id}.{}.{region}.amazonaws.com",
-        crate::service::invoke::EXECUTE_API_LABEL
-    )
-}
-
 /// The document a `GetExport` call answers with.
+///
+/// `address` is the address this emulator announces for the stage
+/// ([`crate::service::invoke::announced_invoke_address`]), which each dialect renders where
+/// it states the endpoint: a 2.0 document carries the HOST and the stage's own `basePath`,
+/// and a 3.0 document ONE server URL, which names the api ahead of its `{basePath}` variable
+/// so that single URL addresses this api. The definition is the artifact a code generator, a
+/// mock server or an API client is built from, so the endpoint it names has to be one this
+/// emulator answers on.
 fn export_document(
     api: &RestApiEntry,
     stage: &StageEntry,
     deployment: &DeploymentEntry,
-    region: &str,
+    address: &AnnouncedInvokeAddress,
     dialect: Dialect,
     extensions: Extensions,
 ) -> Value {
@@ -820,13 +816,15 @@ fn export_document(
     }
 
     let mut document = Map::new();
-    let host = invoke_host(&api.id, region);
     match dialect {
         Dialect::Swagger => {
             document.insert("swagger".to_string(), Value::from(SWAGGER_DOCUMENT_VERSION));
             document.insert("info".to_string(), info_object(api, deployment));
-            document.insert("host".to_string(), Value::from(host));
-            // A 2.0 `basePath` "MUST start with a leading slash".
+            document.insert("host".to_string(), Value::from(address.host.as_str()));
+            // A 2.0 `basePath` "MUST start with a leading slash", and is the stage's own
+            // base path: `{host}{basePath}` is the address a client of this document calls,
+            // which this data plane resolves by the stage the path names when the host is
+            // the emulator's own endpoint and host-style when it is the api's own.
             document.insert(
                 "basePath".to_string(),
                 Value::from(format!("/{}", stage.stage_name)),
@@ -845,7 +843,7 @@ fn export_document(
             document.insert("info".to_string(), info_object(api, deployment));
             document.insert(
                 "servers".to_string(),
-                Value::Array(vec![server_object(&host, &stage.stage_name)]),
+                Value::Array(vec![server_object(address, &stage.stage_name)]),
             );
             document.insert("paths".to_string(), Value::Object(paths));
             // A 3.0 document holds its reusable definitions in ONE Components Object,
@@ -896,9 +894,9 @@ fn export_document(
     Value::Object(document)
 }
 
-/// The one server of an `oas30` document: the stage's invoke URL, with the stage name as
-/// the `{basePath}` variable's value.
-fn server_object(host: &str, stage_name: &str) -> Value {
+/// The one server of an `oas30` document: the stage's invoke URL on the announced address,
+/// with the stage name as the `{basePath}` variable's value.
+fn server_object(address: &AnnouncedInvokeAddress, stage_name: &str) -> Value {
     let mut default = Map::new();
     default.insert("default".to_string(), Value::from(stage_name));
     let mut variables = Map::new();
@@ -906,7 +904,9 @@ fn server_object(host: &str, stage_name: &str) -> Value {
     let mut server = Map::new();
     server.insert(
         "url".to_string(),
-        Value::from(format!("{INVOKE_SCHEME}://{host}/{{{BASE_PATH_VARIABLE}}}")),
+        Value::from(
+            address.templated_invoke_url(INVOKE_SCHEME, &format!("{{{BASE_PATH_VARIABLE}}}")),
+        ),
     );
     server.insert("variables".to_string(), Value::Object(variables));
     Value::Object(server)
@@ -1805,7 +1805,16 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             })
         })?;
 
-        let document = export_document(api, stage, deployment, &region, dialect, extensions);
+        // The endpoint the document advertises is the one this emulator answers on for the
+        // request that asked for the export: a client built from the definition calls the
+        // address it was handed, so it has to be an address that reaches this api.
+        let address = crate::service::invoke::announced_invoke_address(
+            &api.id,
+            &region,
+            ctx.parts(),
+            ctx.endpoint().as_str(),
+        );
+        let document = export_document(api, stage, deployment, &address, dialect, extensions);
         let body = serialization
             .render(&document)
             .map_err(export_not_written)?;

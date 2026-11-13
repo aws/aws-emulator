@@ -28,9 +28,10 @@
 //!   resource path, taking one argument per parameter the path template declares and
 //!   carrying the query string, header and body parameters the method's `requestParameters`
 //!   and `requestModels` declare;
-//! * the api id, the Region the api was created in and the stage name become the invoke
-//!   endpoint the client is bound to — the SAME endpoint the exported definition names
-//!   ([`super::get_export::invoke_host`]) and the one this emulator's data plane answers —
+//! * the stage and the address this emulator ANNOUNCES for it become the invoke endpoint
+//!   the client is bound to — the SAME endpoint the exported definition names
+//!   (`crate::service::invoke::announced_invoke_address`) and the one this emulator's data
+//!   plane answers —
 //!   and a method whose `apiKeyRequired` is set sends the api key the client was constructed
 //!   with.
 //!
@@ -2586,13 +2587,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         // The endpoint the generated client is bound to is the stage's own invoke URL — the
         // endpoint the exported definition names, and the one this emulator's data plane
-        // answers.
-        let endpoint = format!(
-            "{}://{}/{}",
-            super::get_export::INVOKE_SCHEME,
-            super::get_export::invoke_host(&api.id, &region),
-            stage.stage_name
-        );
+        // answers: the address the request reached, else the api's own `execute-api` host.
+        let endpoint = crate::service::invoke::announced_invoke_address(
+            &api.id,
+            &region,
+            ctx.parts(),
+            ctx.endpoint().as_str(),
+        )
+        .invoke_url(super::get_export::INVOKE_SCHEME, &stage.stage_name);
         let project = generator.project(
             ClientTarget {
                 api,

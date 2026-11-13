@@ -4108,6 +4108,19 @@ fn gateway_context(refusal: &GatewayRefusal) -> Vec<(&'static str, String)> {
     ]
 }
 
+/// Emulator resource guard, NOT an AWS quota: the largest body one gateway-response template
+/// renders to.
+///
+/// The same bound the sibling renderer of this language works under
+/// (`super::mapping_template`'s own rendered-body cap, a small multiple of a stored
+/// template's character cap): a gateway template is rendered while SERVING a request, and the
+/// values it substitutes — the refusal's message and its validation detail — carry text a
+/// caller influenced, so the body is capped as well as built in one pass. Generous enough
+/// that no body a gateway response would answer is refused for its size; a template that
+/// renders past it answers API Gateway's own default body for the response type
+/// ([`default_refusal_body`]), which is what a template this emulator cannot render answers.
+const MAX_RENDERED_GATEWAY_BYTES: usize = 8 * crate::ops::put_integration::MAX_TEMPLATE_CHARS;
+
 /// The body a gateway response's `application/json` template renders to for `refusal`, or
 /// `None` when this emulator cannot render it.
 ///
@@ -4118,16 +4131,58 @@ fn gateway_context(refusal: &GatewayRefusal) -> Vec<(&'static str, String)> {
 /// resolve. A template carrying a DIRECTIVE is a template that has to be EXECUTED, which
 /// this emulator does not do: it renders nothing rather than a body it guessed at, and the
 /// caller gets API Gateway's own default body for the response type.
+///
+/// ONE left-to-right pass over the TEMPLATE, so a value that has been substituted is never
+/// scanned again, and the body is bounded by [`MAX_RENDERED_GATEWAY_BYTES`]. The values come
+/// from the refusal, whose message and validation detail carry text the request influenced,
+/// so rewriting the whole template once per name would let one value carry another name's
+/// reference and make the body the PRODUCT of the values' sizes rather than their sum. It is
+/// the same no-rescan contract [`expanded_uri`] and [`resolved_references`] state, for the
+/// same reason.
 fn rendered_gateway_template(template: &str, refusal: &GatewayRefusal) -> Option<String> {
     if carries_velocity_directive(template) {
         return None;
     }
-    let mut rendered = template.to_string();
-    for (path, value) in gateway_context(refusal) {
-        rendered = rendered
-            .replace(&format!("${{{path}}}"), &value)
-            .replace(&format!("${path}"), &value);
+    // Both spellings of each name, built once rather than once per reference; longest name
+    // first, as [`gateway_context`] orders them, so `$context.error.messageString` is
+    // recognized before the `$context.error.message` it opens with.
+    let references: Vec<(String, String, String)> = gateway_context(refusal)
+        .into_iter()
+        .map(|(path, value)| (format!("{{{path}}}"), path.to_string(), value))
+        .collect();
+    let mut rendered = String::with_capacity(template.len());
+    let mut rest = template;
+    while let Some(dollar) = rest.find('$') {
+        let (before, from_dollar) = rest.split_at(dollar);
+        rendered.push_str(before);
+        // `$` is ASCII, so what follows it starts at a character boundary.
+        let after_dollar = from_dollar.get(1..).unwrap_or_default();
+        let substituted = references.iter().find_map(|(braced, plain, value)| {
+            let after = after_dollar
+                .strip_prefix(braced.as_str())
+                .or_else(|| after_dollar.strip_prefix(plain.as_str()))?;
+            Some((value, after))
+        });
+        match substituted {
+            Some((value, after)) => {
+                rendered.push_str(value);
+                rest = after;
+            }
+            // A reference this refusal resolves nothing for travels on as the template
+            // wrote it: scanning continues after the `$`, so the rest of it is copied as
+            // text rather than examined as a reference again.
+            None => {
+                rendered.push('$');
+                rest = after_dollar;
+            }
+        }
+        // The length of what has been built, not a walk over it, checked after each value:
+        // one value may carry the total past the cap.
+        if rendered.len() > MAX_RENDERED_GATEWAY_BYTES {
+            return None;
+        }
     }
+    rendered.push_str(rest);
     Some(rendered)
 }
 
@@ -4765,3 +4820,10 @@ mod compression;
 /// resolution above still reaches each name unqualified.
 mod request_validation;
 pub use request_validation::*;
+
+/// The invoke address this emulator ANNOUNCES for a deployed stage — the address an exported
+/// definition or a generated SDK names — in a file of its own, beside the addressing this
+/// plane SERVES; re-exported whole, so what is announced and what is served are read from one
+/// module.
+mod announced_address;
+pub use announced_address::*;

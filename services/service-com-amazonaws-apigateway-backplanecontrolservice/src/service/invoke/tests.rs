@@ -263,3 +263,105 @@ fn a_substituted_path_parameter_is_never_scanned_for_another_placeholder() {
         );
     }
 }
+
+/// RULE: a gateway response's template is rendered in ONE pass over the TEMPLATE, so a value
+/// substituted for one `$context` name is never scanned for another name's reference — the
+/// refusal's message and validation detail carry text the request influenced, so rescanning
+/// them would make the body the PRODUCT of their sizes rather than their sum — and a
+/// rendering that passes the body bound renders nothing at all, so the caller is answered the
+/// default body.
+#[test]
+fn a_substituted_gateway_context_value_is_never_scanned_for_another_reference() {
+    let refusal = |message: Cow<'static, str>, detail: Cow<'static, str>| GatewayRefusal {
+        response_type: DEFAULT_4XX,
+        message,
+        error_type: None,
+        validation_detail: detail,
+        message_member: MESSAGE_MEMBER,
+    };
+    /// One row: the stored template, the refusal's message and validation detail, and the
+    /// body the rule owes — `None` for a rendering the bound refuses.
+    struct Rendering {
+        case: &'static str,
+        template: String,
+        message: Cow<'static, str>,
+        detail: Cow<'static, str>,
+        expected: Option<String>,
+    }
+    // A value whose own text spells a reference: substituted, it must travel into the body
+    // as text. `validationErrorString` is substituted FIRST by name order, so a per-name
+    // rewrite of the whole template would expand what it left behind.
+    let spells_a_reference = "$context.error.message$context.error.message";
+    // The bound row: a value large enough that repeating its reference passes the cap.
+    let large = "x".repeat(64 * 1024);
+    let cases = vec![
+        Rendering {
+            case: "API Gateway's own default template",
+            template: r#"{"message":$context.error.messageString}"#.to_string(),
+            message: Cow::Borrowed("Missing Authentication Token"),
+            detail: Cow::Borrowed(""),
+            expected: Some(r#"{"message":"Missing Authentication Token"}"#.to_string()),
+        },
+        Rendering {
+            case: "the braced spelling of the same reference",
+            template: r#"{"m":"${context.error.message}"}"#.to_string(),
+            message: Cow::Borrowed("Forbidden"),
+            detail: Cow::Borrowed(""),
+            expected: Some(r#"{"m":"Forbidden"}"#.to_string()),
+        },
+        Rendering {
+            case: "a validation detail that itself spells a reference",
+            template: r#"{"d":"$context.error.validationErrorString"}"#.to_string(),
+            message: Cow::Borrowed("Invalid request body"),
+            detail: Cow::Borrowed(spells_a_reference),
+            expected: Some(format!(r#"{{"d":"{spells_a_reference}"}}"#)),
+        },
+        Rendering {
+            case: "a message that spells the validation detail's reference, both rendered",
+            template: r#"$context.error.validationErrorString|$context.error.message"#
+                .to_string(),
+            message: Cow::Borrowed("$context.error.validationErrorString"),
+            detail: Cow::Borrowed("$context.error.message"),
+            expected: Some(
+                "$context.error.message|$context.error.validationErrorString".to_string(),
+            ),
+        },
+        Rendering {
+            case: "a reference this refusal resolves nothing for, and the response type",
+            template: r#"{"id":"$context.requestId","t":"$context.error.responseType"}"#
+                .to_string(),
+            message: Cow::Borrowed("Bad request"),
+            detail: Cow::Borrowed(""),
+            expected: Some(format!(
+                r#"{{"id":"$context.requestId","t":"{DEFAULT_4XX}"}}"#
+            )),
+        },
+        Rendering {
+            case: "a `$` that is text rather than a reference",
+            template: "a price of $5.00".to_string(),
+            message: Cow::Borrowed("Bad request"),
+            detail: Cow::Borrowed(""),
+            expected: Some("a price of $5.00".to_string()),
+        },
+        Rendering {
+            case: "a template whose rendering passes the body bound",
+            template: "$context.error.message".repeat(8),
+            message: Cow::Owned(large.clone()),
+            detail: Cow::Borrowed(""),
+            expected: None,
+        },
+    ];
+    for row in &cases {
+        let rendered = rendered_gateway_template(
+            &row.template,
+            &refusal(row.message.clone(), row.detail.clone()),
+        );
+        assert_eq!(
+            rendered, row.expected,
+            "case {:?}: expected {:?}, got {:?}",
+            row.case,
+            row.expected.as_deref().map(|body| body.len()),
+            rendered.as_deref().map(str::len)
+        );
+    }
+}
