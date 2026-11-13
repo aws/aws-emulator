@@ -746,13 +746,19 @@ async fn a_pages_blocks_describe_the_words_that_were_drawn_on_it() {
         );
 
         // A labelled line is read into a KEY and a VALUE, which exists only because the
-        // label and its value were separated into words at all.
+        // label and its value were separated into words at all. A line labels its value
+        // either by punctuating the label or by ending in an amount.
         if case.features.contains(&"FORMS") {
             let labelled = case
                 .lines
                 .iter()
                 .filter(|line| {
-                    line.split(' ').any(|word| word.ends_with(':')) && line.contains(' ')
+                    let punctuated = line.split(' ').any(|word| word.ends_with(':'));
+                    let amount = line.split(' ').next_back().is_some_and(|last| {
+                        last.chars().any(|c| c.is_ascii_digit())
+                            && last.chars().all(|c| c.is_ascii_digit() || ".,".contains(c))
+                    });
+                    (punctuated || amount) && line.contains(' ')
                 })
                 .count();
             assert_eq!(

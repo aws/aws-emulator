@@ -2024,6 +2024,19 @@ fn words_of(line: &str) -> Vec<(usize, String)> {
     words
 }
 
+/// Whether `word` is an AMOUNT: figures, with the currency sign, the separators and the
+/// sign an amount or a date is written with, and no letters.
+///
+/// What tells the value of a labelled line from the words that label it, on a line that
+/// punctuates neither: `12.34`, `$12.34`, `-1,250.00` and `01/02/2023` are amounts, while
+/// `RECEIPT` and `Net30` are not.
+fn is_amount(word: &str) -> bool {
+    word.chars().any(|c| c.is_ascii_digit())
+        && word
+            .chars()
+            .all(|c| c.is_ascii_digit() || "$€£¥+-.,/%()".contains(c))
+}
+
 /// Lay out one page's lines, numbering their words so every read path agrees on ids.
 ///
 /// The ONE place a line or a word gets its position, its size and its confidence, so the
@@ -2039,7 +2052,7 @@ fn layout_page(
 ) -> Vec<LineLayout> {
     let measured = content.measured_page(page_index);
     let rotation = content.page_rotation(page_index);
-    page_text
+    let mut laid_out: Vec<LineLayout> = page_text
         .lines()
         .map(str::trim_end)
         .filter(|line| !line.trim().is_empty())
@@ -2075,14 +2088,33 @@ fn layout_page(
                     }
                 })
                 .collect();
-            // A tab-separated line is a table row; otherwise a `:` with words on both
-            // sides makes it a labelled field.
-            let colon = if is_row {
-                None
-            } else {
-                line.chars().position(|c| c == ':').filter(|at| {
-                    words.iter().any(|w| w.column <= *at) && words.iter().any(|w| w.column > *at)
-                })
+            // What splits a line into a LABEL and the VALUE it labels, as a character
+            // position of the line:
+            //
+            // * a `:` with words on both sides of it;
+            // * on a line laid out in TWO columns, the break between them, since a label
+            //   standing in one column and its value in the next is how a form is set out
+            //   whether or not the label is punctuated;
+            // * on a plain line whose last word is an AMOUNT, the space before it: a line
+            //   of words ending in figures labels those figures, which is how a receipt
+            //   sets out its total and a statement its balance.
+            //
+            // A line of three columns or more is a table row, which labels nothing.
+            let labelled = |at: usize| {
+                words.iter().any(|w| w.column <= at) && words.iter().any(|w| w.column > at)
+            };
+            let punctuated = line.chars().position(|c| c == ':');
+            let amount = words
+                .last()
+                .filter(|last| words.len() > 1 && is_amount(&last.text))
+                .and_then(|last| last.column.checked_sub(1));
+            let colon = match cell_texts.len() {
+                0 => None,
+                1 => punctuated.or(amount).filter(|at| labelled(*at)),
+                2 => punctuated
+                    .or_else(|| line.chars().position(|c| c == '\t'))
+                    .filter(|at| labelled(*at)),
+                _ => None,
             };
             let cells: Vec<usize> = if is_row {
                 cell_texts
@@ -2122,7 +2154,25 @@ fn layout_page(
                 colon,
             }
         })
-        .collect()
+        .collect();
+
+    // A line of two columns labels its value only where it stands ALONE: several such lines
+    // one after another are the rows of a two-column table, and a row labels nothing (see
+    // the split above).
+    let rows: Vec<bool> = laid_out
+        .iter()
+        .map(|line: &LineLayout| line.cells.len() > 1)
+        .collect();
+    for (index, line) in laid_out.iter_mut().enumerate() {
+        let beside = index
+            .checked_sub(1)
+            .is_some_and(|before| rows[before])
+            || rows.get(index + 1).copied().unwrap_or(false);
+        if rows[index] && beside {
+            line.colon = None;
+        }
+    }
+    laid_out
 }
 
 /// Every `Block` for a document's stored text, for the requested features.

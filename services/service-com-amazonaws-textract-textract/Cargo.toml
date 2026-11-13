@@ -32,6 +32,24 @@ image = { version = "0.25", default-features = false, features = [
 ] }
 # Public-domain 8x8 ASCII glyph bitmaps, used as the recogniser's match templates.
 font8x8 = "0.3"
+# Pre-rasterised Noto Sans Mono ASCII glyphs, the recogniser's second family of match
+# templates: a proportioned, anti-aliased typeface at several weights and sizes, so a
+# page drawn in an ordinary sans-serif face is matched against glyphs shaped like it.
+noto-sans-mono-bitmap = { version = "0.4", default-features = false, features = [
+    "unicode-basic-latin",
+    "light",
+    "regular",
+    "bold",
+    "size_16",
+    "size_20",
+    "size_24",
+    "size_32",
+] }
+# The X11 fixed bitmap faces (4x6 through 10x20), the recogniser's third family of match
+# templates: the pixel fonts a page drawn at a dozen pixels a line is set in, whose glyphs
+# are a few strokes wide and are no outline face scaled down. Used for the embedded font
+# data alone — nothing here draws to a display.
+embedded-graphics = "0.8"
 # The Amazon S3 client this service reads a `Document.S3Object` / `DocumentLocation`
 # through, over the in-process callback into this same emulator (no network client
 # feature: the transport is the emulator's own).

@@ -15,31 +15,37 @@
 //!    magic bytes name, bounded by [`MAX_RASTER_SIDE`], [`MAX_RASTER_PIXELS`] and
 //!    [`MAX_RASTER_ALLOC`] so one request cannot turn a small compressed file into
 //!    unbounded work.
-//! 2. **Binarise** — Otsu's method (N. Otsu, 1979: the threshold that maximises the
-//!    between-class variance of the grey histogram) splits the page into ink and
-//!    background. Ink is the SMALLER of the two classes, so a light page with dark text
-//!    and a dark page with light text are both read; two classes closer together than
-//!    [`MIN_INK_CONTRAST`] are sensor or compression noise on a blank page, not ink.
+//! 2. **Measure the ink** — Otsu's method (N. Otsu, 1979: the threshold that maximises
+//!    the between-class variance of the grey histogram) splits the page into ink and
+//!    ground. Ink is the SMALLER of the two classes, so a light page with dark text and a
+//!    dark page with light text are both read; two classes closer together than
+//!    [`MIN_INK_CONTRAST`] are sensor or compression noise on a blank page, not ink. Each
+//!    pixel then carries how far it lies from the ground's own level towards the ink's,
+//!    rather than a bit: the text of a page rendered at any ordinary size is
+//!    anti-aliased, and a stroke of a small glyph can be nothing but its own edges.
 //! 3. **Segment** — a horizontal projection profile of the ink gives the page's text
-//!    lines; a vertical profile within one line gives its glyph candidates, and the way
-//!    those candidates are spaced — against the cell a monospaced line sets them in, or
-//!    against the pitch a proportional one advances by — gives the word and column breaks
-//!    ([`Separators`]).
-//! 4. **Recognise** — each candidate is resampled onto an 8x8 grid and scored against
-//!    every printable ASCII glyph of the embedded public-domain 8x8 font (`font8x8`) by
-//!    shape overlap (the Sørensen-Dice coefficient) plus the glyph's height, width and
-//!    position inside its line. The best match above [`MIN_GLYPH_SCORE`] is the
-//!    character; the mean winning score is the `Confidence` the blocks report, because
-//!    it is the only confidence anything here actually measured — per word, per line and
-//!    per page, each over the characters that block was read from.
+//!    lines; a vertical profile within one line gives its marks, and the way those marks
+//!    are spaced — against the cell a monospaced line sets them in, or against the pitch a
+//!    proportional one advances by — gives the word and column breaks ([`Separators`]).
+//!    A run of inked columns is a candidate for ONE character, but at the size a page is
+//!    drawn at it can hold two whose strokes touch, or be what is left of one whose thin
+//!    stroke broke: which it is, is settled by NAMING ([`settle`]).
+//! 4. **Recognise** — each mark is resampled into a frame anchored on the line it sits in
+//!    and scored against every printable ASCII character of a bank of typefaces — the
+//!    embedded 8x8 font, a pre-rasterised sans-serif face at several weights and sizes,
+//!    and the X11 fixed bitmap faces — by how much of its ink and the character's is the
+//!    same ink ([`glyphs`]). The best match above [`glyphs::MIN_MATCH`] is the character;
+//!    the mean winning score is the `Confidence` the blocks report, because it is the only
+//!    confidence anything here actually measured — per word, per line and per page, each
+//!    over the characters that block was read from.
 //! 5. **Orient and separate** — steps 3 and 4 are run over the page as submitted AND over
 //!    each of its quarter turns ([`Ink::turned`]), because a document can be scanned or
-//!    photographed turned. The turn whose marks recognise best is the one the characters
-//!    were drawn at, and the angle it was read at is what the `WORD` blocks report as
-//!    `Geometry$RotationAngle`. At that turn the page is read once more every way something
-//!    that is NOT a character can be joining the marks of a line — a rule drawn across it,
-//!    a panel of light text on a dark ground ([`Ink::variants`]) — and again the reading
-//!    whose marks recognise best is the one reported.
+//!    photographed turned. The reading that accounts for most of the page's own ink
+//!    ([`PageRead::strength`]) is the page's own, and the angle it was read at is what the
+//!    `WORD` blocks report as `Geometry$RotationAngle`. Each turn is read once more every
+//!    way something that is NOT a character can be joining the marks of a line — a rule
+//!    drawn across it, a panel of light text on a dark ground ([`Ink::variants`]) — and
+//!    again the reading that accounts for most of the ink is the one reported.
 //! 6. **Measure** — every line and every word also reports WHERE its ink was found, as
 //!    the fraction of the SUBMITTED page it covers ([`MeasuredLine`], [`MeasuredWord`],
 //!    mapped back out of the turn it was read at by [`Orientation`]), so the `Geometry`
@@ -53,7 +59,8 @@
 //! No maintained Rust crate performs offline OCR: the ones that exist either bind to a
 //! C library or load neural-network weights from a file this emulator may not fetch, so
 //! the recogniser itself is in-crate while the decoding (a format job) is the `image`
-//! crate's.
+//! crate's and the typefaces it holds templates for are the font crates' (`font8x8`,
+//! `noto-sans-mono-bitmap`, `embedded-graphics`).
 //!
 //! ## What it does not read
 //!
@@ -77,11 +84,12 @@
 //! which no request can choose.
 
 use std::io::Cursor;
-use std::sync::OnceLock;
 
 use image::{ImageFormat, Limits};
 
 use super::Unreadable;
+
+mod glyphs;
 
 /// The largest side, in pixels, of a raster this service decodes. NOT an AWS limit: an
 /// emulator-side bound so one request cannot allocate without end.
@@ -95,33 +103,85 @@ pub const MAX_RASTER_PIXELS: u64 = 8_000_000;
 /// stops a small compressed file from expanding into a large allocation.
 pub const MAX_RASTER_ALLOC: u64 = 96 * 1024 * 1024;
 
-/// The most glyph candidates one page may hold. NOT an AWS limit: recognition costs one
-/// comparison per candidate per template, so this bounds the work a single request can
-/// cause.
-pub const MAX_GLYPHS_PER_PAGE: usize = 10_000;
+/// The most glyph candidates one READING of a page may hold: the runs of inked columns its
+/// lines fall into. NOT an AWS limit: it bounds the segmentation, which is linear in them.
+/// A page of ordinary text holds a few thousand characters.
+pub const MAX_GLYPHS_PER_PAGE: usize = 2_500;
+
+/// The most marks one REQUEST may name, over every reading of its page. NOT an AWS limit:
+/// naming one mark costs a comparison against every character of the recogniser's bank, so
+/// this is what bounds the work a single request can cause.
+///
+/// It bounds the PRODUCT of the three factors that multiply, which no per-factor ceiling
+/// does: how many marks a page's lines fall into ([`MAX_GLYPHS_PER_PAGE`]), how many pieces
+/// of a run the segmentation names to settle where its characters end ([`cut_apart`],
+/// [`join`]), and how many ways one page is read (four quarter turns, each read again for
+/// what might be joining the marks of its lines). A page whose reading would cost more
+/// naming than this is reported as too large rather than ground through: see [`Budget`].
+///
+/// It is set so that a page of ordinary text is read at every one of its turns and still
+/// has naming to spare — a page of [`MAX_GLYPHS_PER_PAGE`] marks read at four turns is
+/// 10,000 of them, with the rest for the pieces the segmentation considers — while a page
+/// crafted to make every run of ink look like several characters at every turn runs out.
+pub const MAX_NAMINGS_PER_PAGE: usize = 30_000;
+
+/// How much of a page's ink one reading of it must have accounted for ([`PageRead::
+/// strength`]) for that reading to settle what is ON the page: there is then nothing left
+/// for a reading that takes a rule or a panel out of it to find, so those readings are not
+/// taken at all. NOT an AWS limit: it is what keeps the ordinary page — read as it stands —
+/// from costing the readings an obscured one needs.
+const SETTLED_READING: f32 = 0.3;
 
 /// How far apart the two Otsu classes must be, in grey levels, for the darker one to be
 /// ink. Below this the page holds one tone plus noise, which is a blank page.
 const MIN_INK_CONTRAST: f32 = 24.0;
 
-/// The score a glyph candidate must reach for its best-matching character to be
-/// reported. Ink below it matched nothing, so it contributes no text.
-const MIN_GLYPH_SCORE: f32 = 0.40;
-
-/// How much of a candidate's ink must be SHARED with the template that matched it, as
-/// the Sørensen-Dice coefficient of the two shapes.
-///
-/// A floor on the shape term alone, not just on the weighted total: the size and
-/// position terms of [`score`] can carry up to 0.30 between them, so without this a mark
-/// whose shape is nothing like any glyph could still clear [`MIN_GLYPH_SCORE`] and be
-/// reported as a character. With it, ink that matches no glyph's shape contributes no
-/// text — which is what this module promises.
-const MIN_SHAPE_OVERLAP: f32 = 0.45;
+/// How much ink a pixel must carry to be part of a mark at all, as a fraction of the
+/// ink a stroke of this page's own text carries: the segmentation reads the page's marks
+/// through this floor, so an anti-aliased edge is part of the stroke it belongs to while
+/// the halftone a lossy coding leaves around it is not.
+const INK_FLOOR: f32 = 0.34;
 
 /// How much better than the page as submitted a quarter turn must read for the page to be
 /// reported as read at that turn, as a fraction of the recognition score. A turn that only
 /// ties with the upright reading is a coincidence, not an orientation.
 const MIN_ROTATION_GAIN: f32 = 0.05;
+
+/// How much better than the page as submitted a QUARTER turn must read for the page to be
+/// reported as read at that turn, as a fraction of what each accounted for.
+///
+/// More than a half turn needs ([`MIN_ROTATION_GAIN`]): a quarter turn reads across the
+/// page's lines rather than along them, so it describes a different page — one line of text
+/// becomes a column of slivers of several — and the marks it names are the blobs those
+/// slivers make rather than the characters that were drawn. A page that really was scanned
+/// at a quarter turn reads far better that way than upright, where its lines of text are
+/// themselves the slivers.
+const MIN_QUARTER_TURN_GAIN: f32 = 0.5;
+
+/// How many characters a WORD must hold for the ink it was read from to count towards how
+/// well the page was read ([`PageRead::strength`]): two, since what a word is, as against a
+/// sliver of several lines read across them, is characters side by side.
+const MIN_WORD_CHARACTERS: usize = 2;
+
+/// How much of the page's ink a QUARTER or a HALF turn of it must itself have accounted for
+/// ([`PageRead::strength`]) to be the turn the page is reported as read at.
+///
+/// A page whose marks are no characters at all — a drawing, a page in a face nothing here
+/// matches — reads badly at every turn, and the turn that reads it least badly is a
+/// coincidence, not a discovery: reporting it would turn such a page sideways and split its
+/// one line of marks into a column of slivers. A page that really was scanned turned reads
+/// WELL at its own turn, which is what this asks for.
+const MIN_ALTERNATIVE_READING: f32 = 0.2;
+
+/// How much better than the page as it stands a reading that takes a rule or a panel out of
+/// it must read for that reading to be reported, as a fraction of what was accounted for.
+///
+/// A page that carries no rule and no panel reads much the same either way, and the
+/// difference between the two readings is then the odd mark one of them happens to join or
+/// separate: taking the one that is a hair better would report a page of marks that are no
+/// characters as a panel of light text, split into as many lines as its counters make. A
+/// page that really does carry a rule or a panel reads far better once it is out.
+const MIN_VARIANT_GAIN: f32 = 0.1;
 
 /// How much of the line's own character pitch a gap must cover to separate two WORDS on a
 /// PROPORTIONAL line whose gaps show no boundary of their own: a space leaves a gap of a
@@ -204,6 +264,71 @@ const RULE_MAX_HEIGHT: usize = 3;
 /// The most indent characters a line's left margin is reported as, so a page-wide
 /// margin cannot stretch one line into a long string.
 const MAX_INDENT: usize = 100;
+
+/// How wide one mark of a line may be, in that line's capital heights, before the
+/// segmentation looks for a cut inside it: no Latin character is wider than its own
+/// capitals by this much, so a run of ink that is holds more than one character.
+const MAX_MARK_WIDTH: f32 = 1.2;
+
+/// How wide one mark of a line may be, as a multiple of the width of that line's OWN marks,
+/// before the segmentation looks for a cut inside it.
+///
+/// A run has to be too wide BOTH ways to be cut: the capital height of a line is estimated
+/// off the marks it carries, so a line of nothing but x-height letters sets it low and every
+/// mark on such a line looks wide against it — while against the line's own marks none of
+/// them does.
+const MAX_MARK_PITCH: f32 = 1.6;
+
+/// The most places inside one run of ink the segmentation considers cutting it at. NOT an
+/// AWS limit: naming one piece costs a comparison against the recogniser's bank, and the
+/// pieces of a run are named over every sequence of these places, so this bounds the work
+/// one run of ink can cause.
+const MAX_CUT_CANDIDATES: usize = 20;
+
+/// How narrow a piece of a cut run may be, in its line's capital heights: narrower than the
+/// narrowest character a line sets, so two cuts that close together would separate a
+/// character's own strokes rather than two characters.
+const MIN_PIECE_WIDTH: f32 = 0.12;
+
+/// How wide a mark may be, in its line's capital heights, to be a PIECE of a character
+/// rather than a character: what is left of a letter whose thin stroke fell under the floor
+/// that tells ink from ground.
+const MAX_PIECE_WIDTH: f32 = 0.55;
+
+/// How far apart, in its line's capital heights, two marks may be and still be pieces of
+/// one character: the break a stroke leaves is a column or two, while the gap between two
+/// letters is their own side bearings.
+const MAX_PIECE_GAP: f32 = 0.14;
+
+/// What a unit of ink that named no character is worth to the segmentation: a small cost, so
+/// a cut or a join that leaves ink unaccounted for is taken only when what it does name is
+/// worth more — and ink that is no character at all (a rule, a logo) is still left as it
+/// stands rather than cut up until something matches it.
+const UNNAMED_MARK: f32 = -0.08;
+
+/// How tall a piece of a cut run must be, in its line's capital heights: as tall as a
+/// character of that line, since what a cut separates is two of them.
+const MIN_PIECE_HEIGHT: f32 = 0.45;
+
+/// How much of what a run's own columns carry a column may carry and still be the
+/// narrowing BETWEEN two characters: no more than they do on average, since the inner
+/// strokes of an M or a W carry as much as its outer ones and a cut there would read one
+/// letter as two.
+const CUT_VALLEY: f32 = 1.0;
+
+/// What cutting a run of ink at a column costs, per unit of STROKE the cut crosses there:
+/// see the cut cost in [`cut_apart`]. A cut through the halo between two characters crosses
+/// next to no stroke; one through the middle of a character crosses all of it.
+const CUT_COST: f32 = 1.0;
+
+/// How much better the pieces of a cut run must account for its ink than the whole run
+/// does, per unit of that ink, for the cut to be taken: the mean match of the pieces must
+/// beat the whole's by this much.
+///
+/// A margin rather than a hair, because a run of ink can always be cut into pieces that
+/// match SOMETHING a little better than the whole matched what it is: what the margin asks
+/// for is the clear improvement that separating two letters really gives.
+const CUT_GAIN: f32 = 0.01;
 
 /// A raster page's recognised text.
 #[derive(Debug, Clone, PartialEq)]
@@ -374,24 +499,48 @@ pub fn read_raster(bytes: &[u8], format: ImageFormat) -> Result<Recognised, Unre
         )));
     }
     let ink = Ink::of(&gray);
+    // What this request may spend on NAMING marks, over every reading of the page below:
+    // one budget for the whole of it, so the readings cannot multiply the work (see
+    // [`MAX_NAMINGS_PER_PAGE`]).
+    let mut budget = Budget::new();
     // A document can be scanned or photographed turned, and a page's characters are only
-    // recognisable at the angle they were drawn at, so the page is read as submitted AND
-    // at each of its quarter turns: the turn whose marks recognise BEST is the one the
-    // characters were drawn at. The reading of the page as submitted stands unless a turn
-    // reads it clearly better ([`MIN_ROTATION_GAIN`]), so a page with little ink is never
-    // reported sideways on a coincidence.
-    let mut best = read_every_way(&ink, Orientation::upright(&ink))?;
+    // recognisable at the angle they were drawn at, so the page is read as submitted AND at
+    // each of its quarter turns. The reading of the page AS SUBMITTED stands unless the best
+    // of the turns reads it clearly better, so a page with little ink, or a page of marks
+    // that are no characters at all, is never reported sideways on a coincidence.
+    let upright = read_every_way(&ink, Orientation::upright(&ink), &mut budget)?;
+    let mut turned: Option<(u8, PageRead)> = None;
     for turns in 1..4u8 {
         let orientation = Orientation::turned(&ink, turns);
-        // A turn this page cannot be read at (its marks are over the page's own budget)
-        // says nothing about the page, so the reading already in hand decides.
-        let Ok(read) = read_every_way(&ink.turned(turns), orientation) else {
-            continue;
-        };
-        if read.strength() > best.strength() * (1.0 + MIN_ROTATION_GAIN) {
-            best = read;
+        let read = read_every_way(&ink.turned(turns), orientation, &mut budget)?;
+        if turned
+            .as_ref()
+            .is_none_or(|(_, held)| read.strength() > held.strength())
+        {
+            turned = Some((turns, read));
         }
     }
+    let best = match turned {
+        // A HALF turn of a page of text is still a page of lines of text, so the two
+        // readings are comparable mark for mark and the better of them decides. A QUARTER
+        // turn reads ACROSS the page's lines instead of along them, which turns one line of
+        // text into a column of slivers of several: a reading like that has to be clearly
+        // better, not a little better, to be the page's own.
+        Some((turns, read))
+            if read.strength() >= MIN_ALTERNATIVE_READING
+                && read.strength()
+                    > upright.strength()
+                        * (1.0
+                            + if turns == 2 {
+                                MIN_ROTATION_GAIN
+                            } else {
+                                MIN_QUARTER_TURN_GAIN
+                            }) =>
+        {
+            read
+        }
+        _ => upright,
+    };
 
     Ok(Recognised {
         confidence: percentage(best.score_total, best.score_count),
@@ -408,17 +557,60 @@ pub fn read_raster(bytes: &[u8], format: ImageFormat) -> Result<Recognised, Unre
 ///
 /// Every reading is of the same pixels, so a page that carries no such mark reads the same
 /// either way: there is nothing in it to take out.
-fn read_every_way(ink: &Ink, orientation: Orientation) -> Result<PageRead, Unreadable> {
-    let mut best = recognise_page(ink, orientation)?;
+fn read_every_way(
+    ink: &Ink,
+    orientation: Orientation,
+    budget: &mut Budget,
+) -> Result<PageRead, Unreadable> {
+    let mut best = recognise_page(ink, orientation, budget)?;
+    // A page whose ink is already accounted for carries nothing to take out of it.
+    if best.strength() >= SETTLED_READING {
+        return Ok(best);
+    }
     for variant in ink.variants() {
-        let Ok(read) = recognise_page(&variant, orientation) else {
-            continue;
-        };
-        if read.strength() > best.strength() {
+        let read = recognise_page(&variant, orientation, budget)?;
+        // Clearly better, not a hair better: see [`MIN_VARIANT_GAIN`].
+        if read.strength() > best.strength() * (1.0 + MIN_VARIANT_GAIN) {
             best = read;
         }
     }
     Ok(best)
+}
+
+/// What is left of the naming one request may do, over every reading of its page.
+///
+/// Every mark the recogniser names is charged here, wherever the naming happens: the marks
+/// a line's runs of ink fall into, the pieces a run is cut into to settle where its
+/// characters end, and the pairs a join considers. One budget serves the whole request, so
+/// the factors that would otherwise multiply — marks per reading, pieces per run, readings
+/// per page — are bounded by their PRODUCT, and a page that would cost more than
+/// [`MAX_NAMINGS_PER_PAGE`] is reported as too large instead of being ground through.
+///
+/// A count rather than a clock: the same document then reads the same way on a fast machine
+/// and a slow one, which a wall-clock deadline would not give.
+#[derive(Debug)]
+struct Budget {
+    left: usize,
+}
+
+impl Budget {
+    fn new() -> Self {
+        Self {
+            left: MAX_NAMINGS_PER_PAGE,
+        }
+    }
+
+    /// Charge one naming, or say the page is too large to read.
+    fn spend(&mut self) -> Result<(), Unreadable> {
+        self.left = self.left.checked_sub(1).ok_or_else(|| {
+            Unreadable::TooLarge(format!(
+                "reading the document's marks would take more than \
+                 {MAX_NAMINGS_PER_PAGE} comparisons; this emulator makes at most that many \
+                 for one page"
+            ))
+        })?;
+        Ok(())
+    }
 }
 
 /// One page read at ONE orientation: its text, what it was recognised with, and where its
@@ -427,41 +619,62 @@ struct PageRead {
     text: String,
     score_total: f32,
     score_count: usize,
+    /// How much of the page's ink was named, and how well: see [`PageRead::strength`].
+    named_ink: f32,
+    /// How much ink the page carries in all, which that is measured against.
+    page_ink: f32,
     lines: Vec<MeasuredLine>,
     rotation: f32,
 }
 
 impl PageRead {
-    /// How well this reading of the page holds up as a whole, which is what one
-    /// orientation is chosen over another by.
+    /// How well this reading of the page holds up as a whole, which is what one reading of
+    /// a page is chosen over another by.
     ///
-    /// Each character counts for what its match beat the floor every reported character
-    /// has to clear by ([`MIN_GLYPH_SCORE`]), so a page read at the turn its characters
-    /// were drawn at — many marks, each matching its glyph well — stands far above the same
-    /// page read sideways, where the slivers a turned line of text falls into match
-    /// whatever they match barely at all.
+    /// The share of the page's OWN INK that was named, weighted by how far each mark's
+    /// match beat the floor every reported character has to clear ([`glyphs::MIN_MATCH`]).
+    /// Weighing the ink rather than counting the characters is what makes two readings of
+    /// one page comparable: the same pixels carry the same ink whichever turn they are read
+    /// at, so a page read at the turn its characters were drawn at — where nearly all of
+    /// its ink is in marks that match their glyphs well — stands above the same page read
+    /// sideways, where the slivers a turned line of text falls into match whatever they
+    /// match barely at all, however many of them there are.
+    ///
+    /// Only the ink of a WORD of several characters counts ([`MIN_WORD_CHARACTERS`]):
+    /// characters come in words, so a reading that falls into single marks standing apart —
+    /// which is what a page read ACROSS its own lines falls into — has accounted for none of
+    /// it, however well each of those marks happens to match something.
     fn strength(&self) -> f32 {
-        (self.score_total - MIN_GLYPH_SCORE * self.score_count as f32).max(0.0)
+        if self.page_ink <= 0.0 {
+            return 0.0;
+        }
+        (self.named_ink / self.page_ink).max(0.0)
     }
 }
 
 /// Read the lines of ink of `ink`, which is the submitted page turned as `orientation`
 /// says, measuring every word back in the frame of the page as it was submitted.
-fn recognise_page(ink: &Ink, orientation: Orientation) -> Result<PageRead, Unreadable> {
+fn recognise_page(
+    ink: &Ink,
+    orientation: Orientation,
+    budget: &mut Budget,
+) -> Result<PageRead, Unreadable> {
     let lines = ink.text_lines()?;
 
     let mut text = String::new();
     let mut measured: Vec<MeasuredLine> = Vec::new();
     let mut score_total = 0.0f32;
     let mut score_count = 0usize;
+    let mut named_ink = 0.0f32;
     for line in &lines {
-        let Some(rendered) = line.render(ink) else {
+        let Some(rendered) = line.render(ink, budget)? else {
             continue;
         };
         text.push_str(&rendered.text);
         text.push('\n');
         score_total += rendered.score_total;
         score_count += rendered.score_count;
+        named_ink += rendered.named_ink;
         measured.push(rendered.measured(ink, orientation));
     }
 
@@ -469,6 +682,8 @@ fn recognise_page(ink: &Ink, orientation: Orientation) -> Result<PageRead, Unrea
         text,
         score_total,
         score_count,
+        named_ink,
+        page_ink: ink.total_ink(),
         lines: measured,
         rotation: orientation.angle(),
     })
@@ -620,11 +835,19 @@ fn reader(
 // Binarisation
 // ---------------------------------------------------------------------------
 
-/// A page's ink: one bit per pixel, true where the recogniser sees a mark.
+/// A page's ink: how much of it each pixel carries, from `0` for the page's own ground to
+/// `255` for a pixel as dark as its text's own strokes.
+///
+/// The strength rather than a bit, because the text of a page rendered at a size at all
+/// near the pixel grid is ANTI-ALIASED: the edge of every stroke is drawn part way between
+/// the ink and the ground, and a stroke of a small glyph can be nothing but such edges. A
+/// mark is segmented through [`INK_FLOOR`], so a stroke stays one mark, while the
+/// recogniser measures the strengths themselves, so what it compares against a glyph is
+/// the stroke's own weight.
 struct Ink {
     width: usize,
     height: usize,
-    mask: Vec<bool>,
+    ink: Vec<u8>,
 }
 
 /// The four EXTREME marks of a set of pixels — the topmost, the rightmost, the bottommost
@@ -667,7 +890,13 @@ impl Extremes {
 }
 
 impl Ink {
-    /// Binarise a grey page with Otsu's method, taking the smaller class as ink.
+    /// Measure how much ink each pixel of a grey page carries.
+    ///
+    /// Otsu's method splits the page into its ink and its ground; the SMALLER class is the
+    /// ink, so a light page with dark text and a dark page with light text are both read.
+    /// Each pixel then carries the share of the way from the ground's own level to the
+    /// ink's that it lies, which is `1` for a pixel as solid as the text's strokes and a
+    /// fraction for the anti-aliased edge of one.
     fn of(gray: &image::GrayImage) -> Self {
         let width = gray.width() as usize;
         let height = gray.height() as usize;
@@ -676,20 +905,28 @@ impl Ink {
             histogram[pixel.0[0] as usize] += 1;
         }
         let total: u64 = histogram.iter().sum();
-        let mask = match otsu(&histogram, total) {
+        let ink = match otsu(&histogram, total) {
             // One tone plus noise: a blank page carries no ink at all.
-            None => vec![false; width * height],
+            None => vec![0u8; width * height],
             Some(split) => {
                 let dark: u64 = histogram[..=split.threshold as usize].iter().sum();
                 let ink_is_dark = dark * 2 <= total;
+                let (darker, lighter) = levels(&histogram, split.threshold);
+                let (ground, ink_level) = if ink_is_dark {
+                    (lighter, darker)
+                } else {
+                    (darker, lighter)
+                };
+                let reach = if (ink_level - ground).abs() >= 1.0 {
+                    ink_level - ground
+                } else {
+                    1.0
+                };
                 gray.pixels()
                     .map(|pixel| {
-                        let value = pixel.0[0];
-                        if ink_is_dark {
-                            value <= split.threshold
-                        } else {
-                            value > split.threshold
-                        }
+                        let value = f32::from(pixel.0[0]);
+                        let strength = ((value - ground) / reach).clamp(0.0, 1.0);
+                        (strength * 255.0).round() as u8
                     })
                     .collect()
             }
@@ -697,12 +934,32 @@ impl Ink {
         Self {
             width,
             height,
-            mask,
+            ink,
         }
     }
 
+    /// Whether `(x, y)` is part of a mark: see [`INK_FLOOR`].
     fn at(&self, x: usize, y: usize) -> bool {
-        self.mask.get(y * self.width + x).copied().unwrap_or(false)
+        self.strength(x, y) >= INK_FLOOR
+    }
+
+    /// How much ink the pixel `(x, y)` carries, as a fraction of a solid stroke's.
+    fn strength(&self, x: usize, y: usize) -> f32 {
+        if x >= self.width || y >= self.height {
+            return 0.0;
+        }
+        self.ink
+            .get(y * self.width + x)
+            .map_or(0.0, |ink| f32::from(*ink) / 255.0)
+    }
+
+    /// The same, for a point that may lie off the page altogether: what the recogniser
+    /// measures a mark's frame through, since a frame reaches past the mark it is around.
+    fn coverage(&self, x: isize, y: isize) -> f32 {
+        if x < 0 || y < 0 {
+            return 0.0;
+        }
+        self.strength(x as usize, y as usize)
     }
 
     /// This page turned `turns` quarter turns clockwise, so text drawn at that turn reads
@@ -714,18 +971,26 @@ impl Ink {
         } else {
             (self.width, self.height)
         };
-        let mut mask = vec![false; width * height];
+        let mut ink = vec![0u8; width * height];
         for y in 0..height {
             for x in 0..width {
                 let (sx, sy) = orientation.source(x, y);
-                mask[y * width + x] = self.at(sx, sy);
+                ink[y * width + x] = self.raw(sx, sy);
             }
         }
         Self {
             width,
             height,
-            mask,
+            ink,
         }
+    }
+
+    /// The ink of one pixel as it is stored, for a copy of this page that moves it.
+    fn raw(&self, x: usize, y: usize) -> u8 {
+        if x >= self.width || y >= self.height {
+            return 0;
+        }
+        self.ink.get(y * self.width + x).copied().unwrap_or(0)
     }
 
     /// The extent of the page's CONTENT: the box enclosing every mark on it and the
@@ -926,7 +1191,7 @@ impl Ink {
     /// column IS a bridge is established the way a rule is: by clearing it, and keeping the
     /// result only where what remains falls into more marks than before.
     fn without_hairlines(&self) -> Option<Self> {
-        let mut cleared: Option<Vec<bool>> = None;
+        let mut cleared: Option<Vec<u8>> = None;
         for (top, bottom) in self.bands() {
             let Some((left, right)) = self.ink_columns(top, bottom) else {
                 continue;
@@ -952,17 +1217,17 @@ impl Ink {
             if apart.len() <= joined.len() {
                 continue;
             }
-            let mask = cleared.get_or_insert_with(|| self.mask.clone());
+            let cleared_ink = cleared.get_or_insert_with(|| self.ink.clone());
             for (offset, _) in hairlines.iter().enumerate().filter(|(_, bridge)| **bridge) {
                 for y in top..=bottom {
-                    mask[y * self.width + left + offset] = false;
+                    cleared_ink[y * self.width + left + offset] = 0;
                 }
             }
         }
-        cleared.map(|mask| Self {
+        cleared.map(|ink| Self {
             width: self.width,
             height: self.height,
-            mask,
+            ink,
         })
     }
 
@@ -975,7 +1240,7 @@ impl Ink {
     /// of an 'H' — and it stays. A band too narrow to hold a line of characters
     /// ([`MIN_RULE_BAND_ASPECT`]) carries no rule at all, for the same reason.
     fn without_rules(&self) -> Option<Self> {
-        let mut cleaned: Option<Vec<bool>> = None;
+        let mut cleaned: Option<Vec<u8>> = None;
         for (top, bottom) in self.bands() {
             let Some((left, right)) = self.ink_columns(top, bottom) else {
                 continue;
@@ -995,17 +1260,17 @@ impl Ink {
             if apart.len() <= joined.len() {
                 continue;
             }
-            let mask = cleaned.get_or_insert_with(|| self.mask.clone());
+            let cleaned_ink = cleaned.get_or_insert_with(|| self.ink.clone());
             for (offset, _) in rules.iter().enumerate().filter(|(_, rule)| **rule) {
                 for x in left..=right {
-                    mask[(top + offset) * self.width + x] = false;
+                    cleaned_ink[(top + offset) * self.width + x] = 0;
                 }
             }
         }
-        cleaned.map(|mask| Self {
+        cleaned.map(|ink| Self {
             width: self.width,
             height: self.height,
-            mask,
+            ink,
         })
     }
 
@@ -1018,7 +1283,7 @@ impl Ink {
     /// on a dark ground is text all the same — so the panel is read by taking its ground for
     /// its ink, and only where that ground falls into marks of its own.
     fn panels_read(&self) -> Option<Self> {
-        let mut read: Option<Vec<bool>> = None;
+        let mut read: Option<Vec<u8>> = None;
         for (top, bottom) in self.bands() {
             let Some((left, right)) = self.ink_columns(top, bottom) else {
                 continue;
@@ -1047,19 +1312,26 @@ impl Ink {
             if ground.len() < MIN_PANEL_MARKS {
                 continue;
             }
-            let mask = read.get_or_insert_with(|| self.mask.clone());
+            // The panel's own ground, inked as strongly as the panel was: light text on a
+            // dark ground is drawn with the contrast between the two, which is the contrast
+            // the page was measured by.
+            let read_ink = read.get_or_insert_with(|| self.ink.clone());
             for y in top..=bottom {
                 for x in left..=right {
                     let inside = (inner_left..=inner_right).contains(&x)
                         && (inner_top..=inner_bottom).contains(&y);
-                    mask[y * self.width + x] = inside && !self.at(x, y);
+                    read_ink[y * self.width + x] = if inside && !self.at(x, y) {
+                        u8::MAX
+                    } else {
+                        0
+                    };
                 }
             }
         }
-        read.map(|mask| Self {
+        read.map(|ink| Self {
             width: self.width,
             height: self.height,
-            mask,
+            ink,
         })
     }
 
@@ -1096,12 +1368,131 @@ impl Ink {
         Ok(lines)
     }
 
+    /// How much ink this page carries in all: the sum of every pixel's own strength.
+    ///
+    /// The same pixels carry the same ink whichever turn they are read at, which is what
+    /// lets [`PageRead::strength`] compare two readings of one page.
+    fn total_ink(&self) -> f32 {
+        self.ink.iter().map(|ink| f32::from(*ink) / 255.0).sum()
+    }
+
+    /// How much ink the rectangle of `glyph` carries.
+    fn ink_in(&self, glyph: &GlyphBox) -> f32 {
+        let right = glyph.x1.min(self.width.saturating_sub(1));
+        let bottom = glyph.y1.min(self.height.saturating_sub(1));
+        (glyph.y0..=bottom)
+            .map(|y| (glyph.x0..=right).map(|x| self.strength(x, y)).sum::<f32>())
+            .sum()
+    }
+
     /// The glyph candidates of the band `top..=bottom`: the maximal runs of inked
     /// columns, left to right, each with its own ink extent.
     fn glyphs_between(&self, top: usize, bottom: usize) -> Vec<GlyphBox> {
         self.runs_in(0, self.width.saturating_sub(1), top, bottom, |x, y| {
             self.at(x, y)
         })
+    }
+
+    /// The mark the columns `x0..=x1` of `band` hold: the rectangle their ink occupies, or
+    /// `None` when they carry none.
+    fn mark_in(&self, x0: usize, x1: usize, band: &InkLine) -> Option<GlyphBox> {
+        let right = x1.min(self.width.saturating_sub(1));
+        let bottom = band.bottom.min(self.height.saturating_sub(1));
+        let mut found: Option<GlyphBox> = None;
+        for y in band.top..=bottom {
+            for x in x0..=right {
+                if !self.at(x, y) {
+                    continue;
+                }
+                found = Some(match found {
+                    None => GlyphBox {
+                        x0: x,
+                        x1: x,
+                        y0: y,
+                        y1: y,
+                    },
+                    Some(box_so_far) => GlyphBox {
+                        x0: box_so_far.x0.min(x),
+                        x1: box_so_far.x1.max(x),
+                        y0: box_so_far.y0.min(y),
+                        y1: box_so_far.y1.max(y),
+                    },
+                });
+            }
+        }
+        found
+    }
+
+    /// How much STROKE one column of `band` carries: the ink past the floor that tells a
+    /// page's ink from its ground, which is what a cut through that column crosses.
+    fn stroke_in_column(&self, x: usize, band: &InkLine) -> f32 {
+        let bottom = band.bottom.min(self.height.saturating_sub(1));
+        (band.top..=bottom)
+            .map(|y| ((self.strength(x, y) - INK_FLOOR) / (1.0 - INK_FLOOR)).clamp(0.0, 1.0))
+            .sum()
+    }
+
+    /// The columns INSIDE `run` where it might be cut: the places its ink narrows, which is
+    /// what two characters whose strokes touch leave between them.
+    ///
+    /// A candidate is a column that carries no more ink than the columns either side of it
+    /// — a valley of the run's own profile — and carries little enough of what the run's own
+    /// columns carry ([`CUT_VALLEY`]) to be the narrowing between two characters rather than
+    /// the thin middle of one, as the inner strokes of an M or a W are. The list is the
+    /// deepest [`MAX_CUT_CANDIDATES`] of those, no two closer together than a character of
+    /// this line could be narrow, in column order; a cut nearer an end of the run than that
+    /// separates no character from the rest, so the ends are left out by the same measure
+    /// ([`MIN_PIECE_WIDTH`]).
+    fn cut_candidates(
+        &self,
+        run: &GlyphBox,
+        band: &InkLine,
+        line: glyphs::Line,
+    ) -> Vec<usize> {
+        let margin = (MIN_PIECE_WIDTH * line.cap).ceil() as usize;
+        let from = run.x0 + margin;
+        let Some(to) = run.x1.checked_sub(margin) else {
+            return Vec::new();
+        };
+        if from >= to {
+            return Vec::new();
+        }
+        let bottom = band.bottom.min(self.height.saturating_sub(1));
+        let profile = |x: usize| -> f32 { (band.top..=bottom).map(|y| self.strength(x, y)).sum() };
+        let Some(typical) = median_of(&(run.x0..=run.x1).map(profile).collect::<Vec<f32>>()) else {
+            return Vec::new();
+        };
+        let mut valleys: Vec<(f32, usize)> = (from..=to)
+            .filter(|x| {
+                let (left, here, right) = (profile(x - 1), profile(*x), profile(x + 1));
+                // A real NARROWING: no more ink than either side of it and less than one of
+                // them. A run whose profile is flat — a bar, a rule, a block of filled ink —
+                // narrows nowhere, so it offers no cut at all rather than one at every
+                // column of it.
+                here <= left && here <= right && (here < left || here < right)
+                    && here <= CUT_VALLEY * typical
+            })
+            .map(|x| (profile(x), x))
+            .collect();
+        // Deepest first, so the places the ink narrows most are the ones kept.
+        valleys.sort_by(|one, other| {
+            one.0
+                .total_cmp(&other.0)
+                .then_with(|| one.1.cmp(&other.1))
+        });
+        let apart = (MIN_PIECE_WIDTH * line.cap).max(1.0) as usize;
+        let mut kept: Vec<usize> = Vec::new();
+        for (_, x) in valleys {
+            if kept.len() >= MAX_CUT_CANDIDATES {
+                break;
+            }
+            if kept.iter().any(|held| held.abs_diff(x) < apart) {
+                continue;
+            }
+            kept.push(x);
+        }
+        kept.sort_unstable();
+        kept
     }
 }
 
@@ -1149,11 +1540,40 @@ fn otsu(histogram: &[u64; 256], total: u64) -> Option<Split> {
     best.filter(|split| split.separation >= MIN_INK_CONTRAST)
 }
 
+/// The mean grey level of the two classes `threshold` splits a histogram into: the darker
+/// class's and the lighter class's.
+///
+/// They are the levels the page's ground and its ink are really drawn at, which is what a
+/// pixel's ink strength is measured between. A class with no pixels in it reports the
+/// level it is bounded by, so a page of one tone measures no ink either way.
+fn levels(histogram: &[u64; 256], threshold: u8) -> (f32, f32) {
+    let mean = |range: std::ops::RangeInclusive<usize>, fallback: f32| {
+        let mut weight = 0f64;
+        let mut total = 0f64;
+        for value in range {
+            let count = histogram[value] as f64;
+            weight += count;
+            total += value as f64 * count;
+        }
+        if weight > 0.0 {
+            (total / weight) as f32
+        } else {
+            fallback
+        }
+    };
+    let split = threshold as usize;
+    (
+        mean(0..=split, f32::from(threshold)),
+        mean(split + 1..=255, f32::from(threshold)),
+    )
+}
+
 // ---------------------------------------------------------------------------
 // Segmentation
 // ---------------------------------------------------------------------------
 
 /// One candidate mark: the rectangle its ink occupies.
+#[derive(Debug, Clone, Copy)]
 struct GlyphBox {
     x0: usize,
     x1: usize,
@@ -1165,6 +1585,10 @@ impl GlyphBox {
     fn width(&self) -> usize {
         self.x1 + 1 - self.x0
     }
+
+    fn height(&self) -> usize {
+        self.y1 + 1 - self.y0
+    }
 }
 
 /// A line of ink on the page.
@@ -1174,11 +1598,219 @@ struct InkLine {
     glyphs: Vec<GlyphBox>,
 }
 
+/// One mark of a line as the segmentation settled it: its rectangle, the ink that rectangle
+/// holds, and the character it was named with, if any.
+#[derive(Debug, Clone, Copy)]
+struct Settled {
+    glyph: GlyphBox,
+    ink: f32,
+    named: Option<glyphs::Named>,
+}
+
+impl Settled {
+    /// What this mark is worth to the segmentation: how far its match beat the floor every
+    /// reported character has to clear, over the INK the mark was named from, and a small
+    /// cost per unit of ink that named nothing.
+    ///
+    /// Weighed by the ink rather than counted per mark, because cutting a run of ink into
+    /// pieces and joining pieces into one mark both leave the ink where it was: what the
+    /// segmentation compares is therefore how well the same ink is accounted for either way,
+    /// and it cannot win by naming more marks, each from less of it.
+    fn value(&self) -> f32 {
+        self.ink
+            * self
+                .named
+                .map_or(UNNAMED_MARK, |found| found.score - glyphs::MIN_MATCH)
+    }
+}
+
+/// Name every mark of `band`, cutting a run of ink whose strokes run together and joining
+/// the pieces of a stroke that broke apart.
+///
+/// A run of inked columns is a candidate for ONE character, but at the size a page is
+/// drawn at that candidate can be wrong both ways: neighbouring letters set tight, or
+/// spread by a heavy weight or a lossy coding, touch and come out as one run, while a thin
+/// stroke — the arch of an 'n', the waist of an 's' — can fall under the floor that tells
+/// ink from ground and leave a letter in pieces. Both are settled by NAMING: a cut is kept
+/// only where the pieces are named better than the whole was, and a join only where the
+/// whole is named better than its pieces, so a page that needs neither is read exactly as
+/// its runs stand.
+fn settle(
+    ink: &Ink,
+    band: &InkLine,
+    line: glyphs::Line,
+    budget: &mut Budget,
+) -> Result<Vec<Settled>, Unreadable> {
+    // How wide one mark of THIS line is: a run several times that holds more than one
+    // character, whatever the line's capitals measure.
+    let typical = median(band.glyphs.iter().map(GlyphBox::width)).unwrap_or(1.0);
+    let too_wide = (MAX_MARK_WIDTH * line.cap).max(MAX_MARK_PITCH * typical);
+    let mut cut: Vec<Settled> = Vec::new();
+    for run in &band.glyphs {
+        cut_apart(ink, band, *run, line, too_wide, budget, &mut cut)?;
+    }
+    join(ink, band, cut, line, budget)
+}
+
+/// Name one mark, against this request's naming budget.
+fn name(
+    ink: &Ink,
+    glyph: GlyphBox,
+    line: glyphs::Line,
+    budget: &mut Budget,
+) -> Result<Settled, Unreadable> {
+    budget.spend()?;
+    Ok(Settled {
+        named: glyphs::recognise(ink, &glyph, line),
+        ink: ink.ink_in(&glyph),
+        glyph,
+    })
+}
+
+/// Cut `run` into the pieces that account for its ink best, and push what it settles as
+/// onto `out`.
+///
+/// A run wider than one character of its line holds more than one, with nothing but a
+/// narrowing of its ink between them — the letters' strokes touch, or the halo around them
+/// does. Where exactly is settled by NAMING: the columns where the run's ink narrows are
+/// the places it could be cut ([`Ink::cut_candidates`]), and the run is cut into the
+/// sequence of pieces whose names account for its ink best of all such sequences — found
+/// once, over the whole run, rather than by halving it, since where one letter ends depends
+/// on where the letters after it do.
+fn cut_apart(
+    ink: &Ink,
+    band: &InkLine,
+    run: GlyphBox,
+    line: glyphs::Line,
+    too_wide: f32,
+    budget: &mut Budget,
+    out: &mut Vec<Settled>,
+) -> Result<(), Unreadable> {
+    let whole = name(ink, run, line, budget)?;
+    // No character of this line is this wide: a run that is holds more than one.
+    if (run.width() as f32) <= too_wide {
+        out.push(whole);
+        return Ok(());
+    }
+    // Where each piece may start: the run's own left edge, each place it could be cut, and
+    // one past its right edge, so the piece from `starts[i]` to `starts[j] - 1` is the ink
+    // between two of them.
+    let mut starts = vec![run.x0];
+    starts.extend(ink.cut_candidates(&run, band, line).into_iter().map(|at| at + 1));
+    starts.push(run.x1 + 1);
+    if starts.len() < 3 {
+        out.push(whole);
+        return Ok(());
+    }
+    let last = starts.len() - 1;
+    let widest = MAX_MARK_WIDTH * line.cap;
+    // The best-named sequence of pieces from each start onwards, found from the right so
+    // each piece is named once.
+    let mut best = vec![f32::MIN; starts.len()];
+    let mut then = vec![last; starts.len()];
+    let mut named: Vec<Option<Settled>> = vec![None; starts.len()];
+    best[last] = 0.0;
+    for from in (0..last).rev() {
+        for to in from + 1..=last {
+            let width = (starts[to] - starts[from]) as f32;
+            // Too wide to be one character: and, since the pieces only grow from here, so
+            // is every piece after it — unless nothing narrower was found at all, in which
+            // case this one piece carries the rest of the run.
+            if width > widest && to > from + 1 {
+                break;
+            }
+            let Some(piece) = ink.mark_in(starts[from], starts[to] - 1, band) else {
+                continue;
+            };
+            // A cut separates two characters of the line's own text, and both of them stand
+            // as tall as such a character: a piece shorter than that is part of ONE
+            // character — the bar of a T, the arm of an L — and cutting there would read a
+            // letter as two marks of punctuation.
+            if (piece.height() as f32) < MIN_PIECE_HEIGHT * line.cap {
+                continue;
+            }
+            let piece = name(ink, piece, line, budget)?;
+            // What the cut at the END of this piece costs: the STROKE it crosses. Two
+            // characters whose ink runs together are bridged by the halo anti-aliasing
+            // leaves around their strokes, which is little ink past the floor that tells
+            // ink from ground; the inside of one character — the middle of an M, the waist
+            // of an S — is a stroke, which is all of it. Charging the cut for what it
+            // crosses is what keeps a letter whole where the page gives both.
+            let crossed = if to == last {
+                0.0
+            } else {
+                CUT_COST * ink.stroke_in_column(starts[to] - 1, band)
+            };
+            let value = piece.value() - crossed + best[to];
+            if value > best[from] {
+                best[from] = value;
+                then[from] = to;
+                named[from] = Some(piece);
+            }
+        }
+    }
+    if best[0] <= whole.value() + CUT_GAIN * whole.ink {
+        out.push(whole);
+        return Ok(());
+    }
+    let mut at = 0usize;
+    while at < last {
+        let Some(piece) = named[at] else {
+            break;
+        };
+        out.push(piece);
+        at = then[at];
+    }
+    Ok(())
+}
+
+/// Join the neighbouring pieces of `marks` that are named better as one mark than as two:
+/// what a stroke that broke apart leaves.
+fn join(
+    ink: &Ink,
+    band: &InkLine,
+    marks: Vec<Settled>,
+    line: glyphs::Line,
+    budget: &mut Budget,
+) -> Result<Vec<Settled>, Unreadable> {
+    let mut out: Vec<Settled> = Vec::with_capacity(marks.len());
+    for mark in marks {
+        let mut mark = mark;
+        while let Some(before) = out.last() {
+            // Only PIECES are joined: a mark as wide as a character of this line is one,
+            // and two marks a letter's own side bearing apart are two.
+            let piece = (mark.glyph.width() as f32) <= MAX_PIECE_WIDTH * line.cap;
+            let close = (mark.glyph.x0.saturating_sub(before.glyph.x1 + 1) as f32)
+                <= MAX_PIECE_GAP * line.cap;
+            let fits = ((mark.glyph.x1 + 1 - before.glyph.x0) as f32)
+                <= MAX_MARK_WIDTH * line.cap;
+            if !(piece && close && fits) {
+                break;
+            }
+            let Some(together) = ink.mark_in(before.glyph.x0, mark.glyph.x1, band) else {
+                break;
+            };
+            let together = name(ink, together, line, budget)?;
+            if together.value() <= before.value().max(mark.value()) {
+                break;
+            }
+            out.pop();
+            mark = together;
+        }
+        out.push(mark);
+    }
+    Ok(out)
+}
+
 /// One line's recognised text, and the scores it was recognised with.
 struct RenderedLine {
     text: String,
     score_total: f32,
     score_count: usize,
+    /// How much of the line's ink was named, and how well: the ink of each named mark of a
+    /// word of several characters, weighted by how far its match beat
+    /// [`glyphs::MIN_MATCH`].
+    named_ink: f32,
     /// The line's words, in reading order: one per run of glyphs the text does NOT
     /// separate with a space or a tab, so `words[k]` is the k-th whitespace-separated
     /// word of `text`.
@@ -1193,11 +1825,14 @@ struct WordRun {
     y1: usize,
     score_total: f32,
     score_count: usize,
+    /// How much of the page's ink this word's characters were named from, and how well:
+    /// each mark's ink weighted by how far its match beat [`glyphs::MIN_MATCH`].
+    named_ink: f32,
 }
 
 impl WordRun {
     /// A word starting at `glyph`.
-    fn starting_at(glyph: &GlyphBox, score: f32) -> Self {
+    fn starting_at(glyph: &GlyphBox, score: f32, named_ink: f32) -> Self {
         Self {
             x0: glyph.x0,
             x1: glyph.x1,
@@ -1205,17 +1840,19 @@ impl WordRun {
             y1: glyph.y1,
             score_total: score,
             score_count: 1,
+            named_ink,
         }
     }
 
     /// Take `glyph` into this word.
-    fn extend(&mut self, glyph: &GlyphBox, score: f32) {
+    fn extend(&mut self, glyph: &GlyphBox, score: f32, named_ink: f32) {
         self.x0 = self.x0.min(glyph.x0);
         self.x1 = self.x1.max(glyph.x1);
         self.y0 = self.y0.min(glyph.y0);
         self.y1 = self.y1.max(glyph.y1);
         self.score_total += score;
         self.score_count += 1;
+        self.named_ink += named_ink;
     }
 
     /// This word's ink as it sits on the page it was submitted as, whichever turn of that
@@ -1243,32 +1880,104 @@ impl RenderedLine {
     }
 }
 
-impl InkLine {
-    fn band(&self) -> usize {
-        self.bottom + 1 - self.top
+/// The characters of the named marks of one line, with the ones a BARE STEM could be
+/// resolved by the characters beside them.
+///
+/// A stem with nothing else to it is the same ink in `I`, `l`, `1` and `|`: which of them a
+/// face draws that way differs from face to face — a serif on the capital, a tail on the
+/// letter l, a flag on the figure one, none of them on the bar — so a mark that is nothing
+/// but a stem cannot be told apart by its shape, and the comparison that named it had to
+/// pick one of the four. What tells them apart is what stands beside it in its own word,
+/// which is how a reader tells them apart too: a stem next to figures is the figure, a stem
+/// next to small letters is the small letter — except at the start of a word, where it is
+/// the capital that begins it — and a stem next to capitals is the capital. A stem standing
+/// in no word at all is left as it was named: nothing says it is a letter.
+fn settle_stems(marks: &[Settled], separated: &[(usize, Separation)]) -> Vec<(char, f32)> {
+    let mut named: Vec<(char, f32)> = separated
+        .iter()
+        .filter_map(|(at, _)| marks[*at].named)
+        .map(|found| (found.ch, found.score))
+        .collect();
+    let open: Vec<bool> = separated
+        .iter()
+        .filter_map(|(at, _)| marks[*at].named)
+        .map(|found| found.open)
+        .collect();
+    // The words of the line: runs of marks nothing separates.
+    let mut from = 0usize;
+    for step in 1..=separated.len() {
+        if step < separated.len() && separated[step].1 == Separation::None {
+            continue;
+        }
+        let word = from..step;
+        from = step;
+        if word.len() < 2 {
+            continue;
+        }
+        for at in word.clone() {
+            // Only a mark whose own shape left the reading open is read off its
+            // neighbours: where the face told the stems apart, the shape decides.
+            if !open[at] {
+                continue;
+            }
+            // What stands NEAREST it, either side, skipping the stems whose own reading is
+            // just as open as this one's: the closer a character is, the more it says about
+            // which of the four this one is.
+            let nearest = |mut over: Box<dyn Iterator<Item = usize>>| -> Option<char> {
+                over.find(|other| !open[*other]).map(|other| named[other].0)
+            };
+            let before = nearest(Box::new((word.start..at).rev()));
+            let after = nearest(Box::new(at + 1..word.end));
+            let beside: Vec<char> = before.into_iter().chain(after).collect();
+            let any = |which: fn(&char) -> bool| beside.iter().any(which);
+            named[at].0 = if any(|ch| ch.is_ascii_digit()) {
+                '1'
+            } else if any(|ch| ch.is_lowercase()) {
+                // Among small letters the mark is a letter, but which of the two letters it
+                // is the shape may still have had an opinion about — a tail on the l, a
+                // serif on the I — so that opinion stands. Where it named neither letter,
+                // the position decides: a stem that BEGINS a word of small letters is the
+                // capital that begins it, and one inside such a word is the small letter.
+                match named[at].0 {
+                    letter @ ('I' | 'l') => letter,
+                    _ if at == word.start => 'I',
+                    _ => 'l',
+                }
+            } else if any(|ch| ch.is_uppercase()) {
+                'I'
+            } else {
+                named[at].0
+            };
+        }
     }
+    named
+}
 
+impl InkLine {
     /// Recognise this line: its characters, and the word and column breaks between them.
-    ///
-    /// `None` when nothing in the line matched a glyph, so the line carries no text.
-    fn render(&self, ink: &Ink) -> Option<RenderedLine> {
-        let band = self.band();
-        let median_width = median(self.glyphs.iter().map(GlyphBox::width)).unwrap_or(1.0);
-        let gaps: Vec<usize> = self
-            .glyphs
+    /// `Ok(None)` when nothing in the line matched a glyph, so the line carries no text.
+    fn render(&self, ink: &Ink, budget: &mut Budget) -> Result<Option<RenderedLine>, Unreadable> {
+        // Where this line sets its characters, which is the frame each of its marks is
+        // measured and named in.
+        let line = glyphs::line_of(&self.glyphs, self.top, self.bottom);
+        // What its marks ARE: a run of inked columns is one mark only until the naming
+        // says otherwise (see [`settle`]).
+        let marks = settle(ink, self, line, budget)?;
+        let boxes: Vec<GlyphBox> = marks.iter().map(|mark| mark.glyph).collect();
+        let median_width = median(boxes.iter().map(GlyphBox::width)).unwrap_or(1.0);
+        let gaps: Vec<usize> = boxes
             .windows(2)
             .map(|pair| pair[1].x0.saturating_sub(pair[0].x1 + 1))
             .collect();
         // The STEP from each mark to the next: the pitch the line's characters are set at,
         // which is what its word and column separators are measured against.
-        let steps: Vec<usize> = self
-            .glyphs
+        let steps: Vec<usize> = boxes
             .windows(2)
             .map(|pair| pair[1].x0.saturating_sub(pair[0].x0))
             .collect();
         // Which marks a line separates into words, and which into COLUMNS, is a property
         // of THIS line's own marks: see [`Separators`].
-        let separators = Separators::of(&self.glyphs, &gaps, &steps, median_width);
+        let separators = Separators::of(&boxes, &gaps, &steps, median_width);
         // The character cell the line's left margin is reported in, so a line that
         // starts half way across the page is laid out half way across its text.
         let cell = separators.cell();
@@ -1277,21 +1986,36 @@ impl InkLine {
         let mut score_total = 0.0f32;
         let mut score_count = 0usize;
         let mut words: Vec<WordRun> = Vec::new();
+        // What separates each named mark from the one before it, as this line's own marks
+        // separate them: the one list the text, the words and the ambiguity below all read,
+        // so they cannot disagree on where this line's words are.
+        let mut separated: Vec<(usize, Separation)> = Vec::new();
         let mut previous: Option<&GlyphBox> = None;
-        for glyph in &self.glyphs {
-            let Some((ch, score)) = recognise(ink, glyph, self.top, band) else {
+        for (at, mark) in marks.iter().enumerate() {
+            if mark.named.is_none() {
                 continue;
+            }
+            let separation = match previous {
+                None => Separation::Word,
+                Some(before) => separators.between(before, &mark.glyph),
             };
+            separated.push((at, separation));
+            previous = Some(&mark.glyph);
+        }
+        let named = settle_stems(&marks, &separated);
+
+        for (step, (at, separation)) in separated.iter().enumerate() {
+            let glyph = &marks[*at].glyph;
+            let (ch, score) = named[step];
             // Whether this glyph starts a new word is decided by the same gaps the text
             // is separated on, so the measured words and the words of the text are one
             // and the same list.
-            let starts_word = match previous {
-                None => {
-                    let indent = ((glyph.x0 as f32 / cell).round() as usize).min(MAX_INDENT);
-                    text.push_str(&" ".repeat(indent));
-                    true
-                }
-                Some(before) => match separators.between(before, glyph) {
+            let starts_word = if step == 0 {
+                let indent = ((glyph.x0 as f32 / cell).round() as usize).min(MAX_INDENT);
+                text.push_str(&" ".repeat(indent));
+                true
+            } else {
+                match separation {
                     Separation::Column => {
                         text.push('\t');
                         true
@@ -1301,37 +2025,59 @@ impl InkLine {
                         true
                     }
                     Separation::None => false,
-                },
+                }
             };
             text.push(ch);
+            let named_ink = (score - glyphs::MIN_MATCH) * marks[*at].ink;
             match words.last_mut() {
-                Some(word) if !starts_word => word.extend(glyph, score),
-                _ => words.push(WordRun::starting_at(glyph, score)),
+                Some(word) if !starts_word => word.extend(glyph, score, named_ink),
+                _ => words.push(WordRun::starting_at(glyph, score, named_ink)),
             }
             score_total += score;
             score_count += 1;
-            previous = Some(glyph);
         }
         if score_count == 0 {
-            return None;
+            return Ok(None);
         }
-        Some(RenderedLine {
+        Ok(Some(RenderedLine {
             text,
             score_total,
             score_count,
+            // Only the ink of a WORD of several characters counts towards how well the page
+            // was read: see [`PageRead::strength`].
+            named_ink: words
+                .iter()
+                .filter(|word| word.score_count >= MIN_WORD_CHARACTERS)
+                .map(|word| word.named_ink)
+                .sum(),
             words,
-        })
+        }))
     }
+}
+
+/// The value `share` of the way along `values` in order, or `None` when there are none.
+///
+/// The ONE order statistic this module takes: the median of a line's marks, of a run's own
+/// columns, and the decile a line's capital height is read off ([`glyphs::line_of`]) are all
+/// this, so none of them is a second implementation of sorting and indexing.
+pub(super) fn quantile(values: &[f32], share: f32) -> Option<f32> {
+    if values.is_empty() {
+        return None;
+    }
+    let mut sorted = values.to_vec();
+    sorted.sort_by(f32::total_cmp);
+    let at = ((sorted.len() - 1) as f32 * share).round() as usize;
+    sorted.get(at).copied()
+}
+
+/// The median of `values`, or `None` when there are none.
+fn median_of(values: &[f32]) -> Option<f32> {
+    quantile(values, 0.5)
 }
 
 /// The median of `values`, or `None` when there are none.
 fn median(values: impl Iterator<Item = usize>) -> Option<f32> {
-    let mut values: Vec<usize> = values.collect();
-    if values.is_empty() {
-        return None;
-    }
-    values.sort_unstable();
-    Some(values[values.len() / 2] as f32)
+    median_of(&values.map(|value| value as f32).collect::<Vec<f32>>())
 }
 
 /// What separates two neighbouring marks of one line.
@@ -1502,194 +2248,42 @@ impl Separators {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Recognition
-// ---------------------------------------------------------------------------
-
-/// The side of the grid a glyph and a template are compared on: the embedded font's own
-/// cell size.
-const CELL: usize = 8;
-
-/// One candidate's measurements, in the frame of its line.
-struct Candidate {
-    /// Its ink, resampled over its own bounding box onto a `CELL` x `CELL` grid.
-    shape: [f32; CELL * CELL],
-    /// How much ink that grid holds, for the Dice denominator.
-    ink: f32,
-    /// Its height, width and top offset as fractions of the line's band, which is what
-    /// tells 'o' from 'O' and '.' from '-'.
-    height: f32,
-    width: f32,
-    top: f32,
-}
-
-/// One recognition template: a printable ASCII glyph of the embedded 8x8 font, measured
-/// exactly as a candidate is.
-struct Template {
-    ch: char,
-    shape: [f32; CELL * CELL],
-    ink: f32,
-    height: f32,
-    width: f32,
-    top: f32,
-}
-
-/// Every printable ASCII glyph of the embedded font, as a template.
-///
-/// `font8x8::legacy::BASIC_LEGACY` is the public-domain 8x8 bitmap font: one row per
-/// byte, bit 0 the leftmost pixel.
-fn templates() -> &'static [Template] {
-    static TEMPLATES: OnceLock<Vec<Template>> = OnceLock::new();
-    TEMPLATES.get_or_init(|| (b'!'..=b'~').filter_map(|code| template(code as char)).collect())
-}
-
-fn template(ch: char) -> Option<Template> {
-    // `get`, not an index: the table holds 128 entries and this function's signature
-    // accepts any `char`, so a non-ASCII one is no template rather than a panic inside
-    // the `OnceLock` initialiser.
-    let rows = *font8x8::legacy::BASIC_LEGACY.get(ch as usize)?;
-    let lit = |x: usize, y: usize| rows[y] & (1 << x) != 0;
-    let mut x0 = CELL;
-    let mut x1 = 0usize;
-    let mut y0 = CELL;
-    let mut y1 = 0usize;
-    for y in 0..CELL {
-        for x in 0..CELL {
-            if lit(x, y) {
-                x0 = x0.min(x);
-                x1 = x1.max(x);
-                y0 = y0.min(y);
-                y1 = y1.max(y);
-            }
-        }
-    }
-    if x0 > x1 || y0 > y1 {
-        // A glyph the font leaves blank is no template at all.
-        return None;
-    }
-    let shape = resample(lit, x0, x1, y0, y1);
-    Some(Template {
-        ch,
-        ink: shape.iter().sum(),
-        shape,
-        height: (y1 + 1 - y0) as f32 / CELL as f32,
-        width: (x1 + 1 - x0) as f32 / CELL as f32,
-        top: y0 as f32 / CELL as f32,
-    })
-}
-
-/// The best-matching character for one candidate, and the score it matched with, or
-/// `None` when nothing matched it well enough to report.
-fn recognise(ink: &Ink, glyph: &GlyphBox, band_top: usize, band: usize) -> Option<(char, f32)> {
-    let mask = |x: usize, y: usize| ink.at(x, y);
-    let shape = resample(mask, glyph.x0, glyph.x1, glyph.y0, glyph.y1);
-    let band = band as f32;
-    let candidate = Candidate {
-        ink: shape.iter().sum(),
-        shape,
-        height: ((glyph.y1 + 1 - glyph.y0) as f32 / band).clamp(0.0, 1.0),
-        width: (glyph.width() as f32 / band).clamp(0.0, 1.0),
-        top: (glyph.y0.saturating_sub(band_top) as f32 / band).clamp(0.0, 1.0),
-    };
-    let mut best: Option<Match> = None;
-    for template in templates() {
-        let scored = score(&candidate, template);
-        if best.is_none_or(|best: Match| scored.total > best.total) {
-            best = Some(Match {
-                ch: template.ch,
-                ..scored
-            });
-        }
-    }
-    // Both floors: the mark's shape must really be this glyph's shape, and the whole
-    // measurement must hold up. Ink that clears neither matched nothing.
-    best.filter(|found| found.shape_overlap >= MIN_SHAPE_OVERLAP && found.total >= MIN_GLYPH_SCORE)
-        .map(|found| (found.ch, found.total))
-}
-
-/// How well one candidate matched one template.
-#[derive(Debug, Clone, Copy)]
-struct Match {
-    ch: char,
-    /// The weighted measurement, which is what the `Confidence` reports.
-    total: f32,
-    /// The shape term on its own, floored by [`MIN_SHAPE_OVERLAP`].
-    shape_overlap: f32,
-}
-
-/// How well a candidate matches a template: mostly the overlap of the two shapes (the
-/// Sørensen-Dice coefficient, which is 1 for identical ink and 0 for disjoint ink), plus
-/// how closely the glyph's size and position inside its line agree with the template's
-/// inside its cell.
-fn score(candidate: &Candidate, template: &Template) -> Match {
-    let overlap: f32 = candidate
-        .shape
-        .iter()
-        .zip(template.shape.iter())
-        .map(|(c, t)| c.min(*t))
-        .sum();
-    let denominator = candidate.ink + template.ink;
-    let dice = if denominator > 0.0 {
-        2.0 * overlap / denominator
-    } else {
-        0.0
-    };
-    let agree = |a: f32, b: f32| 1.0 - (a - b).abs().min(1.0);
-    Match {
-        ch: template.ch,
-        total: 0.70 * dice
-            + 0.12 * agree(candidate.height, template.height)
-            + 0.10 * agree(candidate.width, template.width)
-            + 0.08 * agree(candidate.top, template.top),
-        shape_overlap: dice,
-    }
-}
-
-/// Resample the ink of `x0..=x1` by `y0..=y1` onto a `CELL` x `CELL` grid of densities.
-///
-/// Each cell averages the source rectangle it covers, and never fewer than one pixel, so
-/// the same routine both shrinks a large glyph and stretches a one-pixel-wide one.
-///
-/// Generic over the mask rather than taking `&dyn Fn`, so the closure inlines: this runs
-/// `CELL * CELL` sampled rectangles per candidate, for up to [`MAX_GLYPHS_PER_PAGE`]
-/// candidates on a page.
-fn resample(
-    mask: impl Fn(usize, usize) -> bool,
-    x0: usize,
-    x1: usize,
-    y0: usize,
-    y1: usize,
-) -> [f32; CELL * CELL] {
-    let width = x1 + 1 - x0;
-    let height = y1 + 1 - y0;
-    let mut out = [0f32; CELL * CELL];
-    for row in 0..CELL {
-        let sy0 = y0 + row * height / CELL;
-        let sy1 = (y0 + (row + 1) * height / CELL).max(sy0 + 1).min(y1 + 1);
-        for column in 0..CELL {
-            let sx0 = x0 + column * width / CELL;
-            let sx1 = (x0 + (column + 1) * width / CELL).max(sx0 + 1).min(x1 + 1);
-            let mut inked = 0usize;
-            let mut seen = 0usize;
-            for y in sy0..sy1 {
-                for x in sx0..sx1 {
-                    seen += 1;
-                    if mask(x, y) {
-                        inked += 1;
-                    }
-                }
-            }
-            if seen > 0 {
-                out[row * CELL + column] = inked as f32 / seen as f32;
-            }
-        }
-    }
-    out
-}
+#[cfg(test)]
+mod probe;
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The naming one request may do is bounded whatever the page: the budget admits exactly
+    /// [`MAX_NAMINGS_PER_PAGE`] namings, wherever in the reading they happen, and then says
+    /// the page is too large rather than letting the readings, the runs and the pieces of a
+    /// run multiply the work between them.
+    #[test]
+    fn the_naming_one_request_may_do_is_bounded() {
+        let mut budget = Budget::new();
+        for spent in 0..MAX_NAMINGS_PER_PAGE {
+            assert!(
+                budget.spend().is_ok(),
+                "case naming {spent}: a request may name {MAX_NAMINGS_PER_PAGE} marks"
+            );
+        }
+        let refused = budget.spend().expect_err("the budget must run out");
+        let Unreadable::TooLarge(message) = &refused else {
+            panic!("case the budget is spent: the page must be refused as too large, got {refused:?}");
+        };
+        assert!(
+            message.contains(&MAX_NAMINGS_PER_PAGE.to_string()),
+            "case the budget is spent: the refusal must name the ceiling it is, got {message:?}"
+        );
+        assert!(
+            budget.spend().is_err(),
+            "case past the budget: it stays spent"
+        );
+    }
+
+    /// The side of one glyph cell of the 8x8 font these tests draw with.
+    const CELL: usize = glyphs::FONT_CELL;
 
     /// The columns of the font's cell that `ch` puts ink in.
     fn glyph_extent(ch: char) -> (usize, usize) {
