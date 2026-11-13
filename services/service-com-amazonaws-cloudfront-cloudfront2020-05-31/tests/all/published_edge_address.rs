@@ -568,7 +568,10 @@ async fn published_domain(router: &MultiServiceRouter, reference: &str) -> Strin
 /// published authority: the address under test is one of this emulator's own listeners
 /// ([`is_reachable_authority`] has already held it to that), and nothing here opens a
 /// connection to anywhere else.
-async fn dial(authority: &str, method: &str, path: &str) -> String {
+///
+/// `pub(crate)` so every suite that reads a published domain name dials it the same way
+/// rather than carrying its own copy of this client.
+pub(crate) async fn dial(authority: &str, method: &str, path: &str) -> String {
     let port = authority
         .parse::<std::net::SocketAddr>()
         .unwrap_or_else(|error| panic!("the published address {authority} is no address: {error}"))

@@ -34,29 +34,21 @@
 //! really serves, so a served request has an origin answer to be a cache miss of.
 
 use std::sync::Arc;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use base64::Engine as _;
 use service_com_amazonaws_cloudfront_cloudfront2020_05_31::EmulatedService;
 use smithy_server_runtime::MultiServiceRouter;
 
-use crate::distribution_lifecycle::{call, get_distribution, API_VERSION, HOST};
-
-/// How long a poll loop waits for a resource to reach the state the clock owes it. Generous:
-/// what is asserted is that the state arrives, never how fast the host is.
-const READY_DEADLINE: Duration = Duration::from_secs(60);
-
-/// How long a poll loop waits before looking again.
-const POLL_INTERVAL: Duration = Duration::from_millis(50);
+use crate::distribution_lifecycle::{
+    awaited_deployment, call, API_VERSION, HOST, POLL_INTERVAL, READY_DEADLINE,
+};
 
 /// The Region every call below is signed for, and so the Region the streams' ARNs carry.
 const REGION: &str = "us-east-1";
 
 /// The status a stream that serves reads and writes is in.
 const STREAM_ACTIVE: &str = "ACTIVE";
-
-/// The status a distribution whose configuration has reached the edge locations is in.
-const DEPLOYED: &str = "Deployed";
 
 /// Kinesis's own endpoint, and the `X-Amz-Target` prefix its `awsJson1_1` operations are
 /// named under (that model's `targetPrefix`).
@@ -418,24 +410,6 @@ async fn distribution(
     Distribution { id, domain }
 }
 
-/// Look again until the distribution reports itself `Deployed` — a configuration that has not
-/// reached the edge locations serves no viewer — or a generous deadline passes.
-async fn awaited_deployment(router: &MultiServiceRouter, case: &str, distribution: &Distribution) {
-    let deadline = Instant::now() + READY_DEADLINE;
-    loop {
-        let read = get_distribution(router, &distribution.id).await;
-        if read.root().find_text("Status").unwrap_or_default() == DEPLOYED {
-            return;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "case {case}: the distribution never reached {DEPLOYED}, last answer {}",
-            read.raw
-        );
-        ::tokio::time::sleep(POLL_INTERVAL).await;
-    }
-}
-
 /// What the edge answered one viewer request with.
 struct Viewed {
     status: u16,
@@ -774,7 +748,7 @@ async fn a_served_viewer_request_delivers_one_record_to_the_configured_stream() 
 
     for row in &staged {
         awaited_active(&router, &row.name).await;
-        awaited_deployment(&router, row.case, &row.distribution).await;
+        awaited_deployment(&router, row.case, &row.distribution.id).await;
     }
 
     for (row, staged) in rows.iter().zip(&staged) {
@@ -866,7 +840,7 @@ async fn a_record_reports_how_the_edge_classified_the_answer_it_served() {
     )
     .await;
     awaited_active(&router, "realtime-logs-classified").await;
-    awaited_deployment(&router, "classified", &distribution).await;
+    awaited_deployment(&router, "classified", &distribution.id).await;
     let domain = &distribution.domain;
     let path = format!("/{API_VERSION}/distribution");
     let window = window();
@@ -1038,7 +1012,7 @@ async fn an_endpoint_whose_role_may_not_put_a_record_receives_nothing() {
     for (_case, name, _stream_arn, _owed) in &streams {
         awaited_active(&router, name).await;
     }
-    awaited_deployment(&router, "delivery-roles", &distribution).await;
+    awaited_deployment(&router, "delivery-roles", &distribution.id).await;
     let path = format!("/{API_VERSION}/distribution");
     let answer = view(&router, &distribution.domain, "GET", &path).await;
     assert_eq!(

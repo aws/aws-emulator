@@ -253,6 +253,8 @@ mod origin_request_policy_update;
 mod path_identifier_shape;
 #[path = "all/precondition_family_wording.rs"]
 mod precondition_family_wording;
+#[path = "all/published_address_every_mint.rs"]
+mod published_address_every_mint;
 #[path = "all/published_edge_address.rs"]
 mod published_edge_address;
 #[path = "all/public_key_delete.rs"]

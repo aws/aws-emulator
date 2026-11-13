@@ -34,7 +34,7 @@
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use service_com_amazonaws_cloudfront_cloudfront2020_05_31::state::{
@@ -78,6 +78,41 @@ pub(crate) fn emulator() -> MultiServiceRouter {
 /// the same span rather than carrying its own copy of it.
 pub(crate) fn past_propagation() -> Duration {
     PROPAGATION_DELAY + Duration::from_millis(250)
+}
+
+/// How long a poll loop waits for a resource to reach the state the CLOCK owes it.
+/// Generous: what a suite asserts is that the state arrives, never how fast the host is.
+///
+/// `pub(crate)` and defined ONCE here, beside [`past_propagation`], so every suite that
+/// waits for a state waits under the same policy rather than carrying its own copy of it.
+pub(crate) const READY_DEADLINE: Duration = Duration::from_secs(60);
+
+/// How long a poll loop waits before looking again.
+pub(crate) const POLL_INTERVAL: Duration = Duration::from_millis(50);
+
+/// The status a distribution whose configuration has reached the edge locations is in.
+pub(crate) const DEPLOYED: &str = "Deployed";
+
+/// Look again until the distribution `id` reports itself [`DEPLOYED`] — a configuration
+/// that has not reached the edge locations serves no viewer — or [`READY_DEADLINE`]
+/// passes, which fails the case.
+///
+/// The CONDITION is what is waited for, never a span of the host's clock: the transition
+/// is the one the clock owes the record, and the read is what materialises it.
+pub(crate) async fn awaited_deployment(router: &MultiServiceRouter, case: &str, id: &str) {
+    let deadline = Instant::now() + READY_DEADLINE;
+    loop {
+        let read = get_distribution(router, id).await;
+        if read.root().find_text("Status").unwrap_or_default() == DEPLOYED {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "case {case}: the distribution never reached {DEPLOYED}, last answer {}",
+            read.raw
+        );
+        ::tokio::time::sleep(POLL_INTERVAL).await;
+    }
 }
 
 /// Whether `domain` is an address a client on the machine this emulator runs on can DIAL:
