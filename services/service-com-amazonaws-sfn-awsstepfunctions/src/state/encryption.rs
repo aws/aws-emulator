@@ -1118,4 +1118,3 @@ fn modelled_key_state(key_state: &str) -> Option<String> {
         .contains(&modelled.as_str())
         .then_some(modelled)
 }
-

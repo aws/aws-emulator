@@ -215,6 +215,11 @@ use std::time::{Duration, SystemTime};
 
 use serde_json::{Map, Value};
 
+/// Amazon S3's own wire facts, kept out of [`APIS`] because S3 publishes no optimized
+/// integration: it is reached as a `Map` state's dataset and through the AWS SDK family.
+mod s3;
+use s3::S3_API;
+
 /// How deep a chain of in-process calls may be and still make one.
 ///
 /// Emulator bound, NOT an AWS limit. Every interpretation holds one blocking thread
@@ -371,6 +376,18 @@ pub struct Api {
     /// for an error code no error shape of this service's model declares, which is the
     /// error name a `Task` state then reports ([`Api::exception_of`]).
     pub sdk_exception: &'static str,
+    /// The status this service answers an UNAUTHORIZED call with, where the invoked
+    /// operation models no access-denied error of its own — the refusal the role gate
+    /// stands in for ([`super::task_authorization`]); an operation that MODELS one
+    /// carries that error's own modelled status instead ([`Denied::status`]).
+    ///
+    /// No model declares the shape of that refusal: the authorization decision is taken
+    /// before the operation is reached, so what answers it is the service's own front
+    /// door rather than the operation. It is therefore a fact of the SERVICE, stated per
+    /// entry — [`TARGET_FORBIDDEN_STATUS`] for a service that answers an authorization
+    /// failure as a Forbidden, and [`TARGET_CLIENT_ERROR_STATUS`] for one whose front
+    /// door answers it as a client error.
+    pub access_denied_status: u16,
     /// How its model spells the members of an operation's input
     /// ([`MemberCase`]), which is what decides the spelling the document a `Task`
     /// state built goes on the wire under.
@@ -878,6 +895,19 @@ const FORM_MAPS: &[(&str, &[FormMap])] = &[
     ),
 ];
 
+/// The status a service that answers an authorization failure as a FORBIDDEN carries,
+/// which is what the metadata of such a refusal's message reports (`Status Code: 403`).
+///
+/// Amazon SQS, Amazon SNS, AWS Lambda, Amazon S3 and AWS STS each answer a call the
+/// caller's policies do not allow this way, which is how a refusal of one of their calls
+/// reaches a `Task` state ([`Api::access_denied_status`]). It is the INVOKED service's
+/// status, not this one's, which is why it is named for the target.
+const TARGET_FORBIDDEN_STATUS: u16 = 403;
+
+/// The status an invoked service whose front door answers every client error as a BAD
+/// REQUEST carries for the same refusal (`Status Code: 400`).
+const TARGET_CLIENT_ERROR_STATUS: u16 = 400;
+
 /// The services a `Task` state's integration call is made to, and how a request to
 /// each is bound to HTTP ([`Wire`]) — so the document the state built IS the
 /// operation's input, wherever that protocol puts it.
@@ -911,6 +941,7 @@ pub const APIS: &[Api] = &[
         // `AmazonAthenaException` — the model's service shape `AmazonAthena`.
         sdk_client: "AmazonAthena",
         sdk_exception: "AmazonAthenaException",
+        access_denied_status: TARGET_CLIENT_ERROR_STATUS,
         // `StartQueryExecution`'s input: `QueryString`, `WorkGroup`.
         member_case: MemberCase::Pascal,
         query_compatible: false,
@@ -933,6 +964,7 @@ pub const APIS: &[Api] = &[
         // name (`CryoControllerUserManager`), which the SDK's own names do not carry.
         sdk_client: "AWSBackup",
         sdk_exception: "AWSBackupException",
+        access_denied_status: TARGET_CLIENT_ERROR_STATUS,
         // `StartBackupJob`'s input: `BackupVaultName`, `ResourceArn`, `IamRoleArn`.
         member_case: MemberCase::Pascal,
         query_compatible: false,
@@ -958,6 +990,7 @@ pub const APIS: &[Api] = &[
         // refusal already reports itself to a `Task` state.
         sdk_client: "AmazonDynamoDBv2",
         sdk_exception: "AmazonDynamoDBException",
+        access_denied_status: TARGET_CLIENT_ERROR_STATUS,
         // `PutItem`'s input: `TableName`, `Item`.
         member_case: MemberCase::Pascal,
         query_compatible: false,
@@ -980,6 +1013,7 @@ pub const APIS: &[Api] = &[
         // `AmazonSQSException` — the model's service shape `AmazonSQS`.
         sdk_client: "AmazonSQS",
         sdk_exception: "AmazonSQSException",
+        access_denied_status: TARGET_FORBIDDEN_STATUS,
         // `SendMessage`'s input: `QueueUrl`, `MessageBody`.
         member_case: MemberCase::Pascal,
         // Amazon SQS is the one service here whose model carries
@@ -1013,6 +1047,7 @@ pub const APIS: &[Api] = &[
         // (`AmazonSimpleNotificationService`), which the SDK's own names do not carry.
         sdk_client: "AmazonSNS",
         sdk_exception: "AmazonSNSException",
+        access_denied_status: TARGET_FORBIDDEN_STATUS,
         // `Publish`'s input: `TopicArn`, `Message`, `MessageAttributes`.
         member_case: MemberCase::Pascal,
         // Its model declares the `awsQuery` protocol itself rather than the
@@ -1039,6 +1074,7 @@ pub const APIS: &[Api] = &[
         // `AmazonCloudWatchEventsException`.
         sdk_client: "AmazonCloudWatchEvents",
         sdk_exception: "AmazonCloudWatchEventsException",
+        access_denied_status: TARGET_CLIENT_ERROR_STATUS,
         // `PutEvents`' input: `Entries`, `EndpointId`.
         member_case: MemberCase::Pascal,
         query_compatible: false,
@@ -1065,6 +1101,7 @@ pub const APIS: &[Api] = &[
         // `AWSStepFunctionsException` — the model's service shape `AWSStepFunctions`.
         sdk_client: "AWSStepFunctions",
         sdk_exception: "AWSStepFunctionsException",
+        access_denied_status: TARGET_CLIENT_ERROR_STATUS,
         // `StartExecution`'s input: `stateMachineArn`, `name`, `input`.
         member_case: MemberCase::LowerCamel,
         query_compatible: false,
@@ -1088,6 +1125,7 @@ pub const APIS: &[Api] = &[
         // `AmazonKinesisException`.
         sdk_client: "AmazonKinesis",
         sdk_exception: "AmazonKinesisException",
+        access_denied_status: TARGET_CLIENT_ERROR_STATUS,
         // `PutRecord`'s input: `StreamName`, `Data`, `PartitionKey`.
         member_case: MemberCase::Pascal,
         query_compatible: false,
@@ -1110,6 +1148,7 @@ pub const APIS: &[Api] = &[
         // `AmazonSSMException` — the model's service shape `AmazonSSM`.
         sdk_client: "AmazonSSM",
         sdk_exception: "AmazonSSMException",
+        access_denied_status: TARGET_CLIENT_ERROR_STATUS,
         // `GetParameter`'s input: `Name`, `WithDecryption`.
         member_case: MemberCase::Pascal,
         query_compatible: false,
@@ -1134,6 +1173,7 @@ pub const APIS: &[Api] = &[
         // (`AmazonEC2ContainerServiceV20141113`), which the SDK's own names do not.
         sdk_client: "AmazonECS",
         sdk_exception: "AmazonECSException",
+        access_denied_status: TARGET_CLIENT_ERROR_STATUS,
         // `RunTask`'s input: `cluster`, `taskDefinition`, `overrides`.
         member_case: MemberCase::LowerCamel,
         query_compatible: false,
@@ -1156,6 +1196,7 @@ pub const APIS: &[Api] = &[
         // `AWSGlueException` — the model's service shape `AWSGlue`.
         sdk_client: "AWSGlue",
         sdk_exception: "AWSGlueException",
+        access_denied_status: TARGET_CLIENT_ERROR_STATUS,
         // `StartJobRun`'s input: `JobName`, `Arguments`, `Timeout`.
         member_case: MemberCase::Pascal,
         query_compatible: false,
@@ -1176,6 +1217,7 @@ pub const APIS: &[Api] = &[
         // `AWSLambdaException` — the model's service shape `AWSLambda`.
         sdk_client: "AWSLambda",
         sdk_exception: "AWSLambdaException",
+        access_denied_status: TARGET_FORBIDDEN_STATUS,
         // `Invoke`'s input: `FunctionName`, `Payload`, `InvocationType`.
         member_case: MemberCase::Pascal,
         query_compatible: false,
@@ -1200,174 +1242,13 @@ pub const APIS: &[Api] = &[
         // `AWSSecurityTokenServiceV20110615` without the version it carries.
         sdk_client: "AWSSecurityTokenService",
         sdk_exception: "AWSSecurityTokenServiceException",
+        access_denied_status: TARGET_FORBIDDEN_STATUS,
         // `AssumeRole`'s input: `RoleArn`, `RoleSessionName`, `DurationSeconds`.
         member_case: MemberCase::Pascal,
         // Its model declares the `awsQuery` protocol itself rather than the
         // compatibility modifier, so an error of it is named by its own query code and
         // there is no second name to ask for.
         query_compatible: false,
-    },
-];
-
-/// Amazon S3, for the calls this crate makes to it: the DATASET a `Map` state's
-/// `ItemReader` names ([`super::item_reader`]), the result objects its `ResultWriter`
-/// writes ([`super::result_writer`]), and a `Task` state whose `Resource` names one of
-/// its operations through the AWS SDK integration family.
-///
-/// Deliberately NOT one of [`APIS`], which is where the OPTIMIZED family's services are
-/// looked up: S3 publishes no optimized integration, so `arn:aws:states:::s3:<action>`
-/// names no `Task` state's work — it is how a `Map` state's `ItemReader` and
-/// `ResultWriter` name their dataset. [`read`] reaches these facts for the AWS SDK
-/// family's own token (`aws-sdk:s3:<action>`) and reports an optimized `Resource` as
-/// work nothing was run for, exactly as before.
-///
-/// `services/service-com-amazonaws-s3-amazons3/smithy-model/
-/// com-amazonaws-s3-amazons3.json`: restXml, sigv4Name `s3`, endpointPrefix `s3`,
-/// sdkId `S3`, arnNamespace `s3`.
-static S3_API: Api = Api {
-    namespace: S3_NAMESPACE,
-    action_prefix: None,
-    signing_name: S3_NAMESPACE,
-    endpoint_prefix: S3_NAMESPACE,
-    wire: Wire::Rest(S3_REST),
-    sdk_id: "S3",
-    error_prefix: "S3",
-    // The client class `AmazonS3Client`, whose base exception is `AmazonS3Exception`.
-    sdk_client: "AmazonS3",
-    sdk_exception: "AmazonS3Exception",
-    // `GetObject`'s input: `Bucket`, `Key`; `ListObjectsV2`'s: `Bucket`, `Prefix`.
-    member_case: MemberCase::Pascal,
-    query_compatible: false,
-};
-
-/// S3's ARN namespace, its signing name and its endpoint prefix, which are the same
-/// label.
-const S3_NAMESPACE: &str = "s3";
-
-/// The REST bindings of the S3 operations this crate calls: the ones a dataset read
-/// and a dataset write make, and the ones a `Task` state's AWS SDK integration names
-/// ([`S3_SDK_OPERATIONS`]).
-///
-/// `smithy_query(query="operation",operation="ListObjectsV2,GetObject,PutObject,
-/// HeadBucket,DeleteObject",model_path="services/service-com-amazonaws-s3-amazons3/
-/// smithy-model/com-amazonaws-s3-amazons3.json")`: `ListObjectsV2` is `http` GET
-/// `/{Bucket}?list-type=2` with `Bucket` an `httpLabel` and `Prefix`,
-/// `ContinuationToken` and `MaxKeys` `httpQuery` members, answering an XML document
-/// as the whole body; `GetObject` is GET `/{Bucket}/{Key+}?x-id=GetObject` with
-/// `Bucket` and the GREEDY `Key` as `httpLabel`s, its output binds `Body` as its
-/// `httpPayload` and `ETag`, `ContentType` and `VersionId` to headers whose value is
-/// the text they carry; `PutObject` is PUT `/{Bucket}/{Key+}?x-id=PutObject` over
-/// the same two labels, with `Body` as the request's own `httpPayload` and `ETag` bound
-/// to the answer's `ETag` header; `HeadBucket` is HEAD `/{Bucket}` over the one label,
-/// every member of its output bound to a header; `DeleteObject` is DELETE
-/// `/{Bucket}/{Key+}?x-id=DeleteObject` over the two labels, with `VersionId` an
-/// `httpQuery` member, `MFA`, `BypassGovernanceRetention`, `IfMatch` and the rest
-/// `httpHeader`s, and every member of its output bound to a header.
-const S3_REST: &[Rest] = &[
-    Rest {
-        operation: LIST_OBJECTS_OPERATION,
-        method: "GET",
-        uri: "/{Bucket}?list-type=2",
-        request_body: Body::Empty,
-        headers: &[],
-        query: &[
-            ("Prefix", "prefix"),
-            ("ContinuationToken", "continuation-token"),
-            ("MaxKeys", "max-keys"),
-        ],
-        response_body: Body::Text(DATASET_BODY),
-        response_status: "",
-        response_headers: &[],
-    },
-    Rest {
-        operation: GET_OBJECT_OPERATION,
-        method: "GET",
-        uri: "/{Bucket}/{Key+}?x-id=GetObject",
-        request_body: Body::Empty,
-        headers: &[],
-        query: &[],
-        response_body: Body::Text(DATASET_BODY),
-        response_status: "",
-        // The output members a read's answer carries beside the object's bytes: the
-        // ones whose value IS the text the header holds, so what the result reports is
-        // the answer's own. A member the model types as a number or an instant
-        // (`ContentLength`, `LastModified`) is deliberately absent: its header carries
-        // text, and reporting that text under a member a client reads as a number
-        // would be the wrong type rather than the answer.
-        response_headers: &[
-            ("ETag", "ETag"),
-            ("ContentType", "Content-Type"),
-            ("VersionId", "x-amz-version-id"),
-        ],
-    },
-    Rest {
-        operation: PUT_OBJECT_OPERATION,
-        method: "PUT",
-        uri: "/{Bucket}/{Key+}?x-id=PutObject",
-        // The object's own bytes are the request's body: the operation binds `Body` as
-        // its `httpPayload`, so what the write carries under that member IS the object.
-        request_body: Body::Member(DATASET_BODY),
-        headers: &[],
-        query: &[],
-        // A write answers no document at all — every member of its output is a header —
-        // so the one the caller of a write reads is the entity tag the answer carried.
-        response_body: Body::Empty,
-        response_status: "",
-        response_headers: &[("ETag", "ETag")],
-    },
-    Rest {
-        operation: HEAD_BUCKET_OPERATION,
-        method: "HEAD",
-        uri: "/{Bucket}",
-        // `Bucket` is the path, and `ExpectedBucketOwner` the one other input member,
-        // is a header: a HEAD of a bucket sends no body at all.
-        request_body: Body::Empty,
-        headers: &[("ExpectedBucketOwner", "x-amz-expected-bucket-owner")],
-        query: &[],
-        // A HEAD carries no body: every member of this operation's output is a header,
-        // so the answer's headers ARE its output.
-        response_body: Body::Empty,
-        response_status: "",
-        // The output members whose value IS the text the header holds. The remaining
-        // one, `AccessPointAlias`, the model types as a boolean, and reporting a
-        // header's text under a member a client reads as a flag would be the wrong type
-        // rather than the answer — the same reading `GetObject`'s own numbers and
-        // instants are left out under.
-        response_headers: &[
-            ("BucketArn", "x-amz-bucket-arn"),
-            ("BucketRegion", "x-amz-bucket-region"),
-            ("BucketLocationName", "x-amz-bucket-location-name"),
-            ("BucketLocationType", "x-amz-bucket-location-type"),
-        ],
-    },
-    Rest {
-        operation: DELETE_OBJECT_OPERATION,
-        method: "DELETE",
-        uri: "/{Bucket}/{Key+}?x-id=DeleteObject",
-        // Both labels are in the path and every other input member is a header or a
-        // query parameter, so a delete sends no body.
-        request_body: Body::Empty,
-        headers: &[
-            ("MFA", "x-amz-mfa"),
-            ("RequestPayer", "x-amz-request-payer"),
-            (
-                "BypassGovernanceRetention",
-                "x-amz-bypass-governance-retention",
-            ),
-            ("ExpectedBucketOwner", "x-amz-expected-bucket-owner"),
-            ("IfMatch", "If-Match"),
-        ],
-        query: &[("VersionId", "versionId")],
-        // A delete answers no body either: its output is the headers its answer
-        // carried, exactly as a write's is.
-        response_body: Body::Empty,
-        response_status: "",
-        // `DeleteMarker` is left out for the reason `HeadBucket`'s `AccessPointAlias`
-        // is: the model types it as a boolean.
-        response_headers: &[
-            ("VersionId", "x-amz-version-id"),
-            ("RequestCharged", "x-amz-request-charged"),
-        ],
     },
 ];
 
@@ -1527,6 +1408,12 @@ pub struct Call {
     /// ([`answer_of`]) and no [`TARGET_RESOURCES`] entry names a resource it acts on.
     /// The entry it carries is this service's own, because `http:invoke` is Step
     /// Functions' own integration, served by Step Functions.
+    ///
+    /// The endpoint such a call names comes from a caller's own definition, and it stays
+    /// INSIDE this process: the request is handed to the in-process transport every
+    /// emulated service reaches another by, so nothing is resolved or dialled and an
+    /// endpoint this emulator does not serve is answered by the front door's own refusal
+    /// ([`super::http_task`], "Where the request goes").
     pub endpoint: bool,
 }
 
@@ -3572,6 +3459,18 @@ where
             // name rather than a call on a service's operation, so it is made by the
             // module that owns that reading — over the same transport, under the same
             // ceiling, and reported to the walk through the same seam.
+            //
+            // That transport is what makes the endpoint a caller's parameters name safe
+            // to hand over here: BOTH arms below go to
+            // `EmbeddedEmulator::http_connector`, this emulator's own in-process router,
+            // so no client is built, no name is resolved and no address is dialled — an
+            // `ApiEndpoint` naming anything this emulator does not serve reaches nothing
+            // and is answered by the front door's own refusal
+            // (`super::http_task`, "Where the request goes"). There is therefore no
+            // address for an allowlist to screen and nothing of the host on the request:
+            // neither a header of the request being served nor the emulator's own
+            // credentials travel on it, and the only credential it carries is the
+            // emulated connection's own.
             let made = async {
                 match handover.call.endpoint {
                     true => {

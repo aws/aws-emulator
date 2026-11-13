@@ -243,10 +243,14 @@ mod task_execution_role;
 mod task_integrations;
 #[path = "all/task_lifecycle_under_execution_role.rs"]
 mod task_lifecycle_under_execution_role;
+#[path = "all/task_refusal_access_denied_status.rs"]
+mod task_refusal_access_denied_status;
 #[path = "all/task_refusal_session_principal.rs"]
 mod task_refusal_session_principal;
 #[path = "all/task_role_over_dynamodb.rs"]
 mod task_role_over_dynamodb;
+#[path = "all/task_role_session_principal.rs"]
+mod task_role_session_principal;
 #[path = "all/task_target_authorization.rs"]
 mod task_target_authorization;
 #[path = "all/task_work_event_families.rs"]

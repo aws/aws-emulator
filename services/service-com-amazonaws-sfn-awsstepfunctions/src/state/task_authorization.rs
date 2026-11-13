@@ -90,7 +90,7 @@ use ::std::sync::Arc;
 use ::service_common::iam_authorization::{self as iam, Decision};
 
 use super::integration::{
-    access_request, Call, Denied, Failed, Handovers, MapRuns, RoleGate, TASK_FAILED_ERROR,
+    access_request, Api, Call, Denied, Failed, Handovers, MapRuns, RoleGate, TASK_FAILED_ERROR,
 };
 
 /// The GLOBAL service principal Step Functions assumes a state machine's execution
@@ -249,20 +249,24 @@ pub type IamState =
 /// models no access-denied error of its OWN.
 const ACCESS_DENIED_CODE: &str = "AccessDeniedException";
 
-/// The status that refusal carries.
-const ACCESS_DENIED_STATUS: u16 = 400;
-
 /// The error an operation that MODELS the refusal of an unauthorized call answers it
 /// with ([`Denied`]), or the unmodelled refusal above for an operation that models
 /// none: the code the answer names the class by, and the status it carries.
-fn denied_answer(denied: Option<Denied>) -> (&'static str, u16) {
-    denied.map_or((ACCESS_DENIED_CODE, ACCESS_DENIED_STATUS), |denied| {
-        (denied.code, denied.status)
-    })
+///
+/// The status of an UNMODELLED refusal is the invoked service's own
+/// ([`super::integration::Api::access_denied_status`]): the decision is taken before
+/// the operation is reached, so what answers it is that service's front door, and the
+/// services differ in whether they answer an authorization failure as a Forbidden or as
+/// a client error.
+fn denied_answer(api: &Api, denied: Option<Denied>) -> (&'static str, u16) {
+    denied.map_or(
+        (ACCESS_DENIED_CODE, api.access_denied_status),
+        |denied| (denied.code, denied.status),
+    )
 }
 
-/// What decides whether `role_arn` may make the calls of one walk, or `None` when
-/// there is nothing to decide them against — an engine with no IAM store, or an
+/// What decides whether the role `role_arn` may make the calls of one walk, or `None`
+/// when there is nothing to decide them against — an engine with no IAM store, or an
 /// execution carrying no role at all.
 ///
 /// `region` is the Region the walk's calls are made in — the execution's own — which
@@ -310,7 +314,7 @@ pub fn role_gate<Eng: Send + Sync + 'static>(
         let targets = call.targets?;
         let iam = iam_state(&*engine)?;
         let (action, resource) = access_request(call, request, &region)?;
-        let (code, status) = denied_answer(targets.denied);
+        let (code, status) = denied_answer(call.api, targets.denied);
         if let Some(refused) = refusal(
             &iam.lock(),
             Acts {
@@ -425,43 +429,9 @@ pub fn acting<Eng: Send + Sync + 'static>(
     }
 }
 
-/// Why the role `role_arn` may not perform `action` on `resource`, as the service
-/// named `service` words that refusal, or `None` when nothing of the kind can be shown
-/// (see the module docs for the cases that show nothing).
-///
-/// The ONE evaluation of a role's identity-based documents in this crate, so a `Task`
-/// state's integration call and every other decision taken about what a state
-/// machine's execution role may do read the same documents in the same order. Call it
-/// with no store of this service locked: it takes the IAM store's own.
-pub fn role_denial<Eng: Send + Sync + 'static>(
-    engine: &Eng,
-    role_arn: &str,
-    session_name: &str,
-    action: &str,
-    resource: &str,
-    service: &str,
-) -> Option<String> {
-    if role_arn.is_empty() {
-        return None;
-    }
-    let iam = iam_state(engine)?;
-    let denial = refusal(
-        &iam.lock(),
-        Acts {
-            role_arn,
-            session_name,
-        },
-        action,
-        resource,
-        service,
-        ACCESS_DENIED_CODE,
-        ACCESS_DENIED_STATUS,
-    );
-    denial
-}
-
 /// What the task a run-a-job (`.sync`) pattern is parked at fails with when the
-/// execution role `role_arn` may not make `call` — the call that REPORTS its job — on
+/// execution role `role_arn`, acting under `session_name`, may not make `call` — the
+/// call that REPORTS its job — on
 /// `resource`, the ARN of the resource that job belongs to; `None` when nothing of the
 /// kind can be shown (see the module docs).
 ///
@@ -485,6 +455,11 @@ pub fn job_report_denial<Eng: Send + Sync + 'static>(
         return None;
     }
     let iam = iam_state(engine)?;
+    // The reporting call is an operation of the pattern rather than the `Task` state's
+    // own work, and no [`super::integration::TargetResource`] entry names a modelled
+    // access-denied error for one, so its refusal carries the code and the status an
+    // unmodelled one does ([`denied_answer`]).
+    let (code, status) = denied_answer(call.api, None);
     let cause = refusal(
         &iam.lock(),
         Acts {
@@ -494,12 +469,8 @@ pub fn job_report_denial<Eng: Send + Sync + 'static>(
         &call.action(),
         resource,
         call.api.sdk_client,
-        // The reporting call is an operation of the pattern rather than the `Task`
-        // state's own work, and no [`super::integration::TargetResource`] entry names
-        // a modelled access-denied error for one, so its refusal carries the code and
-        // status an unmodelled one does ([`denied_answer`]).
-        ACCESS_DENIED_CODE,
-        ACCESS_DENIED_STATUS,
+        code,
+        status,
     )?;
     Some(Failed {
         error: TASK_FAILED_ERROR.to_string(),
@@ -525,7 +496,7 @@ pub fn iam_holds_role<Eng: Send + Sync + 'static>(engine: &Eng, role_arn: &str) 
 
 /// Whether the role `role_arn` may not perform EVERY one of `actions` on `resource`.
 ///
-/// The same reading as [`role_denial`], for a decision whose own refusal is not an
+/// The same reading as [`withheld`], for a decision whose own refusal is not an
 /// invoked service's message but a sentence of THIS service's: a capability a state
 /// machine's role needs is often several actions at once, and the role has it only
 /// when its documents allow all of them. `false` wherever nothing can be shown — an

@@ -55,7 +55,11 @@ pub(crate) fn session_principal(role_arn: &str, session_name: &str) -> String {
 }
 
 /// A definition whose one `Task` state makes `resource`'s call with `parameters`.
-fn definition(resource: &str, parameters: &Value) -> String {
+///
+/// `pub(crate)` because every suite that reads a refused `Task` state's cause drives it
+/// through one such state: `tests/all.rs` is one crate root, so the definition is stated
+/// here once.
+pub(crate) fn definition(resource: &str, parameters: &Value) -> String {
     json!({
         "StartAt": "Call",
         "States": {
@@ -102,7 +106,9 @@ async fn role_under(chain: &Chain, name: &str, path: &str, policy: &Value) -> St
 
 /// A document that says nothing about any integration call: the log writes a state machine
 /// makes, which withhold every call by stating nothing about it.
-fn unrelated_policy() -> Value {
+///
+/// `pub(crate)` for the reason [`definition`] is.
+pub(crate) fn unrelated_policy() -> Value {
     json!({
         "Version": "2012-10-17",
         "Statement": [{

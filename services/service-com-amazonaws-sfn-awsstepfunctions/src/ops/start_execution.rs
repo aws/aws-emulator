@@ -521,7 +521,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // that role ([`crate::state::task_authorization`]) — which this service has to
         // ASSUME before it makes any of them, so a role it cannot assume (resolved
         // above, before anything was sealed under the key) fails the first `Task` of the
-        // execution instead of its work being done as nobody.
+        // execution instead of its work being done as nobody. The identity those calls
+        // are made under is a SESSION of that role, named after the state machine whose
+        // work they are ([`crate::state::task_authorization::assumed_role_session`]).
         let acting = crate::state::task_authorization::acting(
             &self.engine,
             &region,

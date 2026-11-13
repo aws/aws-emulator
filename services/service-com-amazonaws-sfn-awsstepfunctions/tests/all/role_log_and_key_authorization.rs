@@ -102,7 +102,11 @@ fn event_writing_policy() -> Value {
 
 /// A policy that grants something of ANOTHER service and nothing of CloudWatch Logs,
 /// which is the least-privilege role a client's negative path uses.
-fn unrelated_policy() -> Value {
+///
+/// `pub(crate)` for the reason [`data_key_policy`] is: a sibling suite needing a role whose
+/// documents say nothing about the work under test reads this document rather than carrying
+/// a second copy of it.
+pub(crate) fn unrelated_policy() -> Value {
     json!({
         "Version": "2012-10-17",
         "Statement": [{
@@ -382,7 +386,9 @@ async fn an_update_that_turns_logging_on_needs_the_same_permission() {
 
 /// A statement granting one named principal the two calls sealing an execution's data
 /// makes.
-fn key_statement_for(principal: &str, effect: &str) -> Value {
+///
+/// `pub(crate)` for the reason [`data_key_policy`] is.
+pub(crate) fn key_statement_for(principal: &str, effect: &str) -> Value {
     json!({
         "Sid": "StatesRole",
         "Effect": effect,
@@ -394,7 +400,9 @@ fn key_statement_for(principal: &str, effect: &str) -> Value {
 
 /// A key policy naming the account root, which DELEGATES the decision to that account's
 /// own identity-based policies, beside `statements`.
-fn key_policy_with(statements: Vec<Value>) -> Value {
+///
+/// `pub(crate)` for the reason [`data_key_policy`] is.
+pub(crate) fn key_policy_with(statements: Vec<Value>) -> Value {
     let mut all = granting_policy()
         .get("Statement")
         .and_then(Value::as_array)
