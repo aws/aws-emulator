@@ -13,9 +13,10 @@
 //!
 //! 1. A quote exists only for a Capacity Reservation whose COMMITMENT is still in force: a
 //!    reservation that committed to nothing, and one whose commitment the clock has passed,
-//!    are refused with `IncorrectState`, an id the account holds no reservation for with
-//!    `InvalidCapacityReservationId.NotFound`, and a value outside the id form with
-//!    `InvalidCapacityReservationId.Malformed`.
+//!    are both refused `InvalidParameterValue` with the one fixed sentence AWS words that
+//!    precondition as, a value of the Capacity Reservation id SHAPE the account holds no
+//!    reservation under with `InvalidCapacityReservationId.NotFound`, and a value outside
+//!    that shape with `InvalidCapacityReservationId.Malformed`.
 //! 2. A generated quote is COMPUTED from that reservation's stored commitment and capacity:
 //!    the capacity it reserves and the state it is in as its current configuration, and, as
 //!    its terms, the one cancellation charge the model carries, the state the reservation
@@ -86,6 +87,18 @@ const UNKNOWN_CAPACITY_RESERVATION_ID: &str = "cr-0ffffffffffffffff";
 /// A WELL-FORMED cancellation quote id the account holds no quote for, in the form this
 /// service issues ([`CAPACITY_RESERVATION_CANCELLATION_QUOTE_ID_PREFIX`]).
 const UNKNOWN_QUOTE_ID: &str = "crcq-0ffffffffffffffff";
+
+/// The code AWS answers a cancellation-quote request for a Capacity Reservation with no
+/// commitment terms in force with: the parameter-value class, because the value of
+/// `CapacityReservationId` names a reservation there is no quote to generate for.
+const NO_COMMITMENT_TERMS_CODE: &str = "InvalidParameterValue";
+
+/// The whole sentence that refusal carries. FIXED: it interpolates nothing — not the id the
+/// request named and not the state the reservation is in — so every row of the table below
+/// is answered the same text.
+const NO_COMMITMENT_TERMS_MESSAGE: &str =
+    "The Capacity Reservation contains no commitment terms. Quote is not needed for \
+     cancellation.";
 
 /// Long enough past a clock-owed move's due instant that it has fallen due, with the margin
 /// every other suite of this crate gives one.
@@ -419,19 +432,52 @@ fn seed_reservation(engine: &engine::InMemoryEngine, spec: CapacityReservationSp
         .expect("the store accepts a seeded Capacity Reservation")
 }
 
-/// A reservation whose commitment ended `ago` before now, in the `active` state it is in
-/// after delivery.
-fn elapsed_commitment_spec(ago: Duration) -> CapacityReservationSpec {
+/// The reservations created for IMMEDIATE use that commit to nothing, as
+/// `(case, instance type, instance count, end date)`. The rows differ along what the rule
+/// generalises over: how much capacity is reserved, which instance family reserves it, and
+/// whether the reservation carries an end date ("limited") or none at all ("unlimited",
+/// `CreateCapacityReservationRequest$EndDateType`).
+fn immediate_use_cases() -> Vec<(&'static str, &'static str, i32, Option<SystemTime>)> {
+    let in_two_days = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+        + 2 * 24 * 60 * 60;
+    vec![
+        ("one instance for immediate use", "c5.xlarge", 1, None),
+        ("twenty-five instances for immediate use", "m5.large", 25, None),
+        (
+            "the largest capacity a request may reserve",
+            "t3.micro",
+            1000,
+            None,
+        ),
+        (
+            "capacity for immediate use with an end date",
+            "g4dn.xlarge",
+            2,
+            Some(UNIX_EPOCH + Duration::from_secs(in_two_days)),
+        ),
+    ]
+}
+
+/// A reservation of `instance_count` instances of `instance_type` whose commitment ended
+/// `ago` before now, in the `active` state it is in after delivery.
+fn elapsed_commitment_spec(
+    ago: Duration,
+    instance_type: &str,
+    instance_count: i32,
+) -> CapacityReservationSpec {
     let now = SystemTime::now();
     let ended = now.checked_sub(ago).expect("a representable past instant");
     CapacityReservationSpec {
-        instance_type: "c5.xlarge".to_string(),
+        instance_type: instance_type.to_string(),
         instance_platform: INSTANCE_PLATFORM.to_string(),
         availability_zone: AVAILABILITY_ZONE.to_string(),
         availability_zone_id: "use1-az1".to_string(),
         region: REGION.to_string(),
         tenancy: "default".to_string(),
-        instance_count: 4,
+        instance_count,
         ebs_optimized: false,
         ephemeral_storage: false,
         end_date: None,
@@ -652,52 +698,76 @@ async fn a_quote_is_computed_from_the_reservations_commitment() {
 /// A reservation that committed to nothing, one whose commitment has elapsed, and an id no
 /// reservation of the account answers to are each refused, and nothing is stored for any of
 /// them.
+///
+/// The two reservations with NO commitment terms in force are refused in the PARAMETER-VALUE
+/// class, with the one fixed sentence AWS words that precondition as — nothing of the request
+/// or of the store interpolated into it ([`NO_COMMITMENT_TERMS_CODE`],
+/// [`NO_COMMITMENT_TERMS_MESSAGE`]).
 #[tokio::test]
 async fn only_a_reservation_under_a_live_commitment_can_be_quoted() {
     let (router, engine) = super::ec2_query::emulator();
     // Reservations created for IMMEDIATE use: they commit to nothing, so cancelling them
-    // costs nothing to quote. The rows differ in how much capacity they hold.
-    let mut incorrect_state: Vec<(String, String)> = Vec::new();
-    for instance_count in [1, 25] {
-        let (status, body) = super::ec2_query::call(
-            &router,
-            REGION,
-            "CreateCapacityReservation",
-            &[
-                ("InstanceType".to_string(), "c5.xlarge".to_string()),
-                ("InstancePlatform".to_string(), INSTANCE_PLATFORM.to_string()),
-                ("InstanceCount".to_string(), instance_count.to_string()),
-                (
-                    "AvailabilityZone".to_string(),
-                    AVAILABILITY_ZONE.to_string(),
-                ),
-            ],
-        )
-        .await;
+    // costs nothing to quote. The rows differ in how much capacity they hold, which instance
+    // family holds it, and whether the reservation carries an end date at all.
+    let mut needs_no_quote: Vec<(String, String)> = Vec::new();
+    for (case, instance_type, instance_count, end_date) in immediate_use_cases() {
+        let mut params = vec![
+            ("InstanceType".to_string(), instance_type.to_string()),
+            ("InstancePlatform".to_string(), INSTANCE_PLATFORM.to_string()),
+            ("InstanceCount".to_string(), instance_count.to_string()),
+            (
+                "AvailabilityZone".to_string(),
+                AVAILABILITY_ZONE.to_string(),
+            ),
+        ];
+        if let Some(end_date) = end_date {
+            params.push(("EndDateType".to_string(), "limited".to_string()));
+            params.push(("EndDate".to_string(), iso8601_utc(end_date)));
+        }
+        let (status, body) =
+            super::ec2_query::call(&router, REGION, "CreateCapacityReservation", &params).await;
         assert_eq!(
             status, 200,
-            "creating a reservation of {instance_count} for immediate use: expected HTTP \
-             200, got {status} with body {body}"
+            "case {case:?}: expected the reservation to be created with HTTP 200, got \
+             {status} with body {body}"
         );
         let id = element(&body, "capacityReservationId")
-            .unwrap_or_else(|| panic!("expected a reservation id in {body}"));
-        incorrect_state.push((format!("{instance_count} instances for immediate use"), id));
+            .unwrap_or_else(|| panic!("case {case:?}: expected a reservation id in {body}"));
+        needs_no_quote.push((case.to_string(), id));
     }
 
-    // Commitments the clock has already passed. Seeded, because a commitment that has
-    // elapsed cannot be created over the wire; the rows differ in how long ago it ended.
-    for (case, ago) in [
-        ("a commitment that ended a second ago", Duration::from_secs(1)),
+    // Commitments the clock has already passed: past the commitment duration a cancellation
+    // costs nothing either, so a quote is not needed for one of these either. Seeded, because
+    // a commitment that has elapsed cannot be created over the wire; the rows differ in how
+    // long ago it ended, how much capacity it holds and which family holds it.
+    for (case, ago, instance_type, instance_count) in [
+        (
+            "a commitment that ended a second ago",
+            Duration::from_secs(1),
+            "c5.xlarge",
+            4,
+        ),
+        (
+            "a commitment that ended an hour ago",
+            Duration::from_secs(60 * 60),
+            "t3.micro",
+            1,
+        ),
         (
             "a commitment that ended a month ago",
             Duration::from_secs(30 * 24 * 60 * 60),
+            "r5.large",
+            64,
         ),
     ] {
-        let id = seed_reservation(&engine, elapsed_commitment_spec(ago));
-        incorrect_state.push((case.to_string(), id));
+        let id = seed_reservation(
+            &engine,
+            elapsed_commitment_spec(ago, instance_type, instance_count),
+        );
+        needs_no_quote.push((case.to_string(), id));
     }
 
-    for (case, reservation_id) in &incorrect_state {
+    for (case, reservation_id) in &needs_no_quote {
         let (status, body) = generate(&router, &quote_params(reservation_id)).await;
         assert_eq!(
             status, 400,
@@ -705,25 +775,42 @@ async fn only_a_reservation_under_a_live_commitment_can_be_quoted() {
         );
         assert_eq!(
             error_code(&body),
-            "IncorrectState",
-            "case {case:?}: expected IncorrectState, got {body}"
+            NO_COMMITMENT_TERMS_CODE,
+            "case {case:?}: expected {NO_COMMITMENT_TERMS_CODE}, got {body}"
         );
         let message = error_message(&body);
+        assert_eq!(
+            message, NO_COMMITMENT_TERMS_MESSAGE,
+            "case {case:?}: expected {NO_COMMITMENT_TERMS_MESSAGE:?}, got {message:?}"
+        );
+        // The sentence is FIXED: it interpolates neither the id the request named nor the
+        // state the reservation is in, both of which the caller reads elsewhere.
         assert!(
-            message.contains(reservation_id),
-            "case {case:?}: expected the message to name the reservation, got {message:?}"
+            !message.contains(reservation_id),
+            "case {case:?}: expected the message to interpolate no reservation id, got \
+             {message:?}"
         );
     }
 
-    // An id no reservation answers to: a well-formed one is not found, and a value outside
-    // the id form is malformed before any lookup. The rows differ in the FORM of the id.
-    let known = seed_reservation(&engine, elapsed_commitment_spec(Duration::from_secs(1)));
-    let cases: [(&str, &str); 6] = [
+    // An id no reservation answers to: a value of the Capacity Reservation id SHAPE the
+    // account holds no reservation under is not found — the all-zero placeholder, the short
+    // form and a long form whose leading digit is not zero included — and only a value
+    // outside that shape is malformed, before any lookup. The rows differ in the FORM of the
+    // id: its prefix, how many digits it carries, which digits, and their case.
+    let known = seed_reservation(
+        &engine,
+        elapsed_commitment_spec(Duration::from_secs(1), "m5.large", 2),
+    );
+    let cases: [(&str, &str); 10] = [
         (UNKNOWN_CAPACITY_RESERVATION_ID, "NotFound"),
-        ("cr-00000000000000000", "Malformed"),
-        ("cr-12345678", "Malformed"),
-        ("cr-1234567890abcdef0", "Malformed"),
+        ("cr-00000000000000000", "NotFound"),
+        ("cr-12345678", "NotFound"),
+        ("cr-00000000", "NotFound"),
+        ("cr-1234567890abcdef0", "NotFound"),
         ("crcq-00000000000000001", "Malformed"),
+        ("cr-0123456", "Malformed"),
+        ("cr-0fffffffffffffffg", "Malformed"),
+        ("CR-0FFFFFFFFFFFFFFFF", "Malformed"),
         ("not-an-id", "Malformed"),
     ];
     for (case, half) in cases {

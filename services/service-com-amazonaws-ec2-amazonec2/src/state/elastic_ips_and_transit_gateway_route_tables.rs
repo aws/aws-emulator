@@ -493,21 +493,23 @@ pub fn require_well_formed_capacity_reservation_id<E>(
     ))
 }
 
-/// The record of the Capacity Reservation a Capacity Block EXTENSION operation names, or
-/// the refusal for an id that operation cannot resolve.
+/// The record of the Capacity Reservation a request names IN THE REGION it was signed for,
+/// read by the SHAPE every EC2 resource id takes, or the refusal for an id it cannot resolve.
 ///
 /// Reads the id by SHAPE, through [`require_capacity_reservation_by_id_shape`], rather than
 /// by the stricter issued-id reading [`require_known_capacity_reservation`] applies, so a
 /// value of that shape the account holds no reservation under — the all-zero placeholder
-/// included — is reported NOT FOUND rather than malformed: a recorded
-/// `DescribeCapacityBlockExtensionOfferings` naming the all-zero `cr-` id is answered
-/// [`INVALID_CAPACITY_RESERVATION_ID_NOT_FOUND`].
+/// included — is reported NOT FOUND rather than malformed. That is the reading of the
+/// operations recorded answering it: a `DescribeCapacityBlockExtensionOfferings` and a
+/// `CreateCapacityReservationCancellationQuote` naming the all-zero `cr-` id are each
+/// answered [`INVALID_CAPACITY_RESERVATION_ID_NOT_FOUND`], so they share this reader rather
+/// than each resolving its id its own way.
 ///
-/// Region-scoped like [`require_capacity_reservation_in_region`], and for the same reason:
-/// a Capacity Block extension is offered "in the Amazon Web Services Region that you're
-/// currently using" (`DescribeCapacityBlockExtensionOfferings`), so a reservation of
-/// another Region is not one such a request can name.
-pub fn require_extendable_capacity_reservation<'store, E>(
+/// Region-scoped like [`require_capacity_reservation_in_region`], and for the same reason: a
+/// reservation reserves capacity in ONE Availability Zone, so one of another Region is not a
+/// reservation a request signed for this Region can name, and is reported not found rather
+/// than resolved across Regions.
+pub fn require_capacity_reservation_in_region_by_id_shape<'store, E>(
     store: &'store ComAmazonawsEc2Amazonec2State,
     zones: &[AvailabilityZoneRecord],
     capacity_reservation_id: &str,
@@ -901,6 +903,28 @@ pub fn invalid_capacity_reservation_cancellation_quote_id_not_found<E>(
         format!(
             "The capacity-reservation-cancellation-quote ID '{quote_id}' does not exist"
         ),
+    )
+}
+
+/// Refuse a cancellation quote for a Capacity Reservation that has NO commitment terms in
+/// force: HTTP 400 `InvalidParameterValue`.
+///
+/// "Generates a cancellation quote for a future-dated Capacity Reservation that is within its
+/// commitment duration" (`CreateCapacityReservationCancellationQuote`), and a cancellation
+/// costs nothing to quote when the reservation "is outside the commitment duration or the
+/// commitment duration has elapsed" (`CancelCapacityReservation`). So a reservation that
+/// committed to nothing and one whose commitment the clock has passed are the ONE
+/// precondition — no commitment terms are in force — and both are refused here, in the
+/// parameter-value class, rather than as a state the reservation is in.
+///
+/// AWS words this refusal as one FIXED sentence that interpolates nothing: the id the request
+/// named is the value the caller already sent, and the state the reservation is in is read
+/// back through a describe. Hence a constructor with no parameters, and the ONE place this
+/// crate words it.
+pub fn capacity_reservation_needs_no_cancellation_quote<E>() -> crate::scaffolded::Scaffolded<E> {
+    crate::scaffolded::Scaffolded::invalid_parameter_value(
+        "The Capacity Reservation contains no commitment terms. Quote is not needed for \
+         cancellation.",
     )
 }
 

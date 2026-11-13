@@ -145,7 +145,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         use crate::scaffolded::Scaffolded;
         use crate::state::{
             availability_zones_in_region, invalid_pagination_token_for, request_region,
-            require_extendable_capacity_reservation, require_service_state,
+            require_capacity_reservation_in_region_by_id_shape, require_service_state,
         };
 
         // "available for purchase in the Amazon Web Services Region that you're currently
@@ -192,7 +192,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // id that names no reservation of the account in this Region is an error, not an
         // empty report.
         let reservation =
-            require_extendable_capacity_reservation(&store, &zones, &input.capacity_reservation_id)?
+            require_capacity_reservation_in_region_by_id_shape(&store, &zones, &input.capacity_reservation_id)?
                 .view_at(now);
 
         // DryRun sits AFTER every parameter has been validated and the reservation resolved:

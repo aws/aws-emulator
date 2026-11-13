@@ -177,11 +177,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // "The ID of the Capacity Block extension offering to purchase" and "the ID of the
         // Capacity reservation to be extended": the RESERVATION is what the purchase extends,
         // so an id that names no reservation of the account in this Region has nothing to
-        // extend — resolved through the one reader this family resolves an extendable
-        // reservation with, which answers the reservation's own `NotFound` code for a
-        // well-formed id the store holds nothing under and `.Malformed` for a value outside
-        // the id shape.
-        state::require_extendable_capacity_reservation(
+        // extend — resolved through the one Region-scoped shape reader the operations with
+        // that recorded contract share, which answers the reservation's own `NotFound` code
+        // for an id of the right shape the store holds nothing under and `.Malformed` for a
+        // value outside the id shape.
+        state::require_capacity_reservation_in_region_by_id_shape(
             &store,
             &zones,
             &input.capacity_reservation_id,

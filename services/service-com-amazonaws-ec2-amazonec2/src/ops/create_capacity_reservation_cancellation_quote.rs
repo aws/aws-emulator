@@ -224,37 +224,38 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         }
 
         // "The ID of the Capacity Reservation" — an id the account holds no reservation for in
-        // the Region the request was signed for is an error, not a quote of nothing. Resolved
-        // Region-first, so a reservation of another Region is reported not found rather than
-        // quoted across Regions, and then read for the terms below.
+        // the Region the request was signed for is an error, not a quote of nothing. Read by
+        // the id SHAPE rather than by the stricter issued-id form, because that is the
+        // recorded contract of THIS operation: a `cr-` id of the right shape the account holds
+        // no reservation under — the all-zero placeholder included — is answered
+        // `InvalidCapacityReservationId.NotFound`, and only a value outside the shape is
+        // malformed. Region-scoped, so a reservation of another Region is reported not found
+        // rather than quoted across Regions, and the record is then read for the terms below.
         let zones = state::availability_zones_in_region(&region);
-        state::require_capacity_reservation_in_region(
+        let reservation = state::require_capacity_reservation_in_region_by_id_shape(
             &store,
             &zones,
             &input.capacity_reservation_id,
         )?;
-        let reservation =
-            state::require_known_capacity_reservation(&store, &input.capacity_reservation_id)?;
         let reservation_id = input.capacity_reservation_id.clone();
         let reservation_state = reservation.state_at(now).to_string();
 
         // "Generates a cancellation quote for a future-dated Capacity Reservation that is
         // within its commitment duration" (`CreateCapacityReservationCancellationQuote`): a
         // commitment is what a FUTURE-DATED reservation makes
-        // (`CapacityReservation$CommitmentInfo`), and it is a reservation cancellable only
-        // "during the commitment duration" that "requires a cancellation quote"
+        // (`CapacityReservation$CommitmentInfo`), and it is a reservation cancelled "during
+        // the commitment duration" that "requires a cancellation quote"
         // (`CancelCapacityReservation`). A reservation that committed to nothing is cancelled
-        // with no charge to quote, so there is no quote to generate for it.
+        // with no charge to quote, so there is no quote to generate for it — the refusal every
+        // reservation with no commitment terms in force shares
+        // ([`state::capacity_reservation_needs_no_cancellation_quote`]).
         let Some(commitment) = reservation.view.commitment_info.clone() else {
-            return Err(state::incorrect_state(format!(
-                "The Capacity Reservation '{reservation_id}' is in state \
-                 '{reservation_state}' with no commitment duration, so cancelling it needs \
-                 no cancellation quote"
-            )));
+            return Err(state::capacity_reservation_needs_no_cancellation_quote());
         };
         // The end of the commitment is the end of the window a quote can be generated in, and
         // of the charge below: past it "the commitment duration has elapsed" and the
-        // reservation is cancelled with no charge (`CancelCapacityReservation`).
+        // reservation is cancelled with no charge (`CancelCapacityReservation`) — the same
+        // precondition as a reservation that committed to nothing, so the same refusal.
         let Some(commitment_end_date) = commitment
             .commitment_end_date
             .and_then(|end_date| ::std::time::SystemTime::try_from(end_date).ok())
@@ -265,11 +266,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             )));
         };
         let Ok(remaining) = commitment_end_date.duration_since(now) else {
-            return Err(state::incorrect_state(format!(
-                "The commitment duration of the Capacity Reservation '{reservation_id}' \
-                 elapsed at {}, so cancelling it needs no cancellation quote",
-                state::iso8601_utc(commitment_end_date)
-            )));
+            return Err(state::capacity_reservation_needs_no_cancellation_quote());
         };
 
         // What the quote quotes, read out of the reservation rather than from the request.
