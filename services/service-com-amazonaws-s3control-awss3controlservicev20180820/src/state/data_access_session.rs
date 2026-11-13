@@ -172,6 +172,12 @@ pub fn vend<Eng: Send + Sync + 'static>(
             policies: sts_store::SessionPolicies {
                 inline: Some(session_policy(&plan.scope, &plan.permission)),
                 managed_arns: Vec::new(),
+                // The credential stands for the ROLE the location is registered with, so it
+                // keeps that role's permissions and the inline cap above narrows them: an
+                // empty scope would withhold nothing rather than grant nothing, which is
+                // what this flag distinguishes
+                // ([`sts_store::SessionPolicies::none_means_no_permissions`]).
+                none_means_no_permissions: false,
             },
             role_arn: Some(plan.role_arn.clone()),
             ..sts_store::NewSession::new(

@@ -56,12 +56,13 @@ pub(crate) async fn call_json_rpc(
         ("content-type", content_type.to_string()),
         ("x-amz-target", target.to_string()),
     ];
-    let (status, payload) = dispatch(ctx, signing_name, region, "POST", "/", headers, body)
-        .await
-        .map_err(|message| Refusal {
-            code: "InternalFailure".to_string(),
-            message,
-        })?;
+    let (status, _answered, payload) =
+        dispatch(ctx, signing_name, region, "POST", "/", headers, body, &[])
+            .await
+            .map_err(|message| Refusal {
+                code: "InternalFailure".to_string(),
+                message,
+            })?;
     let document: Value = serde_json::from_slice(&payload).unwrap_or(Value::Null);
     if (200..300).contains(&status) {
         return Ok(document);
@@ -126,13 +127,21 @@ pub(crate) async fn call_query_carrying(
     }
     let mut headers = vec![("content-type", FORM_URLENCODED.to_string())];
     headers.extend(carried);
-    let (status, payload) =
-        dispatch(ctx, signing_name, region, "POST", "/", headers, body.into_bytes())
-        .await
-        .map_err(|message| Refusal {
-            code: "InternalFailure".to_string(),
-            message,
-        })?;
+    let (status, _answered, payload) = dispatch(
+        ctx,
+        signing_name,
+        region,
+        "POST",
+        "/",
+        headers,
+        body.into_bytes(),
+        &[],
+    )
+    .await
+    .map_err(|message| Refusal {
+        code: "InternalFailure".to_string(),
+        message,
+    })?;
     let document = String::from_utf8_lossy(&payload).into_owned();
     if (200..300).contains(&status) {
         return Ok(document);
@@ -228,12 +237,13 @@ async fn rest_json(
         None => Vec::new(),
     };
     let headers = vec![("content-type", REST_JSON.to_string())];
-    let (status, answer) = dispatch(ctx, signing_name, region, method, uri, headers, payload)
-        .await
-        .map_err(|message| Refusal {
-            code: "InternalFailure".to_string(),
-            message,
-        })?;
+    let (status, _answered, answer) =
+        dispatch(ctx, signing_name, region, method, uri, headers, payload, &[])
+            .await
+            .map_err(|message| Refusal {
+                code: "InternalFailure".to_string(),
+                message,
+            })?;
     let document: Value = serde_json::from_slice(&answer).unwrap_or(Value::Null);
     if (200..300).contains(&status) {
         return Ok(document);
@@ -259,12 +269,13 @@ pub(crate) async fn call_rest_payload(
     payload: Vec<u8>,
 ) -> Result<Value, Refusal> {
     let headers = vec![("content-type", media_type.to_string())];
-    let (status, answer) = dispatch(ctx, signing_name, region, method, uri, headers, payload)
-        .await
-        .map_err(|message| Refusal {
-            code: "InternalFailure".to_string(),
-            message,
-        })?;
+    let (status, _answered, answer) =
+        dispatch(ctx, signing_name, region, method, uri, headers, payload, &[])
+            .await
+            .map_err(|message| Refusal {
+                code: "InternalFailure".to_string(),
+                message,
+            })?;
     let document: Value = serde_json::from_slice(&answer).unwrap_or(Value::Null);
     if (200..300).contains(&status) {
         return Ok(document);
@@ -273,8 +284,9 @@ pub(crate) async fn call_rest_payload(
 }
 
 /// Call one REST-XML operation of another emulated service in-process and read the XML
-/// document it answers with. `Err(refusal)` is that service's own refusal: the error CODE
-/// it carries, and the message it worded.
+/// document it answers with, with the response HEADERS the caller names beside it.
+/// `Err(refusal)` is that service's own refusal: the error CODE it carries, and the message
+/// it worded.
 ///
 /// A `restXml` service (Amazon Route 53) binds each operation to a method and a URI like a
 /// REST-JSON one, and takes an XML document rather than a JSON one — so the caller passes
@@ -282,8 +294,17 @@ pub(crate) async fn call_rest_payload(
 /// back is the answer's text, read with [`xml_element`] and [`xml_scalar_children`].
 /// `body` is `None` for an operation whose input is entirely in the URI.
 ///
+/// `sent` are the request headers to add beside the ones the wire needs, and `answered` the
+/// response headers to report back: a `restXml` service can report a resource's VERSION in a
+/// header rather than in the answer's body — CloudFront answers every read of a distribution
+/// with an `ETag`, and the update and the delete of one take that version back as their
+/// `If-Match` — so a provider that changes or removes such a resource reads that header here
+/// and sends it on the next call. A header the answer does not carry is simply absent from
+/// the map.
+///
 /// A 501 is a refusal like any other, exactly as it is for [`call_json_rpc`]: the
 /// difference between the two is only the wire the called service publishes.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn call_rest_xml(
     ctx: &smithy_server_runtime::OperationContext<'_>,
     signing_name: &str,
@@ -291,18 +312,30 @@ pub(crate) async fn call_rest_xml(
     method: &'static str,
     uri: &str,
     body: Option<&str>,
-) -> Result<String, Refusal> {
+    sent: &[(&'static str, String)],
+    answered: &[&str],
+) -> Result<(String, BTreeMap<String, String>), Refusal> {
     let payload = body.map(str::as_bytes).unwrap_or_default().to_vec();
-    let headers = vec![("content-type", REST_XML.to_string())];
-    let (status, answer) = dispatch(ctx, signing_name, region, method, uri, headers, payload)
-        .await
-        .map_err(|message| Refusal {
-            code: "InternalFailure".to_string(),
-            message,
-        })?;
+    let mut request_headers = vec![("content-type", REST_XML.to_string())];
+    request_headers.extend(sent.iter().cloned());
+    let (status, reported, answer) = dispatch(
+        ctx,
+        signing_name,
+        region,
+        method,
+        uri,
+        request_headers,
+        payload,
+        answered,
+    )
+    .await
+    .map_err(|message| Refusal {
+        code: "InternalFailure".to_string(),
+        message,
+    })?;
     let document = String::from_utf8_lossy(&answer).into_owned();
     if (200..300).contains(&status) {
-        return Ok(document);
+        return Ok((document, reported));
     }
     // A restXml error answer is `<ErrorResponse><Error><Type/><Code/><Message/></Error>…`,
     // and the code is the one the model's error shape carries (`NoSuchHostedZone`), which is
@@ -839,6 +872,15 @@ pub(super) fn refusal_of_call(
 /// stack is a fixed size. A task starts from the top of a worker's stack, so one call costs
 /// one level however deeply a template nests. The answer is awaited right here, so the call is
 /// still synchronous to the walk that made it.
+///
+/// `answered` names the response HEADERS to report back beside the status and the body. Most
+/// answers say everything they say in their body; a `restXml` service reports a resource's
+/// VERSION in a header instead — CloudFront's `ETag`, which its own update and delete take
+/// back as an `If-Match` — so a caller that has to address the resource again names the
+/// headers it needs and they are read off the answer here, where the response still exists.
+/// One entry per named header the answer actually had, keyed by the name as the caller
+/// spelled it.
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn dispatch(
     ctx: &smithy_server_runtime::OperationContext<'_>,
     signing_name: &str,
@@ -847,7 +889,8 @@ pub(super) async fn dispatch(
     uri: &str,
     headers: Vec<(&'static str, String)>,
     body: Vec<u8>,
-) -> Result<(u16, Vec<u8>), String> {
+    answered: &[&str],
+) -> Result<(u16, BTreeMap<String, String>, Vec<u8>), String> {
     let host = format!("{signing_name}.{region}.amazonaws.com");
     let mut request = ::http::Request::builder()
         .method(method)
@@ -895,12 +938,21 @@ pub(super) async fn dispatch(
         .map_err(|error| error.to_string())?
         .map_err(|error| error.to_string())?;
     let status = response.status().as_u16();
+    let reported = answered
+        .iter()
+        .filter_map(|name| {
+            response
+                .headers()
+                .get(*name)
+                .map(|value| ((*name).to_string(), value.to_string()))
+        })
+        .collect();
     let payload = response
         .body()
         .bytes()
         .ok_or("the in-process answer carried a streaming body")?
         .to_vec();
-    Ok((status, payload))
+    Ok((status, reported, payload))
 }
 
 /// One in-process call's task, held so that dropping this guard ABORTS it.

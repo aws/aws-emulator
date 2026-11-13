@@ -475,25 +475,52 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 crate::state::CreateRefusal::InvalidLambdaFunctionAssociation(message),
             ));
         }
+        // Standard logging is delivered into the bucket the configuration names, as the
+        // log-delivery account — so whether that bucket can receive a log at all is decided
+        // BEFORE anything is created, and the grant that makes the delivery possible is
+        // applied once the distribution is stored
+        // (`crate::state::standard_logging`). The read is made before the listener below, so
+        // a configuration this emulator will refuse opens no socket either.
+        //
+        // BOXED, both of them: each reaches Amazon S3 over the in-process callback, and the
+        // future of such a call is large — holding it inline would enlarge this operation's
+        // own future, which the router keeps on the stack of every request it serves,
+        // including the ones another service's handler makes in process.
+        let access_logs = Box::pin(crate::state::resolve_access_logs_target(
+            ctx,
+            &input.distribution_config,
+        ))
+        .await;
+        if let Some(message) = access_logs.refusal() {
+            return Err(create_refusal(crate::state::CreateRefusal::InvalidArgument(
+                message,
+            )));
+        }
         let edge_endpoint = if crate::state::is_multi_tenant(&input.distribution_config) {
             None
         } else {
             crate::state::open_edge_endpoint(&*self.engine, ctx.callback().clone()).await
         };
-        let mut store = state.lock();
-        store.settle(now);
+        let created = {
+            let mut store = state.lock();
+            store.settle(now);
 
-        // This operation's request carries no tag set, so the distribution it creates
-        // starts with no tags; everything else is the shared create path, which
-        // `CreateDistributionWithTags` runs too — including the caller-reference rule.
-        let created = store
-            .create_distribution(
-                input.distribution_config,
-                crate::state::TagSet::new(),
-                now,
-                edge_endpoint,
-            )
-            .map_err(create_refusal)?;
+            // This operation's request carries no tag set, so the distribution it creates
+            // starts with no tags; everything else is the shared create path, which
+            // `CreateDistributionWithTags` runs too — including the caller-reference rule.
+            store
+                .create_distribution(
+                    input.distribution_config,
+                    crate::state::TagSet::new(),
+                    now,
+                    edge_endpoint,
+                )
+                .map_err(create_refusal)?
+        };
+
+        // The distribution is stored, so the side effect of enabling standard logging is
+        // owed: the log-delivery account holds `FULL_CONTROL` on the target bucket.
+        Box::pin(access_logs.grant_log_delivery(ctx)).await;
 
         Ok(CreateDistributionOutput {
             distribution: Some(created.distribution),

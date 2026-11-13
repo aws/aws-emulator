@@ -841,8 +841,13 @@ pub(super) async fn call_route53(
         method,
         &format!("{ROUTE53_URI_PREFIX}{uri}"),
         body,
+        // Route 53 says everything it says about a resource in the answer's body: no header
+        // of its answers addresses the next call, so none is sent and none is read.
+        &[],
+        &[],
     )
     .await
+    .map(|(document, _headers)| document)
 }
 
 /// One Route 53 request document: the operation's input shape as the root element, under

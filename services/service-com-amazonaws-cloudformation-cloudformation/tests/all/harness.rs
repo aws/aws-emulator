@@ -131,6 +131,15 @@ pub fn router_with_engine() -> (MultiServiceRouter, Arc<engine::InMemoryEngine>)
     router.register_service(
         service_com_amazonaws_iot_awsiotservice::EmulatedService::new(Arc::clone(&engine)),
     );
+    // Amazon CloudFront, for the `AWS::CloudFront::Distribution` and the
+    // `AWS::CloudFront::OriginAccessControl` a stack really creates there, so a suite that
+    // deploys a content-delivery estate reads the distribution and the control back through
+    // that service's own wire, by the ids it minted.
+    router.register_service(
+        service_com_amazonaws_cloudfront_cloudfront2020_05_31::EmulatedService::new(Arc::clone(
+            &engine,
+        )),
+    );
     // Amazon API Gateway v2, for the `AWS::ApiGatewayV2::Api` a stack really creates there,
     // so a suite that deploys an HTTP api — and a grant that names it — reads the api back
     // through that service's own wire.

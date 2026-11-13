@@ -445,10 +445,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         if state.lock().at_distribution_capacity() {
             return Err(create_refusal(crate::state::too_many_distributions()));
         }
-        // The same two gates `CreateDistribution` applies in the same order, for the reasons
-        // it gives: the refusals the configuration carries by itself, and then a Lambda@Edge
-        // association whose execution role this emulator's records show the edge could not
-        // assume — both before a distribution or a socket exists.
+        // The same three gates `CreateDistribution` applies in the same order, for the
+        // reasons it gives: the refusals the configuration carries by itself, then a
+        // Lambda@Edge association whose execution role this emulator's records show the edge
+        // could not assume, then the standard-logging bucket — all before a distribution or
+        // a socket exists.
         if let Some(refusal) = crate::state::config_refusal_without_state(&distribution_config) {
             return Err(create_refusal(refusal));
         }
@@ -459,19 +460,34 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 crate::state::CreateRefusal::InvalidLambdaFunctionAssociation(message),
             ));
         }
+        // A configuration that enables standard logging to a bucket that cannot receive it is
+        // refused, and the log-delivery grant is applied once the distribution is stored
+        // (`crate::state::standard_logging`). Both reaches of Amazon S3 are BOXED, for the
+        // reason `CreateDistribution` records.
+        let access_logs =
+            Box::pin(crate::state::resolve_access_logs_target(ctx, &distribution_config)).await;
+        if let Some(message) = access_logs.refusal() {
+            return Err(create_refusal(crate::state::CreateRefusal::InvalidArgument(
+                message,
+            )));
+        }
         let edge_endpoint = if crate::state::is_multi_tenant(&distribution_config) {
             None
         } else {
             crate::state::open_edge_endpoint(&*self.engine, ctx.callback().clone()).await
         };
-        let mut store = state.lock();
-        store.settle(now);
+        let created = {
+            let mut store = state.lock();
+            store.settle(now);
 
-        // The create itself is the shared path `CreateDistribution` runs: this operation
-        // differs only in the tag set it stores alongside the new record.
-        let created = store
-            .create_distribution(distribution_config, tags, now, edge_endpoint)
-            .map_err(create_refusal)?;
+            // The create itself is the shared path `CreateDistribution` runs: this operation
+            // differs only in the tag set it stores alongside the new record.
+            store
+                .create_distribution(distribution_config, tags, now, edge_endpoint)
+                .map_err(create_refusal)?
+        };
+
+        Box::pin(access_logs.grant_log_delivery(ctx)).await;
 
         Ok(CreateDistributionWithTagsOutput {
             distribution: Some(created.distribution),

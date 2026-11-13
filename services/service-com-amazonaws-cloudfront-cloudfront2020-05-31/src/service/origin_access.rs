@@ -429,6 +429,22 @@ fn s3_bucket_of_host(host: &str) -> Option<String> {
     ::service_common::s3_bucket_name::is_well_formed(&bucket).then_some(bucket)
 }
 
+/// The bucket an Amazon S3 endpoint host names and the Region that host addresses, or
+/// `None` for a host that names no bucket.
+///
+/// The ONE reading of such a host this crate has, for every member that carries one: an
+/// `Origin$DomainName` naming an S3 origin ([`s3_bucket_of_host`], [`region_of_host`]) and a
+/// `LoggingConfig$Bucket` naming the bucket a distribution's standard access logs are
+/// delivered into ([`crate::state::standard_logging`]) are the same host form, so a host
+/// whose bucket name carries dots, whose Region is in the endpoint label and whose zone
+/// labels differ is read identically for both. A value that is not a hostname at all names
+/// no bucket ([`dns_host`]).
+pub(crate) fn s3_endpoint_bucket(domain_name: &str) -> Option<(String, String)> {
+    let host = dns_host(&host_of(domain_name))?;
+    let bucket = s3_bucket_of_host(&host)?;
+    Some((bucket, region_of_host(&host, S3_ORIGIN_TYPE)))
+}
+
 /// The labels of `host` with its trailing ZONE labels ([`ZONE_LABELS`]) removed, which is
 /// what leaves the endpoint label and the Region at the END of the list and so anchors both
 /// from the right.

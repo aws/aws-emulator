@@ -208,6 +208,10 @@ mod appconfig_resources;
 /// own NAMES live here, beside the arms that provision them
 /// ([`super::template::return_values`] names the two whose identity their create answers).
 pub(super) mod application_auto_scaling;
+/// The two CloudFront types a stack declares — the distribution and the origin access
+/// control its origins reach a private bucket with: created in Amazon CloudFront itself
+/// ([`cloudfront_resources`]).
+mod cloudfront_resources;
 mod cognito_identity_pool;
 /// The three Amazon Cognito user-pool types a stack declares — the user pool, the app client
 /// that signs in against it and the identity provider it federates with: visible to the rest
@@ -879,6 +883,10 @@ pub(super) enum Owner {
     /// deployment strategy a rollout follows. Which of them it is travels with the owner, as
     /// it does for the types above.
     AppConfigResource(appconfig_resources::Kind),
+    /// One of the two Amazon CloudFront types [`cloudfront_resources`] creates: the
+    /// distribution, and the origin access control its origins reach a private bucket with.
+    /// Which of them it is travels with the owner, as it does for the types above.
+    CloudFrontResource(cloudfront_resources::Kind),
     /// One of the two `AWS::ApplicationAutoScaling::*` types
     /// [`application_auto_scaling`] registers in Application Auto Scaling: the scalable
     /// target, and the scaling policy that steers one. Which of them it is travels with the
@@ -960,6 +968,9 @@ pub(super) fn owner_for(resource_type: &str) -> Option<Owner> {
     }
     if let Some(kind) = elastic_load_balancing::kind_of(resource_type) {
         return Some(Owner::ElasticLoadBalancing(kind));
+    }
+    if let Some(kind) = cloudfront_resources::kind_of(resource_type) {
+        return Some(Owner::CloudFrontResource(kind));
     }
     provisioner_for(resource_type).map(Owner::Builtin)
 }

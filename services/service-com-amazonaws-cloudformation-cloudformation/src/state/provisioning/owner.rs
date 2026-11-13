@@ -24,7 +24,16 @@ impl Owner {
     ) -> Result<Created, Refusal> {
         match self {
             Self::Builtin(provisioner) => {
-                provisioner.create(ctx, region, resource, propagated).await
+                // BOXED, and so is every other call this file makes into the catalogue: that
+                // one `match` carries an arm per resource type this emulator creates, so the
+                // future it returns is as large as its largest arm's, and holding it inline
+                // here would put that whole state inside the future of every deployment —
+                // one that a `Box::pin` in a handler builds ON THE STACK before it moves it
+                // to the heap. One pointer instead keeps a stack deployment's cost
+                // independent of how many types the catalogue has grown to carry, which is
+                // the reason its own arms give for boxing themselves
+                // ([`Provisioner::create`]).
+                Box::pin(provisioner.create(ctx, region, resource, propagated)).await
             }
             Self::DynamodbTable => {
                 dynamodb_table::create(ctx, region, resource, propagated).await
@@ -148,6 +157,19 @@ impl Owner {
             Self::ElasticLoadBalancing(kind) => {
                 elastic_load_balancing::create(ctx, region, kind, resource, propagated).await
             }
+            // A DISTRIBUTION is taggable: its `Tags` property is the tag list the create that
+            // carries tags takes, so it carries the tags CloudFormation gives it beside its
+            // own. An origin access control is not: that type publishes no `Tags` property
+            // and `CreateOriginAccessControl` takes none.
+            Self::CloudFrontResource(kind) => {
+                // Boxed, as the catalogue's own arms are: the enclosing future then holds one
+                // pointer instead of this arm's whole state, so adding a type does not
+                // enlarge the future a nested stack's provisioning walk keeps on the stack.
+                Box::pin(cloudfront_resources::create(
+                    ctx, region, kind, resource, propagated,
+                ))
+                .await
+            }
         }
     }
 
@@ -168,7 +190,8 @@ impl Owner {
     ) -> Result<Readiness, Refusal> {
         match self {
             Self::Builtin(provisioner) => {
-                provisioner.readiness(ctx, region, physical_resource_id).await
+                // Boxed for the reason [`Self::create`]'s arm records.
+                Box::pin(provisioner.readiness(ctx, region, physical_resource_id)).await
             }
             Self::DynamodbTable => {
                 Ok(dynamodb_table::readiness(ctx, region, physical_resource_id, declared).await)
@@ -191,6 +214,9 @@ impl Owner {
             // declaration asked for.
             Self::LogsResource(_) => Ok(logs_resources::ready()),
             Self::IotAuthorizer => Ok(iot_authorizer::ready()),
+            // A distribution and an origin access control each EXIST from the moment their
+            // create answers ([`cloudfront_resources::ready`]).
+            Self::CloudFrontResource(_) => Ok(cloudfront_resources::ready()),
             // A task-definition revision is `ACTIVE` the moment `RegisterTaskDefinition`
             // answers.
             Self::EcsTaskDefinition => Ok(ecs_task_definition::ready()),
@@ -268,9 +294,14 @@ impl Owner {
     ) -> Result<BTreeMap<String, String>, Refusal> {
         match self {
             Self::Builtin(provisioner) => {
-                provisioner
-                    .ready_attributes(ctx, region, resource_type, physical_resource_id)
-                    .await
+                // Boxed for the reason [`Self::create`]'s arm records.
+                Box::pin(provisioner.ready_attributes(
+                    ctx,
+                    region,
+                    resource_type,
+                    physical_resource_id,
+                ))
+                .await
             }
             // A function's `Arn` is the one its create answered with, so a resource this
             // owner created has every attribute it publishes already, and neither a layer
@@ -295,6 +326,10 @@ impl Owner {
             // authorizer's `Arn` is the one its create answered with. So there is nothing
             // left to read once any of them is up.
             Self::LogsResource(_) | Self::IotAuthorizer => Ok(BTreeMap::new()),
+            // A distribution's id and domain name, and an origin access control's id, are the
+            // ones their own creates answered with, so there is nothing left to read once
+            // either resource is up.
+            Self::CloudFrontResource(_) => Ok(BTreeMap::new()),
             // A task-definition revision's `TaskDefinitionArn` is the one its own
             // registration answered with, so there is nothing left to read once it is up.
             Self::EcsTaskDefinition => Ok(BTreeMap::new()),
@@ -379,7 +414,8 @@ impl Owner {
     ) -> Result<Removal, Refusal> {
         match self {
             Self::Builtin(provisioner) => {
-                provisioner.removal(ctx, region, physical_resource_id).await
+                // Boxed for the reason [`Self::create`]'s arm records.
+                Box::pin(provisioner.removal(ctx, region, physical_resource_id)).await
             }
             Self::DynamodbTable => Ok(dynamodb_table::removal()),
             // `Delete<entity>Policy` takes the embedded document away, so there is nothing
@@ -405,6 +441,19 @@ impl Owner {
             // deleted in.
             Self::LogsResource(_) => Ok(logs_resources::removal()),
             Self::IotAuthorizer => Ok(iot_authorizer::removal()),
+            // An origin access control is gone as its delete answers; a DISTRIBUTION has to
+            // be disabled and its disabled configuration has to reach the edge locations
+            // first, which this arm waits out ([`cloudfront_resources::removal`]).
+            Self::CloudFrontResource(kind) => {
+                // Boxed for the reason [`Self::create`]'s arm records.
+                Box::pin(cloudfront_resources::removal(
+                    ctx,
+                    region,
+                    kind,
+                    physical_resource_id,
+                ))
+                .await
+            }
             // `DeregisterTaskDefinition` marks the revision `INACTIVE` as it answers, so
             // there is nothing to wait for.
             Self::EcsTaskDefinition => Ok(ecs_task_definition::removal()),
@@ -482,7 +531,8 @@ impl Owner {
                 s3_bucket::update(ctx, region, resource, declared).await
             }
             Self::Builtin(provisioner) => {
-                provisioner.update(ctx, region, resource, declared).await
+                // Boxed for the reason [`Self::create`]'s arm records.
+                Box::pin(provisioner.update(ctx, region, resource, declared)).await
             }
             Self::DynamodbTable => {
                 dynamodb_table::update(ctx, region, resource, declared).await
@@ -520,6 +570,16 @@ impl Owner {
             }
             Self::IotAuthorizer => {
                 iot_authorizer::update(ctx, region, resource, declared).await
+            }
+            // Both CloudFront types are changed by that service's own update, which takes the
+            // whole configuration and the version the caller read, so the resource keeps the
+            // id its create minted ([`cloudfront_resources::update`]).
+            Self::CloudFrontResource(kind) => {
+                // Boxed for the reason [`Self::create`]'s arm records.
+                Box::pin(cloudfront_resources::update(
+                    ctx, region, kind, resource, declared, propagated,
+                ))
+                .await
             }
             // A task-definition revision cannot be CHANGED: Amazon ECS publishes no call that
             // edits one, so a changed declaration registers a new revision rather than
@@ -612,9 +672,8 @@ impl Owner {
                 s3_bucket::retag(ctx, region, resource, declared, propagated).await
             }
             Self::Builtin(provisioner) => {
-                provisioner
-                    .retag(ctx, region, resource, declared, propagated)
-                    .await
+                // Boxed for the reason [`Self::create`]'s arm records.
+                Box::pin(provisioner.retag(ctx, region, resource, declared, propagated)).await
             }
             Self::LambdaFunction => {
                 lambda_function::retag(ctx, region, resource, declared, propagated).await
@@ -639,6 +698,10 @@ impl Owner {
             // log group and of an authorizer that already exist are reconciled by no arm here
             // yet ([`Provisioner::retag`]'s own default), so nothing is asked about them.
             Self::LogsResource(_) | Self::IotAuthorizer => Ok(()),
+            // An origin access control is not taggable at all, and the tags of a distribution
+            // that already exists are reconciled by no arm here yet
+            // ([`Provisioner::retag`]'s own default), so nothing is asked about them.
+            Self::CloudFrontResource(_) => Ok(()),
             // A task-definition revision's tags are the ones its registration carried, and no
             // deployment changes a revision, so nothing is asked about them.
             Self::EcsTaskDefinition => Ok(()),
@@ -696,9 +759,8 @@ impl Owner {
     ) -> Result<(), Refusal> {
         match self {
             Self::Builtin(provisioner) => {
-                provisioner
-                    .delete(ctx, region, resource, final_snapshot)
-                    .await
+                // Boxed for the reason [`Self::create`]'s arm records.
+                Box::pin(provisioner.delete(ctx, region, resource, final_snapshot)).await
             }
             // DynamoDB's `DeleteTable` takes no snapshot of a table on the way out: there
             // is no such call (a backup is `CreateBackup`, a call of its own), so a
@@ -737,6 +799,15 @@ impl Owner {
                 logs_resources::delete(ctx, region, kind, resource).await
             }
             Self::IotAuthorizer => iot_authorizer::delete(ctx, region, resource).await,
+            // CloudFront takes no snapshot of a distribution or an origin access control on
+            // the way out: there is no such call, so a `Snapshot` deletion policy on either
+            // deletes the resource with no snapshot invented for it. A distribution is
+            // DISABLED on the way out, which is what that service requires before it will
+            // take one away ([`cloudfront_resources::delete`]).
+            Self::CloudFrontResource(kind) => {
+                // Boxed for the reason [`Self::create`]'s arm records.
+                Box::pin(cloudfront_resources::delete(ctx, region, kind, resource)).await
+            }
             // Amazon ECS takes no snapshot of a task-definition revision on the way out:
             // there is no such call, so a `Snapshot` deletion policy on one deregisters the
             // revision with no snapshot invented for it.
@@ -832,7 +903,8 @@ impl Owner {
     ) -> Result<Option<Value>, Refusal> {
         match self {
             Self::Builtin(provisioner) => {
-                provisioner.actual_configuration(ctx, region, resource).await
+                // Boxed for the reason [`Self::create`]'s arm records.
+                Box::pin(provisioner.actual_configuration(ctx, region, resource)).await
             }
             // A table reports no configuration of its own to compare yet: this arm reads
             // nothing back for drift detection, so nothing of it is reported as drifted
@@ -873,6 +945,10 @@ impl Owner {
             Self::IotAuthorizer => {
                 iot_authorizer::actual_configuration(ctx, region, resource).await
             }
+            // Neither CloudFront type reports a configuration of its own to compare yet: this
+            // arm reads nothing back for drift detection, so nothing of either is reported as
+            // drifted rather than guessed at.
+            Self::CloudFrontResource(_) => Ok(None),
             // A task-definition revision is immutable — every property of the type requires
             // the resource to be replaced, and Amazon ECS publishes no call that edits one —
             // so nothing of it can have drifted from its declaration.
@@ -946,6 +1022,8 @@ impl Owner {
             Self::DynamodbTable => message.to_string(),
             // Amazon CloudWatch Logs's and AWS IoT's do the same.
             Self::LogsResource(_) | Self::IotAuthorizer => message.to_string(),
+            // Amazon CloudFront's does the same.
+            Self::CloudFrontResource(_) => message.to_string(),
             // Amazon ECS's does the same.
             Self::EcsTaskDefinition => message.to_string(),
             // Amazon EC2's does the same.

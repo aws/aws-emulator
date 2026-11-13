@@ -21,7 +21,7 @@
 //! attribute no type publishes, and two resources of one type in one stack (whose ids must
 //! differ).
 
-use crate::nested_resource_outputs::{is_lower_hex, is_upper_hex};
+use crate::nested_resource_outputs::is_lower_hex;
 use crate::stack_lifecycle::{
     create_stack, describe_stack, router, wait_for_the_transition, xml_text, REGION,
 };
@@ -46,23 +46,34 @@ const APIGATEWAY_SUB_RESOURCE_ID_LEN: usize = 6;
 const CANONICAL_USER_ID_LEN: usize = 64;
 
 /// Whether `value` is an identifier of the shape CloudFront assigns one in: `E` and
-/// [`CLOUDFRONT_ID_BODY`] more uppercase characters. The alphabet check is the shared
-/// `is_upper_hex` of `nested_resource_outputs.rs`, which holds this crate's other assigned
-/// ids to the same alphabet.
+/// [`CLOUDFRONT_ID_BODY`] more characters of the alphabet that service mints one from —
+/// decimal digits and uppercase letters.
+///
+/// The alphabet is base 36 rather than hexadecimal because the ids of the two types this
+/// emulator really CREATES in CloudFront (a distribution, an origin access control) are the
+/// ones that service minted, and it mints them from its own alphabet; an id CloudFormation's
+/// naming rules compute for a type left declared-only (an origin access identity) is
+/// uppercase hexadecimal, which is a subset of the same alphabet.
 fn is_cloudfront_id(value: &str) -> bool {
-    value
-        .strip_prefix('E')
-        .is_some_and(|body| is_upper_hex(body, CLOUDFRONT_ID_BODY))
+    value.strip_prefix('E').is_some_and(|body| {
+        body.chars().count() == CLOUDFRONT_ID_BODY
+            && body
+                .chars()
+                .all(|c| c.is_ascii_digit() || c.is_ascii_uppercase())
+    })
 }
 
-/// Whether `value` is the domain name CloudFront serves a distribution on:
-/// `d<label>.cloudfront.net`, the form `Distribution$DomainName` documents ("such as
-/// d111111abcdef8.cloudfront.net").
-fn is_cloudfront_domain_name(value: &str) -> bool {
-    value
-        .strip_suffix(".cloudfront.net")
-        .and_then(|label| label.strip_prefix('d'))
-        .is_some_and(|label| is_lower_hex(label, CLOUDFRONT_ID_BODY))
+/// Whether `value` is an address a viewer can DIAL the distribution on.
+///
+/// `Distribution$DomainName` is documented as "the domain name that corresponds to the
+/// distribution … such as `d111111abcdef8.cloudfront.net`", and what this emulator publishes
+/// for a distribution it really holds is the authority of the loopback listener its edge is
+/// served on — a name a client on this machine can reach, which a `cloudfront.net` label
+/// could not be. So the FORM asserted here is an authority: a host and a numeric port.
+fn is_reachable_authority(value: &str) -> bool {
+    value.rsplit_once(':').is_some_and(|(host, port)| {
+        !host.is_empty() && !port.is_empty() && port.chars().all(|c| c.is_ascii_digit())
+    })
 }
 
 /// Whether `value` is an identifier of the shape API Gateway assigns one in: `width`
@@ -160,12 +171,31 @@ fn cases() -> Vec<Case> {
                 "      BucketName: cdn-origin-bucket\n",
                 "  Oac:\n",
                 "    Type: AWS::CloudFront::OriginAccessControl\n",
+                "    Properties:\n",
+                "      OriginAccessControlConfig:\n",
+                "        Name: cdn-origin-access\n",
+                "        SigningProtocol: sigv4\n",
+                "        SigningBehavior: always\n",
+                "        OriginAccessControlOriginType: s3\n",
                 "  Oai:\n",
                 "    Type: AWS::CloudFront::CloudFrontOriginAccessIdentity\n",
                 "  CachePolicy:\n",
                 "    Type: AWS::CloudFront::CachePolicy\n",
                 "  Distribution:\n",
                 "    Type: AWS::CloudFront::Distribution\n",
+                "    Properties:\n",
+                "      DistributionConfig:\n",
+                "        Enabled: true\n",
+                "        Comment: the content-delivery estate\n",
+                "        Origins:\n",
+                "          - Id: the-bucket\n",
+                "            DomainName: cdn-origin-bucket.s3.amazonaws.com\n",
+                "            S3OriginConfig:\n",
+                "              OriginAccessIdentity: ''\n",
+                "            OriginAccessControlId: !Ref Oac\n",
+                "        DefaultCacheBehavior:\n",
+                "          TargetOriginId: the-bucket\n",
+                "          ViewerProtocolPolicy: redirect-to-https\n",
                 "Outputs:\n",
                 "  BucketRef:\n",
                 "    Value: !Ref Bucket\n",
@@ -256,15 +286,15 @@ fn cases() -> Vec<Case> {
                 ),
                 (
                     "DistributionDomainName",
-                    form("d<label>.cloudfront.net", is_cloudfront_domain_name),
+                    form("an address a viewer can dial", is_reachable_authority),
                 ),
                 (
                     "DistributionUrl",
-                    form("https://d<label>.cloudfront.net/index.html", |value| {
+                    form("https://<the published address>/index.html", |value| {
                         value
                             .strip_prefix("https://")
                             .and_then(|rest| rest.strip_suffix("/index.html"))
-                            .is_some_and(is_cloudfront_domain_name)
+                            .is_some_and(is_reachable_authority)
                     }),
                 ),
                 (
@@ -312,8 +342,24 @@ fn cases() -> Vec<Case> {
                  "Stage":{"Type":"AWS::ApiGateway::Stage",
                    "Properties":{"RestApiId":{"Ref":"Api"},"StageName":"prod",
                      "DeploymentId":{"Ref":"Deployment"}}},
-                 "First":{"Type":"AWS::CloudFront::Distribution"},
-                 "Second":{"Type":"AWS::CloudFront::Distribution"}},
+                 "First":{"Type":"AWS::CloudFront::Distribution",
+                   "Properties":{"DistributionConfig":{"Enabled":true,
+                     "Comment":"the first distribution",
+                     "Origins":[{"Id":"the-api",
+                       "DomainName":"api.example.com",
+                       "CustomOriginConfig":{"HTTPPort":80,"HTTPSPort":443,
+                         "OriginProtocolPolicy":"https-only"}}],
+                     "DefaultCacheBehavior":{"TargetOriginId":"the-api",
+                       "ViewerProtocolPolicy":"allow-all"}}}},
+                 "Second":{"Type":"AWS::CloudFront::Distribution",
+                   "Properties":{"DistributionConfig":{"Enabled":true,
+                     "Comment":"the second distribution",
+                     "Origins":[{"Id":"the-api",
+                       "DomainName":"api.example.com",
+                       "CustomOriginConfig":{"HTTPPort":80,"HTTPSPort":443,
+                         "OriginProtocolPolicy":"https-only"}}],
+                     "DefaultCacheBehavior":{"TargetOriginId":"the-api",
+                       "ViewerProtocolPolicy":"allow-all"}}}}},
                "Outputs":{
                  "ApiRef":{"Value":{"Ref":"Api"}},
                  "ApiId":{"Value":{"Fn::GetAtt":["Api","RestApiId"]}},
@@ -370,11 +416,11 @@ fn cases() -> Vec<Case> {
                 ),
                 (
                     "FirstDomainName",
-                    form("d<label>.cloudfront.net", is_cloudfront_domain_name),
+                    form("an address a viewer can dial", is_reachable_authority),
                 ),
                 (
                     "SecondDomainName",
-                    form("d<label>.cloudfront.net", is_cloudfront_domain_name),
+                    form("an address a viewer can dial", is_reachable_authority),
                 ),
             ],
         },
@@ -440,8 +486,22 @@ async fn content_delivery_outputs_carry_the_identifiers_their_types_publish() {
 async fn assigned_identifiers_are_unique_per_resource_and_stable_across_reads() {
     let router = router();
     let template = r#"{"Resources":{
-         "First":{"Type":"AWS::CloudFront::Distribution"},
-         "Second":{"Type":"AWS::CloudFront::Distribution"},
+         "First":{"Type":"AWS::CloudFront::Distribution",
+           "Properties":{"DistributionConfig":{"Enabled":true,
+             "Comment":"the first twin",
+             "Origins":[{"Id":"the-origin","DomainName":"origin.example.com",
+               "CustomOriginConfig":{"HTTPPort":80,"HTTPSPort":443,
+                 "OriginProtocolPolicy":"https-only"}}],
+             "DefaultCacheBehavior":{"TargetOriginId":"the-origin",
+               "ViewerProtocolPolicy":"allow-all"}}}},
+         "Second":{"Type":"AWS::CloudFront::Distribution",
+           "Properties":{"DistributionConfig":{"Enabled":true,
+             "Comment":"the second twin",
+             "Origins":[{"Id":"the-origin","DomainName":"origin.example.com",
+               "CustomOriginConfig":{"HTTPPort":80,"HTTPSPort":443,
+                 "OriginProtocolPolicy":"https-only"}}],
+             "DefaultCacheBehavior":{"TargetOriginId":"the-origin",
+               "ViewerProtocolPolicy":"allow-all"}}}},
          "Api":{"Type":"AWS::ApiGateway::RestApi","Properties":{"Name":"twin-api"}}},
        "Outputs":{
          "FirstId":{"Value":{"Ref":"First"}},

@@ -790,7 +790,7 @@ pub async fn send(
                 ("content-type", REST_JSON.to_string()),
                 ("x-amz-invocation-type", INVOCATION_TYPE_EVENT.to_string()),
             ];
-            let (status, payload) = dispatch(
+            let (status, _reported, payload) = dispatch(
                 ctx,
                 LAMBDA_SIGNING_NAME,
                 region,
@@ -798,6 +798,7 @@ pub async fn send(
                 &uri,
                 headers,
                 message.into_bytes(),
+                &[],
             )
             .await
             .map_err(|message| Refusal {

@@ -151,6 +151,11 @@ service-com-amazonaws-cloudwatchlogs-logs-20140328 = { workspace = true }
 # AWS IoT, for the `AWS::IoT::Authorizer` a stack really creates there
 # (`state::provisioning::iot_authorizer`), for the same reason.
 service-com-amazonaws-iot-awsiotservice = { workspace = true }
+# Amazon CloudFront, for the `AWS::CloudFront::Distribution` and the
+# `AWS::CloudFront::OriginAccessControl` a stack really creates there
+# (`state::provisioning::cloudfront_resources`), for the same reason: the ids a stack
+# publishes for them are the ones that service minted.
+service-com-amazonaws-cloudfront-cloudfront2020-05-31 = { workspace = true }
 # Amazon API Gateway v2, for the `AWS::ApiGatewayV2::Api` a stack really creates there
 # (`state::provisioner`): a suite that deploys one — and grants API Gateway permission to
 # invoke a function behind it — must have its owning service mounted beside CloudFormation,

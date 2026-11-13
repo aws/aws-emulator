@@ -303,6 +303,8 @@ mod response_headers_policy_update;
 mod server_supplied_config_members;
 #[path = "all/staging_config_promotion.rs"]
 mod staging_config_promotion;
+#[path = "all/standard_logging_bucket.rs"]
+mod standard_logging_bucket;
 #[path = "all/state_roundtrip.rs"]
 mod state_roundtrip;
 #[path = "all/stored_config_round_trip.rs"]

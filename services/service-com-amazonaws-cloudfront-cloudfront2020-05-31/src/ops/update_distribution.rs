@@ -403,17 +403,21 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             return Err(crate::state::store_unavailable());
         };
         let now = SystemTime::now();
-        // Everything that can be refused WITHOUT reading another service's records is
-        // answered first, so an update this operation was going to refuse anyway pays for
-        // none of those reads: the stored record and its precondition, under a lock taken
-        // and released for that read alone, and then the refusals the submitted
-        // configuration carries by itself.
-        let (current_caller_reference, current_connection_mode) = {
+        // The stored record and its precondition first, under a lock taken and released for
+        // that read alone: an update the store refuses on its own terms — no distribution
+        // under that id, or a version that is not the one its caller read — is answered
+        // before anything of another service's records is read for it.
+        {
             let mut store = state.lock();
             store.settle(now);
-            current_record(&store, &input.id, input.if_match.as_deref())?
-        };
+            current_record(&store, &input.id, input.if_match.as_deref())?;
+        }
 
+        // Everything that can be refused from the SUBMITTED CONFIGURATION ALONE is answered
+        // next, so an update this operation was going to refuse anyway pays for none of the
+        // reads below — and so the refusal a caller is told about is the same one the create
+        // path tells them about for the same configuration.
+        //
         // "The value of Quantity and the size of Items don't match."
         if let Some(message) = crate::state::config_quantity_mismatch(&input.distribution_config) {
             return Err(UpdateDistributionErrorModeled::InconsistentQuantities(
@@ -486,8 +490,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         }
 
         // The same rule the create path applies: a Lambda@Edge association invokes ONE
-        // published version of a function, so an update cannot leave a distribution
-        // carrying an association that names no version either.
+        // published version of a function, so an update cannot leave a distribution carrying
+        // an association that names no version either.
         if let Some(message) =
             crate::state::lambda_association_without_version(&input.distribution_config)
         {
@@ -499,46 +503,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 )
                 .into(),
             );
-        }
-
-        // The same rule the create path applies: a Lambda@Edge association fires only where
-        // the function's execution role admits the assume the edge makes of it, so an update
-        // cannot leave a distribution carrying an association that could never fire either.
-        // This is the first refusal of this operation that reads another service's records
-        // (a bounded number of them — see `crate::state::edge_association_role_refusal`), so
-        // it is reached only once every refusal above has been answered, and it is made with
-        // no lock held.
-        if let Some(message) =
-            crate::state::edge_association_role_refusal(ctx, &input.distribution_config).await
-        {
-            return Err(
-                UpdateDistributionErrorModeled::InvalidLambdaFunctionAssociation(
-                    InvalidLambdaFunctionAssociation {
-                        message: Some(message),
-                    },
-                )
-                .into(),
-            );
-        }
-
-        // The write, and the refusals that read this service's own store. The record is read
-        // again through the one reading above, because it could have changed while the reads
-        // of the configuration's associations were in flight: an update still lands only on
-        // the version its caller read.
-        let mut store = state.lock();
-        store.settle(now);
-        current_record(&store, &input.id, input.if_match.as_deref())?;
-
-        // The same rule the create path applies: a cache behaviour runs the code a
-        // CloudFront function's `LIVE` stage holds, so an update cannot leave a
-        // distribution carrying an association that names nothing published to it either.
-        if let Some(arn) = store.function_association_without_live_stage(&input.distribution_config)
-        {
-            let message = crate::state::invalid_function_association_message(arn);
-            return Err(UpdateDistributionErrorModeled::InvalidArgument(InvalidArgument {
-                message: Some(message),
-            })
-            .into());
         }
 
         // The same rule the create path applies: an origin reaches a private bucket EITHER
@@ -553,110 +517,181 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             );
         }
 
-        // The same rule the create path applies: an origin reaches its bucket with the
-        // credentials of the origin access control it names, so an update cannot leave a
-        // distribution naming a control this account does not hold either.
-        if store
-            .unknown_origin_access_control(&input.distribution_config)
-            .is_some()
-        {
-            return Err(UpdateDistributionErrorModeled::InvalidOriginAccessControl(
-                crate::state::invalid_origin_access_control(),
-            )
-            .into());
-        }
-
         // The same rule the create path applies: a configuration may reference a tenant
         // parameter only where it declares one, so an update cannot leave a distribution
         // carrying a reference CloudFront could never substitute either.
-        if let Some(message) =
-            crate::state::tenant_parameter_refusal(&input.distribution_config)
-        {
+        if let Some(message) = crate::state::tenant_parameter_refusal(&input.distribution_config) {
             return Err(UpdateDistributionErrorModeled::InvalidArgument(InvalidArgument {
                 message: Some(message),
             })
             .into());
         }
 
-        // A distribution's caller reference identifies it for its whole life, so an
-        // update that renames it is not a modification CloudFront allows. The fixed
-        // sentence the DISTRIBUTION surface states that rule in, naming no value from the
-        // request or from the stored record.
-        if input.distribution_config.caller_reference != current_caller_reference {
-            return Err(UpdateDistributionErrorModeled::IllegalUpdate(
-                crate::state::illegal_update_distribution_caller_reference(),
-            )
-            .into());
-        }
-
-        // The same KIND of rule, over the member that says what the distribution IS: a
-        // standard distribution serves its own traffic, a multi-tenant one serves the
-        // tenants bound to it, so the connection mode is fixed when the distribution is
-        // created and an update declaring another one is refused — otherwise every tenant
-        // bound to a multi-tenant distribution would be left unroutable by a call that
-        // reported success.
-        if crate::state::connection_mode_declared(&input.distribution_config)
-            != current_connection_mode
-        {
-            return Err(UpdateDistributionErrorModeled::IllegalUpdate(
-                crate::state::illegal_update_connection_mode(),
-            )
-            .into());
-        }
-
-        // Which members the submitted configuration must and must not state follows from
-        // the KIND of distribution it describes, so both rules are read here, once the mode
-        // it declares is known to be the stored one.
-        //
-        // The same rule the create path applies: the members only a standard distribution
-        // has are no members of a multi-tenant one's configuration, so an update cannot
-        // leave a multi-tenant distribution carrying one either.
-        if let Some(member) =
-            crate::state::multi_tenant_direct_only_member(&input.distribution_config)
-        {
+        // Whether the bucket this configuration's standard logging names can receive a log is
+        // Amazon S3's answer, and whether a Lambda@Edge association's execution role admits
+        // the assume the edge makes of it is read off the services that hold them: both are
+        // read with NO lock held — an await under the guard would make this future
+        // non-`Send`, exactly as opening a listener does on the create path — and both are
+        // reached only once every refusal above has been answered. The standard-logging read
+        // is BOXED, with the grant below, for the reason `crate::ops::create_distribution`
+        // records.
+        let access_logs = Box::pin(crate::state::resolve_access_logs_target(
+            ctx,
+            &input.distribution_config,
+        ))
+        .await;
+        // The same rule the create path applies: a standard access log is delivered into the
+        // bucket the configuration names, as the log-delivery account, so an update cannot
+        // leave a distribution logging to a bucket whose ACLs are disabled either — no log
+        // could ever be written there (`crate::state::standard_logging`).
+        if let Some(message) = access_logs.refusal() {
             return Err(UpdateDistributionErrorModeled::InvalidArgument(InvalidArgument {
-                message: Some(crate::state::multi_tenant_direct_only_message(member)),
+                message: Some(message),
             })
             .into());
         }
-
-        // An update submits the configuration the distribution is to hold WHOLE, so a
-        // member the resource carries and the submitted document leaves out is a
-        // modification CloudFront does not allow rather than a value the service supplies:
-        // the price class is missing from the configuration being written. `PriceClass`
-        // "only supports standard distributions. You can't specify this field for
-        // multi-tenant distributions", so it is demanded of exactly the configurations that
-        // serve traffic directly; a multi-tenant one carries none and is complete without it.
-        if input.distribution_config.price_class.is_none()
-            && !crate::state::is_multi_tenant(&input.distribution_config)
+        // The same rule the create path applies: a Lambda@Edge association fires only where
+        // the function's execution role admits the assume the edge makes of it, so an update
+        // cannot leave a distribution carrying an association that could never fire either.
+        if let Some(message) =
+            crate::state::edge_association_role_refusal(ctx, &input.distribution_config).await
         {
-            return Err(UpdateDistributionErrorModeled::IllegalUpdate(
-                crate::state::illegal_update_missing_price_class(),
-            )
-            .into());
+            return Err(
+                UpdateDistributionErrorModeled::InvalidLambdaFunctionAssociation(
+                    InvalidLambdaFunctionAssociation {
+                        message: Some(message),
+                    },
+                )
+                .into(),
+            );
         }
 
-        if store
-            .apply_config(&input.id, input.distribution_config, now)
-            .is_none()
-        {
-            return Err(UpdateDistributionErrorModeled::NoSuchDistribution(
-                crate::state::no_such_distribution(),
-            )
-            .into());
-        }
-        // The answer reports the record the write left behind, through the one projection
-        // every `Distribution` payload of this service is built by — which reads the
-        // account's key groups too, since the active key group set reports the public keys
-        // the trusted groups hold. The write above stored the record, so the read back
-        // cannot miss; the modelled not-found is answered rather than panicking if it ever
-        // does.
-        let Some((distribution, etag)) = store.distribution_payload(&input.id) else {
+        // EVERYTHING ELSE THIS REQUEST IS WEIGHED AND APPLIED UNDER ONE GUARD, which is
+        // released as the block ends: the grant that follows a configuration enabling
+        // standard logging awaits, and a guard held across an await would make this future
+        // non-`Send` — the shape `crate::ops::create_distribution` keeps for the same
+        // reason. The record is read again through the one reading above, because it could
+        // have changed while the reads of the configuration's associations were in flight:
+        // an update still lands only on the version its caller read.
+        let payload = {
+            let mut store = state.lock();
+            store.settle(now);
+
+            let (current_caller_reference, current_connection_mode) =
+                current_record(&store, &input.id, input.if_match.as_deref())?;
+
+            // The same rule the create path applies: a cache behaviour runs the code a
+            // CloudFront function's `LIVE` stage holds, so an update cannot leave a
+            // distribution carrying an association that names nothing published to it
+            // either.
+            if let Some(arn) =
+                store.function_association_without_live_stage(&input.distribution_config)
+            {
+                let message = crate::state::invalid_function_association_message(arn);
+                return Err(UpdateDistributionErrorModeled::InvalidArgument(InvalidArgument {
+                    message: Some(message),
+                })
+                .into());
+            }
+
+            // The same rule the create path applies: an origin reaches its bucket with the
+            // credentials of the origin access control it names, so an update cannot leave a
+            // distribution naming a control this account does not hold either.
+            if store
+                .unknown_origin_access_control(&input.distribution_config)
+                .is_some()
+            {
+                return Err(UpdateDistributionErrorModeled::InvalidOriginAccessControl(
+                    crate::state::invalid_origin_access_control(),
+                )
+                .into());
+            }
+
+            // A distribution's caller reference identifies it for its whole life, so an
+            // update that renames it is not a modification CloudFront allows. The fixed
+            // sentence the DISTRIBUTION surface states that rule in, naming no value from
+            // the request or from the stored record.
+            if input.distribution_config.caller_reference != current_caller_reference {
+                return Err(UpdateDistributionErrorModeled::IllegalUpdate(
+                    crate::state::illegal_update_distribution_caller_reference(),
+                )
+                .into());
+            }
+
+            // The same KIND of rule, over the member that says what the distribution IS: a
+            // standard distribution serves its own traffic, a multi-tenant one serves the
+            // tenants bound to it, so the connection mode is fixed when the distribution is
+            // created and an update declaring another one is refused — otherwise every
+            // tenant bound to a multi-tenant distribution would be left unroutable by a call
+            // that reported success.
+            if crate::state::connection_mode_declared(&input.distribution_config)
+                != current_connection_mode
+            {
+                return Err(UpdateDistributionErrorModeled::IllegalUpdate(
+                    crate::state::illegal_update_connection_mode(),
+                )
+                .into());
+            }
+
+            // Which members the submitted configuration must and must not state follows from
+            // the KIND of distribution it describes, so both rules are read here, once the
+            // mode it declares is known to be the stored one.
+            //
+            // The same rule the create path applies: the members only a standard
+            // distribution has are no members of a multi-tenant one's configuration, so an
+            // update cannot leave a multi-tenant distribution carrying one either.
+            if let Some(member) =
+                crate::state::multi_tenant_direct_only_member(&input.distribution_config)
+            {
+                return Err(UpdateDistributionErrorModeled::InvalidArgument(InvalidArgument {
+                    message: Some(crate::state::multi_tenant_direct_only_message(member)),
+                })
+                .into());
+            }
+
+            // An update submits the configuration the distribution is to hold WHOLE, so a
+            // member the resource carries and the submitted document leaves out is a
+            // modification CloudFront does not allow rather than a value the service
+            // supplies: the price class is missing from the configuration being written.
+            // `PriceClass` "only supports standard distributions. You can't specify this
+            // field for multi-tenant distributions", so it is demanded of exactly the
+            // configurations that serve traffic directly; a multi-tenant one carries none
+            // and is complete without it.
+            if input.distribution_config.price_class.is_none()
+                && !crate::state::is_multi_tenant(&input.distribution_config)
+            {
+                return Err(UpdateDistributionErrorModeled::IllegalUpdate(
+                    crate::state::illegal_update_missing_price_class(),
+                )
+                .into());
+            }
+
+            if store
+                .apply_config(&input.id, input.distribution_config, now)
+                .is_none()
+            {
+                return Err(UpdateDistributionErrorModeled::NoSuchDistribution(
+                    crate::state::no_such_distribution(),
+                )
+                .into());
+            }
+            // The answer reports the record the write left behind, through the one
+            // projection every `Distribution` payload of this service is built by — which
+            // reads the account's key groups too, since the active key group set reports the
+            // public keys the trusted groups hold. The write above stored the record, so the
+            // read back cannot miss; the modelled not-found is answered rather than
+            // panicking if it ever does.
+            store.distribution_payload(&input.id)
+        };
+        // The configuration is stored, so the side effect of enabling standard logging is
+        // owed: the log-delivery account holds `FULL_CONTROL` on the target bucket.
+        let Some((distribution, etag)) = payload else {
             return Err(UpdateDistributionErrorModeled::NoSuchDistribution(
                 crate::state::no_such_distribution(),
             )
             .into());
         };
+        Box::pin(access_logs.grant_log_delivery(ctx)).await;
 
         Ok(UpdateDistributionOutput {
             distribution: Some(distribution),

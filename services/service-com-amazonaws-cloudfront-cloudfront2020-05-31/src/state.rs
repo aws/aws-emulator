@@ -155,6 +155,14 @@ pub use trust_stores::*;
 pub mod ca_certificates_bundle;
 pub use ca_certificates_bundle::*;
 
+/// Whether the bucket a `DistributionConfig`'s `Logging` names can receive the
+/// distribution's STANDARD ACCESS LOGS, and the log-delivery grant that lets CloudFront
+/// write them into it. A SUBMODULE for the same reason [`functions`] is one — it is the one
+/// place this service reads and writes the object store's ACL state; `pub use` keeps every
+/// name reachable as `crate::state::<name>`.
+pub mod standard_logging;
+pub use standard_logging::*;
+
 /// The VPC ORIGIN slice of this store: the VPC origin record, the id one is addressed by,
 /// the lookup every read goes through, the bound a create is refused at, and the modelled
 /// errors the VPC origin operations answer with. A SUBMODULE for the same reason

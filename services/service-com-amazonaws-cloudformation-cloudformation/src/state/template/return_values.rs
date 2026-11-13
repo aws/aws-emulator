@@ -2354,6 +2354,14 @@ pub fn identity_is_service_assigned(resource_type: &str) -> bool {
         || resource_type == GRAFANA_WORKSPACE
         || resource_type == EMR_CLUSTER
         || resource_type == GUARDDUTY_DETECTOR
+        // The two CloudFront types this emulator provisions are the same case: neither
+        // `CreateDistribution` nor `CreateOriginAccessControl` takes an identifier — a
+        // template declares a configuration, never an id — and each answers the `E…`
+        // identifier CloudFront minted, which is what "Ref returns the distribution ID" and
+        // "Ref returns the origin access control's unique identifier" publish and what every
+        // CloudFront call on the resource takes.
+        || resource_type == CLOUDFRONT_DISTRIBUTION
+        || resource_type == CLOUDFRONT_ORIGIN_ACCESS_CONTROL
         // A GuardDuty trusted IP list is the same case: `CreateIPSet` takes no identifier
         // for the list — the `Name` a declaration states is only the user-friendly name of
         // the IPSet — and answers the `IpSetId` GuardDuty minted, which is what that
