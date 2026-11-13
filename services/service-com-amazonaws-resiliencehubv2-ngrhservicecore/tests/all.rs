@@ -21,6 +21,8 @@ mod invoker_role_trust;
 mod policy_lifecycle;
 #[path = "all/policy_update_and_deletion.rs"]
 mod policy_update_and_deletion;
+#[path = "all/read_projection_fidelity.rs"]
+mod read_projection_fidelity;
 #[path = "all/service_function_lifecycle.rs"]
 mod service_function_lifecycle;
 #[path = "all/service_lifecycle.rs"]

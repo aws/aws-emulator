@@ -243,7 +243,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             policy_arn: input.policy_arn,
             regions: input.regions,
             permission_model: Some(input.permission_model),
-            dependency_discovery: None,
+            // Discovery off is this service's state until something turns it on, not an
+            // absence: the record carries the DISABLED config from the instant it is
+            // created, so every read of the service reports where discovery stands.
+            dependency_discovery: crate::state::disabled_dependency_discovery(now),
             dependency_discovery_due: None,
             report_configuration: input.report_configuration,
             dev_ops_agent_configuration: None,
@@ -251,6 +254,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             kms_key_id: input.kms_key_id,
             tags: input.tags.unwrap_or_default().into_iter().collect(),
             assessment_status: crate::state::ASSESSMENT_STATUS_NOT_STARTED.to_string(),
+            // Nothing has been assessed yet, so no rerun is outstanding.
+            rerun_assessment: false,
             open_findings_count: 0,
             resolved_findings_count: 0,
             ou_id: None,

@@ -1,15 +1,9 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op UpdateServiceFunction
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `UpdateServiceFunction`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
-//!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`UpdateServiceFunction::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! Updates a service function IN the record of the service that holds it, so every later
+//! `ListServiceFunctions` reads what this call wrote. Only the members the caller sent
+//! change; the rest keep what they held. This is the ONLY file to touch for this operation.
 //!
 //! ## Shape of an operation
 //!
@@ -151,18 +145,92 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `UpdateServiceFunction` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(UpdateServiceFunctionErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("UpdateServiceFunction"))
+        let _ = ctx;
+        let Some(state) = crate::state::service_state(&*self.engine) else {
+            return Err(UpdateServiceFunctionErrorModeled::InternalServerException(
+                InternalServerException {
+                    message: "the resiliencehub service store is unavailable".to_string(),
+                },
+            )
+            .into());
+        };
+        let now = ::std::time::SystemTime::now();
+        let mut store = state.lock();
+
+        // A function lives inside its service's record, so the parent is resolved first: a
+        // `serviceArn` naming no service is a 404, not an update of nothing.
+        let Some(service) = store.services.get_mut(&input.service_arn) else {
+            return Err(UpdateServiceFunctionErrorModeled::ResourceNotFoundException(
+                crate::state::resource_not_found(
+                    crate::state::SERVICE_RESOURCE_TYPE,
+                    &input.service_arn,
+                ),
+            )
+            .into());
+        };
+        if !service
+            .service_functions
+            .contains_key(&input.service_function_id)
+        {
+            return Err(function_not_found(&input.service_function_id).into());
+        }
+
+        // A function's name identifies it within its service, so renaming it onto a name
+        // another function there already holds is a conflict, not a rename — the same rule
+        // the create applies. Renaming a function to the name it already has is not a
+        // conflict with itself.
+        if let Some(name) = input.name.as_deref() {
+            if let Some(existing) = service
+                .service_function_named(name)
+                .filter(|existing| existing.service_function_id != input.service_function_id)
+            {
+                return Err(UpdateServiceFunctionErrorModeled::ConflictException(
+                    ConflictException {
+                        message: format!(
+                            "A service function named {name} already exists in service {}: {}",
+                            input.service_arn, existing.service_function_id
+                        ),
+                    },
+                )
+                .into());
+            }
+        }
+
+        let Some(record) = service
+            .service_functions
+            .get_mut(&input.service_function_id)
+        else {
+            return Err(function_not_found(&input.service_function_id).into());
+        };
+
+        // Every member of this request except `serviceArn` and `serviceFunctionId` is
+        // optional, and an absent one means "leave it alone": each member the caller sent
+        // is that field's updated value and replaces the stored one.
+        if let Some(name) = input.name {
+            record.name = name;
+        }
+        if let Some(description) = input.description {
+            record.description = Some(description);
+        }
+        // `criticality` is a modelled enum, so the boundary has already refused anything
+        // outside `SERVICE_FUNCTION_CRITICALITY_VALUES` by the time this runs.
+        if let Some(criticality) = input.criticality {
+            record.criticality = criticality;
+        }
+        // The record changed, so this is the instant it was last updated. `createdAt` is
+        // left where it was: the function was not created again.
+        record.updated_at = now;
+
+        Ok(UpdateServiceFunctionOutput {
+            service_function: record.to_service_function(&input.service_arn),
+        })
     }
+}
+
+/// The refusal for a `serviceFunctionId` that names no function in the service the request
+/// addressed: there is nothing under that identifier to update.
+fn function_not_found(service_function_id: &str) -> UpdateServiceFunctionErrorModeled {
+    UpdateServiceFunctionErrorModeled::ResourceNotFoundException(
+        crate::state::service_function_not_found(service_function_id),
+    )
 }

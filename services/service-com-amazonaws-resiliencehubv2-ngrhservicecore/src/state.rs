@@ -29,16 +29,22 @@
 //! write.
 //!
 //! [`not_found`] holds the refusal every operation that resolves an ARN answers with when
-//! the ARN names nothing stored, so the whole crate words it once.
+//! the ARN names nothing stored, so the whole crate words it once, and [`tagging`] holds
+//! the one tag map projection and the write path `TagResource` reaches a tagged resource
+//! through, whichever of this store's resources an ARN names.
 
 mod invoker_role;
 mod not_found;
 mod policies;
+mod tagging;
 
 pub use invoker_role::{invoker_role_rejection, unassumable_message, SERVICE_PRINCIPAL};
 pub use not_found::{
-    arn_resource_id, resource_not_found, POLICY_RESOURCE_TYPE, SERVICE_RESOURCE_TYPE,
+    arn_resource_id, resource_not_found, service_function_not_found, POLICY_RESOURCE_TYPE,
+    SERVICE_FUNCTION_RESOURCE_TYPE, SERVICE_RESOURCE_TYPE,
 };
+pub use tagging::{tagged_resource_type, MAX_TAGS_PER_RESOURCE};
+pub(crate) use tagging::tag_map_view;
 pub use policies::{
     mint_policy_arn, PolicyRecord, MAX_POLICIES, POLICY_RESOURCE, POLICY_VALUE_SOURCE_CROSS_ACCOUNT,
     POLICY_VALUE_SOURCE_SELF,
@@ -56,6 +62,13 @@ use crate::ops::types::{
 /// The ARN service namespace for this service's resources: the model's `sigv4Name` /
 /// `arnNamespace` (`resiliencehub`), not the `sdkId` (`resiliencehubv2`).
 pub const ARN_SERVICE_NAMESPACE: &str = "resiliencehub";
+
+/// The resource type a service's ARN carries.
+///
+/// From the model's own `IamServiceResource`, whose `@iamResource` name is `service`: the
+/// resource segment of an ARN is that resource name, the way a policy's is
+/// [`POLICY_RESOURCE`].
+pub const SERVICE_RESOURCE: &str = "service";
 
 /// The Region an ARN is minted in when the request carries no SigV4 credential scope to
 /// read one from (an unsigned call to the emulator).
@@ -123,6 +136,12 @@ pub const DEV_OPS_AGENT_CONNECTED: &str = "CONNECTED";
 pub const DEPENDENCY_DISCOVERY_INITIALIZING_MESSAGE: &str =
     "Dependency discovery is initializing for this service.";
 
+/// The `message` reported while dependency discovery is `DISABLED`: the fixed status text
+/// the service publishes for that state, which tells a caller reading a service's
+/// dependencies why there are none to display.
+pub const DEPENDENCY_DISCOVERY_DISABLED_MESSAGE: &str =
+    "Enable dependency discovery to display dependencies.";
+
 /// How long a status the clock owes stays transient before a read materialises it.
 ///
 /// CHOSEN, not documented: neither `DependencyDiscoveryStatus` nor
@@ -189,7 +208,11 @@ pub struct ServiceRecord {
     pub policy_arn: Option<String>,
     pub regions: Vec<String>,
     pub permission_model: Option<PermissionModel>,
-    pub dependency_discovery: Option<DependencyDiscoveryConfig>,
+    /// This service's dependency-discovery state. NOT optional: discovery is either on,
+    /// coming on, or off, and a service that has never enabled it has it off — see
+    /// [`disabled_dependency_discovery`] — so there is no service whose state is unknown
+    /// and no projection that can withhold the member.
+    pub dependency_discovery: DependencyDiscoveryConfig,
     /// When `dependencyDiscovery` is owed its move off `INITIALIZING`; `None` once there
     /// is nothing outstanding.
     pub dependency_discovery_due: Option<SystemTime>,
@@ -201,6 +224,11 @@ pub struct ServiceRecord {
     /// Stored ordered so a tag map reads back the same way every time.
     pub tags: BTreeMap<String, String>,
     pub assessment_status: String,
+    /// Whether an assessment rerun is outstanding for this service — `Service$rerunAssessment`,
+    /// "indicates whether the assessment should be rerun". A created service has none
+    /// outstanding, and the stored flag is what the projection reports, so a caller never has
+    /// to tell "no rerun pending" from "not told".
+    pub rerun_assessment: bool,
     pub open_findings_count: i32,
     pub resolved_findings_count: i32,
     /// The organizational unit this service's account sits in. Nothing in this slice
@@ -237,8 +265,10 @@ impl ServiceRecord {
     /// present: a service with nothing to derive reports the empty object.
     ///
     /// Members no operation in this slice computes (`achievability`,
-    /// `estimatedAssessmentCost`, `resourceDiscovery`, `rerunAssessment`,
-    /// `organizationId`) are left absent rather than filled with a value nothing derived.
+    /// `estimatedAssessmentCost`, `resourceDiscovery`, `organizationId`) are left absent
+    /// rather than filled with a value nothing derived. `dependencyDiscovery`,
+    /// `rerunAssessment` and `tags` are NOT among them: each is a state the record always
+    /// holds, so each is always reported.
     pub fn to_service(&self, effective_policy_values: EffectivePolicyValues) -> Service {
         Service {
             service_arn: self.service_arn.clone(),
@@ -248,7 +278,7 @@ impl ServiceRecord {
             policy_arn: self.policy_arn.clone(),
             regions: Some(self.regions.clone()),
             permission_model: self.permission_model.clone(),
-            dependency_discovery: self.dependency_discovery.clone(),
+            dependency_discovery: Some(self.dependency_discovery.clone()),
             effective_policy_values: Some(effective_policy_values),
             achievability: None,
             report_configuration: self.report_configuration.clone(),
@@ -257,7 +287,7 @@ impl ServiceRecord {
             estimated_assessment_cost: None,
             resource_discovery: None,
             assessment_status: Some(self.assessment_status.clone()),
-            rerun_assessment: None,
+            rerun_assessment: Some(self.rerun_assessment),
             open_findings_count: Some(self.open_findings_count),
             resolved_findings_count: Some(self.resolved_findings_count),
             organization_id: None,
@@ -285,7 +315,7 @@ impl ServiceRecord {
             dev_ops_agent_space_arn: agent.and_then(|view| view.agent_space_arn.clone()),
             open_findings_count: Some(self.open_findings_count),
             resolved_findings_count: Some(self.resolved_findings_count),
-            dependency_discovery: self.dependency_discovery.clone(),
+            dependency_discovery: Some(self.dependency_discovery.clone()),
             achievability: None,
             organization_id: None,
             ou_id: self.ou_id.clone(),
@@ -319,20 +349,16 @@ impl ServiceRecord {
     /// `INITIALIZING` until the instant the clock owes it, then `ENABLED`.
     pub fn set_dependency_discovery(&mut self, requested: &str, now: SystemTime) {
         let enabling = requested == DEPENDENCY_DISCOVERY_ENABLED;
-        self.dependency_discovery = Some(DependencyDiscoveryConfig {
-            status: if enabling {
-                DEPENDENCY_DISCOVERY_INITIALIZING.to_string()
-            } else {
-                DEPENDENCY_DISCOVERY_DISABLED.to_string()
-            },
-            updated_at: Some(to_date_time(now)),
-            eligible_resource_count: None,
-            message: if enabling {
-                Some(DEPENDENCY_DISCOVERY_INITIALIZING_MESSAGE.to_string())
-            } else {
-                None
-            },
-        });
+        self.dependency_discovery = if enabling {
+            DependencyDiscoveryConfig {
+                status: DEPENDENCY_DISCOVERY_INITIALIZING.to_string(),
+                updated_at: Some(to_date_time(now)),
+                eligible_resource_count: None,
+                message: Some(DEPENDENCY_DISCOVERY_INITIALIZING_MESSAGE.to_string()),
+            }
+        } else {
+            disabled_dependency_discovery(now)
+        };
         self.dependency_discovery_due = enabling.then(|| now + TRANSIENT_STATUS_SPAN);
     }
 
@@ -396,11 +422,9 @@ impl ServiceRecord {
     /// `due`, not `now`, so the record says when the change actually fell due.
     pub fn materialise(&mut self, now: SystemTime) {
         if let Some(due) = self.dependency_discovery_due.filter(|due| now >= *due) {
-            if let Some(config) = self.dependency_discovery.as_mut() {
-                config.status = DEPENDENCY_DISCOVERY_ENABLED.to_string();
-                config.message = None;
-                config.updated_at = Some(to_date_time(due));
-            }
+            self.dependency_discovery.status = DEPENDENCY_DISCOVERY_ENABLED.to_string();
+            self.dependency_discovery.message = None;
+            self.dependency_discovery.updated_at = Some(to_date_time(due));
             self.dependency_discovery_due = None;
         }
         if let Some(due) = self.dev_ops_agent_due.filter(|due| now >= *due) {
@@ -488,22 +512,40 @@ impl ComAmazonawsResiliencehubv2NgrhservicecoreState {
     }
 }
 
-/// A stored instant as the modelled `Timestamp` the wire carries.
-pub fn to_date_time(instant: SystemTime) -> ::aws_smithy_types::DateTime {
-    ::aws_smithy_types::DateTime::from(instant)
+/// The dependency-discovery state of a service that has not enabled it, as of `updated`.
+///
+/// Discovery off is a STATE, not an absence: the config carries the `DISABLED` status, the
+/// instant that state was last set, and the fixed status message for it
+/// ([`DEPENDENCY_DISCOVERY_DISABLED_MESSAGE`]). No resource is eligible for attribution
+/// while discovery is off, so `eligibleResourceCount` stays absent rather than reporting a
+/// count nothing discovered.
+pub fn disabled_dependency_discovery(updated: SystemTime) -> DependencyDiscoveryConfig {
+    DependencyDiscoveryConfig {
+        status: DEPENDENCY_DISCOVERY_DISABLED.to_string(),
+        updated_at: Some(to_date_time(updated)),
+        eligible_resource_count: None,
+        message: Some(DEPENDENCY_DISCOVERY_DISABLED_MESSAGE.to_string()),
+    }
 }
 
-/// Stored tags as the modelled `TagMap` the wire carries.
+/// A stored instant as the modelled `Timestamp` the wire carries.
 ///
-/// The member is ALWAYS reported: a resource's tag map is the set of tags it carries, and
-/// a resource carrying none has the EMPTY map rather than an unknown one, so a client that
-/// enumerates or diffs tags never has to tell "no tags" from "not told". Shared by every
-/// tagged resource in this store, so one rule covers them all.
-pub(crate) fn tag_map_view(tags: &BTreeMap<String, String>) -> Option<HashMap<String, String>> {
-    Some(
-        tags.iter()
-            .map(|(key, value)| (key.clone(), value.clone()))
-            .collect(),
+/// Truncated to its MILLISECOND: these members target the prelude `smithy.api#Timestamp`
+/// with no `@timestampFormat` override, so restJson1 carries them as epoch-seconds
+/// numbers, and the epoch-seconds form the service emits carries no more than a
+/// millisecond's resolution. Keeping the clock's nanoseconds would put digits on the wire
+/// no client round-tripping, formatting or comparing these numbers ever sees.
+///
+/// An instant before the epoch, or one too far past it for the modelled type, has no
+/// epoch-milliseconds rendering; it is reported as the epoch rather than panicking. No
+/// instant in this store is one — every one of them is a reading of this process's clock.
+pub fn to_date_time(instant: SystemTime) -> ::aws_smithy_types::DateTime {
+    ::aws_smithy_types::DateTime::from_millis(
+        instant
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .ok()
+            .and_then(|since_epoch| i64::try_from(since_epoch.as_millis()).ok())
+            .unwrap_or(0),
     )
 }
 
@@ -516,7 +558,7 @@ pub fn mint_service_arn(region: &str) -> String {
     ::engine::emulator_arn(
         ARN_SERVICE_NAMESPACE,
         region,
-        &format!("service/{}", mint_uuid(region)),
+        &format!("{SERVICE_RESOURCE}/{}", mint_uuid(region)),
     )
 }
 

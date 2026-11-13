@@ -1,15 +1,9 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op TagResource
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `TagResource`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
-//!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`TagResource::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! Adds tags to a resource of this service, WRITING them into the record that holds the
+//! resource's tag map, so every later read of that resource reports what this call wrote.
+//! This is the ONLY file to touch for this operation.
 //!
 //! ## Shape of an operation
 //!
@@ -134,25 +128,81 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
     const NAME: &'static str = "TagResource";
     const INPUT_SCHEMA: &'static ::aws_smithy_schema::Schema = super::types::TAG_RESOURCE_INPUT_SCHEMA;
     const OUTPUT_SCHEMA: &'static ::aws_smithy_schema::Schema = super::types::TAG_RESOURCE_OUTPUT_SCHEMA;
-    const SUCCESS_STATUS: u16 = 200u16;
+    // `TagResourceResponse` carries no members, and this service answers a tag write that
+    // returns nothing with the no-content status rather than an empty `200` body: that is
+    // the status the wire carries for it, whichever resource was tagged. The constant is
+    // the shared one the framing correction in `crate::service` keys on, so the status and
+    // that framing cannot drift apart.
+    const SUCCESS_STATUS: u16 = ::service_common::no_content_responses::NO_CONTENT_STATUS;
 
     async fn handle(
         &self,
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `TagResource` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(TagResourceErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("TagResource"))
+        let _ = ctx;
+        let Some(state) = crate::state::service_state(&*self.engine) else {
+            return Err(TagResourceErrorModeled::InternalServerException(
+                InternalServerException {
+                    message: "the resiliencehub service store is unavailable".to_string(),
+                },
+            )
+            .into());
+        };
+        let mut store = state.lock();
+
+        // `resourceArn`'s length and `Arn` pattern are modelled, so a malformed one is
+        // already refused with a 400 before this handler runs. A well-formed ARN that names
+        // no resource this service holds is a 404 — tagging nothing is not a success.
+        let Some(tags) = store.resource_tags_mut(&input.resource_arn) else {
+            return Err(TagResourceErrorModeled::ResourceNotFoundException(
+                crate::state::resource_not_found(
+                    crate::state::tagged_resource_type(&input.resource_arn),
+                    &input.resource_arn,
+                ),
+            )
+            .into());
+        };
+
+        // A tag request that would take the resource past the number of tags one resource
+        // may hold — `TagMap`'s own modelled `@length` maximum — is refused whole, rather
+        // than applied in part or silently truncated. `tags` is a JSON OBJECT on this
+        // wire, so the refusal is the finding this service's schema layer states for an
+        // object carrying more properties than its schema admits, in the bracketed list
+        // that layer reports its findings as: both the sentence and the list are the
+        // shared ones, so this service's refusals cannot drift from each other, and the
+        // only values interpolated are the count the resource would hold and the modelled
+        // maximum.
+        let would_hold = tags
+            .keys()
+            .filter(|key| !input.tags.contains_key(*key))
+            .count()
+            + input.tags.len();
+        if would_hold > crate::state::MAX_TAGS_PER_RESOURCE {
+            let finding = ::service_common::validation_message::too_many_properties(
+                would_hold,
+                i64::try_from(crate::state::MAX_TAGS_PER_RESOURCE).unwrap_or(i64::MAX),
+            );
+            return Err(TagResourceErrorModeled::ValidationException(
+                ValidationException {
+                    message: ::service_common::validation_message::bracketed_findings(&[
+                        finding,
+                    ]),
+                    // That layer reports the findings and nothing else: there is no
+                    // per-member list behind a schema report.
+                    reason: None,
+                    field_list: None,
+                },
+            )
+            .into());
+        }
+
+        // Tags are ADDED to the resource: a key the resource already carries takes the
+        // value this request supplies, and the keys this request does not name keep theirs.
+        for (key, value) in input.tags {
+            tags.insert(key, value);
+        }
+
+        Ok(TagResourceOutput {})
     }
 }
