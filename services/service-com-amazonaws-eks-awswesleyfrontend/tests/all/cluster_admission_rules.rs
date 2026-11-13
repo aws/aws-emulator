@@ -42,7 +42,9 @@ use service_com_amazonaws_eks_awswesleyfrontend::state::{
 use smithy_server_runtime::MultiServiceRouter;
 
 use crate::cluster_lifecycle::{minimal_request, REGION};
-use crate::wire::{call, emulator, emulator_with_engine, encode_label, error_code, Answer};
+use crate::wire::{
+    call, emulator, emulator_with_engine, encode_label, error_code, read_until, Answer,
+};
 
 /// A role of the single account this emulator serves, which is what `iam:PassRole`
 /// allows.
@@ -1098,6 +1100,25 @@ async fn a_cluster_is_deleted_only_once_nothing_is_attached_to_it() {
                 removed.status, 200,
                 "case {case:?}: the profile {name:?} must delete, got {removed:?}"
             );
+        }
+        // The node groups' removal is ASYNCHRONOUS: each one is still a node group
+        // of the cluster until the clock has finished it, and the node-group half of
+        // the refusal names no status — so the cluster is deleted once the removals
+        // have finished, which is waited for by LOOKING AGAIN rather than for a span
+        // ([`crate::wire::read_until`]).
+        for name in nodegroups {
+            let path = format!(
+                "/clusters/{}/node-groups/{}",
+                encode_label(&cluster),
+                encode_label(name)
+            );
+            read_until(
+                case,
+                &format!("the removal of the node group {name:?} finished"),
+                || call(&router, REGION, "GET", &path, ""),
+                |read| read.status == 404,
+            )
+            .await;
         }
         let deleted = delete_cluster(&router, &cluster).await;
         assert_eq!(

@@ -561,6 +561,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             selectors: input.selectors.clone().unwrap_or_default(),
             status: FARGATE_PROFILE_STATUS_CREATING.to_string(),
             active_at: Some(now + FARGATE_PROFILE_ACTIVATION_DELAY),
+            // Nothing is being removed: the removal instant is written only once
+            // `DeleteFargateProfile` accepts a delete on this record.
+            removed_at: None,
             tags: input
                 .tags
                 .clone()

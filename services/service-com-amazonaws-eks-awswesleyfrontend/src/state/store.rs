@@ -230,9 +230,17 @@ impl ComAmazonawsEksAwswesleyfrontendState {
         for cluster in self.clusters.values_mut() {
             cluster.materialize_due_transitions(now);
         }
+        // A node group and a Fargate profile whose removal the clock has finished
+        // are no longer resources of their cluster, the same way an add-on's
+        // removal above is: the delete that started each of them finishes at the
+        // instant stored on the record, whether or not anybody called.
+        self.nodegroups
+            .retain(|_, nodegroup| nodegroup.removed_at.is_none_or(|due| now < due));
         for nodegroup in self.nodegroups.values_mut() {
             nodegroup.materialize_due_transitions(now);
         }
+        self.fargate_profiles
+            .retain(|_, profile| profile.removed_at.is_none_or(|due| now < due));
         for profile in self.fargate_profiles.values_mut() {
             profile.materialize_due_transitions(now);
         }
@@ -1648,11 +1656,23 @@ impl ComAmazonawsEksAwswesleyfrontendState {
     /// Pod Identity associations, identity provider configurations — do not keep
     /// it: Amazon EKS deletes those with the cluster, which is what
     /// `DeleteCluster` already does here.
+    ///
+    /// Each half is as wide as the sentence it reports: a node group holds the
+    /// cluster for as long as the cluster has one — the node-group sentence names
+    /// no status — while the profile sentence names the two statuses it is about,
+    /// so a profile whose removal has been accepted holds it no longer.
     pub fn attached_compute_refusal(&self, region: &str, cluster_name: &str) -> Option<&'static str> {
         if self.nodegroups_of(region, cluster_name).next().is_some() {
             return Some(CLUSTER_HAS_NODEGROUPS_ATTACHED);
         }
-        if self.fargate_profiles_of(region, cluster_name).next().is_some() {
+        // The profile half names the statuses it is about
+        // ([`CLUSTER_HAS_FARGATE_PROFILES_ATTACHED`]), so a profile whose removal
+        // has been accepted is in neither of them and holds the cluster no longer,
+        // even while the clock is still finishing that removal.
+        if self
+            .fargate_profiles_of(region, cluster_name)
+            .any(|profile| profile.removed_at.is_none())
+        {
             return Some(CLUSTER_HAS_FARGATE_PROFILES_ATTACHED);
         }
         None

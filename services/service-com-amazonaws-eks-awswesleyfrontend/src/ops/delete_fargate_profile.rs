@@ -1,10 +1,14 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op DeleteFargateProfile
-//! IMPLEMENTED. Takes one Fargate profile off its cluster and answers with the
-//! record it removed, reporting the `DELETING` status that delete leaves it in —
-//! "the deleted Fargate profile". `DescribeFargateProfile` answers from the same
-//! store, so the profile is gone from it as soon as this returns.
+//! IMPLEMENTED. Starts taking one Fargate profile off its cluster and answers with
+//! the record it accepted the delete on, reporting the `DELETING` status that delete
+//! leaves it in — "the deleted Fargate profile". The removal is ASYNCHRONOUS:
+//! `DescribeFargateProfile` answers from the same store, so the profile is readable
+//! in `DELETING` until the clock has finished the removal
+//! (`crate::state::FARGATE_PROFILE_DELETION_DELAY`), after which that read reports it
+//! gone. (`ListFargateProfiles` reads the same store, but is still a scaffolded 501,
+//! so this crate lists no profile at all yet.)
 //!
 //! The rules it enforces:
 //!
@@ -179,15 +183,28 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             input.cluster_name.clone(),
             input.fargate_profile_name.clone(),
         );
-        let Some(mut record) = guard.fargate_profiles.remove(&key) else {
+        let Some(record) = guard.fargate_profiles.get_mut(&key) else {
             return Err(not_found());
         };
 
+        // The removal this record has ALREADY taken: the profile is on its way out of
+        // the store, so a repeat of the call that accepted the delete is answered with
+        // the same record rather than refused for the status that call put it in — the
+        // same answer `DeleteNodegroup` gives a repeat of its own accepted removal.
+        if record.removed_at.is_some() {
+            return Ok(DeleteFargateProfileOutput {
+                fargate_profile: Some(record.to_fargate_profile()),
+            });
+        }
+
         // The answer reports the profile on its way out, which is the status a delete
-        // leaves it in; the record is already gone from the store, so the `CREATING` ->
-        // `ACTIVE` move the clock may still have owed it is owed to nobody.
+        // leaves it in. The removal is ASYNCHRONOUS: the record stays in the store —
+        // readable, listed, and in the way of creating the same name again — until the
+        // clock has finished it ([`state::FARGATE_PROFILE_DELETION_DELAY`]), so the
+        // `CREATING` -> `ACTIVE` move it may still have been owed is owed to nobody.
         record.status = FARGATE_PROFILE_STATUS_DELETING.to_string();
         record.active_at = None;
+        record.removed_at = Some(now + state::FARGATE_PROFILE_DELETION_DELAY);
 
         Ok(DeleteFargateProfileOutput {
             fargate_profile: Some(record.to_fargate_profile()),

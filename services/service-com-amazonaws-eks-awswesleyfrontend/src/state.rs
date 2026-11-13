@@ -775,6 +775,20 @@ pub const DEFAULT_LIST_PAGE_SIZE: i32 = 100;
 /// record; nothing sleeps for it.
 pub const NODEGROUP_ACTIVATION_DELAY: Duration = Duration::from_millis(500);
 
+/// How long a node group whose delete has been accepted reports `DELETING`
+/// before the clock has finished taking it off its cluster.
+///
+/// `DeleteNodegroup` answers with the node group in `DELETING` and finishes the
+/// removal later, so the node group is still a node group of its cluster —
+/// readable, listed, and in the way of creating the same name again — until this
+/// span has passed, exactly as an add-on's removal runs
+/// ([`ADDON_DELETION_DELAY`]). No duration is published for it, so the span is
+/// CHOSEN rather than cited, with the same span [`CLUSTER_DELETION_DELAY`] uses
+/// for the other delete this service accepts and finishes later: a caller that
+/// reads the node group straight after deleting it still observes `DELETING`.
+/// The due instant is stored on the record; nothing sleeps for it.
+pub const NODEGROUP_DELETION_DELAY: Duration = CLUSTER_DELETION_DELAY;
+
 /// The instance type a node group gets when neither `instanceTypes` nor a launch
 /// template names one: "If you don't specify an instance type in a launch
 /// template or for `instanceTypes`, then `t3.medium` is used, by default"
@@ -933,8 +947,9 @@ pub const FARGATE_PROFILE_STATUS_CREATING: &str = "CREATING";
 /// See [`FARGATE_PROFILE_STATUS_CREATING`].
 pub const FARGATE_PROFILE_STATUS_ACTIVE: &str = "ACTIVE";
 /// See [`FARGATE_PROFILE_STATUS_CREATING`] — the status a profile reports once
-/// `DeleteFargateProfile` has taken it off its cluster, which is the final status
-/// that call answers with.
+/// `DeleteFargateProfile` has started taking it off its cluster, which it keeps
+/// until the clock has finished the removal [`FARGATE_PROFILE_DELETION_DELAY`]
+/// later.
 pub const FARGATE_PROFILE_STATUS_DELETING: &str = "DELETING";
 
 /// How long a newly created Fargate profile reports `CREATING` before the clock
@@ -947,6 +962,17 @@ pub const FARGATE_PROFILE_STATUS_DELETING: &str = "DELETING";
 /// be worth waiting for. The due instant is stored on the record; nothing sleeps
 /// for it.
 pub const FARGATE_PROFILE_ACTIVATION_DELAY: Duration = Duration::from_millis(500);
+
+/// How long a Fargate profile whose delete has been accepted reports `DELETING`
+/// before the clock has finished taking it off its cluster.
+///
+/// The same asynchronous removal a node group's delete runs
+/// ([`NODEGROUP_DELETION_DELAY`]), for the same reason and over the same span:
+/// `DeleteFargateProfile` answers with the profile in `DELETING` and finishes the
+/// removal later, so the profile is still a profile of its cluster — readable,
+/// listed, and in the way of creating the same name again — until this span has
+/// passed. The due instant is stored on the record; nothing sleeps for it.
+pub const FARGATE_PROFILE_DELETION_DELAY: Duration = NODEGROUP_DELETION_DELAY;
 
 /// The number of selectors one Fargate profile may carry.
 ///
@@ -2643,6 +2669,15 @@ pub struct FargateProfileRecord {
     /// When set, the instant at which the clock owes this profile the move from
     /// `CREATING` to `ACTIVE`. Cleared once the move is materialised.
     pub active_at: Option<SystemTime>,
+    /// When set, the instant at which the clock has finished taking this profile
+    /// off its cluster, after which the store no longer holds it
+    /// ([`ComAmazonawsEksAwswesleyfrontendState::materialize_due_transitions`]).
+    ///
+    /// A removal is asynchronous: the profile reports
+    /// [`FARGATE_PROFILE_STATUS_DELETING`] from the moment
+    /// `DeleteFargateProfile` accepts the delete until that instant, the way an
+    /// add-on's removal runs ([`AddonRecord::removed_at`]).
+    pub removed_at: Option<SystemTime>,
     pub tags: BTreeMap<String, String>,
     pub client_request_token: Option<String>,
 }
@@ -2651,6 +2686,11 @@ impl FargateProfileRecord {
     /// Materialise the status move the clock already owes at `now`. See
     /// [`ClusterRecord::materialize_due_transitions`].
     pub fn materialize_due_transitions(&mut self, now: SystemTime) {
+        // A profile on its way out is owed nothing but the end of its removal,
+        // which the store itself materialises.
+        if self.removed_at.is_some() {
+            return;
+        }
         if self.active_at.is_some_and(|due| now >= due) {
             self.status = FARGATE_PROFILE_STATUS_ACTIVE.to_string();
             self.active_at = None;

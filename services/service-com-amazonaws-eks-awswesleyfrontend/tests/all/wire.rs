@@ -188,6 +188,49 @@ pub async fn call(
     call_as(router, DEFAULT_ACCESS_KEY_ID, region, method, uri, body).await
 }
 
+/// How long a clock-owed move is given before a suite calls it a failure. Generous
+/// on purpose: what a suite asserts is the state a call reaches, never how fast the
+/// host gets there.
+pub const POLL_DEADLINE: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// How often [`read_until`] looks again. See [`POLL_DEADLINE`].
+pub const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(25);
+
+/// Call `read` until `holds` is true of what it answers, or [`POLL_DEADLINE`]
+/// passes.
+///
+/// The ONE place a suite waits for a clock-owed move: the condition is waited for by
+/// LOOKING AGAIN, never by waiting out a span, so a suite asserts the state a call
+/// reaches rather than how fast the host gets there. `case` names the row and `what`
+/// names the condition, so the failure says which wait gave up on what.
+///
+/// Here rather than in each suite for the same reason the rest of this module is: a
+/// second copy is a second place where the waiting can drift.
+pub async fn read_until<Read, Fut, Holds>(
+    case: &str,
+    what: &str,
+    mut read: Read,
+    holds: Holds,
+) -> Answer
+where
+    Read: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Answer>,
+    Holds: Fn(&Answer) -> bool,
+{
+    let deadline = std::time::Instant::now() + POLL_DEADLINE;
+    loop {
+        let answer = read().await;
+        if holds(&answer) {
+            return answer;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "case {case:?}: {what} never held, last read {answer:?}"
+        );
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
+}
+
 /// [`call`], signed with `access_key_id` in the SigV4 credential scope — which is where
 /// this emulator reads WHICH principal a request speaks for. One request builder for both,
 /// so a suite that drives a particular caller cannot send a differently shaped request

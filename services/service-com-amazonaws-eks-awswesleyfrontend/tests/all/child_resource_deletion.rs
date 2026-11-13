@@ -10,19 +10,24 @@
 //! names, answers with it in the status a delete leaves it in, and a miss of either
 //! half is the same not-found the matching read gives.
 //!
+//! The removal itself is ASYNCHRONOUS — the resource stays readable in `DELETING`
+//! until the clock has finished it, which `tests/all/asynchronous_child_removal.rs`
+//! is about — so a row here that reads the resource as gone waits for the removal to
+//! finish by LOOKING AGAIN, never for a span.
+//!
 //! The wire harness (`Answer`, `emulator`, `call`, `encode_label`) is the shared one
 //! in `tests/all/wire.rs`.
 
 use std::time::Duration;
 
 use service_com_amazonaws_eks_awswesleyfrontend::state::{
-    FARGATE_PROFILE_ACTIVATION_DELAY, NODEGROUP_ACTIVATION_DELAY, UPDATE_COMPLETION_DELAY,
+    NODEGROUP_ACTIVATION_DELAY, UPDATE_COMPLETION_DELAY,
 };
 use smithy_server_runtime::MultiServiceRouter;
 
 use crate::cluster_lifecycle::REGION;
 use crate::nodegroup_lifecycle::{create_cluster, create_nodegroup_in, minimal_request};
-use crate::wire::{call, emulator, encode_label, error_code, Answer};
+use crate::wire::{call, emulator, encode_label, error_code, read_until, Answer};
 
 /// A little longer than the span the clock owes a transition, so a read after it is
 /// certainly past the due instant.
@@ -121,6 +126,73 @@ async fn describe_fargate_profile(
     .await
 }
 
+/// Read the node group until it reports `ACTIVE`, through the shared
+/// [`crate::wire::read_until`]: the clock-owed provisioning is waited for by looking
+/// again, never by waiting out a span.
+async fn nodegroup_until_active(
+    router: &MultiServiceRouter,
+    case: &str,
+    cluster: &str,
+    name: &str,
+) -> Answer {
+    read_until(
+        case,
+        &format!("the node group {name:?} reports ACTIVE"),
+        || describe_nodegroup(router, cluster, name),
+        |answer| answer.status == 200 && answer.body["nodegroup"]["status"] == "ACTIVE",
+    )
+    .await
+}
+
+/// [`nodegroup_until_active`] for the Fargate profile.
+async fn fargate_profile_until_active(
+    router: &MultiServiceRouter,
+    case: &str,
+    cluster: &str,
+    name: &str,
+) -> Answer {
+    read_until(
+        case,
+        &format!("the profile {name:?} reports ACTIVE"),
+        || describe_fargate_profile(router, cluster, name),
+        |answer| answer.status == 200 && answer.body["fargateProfile"]["status"] == "ACTIVE",
+    )
+    .await
+}
+
+/// Read the node group until the read reports it absent: the END of the removal the
+/// delete accepted, waited for the same way.
+async fn nodegroup_until_gone(
+    router: &MultiServiceRouter,
+    case: &str,
+    cluster: &str,
+    name: &str,
+) -> Answer {
+    read_until(
+        case,
+        &format!("the removal of the node group {name:?} finished"),
+        || describe_nodegroup(router, cluster, name),
+        |answer| answer.status == 404,
+    )
+    .await
+}
+
+/// [`nodegroup_until_gone`] for the Fargate profile.
+async fn fargate_profile_until_gone(
+    router: &MultiServiceRouter,
+    case: &str,
+    cluster: &str,
+    name: &str,
+) -> Answer {
+    read_until(
+        case,
+        &format!("the removal of the profile {name:?} finished"),
+        || describe_fargate_profile(router, cluster, name),
+        |answer| answer.status == 404,
+    )
+    .await
+}
+
 // ---------------------------------------------------------------------------
 // RULE: a delete removes the one resource the `(cluster, resource)` pair names and
 // answers with it in the status a delete leaves it in; the matching read then
@@ -149,10 +221,15 @@ async fn a_delete_removes_exactly_the_resource_the_pair_names() {
             "setup: expected 200 from CreateFargateProfile for {name:?}, got {created:?}"
         );
     }
-    tokio::time::sleep(past(
-        NODEGROUP_ACTIVATION_DELAY.max(FARGATE_PROFILE_ACTIVATION_DELAY),
-    ))
-    .await;
+    // Each child settles on the clock; that is waited for by LOOKING AGAIN rather
+    // than for a span, so the deletes below act on resources that have settled.
+    for name in ["ng-one", "ng-two"] {
+        nodegroup_until_active(&router, "the node group delete", "deletions", name).await;
+    }
+    for name in ["fp-one", "fp-two"] {
+        fargate_profile_until_active(&router, "the Fargate profile delete", "deletions", name)
+            .await;
+    }
 
     let deleted = delete_nodegroup(&router, "deletions", "ng-one").await;
     assert_eq!(
@@ -170,10 +247,11 @@ async fn a_delete_removes_exactly_the_resource_the_pair_names() {
         "case the node group delete: expected status DELETING, got {:?}",
         deleted.body["nodegroup"]["status"]
     );
-    let gone = describe_nodegroup(&router, "deletions", "ng-one").await;
+    let gone = nodegroup_until_gone(&router, "the node group delete", "deletions", "ng-one").await;
     assert_eq!(
         gone.status, 404,
-        "case the node group delete: the resource is gone, got {gone:?}"
+        "case the node group delete: the resource is gone once the removal finished, got \
+         {gone:?}"
     );
     let kept = describe_nodegroup(&router, "deletions", "ng-two").await;
     assert_eq!(
@@ -192,10 +270,17 @@ async fn a_delete_removes_exactly_the_resource_the_pair_names() {
         "case the Fargate profile delete: expected status DELETING, got {:?}",
         deleted.body["fargateProfile"]["status"]
     );
-    let gone = describe_fargate_profile(&router, "deletions", "fp-one").await;
+    let gone = fargate_profile_until_gone(
+        &router,
+        "the Fargate profile delete",
+        "deletions",
+        "fp-one",
+    )
+    .await;
     assert_eq!(
         gone.status, 404,
-        "case the Fargate profile delete: the resource is gone, got {gone:?}"
+        "case the Fargate profile delete: the resource is gone once the removal finished, got \
+         {gone:?}"
     );
     let kept = describe_fargate_profile(&router, "deletions", "fp-two").await;
     assert_eq!(
@@ -222,10 +307,8 @@ async fn a_delete_of_a_resource_the_pair_does_not_name_is_not_found() {
         created.status, 200,
         "setup: expected 200 from CreateFargateProfile, got {created:?}"
     );
-    tokio::time::sleep(past(
-        NODEGROUP_ACTIVATION_DELAY.max(FARGATE_PROFILE_ACTIVATION_DELAY),
-    ))
-    .await;
+    nodegroup_until_active(&router, "the node group misses", "delete-misses", "ng").await;
+    fargate_profile_until_active(&router, "the profile misses", "delete-misses", "fp").await;
 
     for (case, cluster, name, nodegroup) in [
         ("a node group whose cluster was never created", "no-such-cluster", "ng", true),
@@ -249,7 +332,8 @@ async fn a_delete_of_a_resource_the_pair_does_not_name_is_not_found() {
         );
     }
 
-    // A second delete of the same resource is the same miss.
+    // A second delete of the same resource, once the removal the first accepted has
+    // finished, is the same miss.
     for (case, nodegroup, name) in [
         ("the node group, twice", true, "ng"),
         ("the Fargate profile, twice", false, "fp"),
@@ -263,6 +347,11 @@ async fn a_delete_of_a_resource_the_pair_does_not_name_is_not_found() {
             first.status, 200,
             "case {case:?}: the first delete succeeds, got {first:?}"
         );
+        if nodegroup {
+            nodegroup_until_gone(&router, case, "delete-misses", name).await;
+        } else {
+            fargate_profile_until_gone(&router, case, "delete-misses", name).await;
+        }
         let second = if nodegroup {
             delete_nodegroup(&router, "delete-misses", name).await
         } else {

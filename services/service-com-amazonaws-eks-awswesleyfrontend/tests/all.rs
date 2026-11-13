@@ -51,6 +51,8 @@ mod addon_update;
 mod addon_version_records;
 #[path = "all/addon_versions.rs"]
 mod addon_versions;
+#[path = "all/asynchronous_child_removal.rs"]
+mod asynchronous_child_removal;
 #[path = "all/cancel_update.rs"]
 mod cancel_update;
 #[path = "all/capability_lifecycle.rs"]
@@ -115,6 +117,8 @@ mod connected_clusters;
 mod control_plane_log_export;
 #[path = "all/control_plane_log_suppression.rs"]
 mod control_plane_log_suppression;
+#[path = "all/duplicate_child_create_refusal.rs"]
+mod duplicate_child_create_refusal;
 #[path = "all/eks_anywhere_subscription_mutations.rs"]
 mod eks_anywhere_subscription_mutations;
 #[path = "all/eks_anywhere_subscriptions.rs"]

@@ -693,12 +693,20 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                         });
                     }
                 }
+                // The SENTENCE is this operation's own, not a shape shared with the
+                // other creates of this service: Amazon EKS words a taken node-group
+                // name as the two labels "with name " and " and cluster name "
+                // followed by the request's `nodegroupName` and `clusterName`, with
+                // NO colon after either label. `CreateCluster`'s own conflict does
+                // carry one ("Cluster already exists with name: <name>"), so the
+                // punctuation is per-operation and is reproduced here as this
+                // operation states it rather than copied from a sibling create.
                 return Err(CreateNodegroupErrorModeled::ResourceInUseException(
                     ResourceInUseException {
                         cluster_name: Some(input.cluster_name.clone()),
                         nodegroup_name: Some(input.nodegroup_name.clone()),
                         message: Some(format!(
-                            "NodeGroup already exists with name: {} and cluster name: {}",
+                            "NodeGroup already exists with name {} and cluster name {}",
                             input.nodegroup_name, input.cluster_name
                         )),
                         ..Default::default()
@@ -815,6 +823,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             release_version: input.release_version.clone(),
             status: STATUS_CREATING.to_string(),
             active_at: Some(now + NODEGROUP_ACTIVATION_DELAY),
+            // Nothing is being removed: the removal instant is written only once
+            // `DeleteNodegroup` accepts a delete on this record.
+            removed_at: None,
             capacity_type: input
                 .capacity_type
                 .clone()

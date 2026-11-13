@@ -28,6 +28,16 @@ pub struct NodegroupRecord {
     /// When set, the instant at which the clock owes this node group the move
     /// from `CREATING` to `ACTIVE`. Cleared once the move is materialised.
     pub active_at: Option<SystemTime>,
+    /// When set, the instant at which the clock has finished taking this node
+    /// group off its cluster, after which the store no longer holds it
+    /// ([`ComAmazonawsEksAwswesleyfrontendState::materialize_due_transitions`]).
+    ///
+    /// A removal is asynchronous: `DeleteNodegroup` answers with the node group
+    /// in [`STATUS_DELETING`] and the node group is still a node group of its
+    /// cluster — readable, listed, and in the way of creating the same name again
+    /// — until that instant, the way an add-on's removal runs
+    /// ([`AddonRecord::removed_at`]).
+    pub removed_at: Option<SystemTime>,
     pub capacity_type: String,
     pub scaling_config: NodegroupScalingConfig,
     /// `None` when the node group was deployed with a launch template: "If the
@@ -182,6 +192,12 @@ impl NodegroupRecord {
     /// change an update owed this record at the instant it was owed. See
     /// [`ClusterRecord::materialize_due_transitions`].
     pub fn materialize_due_transitions(&mut self, now: SystemTime) {
+        // A node group on its way out is owed nothing but the end of its
+        // removal, which the store itself materialises: the change an update
+        // carried can no longer be made to a node group that is being deleted.
+        if self.removed_at.is_some() {
+            return;
+        }
         let Some(due) = self.active_at.filter(|due| now >= *due) else {
             return;
         };

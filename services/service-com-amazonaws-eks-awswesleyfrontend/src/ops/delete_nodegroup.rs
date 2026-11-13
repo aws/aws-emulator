@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op DeleteNodegroup
-//! IMPLEMENTED. Takes one managed node group off its cluster and answers with the
-//! record it removed, reporting the `DELETING` status that delete leaves it in —
-//! "the full description of your deleted node group". `DescribeNodegroup` and
-//! `ListNodegroups` answer from the same store, so the node group is gone from both
-//! as soon as this returns.
+//! IMPLEMENTED. Starts taking one managed node group off its cluster and answers
+//! with the record it accepted the delete on, reporting the `DELETING` status that
+//! delete leaves it in — "the full description of your deleted node group". The
+//! removal is ASYNCHRONOUS: `DescribeNodegroup` and `ListNodegroups` answer from the
+//! same store, so the node group is readable and listed in `DELETING` until the clock
+//! has finished the removal (`crate::state::NODEGROUP_DELETION_DELAY`), after which
+//! both report it gone.
 //!
 //! The rules it enforces:
 //!
@@ -164,7 +166,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // The lock is taken to remove the node group and released again: the capacity
         // it ran on is released below over calls out to other services, which this
         // store's guard is never held across.
-        let record = {
+        let (record, capacity) = {
             let mut guard = store.lock();
             guard.materialize_due_transitions(now);
 
@@ -198,26 +200,49 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 input.cluster_name.clone(),
                 input.nodegroup_name.clone(),
             );
-            let Some(mut record) = guard.nodegroups.remove(&nodegroup_key) else {
+            let Some(record) = guard.nodegroups.get_mut(&nodegroup_key) else {
                 return Err(not_found());
             };
 
+            // The removal this record has ALREADY taken: the node group is on its way
+            // out of the store, so a repeat of the call that accepted the delete is
+            // answered with the same record rather than refused for the status that
+            // call put it in — the same answer `DeleteEksAnywhereSubscription` gives a
+            // repeat of its own accepted removal. Nothing is released twice.
+            if record.removed_at.is_some() {
+                return Ok(DeleteNodegroupOutput {
+                    nodegroup: Some(record.to_nodegroup()),
+                });
+            }
+
             // The answer reports the node group on its way out, which is the status a
-            // delete leaves it in; the record is already gone from the store, so nothing
-            // the clock owed it is owed to anybody any more.
+            // delete leaves it in. The removal is ASYNCHRONOUS: the record stays in
+            // the store — readable, listed, and in the way of creating the same name
+            // again — until the clock has finished it
+            // ([`state::NODEGROUP_DELETION_DELAY`]), so nothing else the clock owed it
+            // is owed to anybody any more.
             record.status = STATUS_DELETING.to_string();
             record.active_at = None;
             record.pending_config = None;
             record.modified_at = now;
-            record
+            record.removed_at = Some(now + state::NODEGROUP_DELETION_DELAY);
+            let answered = record.clone();
+            // The capacity goes as the removal STARTS: the Auto Scaling group is what
+            // takes the nodes down, so it is released below and the STORED record
+            // stops naming it — a later read of the node group on its way out reports
+            // no `resources` rather than an Auto Scaling group the owning service no
+            // longer has, while THIS answer describes the node group as the delete
+            // found it.
+            let capacity = ::std::mem::take(&mut record.capacity);
+            (answered, capacity)
         };
 
         // The capacity the node group ran on goes with it: the Auto Scaling group, the
         // launch template it launched from and the remote-access security group exist
-        // only for this node group, so nothing holds them once it is gone
-        // ([`state::release_nodegroup_capacity`]). The node group has already left this
-        // service's state, so the answer does not depend on what those services say.
-        state::release_nodegroup_capacity(ctx, &region, &record.capacity).await;
+        // only for this node group, so nothing holds them once the delete is accepted
+        // ([`state::release_nodegroup_capacity`]). The answer does not depend on what
+        // those services say.
+        state::release_nodegroup_capacity(ctx, &region, &capacity).await;
 
         Ok(DeleteNodegroupOutput {
             nodegroup: Some(record.to_nodegroup()),
