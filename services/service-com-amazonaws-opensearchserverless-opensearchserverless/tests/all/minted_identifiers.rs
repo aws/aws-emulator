@@ -10,10 +10,11 @@
 //! protocol codec and the handler all take part exactly as they do for an SDK client.
 //!
 //! The rule under test: a value the service mints is DRAWN afresh for each resource and for
-//! each write, over the whole character class its modelled pattern admits — so it matches
-//! that pattern, no two minted values collide (across resource kinds, and across stores),
-//! and none carries structure a caller can read out of it: no filler run, no counter, no
-//! write instant, nothing the request supplied.
+//! each write, over the character class AWS's own values of that member are drawn from — so it
+//! matches the member's modelled pattern, no two minted values collide (across resource kinds,
+//! and across stores), and none carries structure a caller can read out of it: no filler run,
+//! no counter, no write instant, nothing the request supplied. The WIDTH and the alphabet each
+//! minted value carries are the sibling `minted_identifier_form` suite's subject.
 //!
 //! The tables span what the rule generalises over: both resources whose id is
 //! `^[a-z0-9]{3,40}$`, every `CollectionType`, several Regions, both policy families with
@@ -36,30 +37,28 @@ use crate::collection_lifecycle::{
 
 /// Every `CollectionType` member, from the model's own value list
 /// (`smithy_query(query="shape", shape="CollectionType")` -> `values`).
-const COLLECTION_TYPES: [&str; 3] = ["SEARCH", "TIMESERIES", "VECTORSEARCH"];
+pub(crate) const COLLECTION_TYPES: [&str; 3] = ["SEARCH", "TIMESERIES", "VECTORSEARCH"];
 
-/// The characters a hex rendering is built from. A minted token drawn over
-/// `PolicyVersion`'s own class (`[0-9a-zA-Z+/]`) reaches outside this set, which is what
-/// tells a drawn token from a hex-rendered counter or clock.
+/// The characters a hex rendering is built from. A minted token drawn over the alphanumeric
+/// class AWS's own version tokens use reaches outside this set, which is what tells a drawn
+/// token from a hex-rendered counter or clock.
 const HEX_CHARACTERS: &str = "0123456789abcdefABCDEF";
 
 /// An IdP metadata document, so the security-configuration rows have something to carry.
 /// `samlMetadata` is printable text
 /// (`@pattern("[\u{0009}\u{000A}\u{000D}\u{0020}-\u{007E}\u{00A1}-\u{00FF}]+")`).
-const SAML_METADATA: &str =
+pub(crate) const SAML_METADATA: &str =
     r#"<EntityDescriptor entityID="https://minted.example.com/metadata"></EntityDescriptor>"#;
 
 /// One family of version-bearing resource: the operations that create, write and read one,
 /// the member its detail is reported under and the member carrying the minted version.
-struct Family {
-    kind: &'static str,
-    create: &'static str,
-    /// The operation that writes one, or `None` while this service's write for it is still
-    /// scaffolded — `UpdateLifecyclePolicy` answers 501 and is its own stub issue, so the
-    /// lifecycle row covers the create half of the rule only.
-    update: Option<&'static str>,
-    detail: &'static str,
-    version_member: &'static str,
+pub(crate) struct Family {
+    pub(crate) kind: &'static str,
+    pub(crate) create: &'static str,
+    /// The operation that writes one.
+    pub(crate) update: Option<&'static str>,
+    pub(crate) detail: &'static str,
+    pub(crate) version_member: &'static str,
 }
 
 /// Every resource of this service whose write mints a version token: both policy families
@@ -68,7 +67,7 @@ struct Family {
 /// `["encryption", "network"]`), the lifecycle policy
 /// (`shape="LifecyclePolicyType"` -> `["retention"]`) and the security configuration, whose
 /// `configVersion` is a `PolicyVersion` too.
-const FAMILIES: [Family; 5] = [
+pub(crate) const FAMILIES: [Family; 5] = [
     Family {
         kind: "data",
         create: "CreateAccessPolicy",
@@ -93,7 +92,7 @@ const FAMILIES: [Family; 5] = [
     Family {
         kind: "retention",
         create: "CreateLifecyclePolicy",
-        update: None,
+        update: Some("UpdateLifecyclePolicy"),
         detail: "lifecyclePolicyDetail",
         version_member: "policyVersion",
     },
@@ -107,7 +106,7 @@ const FAMILIES: [Family; 5] = [
 ];
 
 /// The document a policy of `kind` carries, in the form that type's rules take.
-fn policy_document(kind: &str) -> String {
+pub(crate) fn policy_document(kind: &str) -> String {
     match kind {
         "data" => r#"{"Rules":[{"ResourceType":"collection","Resource":["collection/demo"],"Permission":["aoss:CreateCollectionItems"]}],"Principal":["arn:aws:iam::000000000000:role/Writer"]}"#.to_string(),
         "encryption" => r#"{"Rules":[{"ResourceType":"collection","Resource":["collection/demo"]}],"AWSOwnedKey":true}"#.to_string(),
@@ -118,7 +117,7 @@ fn policy_document(kind: &str) -> String {
 
 /// Call `operation` with `body`, asserting it was accepted, and answer the member of the
 /// response named by `detail`.
-async fn accepted(
+pub(crate) async fn accepted(
     router: &MultiServiceRouter,
     operation: &str,
     detail: &str,
@@ -135,7 +134,7 @@ async fn accepted(
 
 /// Create the collection `name` of `kind` in `region` with the AWS-owned key, asserting the
 /// create was accepted, and answer its `createCollectionDetail`.
-async fn create_collection(
+pub(crate) async fn create_collection(
     router: &MultiServiceRouter,
     region: &str,
     name: &str,
@@ -155,7 +154,7 @@ async fn create_collection(
 }
 
 /// Create the resource `family` describes under `name`, answering its detail.
-async fn create_versioned(router: &MultiServiceRouter, family: &Family, name: &str) -> Value {
+pub(crate) async fn create_versioned(router: &MultiServiceRouter, family: &Family, name: &str) -> Value {
     let request = if family.create == "CreateSecurityConfig" {
         json!({
             "type": family.kind,
@@ -174,7 +173,7 @@ async fn create_versioned(router: &MultiServiceRouter, family: &Family, name: &s
 
 /// Write the resource `family` describes, addressed at `version` (its optimistic-concurrency
 /// precondition), answering its detail.
-async fn update_versioned(
+pub(crate) async fn update_versioned(
     router: &MultiServiceRouter,
     family: &Family,
     update: &str,

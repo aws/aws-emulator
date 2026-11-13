@@ -42,6 +42,9 @@ pub mod announced_endpoints;
 /// The listener one collection's data plane is published on, which is the address a stock
 /// OpenSearch client is configured with.
 pub mod collection_plane;
+/// The account's VPCs and subnets, which a managed VPC endpoint is placed in: facts this
+/// service RESOLVES against Amazon EC2 rather than holds.
+pub mod ec2_network;
 
 pub use announced_endpoints::AnnouncedEndpoints;
 pub use collection_plane::CollectionPlane;
@@ -454,10 +457,19 @@ pub const MAX_RESOURCE_FILTER_WORK: usize = 100_000_000;
 /// above the combined resource caps so a realistic retry is always still replayable.
 pub const MAX_IDEMPOTENCY_TOKENS: usize = 1_024;
 
-/// The number of characters a minted `CollectionId` carries. `CollectionId` is
-/// `@length(min: 3, max: 40)` with `@pattern("^[a-z0-9]{3,40}$")`; 24 sits inside that and
-/// keeps `36^24` inside a `u128`, so a single draw renders a whole id.
-const ID_LEN: u32 = 24;
+/// The number of characters a minted `CollectionId` carries.
+///
+/// `CollectionId` is `@length(min: 3, max: 40)` with `@pattern("^[a-z0-9]{3,40}$")`, a bound
+/// far wider than the ONE width AWS mints inside it, so the modelled pattern does not settle
+/// this: what does is the RECORDED response of a collection create, whose id is 20 lowercase
+/// alphanumeric characters — the width that is also the host label of the collection endpoint
+/// derived from it (`https://<id>.<region>.aoss.amazonaws.com`). A client, a provider or a
+/// test that checks the form of an id (or of an endpoint built from one) against AWS's own
+/// takes this width and no other.
+///
+/// It sits inside the modelled bound and keeps `36^20` inside a `u128`, so a single draw
+/// renders a whole id.
+const ID_LEN: u32 = 20;
 
 /// The characters a `CollectionId` is built from: exactly the pattern's class.
 const ID_ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyz0123456789";
@@ -465,7 +477,7 @@ const ID_ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyz0123456789";
 /// The radix [`render_id`] renders a draw in — the size of [`ID_ALPHABET`].
 const ID_BASE: u128 = ID_ALPHABET.len() as u128;
 
-/// The number of distinct ids [`ComAmazonawsOpensearchserverlessOpensearchserverlessState::mint_collection_id`] can render: `36^24`.
+/// The number of distinct ids [`ComAmazonawsOpensearchserverlessOpensearchserverlessState::mint_collection_id`] can render: `36^20`.
 const ID_SPACE: u128 = ID_BASE.pow(ID_LEN);
 
 /// How many draws one mint takes before it keeps the last one.
@@ -475,13 +487,26 @@ const ID_SPACE: u128 = ID_BASE.pow(ID_LEN);
 /// of two live resources distinct, and the bound keeps a mint off an unbounded loop.
 const ID_MINT_ATTEMPTS: usize = 8;
 
-/// The number of random bytes behind one minted `PolicyVersion`.
+/// The number of characters one minted `PolicyVersion` carries.
 ///
 /// `PolicyVersion` is `@length(min: 20, max: 36)` with
 /// `@pattern("^([0-9a-zA-Z+/]{4})*(([0-9a-zA-Z+/]{2}==)|([0-9a-zA-Z+/]{3}=))?$")`, a
-/// base64-shaped token: 18 bytes encode to exactly 24 base64 characters, which sits inside
-/// the length bound, is a whole number of four-character groups and so carries no padding.
-const POLICY_VERSION_BYTES: usize = 18;
+/// base64-SHAPED token whose bound admits five widths (20, 24, 28, 32 and 36 characters), so
+/// the model does not settle this either: what does is the RECORDED response of a policy
+/// read, whose version token is 20 characters — the shortest the bound admits, a whole number
+/// of four-character groups, so unpadded.
+const POLICY_VERSION_LEN: usize = 20;
+
+/// The characters one minted `PolicyVersion` is drawn from: the ALPHANUMERIC half of the
+/// class the pattern admits, which is the class AWS's own version tokens are drawn from.
+///
+/// The pattern also admits `+` and `/`, and an encoder using the standard base64 alphabet
+/// puts them in a token: a policy version is an opaque identifier a caller round-trips into
+/// `Update*Policy` / `UpdateSecurityConfig`, logs, stores in configuration and places in
+/// paths and URLs, so a token holding a path delimiter breaks assumptions no AWS-issued one
+/// breaks.
+const POLICY_VERSION_ALPHABET: &[u8] =
+    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
 
 /// The prefix a `VpcEndpointId` carries, from the shape's own
 /// `@pattern("^vpce-[0-9a-z]*$")`.
@@ -664,19 +689,42 @@ fn render_id(draw: u128) -> String {
     String::from_utf8(id).unwrap_or_default()
 }
 
-/// Mint a fresh `PolicyVersion`: [`POLICY_VERSION_BYTES`] drawn bytes, base64-encoded.
+/// The number of byte values one character of [`POLICY_VERSION_ALPHABET`] is drawn from: the
+/// largest whole multiple of the alphabet's size that fits in a byte.
 ///
-/// The codec is `aws_smithy_types::base64`, the standard-alphabet encoder the wire
-/// serializer itself uses, so the token is drawn from exactly the characters
-/// `PolicyVersion`'s pattern admits.
+/// A byte at or above it is DISCARDED rather than folded into the alphabet, because 256 is not
+/// a multiple of 62: folding every byte would make the first eight characters of the alphabet
+/// likelier than the rest, which is structure a caller could read out of enough tokens.
+const POLICY_VERSION_DRAW_CEILING: usize = 256 - 256 % POLICY_VERSION_ALPHABET.len();
+
+/// Mint a fresh `PolicyVersion`: [`POLICY_VERSION_LEN`] characters drawn uniformly from
+/// [`POLICY_VERSION_ALPHABET`], one per drawn byte below
+/// [`POLICY_VERSION_DRAW_CEILING`].
 ///
 /// The token is drawn rather than derived, so it is opaque — it carries neither the write
 /// instant nor a counter a caller could read a write order out of — and a write never
 /// mints the version an earlier write did, which is what makes it usable as the
 /// optimistic-concurrency precondition `Update*Policy` and `UpdateSecurityConfig` check.
+///
+/// The loop draws another 32 bytes only while the token is short of its width, which a draw
+/// discarding under 4% of its bytes reaches with the first batch except by accident.
 pub fn mint_policy_version() -> String {
-    let bytes = random_bytes();
-    ::aws_smithy_types::base64::encode(&bytes[..POLICY_VERSION_BYTES])
+    let mut token = String::with_capacity(POLICY_VERSION_LEN);
+    while token.len() < POLICY_VERSION_LEN {
+        for byte in random_bytes() {
+            if token.len() == POLICY_VERSION_LEN {
+                break;
+            }
+            let draw = usize::from(byte);
+            if draw >= POLICY_VERSION_DRAW_CEILING {
+                continue;
+            }
+            token.push(char::from(
+                POLICY_VERSION_ALPHABET[draw % POLICY_VERSION_ALPHABET.len()],
+            ));
+        }
+    }
+    token
 }
 
 /// The hexadecimal digits a drawn `VpcEndpointId` is built from.

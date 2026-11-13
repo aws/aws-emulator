@@ -153,7 +153,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        let _ = ctx;
         let Some(state) = crate::state::service_state(&*self.engine) else {
             return Err(CreateVpcEndpointErrorModeled::InternalServerException(
                 InternalServerException {
@@ -202,6 +201,30 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 )
                 .into());
             }
+        }
+
+        // An interface endpoint is reached FROM a VPC, through network interfaces in that
+        // VPC's subnets, so the placement this request names has to exist for the endpoint to
+        // be reachable at all. A VPC and a subnet are Amazon EC2's resources, not this
+        // service's, so what the request names is resolved against EC2
+        // (`crate::state::ec2_network`) — before an id is minted and before anything is
+        // stored, so a placement that resolves to nothing leaves no endpoint behind. The
+        // lists are already held to their bounds above, so the resolving call is not sized by
+        // the request, and it is made BEFORE the store is locked.
+        if let Some(refusal) = crate::state::ec2_network::unresolved_network(
+            ctx,
+            &crate::state::request_region(ctx),
+            Some(input.vpc_id.as_str()),
+            &input.subnet_ids,
+        )
+        .await
+        {
+            return Err(CreateVpcEndpointErrorModeled::ValidationException(
+                ValidationException {
+                    message: Some(refusal),
+                },
+            )
+            .into());
         }
 
         let mut store = state.lock();

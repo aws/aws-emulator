@@ -15,6 +15,8 @@
 mod absent_resource_wording;
 #[path = "all/access_policy.rs"]
 mod access_policy;
+#[path = "all/access_policy_client_token_round_trip.rs"]
+mod access_policy_client_token_round_trip;
 #[path = "all/access_policy_listing.rs"]
 mod access_policy_listing;
 #[path = "all/account_settings.rs"]
@@ -81,6 +83,8 @@ mod lifecycle_policy_update;
 mod list_length_refusal_clause;
 #[path = "all/metadata_update_keeps_the_collection_deletable.rs"]
 mod metadata_update_keeps_the_collection_deletable;
+#[path = "all/minted_identifier_form.rs"]
+mod minted_identifier_form;
 #[path = "all/minted_identifiers.rs"]
 mod minted_identifiers;
 #[path = "all/policies_stats.rs"]

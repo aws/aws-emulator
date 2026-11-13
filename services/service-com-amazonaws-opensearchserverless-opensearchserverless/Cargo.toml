@@ -36,6 +36,12 @@ uuid = { version = "1", features = ["v5"] }
 # (`service::collection_rest`) resolves a request by rather than re-implementing.
 # Declared as a path dependency, the way the other consumers do.
 service-common = { path = "../common" }
+# The AWS SDK for EC2, driven over the in-process callback
+# (`OperationContext::callback`): a VPC and a subnet are EC2's resources, so a managed
+# VPC endpoint's placement is resolved against EC2 (`src/state/ec2_network.rs`) before
+# an endpoint is minted. Only the generated client is needed — the emulator supplies
+# the transport.
+aws-sdk-ec2 = { version = "1", default-features = false }
 
 [build-dependencies]
 emulator-core-build-support = { workspace = true }

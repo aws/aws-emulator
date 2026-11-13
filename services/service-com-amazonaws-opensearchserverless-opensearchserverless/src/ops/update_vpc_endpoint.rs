@@ -152,7 +152,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        let _ = ctx;
         let Some(state) = crate::state::service_state(&*self.engine) else {
             return Err(UpdateVpcEndpointErrorModeled::InternalServerException(
                 InternalServerException {
@@ -253,8 +252,49 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .into());
         }
 
+        // The subnets this update would ADD have to be subnets of the account for the
+        // endpoint's interfaces to go in them, and whether they are is Amazon EC2's to
+        // answer: they are resolved against it (`crate::state::ec2_network`) before anything
+        // is written, exactly as `CreateVpcEndpoint` resolves the placement it is given. The
+        // lists are already held to their bounds above, so the resolving call is not sized
+        // by the request, and it is made BEFORE the store is locked.
+        //
+        // It is made only for a request this service would otherwise APPLY: a request
+        // addressed at an endpoint that is not there, or at one in a status it cannot be
+        // changed from, is answered about the endpoint itself below — the endpoint is this
+        // service's own resource, so its state is the first thing the request is held to.
+        let addressed_is_updatable = {
+            let mut store = state.lock();
+            store.settle_due_transitions();
+            store.vpc_endpoints.get(&input.id).is_some_and(|record| {
+                crate::state::VPC_ENDPOINT_UPDATABLE_STATUSES.contains(&record.status.as_str())
+            })
+        };
+        if addressed_is_updatable {
+            if let Some(refusal) = crate::state::ec2_network::unresolved_network(
+                ctx,
+                &crate::state::request_region(ctx),
+                None,
+                input.add_subnet_ids.as_deref().unwrap_or_default(),
+            )
+            .await
+            {
+                return Err(UpdateVpcEndpointErrorModeled::ValidationException(
+                    ValidationException {
+                        message: Some(refusal),
+                    },
+                )
+                .into());
+            }
+        }
+
         let mut store = state.lock();
         store.settle_due_transitions();
+        // The read above was a PRE-CHECK, taken under its own lock because the resolving call
+        // between the two cannot hold one: what is authoritative is this lock's own reading of
+        // the endpoint below, which is where every precondition is applied and the write is
+        // made. A pre-check that was true and is no longer only means the resolving call was
+        // made for a request this lock then refuses on the endpoint's own state.
 
         // A replayed `clientToken` is a retry of the call that already applied this update,
         // so it answers the record that call left rather than applying the change twice.

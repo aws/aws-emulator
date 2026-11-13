@@ -1708,6 +1708,12 @@ mod ebs_refused_block_write_then_ec2_snapshot_completion;
 // can ask it.
 #[path = "all/lambda_in_function_sqs_authorization.rs"]
 mod lambda_in_function_sqs_authorization;
+// Declared in the appended tail, which is where every new suite inserts its lines: that the
+// network an OpenSearch Serverless managed VPC endpoint is placed in is resolved against
+// Amazon EC2, which owns the VPC and the subnets, so no endpoint is stored in a network that
+// does not exist — two services on one engine, which neither crate's own test target can ask.
+#[path = "all/aoss_vpc_endpoint_placement_resolves_in_ec2.rs"]
+mod aoss_vpc_endpoint_placement_resolves_in_ec2;
 // Declared in the appended tail, which is where every new suite inserts its lines: the NETWORK
 // ORIGIN of an S3 access point, enforced on the data path — the access point created with its
 // VpcConfiguration through S3 Control's own API and then addressed on S3's — spans S3 Control
