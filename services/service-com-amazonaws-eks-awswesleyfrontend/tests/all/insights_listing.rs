@@ -259,6 +259,34 @@ fn default_addon_version(engine: &engine::InMemoryEngine, kubernetes_version: &s
         })
 }
 
+/// The NEWEST published build of [`ADDON`] that is not published for one Kubernetes
+/// version — the build an add-on left behind by a version update is installed at.
+///
+/// A build is published for the Kubernetes versions released up to it, so the builds
+/// older than a version do not carry it: this is the newest of those.
+fn build_not_published_for(
+    engine: &engine::InMemoryEngine,
+    kubernetes_version: &str,
+) -> String {
+    let store = engine.state::<ComAmazonawsEksAwswesleyfrontendState>();
+    let guard = store.lock();
+    let now = SystemTime::now();
+    guard
+        .published_addon(ADDON, now)
+        .and_then(|addon| {
+            addon
+                .published_versions(now)
+                .find(|build| !build.supports(kubernetes_version))
+                .map(|build| build.addon_version.clone())
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "the add-on catalog must publish a build of {ADDON} that Kubernetes \
+                 {kubernetes_version} is not among the compatibilities of"
+            )
+        })
+}
+
 /// Two released Kubernetes versions one minor apart: the one a cluster is created at
 /// and the one it would be updated to. Read from the published calendar, so the pair
 /// is whatever that calendar currently offers.
@@ -539,21 +567,21 @@ async fn the_node_group_check_reports_the_version_skew_that_blocks_an_update() {
 async fn the_addon_check_reports_builds_that_do_not_cover_the_next_version() {
     let (router, engine) = emulator_with_engine();
     let (current, target) = version_pair(&engine);
-    // Rows differ in the add-on build installed: none at all; the catalog's default
-    // build for the cluster's own version, which is published for that version and the
-    // one before it and so not for the version the cluster would move to; and the
-    // default build for THAT version, which is published for it. A build the catalog
-    // does not publish cannot be installed at all, so no row can carry one.
-    let build_for_current = default_addon_version(&engine, &current);
+    // Rows differ in the add-on build installed: none at all; the newest build the
+    // catalog does NOT publish for the version the cluster would move to, which is
+    // installable on the cluster's own version; and the default build for THAT
+    // version, which is published for it. A build the catalog does not publish cannot
+    // be installed at all, so no row can carry one.
+    let build_for_current = build_not_published_for(&engine, &target);
     let build_for_target = default_addon_version(&engine, &target);
     assert_ne!(
         build_for_current, build_for_target,
-        "setup: the catalog must publish different default builds for {current} and {target}"
+        "setup: a build that is not published for {target} cannot be its default build"
     );
     let rows: Vec<(&str, Option<String>, &str)> = vec![
         ("no add-ons installed", None, INSIGHT_STATUS_PASSING),
         (
-            "the default build for the cluster's version",
+            "a build not published for the version the cluster would move to",
             Some(build_for_current.clone()),
             INSIGHT_STATUS_ERROR,
         ),
@@ -1298,8 +1326,8 @@ async fn every_listed_insight_is_read_back_by_its_id() {
     );
     let (middle, oldest) = (published[1].clone(), published[2].clone());
     // One cluster with something for each resource-bearing check to list: a node
-    // group left behind by a version update, and an add-on installed at the build the
-    // catalog publishes for the version the cluster came from.
+    // group left behind by a version update, and an add-on installed at a build the
+    // catalog does not publish for the version the cluster is moved to.
     let name = "described";
     create_cluster(&router, name, Some(&oldest), None).await;
     settle_creation().await;
@@ -1308,7 +1336,7 @@ async fn every_listed_insight_is_read_back_by_its_id() {
         .as_str()
         .unwrap_or_default()
         .to_owned();
-    let addon_arn = create_addon(&router, name, &default_addon_version(&engine, &oldest))
+    let addon_arn = create_addon(&router, name, &build_not_published_for(&engine, &middle))
         .await
         .addon()["addonArn"]
         .as_str()

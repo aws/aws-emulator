@@ -578,6 +578,12 @@ impl ComAmazonawsEksAwswesleyfrontendState {
     /// one Kubernetes version — the version `CreateAddon` installs when the
     /// caller names none — or `None` when this catalog publishes no build of
     /// that add-on for that Kubernetes version.
+    ///
+    /// It is the NEWEST published build that supports that Kubernetes version,
+    /// which is the build whose reported compatibility for it carries
+    /// `defaultVersion` true ([`AddonCatalogRecord::to_addon_version_infos`]):
+    /// the catalog a caller reads and the build an install resolves have one
+    /// source.
     pub fn default_addon_version(
         &self,
         addon_name: &str,
@@ -586,7 +592,7 @@ impl ComAmazonawsEksAwswesleyfrontendState {
     ) -> Option<String> {
         self.published_addon(addon_name, now)?
             .published_versions(now)
-            .find(|version| version.is_default_for(kubernetes_version))
+            .find(|version| version.supports(kubernetes_version))
             .map(|version| version.addon_version.clone())
     }
 

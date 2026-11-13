@@ -55,6 +55,19 @@ pub(super) struct AddonCatalogSeed {
     /// Whether the add-on needs IAM permissions of its own
     /// (`AddonVersionInfo$requiresIamPermissions`).
     pub(super) requires_iam_permissions: bool,
+    /// The kinds of compute Amazon EKS publishes THIS add-on's builds for, what
+    /// `AddonVersionInfo$computeTypes` reports for every one of them
+    /// ([`ADDON_COMPUTE_TYPES_EC2`] and the other published combinations).
+    ///
+    /// Source: the compute an add-on is offered on, which is a property of the
+    /// add-on and of nothing else — the workloads its chart ships and the
+    /// compute Amazon EKS supports them on. Every add-on runs on the EC2
+    /// instances of a node group; the ones Amazon EKS builds and curates itself
+    /// run on the nodes EKS Auto Mode provisions as well; AWS Fargate runs no
+    /// DaemonSet, so only an add-on whose every workload is a Deployment is
+    /// published for it; and `hybrid` is published for the add-ons a node joined
+    /// by EKS Hybrid Nodes needs or reports through.
+    pub(super) compute_types: &'static [&'static str],
     /// The configuration properties the add-on cannot be installed without.
     /// EMPTY for an add-on whose configuration values are optional, which is
     /// what makes `AddonVersionInfo$requiresConfiguration` false for it and
@@ -83,17 +96,22 @@ pub(super) struct AddonCatalogSeed {
     /// its own.
     pub(super) pod_identity: &'static [(&'static str, &'static [&'static str])],
     /// The JSON Schema dialect THIS add-on's published configuration document
-    /// is written in ([`ADDON_SCHEMA_DIALECT_DRAFT_06`] or
-    /// [`ADDON_SCHEMA_DIALECT_DRAFT_07`]).
+    /// is written in ([`ADDON_SCHEMA_DIALECT_DRAFT_06`],
+    /// [`ADDON_SCHEMA_DIALECT_DRAFT_07`] or [`ADDON_SCHEMA_DIALECT_2019_09`]).
     ///
     /// Source: the `$schema` keyword of the document `aws eks
     /// describe-addon-configuration --addon-name <name> --addon-version
     /// <build>` reports. The dialect belongs to the DOCUMENT, so it is the
     /// add-on's own: the charts Amazon EKS has published schemas for the longest
     /// declare draft-06, while the newer generation — the upstream projects it
-    /// curates and the operators it has added since — declare draft-07, and a
+    /// curates, the operators it has added since and the drivers whose documents
+    /// it has reissued — declare draft-07 or the 2019-09 dialect, and a
     /// client that loads the document into a validator honours the keywords of
     /// the dialect that add-on published.
+    ///
+    /// It also decides which SHAPE the published document takes, because the two
+    /// go together in the documents Amazon EKS publishes; see
+    /// [`AddonCatalogRecord::configuration_schema_value`].
     pub(super) schema_dialect: &'static str,
     /// The OLDEST Kubernetes version in [`VERSION_CALENDAR`] this add-on has a
     /// published build for: the calendar row Amazon EKS first offered it on, or
@@ -168,6 +186,7 @@ pub(super) const ADDON_CATALOG: &[AddonCatalogSeed] = &[
         // AccuKnox's KubeArmor: the runtime security enforcement agent, a node
         // agent a caller subscribes to through AWS Marketplace.
         addon_name: "accuknox_kubearmor",
+        compute_types: ADDON_COMPUTE_TYPES_EC2,
         workload: AddonWorkload::PerNode,
         required_addons: &[],
         admission_webhook: false,
@@ -191,6 +210,7 @@ pub(super) const ADDON_CATALOG: &[AddonCatalogSeed] = &[
     },
     AddonCatalogSeed {
         addon_name: "adot",
+        compute_types: ADDON_COMPUTE_TYPES_EVERY_COMPUTE,
         // The OpenTelemetry Operator, whose admission webhooks are served with
         // certificates cert-manager issues.
         workload: AddonWorkload::Replicated,
@@ -219,6 +239,7 @@ pub(super) const ADDON_CATALOG: &[AddonCatalogSeed] = &[
         // Akuity's agent, which connects the cluster to the Akuity Platform's
         // managed Argo CD control plane.
         addon_name: "akuity_akuity-agent",
+        compute_types: ADDON_COMPUTE_TYPES_EC2,
         workload: AddonWorkload::Replicated,
         required_addons: &[],
         admission_webhook: false,
@@ -238,6 +259,7 @@ pub(super) const ADDON_CATALOG: &[AddonCatalogSeed] = &[
     },
     AddonCatalogSeed {
         addon_name: "amazon-cloudwatch-observability",
+        compute_types: ADDON_COMPUTE_TYPES_EC2_HYBRID_AUTO,
         workload: AddonWorkload::Replicated,
         required_addons: &[],
         admission_webhook: true,
@@ -281,6 +303,7 @@ pub(super) const ADDON_CATALOG: &[AddonCatalogSeed] = &[
         // training and inference workloads of a HyperPod cluster whose
         // orchestration runs on this cluster.
         addon_name: "amazon-sagemaker-hyperpod-taskgovernance",
+        compute_types: ADDON_COMPUTE_TYPES_EC2_AUTO,
         workload: AddonWorkload::Replicated,
         required_addons: &["cert-manager"],
         admission_webhook: false,
@@ -308,6 +331,7 @@ pub(super) const ADDON_CATALOG: &[AddonCatalogSeed] = &[
     },
     AddonCatalogSeed {
         addon_name: "amazon-sagemaker-hyperpod-training-operator",
+        compute_types: ADDON_COMPUTE_TYPES_EC2_AUTO,
         workload: AddonWorkload::Replicated,
         required_addons: &["cert-manager"],
         admission_webhook: false,
@@ -342,6 +366,7 @@ pub(super) const ADDON_CATALOG: &[AddonCatalogSeed] = &[
     },
     AddonCatalogSeed {
         addon_name: "aws-ebs-csi-driver",
+        compute_types: ADDON_COMPUTE_TYPES_EC2_AUTO,
         // The CSI drivers run a controller Deployment beside their node
         // DaemonSet, so an install of one has a replica to place.
         workload: AddonWorkload::Replicated,
@@ -374,6 +399,7 @@ pub(super) const ADDON_CATALOG: &[AddonCatalogSeed] = &[
         // The Elastic Fabric Adapter device plugin, which advertises the EFA
         // network interfaces of a node to the scheduler.
         addon_name: "aws-efa-k8s-device-plugin",
+        compute_types: ADDON_COMPUTE_TYPES_EC2_AUTO,
         workload: AddonWorkload::PerNode,
         required_addons: &[],
         admission_webhook: false,
@@ -394,6 +420,7 @@ pub(super) const ADDON_CATALOG: &[AddonCatalogSeed] = &[
     },
     AddonCatalogSeed {
         addon_name: "aws-efs-csi-driver",
+        compute_types: ADDON_COMPUTE_TYPES_EC2_AUTO,
         workload: AddonWorkload::Replicated,
         required_addons: &[],
         admission_webhook: false,
@@ -428,7 +455,9 @@ pub(super) const ADDON_CATALOG: &[AddonCatalogSeed] = &[
             // declares the options that add-on itself takes.
             ("useFIPS", "boolean"),
         ],
-        schema_dialect: ADDON_SCHEMA_DIALECT_DRAFT_06,
+        // The driver's document is one Amazon EKS has reissued in the 2019-09
+        // dialect, which is the `$schema` it declares.
+        schema_dialect: ADDON_SCHEMA_DIALECT_2019_09,
         first_cluster_version: None,
         // The driver released two new major versions over these Kubernetes
         // releases, so its published history spans majors 1, 2 and 3: a caller
@@ -447,6 +476,7 @@ pub(super) const ADDON_CATALOG: &[AddonCatalogSeed] = &[
     },
     AddonCatalogSeed {
         addon_name: "aws-guardduty-agent",
+        compute_types: ADDON_COMPUTE_TYPES_EC2_AUTO,
         workload: AddonWorkload::PerNode,
         required_addons: &[],
         admission_webhook: false,
@@ -469,6 +499,7 @@ pub(super) const ADDON_CATALOG: &[AddonCatalogSeed] = &[
     },
     AddonCatalogSeed {
         addon_name: "aws-mountpoint-s3-csi-driver",
+        compute_types: ADDON_COMPUTE_TYPES_EC2_AUTO,
         workload: AddonWorkload::Replicated,
         required_addons: &[],
         admission_webhook: false,
@@ -504,6 +535,7 @@ pub(super) const ADDON_CATALOG: &[AddonCatalogSeed] = &[
         // CloudWatch Network Flow Monitor, which it publishes to with
         // permissions of its own.
         addon_name: "aws-network-flow-monitoring-agent",
+        compute_types: ADDON_COMPUTE_TYPES_EC2_AUTO,
         workload: AddonWorkload::PerNode,
         required_addons: &[],
         admission_webhook: false,
@@ -529,6 +561,7 @@ pub(super) const ADDON_CATALOG: &[AddonCatalogSeed] = &[
     },
     AddonCatalogSeed {
         addon_name: "cert-manager",
+        compute_types: ADDON_COMPUTE_TYPES_EVERY_COMPUTE,
         // Its controller, cainjector and webhook are Deployments, and the
         // webhook is the one the API server calls for the resources of the
         // add-ons installed against it.
@@ -571,6 +604,7 @@ pub(super) const ADDON_CATALOG: &[AddonCatalogSeed] = &[
     },
     AddonCatalogSeed {
         addon_name: "coredns",
+        compute_types: ADDON_COMPUTE_TYPES_EVERY_COMPUTE,
         workload: AddonWorkload::Replicated,
         required_addons: &[],
         admission_webhook: false,
@@ -593,6 +627,7 @@ pub(super) const ADDON_CATALOG: &[AddonCatalogSeed] = &[
     },
     AddonCatalogSeed {
         addon_name: "datadog_operator",
+        compute_types: ADDON_COMPUTE_TYPES_EC2,
         workload: AddonWorkload::Replicated,
         required_addons: &[],
         admission_webhook: false,
@@ -616,6 +651,7 @@ pub(super) const ADDON_CATALOG: &[AddonCatalogSeed] = &[
     },
     AddonCatalogSeed {
         addon_name: "dynatrace_dynatrace-operator",
+        compute_types: ADDON_COMPUTE_TYPES_EC2,
         workload: AddonWorkload::Replicated,
         required_addons: &[],
         admission_webhook: false,
@@ -637,6 +673,7 @@ pub(super) const ADDON_CATALOG: &[AddonCatalogSeed] = &[
         // eG Innovations' universal agent operator, which installs the eG agents
         // that report the cluster's workloads to an eG Manager.
         addon_name: "eg-innovations_eg-universal-agent-operator",
+        compute_types: ADDON_COMPUTE_TYPES_EC2,
         workload: AddonWorkload::Replicated,
         required_addons: &[],
         admission_webhook: false,
@@ -656,6 +693,7 @@ pub(super) const ADDON_CATALOG: &[AddonCatalogSeed] = &[
     },
     AddonCatalogSeed {
         addon_name: "eks-node-monitoring-agent",
+        compute_types: ADDON_COMPUTE_TYPES_EC2_HYBRID_AUTO,
         workload: AddonWorkload::PerNode,
         required_addons: &[],
         admission_webhook: false,
@@ -680,6 +718,7 @@ pub(super) const ADDON_CATALOG: &[AddonCatalogSeed] = &[
     },
     AddonCatalogSeed {
         addon_name: "eks-pod-identity-agent",
+        compute_types: ADDON_COMPUTE_TYPES_EC2_HYBRID_AUTO,
         workload: AddonWorkload::PerNode,
         required_addons: &[],
         admission_webhook: false,
@@ -702,6 +741,7 @@ pub(super) const ADDON_CATALOG: &[AddonCatalogSeed] = &[
     },
     AddonCatalogSeed {
         addon_name: "external-dns",
+        compute_types: ADDON_COMPUTE_TYPES_EC2_FARGATE_AUTO,
         workload: AddonWorkload::Replicated,
         required_addons: &[],
         admission_webhook: false,
@@ -732,6 +772,7 @@ pub(super) const ADDON_CATALOG: &[AddonCatalogSeed] = &[
     AddonCatalogSeed {
         // HAProxy Technologies' enterprise Kubernetes ingress controller.
         addon_name: "haproxy-technologies_kubernetes-ingress-ee",
+        compute_types: ADDON_COMPUTE_TYPES_EC2,
         workload: AddonWorkload::Replicated,
         required_addons: &[],
         admission_webhook: false,
@@ -755,6 +796,7 @@ pub(super) const ADDON_CATALOG: &[AddonCatalogSeed] = &[
         // Kong's Konnect reference implementation: the Kong gateway, managed from
         // a Konnect control plane.
         addon_name: "kong_konnect-ri",
+        compute_types: ADDON_COMPUTE_TYPES_EC2,
         workload: AddonWorkload::Replicated,
         required_addons: &[],
         admission_webhook: false,
@@ -774,6 +816,7 @@ pub(super) const ADDON_CATALOG: &[AddonCatalogSeed] = &[
     },
     AddonCatalogSeed {
         addon_name: "kube-proxy",
+        compute_types: ADDON_COMPUTE_TYPES_EC2_HYBRID_AUTO,
         workload: AddonWorkload::PerNode,
         required_addons: &[],
         admission_webhook: false,
@@ -799,6 +842,7 @@ pub(super) const ADDON_CATALOG: &[AddonCatalogSeed] = &[
     },
     AddonCatalogSeed {
         addon_name: "kube-state-metrics",
+        compute_types: ADDON_COMPUTE_TYPES_EVERY_COMPUTE,
         workload: AddonWorkload::Replicated,
         required_addons: &[],
         admission_webhook: false,
@@ -823,6 +867,7 @@ pub(super) const ADDON_CATALOG: &[AddonCatalogSeed] = &[
     },
     AddonCatalogSeed {
         addon_name: "kubecost_kubecost",
+        compute_types: ADDON_COMPUTE_TYPES_EC2,
         workload: AddonWorkload::Replicated,
         required_addons: &[],
         admission_webhook: false,
@@ -848,6 +893,7 @@ pub(super) const ADDON_CATALOG: &[AddonCatalogSeed] = &[
     },
     AddonCatalogSeed {
         addon_name: "metrics-server",
+        compute_types: ADDON_COMPUTE_TYPES_EVERY_COMPUTE,
         workload: AddonWorkload::Replicated,
         required_addons: &[],
         admission_webhook: false,
@@ -875,6 +921,7 @@ pub(super) const ADDON_CATALOG: &[AddonCatalogSeed] = &[
         // NetApp's Trident operator, which installs the Trident CSI driver for
         // NetApp storage.
         addon_name: "netapp_trident-operator",
+        compute_types: ADDON_COMPUTE_TYPES_EC2,
         workload: AddonWorkload::Replicated,
         required_addons: &[],
         admission_webhook: false,
@@ -895,6 +942,7 @@ pub(super) const ADDON_CATALOG: &[AddonCatalogSeed] = &[
     },
     AddonCatalogSeed {
         addon_name: "prometheus-node-exporter",
+        compute_types: ADDON_COMPUTE_TYPES_EC2_HYBRID_AUTO,
         workload: AddonWorkload::PerNode,
         required_addons: &[],
         admission_webhook: false,
@@ -921,6 +969,7 @@ pub(super) const ADDON_CATALOG: &[AddonCatalogSeed] = &[
         // Rafay Systems' operator, which registers the cluster with the Rafay
         // controller that manages it.
         addon_name: "rafay-systems_rafay-operator",
+        compute_types: ADDON_COMPUTE_TYPES_EC2,
         workload: AddonWorkload::Replicated,
         required_addons: &[],
         admission_webhook: false,
@@ -940,6 +989,7 @@ pub(super) const ADDON_CATALOG: &[AddonCatalogSeed] = &[
     },
     AddonCatalogSeed {
         addon_name: "snapshot-controller",
+        compute_types: ADDON_COMPUTE_TYPES_EC2_FARGATE_AUTO,
         workload: AddonWorkload::Replicated,
         required_addons: &[],
         admission_webhook: false,
@@ -964,6 +1014,7 @@ pub(super) const ADDON_CATALOG: &[AddonCatalogSeed] = &[
         // Solo.io's Istio distribution: the service mesh's control plane, built
         // and supported by Solo.io.
         addon_name: "solo-io_istio-distro",
+        compute_types: ADDON_COMPUTE_TYPES_EC2,
         workload: AddonWorkload::Replicated,
         required_addons: &[],
         admission_webhook: true,
@@ -987,6 +1038,7 @@ pub(super) const ADDON_CATALOG: &[AddonCatalogSeed] = &[
         // Splunk's OpenTelemetry collector chart, which ships the cluster's
         // metrics, traces and logs to a Splunk Observability realm.
         addon_name: "splunk_splunk-otel-collector-chart",
+        compute_types: ADDON_COMPUTE_TYPES_EC2,
         workload: AddonWorkload::Replicated,
         required_addons: &[],
         admission_webhook: false,
@@ -1012,6 +1064,7 @@ pub(super) const ADDON_CATALOG: &[AddonCatalogSeed] = &[
         // StormForge Optimize Live, which right-sizes the cluster's workloads
         // from the recommendations its own platform computes.
         addon_name: "stormforge_optimize-live",
+        compute_types: ADDON_COMPUTE_TYPES_EC2,
         workload: AddonWorkload::Replicated,
         required_addons: &[],
         admission_webhook: false,
@@ -1033,6 +1086,7 @@ pub(super) const ADDON_CATALOG: &[AddonCatalogSeed] = &[
         // Teleport's Kubernetes agent, which joins the cluster to a Teleport
         // cluster so access to it goes through Teleport.
         addon_name: "teleport_teleport-kube-agent",
+        compute_types: ADDON_COMPUTE_TYPES_EC2,
         workload: AddonWorkload::Replicated,
         required_addons: &[],
         admission_webhook: false,
@@ -1054,6 +1108,7 @@ pub(super) const ADDON_CATALOG: &[AddonCatalogSeed] = &[
         // Tetrate's Istio distribution, the hardened build of the mesh Tetrate
         // supports.
         addon_name: "tetrate-io_istio-distro",
+        compute_types: ADDON_COMPUTE_TYPES_EC2,
         workload: AddonWorkload::Replicated,
         required_addons: &[],
         admission_webhook: true,
@@ -1077,6 +1132,7 @@ pub(super) const ADDON_CATALOG: &[AddonCatalogSeed] = &[
         // Upbound's Universal Crossplane, which reconciles the cloud
         // infrastructure the cluster's own resources declare.
         addon_name: "upbound_universal-crossplane",
+        compute_types: ADDON_COMPUTE_TYPES_EC2,
         workload: AddonWorkload::Replicated,
         required_addons: &[],
         admission_webhook: false,
@@ -1101,6 +1157,7 @@ pub(super) const ADDON_CATALOG: &[AddonCatalogSeed] = &[
         // Upwind Security's operator, which runs its runtime sensors on the
         // cluster's nodes.
         addon_name: "upwind-security_upwind-operator",
+        compute_types: ADDON_COMPUTE_TYPES_EC2,
         workload: AddonWorkload::Replicated,
         required_addons: &[],
         admission_webhook: false,
@@ -1120,6 +1177,7 @@ pub(super) const ADDON_CATALOG: &[AddonCatalogSeed] = &[
     },
     AddonCatalogSeed {
         addon_name: "vpc-cni",
+        compute_types: ADDON_COMPUTE_TYPES_EC2_AUTO,
         workload: AddonWorkload::PerNode,
         required_addons: &[],
         admission_webhook: false,
@@ -1238,18 +1296,21 @@ pub struct AddonCompatibilityRecord {
     /// The platform versions of that cluster version the build runs on
     /// ([`ADDON_ANY_PLATFORM_VERSION`]).
     pub platform_versions: Vec<String>,
-    /// Whether this build is the one `CreateAddon` installs on a cluster of
-    /// that Kubernetes version when the caller names no `addonVersion`.
-    pub default_version: bool,
 }
 
 impl AddonCompatibilityRecord {
     /// This row as the modelled `Compatibility` shape.
-    pub fn to_compatibility(&self) -> Compatibility {
+    ///
+    /// `default_version` is whether the build this row belongs to is the one
+    /// Amazon EKS installs on a cluster of that Kubernetes version when the
+    /// caller names no version. It is NOT stored on the row: which build that is
+    /// depends on which builds the clock has reached, so it is decided per read
+    /// (see [`AddonCatalogRecord::to_addon_version_infos`]) and cannot go stale.
+    pub fn to_compatibility(&self, default_version: bool) -> Compatibility {
         Compatibility {
             cluster_version: Some(self.cluster_version.clone()),
             platform_versions: Some(self.platform_versions.clone()),
-            default_version: self.default_version,
+            default_version,
         }
     }
 }
@@ -1268,7 +1329,12 @@ pub struct AddonCatalogVersionRecord {
     pub published_at: SystemTime,
     /// The architectures the build is published for ([`ADDON_ARCHITECTURES`]).
     pub architecture: Vec<String>,
-    /// The Kubernetes versions the build supports, oldest first.
+    /// The kinds of compute the build is published for; see
+    /// [`AddonCatalogSeed::compute_types`].
+    pub compute_types: Vec<String>,
+    /// The Kubernetes versions the build supports, NEWEST FIRST — one row per
+    /// Kubernetes minor version, which is the order and the granularity the
+    /// catalog publishes an add-on build's compatibilities in.
     pub compatibilities: Vec<AddonCompatibilityRecord>,
     /// The configuration properties the build cannot be installed without; see
     /// [`AddonCatalogSeed::required_configuration`].
@@ -1297,33 +1363,35 @@ impl AddonCatalogVersionRecord {
         !self.required_configuration.is_empty()
     }
 
-    /// Whether this build is the default one for a Kubernetes version.
-    pub fn is_default_for(&self, cluster_version: &str) -> bool {
-        self.compatibilities
-            .iter()
-            .any(|entry| entry.cluster_version == cluster_version && entry.default_version)
-    }
-
     /// This build as the modelled `AddonVersionInfo` shape.
     ///
     /// `cluster_version`, when given, is the Kubernetes version the listing was
     /// filtered to: the reported compatibilities are then the ones for that
     /// version alone, because a filtered listing answers about that version.
-    pub fn to_addon_version_info(&self, cluster_version: Option<&str>) -> AddonVersionInfo {
+    ///
+    /// `is_default_for` answers, for one Kubernetes version this build supports,
+    /// whether this build is the DEFAULT build for it — the question the add-on
+    /// as a whole decides, since it is about the other builds of the same add-on
+    /// (see [`AddonCatalogRecord::to_addon_version_infos`]).
+    pub fn to_addon_version_info(
+        &self,
+        cluster_version: Option<&str>,
+        is_default_for: impl Fn(&str) -> bool,
+    ) -> AddonVersionInfo {
         AddonVersionInfo {
             addon_version: Some(self.addon_version.clone()),
             architecture: Some(self.architecture.clone()),
-            // `computeTypes` is "The type of compute associated with the
-            // add-on version": no build this catalog publishes is restricted to
-            // one, so there is nothing to report.
-            compute_types: None,
+            // "Indicates the compute type of the add-on version": the kinds of
+            // compute Amazon EKS publishes this build for, which the catalog
+            // carries per add-on ([`AddonCatalogSeed::compute_types`]).
+            compute_types: Some(self.compute_types.clone()),
             compatibilities: Some(
                 self.compatibilities
                     .iter()
                     .filter(|entry| {
                         cluster_version.is_none_or(|wanted| wanted == entry.cluster_version)
                     })
-                    .map(AddonCompatibilityRecord::to_compatibility)
+                    .map(|entry| entry.to_compatibility(is_default_for(&entry.cluster_version)))
                     .collect(),
             ),
             requires_configuration: self.requires_configuration(),
@@ -1396,6 +1464,42 @@ impl AddonCatalogRecord {
         }
     }
 
+    /// The builds of this add-on a listing reports at `now`, newest first — the
+    /// modelled `AddonVersionInfo` list of its `AddonInfo`.
+    ///
+    /// `cluster_version`, when given, is the Kubernetes version the listing was
+    /// filtered to: only the builds that support it are reported, each with its
+    /// compatibility for that version alone.
+    ///
+    /// Each compatibility's `defaultVersion` marks the build Amazon EKS installs
+    /// on a cluster of that Kubernetes version when the caller names no
+    /// `addonVersion`, which is the NEWEST published build that supports it: a
+    /// superseded build is the default for no Kubernetes version, and whichever
+    /// version the listing is filtered to, the flag is the same one the
+    /// unfiltered listing reports, because it is decided against every published
+    /// build of the add-on rather than against the ones this answer carries.
+    pub fn to_addon_version_infos(
+        &self,
+        now: SystemTime,
+        cluster_version: Option<&str>,
+    ) -> Vec<AddonVersionInfo> {
+        let published: Vec<&AddonCatalogVersionRecord> = self.published_versions(now).collect();
+        published
+            .iter()
+            .enumerate()
+            .filter(|(_, build)| cluster_version.is_none_or(|wanted| build.supports(wanted)))
+            .map(|(position, build)| {
+                // The builds published AFTER this one, which are the ones that
+                // take the default away from it: `published` is newest first, so
+                // they are the ones before it.
+                let newer = &published[..position];
+                build.to_addon_version_info(cluster_version, |minor| {
+                    !newer.iter().any(|newer| newer.supports(minor))
+                })
+            })
+            .collect()
+    }
+
     /// The service accounts this add-on runs as, as the modelled
     /// `AddonPodIdentityConfiguration` list.
     pub fn to_pod_identity_configuration(&self) -> Vec<AddonPodIdentityConfiguration> {
@@ -1442,19 +1546,34 @@ impl AddonCatalogRecord {
     /// ONE source, with no serialise-and-parse round trip between the schema a
     /// client reads and the schema a create is judged by.
     ///
-    /// The document has the shape Amazon EKS publishes an add-on's schema in: a
-    /// ROOT `$ref` into the document's own `definitions`, whose named definition
-    /// is the add-on's chart values type, with one further definition per
-    /// object-valued key that type carries ([`schema_definition_title`] names
-    /// them). A key whose value is an object therefore reads as
-    /// `{"$ref": "#/definitions/<Type>"}` and the type it names declares that
-    /// object's own keys ([`nested_configuration_properties`]), so a client that
-    /// loads the document into a validator walks the same definitions Amazon EKS
-    /// publishes rather than one flat object.
+    /// The document has the shape Amazon EKS publishes THIS add-on's schema in,
+    /// and which of the two shapes that is goes with the dialect the add-on's
+    /// document declares ([`AddonCatalogSeed::schema_dialect`]), because the two
+    /// are properties of the same published document:
+    ///
+    /// * the documents written in the draft dialects are a ROOT `$ref` into the
+    ///   document's own `definitions`, whose named definition is the add-on's
+    ///   chart values type, with one further definition per object-valued key
+    ///   that type carries ([`schema_definition_title`] names them). A key whose
+    ///   value is an object therefore reads as
+    ///   `{"$ref": "#/definitions/<Type>"}` and the type it names declares that
+    ///   object's own keys ([`nested_configuration_properties`]);
+    /// * the ones written in the 2019-09 dialect ([`ADDON_SCHEMA_DIALECT_2019_09`])
+    ///   declare the add-on's keys at the document ROOT, under `properties`, with
+    ///   each object-valued key's own keys declared inline under it and no
+    ///   `definitions` section at all, beside the `description` of what the
+    ///   document configures.
+    ///
+    /// Either way a client that loads the document into a validator walks the
+    /// same keys Amazon EKS publishes for the add-on, and finds them where that
+    /// add-on's own document puts them.
     pub(super) fn configuration_schema_value(
         &self,
         version: &AddonCatalogVersionRecord,
     ) -> ::serde_json::Value {
+        // Whether this add-on's document carries its types in a `definitions`
+        // section a root `$ref` points into, or declares them at the root.
+        let references_definitions = self.schema_dialect != ADDON_SCHEMA_DIALECT_2019_09;
         let mut definitions = ::serde_json::Map::new();
         let mut properties = ::serde_json::Map::new();
         properties.insert(
@@ -1467,30 +1586,37 @@ impl AddonCatalogRecord {
         );
         if let Some((service_account, _)) = self.pod_identity.first() {
             let title = schema_definition_title("serviceAccount");
-            definitions.insert(
-                title.clone(),
-                ::serde_json::json!({
-                    "type": "object",
-                    "title": title,
-                    "properties": {
-                        "name": {
-                            "type": "string",
-                            "default": service_account,
-                            "description":
-                                "The Kubernetes service account the add-on runs as.",
-                        },
+            let declared = ::serde_json::json!({
+                "type": "object",
+                "title": title,
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "default": service_account,
+                        "description":
+                            "The Kubernetes service account the add-on runs as.",
                     },
-                }),
-            );
-            properties.insert("serviceAccount".to_string(), definition_ref(&title));
+                },
+            });
+            if references_definitions {
+                definitions.insert(title.clone(), declared);
+                properties.insert("serviceAccount".to_string(), definition_ref(&title));
+            } else {
+                properties.insert("serviceAccount".to_string(), declared);
+            }
         }
         for (property, json_type) in &self.configuration_properties {
             if json_type == "object" {
                 let title = schema_definition_title(property);
-                definitions
-                    .entry(title.clone())
-                    .or_insert_with(|| object_definition(&title, self.nested_properties(property)));
-                properties.insert(property.clone(), definition_ref(&title));
+                let nested = self.nested_properties(property);
+                if references_definitions {
+                    definitions
+                        .entry(title.clone())
+                        .or_insert_with(|| object_definition(&title, nested));
+                    properties.insert(property.clone(), definition_ref(&title));
+                } else {
+                    properties.insert(property.clone(), object_definition(&title, nested));
+                }
             } else {
                 properties.insert(
                     property.clone(),
@@ -1501,13 +1627,16 @@ impl AddonCatalogRecord {
         for property in &version.required_configuration {
             // A required key keeps what the add-on's own schema declares it as —
             // only the "you cannot install without this" description is added, and
-            // only to a key declared inline — so a required property of a type
+            // only to a key declared as a scalar — so a required property of a type
             // other than string cannot be mis-declared here and then refused when
-            // a caller sets it. A key that reads as a `$ref` is left as the
-            // reference it is: in this dialect the keywords beside a `$ref` are
-            // not read, so a description there would say nothing.
+            // a caller sets it. A key that reads as a `$ref`, or that declares an
+            // object's own keys, is left as it is: a `$ref`'s neighbouring keywords
+            // are not read in these dialects, and overwriting the other would drop
+            // the keys that object declares.
             let declared = properties.get(property);
-            if declared.is_some_and(|declared| declared.get("$ref").is_some()) {
+            if declared.is_some_and(|declared| {
+                declared.get("$ref").is_some() || declared.get("properties").is_some()
+            }) {
                 continue;
             }
             let json_type = declared
@@ -1525,6 +1654,18 @@ impl AddonCatalogRecord {
                     ),
                 }),
             );
+        }
+        if !references_definitions {
+            return ::serde_json::json!({
+                "$schema": self.schema_dialect,
+                "description": format!("Configurable parameters for the {}", self.addon_name),
+                "type": "object",
+                "properties": ::serde_json::Value::Object(properties),
+                "required": version.required_configuration,
+                // A key the schema does not declare is not a key this add-on
+                // takes, so a document that sets one does not satisfy the schema.
+                "additionalProperties": false,
+            });
         }
         let root = schema_definition_title(&self.addon_name);
         definitions.insert(
@@ -1614,7 +1755,9 @@ fn definition_ref(title: &str) -> ::serde_json::Value {
 /// A key whose own keys the catalog publishes declares them; one whose keys it
 /// does not declares none, and such an object carries whatever the chart's own
 /// values take — which is why `additionalProperties` is not closed here the way
-/// it is on the root type. Only the ROOT bounds the keys a document may set.
+/// it is on the root type, and why no key inside one is published as required:
+/// only the ROOT bounds the keys a document may set, and only the build's own
+/// required configuration is a key a document cannot leave out.
 fn object_definition(
     title: &str,
     properties: &'static [AddonSchemaProperty],
@@ -1774,7 +1917,7 @@ pub(super) fn json_type_name(value: &::serde_json::Value) -> &'static str {
 }
 
 /// The keys an object-valued configuration key declares, per add-on: the rows of
-/// the published schemas' own `definitions` sections.
+/// the published schemas' own definitions.
 ///
 /// Source: the chart values each add-on's published configuration schema is
 /// generated from — what `aws eks describe-addon-configuration --addon-name
@@ -1783,8 +1926,12 @@ pub(super) fn json_type_name(value: &::serde_json::Value) -> &'static str {
 /// surface (the `ENABLE_PREFIX_DELEGATION`, `WARM_*`/`MINIMUM_IP_TARGET`,
 /// SNAT, log-level and network-policy variables the Amazon EKS User Guide sets
 /// through `configurationValues`), its `eniConfig` definition the custom
-/// networking keys, and its `init` and `nodeAgent` definitions the sidecars the
-/// chart runs beside the node agent.
+/// networking keys, and its `init` and
+/// `nodeAgent` definitions the sidecars the chart runs beside the node agent. The
+/// EFS CSI driver's `controller` and `node` definitions are the two components
+/// its chart configures separately, each with the log level, placement and
+/// annotations of that component, and the controller with the access-point switch
+/// its own document declares there.
 ///
 /// A key missing from this table is published as an object with no declared key,
 /// which is what an object whose own surface the catalog does not publish is: a
@@ -1870,6 +2017,27 @@ const ADDON_NESTED_CONFIGURATION_PROPERTIES: &[(&str, &str, &[AddonSchemaPropert
             ("logLevel", "integer"),
             ("resources", "object"),
             ("volumeAttachLimit", "integer"),
+        ],
+    ),
+    (
+        "aws-efs-csi-driver",
+        "controller",
+        &[
+            ("deleteAccessPointRootDir", "boolean"),
+            ("logLevel", "integer"),
+            ("nodeSelector", "object"),
+            ("podAnnotations", "object"),
+            ("tolerations", "array"),
+        ],
+    ),
+    (
+        "aws-efs-csi-driver",
+        "node",
+        &[
+            ("logLevel", "integer"),
+            ("nodeSelector", "object"),
+            ("podAnnotations", "object"),
+            ("tolerations", "array"),
         ],
     ),
     (
@@ -1978,13 +2146,19 @@ fn addon_build_version(seed: &AddonCatalogSeed, step: usize) -> String {
 ///
 /// An add-on publishes one build per Kubernetes minor version it has been
 /// OFFERED for, along its own version line ([`addon_build_version`]): the build
-/// published alongside a Kubernetes version supports that version and the one
-/// before it — an add-on build keeps working on the cluster version it was
-/// released on — and it is the DEFAULT version for the Kubernetes version it was
-/// published for. So for any Kubernetes version the catalog names exactly ONE
-/// default build per add-on, while the newer build that still supports that
-/// version is offered as a non-default choice, which is what `CreateAddon`
-/// resolves an absent `addonVersion` through
+/// published alongside a Kubernetes version supports that version and EVERY
+/// older version the add-on has been offered for — an add-on build keeps
+/// working on the cluster versions released before it — so a build's
+/// `compatibilities` carry one entry per Kubernetes minor version it supports,
+/// newest first, and the newest build of an add-on is the one compatible with
+/// the whole window.
+///
+/// Which build is the DEFAULT for a Kubernetes version is not seeded: it is the
+/// newest PUBLISHED build that supports that version, decided per read against
+/// the clock ([`AddonCatalogRecord::to_addon_version_infos`]), so for any
+/// Kubernetes version the catalog names exactly ONE default build per add-on
+/// while every superseded build is offered as a non-default choice. That is what
+/// `CreateAddon` resolves an absent `addonVersion` through
 /// ([`ComAmazonawsEksAwswesleyfrontendState::default_addon_version`]).
 ///
 /// The versions an add-on is offered for start at its OWN first calendar row
@@ -2004,30 +2178,30 @@ pub(super) fn seed_addon_catalog() -> Vec<AddonCatalogRecord> {
                 .iter()
                 .enumerate()
                 .skip(first)
-                .map(|(index, (cluster_version, release, _, _))| {
-                    let mut compatibilities = Vec::with_capacity(2);
-                    if let Some((previous, _, _, _)) = index
-                        .checked_sub(1)
-                        .filter(|earlier| *earlier >= first)
-                        .and_then(|earlier| VERSION_CALENDAR.get(earlier))
-                    {
-                        compatibilities.push(AddonCompatibilityRecord {
-                            cluster_version: (*previous).to_string(),
+                .map(|(index, (_, release, _, _))| {
+                    // Every Kubernetes version the add-on has been offered for
+                    // up to and including the one this build was published
+                    // alongside, newest first.
+                    let compatibilities: Vec<AddonCompatibilityRecord> = VERSION_CALENDAR
+                        [first..=index]
+                        .iter()
+                        .rev()
+                        .map(|(cluster_version, _, _, _)| AddonCompatibilityRecord {
+                            cluster_version: (*cluster_version).to_string(),
                             platform_versions: vec![ADDON_ANY_PLATFORM_VERSION.to_string()],
-                            default_version: false,
-                        });
-                    }
-                    compatibilities.push(AddonCompatibilityRecord {
-                        cluster_version: (*cluster_version).to_string(),
-                        platform_versions: vec![ADDON_ANY_PLATFORM_VERSION.to_string()],
-                        default_version: true,
-                    });
+                        })
+                        .collect();
                     AddonCatalogVersionRecord {
                         addon_version: addon_build_version(seed, index - first),
                         published_at: calendar_instant(release),
                         architecture: ADDON_ARCHITECTURES
                             .iter()
                             .map(|architecture| (*architecture).to_string())
+                            .collect(),
+                        compute_types: seed
+                            .compute_types
+                            .iter()
+                            .map(|compute_type| (*compute_type).to_string())
                             .collect(),
                         compatibilities,
                         required_configuration: seed

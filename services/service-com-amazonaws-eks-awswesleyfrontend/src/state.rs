@@ -4335,6 +4335,63 @@ pub const ADDON_SCHEMA_DIALECT_DRAFT_06: &str = "http://json-schema.org/draft-06
 /// are written in; see [`ADDON_SCHEMA_DIALECT_DRAFT_06`].
 pub const ADDON_SCHEMA_DIALECT_DRAFT_07: &str = "http://json-schema.org/draft-07/schema#";
 
+/// The JSON Schema dialect the newest published add-on configuration documents
+/// are written in; see [`ADDON_SCHEMA_DIALECT_DRAFT_06`].
+pub const ADDON_SCHEMA_DIALECT_2019_09: &str = "https://json-schema.org/draft/2019-09/schema";
+
+/// The compute an add-on build runs on when it runs on the EC2 instances of a
+/// node group.
+///
+/// `AddonVersionInfo$computeTypes` is "Indicates the compute type of the add-on
+/// version": the kinds of compute Amazon EKS publishes the build for, which is
+/// what a caller filters a build on before it installs the add-on on a cluster
+/// whose compute is of one kind. The four values are the kinds of compute an
+/// Amazon EKS cluster runs pods on: the EC2 instances of a node group, the
+/// nodes EKS Hybrid Nodes joins from outside AWS, AWS Fargate, and the nodes
+/// EKS Auto Mode provisions.
+pub const ADDON_COMPUTE_TYPE_EC2: &str = "ec2";
+/// See [`ADDON_COMPUTE_TYPE_EC2`]: compute joined to the cluster by EKS Hybrid
+/// Nodes.
+pub const ADDON_COMPUTE_TYPE_HYBRID: &str = "hybrid";
+/// See [`ADDON_COMPUTE_TYPE_EC2`]: AWS Fargate, which runs no DaemonSet, so
+/// only an add-on whose every workload is a Deployment is published for it.
+pub const ADDON_COMPUTE_TYPE_FARGATE: &str = "fargate";
+/// See [`ADDON_COMPUTE_TYPE_EC2`]: the nodes EKS Auto Mode provisions, which
+/// run the add-ons Amazon EKS builds and curates itself.
+pub const ADDON_COMPUTE_TYPE_AUTO: &str = "auto";
+
+/// The compute types a build published for EC2 node groups alone reports — a
+/// vendor's own build, which Amazon EKS offers on the compute that vendor
+/// supports it on and on no other.
+pub const ADDON_COMPUTE_TYPES_EC2: &[&str] = &[ADDON_COMPUTE_TYPE_EC2];
+/// The compute types an Amazon EKS-managed add-on with a per-node (DaemonSet)
+/// workload reports: a DaemonSet cannot be placed on Fargate, and the add-on is
+/// not one of the ones offered on hybrid nodes.
+pub const ADDON_COMPUTE_TYPES_EC2_AUTO: &[&str] =
+    &[ADDON_COMPUTE_TYPE_EC2, ADDON_COMPUTE_TYPE_AUTO];
+/// The compute types an Amazon EKS-managed add-on with a per-node workload that
+/// a hybrid node also needs reports; see [`ADDON_COMPUTE_TYPES_EC2_AUTO`].
+pub const ADDON_COMPUTE_TYPES_EC2_HYBRID_AUTO: &[&str] = &[
+    ADDON_COMPUTE_TYPE_EC2,
+    ADDON_COMPUTE_TYPE_HYBRID,
+    ADDON_COMPUTE_TYPE_AUTO,
+];
+/// The compute types an Amazon EKS-managed add-on whose every workload is a
+/// Deployment reports, so Fargate can run it too.
+pub const ADDON_COMPUTE_TYPES_EC2_FARGATE_AUTO: &[&str] = &[
+    ADDON_COMPUTE_TYPE_EC2,
+    ADDON_COMPUTE_TYPE_FARGATE,
+    ADDON_COMPUTE_TYPE_AUTO,
+];
+/// The compute types an Amazon EKS-managed add-on published for every kind of
+/// compute an Amazon EKS cluster runs reports.
+pub const ADDON_COMPUTE_TYPES_EVERY_COMPUTE: &[&str] = &[
+    ADDON_COMPUTE_TYPE_EC2,
+    ADDON_COMPUTE_TYPE_HYBRID,
+    ADDON_COMPUTE_TYPE_FARGATE,
+    ADDON_COMPUTE_TYPE_AUTO,
+];
+
 /// One top-level property an add-on's configuration schema declares: the key a
 /// `configurationValues` document may set, and the JSON Schema type that key
 /// takes (`"boolean"`, `"string"`, `"integer"`, `"number"`, `"object"`,

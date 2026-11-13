@@ -240,10 +240,6 @@ fn describe(
     kubernetes_version: Option<&str>,
     now: SystemTime,
 ) -> Option<AddonInfo> {
-    let versions: Vec<AddonVersionInfo> = addon
-        .published_versions(now)
-        .filter(|version| kubernetes_version.is_none_or(|wanted| version.supports(wanted)))
-        .map(|version| version.to_addon_version_info(kubernetes_version))
-        .collect();
+    let versions = addon.to_addon_version_infos(now, kubernetes_version);
     (!versions.is_empty()).then(|| addon.to_addon_info(versions))
 }

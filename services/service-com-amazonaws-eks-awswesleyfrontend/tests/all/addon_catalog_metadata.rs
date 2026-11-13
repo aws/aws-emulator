@@ -36,7 +36,7 @@
 use std::collections::BTreeSet;
 
 use service_com_amazonaws_eks_awswesleyfrontend::state::{
-    ADDON_OWNER_AWS, ADDON_OWNER_COMMUNITY, ADDON_OWNER_MARKETPLACE,
+    ADDON_OWNER_AWS, ADDON_OWNER_COMMUNITY, ADDON_OWNER_MARKETPLACE, ADDON_SCHEMA_DIALECT_2019_09,
     ADDON_SCHEMA_DIALECT_DRAFT_06, ADDON_SCHEMA_DIALECT_DRAFT_07, DEFAULT_KUBERNETES_VERSION,
 };
 
@@ -343,10 +343,11 @@ async fn compatibilities_are_the_addons_own_cluster_versions() {
 /// declares.
 ///
 /// SOURCE: the `$schema` keyword of the document `aws eks
-/// describe-addon-configuration` reports for the add-on. The rows carry both
-/// dialects the catalog publishes — the charts Amazon EKS has published schemas
-/// for the longest declare draft-06, the newer generation declares draft-07 —
-/// and more than one add-on of each.
+/// describe-addon-configuration` reports for the add-on. The rows carry every
+/// dialect the catalog publishes — the charts Amazon EKS has published schemas
+/// for the longest declare draft-06, the newer generation declares draft-07, and
+/// the documents it has reissued declare the 2019-09 dialect — and more than one
+/// add-on of the ones it publishes more than one document in.
 const EXPECTED_DIALECTS: &[(&str, &str)] = &[
     (
         "amazon-sagemaker-hyperpod-training-operator",
@@ -360,7 +361,7 @@ const EXPECTED_DIALECTS: &[(&str, &str)] = &[
     ("metrics-server", ADDON_SCHEMA_DIALECT_DRAFT_07),
     ("vpc-cni", ADDON_SCHEMA_DIALECT_DRAFT_06),
     ("coredns", ADDON_SCHEMA_DIALECT_DRAFT_06),
-    ("aws-efs-csi-driver", ADDON_SCHEMA_DIALECT_DRAFT_06),
+    ("aws-efs-csi-driver", ADDON_SCHEMA_DIALECT_2019_09),
 ];
 
 #[tokio::test]
@@ -403,8 +404,14 @@ async fn the_configuration_schema_declares_the_addons_own_dialect() {
             })
             .to_string();
         assert!(
-            dialect.starts_with("http://json-schema.org/draft-"),
-            "case {addon_name:?}: expected a JSON Schema dialect URI, got {dialect:?}"
+            [
+                ADDON_SCHEMA_DIALECT_DRAFT_06,
+                ADDON_SCHEMA_DIALECT_DRAFT_07,
+                ADDON_SCHEMA_DIALECT_2019_09,
+            ]
+            .contains(&dialect.as_str()),
+            "case {addon_name:?}: expected one of the JSON Schema dialects the catalog publishes \
+             its documents in, got {dialect:?}"
         );
         dialects.insert(dialect);
     }

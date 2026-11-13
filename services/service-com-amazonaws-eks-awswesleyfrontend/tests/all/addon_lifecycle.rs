@@ -828,14 +828,8 @@ pub(crate) async fn catalog_default_version(
 /// the listing publishes the whole calendar, out-of-support rows included, and
 /// each row's `versionStatus` is what says which of them a cluster can run.
 pub(crate) async fn published_cluster_versions(router: &MultiServiceRouter) -> Vec<String> {
-    let answer = call(router, REGION, "GET", "/cluster-versions?maxResults=100", "").await;
-    assert_eq!(
-        answer.status, 200,
-        "setup DescribeClusterVersions: got {answer:?}"
-    );
-    answer.body["clusterVersions"]
-        .as_array()
-        .unwrap_or_else(|| panic!("expected a clusterVersions list, got {:?}", answer.body))
+    published_calendar_rows(router)
+        .await
         .iter()
         .filter(|row| row["versionStatus"].as_str() != Some("UNSUPPORTED"))
         .map(|row| {
@@ -845,6 +839,25 @@ pub(crate) async fn published_cluster_versions(router: &MultiServiceRouter) -> V
                 .to_owned()
         })
         .collect()
+}
+
+/// EVERY row the published Kubernetes version calendar carries, newest first —
+/// the out-of-support rows included, which is what a suite needs when it asks
+/// about the versions the add-on catalog's compatibilities name rather than about
+/// the versions a cluster can be created on ([`published_cluster_versions`] is
+/// that narrower reading of this same listing).
+pub(crate) async fn published_calendar_rows(
+    router: &MultiServiceRouter,
+) -> Vec<serde_json::Value> {
+    let answer = call(router, REGION, "GET", "/cluster-versions?maxResults=100", "").await;
+    assert_eq!(
+        answer.status, 200,
+        "setup DescribeClusterVersions: got {answer:?}"
+    );
+    answer.body["clusterVersions"]
+        .as_array()
+        .unwrap_or_else(|| panic!("expected a clusterVersions list, got {:?}", answer.body))
+        .clone()
 }
 
 /// Every add-on name the catalog publishes, in the order it publishes them — the

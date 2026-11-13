@@ -47,6 +47,8 @@ mod addon_request_precedence;
 mod addon_request_validation;
 #[path = "all/addon_update.rs"]
 mod addon_update;
+#[path = "all/addon_version_records.rs"]
+mod addon_version_records;
 #[path = "all/addon_versions.rs"]
 mod addon_versions;
 #[path = "all/cancel_update.rs"]
