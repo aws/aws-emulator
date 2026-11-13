@@ -558,12 +558,11 @@ impl StoredStack {
             // identity first; for a type whose id the OWNING SERVICE assigns, a record
             // under the same logical id and type IS that resource, because nothing here
             // can recompute the id it was created with — as long as the declaration still
-            // asks for the same resource, which for such a type is what the NAME it
-            // declares says, beside the type's other create-only properties
-            // ([`declares_the_same_create_only`]). A declaration that RENAMES it, or that
-            // states one of those properties differently, is a different resource (AWS
-            // replaces such a resource when the template changes either), and a type with
-            // neither declares none on either side, so the test is vacuous for it.
+            // asks for the same resource, which is what the type's REPLACEMENT properties
+            // say ([`declares_the_same_replacing_properties`]). A declaration that states
+            // one of them differently is a different resource (AWS replaces such a resource
+            // when the template changes one), and a type that publishes none declares none
+            // on either side, so the test is vacuous for it.
             let existing = already_created
                 .iter()
                 .find(|existing| {
@@ -576,8 +575,7 @@ impl StoredStack {
                                 existing.materialised
                                     && existing.logical_id == resource.logical_id
                                     && existing.resource_type == resource.resource_type
-                                    && declared_name(existing) == declared_name(resource)
-                                    && declares_the_same_create_only(existing, resource)
+                                    && declares_the_same_replacing_properties(existing, resource)
                             })
                         })
                         .flatten()
@@ -1723,7 +1721,19 @@ impl StoredStack {
             self.resource_dependencies = deployment.dependencies;
         }
         let status = self.status.clone();
-        let reason = pending.status_reason;
+        // What the EVENT for this terminal status says. One failure is explained ONCE in the
+        // event stream, by the transition that accounts for it: a rollback's reason is
+        // carried by the event that OPENED that rollback ([`Self::begin_rollback`],
+        // [`Self::begin_update_rollback`]), so the terminal status it settles into adds no
+        // second copy of it — a client counting the events that carry a failure reads one
+        // failure, not one per transition that observed it. The stack's own
+        // `StackStatusReason` keeps the reason either way, which is where a client reads why
+        // the stack is in the status it rests in.
+        let reason = if concludes_a_rollback(&status) {
+            None
+        } else {
+            pending.status_reason
+        };
         // The transition the clock made due is the operation's: it concluded at the instant
         // that status was installed, in the state that status names
         // ([`Self::conclude_operation`]).
@@ -3597,19 +3607,46 @@ pub(crate) fn declared_name(resource: &StoredResource) -> Option<String> {
         })
 }
 
-/// Whether two revisions of one declaration state the same CREATE-ONLY properties — the
-/// ones the type publishes as "Update requires: `Replacement`" beside its name
-/// ([`template::replacement_properties`]).
+/// Whether two revisions of one declaration ask for the SAME resource: they state every
+/// property whose change would RECREATE it alike ([`template::replacing_properties`] — the
+/// type's create-only properties, and the name it takes its identity from where that name is
+/// one of them), and the create-only VALUE inside each property whose change recreates it
+/// conditionally ([`template::conditionally_replacing_paths`]).
 ///
-/// The other half of [`declared_name`]'s question, asked for the same reason: a resource is
-/// created with such a property and no call of its owning service changes it, so a
-/// declaration that states one differently asks for a NEW resource rather than for a change
-/// to the one the stack has. A type that publishes none is unaffected — there is nothing to
-/// compare, so the two revisions always agree.
-fn declares_the_same_create_only(existing: &StoredResource, resource: &StoredResource) -> bool {
-    template::replacement_properties(&resource.resource_type)
-        .iter()
-        .all(|property| existing.properties.get(property) == resource.properties.get(property))
+/// A resource is created with such a property and no call of its owning service changes it,
+/// so a declaration that states one differently asks for a NEW resource rather than for a
+/// change to the one the stack has. A property the owning service's own update call DOES take
+/// is not one of them, so restating it is a change to the resource that exists and the
+/// identity in force carries forward: a service that identifies a resource by an id IT minted
+/// renames the resource in place, so such a rename moves neither the resource nor the
+/// identifier the stack publishes for it.
+///
+/// The same reading of "Update requires: `Replacement`" a change set's `RequiresRecreation`
+/// details are computed from, so a preview cannot say a change recreates a resource that the
+/// deployment then updates in place. Both revisions' lists are consulted, since the name
+/// property either of them states is read off its own declaration; a type that publishes none
+/// has nothing to compare, so the test is vacuous for it.
+fn declares_the_same_replacing_properties(
+    existing: &StoredResource,
+    resource: &StoredResource,
+) -> bool {
+    let same_properties = template::replacing_properties(
+        &resource.resource_type,
+        &resource.properties,
+    )
+    .into_iter()
+    .chain(template::replacing_properties(
+        &existing.resource_type,
+        &existing.properties,
+    ))
+    .all(|property| existing.properties.get(&property) == resource.properties.get(&property));
+    same_properties
+        && template::conditionally_replacing_paths(&resource.resource_type)
+            .iter()
+            .all(|path| {
+                template::property_at(&existing.properties, path)
+                    == template::property_at(&resource.properties, path)
+            })
 }
 
 /// Whether the identifier a resource of `resource_type` is known by is one that this
@@ -3627,6 +3664,25 @@ fn declares_the_same_create_only(existing: &StoredResource, resource: &StoredRes
 fn identity_is_assigned_elsewhere(resource_type: &str) -> bool {
     template::identity_is_service_assigned(resource_type)
         || resource_types::is_custom_resource(resource_type)
+}
+
+/// Whether a terminal status is the one a ROLLBACK settles into, so the reason that rollback
+/// carries has already been reported by the event that opened it.
+///
+/// CloudFormation explains a failure once in a stack's event stream: the event of the
+/// transition that accounts for it — the failed status the stack RESTS in
+/// ([`StoredStack::fail_transition`]), or the rollback that supersedes that status and
+/// carries the failure with the clause saying the rollback was asked for
+/// ([`StoredStack::begin_rollback`]). The rollback's terminal event reports that the rollback
+/// finished, nothing about why it ran, so a client counting the events that carry a failure
+/// counts one failure per failure.
+fn concludes_a_rollback(terminal: &str) -> bool {
+    matches!(
+        terminal,
+        status::ROLLBACK_COMPLETE
+            | status::UPDATE_ROLLBACK_COMPLETE
+            | status::IMPORT_ROLLBACK_COMPLETE
+    )
 }
 
 /// The status an operation that cannot be carried out leaves the stack in, by the

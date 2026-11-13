@@ -47,7 +47,7 @@
 //!   [t]o determine the conditions for a `Conditionally` recreation, see the update
 //!   behavior for that property": the property carries values of BOTH kinds, so whether
 //!   the change recreates the resource depends on which of them the two revisions state
-//!   differently ([`template::conditionally_replacing_properties`]).
+//!   differently ([`template::conditionally_replacing`]).
 //! * `Never` — every other property, including the name of a resource whose owning service
 //!   RENAMES it in place.
 //!
@@ -590,7 +590,7 @@ fn recreation_of(resource_type: &str, recreating: &[String], property: &str) -> 
     if recreating.iter().any(|name| name == property) {
         return requires_recreation::ALWAYS;
     }
-    if template::conditionally_replacing_properties(resource_type).contains(&property) {
+    if template::conditionally_replacing(resource_type, property) {
         return requires_recreation::CONDITIONALLY;
     }
     requires_recreation::NEVER

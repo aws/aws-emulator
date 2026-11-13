@@ -41,8 +41,8 @@ use crate::update_rollback_recovery::parameter_value;
 /// An embedding model the published catalog carries: Titan Text Embeddings G1 and V2.
 /// Source: the catalog the owning service resolves an `embeddingModelArn` against
 /// (`state::vector_store::EMBEDDING_MODEL_DIMENSIONS` of the bedrock-agent crate).
-const TITAN_G1: &str = "amazon.titan-embed-text-v1";
-const TITAN_V2: &str = "amazon.titan-embed-text-v2:0";
+pub(crate) const TITAN_G1: &str = "amazon.titan-embed-text-v1";
+pub(crate) const TITAN_V2: &str = "amazon.titan-embed-text-v2:0";
 
 /// How many characters a minted `knowledgeBaseId` carries, and which they may be: the
 /// modelled `Id` shape of `GetKnowledgeBase`'s `knowledgeBaseId`
@@ -54,7 +54,7 @@ const KNOWLEDGE_BASE_ID_CHARACTERS: usize = 10;
 const ACTIVE: &str = "ACTIVE";
 
 /// The ARN of a foundation model, as an `embeddingModelArn` names one.
-fn model_arn(model: &str) -> String {
+pub(crate) fn model_arn(model: &str) -> String {
     format!("arn:aws:bedrock:{REGION}::foundation-model/{model}")
 }
 
@@ -67,7 +67,7 @@ fn knowledge_base_arn(id: &str) -> String {
 /// Whether `value` is an identifier of the form the owning service mints: exactly
 /// [`KNOWLEDGE_BASE_ID_CHARACTERS`] alphanumeric characters, which is the whole of the
 /// modelled pattern.
-fn is_knowledge_base_id(value: &str) -> bool {
+pub(crate) fn is_knowledge_base_id(value: &str) -> bool {
     value.len() == KNOWLEDGE_BASE_ID_CHARACTERS
         && value.chars().all(|c| c.is_ascii_alphanumeric())
 }
@@ -109,7 +109,7 @@ async fn bedrock_agent(
 
 /// `GetKnowledgeBase` for one knowledge base: the HTTP status and the `knowledgeBase` the
 /// answer carries.
-async fn get_knowledge_base(
+pub(crate) async fn get_knowledge_base(
     router: &MultiServiceRouter,
     knowledge_base_id: &str,
 ) -> (u16, Value) {
@@ -128,7 +128,7 @@ async fn get_knowledge_base(
 }
 
 /// The `PhysicalResourceId` `DescribeStackResource` reports for one logical id.
-async fn described_physical_id(
+pub(crate) async fn described_physical_id(
     router: &MultiServiceRouter,
     case: &str,
     stack: &str,
@@ -172,7 +172,7 @@ async fn listed_physical_id(
 }
 
 /// The value the stack reports for one declared output.
-async fn output_value(
+pub(crate) async fn output_value(
     router: &MultiServiceRouter,
     case: &str,
     stack: &str,
@@ -197,7 +197,7 @@ async fn output_value(
 /// Serverless collection: the type's own `OpensearchServerlessConfiguration`, whose three
 /// members `CreateKnowledgeBase` requires (`collectionArn`, `vectorIndexName` and the field
 /// mapping) the declaration states.
-fn opensearch_storage(collection: &str, index: &str) -> Value {
+pub(crate) fn opensearch_storage(collection: &str, index: &str) -> Value {
     json!({
         "Type": "OPENSEARCH_SERVERLESS",
         "OpensearchServerlessConfiguration": {
@@ -233,7 +233,7 @@ fn pinecone_storage(index: &str) -> Value {
 }
 
 /// One `AWS::Bedrock::KnowledgeBase` declaration, as a row writes it.
-fn knowledge_base_resource(
+pub(crate) fn knowledge_base_resource(
     name: Option<&str>,
     description: Option<&str>,
     role: &str,
@@ -260,7 +260,7 @@ fn knowledge_base_resource(
 
 /// The outputs every row publishes per knowledge base: what `Ref` resolves to, and the two
 /// identity attributes the type publishes.
-fn published_outputs(logical_ids: &[&str]) -> Value {
+pub(crate) fn published_outputs(logical_ids: &[&str]) -> Value {
     let mut outputs = serde_json::Map::new();
     for logical_id in logical_ids {
         outputs.insert(

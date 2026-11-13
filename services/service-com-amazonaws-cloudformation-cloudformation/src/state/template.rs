@@ -2762,26 +2762,48 @@ pub fn replacement_properties(resource_type: &str) -> &'static [&'static str] {
     }
 }
 
-/// The properties of this type that carry a value the resource cannot take anew AMONG
+/// Whether a property of this type carries a value the resource cannot take anew AMONG
 /// values it CAN: a change to such a property recreates the resource only when it is the
 /// create-only value inside it that the two revisions state differently, which is the
 /// `Conditionally` of `ResourceTargetDefinition$RequiresRecreation` ("to determine the
 /// conditions for a `Conditionally` recreation, see the update behavior for that
 /// property").
 ///
-/// An Amazon Bedrock knowledge base is the case: `UpdateKnowledgeBase` takes a knowledge
-/// base's whole `knowledgeBaseConfiguration` by id, so most of what that property states IS
-/// updatable, while the embedding model inside it is not — the knowledge base's vectors were
-/// produced by that model, so a knowledge base reading another one is a new knowledge base.
-/// A change to the property is therefore reported as a recreation whose condition is which
-/// value inside it changed, which is what the recorded preview of such a change answers
+/// Read off [`conditionally_replacing_paths`] — the property is the first member of the path
+/// to that value — so the catalogue of such properties and the catalogue of the conditions
+/// they are subject to cannot disagree about which types have one.
+pub fn conditionally_replacing(resource_type: &str, property: &str) -> bool {
+    conditionally_replacing_paths(resource_type)
+        .iter()
+        .any(|path| path.first() == Some(&property))
+}
+
+/// The create-only VALUE inside each property whose change recreates a resource of this type
+/// only CONDITIONALLY: the path from that property down to the member the resource cannot
+/// take anew, which is the CONDITION the recreation is subject to.
+///
+/// "To determine the conditions for a `Conditionally` recreation, see the update behavior for
+/// that property": a change to the property recreates the resource only when it is this value
+/// inside it that the two revisions state differently. An Amazon Bedrock knowledge base is
+/// the case: `UpdateKnowledgeBase` takes a knowledge base's whole
+/// `knowledgeBaseConfiguration` by id, so most of what that property states IS updatable,
+/// while the embedding model inside it is not —
+/// `VectorKnowledgeBaseConfiguration$embeddingModelArn`, "the model used to create vector
+/// embeddings for the knowledge base", which the vectors already in the knowledge base were
+/// produced by, so a knowledge base reading another model is a new knowledge base. A change
+/// to the property is therefore reported as a recreation whose condition is which value
+/// inside it changed, which is what the recorded preview of such a change answers
 /// (`Replacement` `Conditional` rather than `True`).
 ///
-/// A type with no entry has no such property: each of its properties is either create-only
+/// A type with no entry has no such value: each of its properties is either create-only
 /// ([`replacement_properties`]) or updatable.
-pub fn conditionally_replacing_properties(resource_type: &str) -> &'static [&'static str] {
+pub fn conditionally_replacing_paths(resource_type: &str) -> &'static [&'static [&'static str]] {
     match resource_type {
-        BEDROCK_KNOWLEDGE_BASE => &["KnowledgeBaseConfiguration"],
+        BEDROCK_KNOWLEDGE_BASE => &[&[
+            "KnowledgeBaseConfiguration",
+            "VectorKnowledgeBaseConfiguration",
+            "EmbeddingModelArn",
+        ]],
         _ => &[],
     }
 }

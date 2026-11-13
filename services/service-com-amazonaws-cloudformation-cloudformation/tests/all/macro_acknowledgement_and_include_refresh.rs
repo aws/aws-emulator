@@ -35,7 +35,9 @@ use crate::stack_lifecycle::{
     xml_texts,
 };
 use crate::stack_resource_provisioning::s3;
-use service_com_amazonaws_cloudformation_cloudformation::state::{status, CAPABILITY_AUTO_EXPAND};
+use service_com_amazonaws_cloudformation_cloudformation::state::{
+    rollback_requested, status, CAPABILITY_AUTO_EXPAND,
+};
 use smithy_server_runtime::MultiServiceRouter;
 
 /// The bucket the snippets these cases include live in, as a client's own `PutObject`
@@ -428,9 +430,13 @@ async fn an_include_whose_object_is_not_a_template_fragment_fails_with_the_servi
             row.case
         );
         let reasons = xml_texts(&events, "ResourceStatusReason");
+        // The one stack-level event that EXPLAINS the rollback carries that sentence verbatim,
+        // with only the clause saying the rollback was asked for appended to it; the terminal
+        // status the rollback settles into adds no second copy of the failure.
+        let on_the_rollback = rollback_requested(CONTENT_REASON);
         assert!(
-            reasons.iter().any(|reason| reason == CONTENT_REASON),
-            "case {:?}: expected an event whose reason is exactly {CONTENT_REASON:?}, got \
+            reasons.contains(&on_the_rollback),
+            "case {:?}: expected an event whose reason is exactly {on_the_rollback:?}, got \
              {reasons:?}",
             row.case
         );

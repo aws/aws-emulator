@@ -705,7 +705,7 @@ pub(super) fn declared_name_path(resource_type: &str) -> Option<&'static [&'stat
 
 /// The value a declaration's properties carry at a nested member path, or `None` where the
 /// declaration carries no member at it ([`declared_name_path`]).
-pub(super) fn property_at<'a>(properties: &'a Value, path: &[&str]) -> Option<&'a Value> {
+pub(crate) fn property_at<'a>(properties: &'a Value, path: &[&str]) -> Option<&'a Value> {
     path.iter()
         .try_fold(properties, |document, member| document.get(member))
 }

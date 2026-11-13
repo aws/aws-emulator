@@ -151,8 +151,6 @@ mod ecs_elbv2_stack_outputs;
 mod elbv2_resource_provisioning;
 #[path = "all/elbv2_rule_priority_collision.rs"]
 mod elbv2_rule_priority_collision;
-#[path = "all/elbv2_rule_priority_collision_update.rs"]
-mod elbv2_rule_priority_collision_update;
 #[path = "all/elbv2_stack_update_lifecycle.rs"]
 mod elbv2_stack_update_lifecycle;
 #[path = "all/error_envelope.rs"]
@@ -279,8 +277,8 @@ mod macro_acknowledgement_and_include_refresh;
 mod malformed_policy_document_rollback;
 #[path = "all/management_event_recording.rs"]
 mod management_event_recording;
-#[path = "all/monitored_registrations.rs"]
-mod monitored_registrations;
+#[path = "all/minted_identity_across_updates.rs"]
+mod minted_identity_across_updates;
 #[path = "all/nested_resource_outputs.rs"]
 mod nested_resource_outputs;
 #[path = "all/nested_stack_output_attributes.rs"]
@@ -291,6 +289,8 @@ mod nested_stack_output_values;
 mod nested_stacks;
 #[path = "all/no_echo_parameters.rs"]
 mod no_echo_parameters;
+#[path = "all/one_stack_event_per_failure.rs"]
+mod one_stack_event_per_failure;
 #[path = "all/operation_events.rs"]
 mod operation_events;
 #[path = "all/organizations_access.rs"]
@@ -429,8 +429,6 @@ mod stack_configuration_and_provider_limits;
 mod stack_declared_function_identity;
 #[path = "all/stack_delete_failure_reason.rs"]
 mod stack_delete_failure_reason;
-#[path = "all/stack_declared_resource_policy.rs"]
-mod stack_declared_resource_policy;
 #[path = "all/stack_event_timeline.rs"]
 mod stack_event_timeline;
 #[path = "all/stack_exports.rs"]
@@ -613,3 +611,9 @@ mod ssm_parameter_types;
 mod mwaa_environment_resource_type;
 #[path = "all/dynamodb_table_creation_window.rs"]
 mod dynamodb_table_creation_window;
+#[path = "all/elbv2_rule_priority_collision_update.rs"]
+mod elbv2_rule_priority_collision_update;
+#[path = "all/monitored_registrations.rs"]
+mod monitored_registrations;
+#[path = "all/stack_declared_resource_policy.rs"]
+mod stack_declared_resource_policy;
