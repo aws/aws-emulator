@@ -145,7 +145,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // A malformed ARN never reaches here: `GetChannelRequest$arn` carries the
         // modelled `ChannelArn` pattern, which the framework's constraint walk
         // refuses with a 400 `ValidationException` before `handle` runs.
-        let _ = ctx;
         let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
             crate::state::store_unavailable(GetChannelErrorModeled::InternalServerException)
         })?;
@@ -157,7 +156,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         })?;
 
         Ok(GetChannelOutput {
-            channel: Some(channel),
+            // The record the store holds, announced to THIS request: the playback URL
+            // names the address this caller reached the emulator at, because that is the
+            // address the channel is played back from.
+            channel: Some(crate::state::announced_channel(ctx, channel)),
         })
     }
 }

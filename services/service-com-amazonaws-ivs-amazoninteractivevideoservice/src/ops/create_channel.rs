@@ -229,9 +229,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             ));
         }
         let channel_id = store.mint_hex("channel", 6);
-        let ingest_id = store.mint_hex("ingest", 6);
         // The passphrase is the channel's ingest SECRET, so it is generated rather than
-        // derived from the store's mint counter the way an id is.
+        // derived from the store's mint counter the way an id is. The endpoint beside it,
+        // and the channel's own `ingestEndpoint`, are the DEPLOYMENT's address rather than
+        // this channel's, so they are composed for each request that reports the channel
+        // (`announced_channel`) and not stored here.
         let srt_passphrase = crate::state::mint_srt_passphrase(ctx.credential_store())
             .ok_or_else(|| {
                 crate::state::secret_unavailable(
@@ -239,24 +241,27 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 )
             })?;
         let arn = crate::state::channel_arn(&region, &channel_id);
-        let ingest_endpoint = format!("{ingest_id}.global-contribute.live-video.net");
         let channel = Channel {
             arn: Some(arn.clone()),
             name: Some(input.name.unwrap_or_default()),
             latency_mode: Some(latency_mode),
             r#type: Some(channel_type),
             recording_configuration_arn: Some(input.recording_configuration_arn.unwrap_or_default()),
-            ingest_endpoint: Some(ingest_endpoint.clone()),
-            playback_url: Some(format!(
-                "https://{ingest_id}.{region}.playback.live-video.net/api/video/v1/{region}.{}.channel.{channel_id}.m3u8",
-                ::engine::emulator_account_id()
-            )),
+            // Both addresses a channel announces are this emulator's own, composed for
+            // the request that reports the channel by the shared projection below, and
+            // never persisted: this emulator is the thing a client contributes to and
+            // plays back from.
+            ingest_endpoint: None,
+            playback_url: None,
             authorized: input.authorized,
             tags: Some(input.tags.unwrap_or_default()),
             insecure_ingest: input.insecure_ingest,
             preset: Some(preset),
             srt: Some(Srt {
-                endpoint: Some(ingest_endpoint),
+                // The SRT endpoint IS the channel's ingest endpoint: one address serves
+                // both protocols, and the projection fills it for the request reporting
+                // the channel. The passphrase is this channel's own, so it is stored.
+                endpoint: None,
                 passphrase: Some(srt_passphrase),
             }),
             playback_restriction_policy_arn: Some(
@@ -282,7 +287,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         store.channels.insert(arn.clone(), channel.clone());
 
         Ok(CreateChannelOutput {
-            channel: Some(channel),
+            // What the create answers is the channel it persisted, announced to THIS
+            // request: the playback URL names the address this caller reached the
+            // emulator at, which is the address it can fetch the channel back from.
+            channel: Some(crate::state::announced_channel(ctx, channel)),
             stream_key: Some(stream_key),
         })
     }

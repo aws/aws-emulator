@@ -153,15 +153,17 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
     /// * the channel holds no stream in the `LIVE` state -> the operation's own
     ///   `ChannelNotBroadcasting` (404), which is the answer for a channel that
     ///   has never gone live and for one whose broadcast has ended alike;
-    /// * otherwise the persisted stream, exactly as the ingest that started it
-    ///   minted it.
+    /// * otherwise the persisted stream, announced to this request: every member is
+    ///   the one the ingest that started it minted, with the playback URL composed
+    ///   for the address this call reached the emulator at.
     async fn handle(
         &self,
         input: Self::Input,
-        _ctx: &smithy_server_runtime::OperationContext<'_>,
+        ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // Nothing here reads request metadata: `GetStream` is identified entirely by
-        // its `channelArn` member. A malformed ARN never reaches here either —
+        // `GetStream` is identified entirely by its `channelArn` member; the request
+        // metadata `ctx` carries is read only for the address the playback URL this
+        // answer announces is reached at. A malformed ARN never reaches here either —
         // `GetStreamRequest$channelArn` carries the modelled `ChannelArn` length and
         // pattern, which the framework's constraint walk refuses with a 400
         // `ValidationException` before `handle` runs.
@@ -184,7 +186,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         })?;
 
         Ok(GetStreamOutput {
-            stream: Some(stream),
+            // "The stream is played back from its channel's own URL": the member is
+            // composed for THIS request from the channel the stream is ingested on, by
+            // the same projection every channel read uses.
+            stream: Some(crate::state::announced_stream(ctx, stream)),
         })
     }
 }

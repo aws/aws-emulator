@@ -157,7 +157,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // `ChannelArnList` and its `ChannelArn` member carry those modelled
         // constraints, which the framework's constraint walk refuses with a 400
         // `ValidationException` before `handle` runs.
-        let _ = ctx;
         let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
             crate::state::service_unavailable(BatchGetChannelErrorModeled::ServiceUnavailable)
         })?;
@@ -171,7 +170,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let mut errors: Vec<BatchError> = Vec::new();
         for arn in &input.arns {
             match store.channels.get(arn) {
-                Some(channel) => channels.push(channel.clone()),
+                // Each channel is announced to THIS request through the projection every
+                // read of a channel shares, so one batch read and the single-ARN read of
+                // the same channel answer the same addresses.
+                Some(channel) => {
+                    channels.push(crate::state::announced_channel(ctx, channel.clone()))
+                }
                 None => errors.push(BatchError {
                     arn: Some(arn.clone()),
                     code: Some(NOT_FOUND_CODE.to_string()),

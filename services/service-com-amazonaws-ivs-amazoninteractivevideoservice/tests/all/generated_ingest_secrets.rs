@@ -24,9 +24,10 @@ use serde_json::{json, Value};
 
 use super::channel_lifecycle::{text, Ivs};
 
-/// The ingest host every channel of this emulator is reached on, which is also the
-/// `srt.endpoint`: the recorded form is `<host label>.global-contribute.live-video.net`.
-const INGEST_HOST_SUFFIX: &str = ".global-contribute.live-video.net";
+/// Hosts no address this service announces may name: the ingest endpoint is an address a
+/// client takes to an encoder, so it has to be one this emulator answers on and never an
+/// Amazon production host (the rule `announced_channel_endpoints.rs` covers in full).
+const FOREIGN_DOMAINS: [&str; 2] = ["live-video.net", "amazonaws.com"];
 
 /// The window SRT itself admits for a passphrase: the protocol refuses anything shorter
 /// than 10 or longer than 79 characters, so a passphrase outside it is one no SRT client
@@ -127,24 +128,20 @@ async fn every_generated_ingest_secret_carries_the_class_this_service_issues() {
         );
 
         // The endpoint the passphrase goes with: the channel's own ingest endpoint, which
-        // is a per-environment host and not a secret.
+        // is this deployment's address and not a secret.
         let ingest_endpoint = text(channel, "ingestEndpoint");
         assert_eq!(
             text(srt, "endpoint"),
             ingest_endpoint,
             "case {case:?}: srt.endpoint must be the channel's ingest endpoint, got {srt}"
         );
-        assert!(
-            ingest_endpoint.ends_with(INGEST_HOST_SUFFIX)
-                && written_in(
-                    ingest_endpoint
-                        .strip_suffix(INGEST_HOST_SUFFIX)
-                        .unwrap_or_default(),
-                    is_lowercase_hex,
-                ),
-            "case {case:?}: the ingest endpoint must be a host label under \
-             {INGEST_HOST_SUFFIX:?}, got {ingest_endpoint:?}"
-        );
+        for domain in FOREIGN_DOMAINS {
+            assert!(
+                !ingest_endpoint.is_empty() && !ingest_endpoint.ends_with(domain),
+                "case {case:?}: the ingest endpoint must be an address this emulator \
+                 answers on, not a {domain} host, got {ingest_endpoint:?}"
+            );
+        }
 
         // Rule 2 for the other secret this create hands out: `sk_<region>_<id>_<secret>`,
         // whose last field is the generated one.

@@ -188,7 +188,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        let _ = ctx;
         let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
             crate::state::store_unavailable(UpdateChannelErrorModeled::InternalServerException)
         })?;
@@ -249,7 +248,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         store.channels.insert(input.arn, channel.clone());
 
         Ok(UpdateChannelOutput {
-            channel: Some(channel),
+            // The updated record, announced to THIS request through the same projection
+            // every other read of a channel uses, so an update cannot hand back a
+            // playback address a read would not.
+            channel: Some(crate::state::announced_channel(ctx, channel)),
         })
     }
 }

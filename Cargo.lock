@@ -14593,6 +14593,7 @@ dependencies = [
  "rcgen",
  "regex",
  "serde_json",
+ "service-common",
  "sha2 0.10.9",
  "spki 0.7.3",
  "tokio",

@@ -37,6 +37,9 @@ md-5 = "0.10"
 # modelled pattern no IVS ARN can satisfy) is run through the same regex engine the
 # framework's own constraint walk uses, at the minor version that walk pins.
 regex = "1.12"
+# `service-common` carries the ONE reading of which address this emulator is reached at,
+# which the playback URL every channel projection announces is built on.
+service-common = { path = "../common" }
 
 [build-dependencies]
 emulator-core-build-support = { workspace = true }

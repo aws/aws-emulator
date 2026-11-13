@@ -19,6 +19,14 @@ use regex::Regex;
 use sha2::{Digest, Sha256};
 use smithy_server_runtime::{Violation, ViolationKind};
 
+/// The two addresses a channel announces — the ingest server a client contributes to and
+/// the playback URL a player fetches, both of them this emulator's own address — kept in
+/// one module beside the state they are built from, and re-exported here so a handler
+/// reaches them where it reaches the rest of this service's rules.
+mod channel_endpoints;
+
+pub use channel_endpoints::*;
+
 use crate::ops::types::{
     AdConfiguration, Channel, ChannelNotBroadcasting, ConflictException, InternalServerException,
     MultitrackInputConfiguration, PlaybackKeyPair, RecordingConfiguration, RenditionConfiguration,
@@ -574,15 +582,15 @@ pub fn start_stream(
     if let Some(live) = live_stream(state, channel_arn) {
         return live;
     }
-    let playback_url = state
-        .channels
-        .get(channel_arn)
-        .and_then(|channel| channel.playback_url.clone());
     let stream_id = mint_stream_id(state);
     let stream = Stream {
         channel_arn: Some(channel_arn.to_string()),
         stream_id: Some(stream_id),
-        playback_url,
+        // The playback URL is not stored with the stream: it is composed for the
+        // request that reports it, from the channel this stream is ingested on
+        // (`announced_stream`), so a stream announces the address its reader reached
+        // this emulator at rather than the one some earlier call did.
+        playback_url: None,
         start_time: Some(::aws_smithy_types::DateTime::from(
             std::time::SystemTime::now(),
         )),

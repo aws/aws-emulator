@@ -69,6 +69,23 @@ impl Ivs {
         Self { router, engine }
     }
 
+    /// The same emulator, SERVED at `base` — the base URL
+    /// `OperationContext::endpoint` reports, which is the data port's own URL for a
+    /// router that is served on a port and `UNSERVED_URL_BASE` for one that is not
+    /// (what [`Self::new`] leaves it as).
+    ///
+    /// A suite about the addresses a response announces needs both, because an
+    /// address this emulator publishes is read off that base whenever the request
+    /// itself addressed one of AWS's own hosts.
+    pub(crate) fn served_at(base: &str) -> Self {
+        let mut ivs = Self::new();
+        ivs.router.set_url_base(
+            smithy_server_runtime::EndpointUrl::parse(base)
+                .expect("the test endpoint base is a bare https URL"),
+        );
+        ivs
+    }
+
     /// Read this service's store, the way a handler reaches it.
     ///
     /// For state no operation reports back — a started viewer-session revocation,
@@ -95,11 +112,33 @@ impl Ivs {
     }
 
     pub(crate) async fn call(&self, operation: &str, body: &Value) -> Reply {
-        let request = http::Request::builder()
+        self.call_as(operation, body, None, AUTHORIZATION).await
+    }
+
+    /// The same call, from a client that ADDRESSED `host` and signed in the credential
+    /// scope `authorization` names.
+    ///
+    /// `host` is `None` for a client that names no host of its own, as [`Self::call`]
+    /// does: the request URI then carries this service's published endpoint, which is
+    /// what an SDK sends. Both matter to what a response ANNOUNCES as an address — the
+    /// host a client reached this emulator at, and the Region its scope names — so a
+    /// suite about announced addresses drives the operations through this.
+    pub(crate) async fn call_as(
+        &self,
+        operation: &str,
+        body: &Value,
+        host: Option<&str>,
+        authorization: &str,
+    ) -> Reply {
+        let mut builder = http::Request::builder()
             .method("POST")
             .uri(format!("https://ivs.us-east-1.amazonaws.com/{operation}"))
             .header("content-type", "application/json")
-            .header("authorization", AUTHORIZATION)
+            .header("authorization", authorization);
+        if let Some(host) = host {
+            builder = builder.header("host", host);
+        }
+        let request = builder
             .body(bytes::Bytes::from(body.to_string()))
             .expect("the test request is well formed");
         let response = self.router.dispatch(request).await;

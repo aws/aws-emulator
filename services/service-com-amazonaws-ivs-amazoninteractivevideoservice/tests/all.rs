@@ -17,6 +17,8 @@ mod ad_configuration;
 mod ad_configuration_delete;
 #[path = "all/ad_configuration_list.rs"]
 mod ad_configuration_list;
+#[path = "all/announced_channel_endpoints.rs"]
+mod announced_channel_endpoints;
 #[path = "all/batch_get_channel.rs"]
 mod batch_get_channel;
 #[path = "all/batch_get_stream_key.rs"]
