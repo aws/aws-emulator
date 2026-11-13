@@ -772,6 +772,9 @@ pub const RESOURCE_TYPE_DATA_SET: &str = "DATA_SET";
 /// `ResourceType` for a revision, from the same `ResourceType` enum.
 pub const RESOURCE_TYPE_REVISION: &str = "REVISION";
 
+/// `ResourceType` for an asset, from the same `ResourceType` enum.
+pub const RESOURCE_TYPE_ASSET: &str = "ASSET";
+
 /// `ResourceType` for a job, from the same `ResourceType` enum.
 pub const RESOURCE_TYPE_JOB: &str = "JOB";
 
@@ -1042,6 +1045,12 @@ pub fn data_set_not_found(data_set_id: &str) -> ResourceNotFoundException {
 /// `data_set_id`.
 pub fn revision_not_found(revision_id: &str) -> ResourceNotFoundException {
     resource_not_found(revision_id, Some(RESOURCE_TYPE_REVISION))
+}
+
+/// The modelled 404 for a well-formed `AssetId` that names no asset of the revision
+/// the route addresses.
+pub fn asset_not_found(asset_id: &str) -> ResourceNotFoundException {
+    resource_not_found(asset_id, Some(RESOURCE_TYPE_ASSET))
 }
 
 /// The modelled 404 for an `EventActionId` that names no stored event action.
