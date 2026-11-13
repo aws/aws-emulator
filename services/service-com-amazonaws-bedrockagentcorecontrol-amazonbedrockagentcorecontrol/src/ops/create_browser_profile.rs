@@ -192,13 +192,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         // "The name must be unique within your account", so a repeated name is a
         // conflict, not a second profile that later reads cannot tell apart.
-        if let Some(existing) = store.browser_profile_names.get(&input.name) {
-            return Err(CreateBrowserProfileErrorModeled::ConflictException(ConflictException {
-                message: Some(format!(
-                    "a browser profile named {} already exists (profileId {existing})",
-                    input.name
-                )),
-            })
+        if store.browser_profile_names.contains_key(&input.name) {
+            return Err(CreateBrowserProfileErrorModeled::ConflictException(
+                crate::state::browser_profile_name_conflict(&input.name),
+            )
             .into());
         }
 

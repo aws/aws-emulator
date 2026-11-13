@@ -855,24 +855,24 @@ impl ComAmazonawsBedrockagentcorecontrolAmazonbedrockagentcorecontrolState {
             .retain(|token| live.contains_key(token));
     }
 
-    /// Remove every code interpreter whose accepted deletion the clock has made
-    /// due, and the name index entry and idempotency records naming it:
-    /// `DeleteCodeInterpreter` ACCEPTS the deletion (202) and reports the
-    /// interpreter `DELETING`, and the record itself goes when the span it owes
-    /// passes, so a caller polling it sees `DELETING` and then the modelled 404.
-    pub fn expire_deleted_code_interpreters(&mut self, now: SystemTime) {
-        let due: Vec<String> = self
-            .code_interpreters
-            .iter()
-            .filter(|(_, record)| record.removal_due_at.is_some_and(|at| now >= at))
-            .map(|(id, _)| id.clone())
-            .collect();
-        for id in due {
-            if let Some(record) = self.code_interpreters.remove(&id) {
-                self.code_interpreter_names.remove(&record.name);
-                self.forget_code_interpreter_client_tokens_for(&record.code_interpreter_id);
-            }
-        }
+    /// Remove the code interpreter `code_interpreter_id` names, with the name
+    /// index entry and the idempotency records naming it, and hand the record
+    /// back.
+    ///
+    /// A code interpreter's teardown completes inside the
+    /// `DeleteCodeInterpreter` call, so the removal is this call's own and not a
+    /// span the clock owes: the delete answers `DELETED` and every later read of
+    /// the id is the modelled 404. The name becomes this account's to use again,
+    /// and an idempotency record naming an interpreter that is gone can never
+    /// replay anything, so nothing else would reclaim it.
+    pub fn remove_code_interpreter(
+        &mut self,
+        code_interpreter_id: &str,
+    ) -> Option<CodeInterpreterRecord> {
+        let record = self.code_interpreters.remove(code_interpreter_id)?;
+        self.code_interpreter_names.remove(&record.name);
+        self.forget_code_interpreter_client_tokens_for(&record.code_interpreter_id);
+        Some(record)
     }
 
     /// Remove the browser `browser_id` names, with the name index entry and the

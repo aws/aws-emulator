@@ -203,9 +203,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         }
 
         let mut store = state.lock();
-        // A code interpreter whose earlier deletion the clock has already made
-        // due is gone before this call looks at the names this account holds.
-        store.expire_deleted_code_interpreters(now);
 
         // A replayed request carrying the same `clientToken` answers with the
         // code interpreter that token first produced, rather than minting a
@@ -217,20 +214,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // `replayed_code_interpreter_result` answers only for an interpreter
             // the store still holds, so this lookup cannot miss.
             if let Some(record) = store.code_interpreters.get(&code_interpreter_id) {
-                return Ok(record.create_output(now));
+                return Ok(record.create_output());
             }
         }
 
         // "The name must be unique within your account", so a repeated name is a
         // conflict, not a second interpreter later reads cannot tell apart.
-        if let Some(existing) = store.code_interpreter_names.get(&input.name) {
+        if store.code_interpreter_names.contains_key(&input.name) {
             return Err(CreateCodeInterpreterErrorModeled::ConflictException(
-                ConflictException {
-                    message: Some(format!(
-                        "a code interpreter named {} already exists (codeInterpreterId {existing})",
-                        input.name
-                    )),
-                },
+                crate::state::code_interpreter_name_conflict(&input.name),
             )
             .into());
         }
@@ -264,15 +256,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             tags: crate::state::sorted_map(input.tags),
             created_at: now,
             updated_at: now,
-            // A new code interpreter is created, not ready: the transition to
-            // READY is owed by the clock, not by this call.
-            transient_status: crate::state::CODE_INTERPRETER_STATUS_CREATING.to_string(),
-            settled_status: crate::state::CODE_INTERPRETER_STATUS_READY.to_string(),
-            settles_at: now + crate::state::CODE_INTERPRETER_SETTLE_DELAY,
-            // Nobody has deleted this interpreter, so the clock owes no removal.
-            removal_due_at: None,
+            // A code interpreter is provisioned from its network configuration
+            // alone, so it is usable as soon as this call answers: the create
+            // reports the ready status and no transition is left for the clock
+            // to owe.
+            status: crate::state::CODE_INTERPRETER_STATUS_READY.to_string(),
         };
-        let output = record.create_output(now);
+        let output = record.create_output();
 
         store
             .code_interpreter_names

@@ -163,43 +163,32 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         })?;
         let now = ::std::time::SystemTime::now();
         let mut store = state.lock();
-        // A code interpreter whose earlier deletion the clock has already made
-        // due is gone before this call looks for it.
-        store.expire_deleted_code_interpreters(now);
 
-        // The store is keyed by the `codeInterpreterId` the create minted; an id
-        // naming no stored interpreter is the modelled 404 — which is also what
-        // a delete of an already-removed interpreter answers, and what a delete
+        // The store is keyed by the `codeInterpreterId` the create minted, and a
+        // code interpreter's teardown completes inside this call: the record is
+        // removed here, so the delete reports the interpreter DELETED and every
+        // later read of the id is the modelled 404.
+        //
+        // An id naming no stored interpreter is that same 404 — which is what a
+        // delete of an already-removed interpreter answers, and what a delete
         // naming the code interpreter tool the SERVICE provides answers: a
         // delete addresses only an interpreter this account created, and that
         // tool is in no account's store.
-        let record = store
-            .code_interpreters
-            .get_mut(&input.code_interpreter_id)
+        let mut record = store
+            .remove_code_interpreter(&input.code_interpreter_id)
             .ok_or_else(|| {
                 DeleteCodeInterpreterErrorModeled::ResourceNotFoundException(
                     crate::state::code_interpreter_not_found(&input.code_interpreter_id),
                 )
             })?;
 
-        // The deletion is ACCEPTED here (202) and the interpreter reports
-        // `DELETING` from now on; the record is removed when the span the clock
-        // owes passes, so a caller that deletes and then polls sees `DELETING`
-        // and then the modelled 404 rather than a resource that vanished
-        // mid-call.
-        //
-        // `DeleteCodeInterpreter` is `@idempotent`, so a repeat while the
-        // deletion is still under way reports that same interpreter instead of
-        // re-arming the clock.
-        if !record.is_deleting() {
-            record.transient_status = crate::state::CODE_INTERPRETER_STATUS_DELETING.to_string();
-            record.settled_status = crate::state::CODE_INTERPRETER_STATUS_DELETING.to_string();
-            record.settles_at = now;
-            record.removal_due_at = Some(now + crate::state::CODE_INTERPRETER_SETTLE_DELAY);
-            record.updated_at = now;
-        }
+        // The deletion completed in this call, so the record handed back carries
+        // the terminal status and the instant it was deleted — nothing is left
+        // for the clock to settle.
+        record.status = crate::state::CODE_INTERPRETER_STATUS_DELETED.to_string();
+        record.updated_at = now;
 
-        let output = record.delete_output(now);
+        let output = record.delete_output();
         // An interpreter being torn down runs no more code, so the AgentCore DATA
         // plane stops resolving it from this instant: a session started on it after
         // this call would belong to a sandbox nothing holds. Taken AFTER this

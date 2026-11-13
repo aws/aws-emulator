@@ -37,8 +37,8 @@
 //!   reports what it is removing;
 //! * the code interpreter (`/code-interpreters/`): one
 //!   [`CodeInterpreterRecord`] per `codeInterpreterId`, holding the
-//!   configuration `CreateCodeInterpreter` persisted and the statuses the clock
-//!   owes it, so `GetCodeInterpreter` reports exactly that and
+//!   configuration `CreateCodeInterpreter` persisted and the status it reports,
+//!   so `GetCodeInterpreter` reports exactly that and
 //!   `DeleteCodeInterpreter` reports what it is removing;
 //! * the token vault ([`TokenVaults`]): the KMS configuration each vault of the
 //!   account is encrypted under, so `SetTokenVaultCMK` and `GetTokenVault`
@@ -2339,21 +2339,35 @@ pub const BROWSER_ARN_RESOURCE: &str = "browser-custom";
 pub const BROWSER_STATUS_READY: &str = "READY";
 pub const BROWSER_STATUS_DELETED: &str = "DELETED";
 
-/// The modelled conflict for a browser `name` this account already holds.
+/// How this control plane words a create refused because the account already
+/// holds the requested name: the resource type, the name the request carried
+/// quoted, and the account the name is held in — "<resource> with name '<name>'
+/// already exists in this account".
 ///
-/// `CreateBrowser`'s `name` "must be unique within your account", and the
-/// refusal names the name the request carried, quoted: "Browser with name
-/// '<name>' already exists in this account". The sentence around the name is
-/// fixed, the name itself is the caller's own value, and the browser already
-/// holding it is NOT disclosed. Shared by the handlers rather than written per
-/// operation, so one collision cannot be worded two ways.
-pub fn browser_name_conflict(name: &str) -> ConflictException {
+/// Everything but the name is fixed, the name is the caller's own value, and the
+/// resource already holding it is NOT disclosed: an identifier this service
+/// generated for another resource is no part of the refusal, and would make the
+/// message differ between runs that asked the same thing.
+fn name_conflict(resource: &str, name: &str) -> ConflictException {
     ConflictException {
         message: Some(format!(
-            "Browser with name '{name}' already exists in this account"
+            "{resource} with name '{name}' already exists in this account"
         )),
     }
 }
+
+/// The modelled conflict for a browser `name` this account already holds.
+///
+/// `CreateBrowser`'s `name` "must be unique within your account", and the
+/// refusal is this control plane's fixed sentence ([`name_conflict`]) around the
+/// name the request carried. Shared by the handlers rather than written per
+/// operation, so one collision cannot be worded two ways.
+pub fn browser_name_conflict(name: &str) -> ConflictException {
+    name_conflict(BROWSER_CONFLICT_LABEL, name)
+}
+
+/// How this control plane spells the custom browser in a duplicate-name refusal.
+const BROWSER_CONFLICT_LABEL: &str = "Browser";
 
 /// How many browsers this emulator will hold.
 ///
@@ -2516,6 +2530,25 @@ pub const BROWSER_PROFILE_REMOVAL_DELAY: Duration = Duration::from_secs(3);
 /// memory without bound.
 pub const MAX_BROWSER_PROFILES: usize = 1_000;
 
+/// The modelled conflict for a browser profile `name` this account already
+/// holds.
+///
+/// `CreateBrowserProfile`'s `name` "must be unique within your account", and the
+/// refusal is this control plane's fixed sentence ([`name_conflict`]) around the
+/// name the request carried, with the profile already holding it NOT disclosed.
+/// Shared by the handlers rather than written per operation, so one collision
+/// cannot be worded two ways.
+pub fn browser_profile_name_conflict(name: &str) -> ConflictException {
+    name_conflict(BROWSER_PROFILE_CONFLICT_LABEL, name)
+}
+
+/// How this control plane spells the browser profile in a duplicate-name
+/// refusal: the resource type as its own prose names it — "A browser profile
+/// stores persistent browser data" (`smithy_query(query="doc",
+/// shape="CreateBrowserProfileRequest")`) — leading capital, as the sentence
+/// starts with it.
+const BROWSER_PROFILE_CONFLICT_LABEL: &str = "Browser profile";
+
 /// One browser profile: everything `CreateBrowserProfile` persisted for it, and
 /// what a browser session last saved into it.
 ///
@@ -2645,19 +2678,34 @@ pub const CODE_INTERPRETER_ARN_RESOURCE: &str = "code-interpreter-custom";
 
 /// `CodeInterpreterStatus` members this service drives. The enum's full value
 /// list is `CREATING | CREATE_FAILED | READY | DELETING | DELETE_FAILED |
-/// DELETED` (`smithy_query shape=CodeInterpreterStatus`).
-pub const CODE_INTERPRETER_STATUS_CREATING: &str = "CREATING";
-pub const CODE_INTERPRETER_STATUS_READY: &str = "READY";
-pub const CODE_INTERPRETER_STATUS_DELETING: &str = "DELETING";
-
-/// How long a freshly created code interpreter stays `CREATING` before the clock
-/// owes it `READY`, and how long an accepted deletion leaves it `DELETING`
-/// before the record is gone.
+/// DELETED` (`smithy_query shape=CodeInterpreterStatus`), and the two below are
+/// the TERMINAL ones.
 ///
-/// AWS documents no duration for either transition, so the span is chosen: long
-/// enough that a caller acting straight after the call still observes the
-/// transient status, short enough to keep a client script quick.
-pub const CODE_INTERPRETER_SETTLE_DELAY: Duration = Duration::from_secs(3);
+/// A custom code interpreter is provisioned from its network configuration alone
+/// and torn down again within the call that asks for it, so it is usable the
+/// moment `CreateCodeInterpreter` answers and gone the moment
+/// `DeleteCodeInterpreter` does: the only statuses observable to a caller are
+/// `READY`, which it reports for as long as it exists, and `DELETED`, which the
+/// delete that removed it reports. The transient and failed members describe an
+/// interpreter nothing here produces.
+pub const CODE_INTERPRETER_STATUS_READY: &str = "READY";
+pub const CODE_INTERPRETER_STATUS_DELETED: &str = "DELETED";
+
+/// The modelled conflict for a code interpreter `name` this account already
+/// holds.
+///
+/// `CreateCodeInterpreter`'s `name` "must be unique within your account", and
+/// the refusal names the name the request carried, quoted, in this control
+/// plane's fixed sentence ([`name_conflict`]). The interpreter already holding
+/// the name is NOT disclosed. Shared by the handlers rather than written per
+/// operation, so one collision cannot be worded two ways.
+pub fn code_interpreter_name_conflict(name: &str) -> ConflictException {
+    name_conflict(CODE_INTERPRETER_CONFLICT_LABEL, name)
+}
+
+/// How this control plane spells the code interpreter in a duplicate-name
+/// refusal: the resource type as its API names it, one word.
+const CODE_INTERPRETER_CONFLICT_LABEL: &str = "CodeInterpreter";
 
 /// How many code interpreters this emulator will hold.
 ///
@@ -2689,7 +2737,7 @@ pub const CODE_INTERPRETER_NETWORK_MODE_VPC: &str = "VPC";
 pub const CODE_INTERPRETER_NETWORK_MODE_SANDBOX: &str = "SANDBOX";
 
 /// One custom code interpreter: everything `CreateCodeInterpreter` persisted for
-/// it, and the statuses the clock owes it.
+/// it, and the status it holds.
 ///
 /// Every read of the interpreter reports this record, so a create and a later
 /// read cannot disagree about its configuration or status.
@@ -2706,52 +2754,25 @@ pub struct CodeInterpreterRecord {
     pub tags: BTreeMap<String, String>,
     pub created_at: SystemTime,
     pub updated_at: SystemTime,
-    /// The status the interpreter reports until [`Self::settles_at`].
-    pub transient_status: String,
-    /// The status it reports from then on.
-    pub settled_status: String,
-    /// When the clock owes the move from one to the other. Stored, never slept
-    /// on: a read materialises the transition the clock already made due.
-    pub settles_at: SystemTime,
-    /// The instant an accepted deletion removes this record, once
-    /// `DeleteCodeInterpreter` has accepted one; `None` for an interpreter
-    /// nobody has deleted. Stored, never slept on, like
-    /// [`GatewayRecord::removal_due_at`](GatewayRecord#structfield.removal_due_at).
-    pub removal_due_at: Option<SystemTime>,
+    /// The status every read of this interpreter reports.
+    pub status: String,
 }
 
 impl CodeInterpreterRecord {
-    /// The status at `now`: the transient one until the clock owes the
-    /// transition, the settled one from then on. No read performs it — it is due
-    /// at that instant whether or not anybody looks.
-    pub fn status_at(&self, now: SystemTime) -> &str {
-        if now < self.settles_at {
-            &self.transient_status
-        } else {
-            &self.settled_status
-        }
-    }
-
-    /// Whether a deletion has been accepted for this code interpreter: it
-    /// reports `DELETING` and the clock owes its removal.
-    pub fn is_deleting(&self) -> bool {
-        self.removal_due_at.is_some()
-    }
-
     /// What the create of this code interpreter reports: the four members
     /// `CreateCodeInterpreterResponse` declares, every one of them off the
     /// record just written.
-    pub fn create_output(&self, now: SystemTime) -> CreateCodeInterpreterOutput {
+    pub fn create_output(&self) -> CreateCodeInterpreterOutput {
         CreateCodeInterpreterOutput {
             code_interpreter_id: self.code_interpreter_id.clone(),
             code_interpreter_arn: self.code_interpreter_arn.clone(),
             created_at: timestamp(self.created_at),
-            status: self.status_at(now).to_string(),
+            status: self.status.clone(),
         }
     }
 
     /// What a read of this code interpreter reports.
-    pub fn get_output(&self, now: SystemTime) -> GetCodeInterpreterOutput {
+    pub fn get_output(&self) -> GetCodeInterpreterOutput {
         GetCodeInterpreterOutput {
             code_interpreter_id: self.code_interpreter_id.clone(),
             code_interpreter_arn: self.code_interpreter_arn.clone(),
@@ -2759,7 +2780,7 @@ impl CodeInterpreterRecord {
             description: self.description.clone(),
             execution_role_arn: self.execution_role_arn.clone(),
             network_configuration: self.network_configuration.clone(),
-            status: self.status_at(now).to_string(),
+            status: self.status.clone(),
             certificates: self.certificates.clone(),
             filesystem_configurations: self.filesystem_configurations.clone(),
             // Reported only for a status that HAS a reason; a code interpreter
@@ -2770,11 +2791,12 @@ impl CodeInterpreterRecord {
         }
     }
 
-    /// What the deletion of this code interpreter reports.
-    pub fn delete_output(&self, now: SystemTime) -> DeleteCodeInterpreterOutput {
+    /// What the deletion of this code interpreter reports: the record the delete
+    /// removed, in the status it left it in.
+    pub fn delete_output(&self) -> DeleteCodeInterpreterOutput {
         DeleteCodeInterpreterOutput {
             code_interpreter_id: self.code_interpreter_id.clone(),
-            status: self.status_at(now).to_string(),
+            status: self.status.clone(),
             last_updated_at: timestamp(self.updated_at),
         }
     }
@@ -2919,10 +2941,7 @@ impl SystemTools {
             tags: BTreeMap::new(),
             created_at: self.created_at,
             updated_at: self.created_at,
-            transient_status: CODE_INTERPRETER_STATUS_READY.to_string(),
-            settled_status: CODE_INTERPRETER_STATUS_READY.to_string(),
-            settles_at: self.created_at,
-            removal_due_at: None,
+            status: CODE_INTERPRETER_STATUS_READY.to_string(),
         }
     }
 }

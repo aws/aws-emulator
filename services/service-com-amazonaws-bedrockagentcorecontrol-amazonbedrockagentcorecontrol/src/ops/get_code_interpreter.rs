@@ -174,19 +174,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             })
         })?;
         let region = crate::state::request_region(ctx.parts());
-        let now = ::std::time::SystemTime::now();
-        let mut store = state.lock();
-        // A code interpreter whose accepted deletion the clock has already made
-        // due is gone before this read looks for it — the removal was due at
-        // this instant whether or not anybody called.
-        store.expire_deleted_code_interpreters(now);
+        let store = state.lock();
 
         // The code interpreter tool the SERVICE provides is held by every
         // account without anything having created it, and `CodeInterpreterId`
         // reserves its id, so a read of that id reports the tool rather than
         // looking for it among the interpreters this account created.
         if input.code_interpreter_id == crate::state::SYSTEM_CODE_INTERPRETER_ID {
-            return Ok(store.system_tools.code_interpreter(&region).get_output(now));
+            return Ok(store.system_tools.code_interpreter(&region).get_output());
         }
 
         // The store is keyed by the `codeInterpreterId` the create minted; an id
@@ -201,6 +196,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 )
             })?;
 
-        Ok(record.get_output(now))
+        Ok(record.get_output())
     }
 }

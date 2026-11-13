@@ -135,6 +135,8 @@ mod system_tools;
 mod token_vault_cmk;
 #[path = "all/tool_and_bundle_listings.rs"]
 mod tool_and_bundle_listings;
+#[path = "all/tool_resource_statuses_and_name_conflicts.rs"]
+mod tool_resource_statuses_and_name_conflicts;
 #[path = "all/validation_message_rendering.rs"]
 mod validation_message_rendering;
 #[path = "all/workload_identity_arn_region.rs"]

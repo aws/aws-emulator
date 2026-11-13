@@ -7,9 +7,13 @@
 //! [`MultiServiceRouter::dispatch`], so the wire protocol (`restJson1`), the boundary
 //! constraint validation and the handlers are all exercised. The store is the one shared
 //! engine, so what one request writes is what the next request reads.
+//!
+//! A custom code interpreter is provisioned from its network configuration alone and torn
+//! down again inside the call that asks for it, so the only statuses a caller can observe
+//! are the terminal ones: `READY` while the interpreter exists, `DELETED` in the answer to
+//! the delete that removed it, and the modelled 404 for every read after that.
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use aws_smithy_types::date_time::Format;
 use aws_smithy_types::DateTime;
@@ -24,10 +28,6 @@ const REGION: &str = "us-east-1";
 
 /// The account id every emulated ARN carries (`engine::mock_account_id`).
 const ACCOUNT: &str = "000000000000";
-
-/// The settle span `src/state.rs` gives a code interpreter's clock-owed transitions,
-/// plus slack, so a test can wait the clock out.
-const PAST_SETTLE: Duration = Duration::from_millis(3_300);
 
 /// A `clientToken` inside the modelled `ClientToken` constraints (len 33..256,
 /// `^[a-zA-Z0-9](-*[a-zA-Z0-9]){0,256}$`, `smithy_query operation=CreateCodeInterpreter`).
@@ -216,10 +216,6 @@ async fn a_code_interpreter_is_created_and_read_back_for_every_configuration() {
         ),
     ];
 
-    // The interpreters the table creates, so the clock-owed transition is waited out ONCE
-    // after the loop rather than per row.
-    let mut settling: Vec<(&str, String, Value)> = Vec::new();
-
     for (case, name, extra, network) in rows {
         let mut body = json!({"name": name, "networkConfiguration": network.clone()});
         for (member, value) in extra.as_object().expect("the row's members are an object") {
@@ -246,8 +242,9 @@ async fn a_code_interpreter_is_created_and_read_back_for_every_configuration() {
         );
         assert_eq!(
             text(&created, "status"),
-            "CREATING",
-            "case {case:?}: a code interpreter is created in CREATING, got {}",
+            "READY",
+            "case {case:?}: a created code interpreter is usable at once, so the create reports \
+             READY, got {}",
             text(&created, "status")
         );
         assert_date_time(case, "createdAt", &created["createdAt"]);
@@ -290,8 +287,8 @@ async fn a_code_interpreter_is_created_and_read_back_for_every_configuration() {
         );
         assert_eq!(
             text(&fetched, "status"),
-            "CREATING",
-            "case {case:?}: the interpreter is still CREATING straight after the create, got {}",
+            "READY",
+            "case {case:?}: a read of a created interpreter reports READY, got {}",
             text(&fetched, "status")
         );
         assert!(
@@ -315,112 +312,114 @@ async fn a_code_interpreter_is_created_and_read_back_for_every_configuration() {
             assert_date_time(case, member, &fetched[member]);
         }
 
-        settling.push((case, id, fetched["createdAt"].clone()));
-    }
-
-    // The transition to READY is the clock's: it is due at the settle instant whether or
-    // not anybody reads the interpreter.
-    tokio::time::sleep(PAST_SETTLE).await;
-    for (case, id, created_at) in settling {
-        let (status, fetched) = get_code_interpreter(&router, &id).await;
+        // A second read reports the same interpreter, in the same status, with the same
+        // create instant: a read neither re-dates it nor moves its status.
+        let (status, again) = get_code_interpreter(&router, &id).await;
         assert_eq!(
             status, 200,
-            "case {case:?}: expected HTTP 200 from GetCodeInterpreter, got {status} ({fetched})"
+            "case {case:?}: expected HTTP 200 from a repeated GetCodeInterpreter, got {status} \
+             ({again})"
         );
         assert_eq!(
-            text(&fetched, "status"),
-            "READY",
-            "case {case:?}: the clock owes the interpreter READY once its settle span has \
-             passed, got {}",
-            text(&fetched, "status")
-        );
-        assert_eq!(
-            fetched["createdAt"], created_at,
-            "case {case:?}: a read does not re-date the interpreter, got {} against {created_at}",
-            fetched["createdAt"]
+            (text(&again, "status"), again["createdAt"].clone()),
+            (text(&fetched, "status"), fetched["createdAt"].clone()),
+            "case {case:?}: a read does not change what a later caller sees, got {} at {}",
+            text(&again, "status"),
+            again["createdAt"]
         );
     }
 }
 
-/// An accepted deletion reports `DELETING` and the interpreter is gone once the span the
-/// clock owes passes — for one deleted while still `CREATING` and for one deleted after
-/// it reached `READY`, and whether the delete is sent once or repeated.
+/// A deletion completes inside the `DeleteCodeInterpreter` call: it answers 202 with the
+/// terminal status, the interpreter is gone from the store at once — unreadable and
+/// undeletable a second time — and its name is free again.
+///
+/// The rows differ along the interpreter the delete addresses: its network
+/// configuration, whether it was read before the delete, and whether its create carried a
+/// `clientToken` whose idempotency record the removal has to drop.
 #[tokio::test]
-async fn a_deleted_code_interpreter_reports_deleting_and_is_then_not_found() {
+async fn a_deleted_code_interpreter_reports_deleted_and_is_gone_at_once() {
     let router = router();
 
-    // (case, name, whether to wait the create out first, how many deletes to send)
-    let rows: [(&str, &str, bool, usize); 3] = [
-        ("deleted while still creating", "earlyInterpreter", false, 1),
-        ("deleted once it is ready", "readyInterpreter", true, 1),
-        ("deleted twice", "repeatInterpreter", true, 2),
+    // (case, name, the network configuration, whether to read it first, a clientToken)
+    let rows: [(&str, &str, Value, bool, Option<String>); 4] = [
+        (
+            "a sandbox interpreter deleted straight after the create",
+            "earlyInterpreter",
+            json!({"networkMode": "SANDBOX"}),
+            false,
+            None,
+        ),
+        (
+            "a sandbox interpreter read before the delete",
+            "readInterpreter",
+            json!({"networkMode": "SANDBOX"}),
+            true,
+            None,
+        ),
+        (
+            "a public interpreter",
+            "publicInterpreter",
+            json!({"networkMode": "PUBLIC"}),
+            true,
+            None,
+        ),
+        (
+            "an interpreter whose create carried a clientToken",
+            "tokenInterpreter",
+            json!({"networkMode": "SANDBOX"}),
+            false,
+            Some(client_token("del")),
+        ),
     ];
 
-    for (case, name, wait_for_ready, deletes) in rows {
-        let (status, created) = create_code_interpreter(
-            &router,
-            &json!({"name": name, "networkConfiguration": {"networkMode": "SANDBOX"}}),
-        )
-        .await;
+    for (case, name, network, read_first, token) in rows {
+        let mut body = json!({"name": name, "networkConfiguration": network.clone()});
+        if let Some(token) = token.as_deref() {
+            body["clientToken"] = json!(token);
+        }
+        let (status, created) = create_code_interpreter(&router, &body).await;
         assert_eq!(
             status, 202,
             "case {case:?}: expected HTTP 202 from CreateCodeInterpreter, got {status} ({created})"
         );
         let id = text(&created, "codeInterpreterId");
 
-        if wait_for_ready {
-            tokio::time::sleep(PAST_SETTLE).await;
+        if read_first {
             let (_, ready) = get_code_interpreter(&router, &id).await;
             assert_eq!(
                 text(&ready, "status"),
                 "READY",
-                "case {case:?}: the interpreter reaches READY before the delete, got {}",
+                "case {case:?}: the interpreter is READY before the delete, got {}",
                 text(&ready, "status")
             );
         }
 
-        for attempt in 1..=deletes {
-            let (status, deleted) = delete_code_interpreter(&router, &id).await;
-            assert_eq!(
-                status, 202,
-                "case {case:?} (delete {attempt}): expected HTTP 202 from \
-                 DeleteCodeInterpreter, got {status} ({deleted})"
-            );
-            assert_eq!(
-                text(&deleted, "codeInterpreterId"),
-                id,
-                "case {case:?} (delete {attempt}): DeleteCodeInterpreter reports the interpreter \
-                 it deleted, got {}",
-                text(&deleted, "codeInterpreterId")
-            );
-            assert_eq!(
-                text(&deleted, "status"),
-                "DELETING",
-                "case {case:?} (delete {attempt}): an accepted deletion reports DELETING, got {}",
-                text(&deleted, "status")
-            );
-            assert_date_time(case, "lastUpdatedAt", &deleted["lastUpdatedAt"]);
-        }
-
-        // The interpreter reports `DELETING` until the removal the clock owes comes due.
-        let (status, deleting) = get_code_interpreter(&router, &id).await;
+        let (status, deleted) = delete_code_interpreter(&router, &id).await;
         assert_eq!(
-            status, 200,
-            "case {case:?}: an interpreter whose deletion is under way is still readable, got \
-             {status} ({deleting})"
+            status, 202,
+            "case {case:?}: expected HTTP 202 from DeleteCodeInterpreter, got {status} ({deleted})"
         );
         assert_eq!(
-            text(&deleting, "status"),
-            "DELETING",
-            "case {case:?}: an interpreter whose deletion is under way reports DELETING, got {}",
-            text(&deleting, "status")
+            text(&deleted, "codeInterpreterId"),
+            id,
+            "case {case:?}: DeleteCodeInterpreter reports the interpreter it deleted, got {}",
+            text(&deleted, "codeInterpreterId")
         );
+        assert_eq!(
+            text(&deleted, "status"),
+            "DELETED",
+            "case {case:?}: a deletion completes in the call, so it reports DELETED, got {}",
+            text(&deleted, "status")
+        );
+        assert_date_time(case, "lastUpdatedAt", &deleted["lastUpdatedAt"]);
 
-        tokio::time::sleep(PAST_SETTLE).await;
+        // The interpreter is gone from the store the moment the delete answers: the read
+        // and a second delete agree it does not exist.
         let (status, missing) = get_code_interpreter(&router, &id).await;
         assert_eq!(
             status, 404,
-            "case {case:?}: a removed interpreter is the modelled 404, got {status} ({missing})"
+            "case {case:?}: a deleted interpreter is the modelled 404, got {status} ({missing})"
         );
         assert_eq!(
             error_code(&missing),
@@ -435,12 +434,22 @@ async fn a_deleted_code_interpreter_reports_deleting_and_is_then_not_found() {
             text(&missing, "message")
         );
 
-        // The name the removed interpreter held is this account's to use again.
-        let (status, recreated) = create_code_interpreter(
-            &router,
-            &json!({"name": name, "networkConfiguration": {"networkMode": "SANDBOX"}}),
-        )
-        .await;
+        let (status, again) = delete_code_interpreter(&router, &id).await;
+        assert_eq!(
+            (status, error_code(&again)),
+            (404, "ResourceNotFoundException".to_string()),
+            "case {case:?}: a second delete finds nothing to delete, got {status} ({again})"
+        );
+
+        // The name the removed interpreter held is this account's to use again, and the
+        // interpreter it mints is a new one, READY like any other.
+        let mut reuse = json!({"name": name, "networkConfiguration": network});
+        if let Some(token) = token.as_deref() {
+            // The idempotency record of an interpreter that is gone replays nothing:
+            // this create mints an interpreter rather than answering with the deleted one.
+            reuse["clientToken"] = json!(token);
+        }
+        let (status, recreated) = create_code_interpreter(&router, &reuse).await;
         assert_eq!(
             status, 202,
             "case {case:?}: the name of a removed interpreter can be used again, got {status} \
@@ -451,6 +460,12 @@ async fn a_deleted_code_interpreter_reports_deleting_and_is_then_not_found() {
             id,
             "case {case:?}: a second create under the name mints its own interpreter, got {}",
             text(&recreated, "codeInterpreterId")
+        );
+        assert_eq!(
+            text(&recreated, "status"),
+            "READY",
+            "case {case:?}: the interpreter the second create mints is READY, got {}",
+            text(&recreated, "status")
         );
     }
 }
