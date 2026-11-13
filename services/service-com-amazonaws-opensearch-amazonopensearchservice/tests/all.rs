@@ -259,6 +259,8 @@ mod state_roundtrip;
 mod successive_domain_transitions;
 #[path = "all/tag_accumulation.rs"]
 mod tag_accumulation;
+#[path = "all/unreadable_request_values.rs"]
+mod unreadable_request_values;
 #[path = "all/unresolvable_package_id.rs"]
 mod unresolvable_package_id;
 #[path = "all/upgrade_eligibility_checks.rs"]

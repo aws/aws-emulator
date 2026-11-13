@@ -50,6 +50,13 @@
 //! for a request presenting a SigV4 credential, so the emulator verifies the signature
 //! and the handler can resolve which principal signed, and from
 //! [`override_routing_error`](Service::override_routing_error) for one presenting none.
+//!
+//! [`override_operation`](Service::override_operation) is taken for a third reason: a
+//! request whose body carries a value the modelled member it is bound to cannot be read
+//! from never becomes an input at all, and the framework renders the codec's own parser
+//! diagnostic for it under the constraint-violation class. [`request_layer`] is what
+//! answers such a request instead — the protocol's serialization error, naming the class
+//! of value sent and the type it could not be read into.
 
 use smithy_server_runtime::{
     http, BoxFuture, ErasedOperation, Operation, OperationContext, Refusal, Refused, Service,
@@ -57,6 +64,7 @@ use smithy_server_runtime::{
 use std::sync::Arc;
 
 pub mod domain_rest;
+pub(crate) mod request_layer;
 pub(crate) mod validation;
 
 /// What the SERVICE, rather than the caller, puts in a domain's configuration: the
@@ -150,6 +158,11 @@ pub struct EmulatedService<Eng: Send + Sync + 'static> {
     /// ([`StatedStartMigration`]). Held in a field for the same reason as the data plane:
     /// `override_operation` hands back a reference borrowed from `&self`.
     stated_start_migration: StatedStartMigration,
+    /// The request-DESERIALIZATION layer ([`request_layer`]): the answer to a request
+    /// whose body carries a value the modelled member it is bound to cannot be read from.
+    /// Held in a field for the same reason as the two above, and because it carries this
+    /// service's input schemas, which are indexed once rather than per request.
+    unreadable_body: request_layer::UnreadableBody,
 }
 
 /// The auth schemes a credentialed data-plane request is verified under.
@@ -211,6 +224,7 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
                 // key the generated table does not hold.
                 routing_key: <crate::ops::start_migration::StartMigration<Eng> as Operation>::NAME,
             },
+            unreadable_body: request_layer::UnreadableBody::new::<Eng>(),
             engine,
         }
     }
@@ -329,6 +343,26 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
             && domain_rest::carries_sigv4_credential(req)
         {
             return Some(&self.credentialed_data_plane);
+        }
+        // A body value whose JSON class the modelled member it is bound to cannot be read
+        // from never becomes an input at all, so it is answered by the deserialization
+        // layer (see [`request_layer`]) before any operation runs — and before the
+        // validation seam below, which reports on members that WERE read. WHICH value that
+        // is comes from the model: the operation is the one the protocol's own routing key
+        // names, and what each of its members takes is read off that operation's input
+        // schema.
+        if self
+            .entry
+            .protocol()
+            .routing_key(req)
+            .ok()
+            .and_then(|operation| {
+                self.unreadable_body
+                    .refusal(operation, request_layer::request_body(req))
+            })
+            .is_some()
+        {
+            return Some(&self.unreadable_body);
         }
         // `StartMigration` is served through the seam that runs that operation's own
         // validation of the input first (see [`StatedStartMigration`]). WHICH request that
