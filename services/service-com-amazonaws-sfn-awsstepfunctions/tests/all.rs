@@ -25,6 +25,8 @@ mod activity_listing;
 mod activity_task_retries;
 #[path = "all/activity_tasks.rs"]
 mod activity_tasks;
+#[path = "all/activity_timeout_late_answer.rs"]
+mod activity_timeout_late_answer;
 #[path = "all/activity_worker_hand_off.rs"]
 mod activity_worker_hand_off;
 #[path = "all/alias_order_and_redrive_context.rs"]

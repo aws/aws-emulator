@@ -73,13 +73,18 @@ const FAILING: &str =
 const WORKER: &str = "metered-worker";
 
 /// Step Functions and CloudWatch over ONE engine.
-struct Metered {
+///
+/// `pub(crate)`, not private: `tests/all.rs` is this binary's crate root, so a suite that
+/// reads the same `AWS/States` series — the activity-timeout hand-off
+/// (`crate::activity_timeout_late_answer`) — drives them through this harness rather
+/// than carrying a second copy of it.
+pub(crate) struct Metered {
     router: MultiServiceRouter,
     engine: Arc<engine::InMemoryEngine>,
 }
 
 impl Metered {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let engine: Arc<engine::InMemoryEngine> = Arc::new(engine::InMemoryEngine::new());
         let mut router = MultiServiceRouter::new();
         router.set_request_authentication(false);
@@ -136,12 +141,12 @@ impl Metered {
     }
 
     /// One Step Functions call, as `(status, body)`.
-    async fn sfn(&self, operation: &str, body: &Value) -> (u16, Value) {
+    pub(crate) async fn sfn(&self, operation: &str, body: &Value) -> (u16, Value) {
         self.rpc("states", "AWSStepFunctions", operation, body).await
     }
 
     /// One Step Functions call, requiring a 200.
-    async fn ok(&self, case: &str, operation: &str, body: &Value) -> Value {
+    pub(crate) async fn ok(&self, case: &str, operation: &str, body: &Value) -> Value {
         let (status, answered) = self.sfn(operation, body).await;
         assert_eq!(
             status, 200,
@@ -203,7 +208,7 @@ impl Metered {
     /// The SUM of the series `metric` for `dimensions` over the window — the magnitude a
     /// client charts. A series with no datapoint sums to zero, which is what "the series
     /// carries nothing" reads as.
-    async fn summed(&self, case: &str, metric: &str, dimensions: &Value) -> f64 {
+    pub(crate) async fn summed(&self, case: &str, metric: &str, dimensions: &Value) -> f64 {
         self.datapoints(case, metric, dimensions)
             .await
             .iter()
@@ -331,7 +336,7 @@ impl Metered {
     }
 
     /// Create a state machine, answering its ARN.
-    async fn machine(&self, case: &str, name: &str, definition: &str) -> String {
+    pub(crate) async fn machine(&self, case: &str, name: &str, definition: &str) -> String {
         let created = self
             .ok(
                 case,
@@ -369,7 +374,7 @@ impl Metered {
 
     /// The execution once it has left `RUNNING`, looked at again until it has or
     /// [`PATIENCE`] has passed.
-    async fn settled(&self, case: &str, execution: &str) -> Value {
+    pub(crate) async fn settled(&self, case: &str, execution: &str) -> Value {
         let began = Instant::now();
         loop {
             let described = self
@@ -402,12 +407,12 @@ fn now_secs() -> f64 {
 }
 
 /// The dimension set of a series reported per ACTIVITY, as `AWS/States` names it.
-fn activity_dimensions(activity_arn: &str) -> Value {
+pub(crate) fn activity_dimensions(activity_arn: &str) -> Value {
     json!([{ "Name": observability::ACTIVITY_ARN_DIMENSION, "Value": activity_arn }])
 }
 
 /// The dimension set of a series reported per STATE MACHINE.
-fn machine_dimensions(state_machine_arn: &str) -> Value {
+pub(crate) fn machine_dimensions(state_machine_arn: &str) -> Value {
     json!([{ "Name": observability::STATE_MACHINE_ARN_DIMENSION, "Value": state_machine_arn }])
 }
 
