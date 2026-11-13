@@ -318,6 +318,10 @@ image = { version = "0.25", default-features = false, features = [
     "png",
     "jpeg",
 ] }
+# The pipe a handler's own EventBridge Pipes call reads and steers, mounted beside lambda on
+# ONE engine: the pipe a handler described, started, stopped and tagged is asserted where a
+# client reads it, through that service's own reads.
+service-com-amazonaws-pipes-pipes = { workspace = true }
 
 [lints]
 workspace = true

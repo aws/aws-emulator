@@ -263,6 +263,8 @@ mod handler_notification_sdk;
 mod handler_object_store_sdk;
 #[path = "all/handler_parameter_store_sdk.rs"]
 mod handler_parameter_store_sdk;
+#[path = "all/handler_pipes_sdk.rs"]
+mod handler_pipes_sdk;
 #[path = "all/handler_query_compatible_error_code.rs"]
 mod handler_query_compatible_error_code;
 #[path = "all/handler_dynamodb_binary_attributes.rs"]

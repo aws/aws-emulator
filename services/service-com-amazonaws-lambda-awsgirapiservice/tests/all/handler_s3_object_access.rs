@@ -403,8 +403,11 @@ pub(crate) fn document(
     json!({"Version": "2012-10-17", "Statement": [statement]}).to_string()
 }
 
-/// `application/x-www-form-urlencoded` for one awsQuery parameter value.
-fn form_encode(value: &str) -> String {
+/// `application/x-www-form-urlencoded` for one awsQuery parameter value, leaving only RFC
+/// 3986's unreserved characters literal. It is also how an AWS SDK encodes a non-greedy
+/// `@httpLabel`, so `pub(crate)`: the suites that address a resource by its ARN reach this
+/// one encoder rather than writing a second copy of it.
+pub(crate) fn form_encode(value: &str) -> String {
     let mut encoded = String::with_capacity(value.len());
     for byte in value.bytes() {
         match byte {

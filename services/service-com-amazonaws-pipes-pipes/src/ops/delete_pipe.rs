@@ -152,9 +152,19 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The delete is applied to the stored pipe; nothing here depends on request
+        // IAM decides a signed call BEFORE this service reads it, so a caller whose own
+        // policies do not allow the action is told it is not authorized and nothing about
+        // the pipe it addressed — and the delete has no effect.
+        if let Some(refused) = crate::state::request_authorization::refused(
+            &*self.engine,
+            ctx,
+            Self::NAME,
+            &crate::state::pipe_arn(&crate::state::request_region(ctx.parts()), &input.name),
+        ) {
+            return Err(refused);
+        }
+        // The delete is applied to the stored pipe; nothing else here depends on request
         // metadata.
-        let _ = ctx;
         let store = crate::state::service_state(&*self.engine).ok_or_else(|| {
             DeletePipeErrorModeled::InternalException(InternalException {
                 message: "the pipes store is not reachable from this engine".to_string(),

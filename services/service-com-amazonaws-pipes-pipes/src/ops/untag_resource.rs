@@ -146,9 +146,19 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The keys are removed from the stored record; nothing here depends on request
+        // IAM decides a signed call BEFORE this service reads it, and a tagging call names
+        // the resource it acts on itself, so that ARN is what the decision is taken
+        // against — as the request carried it, before any record is resolved.
+        if let Some(refused) = crate::state::request_authorization::refused(
+            &*self.engine,
+            ctx,
+            Self::NAME,
+            &input.resource_arn,
+        ) {
+            return Err(refused);
+        }
+        // The keys are removed from the stored record; nothing else here depends on request
         // metadata.
-        let _ = ctx;
         let store = crate::state::service_state(&*self.engine).ok_or_else(|| {
             UntagResourceErrorModeled::InternalException(InternalException {
                 message: "the pipes store is not reachable from this engine".to_string(),

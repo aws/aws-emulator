@@ -59,8 +59,15 @@ base64 = "0.22"
 # read.
 service-com-amazonaws-cloudwatch-graniteserviceversion20100801 = { workspace = true }
 # The IAM store a pipe's `RoleArn` is resolved against, to decide whether this service may
-# act as that role and make the call each stage makes under it (`state::execution_role`).
+# act as that role and make the call each stage makes under it (`state::execution_role`) —
+# and the store the CALLER's own identity-based policies are read from, which is what
+# decides whether a signed request may act on the pipe it addresses
+# (`state::request_authorization`).
 service-com-amazonaws-iam-awsidentitymanagementv20100508 = { workspace = true }
+# The session registry a request's access key id is resolved through, so the principal a
+# refusal names is the one `sts:GetCallerIdentity` reports for that credential
+# (`state::request_authorization`).
+service-com-amazonaws-sts-awssecuritytokenservicev20110615 = { workspace = true }
 
 [build-dependencies]
 emulator-core-build-support = { workspace = true }
@@ -100,6 +107,10 @@ service-com-amazonaws-eventbridge-awsevents = { workspace = true }
 # on one engine in the metrics suite.
 service-com-amazonaws-iam-awsidentitymanagementv20100508 = { workspace = true }
 service-com-amazonaws-cloudwatch-graniteserviceversion20100801 = { workspace = true }
+# A request signed by an assumed-role session is what the caller-authorization suite drives
+# the identity gate with, so the token service is mounted beside pipes there and the session
+# is minted the way a client mints one (`sts:AssumeRole`).
+service-com-amazonaws-sts-awssecuritytokenservicev20110615 = { workspace = true }
 
 [lints]
 workspace = true

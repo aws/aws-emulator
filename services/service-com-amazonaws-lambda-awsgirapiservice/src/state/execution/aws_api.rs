@@ -266,6 +266,23 @@ pub const APIS: &[Api] = &[
         },
         answer_model: Some(&EVENTBRIDGE),
     },
+    // `services/service-com-amazonaws-pipes-pipes/smithy-model/com-amazonaws-pipes-pipes.json`:
+    // restJson1, sigv4Name `pipes`, endpointPrefix `pipes`, sdkId `Pipes`. Its requests are
+    // bound per operation out of that same model ([`PIPES`]).
+    //
+    // A pipe's own TARGET is a Lambda function, and the handler at the end of a pipe is where
+    // a client drives and inspects the pipe that invoked it: reading the pipe's configuration,
+    // and starting or stopping the flow it is itself part of, are the calls such a function
+    // makes — so a handler that cannot reach this service cannot see or steer the pipe it
+    // serves.
+    Api {
+        sdk_token: "pipes",
+        signing_name: "pipes",
+        endpoint_prefix: "pipes",
+        model: Some(PIPES_MODEL),
+        protocol: Protocol::RestJson(&PIPES),
+        answer_model: Some(&PIPES_ANSWERS),
+    },
     // `services/service-com-amazonaws-dynamodb-dynamodb-20120810/smithy-model/
     // com-amazonaws-dynamodb-dynamodb-20120810.json`: awsJson1_0, sigv4Name `dynamodb`,
     // endpointPrefix `dynamodb`, sdkId `DynamoDB`, service shape `DynamoDB_20120810`.
@@ -792,6 +809,10 @@ pub(super) const EVENTBRIDGE_MODEL: &str = include_str!(
     "../../../../service-com-amazonaws-eventbridge-awsevents/smithy-model/\
      com-amazonaws-eventbridge-awsevents.json"
 );
+pub(super) const PIPES_MODEL: &str = include_str!(
+    "../../../../service-com-amazonaws-pipes-pipes/smithy-model/\
+     com-amazonaws-pipes-pipes.json"
+);
 pub(super) const DYNAMODB_MODEL: &str = include_str!(
     "../../../../service-com-amazonaws-dynamodb-dynamodb-20120810/smithy-model/\
      com-amazonaws-dynamodb-dynamodb-20120810.json"
@@ -917,6 +938,10 @@ static DYNAMODB: super::blob_members::ServiceModel = super::blob_members::Servic
     source: DYNAMODB_MODEL,
     plan: ::std::sync::OnceLock::new(),
 };
+static PIPES_ANSWERS: super::blob_members::ServiceModel = super::blob_members::ServiceModel {
+    source: PIPES_MODEL,
+    plan: ::std::sync::OnceLock::new(),
+};
 static CLOUDWATCH_LOGS: super::blob_members::ServiceModel = super::blob_members::ServiceModel {
     source: CLOUDWATCH_LOGS_MODEL,
     plan: ::std::sync::OnceLock::new(),
@@ -1021,6 +1046,15 @@ static APIGATEWAY: super::rest_json::RestApi = super::rest_json::RestApi {
 static APIGATEWAYMANAGEMENTAPI: super::rest_json::RestApi = super::rest_json::RestApi {
     model: APIGATEWAYMANAGEMENTAPI_MODEL,
     namespace: "com.amazonaws.apigatewaymanagementapi",
+    parsed: ::std::sync::OnceLock::new(),
+};
+
+/// EventBridge Pipes' own model, which a call to it is bound by — embedded exactly as
+/// [`APIGATEWAY`] is, and for the same reason: the wire facts of each operation are that
+/// model's, so this seam states none of them.
+static PIPES: super::rest_json::RestApi = super::rest_json::RestApi {
+    model: PIPES_MODEL,
+    namespace: "com.amazonaws.pipes",
     parsed: ::std::sync::OnceLock::new(),
 };
 

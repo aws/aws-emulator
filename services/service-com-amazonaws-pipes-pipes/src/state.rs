@@ -15,6 +15,10 @@
 //! the only signal that distinguishes a pipe whose stage was refused from a pipe that
 //! never ran.
 //!
+//! [`request_authorization`] is the other identity decision, and not to be confused with
+//! the first: whether the principal that SIGNED a control-plane call may perform it on the
+//! pipe it addresses, which every operation asks before it reads or writes a record.
+//!
 //! [`bring_up`] is the lifecycle's own reading of those: what a pipe could not poll its
 //! source without, which is where a creation, a start or a reconfiguration that cannot be
 //! completed settles.
@@ -23,6 +27,7 @@ pub mod bring_up;
 pub mod data_plane;
 pub mod execution_role;
 pub mod metrics;
+pub mod request_authorization;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant, SystemTime};

@@ -156,8 +156,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // A report of the stored pipes: nothing here depends on request metadata.
-        let _ = ctx;
+        // IAM decides a signed call BEFORE this service reads it. The listing acts on no
+        // one pipe — it reports the account's — so it is decided against every resource,
+        // which is what a statement has to cover to permit it.
+        if let Some(refused) = crate::state::request_authorization::refused(
+            &*self.engine,
+            ctx,
+            Self::NAME,
+            crate::state::request_authorization::EVERY_RESOURCE,
+        ) {
+            return Err(refused);
+        }
+        // A report of the stored pipes: nothing else here depends on request metadata.
         let store = crate::state::service_state(&*self.engine).ok_or_else(|| {
             ListPipesErrorModeled::InternalException(InternalException {
                 message: "the pipes store is not reachable from this engine".to_string(),

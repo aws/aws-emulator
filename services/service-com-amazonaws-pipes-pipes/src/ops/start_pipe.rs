@@ -155,6 +155,17 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
+        // IAM decides a signed call BEFORE this service reads it, so a caller whose own
+        // policies do not allow the action is told it is not authorized and nothing about
+        // the pipe it addressed — and the pipe is left where it was.
+        if let Some(refused) = crate::state::request_authorization::refused(
+            &*self.engine,
+            ctx,
+            Self::NAME,
+            &crate::state::pipe_arn(&crate::state::request_region(ctx.parts()), &input.name),
+        ) {
+            return Err(refused);
+        }
         // The start is recorded on the stored pipe; `ctx` is the callback the data-plane
         // poller this start begins reaches the other services of this emulator through.
         let store = crate::state::service_state(&*self.engine).ok_or_else(|| {
