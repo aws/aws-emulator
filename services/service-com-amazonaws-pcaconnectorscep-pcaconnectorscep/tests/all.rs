@@ -23,6 +23,8 @@ mod challenge_password_connector_state;
 mod connector_delete_not_found;
 #[path = "all/connector_deletion.rs"]
 mod connector_deletion;
+#[path = "all/connector_endpoint_host_routing.rs"]
+mod connector_endpoint_host_routing;
 #[path = "all/connector_lifecycle.rs"]
 mod connector_lifecycle;
 #[path = "all/connector_oidc_parameters.rs"]
