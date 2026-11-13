@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op CreateCluster
-//! IMPLEMENTED: mints a cluster and persists it in [`crate::state`], so
-//! `DescribeClusters`, `CreateHsm`, `DeleteHsm` and `DeleteCluster` all read the same
-//! record. The notes below are the scaffold's, kept for the next reader.
+//! IMPLEMENTED: resolves the requested subnets against the account's network (Amazon
+//! EC2's, through [`crate::state::resolve_requested_subnets`]), then mints a cluster in
+//! them and persists it in [`crate::state`], so `DescribeClusters`, `CreateHsm`,
+//! `DeleteHsm` and `DeleteCluster` all read the same record. The notes below are the
+//! scaffold's, kept for the next reader.
 //!
 //! ## Shape of an operation
 //!
@@ -178,26 +180,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .into());
         };
 
-        // The `HsmType` member doc publishes the catalog ("The allowed values are
-        // hsm1.medium and hsm2m.medium"); the modelled pattern is wider than that
-        // catalog, so a type outside it is refused here rather than stored.
+        // The `HsmType` member doc publishes a catalog ("The allowed values are
+        // hsm1.medium and hsm2m.medium") wider than the types a cluster can still be
+        // created with, and the modelled pattern is wider than either, so a type outside
+        // the catalog this service serves ([`crate::state::HSM_TYPES`]) is refused here
+        // rather than stored.
         if !crate::state::HSM_TYPES.contains(&input.hsm_type.as_str()) {
-            return Err(invalid_request(format!(
-                "HsmType {} is not supported; the allowed values are {}",
-                input.hsm_type,
-                crate::state::HSM_TYPES.join(" and ")
-            )));
-        }
-
-        // "You can specify only one subnet per Availability Zone" (`SubnetIds` doc), so
-        // the same subnet cannot be named twice.
-        for (index, subnet_id) in input.subnet_ids.iter().enumerate() {
-            if input.subnet_ids[..index].contains(subnet_id) {
-                return Err(invalid_request(format!(
-                    "SubnetIds names {subnet_id} more than once; specify only one subnet \
-                     per Availability Zone"
-                )));
-            }
+            return Err(invalid_request(
+                "Provided HsmType is not supported.".to_string(),
+            ));
         }
 
         let backup_retention_policy = retention_policy(input.backup_retention_policy.as_ref())?;
@@ -219,6 +210,40 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         }
 
         let region = crate::state::request_region(ctx);
+
+        // `SubnetIds` names "the subnets where you are creating the cluster", so every
+        // identifier in it is resolved against the subnets the ACCOUNT has before
+        // anything is minted: a subnet is Amazon EC2's resource, and
+        // `crate::state::resolve_requested_subnets` asks the service that owns them (see
+        // `crate::state`'s `ec2_subnets`). An identifier EC2 reports no subnet for names
+        // a subnet the cluster could not be placed in.
+        let subnets =
+            match crate::state::resolve_requested_subnets(ctx, &region, &input.subnet_ids).await {
+                Ok(subnets) => subnets,
+                Err(subnet_id) => return Err(subnet_not_found(&subnet_id)),
+            };
+
+        // "You can specify only one subnet per Availability Zone" (`SubnetIds` doc),
+        // which is a fact of the zones EC2 reports those subnets in rather than of the
+        // identifiers themselves.
+        if let Some(repeated) = crate::state::zone_named_twice(&subnets) {
+            return Err(invalid_request(format!(
+                "More than one of the specified subnets is in Availability Zone {}. You \
+                 can specify only one subnet per Availability Zone.",
+                repeated.availability_zone
+            )));
+        }
+
+        // "All subnets must be in the same virtual private cloud (VPC)" (`SubnetIds`
+        // doc): the cluster reports ONE `VpcId`, so a request spanning two VPCs names no
+        // VPC the cluster could be placed in.
+        let Some(vpc_id) = crate::state::common_vpc(&subnets) else {
+            return Err(invalid_request(
+                "All subnets must be in the same virtual private cloud (VPC).".to_string(),
+            ));
+        };
+        let vpc_id = vpc_id.to_string();
+
         let now = ::std::time::SystemTime::now();
 
         let mut store = state.lock();
@@ -236,7 +261,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         }
 
         let cluster_id = store.mint_cluster_id();
-        let vpc_id = store.mint_vpc_id();
         let security_group = store.mint_security_group();
 
         let record = crate::state::ClusterRecord {
@@ -245,7 +269,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             state: crate::state::CLUSTER_CREATE_IN_PROGRESS.to_string(),
             state_message: None,
             create_timestamp: now,
-            subnet_mapping: crate::state::subnet_mapping(&region, &input.subnet_ids),
+            // Both the zone each subnet is mapped under and the VPC the cluster reports
+            // are read off what EC2 answered, never built from the request or the region.
+            subnet_mapping: crate::state::subnet_mapping_of(&subnets),
             vpc_id,
             security_group,
             backup_policy: crate::state::BACKUP_POLICY_DEFAULT.to_string(),
@@ -257,7 +283,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 .network_type
                 .unwrap_or_else(|| crate::state::DEFAULT_NETWORK_TYPE.to_string()),
             source_backup_id: None,
-            // Both are produced by initialization, which `InitializeCluster` owns.
+            // Both are produced by initialization, which `InitializeCluster` owns; the
+            // cluster still REPORTS `Certificates`, as the empty structure, until then.
             pre_co_password: None,
             certificates: None,
             hsms: Vec::new(),
@@ -286,6 +313,18 @@ fn invalid_request(message: String) -> CreateClusterError {
     CreateClusterErrorModeled::CloudHsmInvalidRequestException(CloudHsmInvalidRequestException {
         message: Some(message),
     })
+    .into()
+}
+
+/// Refuse the request because it names a subnet the account does not have, with the
+/// error the operation models for "a resource that cannot be found" and AWS's sentence
+/// for that resource.
+fn subnet_not_found(subnet_id: &str) -> CreateClusterError {
+    CreateClusterErrorModeled::CloudHsmResourceNotFoundException(
+        CloudHsmResourceNotFoundException {
+            message: Some(format!("The subnet ID '{subnet_id}' does not exist")),
+        },
+    )
     .into()
 }
 

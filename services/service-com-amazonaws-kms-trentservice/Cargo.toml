@@ -62,6 +62,10 @@ emulator-core-build-support = { workspace = true }
 # operations, so the documents it asserts on are the ones those services wrote.
 service-com-amazonaws-iam-awsidentitymanagementv20100508 = { workspace = true }
 service-com-amazonaws-sts-awssecuritytokenservicev20110615 = { workspace = true }
+# The EC2 service, mounted beside this one where a row needs a CloudHSM cluster: CloudHSM
+# places a cluster in the account's SUBNETS, which are EC2's resources, so the cluster
+# those rows create can only be created in the subnets EC2 hands out. DEV-ONLY.
+service-com-amazonaws-ec2-amazonec2 = { workspace = true }
 
 [lints]
 workspace = true

@@ -6,7 +6,17 @@
 //! write, the id minting that satisfies the modelled id patterns, and the single
 //! place where a clock-owed status transition is materialised ([`settle`]).
 //!
+//! The network a cluster is placed in is NOT held here: a subnet is Amazon EC2's
+//! resource, so [`ec2_subnets`] resolves what a request names against the service
+//! that owns subnets and this module stores only what that answer said.
+//!
 //! [`settle`]: ComAmazonawsCloudhsmv2BaldrapiserviceState::settle
+
+mod ec2_subnets;
+
+pub use ec2_subnets::{
+    common_vpc, resolve_requested_subnets, subnet_mapping_of, zone_named_twice, SubnetRecord,
+};
 
 use std::collections::HashMap;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -34,9 +44,13 @@ pub const BACKUP_RETENTION_DAYS_MIN: u32 = 7;
 /// Upper bound of the published `BackupRetentionPolicy$Value` range.
 pub const BACKUP_RETENTION_DAYS_MAX: u32 = 379;
 
-/// The HSM types the `HsmType` member doc publishes: "The allowed values are
-/// hsm1.medium and hsm2m.medium."
-pub const HSM_TYPES: &[&str] = &["hsm1.medium", "hsm2m.medium"];
+/// The HSM types a new cluster can be created with.
+///
+/// The `HsmType` member doc publishes two ("The allowed values are hsm1.medium and
+/// hsm2m.medium"), but `hsm1.medium` is retired: CloudHSM no longer provisions a cluster
+/// of that type, so `CreateCluster` refuses one naming it instead of serving it. Only a
+/// type in this catalog is accepted.
+pub const HSM_TYPES: &[&str] = &["hsm2m.medium"];
 
 /// The `NetworkType` a cluster gets when the request names none: the
 /// `Cluster$NetworkType` doc says "The cluster's NetworkType can be IPv4 (the
@@ -222,7 +236,9 @@ pub struct ClusterRecord {
     pub source_backup_id: Option<String>,
     /// The PRECO password, which only `InitializeCluster` can produce.
     pub pre_co_password: Option<String>,
-    /// The cluster's certificates, which only an initialized cluster has.
+    /// The cluster's certificates, which only an initialized cluster has. A cluster
+    /// without them still REPORTS the member, as the empty structure
+    /// ([`ClusterRecord::to_shape`]).
     pub certificates: Option<Certificates>,
     /// The HSMs in the cluster.
     pub hsms: Vec<HsmRecord>,
@@ -256,7 +272,11 @@ impl ClusterRecord {
             subnet_mapping: Some(self.subnet_mapping.clone()),
             vpc_id: Some(self.vpc_id.clone()),
             network_type: Some(self.network_type.clone()),
-            certificates: self.certificates.clone(),
+            // `Certificates` is reported for every cluster, whatever it holds: a cluster
+            // that has not been initialized has none of them yet, which is the empty
+            // structure rather than an absent member, so the usual "is the CSR available
+            // yet?" read finds no CSR instead of finding no `Certificates` at all.
+            certificates: Some(self.certificates.clone().unwrap_or_default()),
             // `TagList` is modelled `len 1..50`, so an untagged cluster reports no
             // list rather than an empty one.
             tag_list: (!self.tags.is_empty()).then(|| self.tags.clone()),
@@ -419,16 +439,6 @@ impl ComAmazonawsCloudhsmv2BaldrapiserviceState {
         format!("eni-{}", hex_body(&digest, 17))
     }
 
-    /// A fresh VPC id for a new cluster's subnets.
-    ///
-    /// The modelled `VpcId` pattern is `^vpc-[0-9a-fA-F]$` — a single hex digit,
-    /// which no real VPC id has; AWS itself returns the 17-hex-digit form, and
-    /// output is not pattern-validated, so the realistic form is minted here.
-    pub fn mint_vpc_id(&mut self) -> String {
-        let digest = self.digest("vpc");
-        format!("vpc-{}", hex_body(&digest, 17))
-    }
-
     /// A fresh security-group id matching `^sg-[0-9a-fA-F]{8,17}$`.
     pub fn mint_security_group(&mut self) -> String {
         let digest = self.digest("sg");
@@ -501,28 +511,6 @@ pub fn region_names_modelled_azs(region: &str) -> bool {
         return false;
     };
     number.len() == 1 && number.as_bytes()[0].is_ascii_digit() && fields.next().is_none()
-}
-
-/// The Availability Zone a cluster's `n`th subnet is placed in: the request's
-/// region plus a zone letter from `a`.
-///
-/// The emulator models no EC2, so a subnet's Availability Zone cannot be looked
-/// up; it is synthesized once, at `CreateCluster`, and then kept in the
-/// cluster's `SubnetMapping`, which is what every later read and `CreateHsm`
-/// resolves against. `SubnetIds` is modelled `len 1..10`, so a zone letter never
-/// runs past `j`.
-pub fn availability_zone_for(region: &str, index: usize) -> String {
-    let letter = char::from(b'a' + (index % 26) as u8);
-    format!("{region}{letter}")
-}
-
-/// AZ -> subnet for a cluster created over `subnet_ids`, one AZ per subnet.
-pub fn subnet_mapping(region: &str, subnet_ids: &[String]) -> HashMap<String, String> {
-    subnet_ids
-        .iter()
-        .enumerate()
-        .map(|(index, subnet_id)| (availability_zone_for(region, index), subnet_id.clone()))
-        .collect()
 }
 
 /// The IPv6 address an HSM's ENI carries in a `DUALSTACK` cluster.

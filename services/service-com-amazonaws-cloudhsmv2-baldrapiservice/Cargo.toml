@@ -25,9 +25,26 @@ tracing = { workspace = true }
 # alphabets the modelled cluster-/hsm-/eni- id patterns accept.
 sha2 = { workspace = true }
 hex = { workspace = true }
+# The AWS SDK for EC2, driven over the in-process callback
+# (`OperationContext::callback`): the subnets a `CreateCluster` places a cluster in are
+# EC2's resources, so `src/state/ec2_subnets.rs` asks EC2 what the account has rather
+# than deciding it here. Only the generated client is needed — the emulator supplies the
+# transport.
+aws-sdk-ec2 = { version = "1", default-features = false }
+# `arn::region_label` for the endpoint the EC2 call above is made at, the shared AWS
+# wording of a constraint refusal, and the one renaming of the member a JSON error body
+# carries its text in.
+service-common = { path = "../common" }
 
 [build-dependencies]
 emulator-core-build-support = { workspace = true }
+
+[dev-dependencies]
+# The EC2 service, mounted beside this one in the test harness: that a cluster is created
+# in the subnets EC2 holds for the account, and refused for one it does not, can only be
+# driven end to end with the owner of subnets on the same engine. DEV-ONLY: this crate
+# depends on no other service's crate outside its tests.
+service-com-amazonaws-ec2-amazonec2 = { workspace = true }
 
 [lints]
 workspace = true

@@ -105,25 +105,120 @@ fn past_the_span() -> Duration {
     CUSTOM_KEY_STORE_CONNECTION_SPAN + Duration::from_millis(250)
 }
 
-/// A router carrying this service and the CloudHSM service over ONE shared engine —
-/// the assembly a row that names a CloudHSM cluster needs, since the clusters of the
-/// account are that service's own state.
+/// A router carrying this service, the CloudHSM service and Amazon EC2 over ONE shared
+/// engine — the assembly a row that names a CloudHSM cluster needs, since the clusters of
+/// the account are CloudHSM's own state and the subnets such a cluster is placed in are
+/// EC2's.
 fn emulator() -> (MultiServiceRouter, Arc<engine::InMemoryEngine>) {
     let (mut router, engine) = super::harness::router_with_engine();
     router.register_service(
         service_com_amazonaws_cloudhsmv2_baldrapiservice::EmulatedService::new(Arc::clone(&engine)),
     );
+    router.register_service(service_com_amazonaws_ec2_amazonec2::EmulatedService::new(
+        Arc::clone(&engine),
+    ));
     (router, engine)
+}
+
+/// The EC2 API version an ec2Query body names.
+const EC2_API_VERSION: &str = "2016-11-15";
+
+/// The Availability Zones of [`REGION`] a cluster's subnets are placed in, one per subnet:
+/// CloudHSM "can specify only one subnet per Availability Zone"
+/// (`CreateCluster$SubnetIds`).
+const ZONE_LETTERS: [char; 3] = ['a', 'b', 'c'];
+
+/// One ec2Query action that must succeed, answered with its XML body.
+async fn ec2(
+    router: &MultiServiceRouter,
+    case: &str,
+    action: &str,
+    params: &[(&str, &str)],
+) -> String {
+    let mut body = format!("Action={action}&Version={EC2_API_VERSION}");
+    for (name, value) in params {
+        body.push_str(&format!("&{name}={value}"));
+    }
+    let request = http::Request::builder()
+        .method("POST")
+        .uri(format!("https://ec2.{REGION}.amazonaws.com/"))
+        .header("content-type", "application/x-www-form-urlencoded")
+        .header(
+            "authorization",
+            format!(
+                "AWS4-HMAC-SHA256 \
+                 Credential=AKIDEMULATOR/20260101/{REGION}/ec2/aws4_request, \
+                 SignedHeaders=host, Signature=0000"
+            ),
+        )
+        .body(bytes::Bytes::from(body))
+        .expect("the request builds");
+    let response = router.dispatch(request).await;
+    let status = response.status().as_u16();
+    let text = String::from_utf8_lossy(response.body()).to_string();
+    assert_eq!(
+        status, 200,
+        "case {case}: ec2:{action} must answer HTTP 200, got {status} with {text}"
+    );
+    text
+}
+
+/// The text of the first `<name>` element of `xml`.
+fn element(xml: &str, name: &str, case: &str) -> String {
+    let opened = xml
+        .split_once(&format!("<{name}>"))
+        .unwrap_or_else(|| panic!("case {case}: no <{name}> in {xml}"))
+        .1;
+    opened
+        .split_once(&format!("</{name}>"))
+        .unwrap_or_else(|| panic!("case {case}: no </{name}> in {xml}"))
+        .0
+        .to_string()
+}
+
+/// `subnets` subnets of this account, each in its own Availability Zone of [`REGION`],
+/// minted by Amazon EC2 itself through its own operations — the only subnet ids a CloudHSM
+/// cluster of this account can be placed in.
+async fn ec2_subnets(router: &MultiServiceRouter, case: &str, subnets: usize) -> Vec<String> {
+    assert!(
+        subnets <= ZONE_LETTERS.len(),
+        "case {case}: a cluster takes one subnet per Availability Zone, so at most {}",
+        ZONE_LETTERS.len()
+    );
+    let vpc = element(
+        &ec2(router, case, "CreateVpc", &[("CidrBlock", "10.70.0.0%2F16")]).await,
+        "vpcId",
+        case,
+    );
+    let mut minted = Vec::with_capacity(subnets);
+    for (index, letter) in ZONE_LETTERS.iter().take(subnets).enumerate() {
+        let cidr = format!("10.70.{index}.0%2F24");
+        let zone = format!("{REGION}{letter}");
+        minted.push(element(
+            &ec2(
+                router,
+                case,
+                "CreateSubnet",
+                &[
+                    ("VpcId", vpc.as_str()),
+                    ("CidrBlock", cidr.as_str()),
+                    ("AvailabilityZone", zone.as_str()),
+                ],
+            )
+            .await,
+            "subnetId",
+            case,
+        ));
+    }
+    minted
 }
 
 /// Create a CloudHSM cluster of this account over `subnets` private subnets —
 /// CloudHSM places one Availability Zone per subnet — through CloudHSM's OWN
 /// `CreateCluster`, and answer its cluster id.
 async fn cloud_hsm_cluster(router: &MultiServiceRouter, case: &str, subnets: usize) -> String {
-    let subnet_ids: Vec<String> = (0..subnets)
-        .map(|index| format!("subnet-{:08x}", 0x0abc_1000_u32 + index as u32))
-        .collect();
-    let body = json!({"HsmType": "hsm1.medium", "SubnetIds": subnet_ids});
+    let subnet_ids = ec2_subnets(router, case, subnets).await;
+    let body = json!({"HsmType": "hsm2m.medium", "SubnetIds": subnet_ids});
     let request = http::Request::builder()
         .method("POST")
         .uri(format!("https://cloudhsmv2.{REGION}.amazonaws.com/"))

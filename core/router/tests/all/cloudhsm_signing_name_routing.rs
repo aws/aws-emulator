@@ -22,9 +22,16 @@
 //!
 //! Assembling the router costs stack, so it runs on an explicitly sized thread for the
 //! same reason `boot_serve.rs` does.
+//!
+//! The V2 create below is placed in a subnet EC2 minted on the same engine, because
+//! CloudHSM V2 resolves `SubnetIds` against the account's EC2 inventory: an id this suite
+//! made up names no subnet and would be refused for a reason that has nothing to do with
+//! routing.
 
 use aws_emulator_router::{build_router, InMemoryEngine};
 use std::sync::Arc;
+
+use crate::query_wire::{element, form_encode};
 
 /// Keep this at or above the size `boot_serve.rs` uses.
 const BOOT_STACK_SIZE: usize = 64 * 1024 * 1024;
@@ -52,10 +59,16 @@ struct Case {
     marker: &'static str,
 }
 
-/// A `CreateCluster` input: `HsmType` is one of the two the member documents and
-/// `SubnetIds` names one subnet.
-const CREATE_CLUSTER_BODY: &str =
-    r#"{"HsmType":"hsm1.medium","SubnetIds":["subnet-0123456789abcdef0"]}"#;
+/// A `CreateCluster` input: `HsmType` is the type a cluster can be created with and
+/// `SubnetIds` names one subnet. `{subnet}` is replaced with the id EC2 minted for this
+/// run (see the module header), so the create is placed in a subnet the account has.
+const CREATE_CLUSTER_BODY: &str = r#"{"HsmType":"hsm2m.medium","SubnetIds":["{subnet}"]}"#;
+
+/// The placeholder [`CREATE_CLUSTER_BODY`] carries for that id.
+const SUBNET_PLACEHOLDER: &str = "{subnet}";
+
+/// The EC2 API version an ec2Query body names.
+const EC2_API_VERSION: &str = "2016-11-15";
 
 /// A Classic `CreateHsm` input, each member matching its modelled pattern: `SubnetId` is
 /// `^subnet-[0-9a-f]{8}$`, `IamRoleArn` an IAM role ARN, and `SubscriptionType` the one
@@ -175,6 +188,65 @@ const CASES: &[Case] = &[
     },
 ];
 
+/// One subnet of the account, as EC2 itself mints it: a VPC of this suite's own, and one
+/// subnet in it. Driven over EC2's own ec2Query wire on the same router, so the id is one
+/// EC2 handed out rather than one this suite made up.
+async fn ec2_subnet(router: &smithy_server_runtime::MultiServiceRouter) -> String {
+    let vpc = element(
+        &ec2(router, "CreateVpc", &[("CidrBlock", "10.90.0.0/16")]).await,
+        "vpcId",
+    );
+    element(
+        &ec2(
+            router,
+            "CreateSubnet",
+            &[
+                ("VpcId", vpc.as_str()),
+                ("CidrBlock", "10.90.1.0/24"),
+                ("AvailabilityZone", "us-east-1a"),
+            ],
+        )
+        .await,
+        "subnetId",
+    )
+}
+
+/// One ec2Query action that must succeed, answered with its XML body.
+async fn ec2(
+    router: &smithy_server_runtime::MultiServiceRouter,
+    action: &str,
+    params: &[(&str, &str)],
+) -> String {
+    let mut body = format!("Action={action}&Version={EC2_API_VERSION}");
+    for (name, value) in params {
+        body.push('&');
+        body.push_str(&form_encode(name));
+        body.push('=');
+        body.push_str(&form_encode(value));
+    }
+    let request = http::Request::builder()
+        .method("POST")
+        .uri("/")
+        .header("host", "ec2.us-east-1.amazonaws.com")
+        .header("content-type", "application/x-www-form-urlencoded")
+        .header(
+            "authorization",
+            "AWS4-HMAC-SHA256 \
+             Credential=AKIDEXAMPLE/20260101/us-east-1/ec2/aws4_request, \
+             SignedHeaders=host, Signature=0123456789abcdef",
+        )
+        .body(bytes::Bytes::from(body))
+        .expect("the request is well formed");
+    let response = router.dispatch(request).await;
+    let status = response.status().as_u16();
+    let text = String::from_utf8_lossy(response.body().as_ref()).to_string();
+    assert_eq!(
+        status, 200,
+        "setup: EC2 {action} must succeed, got {status} with {text}"
+    );
+    text
+}
+
 #[test]
 fn cloudhsm_classic_and_v2_are_each_claimed_by_exactly_one_service() {
     std::thread::Builder::new()
@@ -191,7 +263,12 @@ fn cloudhsm_classic_and_v2_are_each_claimed_by_exactly_one_service() {
                 // these cases are about which service claims a request.
                 router.set_request_authentication(false);
 
+                // The subnet the V2 create is placed in, minted by EC2 itself on this
+                // same engine — the only kind of id CloudHSM V2 can resolve.
+                let subnet = ec2_subnet(&router).await;
+
                 for case in CASES {
+                    let body = case.body.replace(SUBNET_PLACEHOLDER, &subnet);
                     let mut builder = http::Request::builder()
                         .method("POST")
                         .uri(format!("https://{}/", case.host))
@@ -202,7 +279,7 @@ fn cloudhsm_classic_and_v2_are_each_claimed_by_exactly_one_service() {
                         builder = builder.header("authorization", AUTHORIZATION);
                     }
                     let request = builder
-                        .body(bytes::Bytes::from_static(case.body.as_bytes()))
+                        .body(bytes::Bytes::from(body))
                         .expect("the request is well formed");
                     let response = router.dispatch(request).await;
                     let status = response.status().as_u16();

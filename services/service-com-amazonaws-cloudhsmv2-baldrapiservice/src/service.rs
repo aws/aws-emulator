@@ -41,9 +41,13 @@
 //! do not write it; editing the entry would let this file drift from the model.
 
 use smithy_server_runtime::{
-    http, ErasedOperation, Refusal, Refused, Service,
+    http, ErasedOperation, OperationRoutingTable, Refusal, Refused, Service,
 };
 use std::sync::Arc;
+
+mod error_message_member;
+mod stated_error_bodies;
+mod validation;
 
 /// The service key `::emulator_server::service_from_target` reads out of the
 /// `X-Amz-Target` header this service's awsJson1_1 operations carry: that reader takes
@@ -63,6 +67,12 @@ const TARGET_SERVICE_KEY: &str = "baldrapiservice";
 /// router builds one shared engine and hands it to `new`.
 pub struct EmulatedService<Eng: Send + Sync + 'static> {
     entry: crate::ServiceDefinition<Eng>,
+    /// The same modelled operations the generated table holds, each wrapped so that the
+    /// error bodies it answers with are the ones this service answers with
+    /// ([`stated_error_bodies`]). Keyed by the routing key the protocol resolves — the
+    /// key the generated table uses — and built from the SAME shared engine, so a wrapped
+    /// operation reads and writes the one store.
+    stated_error_bodies: OperationRoutingTable,
 }
 
 impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
@@ -71,6 +81,7 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
     /// operation's behaviour lives in that operation's own `impl Operation`.
     pub fn new(engine: Arc<Eng>) -> Self {
         Self {
+            stated_error_bodies: stated_error_bodies::stated_error_bodies(&engine),
             entry: crate::ServiceDefinition::new(engine),
         }
     }
@@ -109,26 +120,46 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
         &self,
         req: &aws_smithy_runtime_api::http::Request,
     ) -> Option<&dyn ErasedOperation> {
-        // Return `Some(op)` to serve a request the model's routing key cannot name
-        // correctly; `None` (the default) lets the generated routing table resolve
-        // it. `req` is the whole request, so a decision that depends on the body —
-        // the `Action` form field on a query protocol, say — is reachable here.
-        let _ = req;
-        None
+        // NOT a re-route: the key is the one the generated table's own protocol resolves,
+        // and the operation it names is the one served — wrapped so that every error body
+        // reports its text in the member this model declares
+        // ([`error_message_member`]). A key the model does not name resolves to `None`
+        // here exactly as it does in the generated table, so the router's routing-error
+        // path is unchanged.
+        let key = self.entry.protocol().routing_key(req).ok()?;
+        self.stated_error_bodies.get(key)
     }
 
     fn override_refusal(&self, refusal: &Refusal) -> Option<Refused> {
         // The centralized walk calls this on a framework-level refusal (an absent
-        // required member, or a value outside a declared bound) to let this
-        // service reword it. Returning `None` keeps the framework's default
-        // wording. To state a refusal the way the emulated service states it,
-        // replace this body with a `match refusal { .. }` that returns
-        // `Some(Refused { code, message })` for the cases you reword and `None`
-        // for the rest. Replace BOTH the code and the message: a client branches
-        // on the code, so a message without its matching code is worse than
-        // leaving both alone.
-        let _ = refusal;
-        None
+        // required member, or a value outside a declared bound) to let this service
+        // reword it.
+        //
+        // CloudHSM V2 models NO `ValidationException` — the framework's default code for
+        // this class — and declares one error for it instead:
+        // `CloudHsmInvalidRequestException`, documented as "The request was rejected
+        // because it is not a valid request". That sentence describes exactly this
+        // refusal class, so every operation of this service answers a request that
+        // violates its modelled input shape with the code its own model declares, the way
+        // a handler does for the rules the model cannot express. A client matching the
+        // operation's modelled errors can then classify the refusal at all.
+        //
+        // The framework's MESSAGE is kept: it is already the envelope AWS uses —
+        // `<N> validation error(s) detected: ` over one clause per violation, naming the
+        // member as a path spells it, quoting the value the request carried and stating
+        // the requirement it failed, with a `@pattern` quoted as the model writes it.
+        // The one half the walk cannot state is the COLLECTION a clause about a
+        // collection member is about, which the per-operation layer in
+        // [`stated_error_bodies`] states before this seam is reached.
+        match refusal {
+            Refusal::Invalid(violations) => Some(Refused {
+                code: stated_error_bodies::CLOUD_HSM_INVALID_REQUEST.to_string(),
+                message: ::aws_smithy_schema_server::envelope(violations)?,
+            }),
+            // Authentication is the emulator's, not this service's: its model declares no
+            // shape for a refused caller, so the framework's 403 stands.
+            _ => None,
+        }
     }
 
     fn override_routing_error(

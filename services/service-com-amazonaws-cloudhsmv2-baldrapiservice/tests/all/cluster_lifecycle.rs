@@ -6,36 +6,123 @@
 //! Every case drives the real wire path — `POST /` with
 //! `X-Amz-Target: BaldrApiService.<Operation>` through the multi-service router — so
 //! what is asserted is what a client sees, body and HTTP status included.
+//!
+//! Every wait here is on a CONDITION — a record reaching the state the clock owes it, or
+//! leaving the store — so a case looks again until that holds rather than sleeping for a
+//! span: the deadline is generous, so a loaded or a faster host changes nothing about what
+//! is asserted ([`poll_until`]).
 
 use std::collections::BTreeMap;
+use std::future::Future;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use serde_json::{json, Value};
-use service_com_amazonaws_cloudhsmv2_baldrapiservice::state::{
-    DELETED_CLUSTER_RETENTION, MAX_CLUSTERS, MAX_HSMS_PER_CLUSTER, TRANSITION_DELAY,
-};
+use service_com_amazonaws_cloudhsmv2_baldrapiservice::state::{MAX_CLUSTERS, MAX_HSMS_PER_CLUSTER};
 use service_com_amazonaws_cloudhsmv2_baldrapiservice::EmulatedService;
-use smithy_server_runtime::MultiServiceRouter;
+use smithy_server_runtime::{EmbeddedEmulator, MultiServiceRouter};
 
-/// A router carrying exactly this service, over one shared engine.
-struct Emulator {
+/// A router carrying this service and the owner of subnets, over one shared engine.
+///
+/// EC2 is mounted because a subnet is ITS resource: `CreateCluster` resolves every
+/// identifier in `SubnetIds` against the subnets the account has, so a case has to name
+/// subnets that account really holds — the ones EC2 answers with.
+pub(crate) struct Emulator {
     router: MultiServiceRouter,
 }
 
 impl Emulator {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let engine: Arc<engine::InMemoryEngine> = Arc::new(engine::InMemoryEngine::new());
         let mut router = MultiServiceRouter::new();
         router.set_request_authentication(false);
-        router.register_service(EmulatedService::new(engine));
+        router.register_service(EmulatedService::new(Arc::clone(&engine)));
+        router.register_service(service_com_amazonaws_ec2_amazonec2::EmulatedService::new(
+            engine,
+        ));
         Self { router }
+    }
+
+    /// An EC2 client over the in-process callback into this same emulator, signed for
+    /// `region` — the same hop the service under test makes.
+    pub(crate) fn ec2(&self, region: &str) -> ::aws_sdk_ec2::Client {
+        let config = ::aws_sdk_ec2::Config::builder()
+            .behavior_version(::aws_sdk_ec2::config::BehaviorVersion::latest())
+            .region(::aws_sdk_ec2::config::Region::new(region.to_string()))
+            .endpoint_url(format!("https://ec2.{region}.amazonaws.com"))
+            .http_client(EmbeddedEmulator::from_router(self.router.clone()).http_client())
+            .credentials_provider(
+                EmbeddedEmulator::from_router(self.router.clone()).aws_credentials_provider(),
+            )
+            .retry_config(::aws_sdk_ec2::config::retry::RetryConfig::disabled())
+            .timeout_config(::aws_sdk_ec2::config::timeout::TimeoutConfig::disabled())
+            .identity_cache(::aws_sdk_ec2::config::IdentityCache::no_cache())
+            .stalled_stream_protection(
+                ::aws_sdk_ec2::config::StalledStreamProtectionConfig::disabled(),
+            )
+            .build();
+        ::aws_sdk_ec2::Client::from_conf(config)
+    }
+
+    /// The account's subnets in `region`, as (Availability Zone, subnet id) pairs in zone
+    /// order — ASKED of EC2, never assumed: these are the ids `CreateCluster` resolves
+    /// `SubnetIds` against. Only the subnets in a zone OF THIS REGION are kept, so a case
+    /// names a subnet of the region its requests are signed for.
+    pub(crate) async fn subnets_in(&self, region: &str) -> Vec<(String, String)> {
+        let described = self
+            .ec2(region)
+            .describe_subnets()
+            .send()
+            .await
+            .expect("EC2 must report the account's subnets");
+        let mut reported: Vec<(String, String)> = described
+            .subnets()
+            .iter()
+            .filter_map(|subnet| {
+                Some((
+                    subnet.availability_zone()?.to_string(),
+                    subnet.subnet_id()?.to_string(),
+                ))
+            })
+            .filter(|(zone, _)| zone.len() == region.len() + 1 && zone.starts_with(region))
+            .collect();
+        reported.sort();
+        assert!(
+            !reported.is_empty(),
+            "the account must have subnets in {region}, got none"
+        );
+        reported
+    }
+
+    /// The ids of [`Self::subnets_in`], for a case that only names them.
+    pub(crate) async fn subnet_ids_in(&self, region: &str) -> Vec<String> {
+        self.subnets_in(region)
+            .await
+            .into_iter()
+            .map(|(_, id)| id)
+            .collect()
+    }
+
+    /// The VPC EC2 reports `subnet_id` in — what a cluster placed in that subnet must
+    /// report as its own `VpcId`.
+    pub(crate) async fn vpc_of(&self, region: &str, subnet_id: &str) -> String {
+        self.ec2(region)
+            .describe_subnets()
+            .subnet_ids(subnet_id)
+            .send()
+            .await
+            .expect("EC2 must report the subnet")
+            .subnets()
+            .first()
+            .and_then(::aws_sdk_ec2::types::Subnet::vpc_id)
+            .expect("the subnet must name its VPC")
+            .to_string()
     }
 
     /// Call `operation` with `body`, signed for `region` so the service resolves the
     /// request's region the way it does in production (the SigV4 credential scope).
-    async fn call_in(&self, region: &str, operation: &str, body: &Value) -> (u16, Value) {
+    pub(crate) async fn call_in(&self, region: &str, operation: &str, body: &Value) -> (u16, Value) {
         let request = http::Request::builder()
             .method("POST")
             .uri("/")
@@ -57,12 +144,12 @@ impl Emulator {
     }
 
     /// Call `operation` in the default test region.
-    async fn call(&self, operation: &str, body: &Value) -> (u16, Value) {
+    pub(crate) async fn call(&self, operation: &str, body: &Value) -> (u16, Value) {
         self.call_in(REGION, operation, body).await
     }
 
     /// Call `operation`, asserting a 200 and returning the response body.
-    async fn ok(&self, case: &str, operation: &str, body: &Value) -> Value {
+    pub(crate) async fn ok(&self, case: &str, operation: &str, body: &Value) -> Value {
         let (status, response) = self.call(operation, body).await;
         assert_eq!(
             status, 200,
@@ -73,12 +160,7 @@ impl Emulator {
 }
 
 /// The region most cases sign for.
-const REGION: &str = "us-east-1";
-
-/// A subnet id matching the modelled `^subnet-[0-9a-fA-F]{8,17}$`.
-fn subnet(index: usize) -> String {
-    format!("subnet-{:08x}{:09x}", 0x0abc_1234_u32, index)
-}
+pub(crate) const REGION: &str = "us-east-1";
 
 /// Whether `value` is one of the cloudhsm ids modelled as
 /// `^<prefix>[2-7a-zA-Z]{11,16}$`.
@@ -101,7 +183,7 @@ fn is_hex_id(value: &str, prefix: &str) -> bool {
 }
 
 /// The `__type` an awsJson1_1 error body carries.
-fn error_code(response: &Value) -> String {
+pub(crate) fn error_code(response: &Value) -> String {
     response
         .get("__type")
         .and_then(Value::as_str)
@@ -127,9 +209,38 @@ fn subnet_mapping(cluster: &Value) -> BTreeMap<String, String> {
         .unwrap_or_default()
 }
 
-/// Wait past a clock-owed transition's due instant.
-fn wait_for_transition() {
-    std::thread::sleep(TRANSITION_DELAY + Duration::from_millis(400));
+/// How long a case waits for a condition the clock owes before it gives up. Generous: it
+/// is not the span under test, only the ceiling on waiting for one.
+const DEADLINE: Duration = Duration::from_secs(60);
+
+/// How long a case waits before looking again. See [`DEADLINE`].
+const LOOK_AGAIN: Duration = Duration::from_millis(20);
+
+/// Look again until `holds` answers true, or [`DEADLINE`] passes.
+pub(crate) async fn poll_until<Look, Held>(what: &str, mut holds: Look)
+where
+    Look: FnMut() -> Held,
+    Held: Future<Output = bool>,
+{
+    let started = Instant::now();
+    loop {
+        if holds().await {
+            return;
+        }
+        assert!(
+            started.elapsed() < DEADLINE,
+            "case {what:?}: the condition did not hold within {DEADLINE:?}"
+        );
+        tokio::time::sleep(LOOK_AGAIN).await;
+    }
+}
+
+/// The clusters `DescribeClusters` reports with no filter at all.
+async fn described_clusters(emulator: &Emulator, case: &str) -> Vec<Value> {
+    emulator.ok(case, "DescribeClusters", &json!({})).await["Clusters"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
 }
 
 /// One `CreateCluster` request, and what the cluster it mints must report.
@@ -147,18 +258,18 @@ struct CreateCase {
     expected_retention: (&'static str, &'static str),
 }
 
-/// The table: a `CreateCluster` answer is computed from the request and the service's
-/// documented defaults, and `DescribeClusters` reports exactly the cluster that was
-/// stored. Rows vary the region, the subnet count (the modelled `SubnetIds` bound is
-/// `len 1..10`), the HSM type catalog, the mode, the network type, the retention bounds
-/// and the tag count.
+/// The table: a `CreateCluster` answer is computed from the request, the subnets EC2
+/// holds for the account and the service's documented defaults, and `DescribeClusters`
+/// reports exactly the cluster that was stored. Rows vary the region, the subnet count
+/// ("You must specify at least one subnet" and only one per Availability Zone), the mode,
+/// the network type, the retention bounds and the tag count.
 fn create_cases() -> Vec<CreateCase> {
     vec![
         CreateCase {
             name: "defaults, one subnet",
             region: "us-east-1",
             subnets: 1,
-            hsm_type: "hsm1.medium",
+            hsm_type: "hsm2m.medium",
             mode: None,
             network_type: None,
             retention: None,
@@ -169,9 +280,9 @@ fn create_cases() -> Vec<CreateCase> {
             expected_retention: ("DAYS", "90"),
         },
         CreateCase {
-            name: "dualstack hsm2m across three subnets",
+            name: "dualstack hsm2m across two subnets",
             region: "eu-west-2",
-            subnets: 3,
+            subnets: 2,
             hsm_type: "hsm2m.medium",
             mode: Some("NON_FIPS"),
             network_type: Some("DUALSTACK"),
@@ -183,10 +294,10 @@ fn create_cases() -> Vec<CreateCase> {
             expected_retention: ("DAYS", "7"),
         },
         CreateCase {
-            name: "gov region, the modelled maximum of ten subnets",
+            name: "gov region, one subnet in every Availability Zone it has",
             region: "us-gov-west-1",
-            subnets: 10,
-            hsm_type: "hsm1.medium",
+            subnets: 3,
+            hsm_type: "hsm2m.medium",
             mode: Some("FIPS"),
             network_type: Some("IPV4"),
             // The published upper bound of `BackupRetentionPolicy$Value`.
@@ -200,10 +311,15 @@ fn create_cases() -> Vec<CreateCase> {
 }
 
 impl CreateCase {
-    /// This row as a `CreateCluster` request body.
-    fn request(&self) -> Value {
-        let subnets: Vec<String> = (0..self.subnets).map(subnet).collect();
-        let mut body = json!({ "HsmType": self.hsm_type, "SubnetIds": subnets });
+    /// This row as a `CreateCluster` request body, over `subnets` — the account's
+    /// subnets in this row's region, as EC2 reports them.
+    fn request(&self, subnets: &[(String, String)]) -> Value {
+        let requested: Vec<String> = self
+            .placed_in(subnets)
+            .into_iter()
+            .map(|(_, id)| id)
+            .collect();
+        let mut body = json!({ "HsmType": self.hsm_type, "SubnetIds": requested });
         if let Some(mode) = self.mode {
             body["Mode"] = json!(mode);
         }
@@ -224,15 +340,23 @@ impl CreateCase {
         body
     }
 
-    /// The AZ -> subnet map this row's cluster must carry: one AZ per requested
-    /// subnet, in the region the request was signed for.
-    fn expected_subnet_mapping(&self) -> BTreeMap<String, String> {
-        (0..self.subnets)
-            .map(|index| {
-                let letter = char::from(b'a' + index as u8);
-                (format!("{}{letter}", self.region), subnet(index))
-            })
-            .collect()
+    /// The subnets of `subnets` this row places its cluster in: the first `self.subnets`
+    /// of the account's subnets in this row's region, each in its own Availability Zone.
+    fn placed_in(&self, subnets: &[(String, String)]) -> Vec<(String, String)> {
+        assert!(
+            subnets.len() >= self.subnets,
+            "case {:?}: the account must have {} subnets in {}, got {subnets:?}",
+            self.name,
+            self.subnets,
+            self.region
+        );
+        subnets[..self.subnets].to_vec()
+    }
+
+    /// The AZ -> subnet map this row's cluster must carry: the zone EC2 reports for each
+    /// requested subnet, mapped to that subnet.
+    fn expected_subnet_mapping(&self, subnets: &[(String, String)]) -> BTreeMap<String, String> {
+        self.placed_in(subnets).into_iter().collect()
     }
 }
 
@@ -243,8 +367,9 @@ async fn create_cluster_computes_the_cluster_and_describe_clusters_returns_it() 
 
     for case in create_cases() {
         let name = case.name;
+        let subnets = emulator.subnets_in(case.region).await;
         let (status, response) = emulator
-            .call_in(case.region, "CreateCluster", &case.request())
+            .call_in(case.region, "CreateCluster", &case.request(&subnets))
             .await;
         assert_eq!(
             status, 200,
@@ -315,8 +440,9 @@ async fn create_cluster_computes_the_cluster_and_describe_clusters_returns_it() 
         );
         assert_eq!(
             subnet_mapping(&cluster),
-            case.expected_subnet_mapping(),
-            "case {name:?}: expected one Availability Zone per requested subnet"
+            case.expected_subnet_mapping(&subnets),
+            "case {name:?}: expected each requested subnet mapped under the Availability \
+             Zone EC2 reports for it"
         );
         assert_eq!(
             cluster["Hsms"].as_array().map(Vec::len),
@@ -329,9 +455,15 @@ async fn create_cluster_computes_the_cluster_and_describe_clusters_returns_it() 
             "case {name:?}: expected a CreateTimestamp, got {:?}",
             cluster["CreateTimestamp"]
         );
-        assert!(
-            is_hex_id(cluster["VpcId"].as_str().unwrap_or_default(), "vpc-"),
-            "case {name:?}: expected a minted VpcId, got {:?}",
+        // The VPC is the one that OWNS the requested subnets, as EC2 reports it — never
+        // an id this service invented.
+        let owning_vpc = emulator
+            .vpc_of(case.region, &case.placed_in(&subnets)[0].1)
+            .await;
+        assert_eq!(
+            cluster["VpcId"].as_str(),
+            Some(owning_vpc.as_str()),
+            "case {name:?}: expected the VPC owning the requested subnets, got {:?}",
             cluster["VpcId"]
         );
         assert!(
@@ -392,16 +524,18 @@ async fn create_cluster_computes_the_cluster_and_describe_clusters_returns_it() 
 #[tokio::test]
 async fn an_hsm_is_visible_in_its_cluster_and_gone_after_it_is_deleted() {
     let emulator = Emulator::new();
+    let subnets = emulator.subnets_in(REGION).await;
 
-    // One cluster over three subnets, so each HSM lands in a different Availability
-    // Zone and each row below selects a different subnet from the stored mapping.
+    // One cluster over every subnet the account has in this region, so each HSM lands in
+    // a different Availability Zone and each row below selects a different subnet from
+    // the stored mapping.
     let created = emulator
         .ok(
             "fixture",
             "CreateCluster",
             &json!({
                 "HsmType": "hsm2m.medium",
-                "SubnetIds": [subnet(0), subnet(1), subnet(2)],
+                "SubnetIds": subnets.iter().map(|(_, id)| id.clone()).collect::<Vec<String>>(),
                 "NetworkType": "DUALSTACK",
             }),
         )
@@ -414,13 +548,13 @@ async fn an_hsm_is_visible_in_its_cluster_and_gone_after_it_is_deleted() {
     // Rows differ in the Availability Zone, in whether the caller chose the ENI
     // address, and in which of the three documented selectors deletes the HSM.
     let cases: Vec<(&str, usize, Option<&str>, &str)> = vec![
-        ("zone a, address chosen by the service, deleted by HsmId", 0, None, "HsmId"),
-        ("zone b, address chosen by the caller, deleted by EniIp", 1, Some("10.0.1.77"), "EniIp"),
-        ("zone c, address chosen by the service, deleted by EniId", 2, None, "EniId"),
+        ("the first zone, address chosen by the service, deleted by HsmId", 0, None, "HsmId"),
+        ("the second zone, address chosen by the caller, deleted by EniIp", 1, Some("10.0.1.77"), "EniIp"),
+        ("the third zone, address chosen by the service, deleted by EniId", 2, None, "EniId"),
     ];
 
     for (name, zone_index, requested_ip, selector) in cases {
-        let availability_zone = format!("{REGION}{}", char::from(b'a' + zone_index as u8));
+        let (availability_zone, zone_subnet) = subnets[zone_index].clone();
         let mut request = json!({ "ClusterId": cluster_id, "AvailabilityZone": availability_zone });
         if let Some(ip) = requested_ip {
             request["IpAddress"] = json!(ip);
@@ -440,7 +574,7 @@ async fn an_hsm_is_visible_in_its_cluster_and_gone_after_it_is_deleted() {
         );
         assert_eq!(
             hsm["SubnetId"].as_str(),
-            Some(subnet(zone_index).as_str()),
+            Some(zone_subnet.as_str()),
             "case {name:?}: expected the cluster's subnet for {availability_zone}, got {:?}",
             hsm["SubnetId"]
         );
@@ -501,12 +635,18 @@ async fn an_hsm_is_visible_in_its_cluster_and_gone_after_it_is_deleted() {
             "case {name:?}: expected DeleteHsm to report the deleted HSM, got {deleted}"
         );
 
-        // Once the deletion's span has elapsed, the HSM is gone from the cluster.
-        wait_for_transition();
-        let described = emulator
-            .ok(name, "DescribeClusters", &json!({}))
-            .await;
-        let remaining = described["Clusters"][0]["Hsms"]
+        // The deletion the clock owes leaves the HSM out of its cluster: look again
+        // until it is gone rather than waiting for the span.
+        poll_until(name, || async {
+            !described_clusters(&emulator, name).await[0]["Hsms"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+                .iter()
+                .any(|listed| listed["HsmId"] == hsm["HsmId"])
+        })
+        .await;
+        let remaining = described_clusters(&emulator, name).await[0]["Hsms"]
             .as_array()
             .cloned()
             .unwrap_or_default();
@@ -529,12 +669,14 @@ async fn an_hsm_is_visible_in_its_cluster_and_gone_after_it_is_deleted() {
 #[tokio::test]
 async fn every_transition_this_emulator_owes_comes_due_on_its_own() {
     let emulator = Emulator::new();
+    let subnets = emulator.subnets_in(REGION).await;
+    let (zone, zone_subnet) = subnets[0].clone();
 
     let created = emulator
         .ok(
             "cluster",
             "CreateCluster",
-            &json!({ "HsmType": "hsm1.medium", "SubnetIds": [subnet(0)] }),
+            &json!({ "HsmType": "hsm2m.medium", "SubnetIds": [zone_subnet] }),
         )
         .await;
     let cluster_id = created["Cluster"]["ClusterId"]
@@ -548,21 +690,24 @@ async fn every_transition_this_emulator_owes_comes_due_on_its_own() {
         created["Cluster"]["State"]
     );
 
-    wait_for_transition();
-    let described = emulator
-        .ok("cluster", "DescribeClusters", &json!({}))
-        .await;
+    // The cluster is owed UNINITIALIZED: look again until it reports it.
+    poll_until("cluster", || async {
+        described_clusters(&emulator, "cluster").await[0]["State"] == json!("UNINITIALIZED")
+    })
+    .await;
+    let described = described_clusters(&emulator, "cluster").await;
     assert_eq!(
-        described["Clusters"][0]["State"].as_str(),
+        described[0]["State"].as_str(),
         Some("UNINITIALIZED"),
-        "case \"cluster\": expected a created cluster to settle at UNINITIALIZED, got {described}"
+        "case \"cluster\": expected a created cluster to settle at UNINITIALIZED, got \
+         {described:?}"
     );
 
     let hsm = emulator
         .ok(
             "hsm",
             "CreateHsm",
-            &json!({ "ClusterId": cluster_id, "AvailabilityZone": format!("{REGION}a") }),
+            &json!({ "ClusterId": cluster_id, "AvailabilityZone": zone }),
         )
         .await;
     assert_eq!(
@@ -572,14 +717,16 @@ async fn every_transition_this_emulator_owes_comes_due_on_its_own() {
     );
     let hsm_id = hsm["Hsm"]["HsmId"].as_str().expect("an hsm id").to_string();
 
-    wait_for_transition();
-    let described = emulator
-        .ok("hsm", "DescribeClusters", &json!({}))
-        .await;
+    // The HSM is owed ACTIVE.
+    poll_until("hsm", || async {
+        described_clusters(&emulator, "hsm").await[0]["Hsms"][0]["State"] == json!("ACTIVE")
+    })
+    .await;
+    let described = described_clusters(&emulator, "hsm").await;
     assert_eq!(
-        described["Clusters"][0]["Hsms"][0]["State"].as_str(),
+        described[0]["Hsms"][0]["State"].as_str(),
         Some("ACTIVE"),
-        "case \"hsm\": expected a created HSM to settle at ACTIVE, got {described}"
+        "case \"hsm\": expected a created HSM to settle at ACTIVE, got {described:?}"
     );
 
     // A cluster that still contains an HSM cannot be deleted.
@@ -599,7 +746,14 @@ async fn every_transition_this_emulator_owes_comes_due_on_its_own() {
             &json!({ "ClusterId": cluster_id, "HsmId": hsm_id }),
         )
         .await;
-    wait_for_transition();
+    // The HSM leaves the cluster once its own deletion comes due, which is what lets the
+    // cluster be deleted at all.
+    poll_until("hsm", || async {
+        described_clusters(&emulator, "hsm").await[0]["Hsms"]
+            .as_array()
+            .is_none_or(Vec::is_empty)
+    })
+    .await;
 
     let deleted = emulator
         .ok("cluster", "DeleteCluster", &json!({ "ClusterId": cluster_id }))
@@ -610,14 +764,16 @@ async fn every_transition_this_emulator_owes_comes_due_on_its_own() {
         "case \"cluster\": expected the delete answer to show the transient state, got {deleted}"
     );
 
-    wait_for_transition();
-    let described = emulator
-        .ok("cluster", "DescribeClusters", &json!({}))
-        .await;
+    // The cluster is owed its terminal DELETED.
+    poll_until("cluster", || async {
+        described_clusters(&emulator, "cluster").await[0]["State"] == json!("DELETED")
+    })
+    .await;
+    let described = described_clusters(&emulator, "cluster").await;
     assert_eq!(
-        described["Clusters"][0]["State"].as_str(),
+        described[0]["State"].as_str(),
         Some("DELETED"),
-        "case \"cluster\": expected a deleted cluster to settle at DELETED, got {described}"
+        "case \"cluster\": expected a deleted cluster to settle at DELETED, got {described:?}"
     );
 
 
@@ -625,7 +781,7 @@ async fn every_transition_this_emulator_owes_comes_due_on_its_own() {
     for (operation, body) in [
         (
             "CreateHsm",
-            json!({ "ClusterId": cluster_id, "AvailabilityZone": format!("{REGION}a") }),
+            json!({ "ClusterId": cluster_id, "AvailabilityZone": zone }),
         ),
         ("DeleteCluster", json!({ "ClusterId": cluster_id })),
         (
@@ -642,16 +798,17 @@ async fn every_transition_this_emulator_owes_comes_due_on_its_own() {
         );
     }
 
-    // Once the retention window on the terminal state has passed, the store reclaims
-    // the record instead of holding it for the life of the process.
-    std::thread::sleep(DELETED_CLUSTER_RETENTION + Duration::from_millis(400));
-    let described = emulator
-        .ok("cluster", "DescribeClusters", &json!({}))
-        .await;
-    assert_eq!(
-        described["Clusters"].as_array().map(Vec::len),
-        Some(0),
-        "case \"cluster\": expected the deleted cluster to be reclaimed, got {described}"
+    // Once the retention window on the terminal state has passed, the store reclaims the
+    // record instead of holding it for the life of the process: look again until the
+    // store reports no cluster at all.
+    poll_until("cluster", || async {
+        described_clusters(&emulator, "cluster").await.is_empty()
+    })
+    .await;
+    let described = described_clusters(&emulator, "cluster").await;
+    assert!(
+        described.is_empty(),
+        "case \"cluster\": expected the deleted cluster to be reclaimed, got {described:?}"
     );
 }
 
@@ -659,19 +816,21 @@ async fn every_transition_this_emulator_owes_comes_due_on_its_own() {
 async fn the_store_refuses_to_grow_past_the_ceilings_it_keeps_on_itself() {
     // Clusters: the store holds MAX_CLUSTERS of them and refuses the next create.
     let emulator = Emulator::new();
+    let subnets = emulator.subnets_in(REGION).await;
+    let (_, zone_subnet) = subnets[0].clone();
     for index in 0..MAX_CLUSTERS {
         emulator
             .ok(
                 &format!("cluster {index}"),
                 "CreateCluster",
-                &json!({ "HsmType": "hsm1.medium", "SubnetIds": [subnet(0)] }),
+                &json!({ "HsmType": "hsm2m.medium", "SubnetIds": [zone_subnet] }),
             )
             .await;
     }
     let (status, response) = emulator
         .call(
             "CreateCluster",
-            &json!({ "HsmType": "hsm1.medium", "SubnetIds": [subnet(0)] }),
+            &json!({ "HsmType": "hsm2m.medium", "SubnetIds": [zone_subnet] }),
         )
         .await;
     assert_eq!(
@@ -685,18 +844,21 @@ async fn the_store_refuses_to_grow_past_the_ceilings_it_keeps_on_itself() {
     // address the caller chose, which is the path that bypasses address exhaustion —
     // and refuses the next create.
     let emulator = Emulator::new();
+    // A fresh emulator holds a fresh account, so its subnets are its own.
+    let subnets = emulator.subnets_in(REGION).await;
+    let (zone, zone_subnet) = subnets[0].clone();
     let created = emulator
         .ok(
             "fixture",
             "CreateCluster",
-            &json!({ "HsmType": "hsm1.medium", "SubnetIds": [subnet(0)] }),
+            &json!({ "HsmType": "hsm2m.medium", "SubnetIds": [zone_subnet] }),
         )
         .await;
     let cluster_id = created["Cluster"]["ClusterId"]
         .as_str()
         .expect("a cluster id")
         .to_string();
-    let availability_zone = format!("{REGION}a");
+    let availability_zone = zone;
     for index in 0..MAX_HSMS_PER_CLUSTER {
         let mut request =
             json!({ "ClusterId": cluster_id, "AvailabilityZone": availability_zone });
@@ -729,6 +891,7 @@ async fn the_store_refuses_to_grow_past_the_ceilings_it_keeps_on_itself() {
 #[tokio::test]
 async fn describe_clusters_pages_by_max_results_and_round_trips_next_token() {
     let emulator = Emulator::new();
+    let subnets = emulator.subnet_ids_in(REGION).await;
 
     let mut created: Vec<String> = Vec::new();
     for index in 0..7 {
@@ -736,7 +899,10 @@ async fn describe_clusters_pages_by_max_results_and_round_trips_next_token() {
             .ok(
                 "fixture",
                 "CreateCluster",
-                &json!({ "HsmType": "hsm1.medium", "SubnetIds": [subnet(index)] }),
+                &json!({
+                    "HsmType": "hsm2m.medium",
+                    "SubnetIds": [subnets[index % subnets.len()]],
+                }),
             )
             .await;
         created.push(
@@ -814,12 +980,16 @@ async fn describe_clusters_pages_by_max_results_and_round_trips_next_token() {
 #[tokio::test]
 async fn requests_outside_the_documented_rules_are_refused() {
     let emulator = Emulator::new();
+    let subnets = emulator.subnet_ids_in(REGION).await;
+    let first = subnets[0].clone();
+    let second = subnets[1].clone();
+    let zone = emulator.subnets_in(REGION).await[0].0.clone();
 
     let created = emulator
         .ok(
             "fixture",
             "CreateCluster",
-            &json!({ "HsmType": "hsm1.medium", "SubnetIds": [subnet(0), subnet(1)] }),
+            &json!({ "HsmType": "hsm2m.medium", "SubnetIds": [first, second] }),
         )
         .await;
     let cluster_id = created["Cluster"]["ClusterId"]
@@ -835,21 +1005,27 @@ async fn requests_outside_the_documented_rules_are_refused() {
         (
             "an HSM type outside the documented catalog",
             "CreateCluster",
-            json!({ "HsmType": "hsm9.large", "SubnetIds": [subnet(0)] }),
+            json!({ "HsmType": "hsm9.large", "SubnetIds": [first] }),
             "CloudHsmInvalidRequestException",
         ),
         (
-            "the same subnet named twice",
+            "an HSM type CloudHSM no longer provisions",
             "CreateCluster",
-            json!({ "HsmType": "hsm1.medium", "SubnetIds": [subnet(0), subnet(0)] }),
+            json!({ "HsmType": "hsm1.medium", "SubnetIds": [first] }),
+            "CloudHsmInvalidRequestException",
+        ),
+        (
+            "the same subnet named twice, so one Availability Zone twice",
+            "CreateCluster",
+            json!({ "HsmType": "hsm2m.medium", "SubnetIds": [first, first] }),
             "CloudHsmInvalidRequestException",
         ),
         (
             "a retention window one day below the published range",
             "CreateCluster",
             json!({
-                "HsmType": "hsm1.medium",
-                "SubnetIds": [subnet(0)],
+                "HsmType": "hsm2m.medium",
+                "SubnetIds": [first],
                 "BackupRetentionPolicy": { "Type": "DAYS", "Value": "6" },
             }),
             "CloudHsmInvalidRequestException",
@@ -858,8 +1034,8 @@ async fn requests_outside_the_documented_rules_are_refused() {
             "a retention window one day above the published range",
             "CreateCluster",
             json!({
-                "HsmType": "hsm1.medium",
-                "SubnetIds": [subnet(0)],
+                "HsmType": "hsm2m.medium",
+                "SubnetIds": [first],
                 "BackupRetentionPolicy": { "Type": "DAYS", "Value": "380" },
             }),
             "CloudHsmInvalidRequestException",
@@ -868,8 +1044,8 @@ async fn requests_outside_the_documented_rules_are_refused() {
             "a retention policy missing its Value",
             "CreateCluster",
             json!({
-                "HsmType": "hsm1.medium",
-                "SubnetIds": [subnet(0)],
+                "HsmType": "hsm2m.medium",
+                "SubnetIds": [first],
                 "BackupRetentionPolicy": { "Type": "DAYS" },
             }),
             "CloudHsmInvalidRequestException",
@@ -878,8 +1054,8 @@ async fn requests_outside_the_documented_rules_are_refused() {
             "a source backup this emulator does not hold",
             "CreateCluster",
             json!({
-                "HsmType": "hsm1.medium",
-                "SubnetIds": [subnet(0)],
+                "HsmType": "hsm2m.medium",
+                "SubnetIds": [first],
                 "SourceBackupId": "backup-aaaaaaaaaaa2",
             }),
             "CloudHsmResourceNotFoundException",
@@ -887,7 +1063,7 @@ async fn requests_outside_the_documented_rules_are_refused() {
         (
             "an HSM in a cluster that does not exist",
             "CreateHsm",
-            json!({ "ClusterId": unknown_cluster, "AvailabilityZone": format!("{REGION}a") }),
+            json!({ "ClusterId": unknown_cluster, "AvailabilityZone": zone }),
             "CloudHsmResourceNotFoundException",
         ),
         (
@@ -955,28 +1131,46 @@ async fn requests_outside_the_documented_rules_are_refused() {
 #[tokio::test]
 async fn describe_clusters_filters_on_every_documented_field() {
     let emulator = Emulator::new();
+    let subnets = emulator.subnet_ids_in(REGION).await;
 
     let mut clusters: Vec<Value> = Vec::new();
-    for index in 0..3 {
+    for subnet_id in subnets.iter().take(3) {
         let response = emulator
             .ok(
                 "fixture",
                 "CreateCluster",
-                &json!({ "HsmType": "hsm1.medium", "SubnetIds": [subnet(index)] }),
+                &json!({ "HsmType": "hsm2m.medium", "SubnetIds": [subnet_id] }),
             )
             .await;
         clusters.push(response["Cluster"].clone());
     }
-    // Every cluster has settled, so `states` selects on the state they now report.
-    wait_for_transition();
+    // `states` selects on the state the clusters report, so look again until every one of
+    // them has settled at the state the clock owes it.
+    let created = clusters.len();
+    poll_until("fixture", || async {
+        described_clusters(&emulator, "fixture")
+            .await
+            .iter()
+            .filter(|cluster| cluster["State"] == json!("UNINITIALIZED"))
+            .count()
+            == created
+    })
+    .await;
 
     let first_id = clusters[0]["ClusterId"].as_str().unwrap_or_default();
-    let second_vpc = clusters[1]["VpcId"].as_str().unwrap_or_default();
+    // Every one of them was placed in a subnet of the account's default VPC, so that id
+    // selects all of them — the VPC a cluster reports is the one that owns its subnets.
+    let owning_vpc = clusters[1]["VpcId"].as_str().unwrap_or_default();
 
     let cases: Vec<(&str, Value, usize)> = vec![
         ("clusterIds", json!({ "clusterIds": [first_id] }), 1),
-        ("vpcIds", json!({ "vpcIds": [second_vpc] }), 1),
-        ("states", json!({ "states": ["UNINITIALIZED"] }), 3),
+        ("vpcIds", json!({ "vpcIds": [owning_vpc] }), created),
+        (
+            "vpcIds, a VPC no cluster is in",
+            json!({ "vpcIds": ["vpc-ffffffffffffffff0"] }),
+            0,
+        ),
+        ("states", json!({ "states": ["UNINITIALIZED"] }), created),
         ("states, none matching", json!({ "states": ["ACTIVE"] }), 0),
         (
             "clusterIds and states together",
