@@ -62,6 +62,11 @@ mod stage_web_acl_edge;
 // redacted.
 #[path = "all/stage_web_acl_logging.rs"]
 mod stage_web_acl_logging;
+// Which DESTINATION those records reach: both published forms of a log-group ARN name the
+// same group, the count of records tracks the requests inspected, and a destination the
+// prefix rule refuses leaves the binding, the records and the stage alone.
+#[path = "all/stage_web_acl_logging_destination_binding.rs"]
+mod stage_web_acl_logging_destination_binding;
 #[path = "all/stage_web_acl_association_report.rs"]
 mod stage_web_acl_association_report;
 #[path = "all/aws_service_integration.rs"]
