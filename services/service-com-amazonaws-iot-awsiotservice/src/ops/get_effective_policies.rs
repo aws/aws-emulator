@@ -216,7 +216,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     scope.push(crate::state::PolicyTarget::CognitoIdentity(identity).key());
                 }
                 _ => {
-                    return Err(invalid_request(invalid_pool_id_message(pool_id)));
+                    return Err(invalid_request(
+                        crate::state::invalid_cognito_identity_pool_id_message(pool_id),
+                    ));
                 }
             }
         }
@@ -232,24 +234,23 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         // One entry per policy, whatever path brought it into scope: a policy attached
         // both to the principal and to a group above it has ONE effect, so it is reported
-        // once. `BTreeSet` keeps the entries in one stable order, so two reads of an
-        // unchanged relation answer identically.
-        let mut names: ::std::collections::BTreeSet<String> = ::std::collections::BTreeSet::new();
-        for key in &scope {
-            names.extend(store.policy_attachments.policies_of(key));
-        }
-
-        let effective_policies: Vec<EffectivePolicy> = names
-            .iter()
-            // A name the policy registry does not hold governs nothing: it is left out
-            // rather than reported with a document this account never stored.
-            .filter_map(|policy_name| store.policies.get(policy_name))
+        // once, in one stable order — and a name the registry does not hold governs
+        // nothing, so it is left out rather than reported with a document this account
+        // never stored. Which policies the relation holds for a scope is ONE computation
+        // ([`crate::state::ComAmazonawsIotAwsiotserviceState::policies_in_effect`]), shared
+        // with the operation that decides an authorization question from it, so a reader of
+        // the set and a decision made from it cannot disagree. This read overrides nothing:
+        // the two name lists that operation's request may override the set with are empty
+        // here.
+        let effective_policies: Vec<EffectivePolicy> = store
+            .policies_in_effect(&scope, &[], &[])
+            .into_iter()
             .map(|policy| EffectivePolicy {
-                policy_name: Some(policy.policy_name.clone()),
-                policy_arn: Some(policy.policy_arn.clone()),
+                policy_name: Some(policy.policy_name),
+                policy_arn: Some(policy.policy_arn),
                 // "The IAM policy document" of the version in effect — the same document
                 // `GetPolicy` reports for this policy.
-                policy_document: Some(policy.default_document().to_string()),
+                policy_document: Some(policy.document),
             })
             .collect();
 
@@ -275,16 +276,6 @@ const CONFLICTING_IDENTITY_MESSAGE: &str =
 /// has to be supplied, for the same reason the sentence above names both of its.
 const MISSING_IDENTITY_MESSAGE: &str =
     "Principal, CognitoIdentityPoolId or thingName must be provided.";
-
-/// How this operation states that `cognitoIdentityPoolId` is not the form an identity pool
-/// is named in. The fixed text names the member and the form; the variable part is the
-/// value the request sent.
-fn invalid_pool_id_message(pool_id: &str) -> String {
-    format!(
-        "Invalid CognitoIdentityPoolId: {pool_id}. A Cognito identity pool id has the form \
-         region:id"
-    )
-}
 
 /// The modelled `InvalidRequestException` (HTTP 400), lifted into this operation's error
 /// channel.

@@ -2824,10 +2824,21 @@ pub use certificates::{
 // `crate::state::<name>`.
 pub mod policy_attachments;
 pub use policy_attachments::{
-    decode_page_marker, encode_page_marker, missing_certificate_target_message,
-    missing_policy_message, page_of, parse_policy_target, PolicyAttachmentLimit,
-    PolicyAttachments, PolicyTarget, PolicyTargetRefusal, ResolvedPolicyTarget,
-    MAX_ATTACHED_TARGETS, MAX_LIST_PAGE_SIZE, MAX_POLICIES_PER_TARGET,
+    decode_page_marker, encode_page_marker, invalid_cognito_identity_pool_id_message,
+    missing_certificate_target_message, missing_policy_message, page_of, parse_policy_target,
+    PolicyAttachmentLimit, PolicyAttachments, PolicyTarget, PolicyTargetRefusal,
+    ResolvedPolicyTarget, MAX_ATTACHED_TARGETS, MAX_LIST_PAGE_SIZE, MAX_POLICIES_PER_TARGET,
+};
+
+// HOW an authorization question is DECIDED out of that relation — which policies are in
+// effect for a principal, and what their statements say about one action on one resource —
+// lives in `state/policy_evaluation.rs`, beside the attachment relation it reads. Its
+// names are re-exported here so a handler reaches them as `crate::state::<name>`.
+pub mod policy_evaluation;
+pub use policy_evaluation::{
+    evaluate_authorization, iot_action_for_action_type, AuthorizationDecision, PolicyInEffect,
+    PolicyReference, AUTH_DECISION_ALLOWED, AUTH_DECISION_EXPLICIT_DENY,
+    AUTH_DECISION_IMPLICIT_DENY, CLIENT_ID_CONTEXT_KEY, MAX_AUTHORIZED_RESOURCES,
 };
 
 // What a ROLE ALIAS is — the record one holds, the ARN minted for it and what every

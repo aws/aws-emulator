@@ -124,6 +124,21 @@ pub fn missing_certificate_target_message() -> String {
     "The certificate given in the principal does not exist.".to_string()
 }
 
+/// The message a request that named a `cognitoIdentityPoolId` of no supported form is
+/// refused with.
+///
+/// An identity pool is named in the SAME `<region>:<id>` form a Cognito identity is
+/// ([`parse_policy_target`]), and this service holds no record of a pool — identity pools
+/// live in Amazon Cognito — so the id is resolved no further than its form. The fixed text
+/// names the member and the form; the variable part is the value the request sent. Shared,
+/// so every operation that reads the member refuses one value in one wording.
+pub fn invalid_cognito_identity_pool_id_message(pool_id: &str) -> String {
+    format!(
+        "Invalid CognitoIdentityPoolId: {pool_id}. A Cognito identity pool id has the form \
+         region:id"
+    )
+}
+
 /// A policy target resolved against this account's state: everything an attachment or a
 /// listing needs about it.
 #[derive(Debug, Clone, PartialEq, Eq)]
