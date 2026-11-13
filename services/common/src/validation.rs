@@ -30,7 +30,9 @@
 //! is the caller's own bytes: the walk renders a blob as `<n> bytes`, a list as
 //! `<n> items`, a map as `<n> entries` and a document as `<document>`, each a bounded
 //! summary of the value rather than the value, and a numeric or timestamp leaf is already
-//! far shorter than any elision cap.
+//! far shorter than any elision cap. A blob still has a CLAUSE RENDERING — the buffer it
+//! was read into ([`rendered_blob`]), which states its length and nothing of its bytes — so
+//! a structure carrying one, and the list that structure belongs to, render.
 //!
 //! # A clause on the collection itself
 //!
@@ -1992,6 +1994,20 @@ fn declaring_shape(schema: &Schema) -> Option<String> {
 /// clause restored from the walk does.
 pub const UNSET_MEMBER: &str = "null";
 
+/// How a BLOB member is stated inside a rendered structure, and wherever a clause renders
+/// one: the buffer the validating front end read it into, which states the value's LENGTH
+/// three ways and nothing of its bytes.
+///
+/// A blob's content is never echoed — it is not text, and a clause that quoted it would
+/// return the caller's payload — so this is the only rendering a blob has; it is what lets a
+/// structure carrying one render at all, and with it the list that structure belongs to.
+///
+/// `pub` for the same reason [`UNSET_MEMBER`] is.
+#[must_use]
+pub fn rendered_blob(bytes: usize) -> String {
+    format!("java.nio.HeapByteBuffer[pos=0 lim={bytes} cap={bytes}]")
+}
+
 /// `entries` as a map renders, with the entries put in KEY order first — the form a clause
 /// quotes a map-valued member in, stated the one way the same map is stated twice.
 ///
@@ -2048,9 +2064,9 @@ pub fn rendered_record(name: &str, members: &[(&str, &str)]) -> String {
     format!("{name}({})", rendered.join(", "))
 }
 
-/// The children of one composite being walked, and whether more arrived than
-/// [`MAX_RENDERED_CHILDREN`] allows, one of them was larger than a composite may hold,
-/// or one of them was never written.
+/// The children of one composite being walked, and whether more arrived than the walk's
+/// child-count ceiling allows ([`SubmittedValues::child_bound`]), one of them was larger
+/// than a composite may hold, or one of them was never written.
 #[derive(Debug, Default)]
 struct Composite {
     children: Vec<RenderedChild>,
@@ -2062,16 +2078,16 @@ struct Composite {
 }
 
 impl Composite {
-    /// Take one child, or mark this composite truncated once it is full — by child COUNT
-    /// or by the bytes its children already hold, up to `max_bytes` (the walk's own
-    /// ceiling for a composite's rendering). A truncated composite renders as nothing
-    /// ([`SubmittedValues::close_children`]), so dropping a child never states a value
-    /// missing a part of itself.
-    fn take(&mut self, child: RenderedChild, max_bytes: usize) {
+    /// Take one child, or mark this composite truncated once it is full — by child COUNT,
+    /// up to `max_children`, or by the bytes its children already hold, up to `max_bytes`
+    /// (the walk's own ceilings for a composite's rendering). A truncated composite renders
+    /// as nothing ([`SubmittedValues::close_children`]), so dropping a child never states a
+    /// value missing a part of itself.
+    fn take(&mut self, child: RenderedChild, max_children: usize, max_bytes: usize) {
         let bytes = child.name.as_ref().map_or(0, String::len)
             + child.key.as_ref().map_or(0, String::len)
             + child.rendering.as_ref().map_or(0, String::len);
-        if self.children.len() >= MAX_RENDERED_CHILDREN || self.bytes + bytes > max_bytes {
+        if self.children.len() >= max_children || self.bytes + bytes > max_bytes {
             self.truncated = true;
             return;
         }
@@ -2102,7 +2118,7 @@ fn rendered_length(children: &[RenderedChild], named: bool) -> Option<usize> {
 
 /// `children` as a list renders: the elements in order, comma-separated, in brackets,
 /// through the one renderer of that form ([`rendered_list`]). `None` when any element has
-/// no text rendering, so a list of blobs states no value rather than one missing an
+/// no text rendering, so a list of maps states no value rather than one missing an
 /// element, and `None` when the rendering would be longer than [`MAX_RESTORED_ECHO`] —
 /// measured before it is built, so an oversized rendering is never allocated.
 fn rendered_sequence(children: &[RenderedChild], max_render: usize) -> Option<String> {
@@ -2151,9 +2167,10 @@ fn rendered_entries(children: &[RenderedChild], max_render: usize) -> Option<Str
 /// `children` as a structure renders: the shape's name over the members that were
 /// present, each `<member>=<value>`, in the order the value wrote them — the form the AWS
 /// SDKs print a modelled structure in. `None` when a member that WAS written has no text
-/// rendering, so a structure carrying a blob or a map states no value at all rather than
+/// rendering, so a structure carrying a map states no value at all rather than
 /// one missing a part of itself. (An ABSENT member is never written, so it is not a child
-/// here and does not suppress the rendering.) `None` too when the rendering would be
+/// here and does not suppress the rendering; a BLOB renders as the buffer it was read into,
+/// [`rendered_blob`].) `None` too when the rendering would be
 /// longer than [`MAX_RESTORED_ECHO`], measured before it is built.
 fn rendered_structure(name: &str, children: &[RenderedChild], max_render: usize) -> Option<String> {
     if name.len() + rendered_length(children, true)? > max_render {
@@ -2177,7 +2194,7 @@ fn rendered_structure(name: &str, children: &[RenderedChild], max_render: usize)
 /// ([`refusing_violations_with_declared_echoes_over`]).
 ///
 /// `None` on the same terms as [`rendered_structure`]: a member that WAS written and has
-/// no text rendering suppresses the whole structure, so one carrying a blob or a map
+/// no text rendering suppresses the whole structure, so one carrying a map
 /// states no value at all rather than one missing a part of itself, and so does a
 /// rendering longer than [`MAX_RESTORED_ECHO`], measured before it is built.
 fn rendered_declared_structure(
@@ -2228,6 +2245,20 @@ fn declared_members(schema: &Schema) -> Vec<String> {
         .filter_map(|member| member.member_name())
         .map(path::member)
         .collect()
+}
+
+/// Whether a value's rendering is also the one a clause ABOUT that value may quote, or only
+/// the one the composite holding it prints it with.
+///
+/// A BLOB is the second: the structure it sits in prints it as the buffer it was read into
+/// ([`rendered_blob`]), while a clause about the blob member itself states no value — AWS
+/// echoes no blob content, and the length alone is not a value any caller sent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Clause {
+    /// The rendering answers a clause about this very position, and the composite above it.
+    Own,
+    /// The rendering is the enclosing composite's only.
+    ParentOnly,
 }
 
 /// A frame of the collection stack, mirroring the one the validating walk keeps so a
@@ -2368,6 +2399,17 @@ impl SubmittedValues {
         self.max_positions.unwrap_or(MAX_RECORDED_RENDERINGS)
     }
 
+    /// The children ONE composite may render from: the same stated ceiling the walk VISITS
+    /// positions under ([`Self::position_bound`]), because a composite renders only from
+    /// children the walk reached — so a service that states its own position ceiling, from
+    /// the declared maximum of a collection longer than [`MAX_RENDERED_CHILDREN`], gets that
+    /// collection rendered rather than a count it could never have echoed
+    /// ([`refusing_violations_with_echoes_over`]). A caller that states none keeps this
+    /// module's own count, which is the same number as the default leaf budget.
+    fn child_bound(&self) -> usize {
+        self.max_positions.unwrap_or(MAX_RENDERED_CHILDREN)
+    }
+
     /// The lowerCamel path segment for `schema`, if it is a member schema.
     fn segment_for(schema: &Schema) -> Option<String> {
         schema.member_name().map(path::member)
@@ -2450,6 +2492,15 @@ impl SubmittedValues {
     /// Called with the path still naming this value, and AFTER a composite's own frame is
     /// closed, so the child lands on its PARENT.
     fn produced(&mut self, schema: &Schema, rendering: Option<String>) {
+        self.produced_as(schema, rendering, Clause::Own);
+    }
+
+    /// [`Self::produced`], with `clause` saying whether the rendering is also the one a
+    /// clause ABOUT this position may quote: [`Clause::ParentOnly`] hands it to the composite
+    /// this value is a child of and records nothing for the position itself, which is what a
+    /// BLOB needs — its enclosing structure prints it as the buffer it was read into, while a
+    /// clause about the blob member itself states no value at all.
+    fn produced_as(&mut self, schema: &Schema, rendering: Option<String>, clause: Clause) {
         if !self.renders {
             return;
         }
@@ -2460,7 +2511,8 @@ impl SubmittedValues {
         // nothing, rather than as a value missing a part of itself.
         let rendering = rendering.filter(|rendered| rendered.len() <= self.echo_bound());
         let bytes = position.len() + rendering.as_ref().map_or(0, String::len);
-        if self.renderings.len() < self.recorded_renderings_bound()
+        if clause == Clause::Own
+            && self.renderings.len() < self.recorded_renderings_bound()
             && self.rendered + bytes <= MAX_RECORDED_RENDERED_BYTES.max(self.echo_bound())
         {
             self.rendered += bytes;
@@ -2482,6 +2534,7 @@ impl SubmittedValues {
             _ => None,
         };
         let ceiling = self.render_bound();
+        let children = self.child_bound();
         if let Some(open) = self.open.last_mut() {
             open.take(
                 RenderedChild {
@@ -2497,6 +2550,7 @@ impl SubmittedValues {
                     key,
                     rendering,
                 },
+                children,
                 ceiling,
             );
         }
@@ -2506,8 +2560,33 @@ impl SubmittedValues {
     /// bytes (a string, or a big-number rendering) and is `None` for every other leaf
     /// kind — which is still walked, so a later leaf's path stays correct. `rendering` is
     /// how a clause states that value, which a number or a boolean has even though its
-    /// text is not the caller's own bytes, and a blob or a document has not at all.
+    /// text is not the caller's own bytes, and a map or a document has not at all.
     fn leaf(&mut self, schema: &Schema, value: Option<&str>, rendering: Option<&str>) {
+        self.leaf_rendered(schema, value, rendering, Clause::Own);
+    }
+
+    /// One leaf write whose rendering is for the composite this value is a CHILD of and not
+    /// for a clause about the value itself ([`Clause::ParentOnly`]) — a blob, whose enclosing
+    /// structure prints it as the buffer it was read into while its own clause states no
+    /// value.
+    fn leaf_rendered_for_parent(
+        &mut self,
+        schema: &Schema,
+        value: Option<&str>,
+        rendering: Option<&str>,
+    ) {
+        self.leaf_rendered(schema, value, rendering, Clause::ParentOnly);
+    }
+
+    /// The body both leaf writes share: `clause` says whether the rendering is also the one a
+    /// clause ABOUT this position may quote.
+    fn leaf_rendered(
+        &mut self,
+        schema: &Schema,
+        value: Option<&str>,
+        rendering: Option<&str>,
+        clause: Clause,
+    ) {
         if self.done() {
             self.abandoned();
             return;
@@ -2533,13 +2612,13 @@ impl SubmittedValues {
             Some(segment) => {
                 self.path.push(segment);
                 self.record(value);
-                self.produced(schema, rendering);
+                self.produced_as(schema, rendering, clause);
                 self.path.pop();
                 self.end_child();
             }
             None => self.with_segment(schema, |this| {
                 this.record(value);
-                this.produced(schema, rendering);
+                this.produced_as(schema, rendering, clause);
             }),
         }
     }
@@ -2789,11 +2868,13 @@ impl ShapeSerializer for SubmittedValues {
         Ok(())
     }
 
-    fn write_blob(&mut self, schema: &Schema, _value: &[u8]) -> Result<(), SerdeError> {
+    fn write_blob(&mut self, schema: &Schema, value: &[u8]) -> Result<(), SerdeError> {
         // The walk renders a blob as its byte count, never its bytes, so there is no
-        // caller-submitted text to re-echo here — and no text rendering of the value for
-        // a clause either.
-        self.leaf(schema, None, None);
+        // caller-submitted text to re-echo here. The clause rendering is the BUFFER the
+        // value was read into ([`rendered_blob`]), which states its length and nothing of
+        // its content — and it is the ENCLOSING structure's to print: a clause about the
+        // blob member itself states no value at all, which is what `ParentOnly` keeps.
+        self.leaf_rendered_for_parent(schema, None, Some(&rendered_blob(value.len())));
         Ok(())
     }
 
@@ -2828,7 +2909,7 @@ impl ShapeSerializer for SubmittedValues {
 mod tests {
     use super::{
         echo_of, is_elision_of, list_of_element, named_byte_count, quoted_echo, quoted_echo_up_to,
-        echo_held_to, rendered_declared_structure, rendered_entries, rendered_map,
+        echo_held_to, rendered_blob, rendered_declared_structure, rendered_entries, rendered_map,
         rendered_map_in_key_order, rendered_record, rendered_sequence, rendered_structure,
         unanchored, unanchored_grouping_alternation,
         unanchored_keeping_inner_anchors, Composite, RenderedChild, Submitted, SubmittedEcho,
@@ -3516,6 +3597,59 @@ mod tests {
         }
     }
 
+    /// RULE: a BLOB renders as the buffer the validating front end read it into — its length
+    /// three ways and nothing of its bytes — so a structure carrying one, and the list that
+    /// structure belongs to, render rather than stating no value at all.
+    #[test]
+    fn a_blob_renders_as_the_buffer_it_was_read_into() {
+        // (case, the blob's length, the rendering a clause states it with). The rows differ
+        // along the length: none, one byte, and a mebibyte.
+        let rows: [(&str, usize, &str); 3] = [
+            ("an empty blob", 0, "java.nio.HeapByteBuffer[pos=0 lim=0 cap=0]"),
+            ("one byte", 1, "java.nio.HeapByteBuffer[pos=0 lim=1 cap=1]"),
+            (
+                "a mebibyte",
+                1024 * 1024,
+                "java.nio.HeapByteBuffer[pos=0 lim=1048576 cap=1048576]",
+            ),
+        ];
+        for (case, bytes, expected) in rows {
+            let actual = rendered_blob(bytes);
+            assert_eq!(
+                actual, expected,
+                "case {case:?}: expected {expected:?}, got {actual:?}"
+            );
+        }
+
+        // A structure carrying a blob renders over every member its shape declares, the
+        // unset ones as `null` — and so does the list of such structures.
+        let entry = RenderedChild {
+            name: Some("data".to_string()),
+            declared_by: Some("Entry".to_string()),
+            key: None,
+            rendering: Some(rendered_blob(1)),
+        };
+        let declared = ["data".to_string(), "key".to_string()];
+        let rendered = rendered_declared_structure("Entry", &declared, &[entry], MAX_RESTORED_ECHO);
+        assert_eq!(
+            rendered.as_deref(),
+            Some("Entry(data=java.nio.HeapByteBuffer[pos=0 lim=1 cap=1], key=null)"),
+            "case a structure carrying a blob: expected it rendered, got {rendered:?}"
+        );
+        let element = RenderedChild {
+            name: None,
+            declared_by: None,
+            key: None,
+            rendering: rendered,
+        };
+        let list = rendered_sequence(&[element], MAX_RESTORED_ECHO);
+        assert_eq!(
+            list.as_deref(),
+            Some("[Entry(data=java.nio.HeapByteBuffer[pos=0 lim=1 cap=1], key=null)]"),
+            "case a list of structures carrying blobs: expected it rendered, got {list:?}"
+        );
+    }
+
     /// RULE: the renderers a HANDLER states its own clause with produce the same forms the
     /// walk's own composites do — a structure as `<ShapeName>(<member>=<value>, …)` over
     /// the members given, a map as `{<key>=<value>, …}` over its entries in KEY order — and
@@ -3717,13 +3851,14 @@ mod tests {
         let mut composite = Composite::default();
         composite.take(
             child(&"a".repeat(MAX_RESTORED_ECHO - "name".len())),
+            MAX_RENDERED_CHILDREN,
             MAX_RESTORED_ECHO,
         );
         assert!(
             !composite.truncated && composite.children.len() == 1,
             "case a child at the byte bound: expected it held, got {composite:?}"
         );
-        composite.take(child("b"), MAX_RESTORED_ECHO);
+        composite.take(child("b"), MAX_RENDERED_CHILDREN, MAX_RESTORED_ECHO);
         assert!(
             composite.truncated && composite.children.len() == 1,
             "case a child past the byte bound: expected the composite truncated with the \
@@ -3733,13 +3868,27 @@ mod tests {
         // A child count past the cap is the other bound, unchanged.
         let mut counted = Composite::default();
         for _ in 0..=MAX_RENDERED_CHILDREN {
-            counted.take(child("a"), MAX_RESTORED_ECHO);
+            counted.take(child("a"), MAX_RENDERED_CHILDREN, MAX_RESTORED_ECHO);
         }
         assert!(
             counted.truncated && counted.children.len() == MAX_RENDERED_CHILDREN,
             "case more children than the cap: expected the composite truncated at the cap, \
              got {} children",
             counted.children.len()
+        );
+
+        // A caller that states a LARGER child ceiling — a service whose model declares a
+        // collection longer than the default count — gets those children held.
+        let stated_children = 2 * MAX_RENDERED_CHILDREN;
+        let mut stated = Composite::default();
+        for _ in 0..stated_children {
+            stated.take(child("a"), stated_children, MAX_RESTORED_ECHO * 64);
+        }
+        assert!(
+            !stated.truncated && stated.children.len() == stated_children,
+            "case a stated child ceiling: expected every child held, got {} of \
+             {stated_children}",
+            stated.children.len()
         );
 
         // And a rendering that would exceed the bound is refused by both renderers, which
@@ -3780,8 +3929,16 @@ mod tests {
              list rendered"
         );
         let mut held = Composite::default();
-        held.take(child(&"a".repeat(MAX_RESTORED_ECHO)), stated);
-        held.take(child(&"b".repeat(MAX_RESTORED_ECHO)), stated);
+        held.take(
+            child(&"a".repeat(MAX_RESTORED_ECHO)),
+            MAX_RENDERED_CHILDREN,
+            stated,
+        );
+        held.take(
+            child(&"b".repeat(MAX_RESTORED_ECHO)),
+            MAX_RENDERED_CHILDREN,
+            stated,
+        );
         assert!(
             !held.truncated && held.children.len() == 2,
             "case two children inside a stated ceiling: expected both held, got {held:?}"

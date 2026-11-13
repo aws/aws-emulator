@@ -7,11 +7,10 @@
 //! stream its `StreamARN` addresses, replacing whatever that stream carried — the value its
 //! create named, or the documented default it fell back to — and answers the modelled empty
 //! body. From then on that stored value is what a read of the stream reports and what every
-//! write to it is measured against: a record whose data and partition key together total
-//! exactly the stored maximum is stored, one byte more is refused as a parameter that cannot
-//! be used, and a data blob longer than the stored maximum on its own fails that member's
-//! length the way a modelled `@length` does. The change is scoped to the one stream the
-//! request names, and setting the same value again changes nothing.
+//! write to it is measured against: a DATA BLOB of exactly the stored maximum is stored
+//! whatever partition key travels with it, and one byte more fails that member's length the
+//! way a modelled `@length` does. The change is scoped to the one stream the request names,
+//! and setting the same value again changes nothing.
 //!
 //! The refusals are the ones that rule implies and the operation models: a request naming
 //! no `StreamARN` names no stream, which is `InvalidArgumentException`; an ARN this account
@@ -39,7 +38,9 @@ use service_com_amazonaws_kinesis_kinesis_20131202::state::{
     STREAM_MODE_ON_DEMAND, STREAM_MODE_PROVISIONED,
 };
 
-use crate::stream_tags::{error_code, error_message, past_activation, stream_arn, Emulator, REGION};
+use crate::stream_tags::{
+    error_code, error_message, past_activation, poll_until_active, stream_arn, Emulator, REGION,
+};
 
 /// The published bounds of `MaxRecordSizeInKiB`, in KiB
 /// (`smithy_query(query="operation",operation="UpdateMaxRecordSize")` -> `MaxRecordSizeInKiB`
@@ -49,11 +50,9 @@ const MAX_RECORD_SIZE_BOUNDS: (i64, i64) = (1024, 10240);
 /// How many bytes one KiB is, the unit `MaxRecordSizeInKiB` is expressed in.
 const BYTES_PER_KI_B: usize = 1024;
 
-/// The partition key every write of this suite carries. Its bytes count towards the record's
-/// size: "When the data blob (the payload before base64-encoding) is added to the partition
-/// key size, the total size must not exceed the maximum record size" (`PutRecordInput$Data`),
-/// so a write that crosses the maximum by one byte can do so with its data inside the
-/// modelled `@length` of `Data`.
+/// The partition key every write of this suite carries. It is bounded by its OWN modelled
+/// `@length` of 1..256 (`PutRecordInput$PartitionKey`) and is not charged against the
+/// record-size ceiling, which bounds the data blob alone.
 const PARTITION_KEY: &str = "pk";
 
 /// One row of the update table: the stream the update lands on, and the value it names.
@@ -126,13 +125,12 @@ fn create_body(row: &Row) -> Value {
     body
 }
 
-/// A `PutRecord` body whose data and partition key total `total` bytes.
-fn write_of(stream_arn: &str, total: usize) -> Value {
-    let data = vec![b'x'; total.saturating_sub(PARTITION_KEY.len())];
+/// A `PutRecord` body whose DATA blob is `data_bytes` long, with a partition key on top.
+fn write_of(stream_arn: &str, data_bytes: usize) -> Value {
     json!({
         "StreamARN": stream_arn,
         "PartitionKey": PARTITION_KEY,
-        "Data": aws_smithy_types::base64::encode(data),
+        "Data": aws_smithy_types::base64::encode(vec![b'x'; data_bytes]),
     })
 }
 
@@ -190,7 +188,9 @@ async fn an_update_stores_the_maximum_every_later_read_and_write_uses() {
             .ok(row.label, "CreateStream", &create_body(&row))
             .await;
     }
-    tokio::time::sleep(past_activation()).await;
+    for row in rows() {
+        poll_until_active(&emulator, row.label, row.label).await;
+    }
 
     for row in rows() {
         let case = row.label;
@@ -224,7 +224,8 @@ async fn an_update_stores_the_maximum_every_later_read_and_write_uses() {
             row.updated_to
         );
 
-        // A record of exactly the stored maximum is stored...
+        // A record whose data is exactly the stored maximum is stored, partition key on
+        // top of it...
         let maximum = usize::try_from(row.updated_to).unwrap_or(0) * BYTES_PER_KI_B;
         let answer = emulator
             .ok(case, "PutRecord", &write_of(&arn, maximum))
@@ -234,49 +235,26 @@ async fn an_update_stores_the_maximum_every_later_read_and_write_uses() {
                 .get("SequenceNumber")
                 .and_then(Value::as_str)
                 .is_some(),
-            "case {case}: a record of exactly {maximum} bytes is inside the stored maximum, \
-             got {answer}"
+            "case {case}: a record whose data is exactly {maximum} bytes is inside the stored \
+             maximum, got {answer}"
         );
 
-        // ...one byte more in total, across the data and the partition key, is the modelled
-        // refusal for two members that together pass the maximum...
-        let (status, response) = emulator.call("PutRecord", &write_of(&arn, maximum + 1)).await;
+        // ...and a data blob one byte longer than the maximum is a validation failure of
+        // that member's length. The row at the published ceiling has no room above it:
+        // there the stream's maximum IS the modelled `@length` of `Data`, so a longer blob
+        // is refused by the boundary validator rather than against the stored maximum,
+        // which states the same code in the framework's own wording.
+        let (status, response) = emulator
+            .call("PutRecord", &write_of(&arn, maximum + 1))
+            .await;
         assert_eq!(
-            status, 400,
-            "case {case}: a record of {} bytes is past the stored maximum, got {status} with \
-             body {response}",
+            (status, error_code(&response).as_str()),
+            (400, "ValidationException"),
+            "case {case}: a data blob of {} bytes is longer than the stored maximum, got \
+             {status} with body {response}",
             maximum + 1
         );
-        assert_eq!(
-            error_code(&response),
-            "InvalidArgumentException",
-            "case {case}: expected InvalidArgumentException past the stored maximum, got \
-             {response}"
-        );
-
-        // ...and a data blob that is longer than the maximum on its own is a validation
-        // failure of that member's length. The row at the published ceiling has no room
-        // above it: there the stream's maximum IS the modelled `@length` of `Data`, so a
-        // longer blob is refused by the boundary validator rather than against the stored
-        // maximum, which is a different check.
         if row.updated_to < MAX_RECORD_SIZE_BOUNDS.1 {
-            let (status, response) = emulator
-                .call(
-                    "PutRecord",
-                    &json!({
-                        "StreamARN": arn,
-                        "PartitionKey": PARTITION_KEY,
-                        "Data": aws_smithy_types::base64::encode(vec![b'x'; maximum + 1]),
-                    }),
-                )
-                .await;
-            assert_eq!(
-                (status, error_code(&response).as_str()),
-                (400, "ValidationException"),
-                "case {case}: a data blob of {} bytes is longer than the stored maximum, got \
-                 {status} with body {response}",
-                maximum + 1
-            );
             assert_eq!(
                 error_message(&response),
                 data_too_long_message(&[put_record_data_path()], maximum),
@@ -314,7 +292,9 @@ async fn an_update_changes_only_the_stream_it_names() {
             )
             .await;
     }
-    tokio::time::sleep(past_activation()).await;
+    for name in [updated, untouched] {
+        poll_until_active(&emulator, case, name).await;
+    }
 
     let enlarged = 2 * MAX_RECORD_SIZE_BOUNDS.0;
     emulator
@@ -336,7 +316,7 @@ async fn an_update_changes_only_the_stream_it_names() {
     );
 
     // The default maximum a stream that names none falls back to still bounds the untouched
-    // stream, while the updated stream takes a record past it.
+    // stream, while the updated stream takes a data blob past it.
     let past_the_default =
         usize::try_from(DEFAULT_MAX_RECORD_SIZE_KI_B).unwrap_or(0) * BYTES_PER_KI_B + 1;
     let answer = emulator
@@ -351,8 +331,8 @@ async fn an_update_changes_only_the_stream_it_names() {
             .get("SequenceNumber")
             .and_then(Value::as_str)
             .is_some(),
-        "case {case}: the updated stream takes a record of {past_the_default} bytes, got \
-         {answer}"
+        "case {case}: the updated stream takes a record whose data is {past_the_default} \
+         bytes, got {answer}"
     );
 
     let (status, response) = emulator
@@ -363,8 +343,8 @@ async fn an_update_changes_only_the_stream_it_names() {
         .await;
     assert_eq!(
         (status, error_code(&response).as_str()),
-        (400, "InvalidArgumentException"),
-        "case {case}: the untouched stream still refuses a record of {past_the_default} \
+        (400, "ValidationException"),
+        "case {case}: the untouched stream still refuses a data blob of {past_the_default} \
          bytes, got {status} with body {response}"
     );
 

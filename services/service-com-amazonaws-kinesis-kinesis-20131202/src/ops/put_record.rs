@@ -249,6 +249,31 @@ fn lookup_refusal(failure: crate::state::StreamLookupFailure, identifier: &str) 
     }
 }
 
+/// The modelled refusal for a stream whose CMK KMS reports as disabled: "The request was
+/// rejected because the specified customer master key (CMK) isn't enabled"
+/// (`KMSDisabledException`), in KMS's own wording for that state.
+fn kms_disabled(key_arn: &str) -> PutRecordError {
+    PutRecordErrorModeled::KMSDisabledException(KMSDisabledException {
+        message: Some(crate::state::key_disabled_message(key_arn)),
+    })
+    .into()
+}
+
+/// The modelled refusal for a record the shard it was placed in cannot take at this rate:
+/// "The request rate for the stream is too high, or the requested data is too large for the
+/// available throughput" (`ProvisionedThroughputExceededException`). One record has no
+/// per-entry result to report a failure in, so the CALL carries it.
+fn throughput_exceeded(stream_name: &str, shard_id: &str) -> PutRecordError {
+    PutRecordErrorModeled::ProvisionedThroughputExceededException(
+        ProvisionedThroughputExceededException {
+            message: Some(crate::state::write_rate_exceeded_message(
+                stream_name, shard_id,
+            )),
+        },
+    )
+    .into()
+}
+
 /// How a record this stream cannot place is refused: a parameter that "can't be used",
 /// which is what the modelled `InvalidArgumentException` states.
 fn placement_refusal(failure: crate::state::RecordPlacementFailure) -> PutRecordError {
@@ -309,6 +334,35 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         })?;
 
         let now = ::std::time::SystemTime::now();
+
+        // The stream's own CMK decides whether its data plane serves this call at all, so
+        // the key is resolved against KMS BEFORE anything is written: "KMS: Use server-side
+        // encryption on the records in the stream using a customer-managed Amazon Web
+        // Services KMS key" (`PutRecordInput$EncryptionType`), and a disabled key is the
+        // modelled `KMSDisabledException`. The store guard is taken only to read which key
+        // the addressed stream carries, because no guard is held across an await; every
+        // refusal about the request itself is answered by the body below, which resolves the
+        // stream again under the write lock.
+        let encryption_key = {
+            let store = state.lock();
+            store
+                .resolve_stream(
+                    now,
+                    &region,
+                    input.stream_name.as_deref(),
+                    input.stream_arn.as_deref(),
+                )
+                .ok()
+                .and_then(|stream| stream.encryption_key().map(str::to_string))
+        };
+        if let Some(key_id) = encryption_key {
+            if let crate::state::KeyState::Disabled(key_arn) =
+                crate::state::key_state(ctx, &region, &key_id).await
+            {
+                return Err(kms_disabled(&key_arn));
+            }
+        }
+
         let mut store = state.lock();
 
         let identifier = input
@@ -343,11 +397,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             )));
         }
 
-        // The stream's own maximum record size is a bound on the LENGTH of this request's
-        // `Data`, so a blob past it is refused the way a modelled `@length` is: the
-        // validation envelope, naming the member and the bound it failed. This operation
-        // models no `ValidationException`, so that refusal travels through the error
-        // channel's own validation variant, which answers that code with HTTP 400.
+        // The stream's own maximum record size bounds the LENGTH of this request's `Data` —
+        // that blob alone, since `PutRecordInput$PartitionKey` carries its own `@length` of
+        // 1..256 and is not charged against the record ceiling — so a blob past it is
+        // refused the way a modelled `@length` is: the validation envelope, naming the
+        // member and the bound it failed. This operation models no `ValidationException`, so
+        // that refusal travels through the error channel's own validation variant, which
+        // answers that code with HTTP 400.
         let maximum = stream.max_record_size_bytes();
         if input.data.len() > maximum {
             return Err(crate::scaffolded::Scaffolded::validation(
@@ -356,23 +412,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     maximum,
                 ),
             ));
-        }
-
-        // "When the data blob (the payload before base64-encoding) is added to the
-        // partition key size, the total size must not exceed the maximum record size"
-        // (`PutRecordInput$Data`): a bound on the TOTAL of two members, which no single
-        // member's length states, so it is the modelled "parameter ... can't be used"
-        // refusal rather than a length violation.
-        let size = input.data.len()
-            + input
-                .partition_key
-                .as_deref()
-                .map(str::len)
-                .unwrap_or_default();
-        if size > maximum {
-            return Err(invalid_argument(crate::state::record_too_large_message(
-                size, maximum,
-            )));
         }
 
         // The record's placement is resolved before the dry run is answered, so a dry run
@@ -409,6 +448,22 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // strictly increasing ordering... use the SequenceNumberForOrdering parameter")
         // asks for an ordering every write to one shard of this emulator already has.
         let encryption_type = stream.encryption_type.clone();
+        let stream_name = stream.name.clone();
+        // "Each shard can support writes up to 1,000 records per second, up to a maximum
+        // data write total of 1 MB per second" (`PutRecord`): the shard the record was
+        // placed in is metered, and a record it cannot take is not stored — the modelled
+        // throughput refusal, which is why this operation declares it.
+        let metered = input.data.len()
+            + input
+                .partition_key
+                .as_deref()
+                .map(str::len)
+                .unwrap_or_default();
+        if let Some((false, shard_id)) =
+            stream.charge_write_at(shard_index, metered, ::std::time::Instant::now())
+        {
+            return Err(throughput_exceeded(&stream_name, &shard_id));
+        }
         // The shard map answered this index a moment ago, under the same `&mut` borrow, so
         // nothing reaches the `else`; it answers the modelled server error rather than a
         // sequence number for a record that was not stored.

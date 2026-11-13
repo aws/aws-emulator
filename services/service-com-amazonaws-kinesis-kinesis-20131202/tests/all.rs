@@ -19,10 +19,16 @@ mod account_settings;
 mod account_settings_reporting;
 #[path = "all/batch_write_failure_count.rs"]
 mod batch_write_failure_count;
+#[path = "all/batch_write_validation.rs"]
+mod batch_write_validation;
 #[path = "all/capacity_mode.rs"]
 mod capacity_mode;
 #[path = "all/channel_configuration_updates.rs"]
 mod channel_configuration_updates;
+#[path = "all/channel_dependents.rs"]
+mod channel_dependents;
+#[path = "all/channel_key_authorization.rs"]
+mod channel_key_authorization;
 #[path = "all/channel_lifecycle.rs"]
 mod channel_lifecycle;
 #[path = "all/channel_listing.rs"]
@@ -37,6 +43,8 @@ mod consumer_listing;
 mod constraint_refusal_wording;
 #[path = "all/data_records.rs"]
 mod data_records;
+#[path = "all/encrypted_data_plane.rs"]
+mod encrypted_data_plane;
 #[path = "all/encrypted_records.rs"]
 mod encrypted_records;
 #[path = "all/encryption_key_resolution.rs"]
@@ -81,6 +89,8 @@ mod shard_listing;
 mod shard_quota;
 #[path = "all/shard_scaling.rs"]
 mod shard_scaling;
+#[path = "all/shard_write_quota.rs"]
+mod shard_write_quota;
 #[path = "all/split_shard_lineage.rs"]
 mod split_shard_lineage;
 #[path = "all/state_roundtrip.rs"]

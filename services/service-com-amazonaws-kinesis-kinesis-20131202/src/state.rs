@@ -20,8 +20,22 @@
 //! `ENABLED_UNTIL_EARLIEST_ALLOWED_END` -> `DISABLED` transitions decided in one place
 //! ([`Commitment::status`]).
 
+//! Three concerns of that state live in their own files beside this one, because each is a
+//! rule of its own that several operations consult: the per-shard WRITE quota a producer is
+//! metered by ([`write_quota`]), what KMS says about the key a stream is encrypted with
+//! ([`kms_key`]), and whether a channel's service execution role may use that key
+//! ([`channel_key_access`]).
+
+mod channel_key_access;
+mod kms_key;
+mod write_quota;
+
+pub use channel_key_access::*;
+pub use kms_key::*;
+pub use write_quota::*;
+
 use std::collections::HashMap;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::ops::types::{
     ChannelDescription, ChannelEncryptionConfiguration, ChannelLoggingConfiguration,
@@ -610,6 +624,11 @@ pub struct ShardRecord {
     /// How many bytes [`Self::records`] occupies, maintained as records are appended and
     /// dropped so the write path never re-sums the whole shard.
     pub records_bytes: usize,
+    /// What the shard has left of the write rate it admits records at — "each shard can
+    /// support writes up to 1,000 records per second, up to a maximum data write total of 1
+    /// MB per second" (`PutRecords`). Metered PER SHARD, so it is held here rather than on
+    /// the stream ([`WriteQuota`]).
+    write_quota: WriteQuota,
 }
 
 impl ShardRecord {
@@ -638,6 +657,10 @@ impl ShardRecord {
             records: Vec::new(),
             records_written: 0,
             records_bytes: 0,
+            // A shard nothing has been written to admits a second's worth of writes at
+            // once. The rate is measured against the monotonic clock, which is the clock a
+            // rate has to be read on: a wall-clock jump must not hand out capacity.
+            write_quota: WriteQuota::fresh(Instant::now()),
         }
     }
 
@@ -708,6 +731,17 @@ impl ShardRecord {
             self.starting_hash_key.parse::<u128>().ok()?,
             self.ending_hash_key.parse::<u128>().ok()?,
         ))
+    }
+
+    /// Whether this shard's write quota admits a record occupying `bytes` at `at`, charging
+    /// the quota for it when it does ([`WriteQuota::admits`]). `max_record_bytes` is what one
+    /// record of the stream this shard belongs to may carry, which is what the shard's write
+    /// capacity is read from.
+    ///
+    /// Consulted by every write before it appends, and by nothing else: a READ of a shard
+    /// spends no write capacity.
+    pub fn admits_write(&mut self, bytes: usize, max_record_bytes: usize, at: Instant) -> bool {
+        self.write_quota.admits(bytes, max_record_bytes, at)
     }
 
     /// Append `record` to the shard and answer the sequence number it was stored under.
@@ -1108,6 +1142,40 @@ impl Stream {
     pub fn max_record_size_bytes(&self) -> usize {
         let ki_b = self.max_record_size_in_ki_b.max(1);
         usize::try_from(ki_b).unwrap_or(usize::MAX).saturating_mul(1024)
+    }
+
+    /// Whether the shard at `index` in the shard map — the index [`Self::placement`]
+    /// resolved — admits a record occupying `bytes` at `at`, charging that shard's write
+    /// quota when it does, together with the shard's id, which the refusal names.
+    /// `None` for an index the map does not hold.
+    ///
+    /// ONE path for every write, exactly as [`Self::append_at`] is: `PutRecord` and
+    /// `PutRecords` meter a record against the shard it is placed in by this one rule, so a
+    /// producer cannot pass the shard's rate by splitting its writes over the two
+    /// operations.
+    pub fn charge_write_at(
+        &mut self,
+        index: usize,
+        bytes: usize,
+        at: Instant,
+    ) -> Option<(bool, String)> {
+        let max_record_bytes = self.max_record_size_bytes();
+        let shard = self.shards.get_mut(index)?;
+        let admitted = shard.admits_write(bytes, max_record_bytes, at);
+        Some((admitted, shard.shard_id.clone()))
+    }
+
+    /// The KMS key the stream's records are encrypted under, and `None` for a stream that is
+    /// not encrypted at all.
+    ///
+    /// What the data plane asks KMS about on every call: "KMS: Use server-side encryption on
+    /// the records in the stream using a customer-managed Amazon Web Services KMS key"
+    /// (`PutRecordOutput$EncryptionType`), so the key's own state decides whether those
+    /// records can be written and read at all.
+    pub fn encryption_key(&self) -> Option<&str> {
+        self.key_id
+            .as_deref()
+            .filter(|_| self.encryption_type == ENCRYPTION_TYPE_KMS)
     }
 
     /// Append one record to the shard at `index` in the shard map — the index
@@ -1548,14 +1616,10 @@ impl Stream {
     }
 
     /// How many tags the stream would carry once `tags` were assigned to it, which is what
-    /// [`MAX_STREAM_TAGS`] bounds: an assignment overwrites a key the stream already
-    /// carries rather than adding a second entry for it.
+    /// [`MAX_STREAM_TAGS`] bounds, through the one reading every tagged resource of this
+    /// service is held to ([`tag_count_with`]).
     pub fn tag_count_with(&self, tags: &HashMap<String, String>) -> usize {
-        self.tags.len()
-            + tags
-                .keys()
-                .filter(|key| !self.tags.contains_key(key.as_str()))
-                .count()
+        tag_count_with(&self.tags, tags)
     }
 
     /// Assign `tags` to the stream: a key the stream already carries takes the new value
@@ -2367,6 +2431,24 @@ impl ComAmazonawsKinesisKinesis20131202State {
         channels
     }
 
+    /// The channels this store holds that source the stream `stream_arn` names, in the order
+    /// their names sort in.
+    ///
+    /// "The list of Kinesis data streams that are sources for this channel"
+    /// (`ChannelDescription$StreamConfigurationList`): a stream named there is a DEPENDENCY
+    /// of that channel, which is what stands in the way of the stream's removal. The ARN is
+    /// the identifier both sides hold, so one walk answers it whatever region the channel was
+    /// created in.
+    pub fn channels_sourcing(&self, stream_arn: &str) -> Vec<&Channel> {
+        let mut channels: Vec<&Channel> = self
+            .channels
+            .values()
+            .filter(|channel| channel.sources_stream(stream_arn, None))
+            .collect();
+        channels.sort_by(|left, right| left.name.cmp(&right.name));
+        channels
+    }
+
     /// The tags the Kinesis resource `arn` names carries at `now`, ordered by key, or `None`
     /// when this account and region hold no resource under that ARN.
     ///
@@ -3135,6 +3217,22 @@ pub fn stream_has_consumers_message(stream_name: &str) -> String {
     )
 }
 
+/// How a delete refuses a stream a channel still sources: a stream named in a channel's
+/// `StreamConfigurationList` is a dependency of that channel, so the channels have to go
+/// first — "For successful operation, the resource must be in the ACTIVE state"
+/// (`ResourceInUseException`), which a stream another resource depends on is not available
+/// for. The sentence is the one the recorded refusal of this call carries, which names the
+/// dependency class and what to do about it; built FROM the request and this account, so the
+/// stream standing in the way and the account holding it are what fill it.
+pub fn stream_has_channels_message(stream_name: &str) -> String {
+    format!(
+        "Stream {stream_name} under account {} cannot be deleted because it is associated \
+         with one or more channels. Delete all associated channels before deleting the \
+         stream.",
+        ::engine::emulator_account_id()
+    )
+}
+
 /// The ARN a consumer named `name`, registered at `created_at` with the stream `stream_arn`
 /// addresses, is addressed by.
 ///
@@ -3268,12 +3366,13 @@ fn arn_names_channel(arn: &str) -> bool {
 
 /// How a create states that this account and region already hold a channel under the name
 /// the request named: "The name is unique within your Amazon Web Services account and
-/// Amazon Web Services Region" (`CreateChannelInput$ChannelName`). Built FROM the request,
-/// so the name at fault names it.
+/// Amazon Web Services Region" (`CreateChannelInput$ChannelName`). Built FROM the request
+/// and the account serving it — the name at fault and the account that already holds a
+/// channel under it — with the fixed spans this service states every "already exists" with.
 pub fn channel_already_exists_message(channel_name: &str) -> String {
     format!(
-        "channel {channel_name} already exists in this account and region; a channel name \
-         is unique within your account and region"
+        "Channel {channel_name} under account {} already exists.",
+        ::engine::emulator_account_id()
     )
 }
 
@@ -3458,6 +3557,23 @@ pub fn tags_ordered(tags: &HashMap<String, String>) -> Vec<Tag> {
         .collect();
     tags.sort_by(|left, right| left.key.cmp(&right.key));
     tags
+}
+
+/// How many tags a stored tag set would hold once `requested` were assigned to it, which is
+/// what [`MAX_STREAM_TAGS`] bounds: an assignment overwrites a key the set already carries
+/// rather than adding a second entry for it.
+///
+/// ONE reading for every resource kind that carries tags, so the ceiling a stream is held to
+/// is the ceiling a channel is held to.
+pub fn tag_count_with(
+    tags: &HashMap<String, String>,
+    requested: &HashMap<String, String>,
+) -> usize {
+    tags.len()
+        + requested
+            .keys()
+            .filter(|key| !tags.contains_key(key.as_str()))
+            .count()
 }
 
 /// Unassign the tags `keys` names from a stored tag set: "Removed tags are deleted and can't
@@ -3831,30 +3947,16 @@ pub fn batch_too_large_message(size: usize, maximum: usize) -> String {
     )
 }
 
-/// How a write refuses a record past the stream's maximum record size: "When the data blob
-/// (the payload before base64-encoding) is added to the partition key size, the total size
-/// must not exceed the maximum record size" (`PutRecordInput$Data`). Built FROM the request
-/// and the stream, so the size at fault and the size allowed both name it.
-///
-/// This is the refusal for the TOTAL of two members, which no single member's length states;
-/// a `Data` blob that is longer than the maximum on its own is refused by
-/// [`data_too_long_message`] instead.
-pub fn record_too_large_message(size: usize, maximum: usize) -> String {
-    format!(
-        "the record's data and partition key total {size} bytes, past the {maximum} bytes \
-         one record of this stream may carry"
-    )
-}
-
 /// How a write refuses the records whose `Data` is longer than the maximum record size of
 /// the stream it addresses: one clause per member path at fault, in AWS's envelope.
 ///
-/// A stream's `MaxRecordSizeInKiB` is a bound on the LENGTH of a member of the request, so
-/// it is stated as a length violation of that member, where the blob sits in the request
-/// ([`put_record_data_path`], [`put_records_data_path`]) and the number of bytes it may
-/// carry. A blob's CONTENT is not echoed, which is why a clause states the member and the
-/// requirement alone; a request that breaks the bound in several members states one clause
-/// each, the way the envelope accumulates.
+/// A stream's `MaxRecordSizeInKiB` bounds the LENGTH of the DATA BLOB one write carries —
+/// that member alone, the partition key beside it being bounded by its own modelled
+/// `@length` of 1..256 — so it is stated as a length violation of that member, where the
+/// blob sits in the request ([`put_record_data_path`], [`put_records_data_path`]) and the
+/// number of bytes it may carry. A blob's CONTENT is not echoed, which is why a clause states
+/// the member and the requirement alone; a request that breaks the bound in several members
+/// states one clause each, the way the envelope accumulates.
 pub fn data_too_long_message(member_paths: &[String], maximum: usize) -> String {
     let clauses: Vec<String> = member_paths
         .iter()

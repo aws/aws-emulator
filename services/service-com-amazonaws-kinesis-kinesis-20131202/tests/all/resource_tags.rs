@@ -29,13 +29,13 @@
 
 use serde_json::{json, Value};
 use service_com_amazonaws_kinesis_kinesis_20131202::state::{
-    stream_not_found_message, tag_ceiling_exceeded_message, MAX_STREAM_TAGS, STREAM_ACTIVE,
+    resource_not_found_message, tag_ceiling_exceeded_message, MAX_STREAM_TAGS, STREAM_ACTIVE,
     STREAM_CREATING, STREAM_DELETING,
 };
 
 use crate::stream_tags::{
-    error_code, error_message, in_key_order, pair, pairs, past_activation, reported_tags,
-    stream_arn, tag_map, Emulator, REGION,
+    error_code, error_message, in_key_order, pair, pairs, past_activation, poll_until_active,
+    reported_tags, stream_arn, tag_map, Emulator, REGION,
 };
 
 /// One row of the assignment table: what the stream was created with, what successive
@@ -193,7 +193,7 @@ async fn an_arn_naming_no_resource_of_this_account_and_region_is_refused() {
             &json!({ "StreamName": name, "ShardCount": 1 }),
         )
         .await;
-    tokio::time::sleep(past_activation()).await;
+    poll_until_active(&emulator, name, name).await;
 
     let rows: Vec<(&str, String)> = vec![
         ("a stream nothing created", stream_arn(REGION, "never-created")),
@@ -227,7 +227,10 @@ async fn an_arn_naming_no_resource_of_this_account_and_region_is_refused() {
         );
         assert_eq!(
             error_message(&response),
-            stream_not_found_message(arn),
+            // The sentence is the one this service states for the KIND the ARN names: a
+            // `channel/` ARN names a channel, which is a tagging target of its own, so it is
+            // not reported as a missing stream.
+            resource_not_found_message(arn),
             "case {case}: expected the not-found sentence this service states, got {response}"
         );
     }

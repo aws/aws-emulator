@@ -43,7 +43,9 @@ use service_com_amazonaws_kinesis_kinesis_20131202::state::{
     ENCRYPTION_UPDATE_DELAY, STREAM_MODE_ON_DEMAND, STREAM_MODE_PROVISIONED,
 };
 
-use crate::stream_tags::{error_code, past_activation, stream_arn, Emulator, REGION};
+use crate::stream_tags::{
+    error_code, past_activation, poll_until_active, stream_arn, Emulator, REGION,
+};
 
 /// The published bounds of `MaxRecordSizeInKiB`, in KiB
 /// (`smithy_query(query="shape",shape="MaxRecordSizeInKiB")` -> range 1024..10240).
@@ -52,10 +54,9 @@ const MAX_RECORD_SIZE_BOUNDS: (i64, i64) = (1024, 10240);
 /// How many bytes one KiB is, the unit `MaxRecordSizeInKiB` is expressed in.
 const BYTES_PER_KI_B: usize = 1024;
 
-/// The partition key every write of this suite carries. Its bytes count towards the
-/// record's size: "When the data blob (the payload before base64-encoding) is added to the
-/// partition key size, the total size must not exceed the maximum record size"
-/// (`PutRecordInput$Data`).
+/// The partition key every write of this suite carries. It is bounded by its OWN modelled
+/// `@length` of 1..256 (`PutRecordInput$PartitionKey`) and is not charged against the
+/// record-size ceiling, which bounds the data blob alone.
 const PARTITION_KEY: &str = "pk";
 
 /// A `KeyId` in one of the forms `StartStreamEncryptionInput$KeyId` documents: "You can
@@ -89,13 +90,14 @@ async fn summary(emulator: &Emulator, case: &str, name: &str) -> Value {
         .unwrap_or_else(|| panic!("case {case}: DescribeStreamSummary must carry a summary"))
 }
 
-/// A `PutRecord` body for `arn` whose data and partition key total `total` bytes.
-fn write_of(arn: &str, total: usize) -> Value {
-    let data = vec![b'x'; total.saturating_sub(PARTITION_KEY.len())];
+/// A `PutRecord` body for `arn` whose DATA blob is `data_bytes` long, with a partition key
+/// on top of it: "Each data record can be up to 1 MiB in size by default" bounds the blob,
+/// and `PutRecordInput$PartitionKey` carries its own `@length` of 1..256 beside it.
+fn write_of(arn: &str, data_bytes: usize) -> Value {
     json!({
         "StreamARN": arn,
         "PartitionKey": PARTITION_KEY,
-        "Data": aws_smithy_types::base64::encode(data),
+        "Data": aws_smithy_types::base64::encode(vec![b'x'; data_bytes]),
     })
 }
 
@@ -171,7 +173,9 @@ async fn every_summary_reports_the_maximum_record_size_the_stream_is_configured_
         }
         emulator.ok(row.label, "CreateStream", &body).await;
     }
-    tokio::time::sleep(past_activation()).await;
+    for row in size_rows() {
+        poll_until_active(&emulator, row.label, row.label).await;
+    }
 
     for row in size_rows() {
         let case = row.label;
@@ -193,9 +197,9 @@ async fn every_summary_reports_the_maximum_record_size_the_stream_is_configured_
              type, got {summary}"
         );
 
-        // What the summary reports is the bound the stream enforces: a record of exactly
-        // that many bytes is stored, one byte more is the refusal two members that together
-        // pass the maximum draw.
+        // What the summary reports is the bound the stream enforces on the DATA blob: a
+        // blob of exactly that many bytes is stored whatever partition key travels with it,
+        // and one byte more fails that member's length.
         let maximum = usize::try_from(row.expected).unwrap_or(0) * BYTES_PER_KI_B;
         let arn = stream_arn(REGION, case);
         let answer = emulator
@@ -206,14 +210,14 @@ async fn every_summary_reports_the_maximum_record_size_the_stream_is_configured_
                 .get("SequenceNumber")
                 .and_then(Value::as_str)
                 .is_some(),
-            "case {case}: a record of exactly the reported maximum ({maximum} bytes) is \
-             stored, got {answer}"
+            "case {case}: a record whose data is exactly the reported maximum ({maximum} \
+             bytes) is stored, got {answer}"
         );
         let (status, response) = emulator.call("PutRecord", &write_of(&arn, maximum + 1)).await;
         assert_eq!(
             (status, error_code(&response).as_str()),
-            (400, "InvalidArgumentException"),
-            "case {case}: a record one byte past the reported maximum is refused, got \
+            (400, "ValidationException"),
+            "case {case}: a data blob one byte past the reported maximum is refused, got \
              {status} with body {response}"
         );
     }

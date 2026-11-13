@@ -231,6 +231,16 @@ fn lookup_refusal(failure: crate::state::StreamLookupFailure, identifier: &str) 
     }
 }
 
+/// The modelled refusal for a stream whose CMK KMS reports as disabled: "The request was
+/// rejected because the specified customer master key (CMK) isn't enabled"
+/// (`KMSDisabledException`), in KMS's own wording for that state.
+fn kms_disabled(key_arn: &str) -> PutRecordsError {
+    PutRecordsErrorModeled::KMSDisabledException(KMSDisabledException {
+        message: Some(crate::state::key_disabled_message(key_arn)),
+    })
+    .into()
+}
+
 /// How an entry this stream cannot place is refused. `PutRecordsResultEntry$ErrorCode` is
 /// "either ProvisionedThroughputExceededException or InternalFailure", neither of which a
 /// malformed entry is, so the whole request is refused rather than the entry being reported
@@ -266,6 +276,21 @@ fn placement_refusal(failure: crate::state::RecordPlacementFailure, index: usize
 /// The input member a hash-key range refusal names, as the API spells it inside one entry
 /// of the batch.
 const EXPLICIT_HASH_KEY: &str = "ExplicitHashKey";
+
+/// What one entry of the batch OCCUPIES: "The record size limit applies to the total size of
+/// the partition key and data blob" (`PutRecords`), which is what the request's own total is
+/// measured in and what the shard's write-byte rate is charged.
+///
+/// It is NOT what the per-record ceiling bounds: that ceiling is applied to the data blob
+/// alone, where the request carries it ([`crate::state::put_records_data_path`]).
+fn metered_bytes(entry: &PutRecordsRequestEntry) -> usize {
+    entry.data.len()
+        + entry
+            .partition_key
+            .as_deref()
+            .map(str::len)
+            .unwrap_or_default()
+}
 
 impl<Eng> PutRecords<Eng> {
     /// Construct the operation from the shared engine. INFALLIBLE — the engine is a
@@ -303,6 +328,35 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         })?;
 
         let now = ::std::time::SystemTime::now();
+
+        // The stream's own CMK decides whether its data plane serves this call at all, so
+        // the key is resolved against KMS BEFORE anything is written: "KMS: Use server-side
+        // encryption on the records using a customer-managed Amazon Web Services KMS key"
+        // (`PutRecordsOutput$EncryptionType`), and a disabled key is the modelled
+        // `KMSDisabledException`. The store guard is taken only to read which key the
+        // addressed stream carries, because no guard is held across an await; every refusal
+        // about the request itself is answered by the body below, which resolves the stream
+        // again under the write lock.
+        let encryption_key = {
+            let store = state.lock();
+            store
+                .resolve_stream(
+                    now,
+                    &region,
+                    input.stream_name.as_deref(),
+                    input.stream_arn.as_deref(),
+                )
+                .ok()
+                .and_then(|stream| stream.encryption_key().map(str::to_string))
+        };
+        if let Some(key_id) = encryption_key {
+            if let crate::state::KeyState::Disabled(key_arn) =
+                crate::state::key_state(ctx, &region, &key_id).await
+            {
+                return Err(kms_disabled(&key_arn));
+            }
+        }
+
         let mut store = state.lock();
 
         let identifier = input
@@ -341,14 +395,17 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // on halfway through.
         let maximum = stream.max_record_size_bytes();
 
-        // The stream's own maximum record size is a bound on the LENGTH of an entry's
-        // `Data`, so a blob past it is refused the way a modelled `@length` is: the
-        // validation envelope, naming the member at its position in the batch and the bound
-        // it failed. Every entry is measured in this one pass and EVERY member at fault
-        // contributes its clause, the way that envelope accumulates, so a batch with two
-        // oversize blobs names both rather than only the first. This operation models no
-        // `ValidationException`, so the refusal travels through the error channel's own
-        // validation variant, which answers that code with HTTP 400.
+        // The stream's own maximum record size bounds the LENGTH of an entry's `Data` —
+        // that blob alone, since `PutRecordsRequestEntry$PartitionKey` carries its own
+        // `@length` of 1..256 and is not charged against the record ceiling — so a blob past
+        // it is refused the way a modelled `@length` is: the validation envelope, naming the
+        // member at its position in the batch and the bound it failed. Every entry is
+        // measured in this one pass and EVERY member at fault contributes its clause, the
+        // way that envelope accumulates, so a batch with two oversize blobs names both
+        // rather than only the first; the whole call is refused and no sibling entry is
+        // stored. This operation models no `ValidationException`, so the refusal travels
+        // through the error channel's own validation variant, which answers that code with
+        // HTTP 400.
         let too_long: Vec<String> = input
             .records
             .iter()
@@ -365,22 +422,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let mut placements: Vec<usize> = Vec::with_capacity(input.records.len());
         let mut batch_bytes = 0usize;
         for (index, entry) in input.records.iter().enumerate() {
-            let position = index.saturating_add(1);
-            // The TOTAL of the entry's two members, which no single member's length states,
-            // so it is the modelled "parameter ... can't be used" refusal.
-            let size = entry.data.len()
-                + entry
-                    .partition_key
-                    .as_deref()
-                    .map(str::len)
-                    .unwrap_or_default();
-            if size > maximum {
-                return Err(invalid_argument(format!(
-                    "record {position} of the batch: {}",
-                    crate::state::record_too_large_message(size, maximum)
-                )));
-            }
-            batch_bytes = batch_bytes.saturating_add(size);
+            // What the record occupies, which is what the request total below bounds: "Each
+            // record in the request can be as large as 1 MiB, up to a limit of 5 MiB for the
+            // entire request, including partition keys" (`PutRecords`).
+            batch_bytes = batch_bytes.saturating_add(metered_bytes(entry));
             placements.push(
                 stream
                     .placement(
@@ -420,11 +465,39 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // "The response Records array includes both successfully and unsuccessfully
         // processed records... A record that is successfully added to a stream includes
         // SequenceNumber and ShardId in the result": every entry goes into the shard the
-        // pass above resolved for it, in the order the request carried them.
+        // pass above resolved for it, in the order the request carried them — as far as
+        // that shard's own write quota admits it.
         let encryption_type = stream.encryption_type.clone();
+        let stream_name = stream.name.clone();
+        // The instant the shard's write rate is measured against, read once so every entry
+        // of one call is metered at the same point of the refill rather than at a point
+        // that depends on how long the loop takes.
+        let charged_at = ::std::time::Instant::now();
         let mut records: Vec<PutRecordsResultEntry> = Vec::with_capacity(input.records.len());
         let mut failed = 0i32;
         for (entry, shard_index) in input.records.into_iter().zip(placements) {
+            let metered = metered_bytes(&entry);
+            // "Each shard can support writes up to 1,000 records per second, up to a
+            // maximum data write total of 1 MB per second" (`PutRecords`): an entry the
+            // shard cannot take is REPORTED rather than refusing the call — "a single record
+            // failure does not stop the processing of subsequent records" — and it is not
+            // stored, so the producer that resends exactly the failed subset writes each
+            // record once. An index the shard map does not hold charges nothing and falls
+            // through to the append below, which answers the modelled per-record failure.
+            if let Some((false, shard_id)) = stream.charge_write_at(shard_index, metered, charged_at)
+            {
+                failed = failed.saturating_add(1);
+                records.push(PutRecordsResultEntry {
+                    sequence_number: None,
+                    shard_id: None,
+                    error_code: Some(crate::state::THROUGHPUT_EXCEEDED_ERROR_CODE.to_string()),
+                    error_message: Some(crate::state::write_rate_exceeded_message(
+                        &stream_name,
+                        &shard_id,
+                    )),
+                });
+                continue;
+            }
             match stream.append_at(shard_index, entry.partition_key, entry.data, now) {
                 Some((shard_id, sequence_number)) => records.push(PutRecordsResultEntry {
                     sequence_number: Some(sequence_number),

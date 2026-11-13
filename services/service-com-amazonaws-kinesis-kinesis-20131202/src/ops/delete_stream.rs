@@ -9,6 +9,12 @@
 //! shard logs and its tags all go with it. This is the ONLY file to touch for this
 //! operation.
 //!
+//! A stream another resource DEPENDS on is not available for removal: a channel that names
+//! it in its `StreamConfigurationList` sources it, so the delete is refused with the
+//! modelled `ResourceInUseException` and the stream survives, until those channels are
+//! deleted. The consumers registered with the stream stand in the way the same way unless
+//! `EnforceConsumerDeletion` asks for them to go with it.
+//!
 //! ## Shape of an operation
 //!
 //! Each operation is a struct that owns the shared engine and implements
@@ -237,15 +243,25 @@ fn delete_stream(
     store.drop_removed_streams(now);
 
     // `StreamId` is documented "Not Implemented. Reserved for future use", so no stream
-    // carries one and a request naming only that member names no stream.
-    let stream = store
-        .resolve_stream_mut(
-            now,
-            region,
-            input.stream_name.as_deref(),
-            input.stream_arn.as_deref(),
+    // carries one and a request naming only that member names no stream. The stream is
+    // resolved READ-ONLY first, because the refusals below are decided from records beside
+    // it — the channels this account holds — which no borrow of one stream can reach.
+    let (stream_name, stream_arn, status, registered) = {
+        let stream = store
+            .resolve_stream(
+                now,
+                region,
+                input.stream_name.as_deref(),
+                input.stream_arn.as_deref(),
+            )
+            .map_err(|failure| lookup_refusal(failure, input))?;
+        (
+            stream.name.clone(),
+            stream.arn.clone(),
+            stream.status(now),
+            stream.consumers.len(),
         )
-        .map_err(|failure| lookup_refusal(failure, input))?;
+    };
 
     // A stream is "ready for read and write operations or deletion" in `ACTIVE`
     // (`StreamStatus`), but reaching that state is not a precondition of the removal: a
@@ -254,14 +270,28 @@ fn delete_stream(
     // with the error that rule publishes ("The resource is not available for this operation.
     // For successful operation, the resource must be in the ACTIVE state") — there is
     // nothing left to accept for it.
-    let status = stream.status(now);
     if status == crate::state::STREAM_DELETING {
         return Err(DeleteStreamErrorModeled::ResourceInUseException(
             ResourceInUseException {
                 message: Some(crate::state::stream_not_active_message(
-                    &stream.name,
+                    &stream_name,
                     status,
                 )),
+            },
+        )
+        .into());
+    }
+
+    // "The list of Kinesis data streams that are sources for this channel"
+    // (`ChannelDescription$StreamConfigurationList`): a channel that sources this stream
+    // DEPENDS on it, so the stream is not available for its removal while the channel is
+    // there — the same `ResourceInUseException` rule, decided BEFORE anything is mutated, so
+    // the stream survives the refusal and the identical call is served once the channels are
+    // deleted.
+    if !store.channels_sourcing(&stream_arn).is_empty() {
+        return Err(DeleteStreamErrorModeled::ResourceInUseException(
+            ResourceInUseException {
+                message: Some(crate::state::stream_has_channels_message(&stream_name)),
             },
         )
         .into());
@@ -271,15 +301,23 @@ fn delete_stream(
     // registered consumers, the call to DeleteStream fails with a ResourceInUseException"
     // (`DeleteStreamInput$EnforceConsumerDeletion`): the consumers registered with the
     // stream stand in the way of its removal unless the request asks for them to go with it.
-    let registered = stream.consumers.len();
     if registered > 0 && !input.enforce_consumer_deletion.unwrap_or(false) {
         return Err(DeleteStreamErrorModeled::ResourceInUseException(
             ResourceInUseException {
-                message: Some(crate::state::stream_has_consumers_message(&stream.name)),
+                message: Some(crate::state::stream_has_consumers_message(&stream_name)),
             },
         )
         .into());
     }
+
+    let stream = store
+        .resolve_stream_mut(
+            now,
+            region,
+            input.stream_name.as_deref(),
+            input.stream_arn.as_deref(),
+        )
+        .map_err(|failure| lookup_refusal(failure, input))?;
 
     // DELETING is not terminal: the stream is owed its removal, and the instant that is due
     // is stored rather than slept on. "When you delete a stream, any shards in that stream

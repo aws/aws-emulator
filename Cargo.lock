@@ -14667,6 +14667,7 @@ dependencies = [
  "http",
  "md-5 0.10.6",
  "serde_json",
+ "service-com-amazonaws-iam-awsidentitymanagementv20100508",
  "service-com-amazonaws-kms-trentservice",
  "service-common",
  "sha2 0.10.9",

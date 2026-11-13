@@ -34,17 +34,17 @@ use std::sync::Arc;
 use bytes::Bytes;
 use serde_json::{json, Value};
 use service_com_amazonaws_kinesis_kinesis_20131202::state::{
-    ENCRYPTION_TYPE_KMS, ENCRYPTION_TYPE_NONE,
+    ENCRYPTION_TYPE_KMS, ENCRYPTION_TYPE_NONE, STREAM_ACTIVE,
 };
 use service_com_amazonaws_kinesis_kinesis_20131202::EmulatedService;
 use smithy_server_runtime::MultiServiceRouter;
 
-use crate::stream_tags::{error_code, error_message, past_activation, stream_arn, REGION};
+use crate::stream_tags::{error_code, error_message, stream_arn, REGION};
 
 /// The `X-Amz-Target` prefix of each service a case drives (`OPERATIONS.md`, "Wire
 /// protocol", and the KMS model's service shape).
 const KINESIS_TARGET_PREFIX: &str = "Kinesis_20131202";
-const KMS_TARGET_PREFIX: &str = "TrentService";
+pub(crate) const KMS_TARGET_PREFIX: &str = "TrentService";
 
 /// A `KeyId` KMS resolves to no key: a UUID of the shape `KeyId` documents ("Globally
 /// unique key ID example: 12345678-1234-1234-1234-123456789012") that no `CreateKey` of
@@ -59,13 +59,17 @@ const SERVICE_ALIAS: &str = "alias/aws/kinesis";
 
 /// A router carrying Kinesis and (unless a case is about KMS being absent) KMS, over one
 /// shared engine: the same assembly `core/router` performs.
-struct Emulator {
+///
+/// `pub(crate)` because the DATA-plane half of the same contract is driven over the same two
+/// services (`crate::encrypted_data_plane`), and one harness for one assembly is better than
+/// two.
+pub(crate) struct Emulator {
     router: MultiServiceRouter,
 }
 
 impl Emulator {
     /// Kinesis with KMS beside it, which is how the assembled emulator runs.
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self::build(true)
     }
 
@@ -92,7 +96,12 @@ impl Emulator {
     }
 
     /// Call `operation` of the service `target_prefix` names, signed for `REGION`.
-    async fn send(&self, target_prefix: &str, operation: &str, body: &Value) -> (u16, Value) {
+    pub(crate) async fn send(
+        &self,
+        target_prefix: &str,
+        operation: &str,
+        body: &Value,
+    ) -> (u16, Value) {
         let signing_name = if target_prefix == KMS_TARGET_PREFIX {
             "kms"
         } else {
@@ -119,12 +128,12 @@ impl Emulator {
     }
 
     /// One Kinesis call.
-    async fn call(&self, operation: &str, body: &Value) -> (u16, Value) {
+    pub(crate) async fn call(&self, operation: &str, body: &Value) -> (u16, Value) {
         self.send(KINESIS_TARGET_PREFIX, operation, body).await
     }
 
     /// One Kinesis call that must be answered 200.
-    async fn ok(&self, case: &str, operation: &str, body: &Value) -> Value {
+    pub(crate) async fn ok(&self, case: &str, operation: &str, body: &Value) -> Value {
         let (status, response) = self.call(operation, body).await;
         assert_eq!(
             status, 200,
@@ -134,16 +143,30 @@ impl Emulator {
         response
     }
 
-    /// Create an ACTIVE stream named `name`.
-    async fn active_stream(&self, case: &str, name: &str) {
+    /// Create an ACTIVE stream named `name`: the create, then LOOKING until the stream
+    /// reports the status its create owes it, through the crate's one poll loop
+    /// ([`crate::stream_tags::poll_until`]).
+    pub(crate) async fn active_stream(&self, case: &str, name: &str) {
         self.ok(case, "CreateStream", &json!({ "StreamName": name, "ShardCount": 1 }))
             .await;
-        tokio::time::sleep(past_activation()).await;
+        crate::stream_tags::poll_until(
+            case,
+            &format!("the stream {name} reports {STREAM_ACTIVE}"),
+            || async {
+                let (status, response) = self
+                    .call("DescribeStreamSummary", &json!({ "StreamName": name }))
+                    .await;
+                status == 200
+                    && response["StreamDescriptionSummary"]["StreamStatus"].as_str()
+                        == Some(STREAM_ACTIVE)
+            },
+        )
+        .await;
     }
 
     /// Mint a key through the mounted KMS and answer its `(KeyId, Arn)`, so an identifier a
     /// case means to be REAL is one KMS can resolve.
-    async fn create_key(&self) -> (String, String) {
+    pub(crate) async fn create_key(&self) -> (String, String) {
         let (status, response) = self.send(KMS_TARGET_PREFIX, "CreateKey", &json!({})).await;
         assert_eq!(
             status, 200,
@@ -180,7 +203,11 @@ impl Emulator {
     }
 
     /// The `EncryptionType` and `KeyId` `DescribeStreamSummary` reports for `name`.
-    async fn reported_encryption(&self, case: &str, name: &str) -> (String, Option<String>) {
+    pub(crate) async fn reported_encryption(
+        &self,
+        case: &str,
+        name: &str,
+    ) -> (String, Option<String>) {
         let described = self
             .ok(case, "DescribeStreamSummary", &json!({ "StreamName": name }))
             .await;

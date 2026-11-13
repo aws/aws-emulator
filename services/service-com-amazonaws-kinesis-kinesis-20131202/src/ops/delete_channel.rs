@@ -6,10 +6,10 @@
 //! request names, inside the region the request was signed for: "Deleting a channel stops
 //! delivery from the source stream to the destination", so the whole record goes and the
 //! channel is no resource of this account any more — a later `DescribeChannel` or
-//! `ListChannels` reports it gone and its name is free for another create. A channel still
-//! inside the transition its create or its last accepted change armed is refused with
-//! `ResourceInUseException`, and an ARN this account and region hold no channel under with
-//! `ResourceNotFoundException`.
+//! `ListChannels` reports it gone and its name is free for another create. The delete is
+//! served whatever lifecycle status the channel is in — the model declares this operation no
+//! "the resource must be in the ACTIVE state" error at all — and an ARN this account and
+//! region hold no channel under is refused with `ResourceNotFoundException`.
 //!
 //! ## Shape of an operation
 //!
@@ -117,7 +117,7 @@ impl ::aws_smithy_schema::serde::SerializableStruct for DeleteChannelOutput {
     // is what a channel still inside a transition earns from every channel write, and
     // `InternalFailureException`, the only honest answer for a service mounted on an engine
     // that holds no state for it.
-    extra_errors = ["ResourceInUseException", "InternalFailureException"]
+    extra_errors = ["InternalFailureException"]
 )]
 #[derive(Debug)]
 pub enum DeleteChannelErrorModeled {
@@ -126,7 +126,6 @@ pub enum DeleteChannelErrorModeled {
     LimitExceededException(LimitExceededException),
     ResourceNotFoundException(ResourceNotFoundException),
     ValidationException(ValidationException),
-    ResourceInUseException(ResourceInUseException),
     InternalFailureException(InternalFailureException),
 }
 
@@ -179,17 +178,6 @@ fn not_found(message: String) -> DeleteChannelError {
     .into()
 }
 
-/// Refuse the request because the channel it names is "not available for this operation": a
-/// channel whose create or whose accepted change is still due is one no further change may be
-/// applied to, since "For successful operation, the resource must be in the ACTIVE state"
-/// (`ResourceInUseException`).
-fn resource_in_use(message: String) -> DeleteChannelError {
-    DeleteChannelErrorModeled::ResourceInUseException(ResourceInUseException {
-        message: Some(message),
-    })
-    .into()
-}
-
 /// Remove the channel the request names, or answer the modelled refusal that stands in the
 /// way.
 ///
@@ -200,7 +188,6 @@ fn resource_in_use(message: String) -> DeleteChannelError {
 fn delete_channel(
     store: &mut crate::state::ComAmazonawsKinesisKinesis20131202State,
     region: &str,
-    now: ::std::time::SystemTime,
     input: &DeleteChannelInput,
 ) -> Result<(), DeleteChannelError> {
     // `ChannelARN` is the only identifier this operation takes (`@required`), and a channel
@@ -211,16 +198,12 @@ fn delete_channel(
         .channel_by_arn(region, identifier)
         .ok_or_else(|| not_found(crate::state::channel_not_found_message(identifier)))?;
 
-    // A channel whose create or whose previous change is still due is in use by that
-    // transition, so the delete is refused and the record is left exactly as it was; the
-    // caller retries once the channel reports `ACTIVE`.
-    let status = channel.status(now);
-    if status != crate::state::CHANNEL_ACTIVE {
-        return Err(resource_in_use(crate::state::channel_not_active_message(
-            &channel.name,
-            status,
-        )));
-    }
+    // The delete is served whatever lifecycle status the channel is in: the model declares
+    // `DeleteChannel` no "the resource must be in the ACTIVE state" error at all (its errors
+    // are `AccessDeniedException`, `InvalidArgumentException`, `LimitExceededException`,
+    // `ResourceNotFoundException` and `ValidationException`), so a channel whose create or
+    // whose accepted change is still due is removed rather than held until the transition
+    // falls due.
 
     // "Deleting a channel stops delivery from the source stream to the destination"
     // (`DeleteChannel`): the whole record goes, so nothing of it is read afterwards — the
@@ -274,10 +257,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             ))
         })?;
 
-        let now = ::std::time::SystemTime::now();
         let deleted = {
             let mut store = state.lock();
-            delete_channel(&mut store, &region, now, &input)
+            delete_channel(&mut store, &region, &input)
         };
         audit(
             &akid,

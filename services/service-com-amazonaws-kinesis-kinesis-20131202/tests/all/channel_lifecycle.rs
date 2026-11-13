@@ -38,13 +38,11 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 use service_com_amazonaws_kinesis_kinesis_20131202::state::{
-    channel_arn, CHANNEL_ACTIVATION_DELAY, MAX_CHANNELS_PER_REGION, STREAM_MODE_ON_DEMAND,
-    STREAM_MODE_PROVISIONED,
+    channel_arn, CHANNEL_ACTIVATION_DELAY, CHANNEL_ACTIVE, MAX_CHANNELS_PER_REGION,
+    STREAM_MODE_ON_DEMAND, STREAM_MODE_PROVISIONED,
 };
 
-use crate::stream_tags::{
-    error_code, error_message, past_activation, stream_arn, Emulator, REGION,
-};
+use crate::stream_tags::{error_code, error_message, stream_arn, Emulator, REGION};
 
 /// The status a freshly created channel reports: "CREATING - The channel is being created"
 /// (`smithy_query(query="shape",shape="ChannelSummary")` -> `ChannelStatus`).
@@ -81,6 +79,20 @@ const SERVICE_KEY_ALIAS: &str = "alias/aws/kinesis";
 /// the create armed the `CREATING` -> `ACTIVE` transition for.
 pub(crate) fn past_channel_activation() -> Duration {
     CHANNEL_ACTIVATION_DELAY + Duration::from_millis(400)
+}
+
+/// Look at the channel `arn` until it reports `ACTIVE` — the state its create or its last
+/// accepted change owes it — through the crate's one poll loop
+/// ([`crate::stream_tags::poll_until`]).
+pub(crate) async fn poll_until_channel_active(emulator: &Emulator, case: &str, arn: &str) {
+    crate::stream_tags::poll_until(case, &format!("the channel {arn} reports {CHANNEL_ACTIVE}"), || async {
+        let (status, response) = emulator
+            .call("DescribeChannel", &json!({ "ChannelARN": arn }))
+            .await;
+        status == 200
+            && response["ChannelDescription"]["ChannelStatus"].as_str() == Some(CHANNEL_ACTIVE)
+    })
+    .await;
 }
 
 /// The ARN of an IAM role inside the `RoleARN` pattern
@@ -189,7 +201,7 @@ pub(crate) async fn on_demand_stream_in(emulator: &Emulator, region: &str, name:
             }),
         )
         .await;
-    tokio::time::sleep(past_activation()).await;
+    crate::stream_tags::poll_until_active_in(emulator, name, region, name).await;
     stream_arn(region, name)
 }
 
@@ -1038,7 +1050,10 @@ async fn a_channel_name_is_unique_within_a_region() {
         "case {case}: expected ResourceInUseException, got {response}"
     );
     let message = error_message(&response);
-    let says = format!("channel {case} already exists in this account and region");
+    let says = format!(
+        "Channel {case} under account {} already exists.",
+        engine::EMULATOR_ACCOUNT_ID
+    );
     assert!(
         message.contains(&says),
         "case {case}: expected the message to name {says:?}, got {message:?}"
@@ -1088,21 +1103,7 @@ async fn a_channel_name_is_unique_within_a_region() {
         "case {case}: expected the message to name {says:?}, got {response}"
     );
 
-    let source_elsewhere = {
-        emulator
-            .ok_in(
-                case,
-                elsewhere,
-                "CreateStream",
-                &json!({
-                    "StreamName": "unique-source",
-                    "StreamModeDetails": { "StreamMode": STREAM_MODE_ON_DEMAND },
-                }),
-            )
-            .await;
-        tokio::time::sleep(past_activation()).await;
-        stream_arn(elsewhere, "unique-source")
-    };
+    let source_elsewhere = on_demand_stream_in(&emulator, elsewhere, "unique-source").await;
     let created = emulator
         .ok_in(
             case,

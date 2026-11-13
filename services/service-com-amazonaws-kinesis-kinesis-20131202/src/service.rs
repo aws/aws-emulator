@@ -43,17 +43,20 @@
 //! ## This service's edited seam: how a broken input constraint is stated
 //!
 //! Kinesis words a constraint refusal FROM THE REQUEST — the member path, the value as
-//! submitted, and the requirement as the service itself states it ([`validation`]). One part
-//! of that sentence the framework cannot produce on its own: the value a clause echoes. The
-//! framework's constraint walk stores it SHORTENED (a byte-bounded prefix plus a marker
-//! naming the byte count, text AWS never emits), because a clause interpolates whatever is
-//! stored and a caller controls the length. The whole value is only recoverable from the
-//! built input, which [`Service::override_refusal`] is never handed — it is given the
-//! violations alone.
+//! submitted, and the requirement as the service itself states it ([`validation`]). Two parts
+//! of that sentence the framework cannot produce on its own, both of them the value half of a
+//! clause. A SCALAR value it stores SHORTENED (a byte-bounded prefix plus a marker naming the
+//! byte count, text AWS never emits), because a clause interpolates whatever is stored and a
+//! caller controls the length. A COLLECTION it stores as a count summary (`<n> items`), which
+//! is no value any caller sent, because a `@length` on a list is checked on the member before
+//! the walk descends into its elements. Both are only recoverable from the built input, which
+//! [`Service::override_refusal`] is never handed — it is given the violations alone.
 //!
-//! [`StatedPerOperation`] is where it comes from: each operation this crate serves is
+//! [`StatedPerOperation`] is where they come from: each operation this crate serves is
 //! mounted wrapped in it, the wrapper asks `service_common::validation` for the framework's
-//! OWN violations against that operation's input schema — echoes restored — and
+//! OWN violations against that operation's input schema together with the echo each clause
+//! can state its value from, the two shared restoring rules in
+//! `service_common::validation_message` put those values back ([`stated_refusal`]), and
 //! [`validation`] turns them into the sentence. `override_refusal` states a refusal that
 //! reaches the centralized walk anyway through that same module, so the wording lives in ONE
 //! place.
@@ -62,6 +65,7 @@
 //! dry run — are not here: they are built by the shared helpers in [`crate::state`] so every
 //! operation states them one way.
 
+mod submitted_batch;
 mod validation;
 
 use aws_smithy_runtime_api::http::{Request as RtRequest, Response as RtResponse};
@@ -200,16 +204,43 @@ impl<O> StatedPerOperation<O> {
 /// answers in its own envelope.
 ///
 /// The collecting half is the tree's shared one,
-/// `service_common::validation::refusing_violations`: one read of the request yields the
-/// framework's own violations (the protocol's deserializer for an absent `@required` member,
-/// `constraints::validate` over the built input) with each value echo restored to the bytes
-/// the caller sent. Nothing is re-checked here, and no second copy of that walk lives in this
-/// crate.
+/// `service_common::validation::refusing_violations_with_declared_echoes_rendering_up_to`:
+/// one read of the request yields the framework's own violations (the protocol's
+/// deserializer for an absent `@required` member, `constraints::validate` over the built
+/// input) together with the echo each clause can state its value from. Nothing is re-checked
+/// here, no second read of the request lives in this crate, and the two restorations below
+/// are the shared rules for the two halves this service's clauses state:
+///
+/// * the whole value the caller SUBMITTED where the framework stored its own elision of one
+///   (`validation_message::quoting_the_whole_submitted_value`);
+/// * the COLLECTION the caller submitted where the framework stored its own `<n> items`
+///   summary of one (`validation_message::quoting_the_submitted_collection`) — the clause a
+///   `@length` on a list earns, which is checked on the member before the walk descends into
+///   the elements.
+///
+/// The two CEILINGS passed are MODEL constants, from the largest list this service's model
+/// declares ([`submitted_batch`]), so no response is sized by the request: past them the
+/// framework's own summary stands.
 fn stated_refusal<O: Operation>(
     protocol: &dyn ServerHttpProtocol,
     req: &RtRequest,
 ) -> Option<(Vec<Violation>, Refused)> {
-    let violations = ::service_common::validation::refusing_violations::<O>(protocol, req);
+    use ::service_common::validation_message::{
+        quoting_the_submitted_collection, quoting_the_whole_submitted_value,
+    };
+    let violations: Vec<Violation> =
+        ::service_common::validation::refusing_violations_with_declared_echoes_rendering_up_to::<O>(
+            protocol,
+            req,
+            submitted_batch::QUOTED_BATCH_POSITIONS,
+            submitted_batch::QUOTED_BATCH_RENDERING_BYTES,
+        )
+        .into_iter()
+        .map(|(violation, echo)| {
+            let violation = quoting_the_whole_submitted_value(violation, &echo);
+            quoting_the_submitted_collection(violation, echo)
+        })
+        .collect();
     let stated = validation::refusal(&violations)?;
     Some((violations, stated))
 }

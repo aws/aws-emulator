@@ -164,6 +164,74 @@ pub(crate) fn error_message(response: &Value) -> String {
         .to_string()
 }
 
+/// How long a case keeps LOOKING for a state the service owes it before giving up. Generous
+/// on purpose: what a case waits for is a CONDITION the emulator reaches on its own clock,
+/// never a duration the case measures, so a slow or loaded host only makes it look again.
+pub(crate) const POLL_DEADLINE: Duration = Duration::from_secs(60);
+
+/// How long a case waits between two looks while polling for such a condition.
+pub(crate) const BETWEEN_LOOKS: Duration = Duration::from_millis(25);
+
+/// Look again until `holds` answers true, and fail once [`POLL_DEADLINE`] has passed.
+///
+/// THE ONE poll loop of this crate's suites, whichever harness a case drives: what a case
+/// waits for is a CONDITION the emulator reaches on its own clock — a stream that reports
+/// `ACTIVE`, a channel that has settled, a name a delete has released — never a duration the
+/// case measures, so a slow or loaded host only makes it look again. `what` names the
+/// condition in the failure.
+pub(crate) async fn poll_until<F, Fut>(case: &str, what: &str, holds: F)
+where
+    F: Fn() -> Fut,
+    Fut: std::future::Future<Output = bool>,
+{
+    let deadline = std::time::Instant::now() + POLL_DEADLINE;
+    loop {
+        if holds().await {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "case {case}: {what} never became true inside the deadline"
+        );
+        tokio::time::sleep(BETWEEN_LOOKS).await;
+    }
+}
+
+/// Look at the stream named `name` in `region` until it reports `ACTIVE` — the state its
+/// create owes it — through [`poll_until`].
+pub(crate) async fn poll_until_active_in(emulator: &Emulator, case: &str, region: &str, name: &str) {
+    poll_until(
+        case,
+        &format!("the stream {name} reports {STREAM_ACTIVE}"),
+        || async {
+            let (status, response) = emulator
+                .call_in(region, "DescribeStreamSummary", &json!({ "StreamName": name }))
+                .await;
+            status == 200
+                && response["StreamDescriptionSummary"]["StreamStatus"].as_str()
+                    == Some(STREAM_ACTIVE)
+        },
+    )
+    .await;
+}
+
+/// [`poll_until_active_in`] in the default test region.
+pub(crate) async fn poll_until_active(emulator: &Emulator, case: &str, name: &str) {
+    poll_until_active_in(emulator, case, REGION, name).await;
+}
+
+/// Look until this account and region hold no stream under `name` any more — the removal a
+/// delete owes — through [`poll_until`].
+pub(crate) async fn poll_until_gone(emulator: &Emulator, case: &str, name: &str) {
+    poll_until(case, &format!("the stream {name} is released"), || async {
+        let (status, response) = emulator
+            .call("DescribeStreamSummary", &json!({ "StreamName": name }))
+            .await;
+        status == 400 && error_code(&response) == "ResourceNotFoundException"
+    })
+    .await;
+}
+
 /// The ARN a stream named `name` in `region` is addressed by.
 pub(crate) fn stream_arn(region: &str, name: &str) -> String {
     format!(

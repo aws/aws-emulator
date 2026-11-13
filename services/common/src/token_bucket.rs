@@ -66,14 +66,47 @@ impl Bucket {
     /// rather than held, so limits a resource is UPDATED to take effect on the next request
     /// instead of on a bucket frozen at the old ones.
     pub fn admits(&mut self, limits: Limits, now: ::std::time::Instant) -> bool {
+        self.admits_cost(limits, now, ONE_REQUEST)
+    }
+
+    /// Admit one request that takes `cost` of the capacity and record it, or report that
+    /// `limits` do not admit it at `now`.
+    ///
+    /// The same bucket as [`Self::admits`] — same refill, same cap — for a rate published
+    /// over something other than whole requests: the records or the BYTES one call carries,
+    /// where one request spends as much capacity as it brings. `cost` is the caller's: a
+    /// cost larger than the burst can never be admitted, so a caller whose metered thing
+    /// may exceed the capacity in one request decides what such a request spends before it
+    /// asks here.
+    pub fn admits_cost(&mut self, limits: Limits, now: ::std::time::Instant, cost: f64) -> bool {
+        if self.capacity_at(limits, now) < cost {
+            return false;
+        }
+        self.charge(cost);
+        true
+    }
+
+    /// The capacity left at `now`, refilled first: the time since the last look times the
+    /// rate, capped at the burst, which is what makes the steady-state rate the rate.
+    ///
+    /// The PEEK half of [`Self::admits_cost`], for a resource bounded by SEVERAL published
+    /// rates at once (a Kinesis shard's records per second AND its write bytes per second):
+    /// a request such a resource does not admit must spend none of them, so every budget is
+    /// asked what it has left before any of them is charged. The limits are passed per call
+    /// for the reason [`Self::admits`] gives.
+    pub fn capacity_at(&mut self, limits: Limits, now: ::std::time::Instant) -> f64 {
         let elapsed = now.saturating_duration_since(self.at).as_secs_f64();
         self.tokens = (self.tokens + elapsed * limits.rate).min(limits.burst);
         self.at = now;
-        if self.tokens < ONE_REQUEST {
-            return false;
-        }
-        self.tokens -= ONE_REQUEST;
-        true
+        self.tokens
+    }
+
+    /// Spend `cost` of the capacity: the CHARGE half, taken only once every budget of the
+    /// resource has answered that it holds what the request brings
+    /// ([`Self::capacity_at`]). Charges what it is given, so a caller that has not asked
+    /// first can take the bucket below zero.
+    pub fn charge(&mut self, cost: f64) {
+        self.tokens -= cost;
     }
 }
 
@@ -146,5 +179,85 @@ mod tests {
                 "case {case:?}: a bucket with no capacity must admit nothing, got {actual}"
             );
         }
+    }
+
+    #[test]
+    fn a_request_spends_the_cost_it_brings_and_one_past_the_burst_is_never_admitted() {
+        let start = Instant::now();
+        let limits = Limits {
+            rate: 1_000.0,
+            burst: 1_000.0,
+        };
+        let mut bucket = Bucket::full(limits, start);
+        // Rows differ along the COST one request brings, against the capacity left when it
+        // arrives: a cost inside the capacity, the cost that spends exactly the rest of it,
+        // one past what is left, what the rate refilled a moment later, and a cost no full
+        // bucket could ever hold.
+        let cases: [(&str, Duration, f64, bool); 6] = [
+            ("a cost well inside the burst", Duration::ZERO, 400.0, true),
+            ("the cost that spends the rest", Duration::ZERO, 600.0, true),
+            ("one unit past an empty bucket", Duration::ZERO, 1.0, false),
+            ("what the rate refilled", Duration::from_millis(100), 100.0, true),
+            ("more than the refill", Duration::from_millis(100), 101.0, false),
+            ("a cost past the whole burst", Duration::from_secs(60), 1_001.0, false),
+        ];
+        for (case, elapsed, cost, expected) in cases {
+            let actual = bucket.admits_cost(limits, start + elapsed, cost);
+            assert_eq!(
+                actual, expected,
+                "case {case:?}: expected admitted {expected} for cost {cost}, got {actual}"
+            );
+        }
+    }
+
+    /// The peek-then-charge split: a resource bounded by SEVERAL published rates asks every
+    /// budget what it holds before any of them is charged, so a request one of them refuses
+    /// spends none.
+    #[test]
+    fn a_resource_bounded_by_two_rates_charges_neither_budget_when_one_refuses() {
+        let start = Instant::now();
+        let records = Limits {
+            rate: 1_000.0,
+            burst: 1_000.0,
+        };
+        let bytes = Limits {
+            rate: 1_024.0,
+            burst: 1_024.0,
+        };
+        let mut record_budget = Bucket::full(records, start);
+        let mut byte_budget = Bucket::full(bytes, start);
+
+        // One request past what the BYTE budget holds: it is refused, and the record budget
+        // it never used keeps its whole capacity.
+        let too_many_bytes = 2_048.0;
+        let admitted = record_budget.capacity_at(records, start) >= 1.0
+            && byte_budget.capacity_at(bytes, start) >= too_many_bytes;
+        assert!(
+            !admitted,
+            "case a request past one of two budgets: expected it refused"
+        );
+        assert_eq!(
+            record_budget.capacity_at(records, start),
+            1_000.0,
+            "case a request past one of two budgets: the budget that did not refuse it keeps \
+             its capacity"
+        );
+
+        // The same request inside both budgets charges both.
+        assert!(
+            record_budget.capacity_at(records, start) >= 1.0
+                && byte_budget.capacity_at(bytes, start) >= 512.0,
+            "case a request inside both budgets: expected it admitted"
+        );
+        record_budget.charge(1.0);
+        byte_budget.charge(512.0);
+        assert_eq!(
+            (
+                record_budget.capacity_at(records, start),
+                byte_budget.capacity_at(bytes, start)
+            ),
+            (999.0, 512.0),
+            "case a request inside both budgets: expected both charged what it brought"
+        );
     }
 }

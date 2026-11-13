@@ -8,12 +8,14 @@
 //! delivery from the source stream to the destination" — so from the answer on, the channel is
 //! no resource of this account: `DescribeChannel` and `ListChannels` report it gone, its name
 //! is free for another create, and nothing else the account holds moves (the source stream it
-//! read from included, since "Data already delivered to the destination is not deleted"). A
-//! channel still inside the transition its create or its last accepted change armed is "not
-//! available for this operation" and is refused `ResourceInUseException` with the record left
-//! exactly as it was, and an identifier this account and region hold no channel under is
-//! refused `ResourceNotFoundException` — which is also what a second delete of one channel
-//! earns.
+//! read from included, since "Data already delivered to the destination is not deleted"). The
+//! delete is served whatever lifecycle status the channel is in — the model declares this
+//! operation no "the resource must be in the ACTIVE state" error at all, its errors being
+//! `AccessDeniedException`, `InvalidArgumentException`, `LimitExceededException`,
+//! `ResourceNotFoundException` and `ValidationException`
+//! (`smithy_query(query="operation",operation="DeleteChannel")`) — and an identifier this
+//! account and region hold no channel under is refused `ResourceNotFoundException`, which is
+//! also what a second delete of one channel earns.
 //!
 //! The recorded flow this was derived from creates ONE channel delivering to one general
 //! purpose bucket, waits for it to become `ACTIVE` and deletes it, which is one row of the
@@ -34,8 +36,8 @@ use service_com_amazonaws_kinesis_kinesis_20131202::state::{
 // The one wire harness this crate's suites share, and the channel-building helpers the create
 // suite already carries — this suite adds the deletion steps rather than a second copy of them.
 use crate::channel_lifecycle::{
-    dead_letter_queue, description, member, past_channel_activation, role_arn, schema_arn,
-    storage_configuration, stream_configuration, table_bucket_arn,
+    dead_letter_queue, description, member, past_channel_activation, poll_until_channel_active,
+    role_arn, schema_arn, storage_configuration, stream_configuration, table_bucket_arn,
 };
 use crate::stream_tags::{
     error_code, error_message, past_activation, stream_arn, Emulator, REGION,
@@ -317,10 +319,11 @@ async fn a_deleted_channel_is_gone_and_its_name_is_free() {
     }
 }
 
-/// A channel still inside a transition is not deleted: it is "not available for this
-/// operation", the record stands, and the delete succeeds once the transition falls due.
+/// A channel still inside a transition is deleted like any other: the model declares this
+/// operation no not-ACTIVE refusal, so the record goes and the identifier answers nothing
+/// from then on.
 #[tokio::test]
-async fn a_channel_inside_a_transition_is_not_deleted() {
+async fn a_channel_inside_a_transition_is_deleted_too() {
     let emulator = Emulator::new();
     let source = "transition-source";
     on_demand_source_in(&emulator, &[REGION], source).await;
@@ -345,7 +348,7 @@ async fn a_channel_inside_a_transition_is_not_deleted() {
         emulator.ok(case, "CreateChannel", &body).await;
         let arn = channel_arn(REGION, case);
         if through_update {
-            tokio::time::sleep(past_channel_activation()).await;
+            poll_until_channel_active(&emulator, case, &arn).await;
             emulator
                 .ok(
                     case,
@@ -363,41 +366,13 @@ async fn a_channel_inside_a_transition_is_not_deleted() {
             Ok(transient.to_string()),
             "case {case}: expected the channel to be {transient} when the delete arrives"
         );
-        let (code, message) =
-            refused(&emulator, case, REGION, "DeleteChannel", &json!({ "ChannelARN": arn })).await;
-        assert_eq!(
-            code, "ResourceInUseException",
-            "case {case}: expected a channel that is not {CHANNEL_ACTIVE} to be refused as one \
-             not available for this operation, got {code} with message {message:?}"
-        );
-        assert!(
-            message.contains(transient) && message.contains(CHANNEL_ACTIVE),
-            "case {case}: expected the refusal to name the status the channel is in and the one \
-             it must be in, got {message:?}"
-        );
-
-        // The refused delete wrote nothing: the channel is still held, and still reaches the
-        // status the transition owes it.
-        assert_eq!(
-            channel_status(&emulator, REGION, &arn).await,
-            Ok(transient.to_string()),
-            "case {case}: expected the refused delete to leave the channel exactly as it was"
-        );
-        tokio::time::sleep(past_channel_activation()).await;
-        assert_eq!(
-            channel_status(&emulator, REGION, &arn).await,
-            Ok(CHANNEL_ACTIVE.to_string()),
-            "case {case}: expected the channel to reach {CHANNEL_ACTIVE} once the transition \
-             falls due"
-        );
         emulator
             .ok(case, "DeleteChannel", &json!({ "ChannelARN": arn }))
             .await;
         assert_eq!(
             channel_status(&emulator, REGION, &arn).await,
             Err("ResourceNotFoundException".to_string()),
-            "case {case}: expected the delete taken once the channel was {CHANNEL_ACTIVE} to \
-             remove it"
+            "case {case}: expected the delete of a {transient} channel to remove it"
         );
     }
 }

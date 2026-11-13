@@ -8,10 +8,12 @@
 //! stream". The change is asynchronous, so the stream is `UPDATING` until it falls back to
 //! `ACTIVE`, from when on records written to it are encrypted.
 //!
-//! The `KeyId` is RESOLVED against KMS before anything is stored ([`resolve_key`]): a
-//! stream reported as encrypted is one whose records are wrapped with the caller's key, so
-//! an identifier KMS holds no key for is refused `KMSNotFoundException` — the error this
-//! operation models for exactly that — and the stream keeps the configuration it had.
+//! The `KeyId` is RESOLVED against KMS before anything is stored
+//! ([`crate::state::key_state`]): a stream reported as encrypted is one whose records are
+//! wrapped with the caller's key, so an identifier KMS holds no key for is refused
+//! `KMSNotFoundException` — the error this operation models for exactly that — a key KMS
+//! reports as not enabled is refused as a parameter that cannot be used, and either way the
+//! stream keeps the configuration it had.
 //!
 //! The engine is held on `self` (constructor-injected), NOT passed per request. `ctx`
 //! ([`smithy_server_runtime::OperationContext`]) carries request metadata only.
@@ -343,101 +345,6 @@ fn refusal_from_state(
     Ok(())
 }
 
-/// What KMS answered about the `KeyId` this request named.
-#[derive(Debug, PartialEq, Eq)]
-enum KeyLookup {
-    /// KMS resolved the identifier to a key, so the stream can be reported as encrypted
-    /// under it.
-    Resolved,
-    /// KMS reported that this account and region hold no key the identifier resolves to.
-    NoSuchKey,
-    /// KMS said nothing about the key itself (it answered about the call, about itself, or
-    /// it was not there to ask). Not a negative, so not a refusal.
-    Indeterminate,
-}
-
-/// The KMS client this service resolves a `KeyId` through: the AWS SDK driven over the
-/// emulator's own in-process callback, so this crate names no other service's crate and no
-/// socket is opened. `region` is the request's own signing region, which is where the
-/// stream this key encrypts lives.
-///
-/// That region is CALLER-SUPPLIED text and here it ends up in an endpoint URL's AUTHORITY,
-/// so it is read as a Region LABEL ([`::service_common::arn::region_label`], the one place
-/// this tree states that grammar) rather than interpolated as given. `None` for a value
-/// that would name an authority the caller chose, in which case no lookup is made at all
-/// and nothing is refused on it.
-fn kms_client(
-    ctx: &smithy_server_runtime::OperationContext<'_>,
-    region: &str,
-) -> Option<::aws_sdk_kms::Client> {
-    let region = ::service_common::arn::region_label(region)?;
-    let config = ::aws_sdk_kms::Config::builder()
-        .behavior_version(::aws_sdk_kms::config::BehaviorVersion::latest())
-        .http_client(ctx.callback().http_client())
-        .credentials_provider(ctx.callback().aws_credentials_provider())
-        .region(::aws_sdk_kms::config::Region::new(region.to_string()))
-        // The endpoint is the LABEL the in-process transport routes by (and what the
-        // request is signed for); the callback above dispatches it inside this process, so
-        // no socket is opened and nothing outside the emulator is reached.
-        .endpoint_url(format!("https://kms.{region}.amazonaws.com"))
-        // The transport is in-process: there is nothing to retry, time out or watch for a
-        // stalled stream, and each of those would need a sleep implementation this client
-        // is not given. The same goes for caching the identity: the credentials are handed
-        // over directly.
-        .retry_config(::aws_sdk_kms::config::retry::RetryConfig::disabled())
-        .timeout_config(::aws_sdk_kms::config::timeout::TimeoutConfig::disabled())
-        .identity_cache(::aws_sdk_kms::config::IdentityCache::no_cache())
-        .stalled_stream_protection(::aws_sdk_kms::config::StalledStreamProtectionConfig::disabled())
-        .build();
-    Some(::aws_sdk_kms::Client::from_conf(config))
-}
-
-/// Ask KMS whether `key_id` names a key at all.
-///
-/// `DescribeKey` is the read the service itself performs here: a stream this operation
-/// accepts is a stream whose records are wrapped with the caller's key, so the identifier is
-/// RESOLVED before the configuration is stored — which is why the operation models
-/// `KMSNotFoundException` at all. It also resolves every form `KeyId` takes (a key id, a key
-/// or alias ARN, an alias name, and the service's own predefined alias), so this asks KMS
-/// rather than deciding from the shape of the value.
-///
-/// A definite negative is only KMS's own "no such key" answer, with the client status it
-/// came with. Anything else — a fault, a throttle, a refusal about the CALL, no KMS
-/// mounted beside this service to ask, or a region this emulator will not put in an
-/// endpoint's authority ([`kms_client`]) — says nothing about the key's existence and is
-/// reported as [`KeyLookup::Indeterminate`], so nothing is refused that could not be
-/// grounded in KMS's answer.
-async fn resolve_key(
-    ctx: &smithy_server_runtime::OperationContext<'_>,
-    region: &str,
-    key_id: &str,
-) -> KeyLookup {
-    let Some(client) = kms_client(ctx, region) else {
-        return KeyLookup::Indeterminate;
-    };
-    let error = match client.describe_key().key_id(key_id).send().await {
-        Ok(_) => return KeyLookup::Resolved,
-        Err(error) => error,
-    };
-    let about_the_key = error.as_service_error().is_some_and(
-        ::aws_sdk_kms::operation::describe_key::DescribeKeyError::is_not_found_exception,
-    );
-    // A 5xx is about KMS, not about the key, whatever code travels with it.
-    let client_error = error
-        .raw_response()
-        .is_some_and(|response| response.status().is_client_error());
-    if about_the_key && client_error {
-        return KeyLookup::NoSuchKey;
-    }
-    // Visible to an operator: an indeterminate lookup is accepted, so without this line it
-    // would be indistinguishable from a key KMS resolved.
-    ::tracing::warn!(
-        error = %::aws_smithy_types::error::display::DisplayErrorContext(&error),
-        "KMS gave no answer about this stream's KeyId; accepting it"
-    );
-    KeyLookup::Indeterminate
-}
-
 /// The modelled refusal for a `KeyId` KMS holds no key for: "The request was rejected
 /// because the specified entity or resource can't be found" (`KMSNotFoundException`). The
 /// identifier is echoed from the request, since that is the value that resolved to nothing.
@@ -503,12 +410,26 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             return Err(refusal);
         }
 
-        // Nothing is stored for a key that resolves to nothing: the stream keeps the
-        // encryption configuration it had, so a stream AWS would have left unencrypted is
-        // left unencrypted here too.
-        if resolve_key(ctx, &region, &input.key_id).await == KeyLookup::NoSuchKey {
-            audit(&akid, &region, "refused");
-            return Err(kms_not_found(&input.key_id));
+        // Nothing is stored for a key this service would not be able to use: the stream
+        // keeps the encryption configuration it had, so a stream AWS would have left
+        // unencrypted is left unencrypted here too. The key is RESOLVED against KMS — the
+        // one lookup this crate puts every such question through
+        // ([`crate::state::key_state`]) — which is why this operation models
+        // `KMSNotFoundException` at all; a key KMS reports as not enabled is refused as the
+        // parameter that "can't be used", which is the modelled refusal AWS answers it
+        // with.
+        match crate::state::key_state(ctx, &region, &input.key_id).await {
+            crate::state::KeyState::NoSuchKey => {
+                audit(&akid, &region, "refused");
+                return Err(kms_not_found(&input.key_id));
+            }
+            crate::state::KeyState::Disabled(_) => {
+                audit(&akid, &region, "refused");
+                return Err(invalid_argument(
+                    crate::state::KEY_NOT_ENABLED_MESSAGE.to_string(),
+                ));
+            }
+            crate::state::KeyState::Usable(_) | crate::state::KeyState::Unknown => {}
         }
 
         let outcome = {

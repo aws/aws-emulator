@@ -45,6 +45,9 @@ sha2 = { workspace = true }
 # The encryption suites mount the KMS service beside Kinesis on one engine, because
 # `StartStreamEncryption` resolves the `KeyId` it is given by calling it.
 service-com-amazonaws-kms-trentservice = { workspace = true }
+# The channel-key suite mounts IAM beside them too: a channel's create asks IAM whether its
+# service execution role may use that key.
+service-com-amazonaws-iam-awsidentitymanagementv20100508 = { workspace = true }
 
 [lints]
 workspace = true

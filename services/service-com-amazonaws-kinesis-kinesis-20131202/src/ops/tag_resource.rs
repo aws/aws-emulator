@@ -2,21 +2,23 @@
 
 //! @op TagResource
 //!
-//! Assigns the request's `Tags` to the Kinesis resource its `ResourceARN` names in
-//! `crate::state`'s `streams` store, and answers the modelled empty body. A key the
-//! resource already carries takes the new value and every other tag it carries stays, so
-//! the stored tag set is the union of what was there and what the request assigned;
-//! `ListTagsForStream` reports that stored set.
+//! Assigns the request's `Tags` to the Kinesis resource its `ResourceARN` names — a stream
+//! or a channel, the two kinds that ARN may name — and answers the modelled empty body. A
+//! key the resource already carries takes the new value and every other tag it carries
+//! stays, so the stored tag set is the union of what was there and what the request
+//! assigned; `ListTagsForResource` (and, for a stream, `ListTagsForStream`) reports that
+//! stored set.
 //!
-//! The resource is resolved by ARN through the one lookup every operation of this service
-//! that addresses a stream shares
-//! ([`crate::state::ComAmazonawsKinesisKinesis20131202State::resolve_stream_mut`]), so an
-//! ARN this account and region hold no resource under is the modelled
-//! `ResourceNotFoundException`. A request that would take the resource past the documented
-//! ceiling of tags is refused with the modelled `LimitExceededException` BEFORE the stored
-//! map grows, and the write is served whatever lifecycle status the resource is in — the
-//! same rules `AddTagsToStream` applies, because they are one rule about one stored tag
-//! set.
+//! The resource is resolved by ARN through the one lookup that spans every kind this service
+//! holds tags for
+//! ([`crate::state::ComAmazonawsKinesisKinesis20131202State::resource_tags_by_arn_mut`]) —
+//! the same lookup `ListTagsForResource` reads and `UntagResource` writes — so an ARN this
+//! account and region hold no resource under is the modelled `ResourceNotFoundException`,
+//! worded for the kind that ARN names. A request that would take the resource past the
+//! documented ceiling of tags is refused with the modelled `LimitExceededException` BEFORE
+//! the stored map grows, and the write is served whatever lifecycle status the resource is
+//! in — the same rules `AddTagsToStream` applies, because they are one rule about one stored
+//! tag set.
 //!
 //! ## Shape of an operation
 //!
@@ -178,27 +180,13 @@ fn audit(akid: &str, region: &str, outcome: &str) {
 }
 
 /// The modelled refusal for a request whose `ResourceARN` names no resource of this account
-/// and region, worded exactly as every other operation of this service words it: one rule,
-/// one phrasing.
-fn lookup_refusal(
-    failure: crate::state::StreamLookupFailure,
-    resource_arn: &str,
-) -> TagResourceError {
-    match failure {
-        // `ResourceARN` is required, so a request reaching here always names one; the arm
-        // is the modelled refusal rather than a panic.
-        crate::state::StreamLookupFailure::Unspecified
-        | crate::state::StreamLookupFailure::Mismatch { .. } => {
-            TagResourceErrorModeled::InvalidArgumentException(InvalidArgumentException {
-                message: Some(crate::state::STREAM_IDENTIFIER_REQUIRED_MESSAGE.to_string()),
-            })
-        }
-        crate::state::StreamLookupFailure::NotFound => {
-            TagResourceErrorModeled::ResourceNotFoundException(ResourceNotFoundException {
-                message: Some(crate::state::stream_not_found_message(resource_arn)),
-            })
-        }
-    }
+/// and region, worded for the KIND of resource that ARN names
+/// ([`crate::state::resource_not_found_message`]) — one rule, one phrasing, shared with the
+/// reads that address a resource by the same ARN.
+fn not_found(resource_arn: &str) -> TagResourceError {
+    TagResourceErrorModeled::ResourceNotFoundException(ResourceNotFoundException {
+        message: Some(crate::state::resource_not_found_message(resource_arn)),
+    })
     .into()
 }
 
@@ -211,19 +199,21 @@ fn apply_assignment(
     now: ::std::time::SystemTime,
     input: &TagResourceInput,
 ) -> Result<(), TagResourceError> {
-    // The ARN is what this operation addresses a resource by; `StreamId` is documented
-    // "Not Implemented. Reserved for future use", so no resource carries one and it names
-    // nothing. An ARN of a resource kind this emulator holds none of resolves to no
-    // resource, which is the not-found answer below.
-    let stream = store
-        .resolve_stream_mut(now, region, None, Some(input.resource_arn.as_str()))
-        .map_err(|failure| lookup_refusal(failure, &input.resource_arn))?;
-
+    // `ResourceARN` addresses "the Kinesis resource" rather than one kind of it — it is
+    // modelled `^arn:aws.*:kinesis:.*:\d{12}:.*(stream|channel)/\S+$`, so a channel is a
+    // first-class tagging target — and each kind carries ONE stored tag set, so the write
+    // goes through the lookup that spans every kind this service holds, the very lookup
+    // `ListTagsForResource` reads and `UntagResource` writes. An ARN of a resource kind this
+    // emulator holds none of resolves to no resource, which is the not-found answer.
+    //
     // A resource's tags are control-plane metadata of the resource itself, not of the
     // shards its create is provisioning: the stored tag set exists for as long as the
     // resource does, so this write is served for a resource in any lifecycle status — the
     // same as the `UntagResource` that unassigns from that very set, and the same rule
     // `AddTagsToStream` applies to the one stored tag set both write.
+    let tags = store
+        .resource_tags_by_arn_mut(now, region, input.resource_arn.as_str())
+        .ok_or_else(|| not_found(&input.resource_arn))?;
 
     // "You can assign up to 50 tags to a Kinesis resource" — the ceiling is on what the
     // RESOURCE carries once the request is served, not on what the request names, and it is
@@ -231,7 +221,7 @@ fn apply_assignment(
     // already carries, so re-tagging a fully tagged resource stays inside the ceiling. The
     // refusal is the one sentence this service states the ceiling in, shared with
     // `AddTagsToStream`, which writes the same stored tag set.
-    let resulting = stream.tag_count_with(&input.tags);
+    let resulting = crate::state::tag_count_with(tags, &input.tags);
     if resulting > crate::state::MAX_STREAM_TAGS {
         return Err(TagResourceErrorModeled::LimitExceededException(
             LimitExceededException {
@@ -241,7 +231,10 @@ fn apply_assignment(
         .into());
     }
 
-    stream.assign_tags(input.tags.clone());
+    // "If tags have already been assigned to the resource, TagResource overwrites any
+    // existing tags that correspond to the specified tag keys", and every tag the request
+    // does not name stays as it was.
+    tags.extend(input.tags.clone());
     Ok(())
 }
 

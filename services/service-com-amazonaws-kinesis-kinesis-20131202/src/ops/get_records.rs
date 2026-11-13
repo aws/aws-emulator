@@ -293,6 +293,36 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         })?;
 
         let now = ::std::time::SystemTime::now();
+
+        // The stream's own CMK decides whether its data plane serves this read at all, so
+        // the key is resolved against KMS first: a record of an encrypted stream is served
+        // by unwrapping it under that key, and a disabled key is the modelled
+        // `KMSDisabledException`. The store guard is taken only to read which key the
+        // iterator's stream carries, because no guard is held across an await; every refusal
+        // about the iterator itself is answered by the body below, which reads the store
+        // again.
+        let encryption_key = {
+            let store = state.lock();
+            crate::state::ShardIteratorToken::decode(&input.shard_iterator)
+                .and_then(|token| {
+                    store
+                        .stream_by_arn(now, &region, &token.stream_arn)
+                        .and_then(|stream| stream.encryption_key().map(str::to_string))
+                })
+        };
+        if let Some(key_id) = encryption_key {
+            if let crate::state::KeyState::Disabled(key_arn) =
+                crate::state::key_state(ctx, &region, &key_id).await
+            {
+                return Err(GetRecordsErrorModeled::KMSDisabledException(
+                    KMSDisabledException {
+                        message: Some(crate::state::key_disabled_message(&key_arn)),
+                    },
+                )
+                .into());
+            }
+        }
+
         // Reading records changes nothing a later caller sees: every part of the position
         // travels inside the iterator, so the guard below is only ever read through.
         let store = state.lock();

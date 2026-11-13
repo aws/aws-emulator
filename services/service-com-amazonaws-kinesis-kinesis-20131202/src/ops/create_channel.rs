@@ -14,6 +14,12 @@
 //! region already holds a channel under is refused with the modelled `ResourceInUseException`
 //! and leaves the stored channel untouched.
 //!
+//! The `EncryptionConfiguration` is judged SYNCHRONOUSLY, before any channel state is
+//! written: a channel delivers under its `ServiceExecutionRoleARN`, so the key policy KMS
+//! holds and — where that policy delegates to the account — the role's own IAM policies have
+//! to let that role use the key ([`crate::state::role_cannot_use_key`]), and a configuration
+//! they do not is refused with the modelled `ValidationException` leaving no channel behind.
+//!
 //! ## Shape of an operation
 //!
 //! Each operation is a struct that owns the shared engine and implements
@@ -597,6 +603,31 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         })?;
 
         let now = ::std::time::SystemTime::now();
+
+        // The KMS half of the create, judged BEFORE anything is written and outside the
+        // store's lock (no guard is held across an await): "the service checks the
+        // EncryptionConfiguration.KeyId synchronously with the ServiceExecutionRoleARN", so
+        // a configuration whose role could never use its key creates no channel at all. The
+        // refusals that are decided from the REQUEST and the STORE alone are the write
+        // below's, so a create that is wrong in two ways is still refused for the request's
+        // own fault first.
+        if let Some(configuration) = input.encryption_configuration.as_ref() {
+            if encryption_refusal(configuration).is_none()
+                && crate::state::role_cannot_use_key(
+                    ctx,
+                    &region,
+                    &configuration.key_id,
+                    &input.service_execution_role_arn,
+                )
+                .await
+            {
+                audit(&akid, &region, "refused");
+                return Err(validation(
+                    crate::state::ROLE_NOT_AUTHORIZED_FOR_KEY_MESSAGE.to_string(),
+                ));
+            }
+        }
+
         let created = create_channel(&mut state.lock(), &region, now, &input);
         match created {
             Ok(channel_description) => {
