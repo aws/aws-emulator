@@ -2097,3 +2097,9 @@ mod served_call_audit_records;
 // envelope's single `<return>true</return>` beside an operation's modelled output. Declared
 #[path = "all/associated_address_reads_and_return_flag.rs"]
 mod associated_address_reads_and_return_flag;
+// The published per-type rows of the instance-type catalog the previous generation compute
+// optimized, the inference accelerated and the memory optimized with local NVMe families
+// carry, and the member set every reported instance type carries. Declared at the tail of
+// this file, which is where every new ec2 suite lands.
+#[path = "all/published_catalog_rows.rs"]
+mod published_catalog_rows;

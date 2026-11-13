@@ -7,10 +7,12 @@
 //! The model a service crate is generated from is a SNAPSHOT of the API, and the live EC2
 //! wire has moved past it in places: a reported shape carries an element the shape's
 //! modelled member list does not mention. A recorded `DescribeVpcs` answers every VPC with
-//! `<dhcpOptionsSource>`, and every operation that reports a Verified Access instance
+//! `<dhcpOptionsSource>`, every operation that reports a Verified Access instance
 //! answers it with `<verifiedAccessInstanceTransitGatewayAttachmentSet>` — present and
-//! empty for an instance with no transit-gateway attachment. The generated serializer walks
-//! the model's members and only those, so both elements are missing from this emulator's
+//! empty for an instance with no transit-gateway attachment — and a recorded
+//! `DescribeInstanceTypes` answers every instance type with `<cpuBurstModel>` and every
+//! `networkInfo` with `<trafficMirroringSupport>`. The generated serializer walks
+//! the model's members and only those, so those elements are missing from this emulator's
 //! responses: a client that reads `dhcpOptionsSource` to decide whether a VPC's DHCP
 //! options are its own or the account's reads nothing, and a strict deserializer that
 //! iterates the attachment set is handed a null collection instead of an empty one.
@@ -27,11 +29,12 @@
 //! Nothing here invents a value: each element is derived from the record being reported —
 //! the VPC's own DHCP option set association ([`WrittenMembers::dhcp_options_id`]), the
 //! transit-gateway attachments a Verified Access instance of this store holds, of which
-//! there are none, no operation of this service attaching one, and the Availability Zone a
+//! there are none, no operation of this service attaching one, the Availability Zone a
 //! reported volume's attachment sits in, which is the zone of the VOLUME the attachment was
-//! written under ([`ZoneContext`]) — a volume and the instance it is attached to are always
+//! written under ([`EnclosingRecord`]) — a volume and the instance it is attached to are always
 //! in one zone, which is what "the volume must be in the same Availability Zone as the
-//! instance" (`AttachVolume`) means.
+//! instance" (`AttachVolume`) means — and, for an instance type, the burstable performance
+//! and the network adapter the type itself reports.
 //!
 //! # What it does NOT reach
 //!
@@ -86,6 +89,67 @@ const AVAILABILITY_ZONE_MEMBER: &str = "AvailabilityZone";
 
 /// The Smithy member name an Availability Zone's ID is written under.
 const AVAILABILITY_ZONE_ID_MEMBER: &str = "AvailabilityZoneId";
+
+/// The Smithy member name an instance type's own name is written under, on the reported
+/// instance type and on every other shape that names one.
+const INSTANCE_TYPE_MEMBER: &str = "InstanceType";
+
+/// The Smithy member name an instance type's burstable performance is written under, which
+/// is what says the structure being walked IS a reported instance type — and what the burst
+/// model below is read off.
+const BURSTABLE_PERFORMANCE_MEMBER: &str = "BurstablePerformanceSupported";
+
+/// The Smithy member name an instance type's Elastic Network Adapter support is written
+/// under, which is what says the structure being walked IS a reported `networkInfo`.
+const ENA_SUPPORT_MEMBER: &str = "EnaSupport";
+
+/// The Smithy member name an instance type's bare metal flag is written under, which is
+/// what says a type runs the caller's software on the host with no hypervisor under it.
+const BARE_METAL_MEMBER: &str = "BareMetal";
+
+/// `cpuBurstModel` of a burstable performance type: its vCPUs run at a baseline rate and
+/// spend the CPU credits they earn to run above it.
+const CPU_BURST_MODEL_CREDIT: &str = "credit";
+
+/// `cpuBurstModel` of a type whose vCPUs run at their full rate, with no burst above a
+/// baseline and so no burst model at all.
+const CPU_BURST_MODEL_NONE: &str = "none";
+
+/// `trafficMirroringSupport` of a type that supports Traffic Mirroring, and of one that does
+/// not: copying a session's packets is done under the guest rather than by it, which a bare
+/// metal instance — running on the host with no hypervisor under it — has nothing to do.
+const TRAFFIC_MIRRORING_SUPPORTED: &str = "supported";
+
+/// `trafficMirroringSupport` of a type whose packets nothing under the guest can copy.
+const TRAFFIC_MIRRORING_UNSUPPORTED: &str = "unsupported";
+
+/// `<cpuBurstModel>` on a reported instance type — a member schema for the same reason as
+/// [`VPC_DHCP_OPTIONS_SOURCE`]: `com.amazonaws.ec2#InstanceTypeInfo` declares no such
+/// member.
+static INSTANCE_TYPE_CPU_BURST_MODEL: Schema = Schema::new_member(
+    ShapeId::from_static(
+        "com.amazonaws.ec2#InstanceTypeInfo$cpuBurstModel",
+        EC2_NAMESPACE,
+        "cpuBurstModel",
+    ),
+    ShapeType::String,
+    "cpuBurstModel",
+    0,
+);
+
+/// `<trafficMirroringSupport>` on a reported instance type's network settings — a member
+/// schema for the same reason as [`VPC_DHCP_OPTIONS_SOURCE`]:
+/// `com.amazonaws.ec2#NetworkInfo` declares no such member.
+static NETWORK_INFO_TRAFFIC_MIRRORING_SUPPORT: Schema = Schema::new_member(
+    ShapeId::from_static(
+        "com.amazonaws.ec2#NetworkInfo$trafficMirroringSupport",
+        EC2_NAMESPACE,
+        "trafficMirroringSupport",
+    ),
+    ShapeType::String,
+    "trafficMirroringSupport",
+    0,
+);
 
 /// `<dhcpOptionsSource>` on a reported VPC.
 ///
@@ -169,7 +233,7 @@ impl SerializableStruct for RecordedMembersRef<'_> {
         self.0.serialize_members(&mut RecordedMemberSerializer {
             inner: s,
             written: None,
-            zone: ZoneContext::default(),
+            zone: EnclosingRecord::default(),
         })
     }
 }
@@ -177,7 +241,7 @@ impl SerializableStruct for RecordedMembersRef<'_> {
 /// One nested structure of no recorded elements of its own, serialized with the zone of the
 /// record it was written under carried on into it — so a shape that DOES render the zone
 /// still gets it however deep under that record it sits.
-struct RecordedMembersUnder<'a>(&'a dyn SerializableStruct, ZoneContext);
+struct RecordedMembersUnder<'a>(&'a dyn SerializableStruct, EnclosingRecord);
 
 impl SerializableStruct for RecordedMembersUnder<'_> {
     fn serialize_members(&self, s: &mut dyn ShapeSerializer) -> Result<(), SerdeError> {
@@ -189,20 +253,44 @@ impl SerializableStruct for RecordedMembersUnder<'_> {
     }
 }
 
-/// The Availability Zone the structure a nested one is written UNDER reported, as that
-/// nested structure's own recorded elements need it.
+/// The CONTEXT the structure a nested one is written UNDER reported, as that nested
+/// structure's own recorded elements need it.
 ///
-/// The one piece of CONTEXT this walk carries down: a volume attachment renders the zone it
+/// What this walk carries DOWN: a volume attachment renders the zone it
 /// is in and the `VolumeAttachment` structure has no member for it, so the zone is taken
 /// from the volume the attachment was reported under, whose own `AvailabilityZone` and
-/// `AvailabilityZoneId` members are written before its `attachmentSet`. Empty for a
-/// structure written under one that reported no zone, in which case nothing is rendered.
+/// `AvailabilityZoneId` members are written before its `attachmentSet`; an instance type's
+/// network settings render whether the type supports Traffic Mirroring and the `NetworkInfo`
+/// structure has no member saying whether the type is bare metal, so that too is taken from
+/// the instance type the settings were reported under. Empty for a
+/// structure written under one that reported neither, in which case nothing is rendered.
 #[derive(Debug, Default, Clone)]
-struct ZoneContext {
+struct EnclosingRecord {
     /// `Volume$AvailabilityZone` as the enclosing structure wrote it.
     availability_zone: Option<String>,
     /// `Volume$AvailabilityZoneId` as the enclosing structure wrote it.
     availability_zone_id: Option<String>,
+    /// `InstanceTypeInfo$BareMetal` as the enclosing structure wrote it.
+    bare_metal: Option<bool>,
+}
+
+impl EnclosingRecord {
+    /// What a structure written under the one being walked is handed: whatever that structure
+    /// reported for ITSELF, and otherwise what it was handed in turn — so a record passes on
+    /// the context it was given rather than hiding it.
+    fn inherited_from(&self, outer: &Self) -> Self {
+        Self {
+            availability_zone: self
+                .availability_zone
+                .clone()
+                .or_else(|| outer.availability_zone.clone()),
+            availability_zone_id: self
+                .availability_zone_id
+                .clone()
+                .or_else(|| outer.availability_zone_id.clone()),
+            bare_metal: self.bare_metal.or(outer.bare_metal),
+        }
+    }
 }
 
 /// What the structure being walked wrote of the members a recorded element is derived from.
@@ -224,15 +312,23 @@ struct WrittenMembers {
     /// Whether the structure wrote an IMDSv2 requirement of its own, which is what makes a
     /// structure named after a reported metadata option set one.
     http_tokens: bool,
-    /// The zone the structure reported for ITSELF, which is the zone the structures nested
-    /// under it are written in.
-    zone: ZoneContext,
+    /// Whether the structure wrote an instance type name of its own.
+    instance_type: bool,
+    /// The burstable performance the structure reported for itself, which is what says it IS
+    /// a reported instance type and what its burst model follows from.
+    burstable_performance_supported: Option<bool>,
+    /// The Elastic Network Adapter support the structure reported for itself, which is what
+    /// says it IS a reported `networkInfo`.
+    ena_support: Option<String>,
+    /// The context the structure reported for ITSELF — the zone it is in, and whether it is
+    /// a bare metal instance type — which is what the structures nested under it are handed.
+    zone: EnclosingRecord,
 }
 
 /// How one shape's recorded elements are written, once its modelled members have been:
 /// from what the structure itself wrote and the zone of the record it was written under.
 type RecordedWriter =
-    fn(&mut dyn ShapeSerializer, &WrittenMembers, &ZoneContext) -> Result<(), SerdeError>;
+    fn(&mut dyn ShapeSerializer, &WrittenMembers, &EnclosingRecord) -> Result<(), SerdeError>;
 
 /// How `schema`'s own shape renders the elements the model does not declare for it, or
 /// `None` for a shape the live wire renders exactly as the model declares it.
@@ -257,6 +353,8 @@ fn recorded_writer_for(schema: &Schema) -> Option<RecordedWriter> {
         "Vpc" => Some(write_vpc_recorded_members),
         "VerifiedAccessInstance" => Some(write_verified_access_instance_recorded_members),
         "VolumeAttachment" => Some(write_volume_attachment_recorded_members),
+        "InstanceTypeInfo" => Some(write_instance_type_recorded_members),
+        "NetworkInfo" => Some(write_network_info_recorded_members),
         // An INSTANCE's metadata option set (`InstanceMetadataOptionsResponse`), which this
         // model reports under exactly two members: `Instance$MetadataOptions` and
         // `ModifyInstanceMetadataOptionsResult$InstanceMetadataOptions`. A LAUNCH TEMPLATE's
@@ -270,7 +368,7 @@ fn recorded_writer_for(schema: &Schema) -> Option<RecordedWriter> {
         }
         // A reported volume renders every element the model declares for it, and is walked
         // for its own shape all the same: the zone it reports is the zone the attachments
-        // nested under it are in ([`ZoneContext`]).
+        // nested under it are in ([`EnclosingRecord`]).
         "Volume" => Some(write_no_recorded_members),
         _ => None,
     }
@@ -291,11 +389,11 @@ fn declaring_shape(schema: &Schema) -> Option<String> {
 }
 
 /// A shape that renders no element of its own, walked only so the structures NESTED under
-/// it are handed what it reported ([`ZoneContext`]).
+/// it are handed what it reported ([`EnclosingRecord`]).
 fn write_no_recorded_members(
     _s: &mut dyn ShapeSerializer,
     _written: &WrittenMembers,
-    _zone: &ZoneContext,
+    _zone: &EnclosingRecord,
 ) -> Result<(), SerdeError> {
     Ok(())
 }
@@ -309,7 +407,7 @@ fn write_no_recorded_members(
 fn write_metadata_options_recorded_members(
     s: &mut dyn ShapeSerializer,
     written: &WrittenMembers,
-    _zone: &ZoneContext,
+    _zone: &EnclosingRecord,
 ) -> Result<(), SerdeError> {
     if !written.http_tokens {
         return Ok(());
@@ -334,7 +432,7 @@ fn write_metadata_options_recorded_members(
 fn write_volume_attachment_recorded_members(
     s: &mut dyn ShapeSerializer,
     written: &WrittenMembers,
-    zone: &ZoneContext,
+    zone: &EnclosingRecord,
 ) -> Result<(), SerdeError> {
     if !written.volume_id {
         return Ok(());
@@ -348,6 +446,62 @@ fn write_volume_attachment_recorded_members(
     Ok(())
 }
 
+/// A reported instance type's recorded elements: the burst model of its vCPUs.
+///
+/// "Burstable performance instances ... can burst above the baseline" (EC2 User Guide): a
+/// type whose vCPUs run at a baseline spends CPU credits to run above it, and a type that
+/// runs at its full rate has no burst to model. So the element is read off the burstable
+/// performance the type itself reported, which is the fact the model DOES declare for it.
+///
+/// Written only for a structure that reported an instance type and a burstable performance
+/// of its own, which is what makes it a reported instance type rather than a shape whose
+/// member shares the name.
+fn write_instance_type_recorded_members(
+    s: &mut dyn ShapeSerializer,
+    written: &WrittenMembers,
+    _zone: &EnclosingRecord,
+) -> Result<(), SerdeError> {
+    let Some(burstable) = written.burstable_performance_supported else {
+        return Ok(());
+    };
+    if !written.instance_type {
+        return Ok(());
+    }
+    let burst_model = if burstable {
+        CPU_BURST_MODEL_CREDIT
+    } else {
+        CPU_BURST_MODEL_NONE
+    };
+    s.write_string(&INSTANCE_TYPE_CPU_BURST_MODEL, burst_model)
+}
+
+/// A reported instance type's network settings' recorded elements: whether the type supports
+/// Traffic Mirroring.
+///
+/// Copying the packets of a session is done UNDER the guest rather than by it, so a bare
+/// metal type — which runs the caller's software on the host with no hypervisor under it,
+/// and reports no hypervisor at all — does not support it while every other type does. The
+/// flag is read off the instance type these settings were reported under
+/// ([`EnclosingRecord`]), the `NetworkInfo` structure having no member of its own for it.
+///
+/// Written only for a structure that reported an adapter support of its own, which is what
+/// makes it a reported `networkInfo`.
+fn write_network_info_recorded_members(
+    s: &mut dyn ShapeSerializer,
+    written: &WrittenMembers,
+    zone: &EnclosingRecord,
+) -> Result<(), SerdeError> {
+    if written.ena_support.is_none() {
+        return Ok(());
+    }
+    let mirroring = if zone.bare_metal == Some(true) {
+        TRAFFIC_MIRRORING_UNSUPPORTED
+    } else {
+        TRAFFIC_MIRRORING_SUPPORTED
+    };
+    s.write_string(&NETWORK_INFO_TRAFFIC_MIRRORING_SUPPORT, mirroring)
+}
+
 /// A reported VPC's recorded elements: the scope its DHCP option set comes from.
 ///
 /// Written only for a VPC that reported an option set association of its own: a VPC with no
@@ -355,7 +509,7 @@ fn write_volume_attachment_recorded_members(
 fn write_vpc_recorded_members(
     s: &mut dyn ShapeSerializer,
     written: &WrittenMembers,
-    _zone: &ZoneContext,
+    _zone: &EnclosingRecord,
 ) -> Result<(), SerdeError> {
     if !written.dhcp_options_id {
         return Ok(());
@@ -376,7 +530,7 @@ fn write_vpc_recorded_members(
 fn write_verified_access_instance_recorded_members(
     s: &mut dyn ShapeSerializer,
     written: &WrittenMembers,
-    _zone: &ZoneContext,
+    _zone: &EnclosingRecord,
 ) -> Result<(), SerdeError> {
     if !written.verified_access_instance_id {
         return Ok(());
@@ -396,7 +550,7 @@ struct WithRecordedMembers<'a> {
     writer: RecordedWriter,
     /// The zone of the record THIS structure was written under, for a shape whose elements
     /// are read off it.
-    zone: ZoneContext,
+    zone: EnclosingRecord,
 }
 
 impl SerializableStruct for WithRecordedMembers<'_> {
@@ -429,23 +583,19 @@ struct RecordedMemberSerializer<'a> {
     written: Option<&'a mut WrittenMembers>,
     /// The zone handed DOWN to the structures written from here: the one the structure being
     /// walked has reported so far, or the one it was itself written under.
-    zone: ZoneContext,
+    zone: EnclosingRecord,
 }
 
 impl RecordedMemberSerializer<'_> {
-    /// The zone the structures written from here sit in: the zone the structure being walked
-    /// reported for ITSELF, and otherwise the one it was written under — so a volume hands
-    /// its own zone to its attachments and a structure that reports none passes on what it
-    /// was given rather than hiding it.
-    fn nested_zone(&self) -> ZoneContext {
+    /// The context the structures written from here sit in: what the structure being walked
+    /// reported for ITSELF, and otherwise what it was written under — so a volume hands
+    /// its own zone to its attachments, an instance type hands down whether it is bare
+    /// metal, and a structure that reports neither passes on what it was given rather than
+    /// hiding it.
+    fn nested_zone(&self) -> EnclosingRecord {
         match self.written.as_deref() {
-            Some(written)
-                if written.zone.availability_zone.is_some()
-                    || written.zone.availability_zone_id.is_some() =>
-            {
-                written.zone.clone()
-            }
-            _ => self.zone.clone(),
+            Some(written) => written.zone.inherited_from(&self.zone),
+            None => self.zone.clone(),
         }
     }
 }
@@ -503,6 +653,17 @@ impl ShapeSerializer for RecordedMemberSerializer<'_> {
     }
 
     fn write_boolean(&mut self, schema: &Schema, value: bool) -> Result<(), SerdeError> {
+        if let Some(written) = self.written.as_deref_mut() {
+            if schema.shape_id().namespace() == EC2_NAMESPACE {
+                match schema.shape_id().shape_name() {
+                    BURSTABLE_PERFORMANCE_MEMBER => {
+                        written.burstable_performance_supported = Some(value);
+                    }
+                    BARE_METAL_MEMBER => written.zone.bare_metal = Some(value),
+                    _ => {}
+                }
+            }
+        }
         self.inner.write_boolean(schema, value)
     }
 
@@ -541,9 +702,10 @@ impl ShapeSerializer for RecordedMemberSerializer<'_> {
     /// The leaves this notes as it forwards: the DHCP option set id a VPC reports, which is
     /// what [`write_vpc_recorded_members`] names the scope of, the id a Verified Access
     /// instance reports, which is what identifies it as one, the volume id that identifies a
-    /// volume attachment, and the zone a record reports for itself, which is the zone the
+    /// volume attachment, the zone a record reports for itself, which is the zone the
     /// records nested under it are in
-    /// ([`write_volume_attachment_recorded_members`]).
+    /// ([`write_volume_attachment_recorded_members`]), and the instance type name and
+    /// adapter support a reported instance type and its network settings carry.
     fn write_string(&mut self, schema: &Schema, value: &str) -> Result<(), SerdeError> {
         if let Some(written) = self.written.as_deref_mut() {
             if schema.shape_id().namespace() == EC2_NAMESPACE {
@@ -560,6 +722,8 @@ impl ShapeSerializer for RecordedMemberSerializer<'_> {
                     AVAILABILITY_ZONE_ID_MEMBER => {
                         written.zone.availability_zone_id = Some(value.to_string());
                     }
+                    INSTANCE_TYPE_MEMBER => written.instance_type = true,
+                    ENA_SUPPORT_MEMBER => written.ena_support = Some(value.to_string()),
                     _ => {}
                 }
             }

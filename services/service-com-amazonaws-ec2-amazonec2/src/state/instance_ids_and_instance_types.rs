@@ -1963,6 +1963,10 @@ pub struct InstanceTypeRecord {
     pub burstable: bool,
     /// Is this the latest generation of its family?
     pub current_generation: bool,
+    /// The step the core counts a caller may ask this type for go up in: one where every
+    /// count up to its default can be configured, and the processor sockets its cores sit on
+    /// where AWS publishes the counts one per socket.
+    pub valid_core_step: i32,
     /// Does it run on the AWS Nitro System?
     pub nitro: bool,
     /// The processor architecture, one value of the modelled `ArchitectureValues`.
@@ -1980,9 +1984,19 @@ pub struct InstanceTypeRecord {
 impl InstanceTypeRecord {
     /// The core counts a caller may ask this instance type for: "the number of cores
     /// that can be configured for the instance type"
-    /// (`VCpuInfo$ValidCores`) — one core up to the type's own default.
+    /// (`VCpuInfo$ValidCores`) — up to the type's own default, in the steps its cores are
+    /// configured in ([`InstanceTypeRecord::valid_core_step`]).
     pub fn valid_cores(&self) -> Vec<i32> {
-        (1..=self.default_cores).collect()
+        let step = self.valid_core_step.max(EVERY_CORE_COUNT);
+        let counts: Vec<i32> = (1..=self.default_cores)
+            .filter(|cores| cores % step == 0)
+            .collect();
+        // A type with fewer cores than its own step takes them all or none, so the one count
+        // it can be configured with is its default.
+        if counts.is_empty() {
+            return vec![self.default_cores];
+        }
+        counts
     }
 
     /// The threads-per-core counts a caller may ask for: one thread per core disables
@@ -1992,6 +2006,10 @@ impl InstanceTypeRecord {
         (1..=self.default_threads_per_core).collect()
     }
 }
+
+/// The step the core counts of a type whose cores are configured one at a time go up in:
+/// every count from one up to the type's default is valid.
+pub(super) const EVERY_CORE_COUNT: i32 = 1;
 
 /// The micro-dollars one vCPU of an instance costs for one hour at the On-Demand rate.
 ///
@@ -2055,20 +2073,22 @@ pub fn instance_type_record(instance_type: &str) -> Option<InstanceTypeRecord> {
     // carries is a fact of the type, so it is reported instead of the figure the name and the
     // per-family ratios below derive.
     let facts = published_instance_type_facts(instance_type);
-    let (default_vcpus, derived_memory_mib) = match mac_host(name.family) {
+    let (derived_vcpus, derived_memory_mib) = match mac_host(name.family) {
         Some((vcpus, memory_gib)) => (vcpus, memory_gib * 1024),
         None => (
             default_vcpus(&name, sixteenths),
             memory_mib_of(&name, sixteenths),
         ),
     };
+    let default_vcpus = facts
+        .and_then(|facts| facts.default_vcpus)
+        .unwrap_or(derived_vcpus);
     let memory_mib = facts
         .and_then(|facts| facts.memory_mib)
         .unwrap_or(derived_memory_mib);
     let default_threads_per_core = default_threads_per_core(&name, &architecture, default_vcpus);
     let derived_storage = instance_storage_facts(&name, sixteenths);
-    let instance_storage =
-        published_instance_storage(facts, &name, derived_storage).or(derived_storage);
+    let instance_storage = published_instance_storage(facts, &name, derived_storage);
     let (derived_interfaces, derived_ipv4) = network_limits(sixteenths);
     let maximum_network_interfaces = facts
         .and_then(|facts| facts.maximum_network_interfaces)
@@ -2084,7 +2104,12 @@ pub fn instance_type_record(instance_type: &str) -> Option<InstanceTypeRecord> {
         memory_mib,
         bare_metal: name.bare_metal(),
         burstable: name.burstable(),
-        current_generation: name.current_generation(),
+        current_generation: facts
+            .and_then(|facts| facts.current_generation)
+            .unwrap_or_else(|| name.current_generation()),
+        valid_core_step: facts
+            .and_then(|facts| facts.valid_core_step)
+            .unwrap_or(EVERY_CORE_COUNT),
         nitro: name.nitro(),
         architecture,
         instance_storage,
@@ -2447,18 +2472,27 @@ pub(super) fn network_performance(baseline_centi: i64, peak_centi: i64) -> Strin
 /// the ones the type itself reports divided by the number of cards. `interface_types` names
 /// what may be attached to a card: an ordinary network interface, plus the Elastic Fabric
 /// Adapter on a type that is offered one.
+///
+/// `published_performance` is the network performance AWS publishes for the type, where the
+/// catalog holds it: a type with ONE card reports that figure on the card too, the single
+/// card carrying the whole instance's network.
 pub(super) fn network_cards(
     name: &InstanceTypeName<'_>,
     sixteenths: u32,
     cards: i32,
     maximum_network_interfaces: i32,
     efa_interfaces: i32,
+    published_performance: Option<&'static str>,
 ) -> Vec<NetworkCardInfo> {
     let (baseline, peak) = network_bandwidth_centi_gbps(name, sixteenths);
     let count = i64::from(cards.max(1));
     let per_card_baseline = (baseline / count).max(1);
     let per_card_peak = (peak / count).max(per_card_baseline);
     let interfaces_per_card = (maximum_network_interfaces / cards.max(1)).max(1);
+    let per_card_performance = match published_performance {
+        Some(performance) if cards <= 1 => performance.to_string(),
+        _ => network_performance(per_card_baseline, per_card_peak),
+    };
     let mut interface_types = vec!["interface".to_string()];
     if efa_interfaces > 0 {
         interface_types.push("efa".to_string());
@@ -2466,7 +2500,7 @@ pub(super) fn network_cards(
     (0..cards.max(1))
         .map(|index| NetworkCardInfo {
             network_card_index: Some(index),
-            network_performance: Some(network_performance(per_card_baseline, per_card_peak)),
+            network_performance: Some(per_card_performance.clone()),
             maximum_network_interfaces: Some(interfaces_per_card),
             additional_flexible_network_interfaces: None,
             baseline_bandwidth_in_gbps: Some(per_card_baseline as f64 / CENTI_GBPS as f64),
@@ -2607,10 +2641,12 @@ pub fn instance_type_info(instance_type: &str) -> Option<InstanceTypeInfo> {
     // The network cards the instance has, and the bandwidth its size's share of the host
     // carries: the per-card figures are derived from those two facts, so the cards of one
     // instance cannot disagree with each other. A type whose row publishes a network
-    // performance reports THAT figure as its own, while its per-card bandwidth stays this
-    // share until AWS's published per-card figures are recorded in the row too, so the two
-    // may differ for a type the table covers.
+    // performance reports THAT figure as its own, and its ONE card reports it too — a single
+    // card carries the whole instance's network — while the per-card bandwidth of a type with
+    // several cards stays this share until AWS's published per-card figures are recorded in
+    // the row too.
     let cards = network_card_count(instance_type);
+    let published_performance = facts.and_then(|facts| facts.network_performance);
     let (baseline_centi, peak_centi) = network_bandwidth_centi_gbps(&name, sixteenths);
     let instance_store_disks = record
         .instance_storage
@@ -2710,12 +2746,10 @@ pub fn instance_type_info(instance_type: &str) -> Option<InstanceTypeInfo> {
             // type the catalog holds no row for — the instance's share of its host's
             // bandwidth, or the ceiling a size below that share bursts to.
             network_performance: Some(
-                facts
-                    .and_then(|facts| facts.network_performance)
-                    .map_or_else(
-                        || network_performance(baseline_centi, peak_centi),
-                        str::to_string,
-                    ),
+                published_performance.map_or_else(
+                    || network_performance(baseline_centi, peak_centi),
+                    str::to_string,
+                ),
             ),
             maximum_network_interfaces: Some(record.maximum_network_interfaces),
             // Every instance has at least one physical network card, its interfaces being
@@ -2729,12 +2763,18 @@ pub fn instance_type_info(instance_type: &str) -> Option<InstanceTypeInfo> {
                 cards,
                 record.maximum_network_interfaces,
                 efa_interfaces,
+                published_performance,
             )),
             ipv4_addresses_per_interface: Some(record.ipv4_addresses_per_interface),
             ipv6_addresses_per_interface: ipv6_supported
                 .then_some(record.ipv4_addresses_per_interface),
             ipv6_supported: Some(ipv6_supported),
-            ena_support: Some(ena_support(&name).to_string()),
+            ena_support: Some(
+                facts
+                    .and_then(|facts| facts.ena_support)
+                    .unwrap_or_else(|| ena_support(&name))
+                    .to_string(),
+            ),
             efa_supported: Some(efa_interfaces > 0),
             efa_info: (efa_interfaces > 0).then_some(EfaInfo {
                 maximum_efa_interfaces: Some(efa_interfaces),
@@ -2750,20 +2790,27 @@ pub fn instance_type_info(instance_type: &str) -> Option<InstanceTypeInfo> {
                 instance_type,
             )),
             // "Indicates whether the instance type supports ENA Express"
-            // (`$EnaSrdSupported`), the adapter feature the sixth generation introduced.
-            ena_srd_supported: Some(has_nitro_feature(&name, FIRST_ENA_SRD_GENERATION)),
+            // (`$EnaSrdSupported`): the published row where the catalog holds one, else the
+            // adapter feature the sixth generation introduced.
+            ena_srd_supported: Some(
+                facts
+                    .and_then(|facts| facts.ena_srd_supported)
+                    .unwrap_or_else(|| has_nitro_feature(&name, FIRST_ENA_SRD_GENERATION)),
+            ),
             bandwidth_weightings: None,
             // "Indicates whether changing the number of ENA queues is supported"
             // (`$FlexibleEnaQueuesSupport`), reported as the enum member it is for every
             // type rather than only for the types that have it.
             flexible_ena_queues_support: Some(supported_or_not(nitro_clock)),
-            connection_tracking_configuration: nitro.then_some(
-                DefaultConnectionTrackingConfiguration {
-                    default_tcp_established_timeout: Some(tcp_established),
-                    default_udp_timeout: Some(udp),
-                    default_udp_stream_timeout: Some(udp_stream),
-                },
-            ),
+            // "Indicates conntrack information for the instance type"
+            // (`NetworkInfo$ConnectionTrackingConfiguration`): the idle timeouts a security
+            // group's connection tracking applies by default, which are the same for every
+            // instance type and are reported for every one.
+            connection_tracking_configuration: Some(DefaultConnectionTrackingConfiguration {
+                default_tcp_established_timeout: Some(tcp_established),
+                default_udp_timeout: Some(udp),
+                default_udp_stream_timeout: Some(udp_stream),
+            }),
             // "Indicates whether secondary interface attachments from secondary network
             // are supported" (`$SecondaryNetworkSupported`). A type that supports them
             // takes them on the same adapter as its primary interfaces, so the secondary
@@ -2781,7 +2828,9 @@ pub fn instance_type_info(instance_type: &str) -> Option<InstanceTypeInfo> {
         placement_group_info: Some(PlacementGroupInfo {
             supported_strategies: Some(placement_group_strategies(&name)),
         }),
-        inference_accelerator_info: None,
+        inference_accelerator_info: facts
+            .and_then(|facts| facts.inference_devices)
+            .map(PublishedInferenceDevices::to_inference_accelerator_info),
         hibernation_supported: Some(record.hibernation_supported),
         burstable_performance_supported: Some(record.burstable),
         // "Dedicated Hosts are supported for ... current generation instance types",
@@ -2800,7 +2849,14 @@ pub fn instance_type_info(instance_type: &str) -> Option<InstanceTypeInfo> {
                 .and_then(|facts| facts.auto_recovery_supported)
                 .unwrap_or(!record.bare_metal && record.instance_storage.is_none()),
         ),
-        supported_boot_modes: Some(supported_boot_modes(&record.architecture, nitro)),
+        supported_boot_modes: Some(
+            facts
+                .and_then(|facts| facts.supported_boot_modes)
+                .map_or_else(
+                    || supported_boot_modes(&record.architecture, nitro),
+                    |modes| modes.iter().map(|mode| (*mode).to_string()).collect(),
+                ),
+        ),
         nitro_enclaves_support: Some(
             if nitro
                 && !record.bare_metal
