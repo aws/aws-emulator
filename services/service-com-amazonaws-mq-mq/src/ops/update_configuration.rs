@@ -245,7 +245,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             configuration.next_revision_number(),
             ::std::time::SystemTime::now(),
             input.description.clone().unwrap_or_default(),
-            Some(data),
+            // The document the revision stores is the service's own serialization of
+            // the one the request sent, not the bytes it sent: an XML configuration is
+            // parsed and stored canonicalized, so every reader of the revision reports
+            // the form Amazon MQ would have stored (see
+            // `state::stored_configuration_data`).
+            Some(state::stored_configuration_data(&data)),
         );
         configuration.revisions.push(revision.clone());
 
@@ -264,13 +269,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             }),
             name: Some(configuration.name.clone()),
             // `Warnings` are "the first 20 warnings about the configuration
-            // elements or attributes that were SANITIZED". This service does not
-            // sanitize: it stores the document as sent, and refuses one it cannot
-            // decode, so there is no element it removed to warn about. The
-            // recorded Amazon MQ answer for a document it accepted carries the
-            // member as an EMPTY list, which is what this reports; a document AWS
-            // would have sanitized is a gap of the stored-as-sent document itself,
-            // not of this member.
+            // elements or attributes that were SANITIZED". This service removes
+            // no element and no attribute: it stores the document's own content,
+            // serialized canonically (`state::stored_configuration_data`), and
+            // refuses one it cannot decode, so there is nothing it dropped to
+            // warn about. The recorded Amazon MQ answer for a document it
+            // accepted carries the member as an EMPTY list, which is what this
+            // reports; a document AWS would have sanitized is a gap of the
+            // stored document itself, not of this member.
             warnings: Some(Vec::new()),
             // The answer describes the configuration this call revised, so it
             // reports that configuration's strategy in the spelling the

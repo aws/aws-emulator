@@ -225,7 +225,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     .max_results
                     .unwrap_or(state::DEFAULT_MAX_RESULTS as i32),
             ),
-            next_token: page.next_token,
+            // The token that resumes after this page. Amazon MQ's recorded revision
+            // listing carries the member on the page that exhausts the chain too, so
+            // this reports one whenever the page carries a revision at all; following
+            // it answers the empty page past the end, which carries none and so
+            // terminates a client paginating by the member's presence.
+            next_token: page.token_after(),
             revisions: Some(revisions),
         })
     }

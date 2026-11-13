@@ -12,13 +12,17 @@
 //! The readings a BROKER's own answer needs, each one concern, live in this
 //! module's own files: [`broker_published_values`] (what the service decides for a
 //! broker its create did not), [`broker_endpoints`] (where a client reaches a running
-//! broker) and [`broker_configuration`] (the configuration a broker runs).
+//! broker) and [`broker_configuration`] (the configuration a broker runs). The form a
+//! configuration revision's document is stored in lives in
+//! [`configuration_document`].
 
 use std::collections::{BTreeMap, VecDeque};
 use std::time::{Duration, SystemTime};
 
 /// Which configuration revision a broker runs, and where it comes from.
 mod broker_configuration;
+/// The form a configuration revision's document is stored in.
+mod configuration_document;
 /// Where a client reaches a running broker: its console and its wire endpoints.
 mod broker_endpoints;
 /// The values the service decides for a broker rather than echoing from its create.
@@ -26,6 +30,7 @@ mod broker_published_values;
 
 pub use broker_configuration::*;
 pub use broker_endpoints::*;
+pub use configuration_document::*;
 pub use broker_published_values::*;
 
 /// Region used for an ARN when the request carries no SigV4 credential scope to
@@ -462,9 +467,11 @@ pub struct ConfigurationRevisionRecord {
     /// `Configuration$Description` a listing carries is required, so an absent
     /// member is not a form every read could agree on).
     pub description: String,
-    /// The configuration document the revision carries, as the update sent it
-    /// (base64). `None` for the revision a create makes: that one holds the
-    /// engine's own default settings, which no request supplied.
+    /// The configuration document the revision carries (base64), in the form this
+    /// service STORES it: the canonical serialization of the document the update sent
+    /// ([`stored_configuration_data`]), not the bytes it sent. `None` for the revision
+    /// a create makes: that one holds the engine's own default settings, which no
+    /// request supplied.
     pub data: Option<String>,
     /// Whether the engine judged this revision's document unusable, reported as
     /// `ConfigurationRevision$isInvalid`. A revision is only ever made from a
@@ -1303,6 +1310,24 @@ pub fn page_of(total: usize, max_results: Option<i32>, offset: usize) -> Page {
 /// Every listing of this service pages through this one function.
 pub fn page_slice<'a, T>(items: &'a [T], page: &Page) -> &'a [T] {
     items.get(page.start..page.end).unwrap_or_default()
+}
+
+impl Page {
+    /// The `NextToken` a listing that always reports one answers with: the token that
+    /// resumes AFTER this page, for a page that carries at least one element —
+    /// including the page that exhausts the collection, where [`page_of`] leaves the
+    /// member out.
+    ///
+    /// Amazon MQ's revision listing carries the member on its last page too, so a
+    /// client that paginates by the member's presence makes one more call; that call
+    /// answers the empty page past the end, which carries no element and therefore no
+    /// token, so the client still terminates. The token is produced by this module's
+    /// own codec, so the one a page reports is one [`decode_page_token`] accepts.
+    pub fn token_after(&self) -> Option<String> {
+        self.next_token
+            .clone()
+            .or_else(|| (self.end > self.start).then(|| encode_page_token(self.end)))
+    }
 }
 
 /// The region to build an ARN in: the one the caller signed for, else
