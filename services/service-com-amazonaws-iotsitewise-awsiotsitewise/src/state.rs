@@ -155,6 +155,10 @@ use crate::ops::types::{
 // * `paths` — the structured `path` a read reports for a property or a composite
 //   model, the notification block a reported asset property carries, and which
 //   of a model's composite models are built-in.
+// * `assistant` — the SiteWise Assistant conversations `InvokeAssistant` records,
+//   the retrieval one turn runs over this account's datasets and the answer it
+//   is composed into.
+mod assistant;
 mod asset_records;
 mod capture_ingest;
 mod computation_models;
@@ -169,6 +173,7 @@ mod store;
 mod workspace_records;
 
 pub use asset_records::*;
+pub use assistant::*;
 pub use capture_ingest::*;
 pub use computation_models::*;
 pub use id_references::*;
@@ -2187,6 +2192,15 @@ pub struct ComAmazonawsIotsitewiseAwsiotsitewiseState {
     /// [`Self::record_idempotent_call`], read by [`Self::idempotent_verdict`]
     /// and bounded by [`MAX_IDEMPOTENT_CALLS`].
     pub idempotent_calls: HashMap<String, IdempotentCall>,
+    /// The SiteWise Assistant conversations, by the `conversationId` they are
+    /// addressed by — the caller's own when the request named one, and the id
+    /// minted for it when it named none. Each record says when the conversation
+    /// began, when its last turn landed and how many turns it has taken, which is
+    /// what lets a later turn continue it. Written by `InvokeAssistant`
+    /// ([`Self::record_assistant_turn`]) and bounded at
+    /// [`MAX_ASSISTANT_CONVERSATIONS`] by evicting the least recently used one,
+    /// because this service models no call that deletes a conversation.
+    pub assistant_conversations: HashMap<String, AssistantConversationRecord>,
 }
 
 /// The resource kind a `ResourceNotFoundException` / `ResourceAlreadyExistsException`

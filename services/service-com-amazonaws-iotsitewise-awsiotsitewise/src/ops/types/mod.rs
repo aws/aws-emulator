@@ -103,6 +103,7 @@ pub mod get_capture_data_types;
 pub mod get_interpolated_asset_property_values_types;
 pub mod get_query_results_types;
 pub mod get_search_results_types;
+pub mod invoke_assistant_types;
 pub mod list_access_policies_types;
 pub mod list_actions_types;
 pub mod list_applications_types;
@@ -342,6 +343,8 @@ pub use get_interpolated_asset_property_values_types::*;
 pub use get_query_results_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use get_search_results_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use invoke_assistant_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_access_policies_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]

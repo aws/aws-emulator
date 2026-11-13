@@ -32,6 +32,13 @@
 #[path = "all/asset_model_definition_validation.rs"]
 mod asset_model_definition_validation;
 
+// `assistant_invocation` is declared HERE, beside the suite above, for the reason
+// the notes above give: the sorted list and the END of this file are both
+// stretches every concurrent iotsitewise change puts a declaration of its own in.
+// Fold it into the list once the churn settles.
+#[path = "all/assistant_invocation.rs"]
+mod assistant_invocation;
+
 // `variable_reference_resolution` is declared HERE, beside the suite above whose
 // refusal rules it is the resolution half of, for the reason the notes above
 // give: the sorted list and the END of this file are both stretches every

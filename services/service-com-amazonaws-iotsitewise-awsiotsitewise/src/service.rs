@@ -21,8 +21,11 @@
 //!   for anything the model does not express: a signing name shared by several
 //!   services, or routing that keys on the access-key id.
 //! - `override_operation` — serve a request the model's routing key cannot name
-//!   correctly. The default returns `None`, so every request resolves through the
-//!   generated routing table. Return `Some(op)` to route one yourself.
+//!   correctly. THIS service uses it for one thing: `InvokeAssistant` answers a
+//!   `vnd.amazon.eventstream` body, which the generated shim of a `@streaming`-output
+//!   operation declines rather than serializes, so this seam routes it to the
+//!   hand-authored handler in [`crate::ops::invoke_assistant`]. Every other request
+//!   resolves through the generated routing table.
 //! - `override_refusal` — how this service words a request the framework refused
 //!   before any handler ran. The default returns `None`, keeping the framework's
 //!   wording. See the inline note on that method for how to reword.
@@ -40,6 +43,8 @@
 //! and is reached, not edited, through the one `definition` method below. You
 //! do not write it; editing the entry would let this file drift from the model.
 
+use crate::ops::invoke_assistant::InvokeAssistant;
+use service_common::event_stream::EventStreamRoute;
 use smithy_server_runtime::{
     http, ErasedOperation, Refusal, Refused, Service,
 };
@@ -64,6 +69,13 @@ const INVALID_REQUEST: &str = "InvalidRequestException";
 /// router builds one shared engine and hands it to `new`.
 pub struct EmulatedService<Eng: Send + Sync + 'static> {
     entry: crate::ServiceDefinition<Eng>,
+    /// Serves `InvokeAssistant`, whose output is a `@streaming` event-stream union. The
+    /// generated `ErasedOperation` shim of such an operation declines the request (it
+    /// cannot drive `serialize_as_event_stream<P>` through an object-safe `run`), so this
+    /// copy is held behind an [`EventStreamRoute`] and routed by
+    /// [`Service::override_operation`]. It owns the shared engine, so the conversation it
+    /// records and the datasets it reads live in the same store every other handler reads.
+    invoke_assistant: EventStreamRoute<InvokeAssistant<Eng>>,
 }
 
 impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
@@ -72,6 +84,7 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
     /// operation's behaviour lives in that operation's own `impl Operation`.
     pub fn new(engine: Arc<Eng>) -> Self {
         Self {
+            invoke_assistant: EventStreamRoute(InvokeAssistant::new(Arc::clone(&engine))),
             entry: crate::ServiceDefinition::new(engine),
         }
     }
@@ -99,12 +112,18 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
         &self,
         req: &aws_smithy_runtime_api::http::Request,
     ) -> Option<&dyn ErasedOperation> {
-        // Return `Some(op)` to serve a request the model's routing key cannot name
-        // correctly; `None` (the default) lets the generated routing table resolve
-        // it. `req` is the whole request, so a decision that depends on the body —
-        // the `Action` form field on a query protocol, say — is reachable here.
-        let _ = req;
-        None
+        // `InvokeAssistant` answers an event-stream body, which the generated shim for a
+        // `@streaming`-output operation cannot serialize — it declines the request — so
+        // this seam routes it to the hand-authored handler, which reads its own request
+        // and refuses a constraint violation in this service's own words.
+        //
+        // The request is recognised by the key the model's OWN route table resolves for it
+        // (`POST /assistant/invocation`), not by a path written here, so this seam cannot
+        // drift from the URI the model binds. Every other request answers `None` and
+        // resolves through that same table.
+        let key = self.entry.protocol().routing_key(req).ok()?;
+        (key == crate::ops::invoke_assistant::INVOKE_ASSISTANT)
+            .then_some(&self.invoke_assistant as &dyn ErasedOperation)
     }
 
     fn override_refusal(&self, refusal: &Refusal) -> Option<Refused> {

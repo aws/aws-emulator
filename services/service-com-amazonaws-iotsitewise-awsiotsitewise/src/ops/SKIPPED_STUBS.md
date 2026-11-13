@@ -19,3 +19,10 @@ union can be declared as `{Op}Output`. A `@required` union member and a
 handler returns an error, so it never has to construct a value.
 
 // SKIPPED: InvokeAssistant — unsupported shape construct: operation 'InvokeAssistant' has a @streaming event-stream output member, which needs wire framing the generator does not emit
+
+The census above records what the GENERATOR did, so each line stays as written.
+`InvokeAssistant` has since been hand-authored in `ops/invoke_assistant.rs`: it frames
+its `ResponseStream` through `service_common::event_stream`, reads its own request, and
+is routed by `Service::override_operation` (the generated shim for a `@streaming`-output
+operation declines the request, so it cannot serve one). It therefore has no
+`impl Operation`; its shapes are hand-authored in `types/invoke_assistant_types.rs`.

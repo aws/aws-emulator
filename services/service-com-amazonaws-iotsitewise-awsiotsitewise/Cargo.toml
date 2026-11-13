@@ -69,6 +69,9 @@ emulator-core-build-support = { workspace = true }
 service-com-amazonaws-s3-amazons3 = { workspace = true }
 # The generated Amazon S3 client that suite stages its objects with.
 aws-sdk-s3 = { version = "1", default-features = false, features = ["rt-tokio", "behavior-version-latest"] }
+# Decodes the `application/vnd.amazon.eventstream` frames the SiteWise Assistant suite
+# reads back, so what is asserted is the wire an SDK's event-stream decoder sees.
+aws-smithy-eventstream = "0.60"
 
 [lints]
 workspace = true
