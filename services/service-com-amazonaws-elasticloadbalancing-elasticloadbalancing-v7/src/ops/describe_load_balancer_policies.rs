@@ -278,20 +278,23 @@ fn describe(policy: &crate::state::PolicyRecord) -> PolicyDescription {
 
 /// Project one predefined sample policy into the modelled `PolicyDescription`.
 ///
-/// A sample policy belongs to no load balancer and nothing a caller does changes it, so
-/// it is reported from this service's own set of them
-/// ([`crate::state::SAMPLE_POLICIES`]) rather than from the store.
+/// A sample policy belongs to no load balancer and nothing a caller does changes it, so it
+/// is reported from this service's own catalog of them
+/// ([`crate::state::SAMPLE_POLICIES`]) rather than from the store. Its attributes are the
+/// WHOLE attribute set of its policy type — every protocol attribute, the server
+/// cipher-order attribute and one per published cipher suite — each carrying the value the
+/// sample's own configuration gives it, which is what the catalog projects.
 fn describe_sample(sample: &crate::state::SamplePolicy) -> PolicyDescription {
     PolicyDescription {
         policy_name: Some(sample.name.to_string()),
         policy_type_name: Some(sample.policy_type_name.to_string()),
         policy_attribute_descriptions: Some(
             sample
-                .attributes
-                .iter()
-                .map(|(name, value)| PolicyAttributeDescription {
-                    attribute_name: Some((*name).to_string()),
-                    attribute_value: Some((*value).to_string()),
+                .attribute_entries()
+                .into_iter()
+                .map(|attribute| PolicyAttributeDescription {
+                    attribute_name: Some(attribute.name),
+                    attribute_value: attribute.value,
                 })
                 .collect(),
         ),

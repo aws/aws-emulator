@@ -504,66 +504,11 @@ pub const SSL_NEGOTIATION_POLICY_TYPE: &str = "SSLNegotiationPolicyType";
 /// have the ELBSample- prefix."
 pub const SAMPLE_POLICY_NAME_PREFIX: &str = "ELBSample-";
 
-/// One sample policy: a policy the SERVICE predefines rather than one a caller created,
-/// which is why it carries no load balancer and lives in a constant rather than in the
-/// store.
-#[derive(Debug)]
-pub struct SamplePolicy {
-    pub name: &'static str,
-    pub policy_type_name: &'static str,
-    /// The attributes the sample's published configuration sets, each as the name and the
-    /// value a describe reports.
-    pub attributes: &'static [(&'static str, &'static str)],
-}
-
-/// The sample policies this service predefines — what `DescribeLoadBalancerPolicies`
-/// describes when the request names no load balancer: "descriptions of the specified
-/// sample policies, or descriptions of all sample policies".
-///
-/// Source: the two SAMPLE SSL negotiation configurations the Classic Load Balancer
-/// documentation publishes beside the predefined security policies — the load balancer's
-/// own default cipher policy and OpenSSL's — both of the SSL negotiation policy type and
-/// both named with the documented [`SAMPLE_POLICY_NAME_PREFIX`].
-///
-/// Each entry carries the SSL PROTOCOL attributes of that policy type, whose values are
-/// what its published configuration enables: the load balancer's default negotiates TLS
-/// only, OpenSSL's default negotiates SSLv3 as well, and neither negotiates SSLv2. The
-/// cipher attributes of those configurations — one per cipher suite the configuration
-/// enables — are deliberately NOT carried here: this set is the protocol half of the
-/// published samples, not the whole of either one, so a reader must not take it for the
-/// complete attribute list AWS reports.
-pub const SAMPLE_POLICIES: &[SamplePolicy] = &[
-    SamplePolicy {
-        name: "ELBSample-ELBDefaultCipherPolicy",
-        policy_type_name: SSL_NEGOTIATION_POLICY_TYPE,
-        attributes: &[
-            ("Protocol-SSLv2", "false"),
-            ("Protocol-SSLv3", "false"),
-            ("Protocol-TLSv1", "true"),
-            ("Protocol-TLSv1.1", "true"),
-            ("Protocol-TLSv1.2", "true"),
-        ],
-    },
-    SamplePolicy {
-        name: "ELBSample-OpenSSLDefaultCipherPolicy",
-        policy_type_name: SSL_NEGOTIATION_POLICY_TYPE,
-        attributes: &[
-            ("Protocol-SSLv2", "false"),
-            ("Protocol-SSLv3", "true"),
-            ("Protocol-TLSv1", "true"),
-            ("Protocol-TLSv1.1", "true"),
-            ("Protocol-TLSv1.2", "true"),
-        ],
-    },
-];
-
-/// The sample policy named `policy_name`, or `None` when no sample policy carries that
-/// name.
-pub fn sample_policy(policy_name: &str) -> Option<&'static SamplePolicy> {
-    SAMPLE_POLICIES
-        .iter()
-        .find(|sample| sample.name == policy_name)
-}
+/// The SSL negotiation configurations this service predefines, and the attribute set every
+/// one of them is described by: the catalog `DescribeLoadBalancerPolicies` answers a
+/// request that names no load balancer from.
+mod sample_policies;
+pub use sample_policies::*;
 
 /// Whether `policy_type_name` names one of the policy types this service predefines.
 ///
