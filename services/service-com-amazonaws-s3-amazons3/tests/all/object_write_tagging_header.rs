@@ -349,8 +349,11 @@ async fn a_header_tag_set_past_a_published_limit_is_refused_and_stores_nothing()
     // One row per published bound, each ONE past it, plus the key-uniqueness the set has,
     // the empty key the modelled `Tag$Key` (`length {min 1}`) could never carry, and the
     // character class every tag shares. The code says WHICH class of restriction broke: a
-    // set bigger than the resource may hold is `BadRequest`, and an individual tag that
-    // does not pass input validation is `InvalidTag`.
+    // set bigger than the resource may hold is `BadRequest`, an individual tag that
+    // does not pass input validation is `InvalidTag`, and a HEADER that is not the URL query
+    // string it is declared to be — a value half that is the encoding of no tag value, or one
+    // tag named twice — is `InvalidArgument` about that header (see
+    // `super::inline_tagging_header_grammar`).
     let rows: Vec<(&str, String, &str)> = vec![
         (
             "one pair past the per-object count bound",
@@ -381,18 +384,18 @@ async fn a_header_tag_set_past_a_published_limit_is_refused_and_stores_nothing()
         (
             "the same key twice",
             "duplicate=first&duplicate=second".to_string(),
-            "InvalidTag",
+            "InvalidArgument",
         ),
         (
             "the same key twice among pairs that are fine",
             "alpha=1&beta=2&alpha=3".to_string(),
-            "InvalidTag",
+            "InvalidArgument",
         ),
         ("an empty key", "=value".to_string(), "InvalidTag"),
         (
             "a percent-escaped astral-plane symbol as the value",
             "mood=%F0%9F%98%80".to_string(),
-            "InvalidTag",
+            "InvalidArgument",
         ),
     ];
 

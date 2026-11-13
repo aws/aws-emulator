@@ -233,8 +233,19 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // A read needs nothing from the request beyond its deserialized input.
-        let _ = ctx;
+        // The ENCRYPTION HEADERS a WRITE names the configuration of the object it stores in
+        // are not this operation's input: so a read that CARRIES one is refused for the
+        // header, through the one rule every read of this service is judged by
+        // ([`crate::state::unsupported_read_encryption_header`]).
+        if let Some((header, value)) =
+            crate::state::unsupported_read_encryption_header(ctx.parts())
+        {
+            return Err(crate::scaffolded::Scaffolded::invalid_argument(
+                header,
+                Some(&value),
+                crate::state::unsupported_read_encryption_message(header),
+            ));
+        }
 
         // "The account ID of the expected bucket owner. If the account ID that you provide
         // does not match the actual owner of the bucket, the request fails with the HTTP
@@ -307,17 +318,36 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         };
         // "If the specified version is a delete marker, the response returns a 405 Method
         // Not Allowed error" (`GetObject`, whose options this read shares): a marker holds
-        // no attributes to report.
-        if version_id.is_some() && held.is_some_and(|held| held.as_delete_marker().is_some()) {
-            return Err(crate::scaffolded::Scaffolded::method_not_allowed(
-                ATTRIBUTES_METHOD,
-                crate::state::DELETE_MARKER_RESOURCE_TYPE,
-            ));
+        // no attributes to report. The answer NAMES the marker in its headers, the way every
+        // other read of this service answers about one (see `crate::service::wire`'s
+        // delete-marker note), so a caller learns which version made the object a deleted
+        // one.
+        if version_id.is_some() {
+            if let Some(marker) = held.and_then(crate::state::StoredVersion::as_delete_marker) {
+                crate::service::wire::note_addressed_delete_marker(
+                    marker.version_id.as_deref(),
+                    marker.last_modified,
+                );
+                return Err(crate::scaffolded::Scaffolded::method_not_allowed(
+                    ATTRIBUTES_METHOD,
+                    crate::state::DELETE_MARKER_RESOURCE_TYPE,
+                ));
+            }
         }
         let Some(object) = held.and_then(crate::state::StoredVersion::as_object) else {
             // A `versionId` the bucket holds no version for is `NoSuchVersion`, because the
             // key itself may well be there; without one the key has no current object,
-            // which is this operation's own modeled `NoSuchKey`.
+            // which is this operation's own modeled `NoSuchKey` — and when a DELETE MARKER
+            // is what makes the key have none, the answer names that marker in its headers,
+            // exactly as a `GetObject` or a `HeadObject` of the same key does.
+            if version_id.is_none() {
+                if let Some(marker) = held.and_then(crate::state::StoredVersion::as_delete_marker) {
+                    crate::service::wire::note_addressed_delete_marker(
+                        marker.version_id.as_deref(),
+                        marker.last_modified,
+                    );
+                }
+            }
             return Err(match version_id {
                 Some(_) => crate::scaffolded::Scaffolded::unmodeled(
                     crate::state::NO_SUCH_VERSION_CODE,

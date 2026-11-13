@@ -68,7 +68,6 @@
 //! this service answers a union.
 //!
 //! ## A document the OPERATION, not the boundary, refuses
-//!
 //! One normalization IS keyed on the operation, and on purpose. S3 publishes a refusal of
 //! its own for several members of a `WebsiteConfiguration` — one that names the member in
 //! `<ArgumentName>` and echoes what it held in `<ArgumentValue>` — and two of those members
@@ -87,7 +86,36 @@
 //! anything the document spells, and it changes what the codec reads only for a
 //! configuration that is refused, so no accepted request is affected by it.
 //!
-//! ## A MODE header, whose value S3 reads case-insensitively//!
+//! ## The TEXT of an element: what the codec trims, and what a boolean may be spelled
+//!
+//! Two more things the codec reads differently from the schema S3 publishes, both about an
+//! element's TEXT rather than about a member the protocol cannot express.
+//!
+//! A request document is validated against that schema, where a boolean element is an
+//! `xsd:boolean`, whose lexical space is `true`, `false`, `1` and `0` (W3C XML Schema Part 2,
+//! §3.2.2) — the codec reads the two words only, so a document spelling one the numeric way is
+//! refused where the published schema admits it. [`XML_BOOLEAN_DOCUMENT_ELEMENTS`] is the
+//! catalog of the elements a request document binds a boolean from and
+//! [`xsd_boolean_spellings_folded`] re-spells those two values onto the words; text in neither
+//! spelling is left exactly as it arrived, for the codec to refuse.
+//!
+//! And the codec reads every element's text TRIMMED, which is right for a value whose own
+//! lexical space ignores surrounding whitespace and wrong for one the caller CHOSE: an object
+//! key may be composed of whitespace (`DeleteObjects` names such a key in its own
+//! documentation) or begin with it, and trimming makes the first the empty string its modelled
+//! minimum length then refuses and the second another key altogether.
+//! [`XML_OBJECT_KEY_DOCUMENT_ELEMENTS`] is the catalog of the elements a request document
+//! carries a key in and [`verbatim_text_folded`] re-spells the whitespace at either end as the
+//! character references that state it, which the codec then decodes back to the same text.
+//!
+//! Both catalogs are DERIVED from the model — the first from the members whose target is a
+//! boolean shape, the second from those targeting `ObjectKey` — and
+//! `tests/all/zzz_batch_probe.rs` re-derives each so a model update cannot leave one behind.
+//! Neither reaches the framework's own codec, which is vendored and read-only here: what they
+//! change is the document THIS service hands it.
+//!
+//! ## A MODE header, whose value S3 reads case-insensitively
+//!
 //! The last thing this protocol normalizes is in a HEADER rather than in a document. S3 reads
 //! the value of `x-amz-checksum-mode` as the NAME OF A MODE, not as a case-sensitive
 //! identifier: the AWS CLI's own `s3 cp` download path sends it lowercase and AWS serves the
@@ -1074,6 +1102,151 @@ fn published_names_as_members(document: &[u8]) -> Option<Vec<u8>> {
     renamed.then(|| writer.into_inner())
 }
 
+/// Every ELEMENT a request document of this service carries an OBJECT KEY in, under the name
+/// restXml writes it with.
+///
+/// An object key is bytes the CALLER chose and S3 addresses the object by exactly — "an object
+/// that's composed entirely of whitespace characters" is a key `DeleteObjects` names in its own
+/// documentation — so the whitespace at either end of such an element's text is part of the
+/// value rather than layout around it. The framework's codec reads an element's text TRIMMED,
+/// which is right for every value whose own lexical space ignores surrounding whitespace (a
+/// boolean, a number, a timestamp) and wrong for a key: a key of spaces arrives as the empty
+/// string, which the model's `length {min 1}` then refuses, and a key with a leading space
+/// arrives as another key altogether. [`verbatim_text_folded`] is what keeps it.
+///
+/// ONE element name carries the two members the model targets at `ObjectKey`:
+/// `ObjectIdentifier$Key`, the key a batch delete names, and `Tag$Key`, which that shape
+/// documents as "name of the object key"
+/// (`smithy_query(query="shape",shape="ObjectIdentifier,Tag")`). Both are kept, and for the
+/// same reason: whitespace is a character a tag key may carry too (the published tag
+/// restrictions admit "letters, whitespace, and numbers representable in UTF-8"), so a tag key
+/// stated with it is a tag key with it.
+///
+/// Source: the members of this service's request documents whose target is the `ObjectKey`
+/// shape, re-derived from the model by `tests/all/zzz_batch_probe.rs`.
+pub const XML_OBJECT_KEY_DOCUMENT_ELEMENTS: &[&str] = &["Key"];
+
+/// The XML character reference for each whitespace character an element's text may begin or end
+/// with — the form that states that character where the codec's trim cannot take it away, and
+/// which the codec then decodes back to the character itself.
+///
+/// XML 1.0's own whitespace (§2.3 `S`): space, tab, carriage return and line feed.
+const XML_WHITESPACE_REFERENCES: [(char, &str); 4] = [
+    (' ', "&#32;"),
+    ('\t', "&#9;"),
+    ('\r', "&#13;"),
+    ('\n', "&#10;"),
+];
+
+/// `document` with the leading and trailing whitespace of every object-key element re-spelled
+/// as the character references that state it ([`XML_WHITESPACE_REFERENCES`]), or `None` when no
+/// such element's text has any (in which case nothing is rewritten and the original bytes are
+/// used).
+///
+/// Only the whitespace AT THE ENDS is re-spelled, and only inside an element of
+/// [`XML_OBJECT_KEY_DOCUMENT_ELEMENTS`]: the text between those ends is written back exactly as
+/// it arrived — a reference the client itself sent included, because the text is handed on
+/// pre-escaped and so is decoded exactly once, the way
+/// [`attributes_as_elements`] hands on an attribute's value.
+fn verbatim_text_folded(document: &[u8]) -> Option<Vec<u8>> {
+    fold_element_text(
+        document,
+        XML_OBJECT_KEY_DOCUMENT_ELEMENTS,
+        &end_whitespace_as_references,
+    )
+}
+
+/// `raw` with the whitespace it begins and ends with written as character references, or `None`
+/// when it begins and ends with none (and so states itself already), and for text the ends of
+/// which are not the whole of it and whose middle is not UTF-8 — which no re-spelling can
+/// state, and which the framework's own parser is left to refuse.
+///
+/// Read as BYTES: every character folded is ASCII ([`XML_WHITESPACE_REFERENCES`]), so the ends
+/// are found without decoding, and the middle travels through unchanged.
+fn end_whitespace_as_references(raw: &[u8]) -> Option<String> {
+    let is_xml_whitespace =
+        |byte: u8| XML_WHITESPACE_REFERENCES.iter().any(|(ws, _)| *ws as u32 == u32::from(byte));
+    let reference = |byte: u8| {
+        XML_WHITESPACE_REFERENCES
+            .iter()
+            .find(|(ws, _)| *ws as u32 == u32::from(byte))
+            .map(|(_, reference)| *reference)
+            .unwrap_or_default()
+    };
+    let leading = raw.iter().take_while(|byte| is_xml_whitespace(**byte)).count();
+    let trailing = raw[leading..]
+        .iter()
+        .rev()
+        .take_while(|byte| is_xml_whitespace(**byte))
+        .count();
+    if leading == 0 && trailing == 0 {
+        return None;
+    }
+    // The middle is what the ends leave: for text that is whitespace all the way through there
+    // is none, and every character of it is stated once.
+    let middle = ::std::str::from_utf8(&raw[leading..raw.len() - trailing]).ok()?;
+    let mut stated: String = raw[..leading].iter().map(|byte| reference(*byte)).collect();
+    stated.push_str(middle);
+    stated.extend(raw[raw.len() - trailing..].iter().map(|byte| reference(*byte)));
+    Some(stated)
+}
+
+/// `document` with the TEXT of every element named in `catalog` replaced by what `folded`
+/// states it as, or `None` when `folded` states none of them differently (in which case nothing
+/// is rewritten and the original bytes are used).
+///
+/// The ONE walk both text folds of this module are written over, so the two cannot drift apart
+/// in how they read a document: an element is matched by NAME, which is what the codec matches
+/// it by too, its text is handed to `folded` as the BYTES it arrived as, and what comes back is
+/// written as pre-escaped character data — so a value is decoded exactly once, the way
+/// [`attributes_as_elements`] hands on an attribute's. Everything else — every other element,
+/// every attribute, every comment — is written back exactly as it arrived.
+fn fold_element_text(
+    document: &[u8],
+    catalog: &[&str],
+    folded: &dyn Fn(&[u8]) -> Option<String>,
+) -> Option<Vec<u8>> {
+    let mut reader = Reader::from_reader(document);
+    reader.config_mut().trim_text(false);
+    let mut writer = Writer::new(Vec::new());
+    let mut changed = false;
+    // Whether the element whose text is being read is one of the catalog's.
+    let mut in_catalog = false;
+    loop {
+        match reader.read_event() {
+            Ok(Event::Eof) => break,
+            Ok(Event::Start(start)) => {
+                in_catalog = catalog
+                    .iter()
+                    .any(|element| element.as_bytes() == start.name().as_ref());
+                writer.write_event(Event::Start(start)).ok()?;
+            }
+            Ok(Event::Text(text)) if in_catalog => match folded(text.as_ref()) {
+                Some(stated) => {
+                    changed = true;
+                    writer
+                        .write_event(Event::Text(BytesText::from_escaped(stated)))
+                        .ok()?;
+                }
+                None => {
+                    writer.write_event(Event::Text(text)).ok()?;
+                }
+            },
+            Ok(Event::End(end)) => {
+                in_catalog = false;
+                writer.write_event(Event::End(end)).ok()?;
+            }
+            Ok(other) => {
+                writer.write_event(other).ok()?;
+            }
+            // A document the XML reader cannot walk is left for the framework's own
+            // parser to refuse, so the refusal a client sees is the framework's.
+            Err(_) => return None,
+        }
+    }
+    changed.then(|| writer.into_inner())
+}
+
 /// `start` under the element name `name`, carrying its attributes verbatim —
 /// `push_attribute` copies an `Attribute`'s raw value unchanged, so nothing is re-escaped.
 fn renamed_start(start: &BytesStart<'_>, name: &'static str) -> BytesStart<'static> {
@@ -1082,6 +1255,59 @@ fn renamed_start(start: &BytesStart<'_>, name: &'static str) -> BytesStart<'stat
         renamed.push_attribute(attribute);
     }
     renamed
+}
+
+/// The two values an XML boolean may be spelled with that the framework's codec does not read,
+/// and the value each of them means.
+///
+/// A request document is validated against the schema S3 publishes for it, where a boolean
+/// element is an `xsd:boolean` — whose lexical space is `true`, `false`, `1` and `0` (W3C XML
+/// Schema Part 2, §3.2.2), the last two being the numeric spellings of the first two. The
+/// codec reads the words alone, so a document spelling a boolean the numeric way is refused
+/// where the published schema admits it; [`xsd_boolean_spellings_folded`] re-spells those two
+/// into the words before the codec reads the document, which leaves the value the client
+/// stated unchanged. Any other text is in neither spelling and is left exactly as it arrived,
+/// for the codec to refuse.
+const XSD_BOOLEAN_SPELLINGS: [(&str, &str); 2] = [("1", "true"), ("0", "false")];
+
+/// Every ELEMENT a request document of this service binds a BOOLEAN member from, under the
+/// name restXml writes it with (the member's `@xmlName`, else its own name).
+///
+/// The fold below is keyed on the element name, so this is the catalog that says which
+/// elements it may touch: an element naming anything else keeps its text exactly as the
+/// client sent it, whatever that text is.
+///
+/// Source: the members of this service's request documents whose target is a `boolean` shape,
+/// re-derived from the model by `tests/all/zzz_batch_probe.rs` so a model update that adds one
+/// cannot quietly keep being refused.
+pub const XML_BOOLEAN_DOCUMENT_ELEMENTS: &[&str] = &[
+    "AllowQuotedRecordDelimiter",
+    "BlockPublicAcls",
+    "BlockPublicPolicy",
+    "BucketKeyEnabled",
+    "ExpiredObjectDeleteMarker",
+    "IgnorePublicAcls",
+    "IsEnabled",
+    "Quiet",
+    "RestrictPublicBuckets",
+];
+
+/// `document` with every boolean element spelled `1` or `0` re-spelled as `true` or `false`,
+/// or `None` when it spells none that way (in which case nothing is rewritten and the original
+/// bytes are used).
+///
+/// Only the TEXT of an element the model declares a boolean changes
+/// ([`XML_BOOLEAN_DOCUMENT_ELEMENTS`]), and only when that text is one of the two numeric
+/// spellings: every other element, every attribute and every other value is written back
+/// exactly as it arrived.
+fn xsd_boolean_spellings_folded(document: &[u8]) -> Option<Vec<u8>> {
+    fold_element_text(document, XML_BOOLEAN_DOCUMENT_ELEMENTS, &|raw| {
+        let spelled = ::std::str::from_utf8(raw).ok()?;
+        XSD_BOOLEAN_SPELLINGS
+            .iter()
+            .find(|(numeric, _)| *numeric == spelled.trim())
+            .map(|(_, word)| (*word).to_string())
+    })
 }
 
 /// `document` with every `@xmlAttribute` member moved out of its own element and onto its
@@ -1620,6 +1846,7 @@ fn normalized_headers(request: &Request, input_schema: &Schema) -> Option<Vec<(S
     });
     changed.then_some(headers)
 }
+
 
 /// A request's headers as `(name, value)` pairs, original case preserved and every value
 /// of a repeated header kept, which is what the binding deserializer needs to bind a
@@ -2217,6 +2444,37 @@ fn with_attribute_members(mut response: Response) -> Response {
     /// one request — see [`spelled_in_request`].
     static REQUEST_DOCUMENT: ::std::cell::RefCell<Option<Vec<u8>>> =
         const { ::std::cell::RefCell::new(None) };
+    /// Whether that request carried an `x-amz-object-attributes` header, and with what — see
+    /// [`object_attributes_header_as_sent`].
+    static OBJECT_ATTRIBUTES_HEADER: ::std::cell::RefCell<Option<String>> =
+        const { ::std::cell::RefCell::new(None) };
+}
+
+/// Record the `x-amz-object-attributes` header the request this thread is serving carried,
+/// `None` for a request that carried none.
+///
+/// Called for EVERY request this service reads, under the same discipline as
+/// [`remember_request_document`]: a `None` overwrites whatever the previous request on this
+/// thread recorded, so no refusal can read another request's header.
+fn remember_object_attributes_header(header: Option<&str>) {
+    let recorded = header.map(str::to_string);
+    OBJECT_ATTRIBUTES_HEADER.with(|note| {
+        *note.borrow_mut() = recorded;
+    });
+}
+
+/// The `x-amz-object-attributes` header the request this thread is serving SENT, or `None`
+/// when it sent none at all.
+///
+/// What tells the two requests that state no attribute apart, which is what decides their
+/// refusal (`crate::service::published_refusal`): a request that sent NO such header asked for
+/// no attributes, and one that sent it EMPTY named an attribute that is not one. The parsed
+/// input cannot tell them apart — both bind an empty list — so the request's own headers are
+/// what answers it.
+///
+/// Read under the same discipline as [`spelled_in_request`].
+pub fn object_attributes_header_as_sent() -> Option<String> {
+    OBJECT_ATTRIBUTES_HEADER.with(|note| note.borrow().clone())
 }
 
 /// Record `document` as the XML document the request this thread is serving carried, `None`
@@ -2659,6 +2917,13 @@ impl ServerProtocol for UnwrappedXmlRestXml {
             false => None,
         };
         remember_request_document(document);
+        // And whether it carried an `x-amz-object-attributes` header, which is what tells a
+        // request that sent none from one that sent it empty once the codec has bound both to
+        // an empty list (see [`object_attributes_header_as_sent`]). Recorded for EVERY
+        // request, so the note a refusal reads is always its own request's.
+        remember_object_attributes_header(
+            request.headers().get(crate::state::OBJECT_ATTRIBUTES_HEADER),
+        );
         // A request whose body IS an XML document is refused here when that document
         // carries a character XML cannot hold, before any codec reads it. See
         // [`xml_charset_violation`].
@@ -2711,8 +2976,9 @@ impl ServerProtocol for UnwrappedXmlRestXml {
                 .body()
                 .bytes()
                 .ok_or_else(|| ProtocolError::BodyRead("body is not available as bytes".into()))?;
-            // Two normalizations, each applied only to a document that calls for it, and
-            // the second over the result of the first so a document needing both is served.
+            // Four normalizations, each applied only to a document that calls for it, and
+            // each over the result of the one before it so a document needing several is
+            // served.
             let mut normalized: Option<Vec<u8>> = None;
             if XML_ATTRIBUTE_MEMBERS
                 .iter()
@@ -2729,7 +2995,35 @@ impl ServerProtocol for UnwrappedXmlRestXml {
                     normalized = Some(document);
                 }
             }
-            // And a THIRD, for the one document whose refusals `PutBucketWebsite` is the
+            // And a THIRD, for a BOOLEAN the document spells the numeric way: the published
+            // schema admits `1` and `0` for one, and the codec reads only the words, so those
+            // two spellings are folded onto the words the codec binds
+            // ([`xsd_boolean_spellings_folded`]). The byte scan comes first, so only a
+            // document that carries a boolean element at all is walked.
+            let current: &[u8] = normalized.as_deref().unwrap_or(body);
+            if XML_BOOLEAN_DOCUMENT_ELEMENTS
+                .iter()
+                .any(|element| holds(current, format!("<{element}>").as_bytes()))
+            {
+                if let Some(document) = xsd_boolean_spellings_folded(current) {
+                    normalized = Some(document);
+                }
+            }
+            // And a FOURTH, for the whitespace an OBJECT KEY's element begins or ends with:
+            // the codec reads an element's text trimmed, and a key's whitespace is part of the
+            // key, so it is re-spelled as the character references that state it
+            // ([`verbatim_text_folded`]). The byte scan comes first, so only a document that
+            // carries such an element at all is walked.
+            let current: &[u8] = normalized.as_deref().unwrap_or(body);
+            if XML_OBJECT_KEY_DOCUMENT_ELEMENTS
+                .iter()
+                .any(|element| holds(current, format!("<{element}>").as_bytes()))
+            {
+                if let Some(document) = verbatim_text_folded(current) {
+                    normalized = Some(document);
+                }
+            }
+            // And a FIFTH, for the one document whose refusals `PutBucketWebsite` is the
             // one place that can state them: a website document that operation refuses on
             // the DOCUMENT — because the published schema rejects it, or because a member
             // carries a value only the document still holds — is withheld from the codec in
@@ -2744,7 +3038,7 @@ impl ServerProtocol for UnwrappedXmlRestXml {
             {
                 normalized = Some(EMPTY_WEBSITE_CONFIGURATION.to_vec());
             }
-            // And a FOURTH, for the one VALUE a create's configuration carries that the
+            // And a SIXTH, for the one VALUE a create's configuration carries that the
             // operation rather than the boundary refuses: a location constraint naming no
             // Region the model publishes is withheld from the codec — the whole container is
             // replaced by [`EMPTY_CREATE_BUCKET_CONFIGURATION`] — so `CreateBucket` answers

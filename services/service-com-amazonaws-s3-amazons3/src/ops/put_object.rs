@@ -542,6 +542,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> PutObject<Eng> {
         // hold is refused without this process holding a tag set it would never store.
         let tags = match input.tagging.as_deref() {
             Some(header) => {
+                // The GRAMMAR that header is declared to be in comes first: a header that is
+                // not a URL query string of UTF-8 naming each tag once carries no tag set at
+                // all, which S3 refuses for the HEADER
+                // ([`crate::state::inline_tagging_header_is_well_formed`]) rather than as a
+                // tag whose key or value is not storable.
+                if !crate::state::inline_tagging_header_is_well_formed(header) {
+                    return Err(crate::scaffolded::Scaffolded::inline_tagging_header(header));
+                }
                 match crate::state::tag_set_from_header(
                     header,
                     crate::state::OBJECT_TAG_SET_LIMITS,

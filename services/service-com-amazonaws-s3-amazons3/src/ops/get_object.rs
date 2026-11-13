@@ -359,6 +359,24 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         //   customer-provided one is read with, matched below against the digest that object
         //   records ([`crate::state::sse_customer`]).
 
+        // The ENCRYPTION HEADERS a WRITE names the configuration of the object it stores in
+        // are not this operation's input at all: a read REPORTS the configuration the object
+        // was stored under in headers of the same names, so one that CARRIES them asks this
+        // read to encrypt something it is not writing, which S3 refuses for the header
+        // ([`crate::state::unsupported_read_encryption_header`] holds the catalog and the
+        // rule, and every read of this service is judged by it). Refused before anything
+        // about the object is reported, so nothing of it is served to a request S3 does not
+        // serve at all.
+        if let Some((header, value)) =
+            crate::state::unsupported_read_encryption_header(ctx.parts())
+        {
+            return Err(crate::scaffolded::Scaffolded::invalid_argument(
+                header,
+                Some(&value),
+                crate::state::unsupported_read_encryption_message(header),
+            ));
+        }
+
         // The CUSTOMER-PROVIDED key this read presents, read through the one rule every call
         // of this service reads the three members by
         // ([`crate::state::requested_customer_key`]): a key the request itself could not have
@@ -520,6 +538,57 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         let now = ::std::time::SystemTime::now();
 
+        // WHICH BYTES this read asks for, resolved FIRST of everything this read is judged by.
+        //
+        // A `partNumber` "effectively performs a 'ranged' GET request for the part specified"
+        // (`GetObjectRequest$PartNumber`) and a `Range` "downloads the specified byte range of
+        // an object" (`$Range`) — so each selects a span of the object, and a response carrying
+        // a span reports it in `Content-Range` (which is what makes the answer a 206; see
+        // `crate::service::wire`). A read naming neither is of the whole object and reports no
+        // range at all.
+        //
+        // `partNumber` is judged first: a number the object has no part for is
+        // `InvalidPartNumber` (416), and a `Range` asking for bytes outside the object is
+        // `InvalidRange` (416) — the two refusals HTTP has for a span that cannot be served.
+        //
+        // A request naming BOTH is answered with the part: "effectively performs a 'ranged'
+        // GET request for the part specified" (`GetObjectRequest$PartNumber`) — the part
+        // number IS the range it asks for, so it decides the span and the `Range` beside it
+        // names a second one the answer cannot also be.
+        //
+        // The SPAN is resolved against the version the address resolved to and BEFORE
+        // everything else this read is judged by — the key it presents, the conditions it
+        // states, the state of the bytes — because that is the order S3 answers in: recorded
+        // behaviour for a read that both asks for bytes outside the object and presents
+        // encryption parameters that do not apply to it is the 416 for the span, not the 400
+        // for the parameters.
+        let total = object.body.len();
+        let span = match (input.part_number, input.range.as_deref()) {
+            (Some(part_number), _) => match object.part_span(part_number) {
+                Some(span) => Some(span),
+                None => {
+                    return Err(crate::scaffolded::Scaffolded::unmodeled(
+                        crate::state::INVALID_PART_NUMBER_CODE,
+                        crate::state::INVALID_PART_NUMBER_STATUS,
+                        crate::state::INVALID_PART_NUMBER_MESSAGE,
+                    ))
+                }
+            },
+            (None, Some(header)) => match crate::state::requested_range(header, total) {
+                crate::state::RangeRequest::Span(span) => Some(span),
+                crate::state::RangeRequest::Unsatisfiable => {
+                    return Err(crate::scaffolded::Scaffolded::invalid_range(
+                        header,
+                        i64::try_from(total).unwrap_or(i64::MAX),
+                    ))
+                }
+                // A header this emulator serves no single span for is ignored, which RFC
+                // 9110 allows and S3 does: the whole object is served with 200.
+                crate::state::RangeRequest::Ignored => None,
+            },
+            (None, None) => None,
+        };
+
         // The object's plaintext comes of the CUSTOMER-PROVIDED key it was stored under, when
         // it was stored under one: a read presenting none cannot be served it, and one
         // presenting a key that is not the object's is refused the way any caller not
@@ -628,49 +697,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             ));
         }
 
-        // WHICH BYTES this read answers with, and what it reports about them.
-        //
-        // A `partNumber` "effectively performs a 'ranged' GET request for the part
-        // specified" (`GetObjectRequest$PartNumber`) and a `Range` "downloads the specified
-        // byte range of an object" (`$Range`) — so each selects a span of the object, and a
-        // response carrying a span reports it in `Content-Range` (which is what makes the
-        // answer a 206; see `crate::service::wire`). A read naming neither is of the whole
-        // object and reports no range at all.
-        //
-        // `partNumber` is judged first: a number the object has no part for is
-        // `InvalidPartNumber` (416), and a `Range` asking for bytes outside the object is
-        // `InvalidRange` (416) — the two refusals HTTP has for a span that cannot be served.
-        //
-        // A request naming BOTH is answered with the part: "effectively performs a 'ranged'
-        // GET request for the part specified" (`GetObjectRequest$PartNumber`) — the part
-        // number IS the range it asks for, so it decides the span and the `Range` beside it
-        // names a second one the answer cannot also be.
-        let total = object.body.len();
-        let span = match (input.part_number, input.range.as_deref()) {
-            (Some(part_number), _) => match object.part_span(part_number) {
-                Some(span) => Some(span),
-                None => {
-                    return Err(crate::scaffolded::Scaffolded::unmodeled(
-                        crate::state::INVALID_PART_NUMBER_CODE,
-                        crate::state::INVALID_PART_NUMBER_STATUS,
-                        crate::state::INVALID_PART_NUMBER_MESSAGE,
-                    ))
-                }
-            },
-            (None, Some(header)) => match crate::state::requested_range(header, total) {
-                crate::state::RangeRequest::Span(span) => Some(span),
-                crate::state::RangeRequest::Unsatisfiable => {
-                    return Err(crate::scaffolded::Scaffolded::invalid_range(
-                        header,
-                        i64::try_from(total).unwrap_or(i64::MAX),
-                    ))
-                }
-                // A header this emulator serves no single span for is ignored, which RFC
-                // 9110 allows and S3 does: the whole object is served with 200.
-                crate::state::RangeRequest::Ignored => None,
-            },
-            (None, None) => None,
-        };
+        // The BYTES this read answers with: the span resolved above, or the whole object for
+        // a read that asked for none.
         let body = match span {
             Some(span) => span.slice(&object.body),
             None => object.body.clone(),

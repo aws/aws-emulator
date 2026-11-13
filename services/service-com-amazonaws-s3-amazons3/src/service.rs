@@ -687,12 +687,30 @@ fn published_refusal(violation: &Violation) -> Option<Refused> {
             crate::state::INVALID_ARGUMENT_CODE,
             crate::state::INVALID_ENCODING_METHOD_MESSAGE.to_string(),
         ),
-        // `GetObjectAttributes` names the attribute that is not one, whichever element of
-        // the header's list carried it.
-        "objectAttributes" => (
-            crate::state::INVALID_ARGUMENT_CODE,
-            "Invalid attribute name specified.".to_string(),
-        ),
+        // `GetObjectAttributes`' `x-amz-object-attributes`: the header "specifies the fields
+        // at the root level that you want returned in the response"
+        // (`GetObjectAttributesRequest$ObjectAttributes`, a REQUIRED `@httpHeader` member), so
+        // a request that SENT no such header asks for no attributes at all — which S3 reports
+        // against the REQUEST, naming the header and that it was either missing or empty,
+        // rather than as an attribute name that is not one. A header the request DID send
+        // names attributes, and one of them being outside the published set is that second
+        // refusal — including the header sent EMPTY, which names an attribute that is not one
+        // ([`wire::object_attributes_header_as_sent`] is what tells the two apart, the parsed
+        // input having bound both to an empty list).
+        "objectAttributes" => match violation.kind {
+            ViolationKind::MissingRequiredMember
+                if wire::object_attributes_header_as_sent().is_none() =>
+            {
+                (
+                    crate::state::INVALID_REQUEST_CODE,
+                    crate::state::OBJECT_ATTRIBUTES_UNSTATED_MESSAGE.to_string(),
+                )
+            }
+            _ => (
+                crate::state::INVALID_ARGUMENT_CODE,
+                crate::state::INVALID_OBJECT_ATTRIBUTE_MESSAGE.to_string(),
+            ),
+        },
         // The `x-amz-copy-source` of the two copies. The value is put into the form the
         // member's pattern is applied to before it is judged
         // ([`crate::state::canonical_copy_source`]), so what is left for the pattern to
@@ -914,6 +932,17 @@ fn addresses_object(path: &str) -> bool {
 fn addresses_s3_select(path: &str, query: &str) -> bool {
     query_carries(query, SELECT_SUBRESOURCE) && addresses_object(path)
 }
+
+/// The query parameter that addresses an object's ATTRIBUTES.
+///
+/// `GetObjectAttributes` is bound at `GET /{Bucket}/{Key+}?attributes`
+/// (`smithy_query(query="operation",operation="GetObjectAttributes")` reports that `@http`
+/// uri), so the `attributes` SUBRESOURCE is what names the call.
+const ATTRIBUTES_SUBRESOURCE: &str = "attributes";
+
+/// The operation a read of an object's attributes names, as the model's routing table keys
+/// it.
+const GET_OBJECT_ATTRIBUTES: &str = "GetObjectAttributes";
 
 /// The query parameter that addresses a DIRECTORY bucket's session.
 ///
@@ -1298,6 +1327,52 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
                 .with_buckets(addresses_a_bucket)
                 .with_access_points(addressed_access_point),
         }
+    }
+
+    /// The operation a READ of an object's ATTRIBUTES names when it states no attribute at
+    /// all — no `x-amz-object-attributes` header, or one carrying no field name — or `None`
+    /// for every other request, which keeps the route the generated table gives it.
+    ///
+    /// The model binds `GetObjectAttributes` at `GET /{Bucket}/{Key+}?attributes` with
+    /// `ObjectAttributes` as a REQUIRED `@httpHeader` member
+    /// (`smithy_query(query="operation",operation="GetObjectAttributes")`), and the generated
+    /// table drops a route whose required bindings the request does not carry — so such a call
+    /// fell through to the route bound to the same method and path with no subresource, which
+    /// is `GetObject`, and was answered with the object's BODY. The `attributes` subresource is
+    /// not the object: S3 serves such a request as the attributes call it addressed, refused
+    /// for the header it did not state ([`published_refusal`] words that refusal from the
+    /// member the boundary reports absent), so it is resolved here rather than becoming a read
+    /// of the object itself.
+    ///
+    /// The address is read in the PATH-STYLE form every route of this service is bound in
+    /// ([`Self::path_style_path`]), so the two address forms resolve alike, and only an OBJECT
+    /// path resolves: `?attributes` on a bucket addresses no object for attributes to be read
+    /// off.
+    fn object_attributes_without_the_header(&self, req: &RtRequest) -> Option<&dyn ErasedOperation> {
+        if req.method() != http::Method::GET {
+            return None;
+        }
+        if !query_carries(wire::request_query(req.uri()), ATTRIBUTES_SUBRESOURCE) {
+            return None;
+        }
+        if !addresses_object(&self.path_style_path(req)) {
+            return None;
+        }
+        // A header the request DID send leaves the generated table's own lookup to resolve
+        // the call, and the boundary and the handler to judge the fields it names.
+        if req
+            .headers()
+            .get(crate::state::OBJECT_ATTRIBUTES_HEADER)
+            .is_some()
+        {
+            return None;
+        }
+        // Served behind this service's FRONT DOOR where that operation is one of the door's
+        // ([`front_door`]), exactly as a request the generated table resolves is, and from the
+        // generated table otherwise.
+        self.door
+            .get(GET_OBJECT_ATTRIBUTES)
+            .or_else(|| self.entry.routing_table().get(GET_OBJECT_ATTRIBUTES))
     }
 
     /// The front-door entry for `req`, when the operation its address names is one served
@@ -1933,6 +2008,14 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
         // model's routing table, which drops the subresource route for the required binding
         // the request does not carry.
         if let Some(operation) = self.configuration_subresource_operation(req) {
+            return Some(operation);
+        }
+        // A read of an object's ATTRIBUTES that states no `x-amz-object-attributes` is that
+        // read with the header missing, never the `GetObject` bound to the same method and
+        // path with no subresource; see [`Self::object_attributes_without_the_header`].
+        // Resolved before the model's routing table, which drops the subresource route for
+        // the required binding the request does not carry.
+        if let Some(operation) = self.object_attributes_without_the_header(req) {
             return Some(operation);
         }
         // A VIRTUAL-HOSTED-STYLE request names its bucket in the host, so its path is the

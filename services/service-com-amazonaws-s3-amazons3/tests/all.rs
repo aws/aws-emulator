@@ -171,6 +171,8 @@ mod global_condition_keys;
 mod head_object_read_back;
 #[path = "all/identity_authorization.rs"]
 mod identity_authorization;
+#[path = "all/inline_tagging_header_grammar.rs"]
+mod inline_tagging_header_grammar;
 #[path = "all/json_payload_media_type.rs"]
 mod json_payload_media_type;
 #[path = "all/kms_key_references.rs"]
@@ -279,6 +281,8 @@ mod object_partial_reads;
 mod object_plane_byte_budget;
 #[path = "all/object_read_authorization.rs"]
 mod object_read_authorization;
+#[path = "all/object_read_request_headers.rs"]
+mod object_read_request_headers;
 #[path = "all/object_read_policy_union.rs"]
 mod object_read_policy_union;
 #[path = "all/object_replication.rs"]
@@ -411,3 +415,5 @@ mod write_response_identity;
 mod zz_host_style_probe;
 #[path = "all/zz_probe.rs"]
 mod zz_probe;
+#[path = "all/zzz_batch_probe.rs"]
+mod zzz_batch_probe;

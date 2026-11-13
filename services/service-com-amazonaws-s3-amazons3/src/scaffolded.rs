@@ -1896,6 +1896,23 @@ impl<E> Scaffolded<E> {
             None => refusal,
         }
     }
+
+    /// The refusal every write that delivers its tag set IN A HEADER answers an
+    /// `x-amz-tagging` outside the grammar that header is declared to be in with
+    /// ([`crate::state::inline_tagging_header_is_well_formed`] decides it): the
+    /// `InvalidArgument` above carrying the sentence S3 states that grammar in, and the
+    /// `<ArgumentName>` / `<ArgumentValue>` pair naming the header and echoing it as sent.
+    ///
+    /// One place, so an unencodable header is refused identically wherever it arrives — and
+    /// distinctly from a tag set the header DID encode whose own tag breaks a published
+    /// restriction ([`Self::tag_set`]).
+    pub fn inline_tagging_header(header: &str) -> Self {
+        Self::invalid_argument(
+            crate::state::INLINE_TAGGING_HEADER,
+            Some(header),
+            crate::state::INLINE_TAGGING_ENCODING_MESSAGE,
+        )
+    }
 }
 
 impl<E: std::fmt::Display> std::fmt::Display for Scaffolded<E> {

@@ -358,6 +358,21 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             )));
         }
 
+        // The ENCRYPTION HEADERS a WRITE names the configuration of the object it stores in
+        // are not this operation's input: this read REPORTS that configuration in headers of
+        // the same names, so one that CARRIES them is refused for the header, through the one
+        // rule every read of this service is judged by
+        // ([`crate::state::unsupported_read_encryption_header`]).
+        if let Some((header, value)) =
+            crate::state::unsupported_read_encryption_header(ctx.parts())
+        {
+            return Err(crate::scaffolded::Scaffolded::invalid_argument(
+                header,
+                Some(&value),
+                crate::state::unsupported_read_encryption_message(header),
+            ));
+        }
+
         // The CUSTOMER-PROVIDED key this read presents, read through the one rule every call
         // of this service reads the three members by
         // ([`crate::state::requested_customer_key`]); whether it is the object's own is
@@ -531,6 +546,39 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         let now = ::std::time::SystemTime::now();
 
+        // WHICH SPAN of the object this HEAD describes: "a HEAD request has the same options
+        // as a GET operation on an object" (`HeadObject`'s own documentation), so a
+        // `PartNumber` or a `Range` is answered with the same span, the same `Content-Range`
+        // and the same two refusals `GetObject` answers — with the length of that span as
+        // `Content-Length`, since a HEAD reports what a GET of the same request would
+        // return without carrying the bytes. Resolved FIRST of everything this read is judged
+        // by, which is the order `GetObject` resolves its own in: the two cannot disagree
+        // about which refusal a request earning several of them is answered with.
+        let total = object.body.len();
+        let span = match (input.part_number, input.range.as_deref()) {
+            (Some(part_number), _) => match object.part_span(part_number) {
+                Some(span) => Some(span),
+                None => {
+                    return Err(crate::scaffolded::Scaffolded::unmodeled(
+                        crate::state::INVALID_PART_NUMBER_CODE,
+                        crate::state::INVALID_PART_NUMBER_STATUS,
+                        crate::state::INVALID_PART_NUMBER_MESSAGE,
+                    ))
+                }
+            },
+            (None, Some(header)) => match crate::state::requested_range(header, total) {
+                crate::state::RangeRequest::Span(span) => Some(span),
+                crate::state::RangeRequest::Unsatisfiable => {
+                    return Err(crate::scaffolded::Scaffolded::invalid_range(
+                        header,
+                        i64::try_from(total).unwrap_or(i64::MAX),
+                    ))
+                }
+                crate::state::RangeRequest::Ignored => None,
+            },
+            (None, None) => None,
+        };
+
         // The object's plaintext comes of the CUSTOMER-PROVIDED key it was stored under, when
         // it was stored under one, so this read is decided by the key it presents through the
         // one rule `GetObject` is decided by ([`crate::state::sse_customer::read_refusal`]) —
@@ -578,37 +626,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 object.version_id.as_deref(),
             ));
         }
-
-        // WHICH SPAN of the object this HEAD describes: "a HEAD request has the same options
-        // as a GET operation on an object" (`HeadObject`'s own documentation), so a
-        // `PartNumber` or a `Range` is answered with the same span, the same `Content-Range`
-        // and the same two refusals `GetObject` answers — with the length of that span as
-        // `Content-Length`, since a HEAD reports what a GET of the same request would
-        // return without carrying the bytes.
-        let total = object.body.len();
-        let span = match (input.part_number, input.range.as_deref()) {
-            (Some(part_number), _) => match object.part_span(part_number) {
-                Some(span) => Some(span),
-                None => {
-                    return Err(crate::scaffolded::Scaffolded::unmodeled(
-                        crate::state::INVALID_PART_NUMBER_CODE,
-                        crate::state::INVALID_PART_NUMBER_STATUS,
-                        crate::state::INVALID_PART_NUMBER_MESSAGE,
-                    ))
-                }
-            },
-            (None, Some(header)) => match crate::state::requested_range(header, total) {
-                crate::state::RangeRequest::Span(span) => Some(span),
-                crate::state::RangeRequest::Unsatisfiable => {
-                    return Err(crate::scaffolded::Scaffolded::invalid_range(
-                        header,
-                        i64::try_from(total).unwrap_or(i64::MAX),
-                    ))
-                }
-                crate::state::RangeRequest::Ignored => None,
-            },
-            (None, None) => None,
-        };
 
         // "To retrieve the checksum, this parameter must be enabled"
         // (`HeadObjectRequest$ChecksumMode`): the checksum the write stored with the object

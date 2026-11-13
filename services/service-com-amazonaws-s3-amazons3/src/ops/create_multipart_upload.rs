@@ -465,6 +465,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // initiation leaves the bucket's uploads untouched.
         let tags = match input.tagging.as_deref() {
             Some(header) => {
+                // The GRAMMAR that header is declared to be in comes first, through the one
+                // rule every write delivering a tag set in a header is judged by
+                // ([`crate::state::inline_tagging_header_is_well_formed`]).
+                if !crate::state::inline_tagging_header_is_well_formed(header) {
+                    return Err(crate::scaffolded::Scaffolded::inline_tagging_header(header));
+                }
                 match crate::state::tag_set_from_header(
                     header,
                     crate::state::OBJECT_TAG_SET_LIMITS,

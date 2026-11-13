@@ -130,6 +130,31 @@ pub const OBJECT_ATTRIBUTE_CHECKSUM: &str = "Checksum";
 /// upload assembled the object from.
 pub const OBJECT_ATTRIBUTE_OBJECT_PARTS: &str = "ObjectParts";
 
+/// The header `GetObjectAttributes` binds the fields it is to report from
+/// (`smithy_query(query="operation",operation="GetObjectAttributes")` reports
+/// `ObjectAttributes: {httpHeader: "x-amz-object-attributes", required: true}`), which is also
+/// how S3's refusal of a request that states no field names it.
+pub const OBJECT_ATTRIBUTES_HEADER: &str = "x-amz-object-attributes";
+
+/// The `<Message>` S3 sends with [`INVALID_REQUEST_CODE`] for a `GetObjectAttributes` that
+/// carries no `x-amz-object-attributes` at all.
+///
+/// "Specifies the fields at the root level that you want returned in the response"
+/// (`GetObjectAttributesRequest$ObjectAttributes`, a REQUIRED `@httpHeader` member): a request
+/// that carries no such header states no field, so there is no attribute name for a refusal to
+/// report as one the published set does not list. Fixed text, naming the header and that it
+/// carried nothing.
+pub const OBJECT_ATTRIBUTES_UNSTATED_MESSAGE: &str =
+    "The x-amz-object-attributes header specifying the attributes to be retrieved is either \
+     missing or empty";
+
+/// The `<Message>` S3 sends with [`INVALID_ARGUMENT_CODE`] for an `x-amz-object-attributes`
+/// that names a field outside the published `ObjectAttributes` set.
+///
+/// Fixed text: the document names the rejected attribute in its `<ArgumentValue>` rather than
+/// in the sentence.
+pub const INVALID_OBJECT_ATTRIBUTE_MESSAGE: &str = "Invalid attribute name specified.";
+
 /// The `StorageClass` values whose objects are ARCHIVED: not readable, not copyable and
 /// not usable until a temporary copy of them has been restored.
 ///
@@ -4251,10 +4276,14 @@ mod bucket;
 // The continuation token every listing of a bucket's id-addressed configurations pages
 // with, and the reading of a token a caller hands back.
 mod configuration_tokens;
+// The grammar the tag set a write delivers in the `x-amz-tagging` header has to be in.
+mod inline_tagging;
 // What a bucket's stored lifecycle configuration is, and which ones S3 admits.
 mod lifecycle;
 // One stored object version.
 mod object;
+// The server-side encryption headers a READ of an object may not carry.
+mod read_encryption_headers;
 // The wire codes, statuses and sentences a refusal of this service carries.
 mod refusals;
 // The renames this store has performed, remembered by the client token that asked for them.
@@ -4277,8 +4306,10 @@ mod website;
 pub use account_public_access_block::*;
 pub use bucket::*;
 pub use configuration_tokens::*;
+pub use inline_tagging::*;
 pub use lifecycle::*;
 pub use object::*;
+pub use read_encryption_headers::*;
 pub use refusals::*;
 pub use renames::*;
 pub use sessions::*;
