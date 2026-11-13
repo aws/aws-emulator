@@ -75,6 +75,11 @@ pub mod service_role_permissions;
 /// that digest is computed, where such a revision is recorded.
 pub mod revision_digest;
 
+/// The revision a deployment deploys when it names an S3 object, FETCHED from the
+/// object store that holds it: the one place a revision's identity is resolved and
+/// the one place a deployment whose revision cannot be located is failed.
+pub mod s3_revision;
+
 use crate::ops::types::{
     AlarmConfiguration, AutoRollbackConfiguration, BlueGreenDeploymentConfiguration,
     DeploymentStyle, EC2DeploymentOptions, EC2TagFilter, EC2TagSet, ECSService, LoadBalancerInfo,
@@ -192,6 +197,23 @@ pub fn deployment_is_terminal(status: &str) -> bool {
     )
 }
 
+/// The `ErrorCode` CodeDeploy reports on a deployment a CALLER stopped
+/// (`smithy_query(query="shape",shape="ErrorCode")` carries it; the AWS CodeDeploy
+/// User Guide's "Error codes" documents `MANUAL_STOP` as the deployment having
+/// been stopped by a user).
+///
+/// A stop is how a deployment ENDED, so the deployment attributes itself to it the
+/// same way a deployment the alarm gate stopped attributes itself to
+/// [`alarm_gate::ERROR_CODE_ALARM_ACTIVE`].
+pub const ERROR_CODE_MANUAL_STOP: &str = "MANUAL_STOP";
+
+/// The `ErrorInformation$message` that goes with [`ERROR_CODE_MANUAL_STOP`]: this
+/// outcome's own fixed sentence, interpolating nothing — every deployment a caller
+/// stopped ended the same way, and who stopped it is not something this service
+/// reports here. CodeDeploy words it as the deployment having been cancelled on
+/// request, in the lower case it answers it in.
+pub const MANUAL_STOP_MESSAGE: &str = "the deployment is cancelled due to an abort request";
+
 /// The `ErrorCode` a deployment that found nothing to deploy to carries
 /// (`smithy_query(query="shape",shape="ErrorCode")` lists it; the AWS CodeDeploy
 /// User Guide's "Error codes" documents `NO_INSTANCES` as "no instances were
@@ -307,7 +329,7 @@ pub const DEPLOYMENT_INTERNAL_STATE_ABORTED: &str = "ABORTED";
 /// that refusal the same way.
 pub fn deployment_already_completed(deployment_id: &str, status: &str) -> String {
     format!(
-        "The deployment {deployment_id} has already completed, current state {}.",
+        "The deployment {deployment_id} is already in state {}",
         deployment_internal_state(status)
     )
 }
@@ -1543,6 +1565,22 @@ pub struct Deployment {
     /// when the deployment was recorded; `None` for a deployment whose revision
     /// declares none (see [`appspec::declared_shift`]).
     pub lambda_traffic_shift: Option<appspec::LambdaTrafficShift>,
+    /// Whether this deployment still owes the FETCH of a revision that keeps its
+    /// AppSpec outside the request — the `S3` revision form (see
+    /// [`s3_revision`]). The fetch falls due when the deployment starts, and what
+    /// the fetched object declares is what the deployment then performs; a
+    /// deployment whose revision carries its content inline owes none.
+    pub awaits_revision_fetch: bool,
+    /// Whether the traffic this deployment had already shifted still owes its
+    /// RESTORATION to the version it was shifting from.
+    ///
+    /// Set where a deployment is rolled back ([`rollback::record_rollback`]) and
+    /// carried out where the alias is written
+    /// ([`lambda_traffic_shift::apply_due_shifts`]): a rollback of a deployment
+    /// that had moved some of the traffic puts the alias back the way that
+    /// deployment found it, whether or not the group also had a revision to
+    /// create a rollback DEPLOYMENT of.
+    pub awaits_alias_restore: bool,
     /// How far that shift has got, which is also what keeps the clock from
     /// settling a deployment whose shift has not happened yet; see
     /// [`lambda_traffic_shift::TrafficShiftProgress`].
@@ -2584,15 +2622,20 @@ impl ComAmazonawsCodedeployCodedeploy20141006State {
     /// `registrationStatus` and one tag filter list, in REGISTRATION order so
     /// the listing is deterministic and pages stably.
     ///
-    /// Both members RESTRICT what the full registry would answer, and an absent
-    /// member restricts nothing: "unless otherwise specified, both registered
-    /// and deregistered on-premises instance names are listed"
-    /// (`smithy_query(query="doc",shape="ListOnPremisesInstances")`), and the
-    /// tags "are used to restrict the on-premises instance names returned"
-    /// (`smithy_query(query="doc",shape="ListOnPremisesInstancesInput",member="tagFilters")`).
-    /// A record the registry keeps for a DEREGISTERED instance is as listable
-    /// as a registered one — which is what the `Deregistered` status selects —
-    /// and it is reported with the tags it still carries.
+    /// A host's REGISTRATION is what the fleet listing reports, so the default
+    /// listing answers the hosts that hold one: deregistering a host ends its
+    /// registration, and the record CodeDeploy keeps for it is surfaced by the
+    /// `Deregistered` registration status — the status whose own purpose is to ask
+    /// for the retired records — rather than by the unrestricted listing. That is
+    /// the behaviour measured on the real service: after a successful
+    /// deregistration the host is gone from the unfiltered listing while every
+    /// other registered host is still in it.
+    ///
+    /// Both members RESTRICT what the registry would otherwise answer, and the tag
+    /// filters "are used to restrict the on-premises instance names returned"
+    /// (`smithy_query(query="doc",shape="ListOnPremisesInstancesInput",member="tagFilters")`)
+    /// — a record is reported with the tags it still carries, which is what lets a
+    /// retired record be selected by tag under the `Deregistered` status.
     pub fn on_premises_instance_names(
         &self,
         registration_status: Option<&str>,
@@ -2602,8 +2645,7 @@ impl ComAmazonawsCodedeployCodedeploy20141006State {
             .iter()
             .filter_map(|name| self.on_premises_instances.get(name))
             .filter(|instance| match registration_status {
-                None => true,
-                Some(REGISTRATION_STATUS_REGISTERED) => instance.is_registered(),
+                None | Some(REGISTRATION_STATUS_REGISTERED) => instance.is_registered(),
                 Some(REGISTRATION_STATUS_DEREGISTERED) => !instance.is_registered(),
                 // A status outside the modelled enum is refused at the request
                 // boundary, so it never reaches here; selecting nothing for it
@@ -3179,33 +3221,61 @@ pub fn target_last_updated_at_ms(deployment: &Deployment) -> i64 {
 /// The lifecycle events of `deployment`, as the modelled `LifecycleEvent` list a
 /// target carries.
 ///
-/// CodeDeploy reports a target's lifecycle events as the hooks its deployment ran
-/// on that target. Two kinds of event are held here, and both are reported:
+/// CodeDeploy reports a target's lifecycle events as the events its deployment ran
+/// on that target. Three kinds of event are held here, and all three are reported,
+/// in the order the deployment runs them:
 ///
 /// * the hooks the revision DECLARED, which this service dispatched to a Lambda
 ///   validation function ([`lifecycle_hook`]) — each as far as its own execution
 ///   has got ([`hook_event_status`]), in the order its platform runs them;
+/// * the event that MOVES the traffic, for a deployment that performs a traffic
+///   shift: work this service does itself rather than through a function, so it is
+///   reported from that shift's own progress
+///   ([`lifecycle_hook::allow_traffic_event`]) and sits between the hook that runs
+///   before traffic and the one that runs after it;
 /// * a result reported against a hook execution this deployment did not mint,
 ///   which is a report of one of the platform's lifecycle events made directly
 ///   rather than by a function this service invoked.
 ///
 /// Nothing here runs the EC2/on-premises hooks the CodeDeploy agent runs, so a
-/// deployment that declared no hook and nothing reported for carries no lifecycle
-/// event rather than events nothing ran. A report says what the lifecycle event
-/// ended as and when it was made, which is when that event ENDED; when it started
-/// is not something a report carries, so it is left absent.
+/// deployment that declared no hook, performs no shift and nothing reported for
+/// carries no lifecycle event rather than events nothing ran. A report says what
+/// the lifecycle event ended as and when it was made, which is when that event
+/// ENDED; when it started is not something a report carries, so it is left absent.
 fn target_lifecycle_events(
     deployment: &Deployment,
 ) -> Option<Vec<crate::ops::types::LifecycleEvent>> {
-    let declared = deployment.hook_executions.iter().map(|hook| {
+    let hook_event = |hook: &lifecycle_hook::HookExecution| crate::ops::types::LifecycleEvent {
+        lifecycle_event_name: Some(hook.lifecycle_event_name.clone()),
+        diagnostics: None,
+        start_time: None,
+        end_time: hook.update_time_ms.map(timestamp),
+        status: Some(hook_event_status(deployment, hook).to_string()),
+    };
+    let before_traffic = deployment
+        .hook_executions
+        .iter()
+        .filter(|hook| !hook.runs_after_traffic())
+        .map(hook_event);
+    // The traffic move itself, for a deployment that performs one: the alias write
+    // this service carries out ([`lambda_traffic_shift`]). The instant it ended is
+    // the instant the deployment it completed ended, which is the only instant
+    // this service holds for it.
+    let allow_traffic = lifecycle_hook::allow_traffic_event(deployment).map(|status| {
         crate::ops::types::LifecycleEvent {
-            lifecycle_event_name: Some(hook.lifecycle_event_name.clone()),
+            lifecycle_event_name: Some(lifecycle_hook::LIFECYCLE_EVENT_ALLOW_TRAFFIC.to_string()),
             diagnostics: None,
             start_time: None,
-            end_time: hook.update_time_ms.map(timestamp),
-            status: Some(hook_event_status(deployment, hook).to_string()),
+            end_time: (status == LIFECYCLE_EVENT_STATUS_SUCCEEDED)
+                .then(|| timestamp(target_last_updated_at_ms(deployment))),
+            status: Some(status.to_string()),
         }
     });
+    let after_traffic = deployment
+        .hook_executions
+        .iter()
+        .filter(|hook| hook.runs_after_traffic())
+        .map(hook_event);
     // A report that landed on a declared hook is already one of the events above,
     // so it is not reported twice.
     let reported = deployment
@@ -3224,7 +3294,11 @@ fn target_lifecycle_events(
             end_time: Some(timestamp(execution.update_time_ms)),
             status: Some(execution.status.clone()),
         });
-    let events: Vec<crate::ops::types::LifecycleEvent> = declared.chain(reported).collect();
+    let events: Vec<crate::ops::types::LifecycleEvent> = before_traffic
+        .chain(allow_traffic)
+        .chain(after_traffic)
+        .chain(reported)
+        .collect();
     non_empty(&events)
 }
 
@@ -4437,7 +4511,13 @@ pub fn with_state<Eng: Send + Sync + 'static, R>(
     body: impl FnOnce(&mut ComAmazonawsCodedeployCodedeploy20141006State) -> R,
 ) -> Option<R> {
     let state = service_state(engine)?;
-    // The service role the deployments in flight run as is consulted FIRST: a
+    // The revision of every deployment that has reached for one is resolved
+    // FIRST: what a fetched AppSpec declares is what the deployment performs, so
+    // it is read before the role is asked about those calls and before any
+    // traffic moves — and a deployment whose revision cannot be located fails
+    // here, having done nothing.
+    s3_revision::resolve_due_revisions(engine);
+    // The service role the deployments in flight run as is consulted next: a
     // deployment its role does not authorize must have no effect at all, so it is
     // failed before any alarm is polled and before any traffic moves.
     service_role_permissions::refuse_unauthorized_deployments(engine);

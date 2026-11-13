@@ -6,8 +6,8 @@
 //! records the store holds, in one deterministic order, one page of
 //! `nextToken`-continued results at a time, RESTRICTED by the two restricting
 //! input members and by nothing else — `registrationStatus` keeps only the
-//! records in that registration state (absent: "both registered and
-//! deregistered on-premises instance names are listed"), and `tagFilters` keeps
+//! records in that registration state (absent: the hosts that hold a
+//! registration, which is the fleet the listing reports), and `tagFilters` keeps
 //! only the records matching ANY of its filters (absent or empty: no
 //! restriction, and a list longer than the service scans is refused) — and it
 //! changes nothing a later caller sees.
@@ -180,7 +180,9 @@ async fn seeded_fleet() -> Emulator {
         }
     }
     // Deregistered AFTER it was tagged: the record (and its tags) outlives the
-    // registration, which is what the `Deregistered` status selects.
+    // registration, which is what the `Deregistered` status selects — and what
+    // the unrestricted listing, which reports the fleet that holds a
+    // registration, no longer carries.
     emulator
         .ok(
             "DeregisterOnPremisesInstance",
@@ -191,9 +193,10 @@ async fn seeded_fleet() -> Emulator {
 }
 
 /// RULE: the listing answers exactly the stored records the request's two
-/// restricting members select — `registrationStatus` by registration state and
-/// `tagFilters` by ANY of its filters, each absent member restricting nothing —
-/// and the same request answers the same names every time.
+/// restricting members select — `registrationStatus` by registration state, an
+/// absent one selecting the hosts that hold a registration, and `tagFilters` by
+/// ANY of its filters, an absent one restricting nothing — and the same request
+/// answers the same names every time.
 #[tokio::test]
 async fn the_listing_answers_the_records_the_request_selects() {
     let emulator = seeded_fleet().await;
@@ -205,14 +208,14 @@ async fn the_listing_answers_the_records_the_request_selects() {
     // including filters that select everything and filters that select nothing.
     let cases: &[ListCase] = &[
         (
-            "no restriction at all: both registration states",
+            "no restriction at all: the registered hosts",
             json!({}),
-            &["web-1", "web-2", "db-1", "retired-1", "untagged-1"],
+            &["web-1", "web-2", "db-1", "untagged-1"],
         ),
         (
             "an EMPTY tag filter list restricts nothing",
             json!({"tagFilters": []}),
-            &["web-1", "web-2", "db-1", "retired-1", "untagged-1"],
+            &["web-1", "web-2", "db-1", "untagged-1"],
         ),
         (
             "only the registered records",
@@ -225,9 +228,9 @@ async fn the_listing_answers_the_records_the_request_selects() {
             &["retired-1"],
         ),
         (
-            "KEY_AND_VALUE: one key/value pair, across both registration states",
+            "KEY_AND_VALUE: one key/value pair",
             json!({"tagFilters": [filter(Some("env"), Some("prod"), Some("KEY_AND_VALUE"))]}),
-            &["web-1", "db-1", "retired-1"],
+            &["web-1", "db-1"],
         ),
         (
             "KEY_AND_VALUE, narrowed to the registered records",
@@ -248,7 +251,7 @@ async fn the_listing_answers_the_records_the_request_selects() {
         (
             "KEY_ONLY: the value is not looked at",
             json!({"tagFilters": [filter(Some("role"), Some("ignored"), Some("KEY_ONLY"))]}),
-            &["web-1", "web-2", "db-1", "retired-1"],
+            &["web-1", "web-2", "db-1"],
         ),
         (
             "VALUE_ONLY: the key is not looked at",
@@ -263,12 +266,12 @@ async fn the_listing_answers_the_records_the_request_selects() {
         (
             "no Type, key only: the key has to match",
             json!({"tagFilters": [filter(Some("role"), None, None)]}),
-            &["web-1", "web-2", "db-1", "retired-1"],
+            &["web-1", "web-2", "db-1"],
         ),
         (
             "no Type, value only: the value has to match",
             json!({"tagFilters": [filter(None, Some("web"), None)]}),
-            &["web-1", "web-2", "retired-1"],
+            &["web-1", "web-2"],
         ),
         (
             "two filters: a record matching EITHER is selected",
@@ -306,7 +309,7 @@ async fn the_listing_answers_the_records_the_request_selects() {
             json!({"tagFilters": filters_of_length(
                 service_com_amazonaws_codedeploy_codedeploy_20141006::state::MAX_TAG_FILTERS_PER_LIST,
             )}),
-            &["web-1", "db-1", "retired-1"],
+            &["web-1", "db-1"],
         ),
         (
             "a status and a filter that disagree select nothing",
@@ -370,7 +373,9 @@ async fn the_listing_pages_without_repeating_or_skipping() {
     let page_size = service_com_amazonaws_codedeploy_codedeploy_20141006::state::PAGE_SIZE;
     // One page's worth plus a remainder, so a walk takes more than one page and
     // the last page is a short one. Every third instance is deregistered and
-    // every other one is tagged, so each restriction selects a different count.
+    // every other one is tagged, so each restriction selects a different count;
+    // an unrestricted listing reports the hosts that hold a registration, so a
+    // tag filter with no status alongside it selects the tagged ones among those.
     let total = page_size + page_size / 2 + 3;
     let mut registered: Vec<String> = Vec::new();
     let mut deregistered: Vec<String> = Vec::new();
@@ -380,7 +385,6 @@ async fn the_listing_pages_without_repeating_or_skipping() {
         register(&emulator, &name).await;
         if index % 2 == 0 {
             tag(&emulator, &name, &[("tier", "edge")]).await;
-            tagged.push(name.clone());
         }
         if index % 3 == 0 {
             emulator
@@ -392,14 +396,16 @@ async fn the_listing_pages_without_repeating_or_skipping() {
             deregistered.push(name.clone());
         } else {
             registered.push(name.clone());
+            if index % 2 == 0 {
+                tagged.push(name.clone());
+            }
         }
     }
-    let every: Vec<String> = (0..total).map(|index| format!("paged-{index:04}")).collect();
 
     // Rows differ along the restriction, and so along how many records the walk
     // has to page through.
     let cases: &[(&str, Value, &Vec<String>)] = &[
-        ("every record", json!({}), &every),
+        ("no restriction: the registered ones", json!({}), &registered),
         (
             "the registered ones",
             json!({"registrationStatus": "Registered"}),
@@ -411,7 +417,7 @@ async fn the_listing_pages_without_repeating_or_skipping() {
             &deregistered,
         ),
         (
-            "the tagged ones",
+            "the tagged ones that hold a registration",
             json!({"tagFilters": [filter(Some("tier"), Some("edge"), Some("KEY_AND_VALUE"))]}),
             &tagged,
         ),
@@ -516,12 +522,12 @@ async fn a_listing_the_service_will_not_accept_is_refused_with_its_modelled_code
     }
 
     // A refusal left the store alone: the unrestricted listing still answers
-    // every record.
+    // every registered record.
     let answered = list_every_page(&emulator, "after the refusals", &json!({})).await;
     assert_eq!(
         answered.len(),
-        5,
-        "expected the five seeded records after the refusals, got {answered:?}"
+        4,
+        "expected the four registered records after the refusals, got {answered:?}"
     );
 }
 
@@ -580,11 +586,12 @@ async fn the_listing_follows_the_registration_lifecycle() {
         names, nothing,
         "case {case:?}: expected nothing under Registered, got {names:?}"
     );
-    // The retired record is still LISTED: an unrestricted listing carries it.
+    // The retired record is NOT part of the fleet the unrestricted listing
+    // reports: deregistration ended its registration.
     let names = list_every_page(&emulator, case, &json!({})).await;
     assert_eq!(
-        names, only,
-        "case {case:?}: expected the retired record to still be listed, got {names:?}"
+        names, nothing,
+        "case {case:?}: expected the retired record to be gone from the listing, got {names:?}"
     );
 
     register(&emulator, name).await;

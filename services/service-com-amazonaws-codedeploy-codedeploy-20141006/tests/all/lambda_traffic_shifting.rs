@@ -316,6 +316,96 @@ async fn readings_until_terminal(
     }
 }
 
+/// RULE: stopping a deployment mid-shift ENDS its traffic shift where it stands,
+/// and the rollback the caller asks for with it puts the alias back the way that
+/// deployment found it — on the version its AppSpec was shifting from, with the
+/// weighted routing the shift added cleared; a stop that asks for no rollback
+/// leaves the alias on the increment that was in force.
+#[tokio::test]
+async fn a_stop_that_rolls_back_restores_the_alias_the_shift_had_moved() {
+    // Rows differ along whether the stop asks for the rollback at all, which is
+    // what decides whether the traffic that had moved goes back.
+    let cases: &[(&str, Option<bool>, AliasReading)] = &[
+        (
+            "a stop that asks for a rollback",
+            Some(true),
+            ("1".to_string(), Vec::new()),
+        ),
+        (
+            "a stop that asks for none",
+            Some(false),
+            ("1".to_string(), vec![("2".to_string(), 0.1)]),
+        ),
+        (
+            "a stop that says nothing about a rollback",
+            None,
+            ("1".to_string(), vec![("2".to_string(), 0.1)]),
+        ),
+    ];
+
+    for (index, (case, auto_rollback, expected)) in cases.iter().enumerate() {
+        let emulator = Emulator::with_lambda();
+        let function = format!("stop-fn-{index}");
+        let application = format!("stop-app-{index}");
+        function_with_versions(&emulator, &function, 2).await;
+        // A canary whose interval is long enough that the window is comfortably
+        // open while the stop is made: the SECOND increment is what the stop has
+        // to come before, and nothing here measures how long the window is.
+        let group = lambda_group(
+            &emulator,
+            &application,
+            Some(traffic_routing("TimeBasedCanary", 10, 5)),
+            &json!({}),
+        )
+        .await;
+        let deployment = create_deployment(
+            &emulator,
+            &application,
+            &group,
+            &appspec_revision(&function, ALIAS, "1", "2"),
+        )
+        .await;
+
+        // The canary increment is on the alias: the deployment has moved traffic,
+        // which is what the stop then has to deal with.
+        let canary = ("1".to_string(), vec![("2".to_string(), 0.1)]);
+        let deadline = Instant::now() + WINDOW_DEADLINE;
+        loop {
+            if alias_reading(&emulator, &function).await == canary {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "case {case:?}: the canary increment never reached the alias"
+            );
+            tokio::time::sleep(SAMPLE_INTERVAL).await;
+        }
+
+        let mut request = json!({"deploymentId": deployment});
+        if let Some(enabled) = auto_rollback {
+            request["autoRollbackEnabled"] = json!(enabled);
+        }
+        emulator.ok("StopDeployment", request).await;
+
+        let info = emulator
+            .ok("GetDeployment", json!({"deploymentId": deployment}))
+            .await["deploymentInfo"]
+            .clone();
+        assert_eq!(
+            info["status"].as_str(),
+            Some("Stopped"),
+            "case {case:?}: expected the stop to end the deployment, got {info:?}"
+        );
+        // The stop has taken effect, so the alias holds what it holds: no further
+        // increment of a terminal deployment can move it.
+        let reading = alias_reading(&emulator, &function).await;
+        assert_eq!(
+            &reading, expected,
+            "case {case:?}: expected the alias at {expected:?} after the stop, got {reading:?}"
+        );
+    }
+}
+
 /// RULE: a deployment shifts traffic in the increments its resolved
 /// `trafficRoutingConfig` describes — each one but the last holding the version
 /// the deployment started from with that increment's share weighted onto the

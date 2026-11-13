@@ -6,13 +6,16 @@
 //! RULES under test:
 //!
 //! * `DeploymentAlreadyCompletedException` says
-//!   `The deployment <deploymentId> has already completed, current state <STATE>.`
-//!   — the id the request named and the deployment's INTERNAL state name, the
-//!   upper-snake form of its `DeploymentStatus`, in which a deployment a caller
-//!   stopped is `ABORTED` rather than `Stopped`. Rows span the three outcomes a
-//!   deployment reaches, how it reached each one (the clock, or a caller
-//!   stopping it), the compute platform, the deployment type and every operation
-//!   of this service that raises the error.
+//!   `The deployment <deploymentId> is already in state <STATE>` — the id the
+//!   request named and the deployment's INTERNAL state name, the upper-snake form
+//!   of its `DeploymentStatus`, in which a deployment a caller stopped is
+//!   `ABORTED` rather than `Stopped`. Rows span the three outcomes a deployment
+//!   reaches, how it reached each one (the clock, or a caller stopping it), the
+//!   compute platform, the deployment type and every operation of this service
+//!   that raises the error on it. A second `StopDeployment` of a deployment a
+//!   stop ALREADY ended is not one of them: it asks for the state that deployment
+//!   is already in, so it is answered rather than refused (`stop_deployment`
+//!   holds that rule).
 //! * `UnsupportedActionForDeploymentTypeException` says
 //!   `Operation is not supported for the deployment <deploymentId> of type <TYPE>.`
 //!   — the id and the `DeploymentType` the deployment runs as, so a caller
@@ -137,7 +140,9 @@ struct Completed {
     state: &'static str,
     /// The operations refused with `DeploymentAlreadyCompletedException` on it.
     /// `ContinueDeployment` refuses an in-place deployment for its TYPE before
-    /// it looks at progress, so it only appears on a blue/green row.
+    /// it looks at progress, so it only appears on a blue/green row; a second
+    /// `StopDeployment` only appears on a row whose outcome is not a stop,
+    /// because a stop of an already-stopped deployment is answered.
     operations: &'static [&'static str],
 }
 
@@ -147,11 +152,10 @@ fn blue_green_style() -> Value {
 }
 
 /// RULE: `DeploymentAlreadyCompletedException` says
-/// `The deployment <deploymentId> has already completed, current state <STATE>.`
-/// — the deployment id the request carried and the deployment's internal state
-/// name, which for a stopped deployment is `ABORTED` and not its API status —
-/// whichever operation was refused and however the deployment reached its
-/// outcome.
+/// `The deployment <deploymentId> is already in state <STATE>` — the deployment
+/// id the request carried and the deployment's internal state name, which for a
+/// stopped deployment is `ABORTED` and not its API status — whichever operation
+/// was refused and however the deployment reached its outcome.
 #[tokio::test]
 async fn a_completed_deployment_is_refused_with_its_internal_state() {
     // Rows span every outcome a deployment reaches (Succeeded, Failed, Stopped),
@@ -166,7 +170,7 @@ async fn a_completed_deployment_is_refused_with_its_internal_state() {
             stopped_by_caller: true,
             status: "Stopped",
             state: "ABORTED",
-            operations: &["SkipWaitTimeForInstanceTermination", "StopDeployment"],
+            operations: &["SkipWaitTimeForInstanceTermination"],
         },
         Completed {
             case: "stopped blue/green server",
@@ -181,11 +185,7 @@ async fn a_completed_deployment_is_refused_with_its_internal_state() {
             stopped_by_caller: true,
             status: "Stopped",
             state: "ABORTED",
-            operations: &[
-                "SkipWaitTimeForInstanceTermination",
-                "ContinueDeployment",
-                "StopDeployment",
-            ],
+            operations: &["SkipWaitTimeForInstanceTermination", "ContinueDeployment"],
         },
         Completed {
             // An EC2/on-premises group resolves no target here, so the clock
@@ -270,7 +270,7 @@ async fn a_completed_deployment_is_refused_with_its_internal_state() {
         );
 
         let expected = format!(
-            "The deployment {deployment_id} has already completed, current state {}.",
+            "The deployment {deployment_id} is already in state {}",
             row.state
         );
         for operation in row.operations {

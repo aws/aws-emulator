@@ -107,6 +107,8 @@ mod resource_tag_removal;
 mod resource_tagging;
 #[path = "all/revision_content_digest.rs"]
 mod revision_content_digest;
+#[path = "all/s3_revision_resolution.rs"]
+mod s3_revision_resolution;
 #[path = "all/service_role_permissions.rs"]
 mod service_role_permissions;
 #[path = "all/service_role_validation.rs"]

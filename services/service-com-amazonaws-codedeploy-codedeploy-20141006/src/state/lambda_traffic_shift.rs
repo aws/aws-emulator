@@ -108,10 +108,24 @@ pub fn apply_due_shifts<Eng: Send + Sync + 'static>(engine: &Eng) {
         return;
     };
     let now = now_ms();
-    let claimed = {
+    let (claimed, restores) = {
         let mut store = state.lock();
-        claim_due_increments(&mut store, now)
+        (
+            claim_due_increments(&mut store, now),
+            claim_due_restorations(&mut store),
+        )
     };
+    // The traffic a rolled-back deployment had already moved goes back first: the
+    // alias ends up where that deployment found it, not where a later increment
+    // of it would have put it.
+    for restore in &restores {
+        let _ = super::lambda_alias::move_alias(
+            engine,
+            &restore.function_name,
+            &restore.alias_name,
+            &restore.alias_move,
+        );
+    }
     if claimed.is_empty() {
         return;
     }
@@ -155,6 +169,54 @@ fn record_applied(state: &mut ComAmazonawsCodedeployCodedeploy20141006State, cla
     } else {
         TrafficShiftProgress::Declared
     };
+}
+
+/// What one alias RESTORATION puts back, and where.
+#[derive(Debug, Clone)]
+struct Restore {
+    /// The function whose alias goes back.
+    function_name: String,
+    /// The alias that goes back.
+    alias_name: String,
+    /// The write that puts it back: onto the version the deployment was shifting
+    /// FROM, with the weighted routing the shift added cleared.
+    alias_move: AliasMove,
+}
+
+/// The alias restoration every rolled-back deployment that owes one owes, CLAIMED
+/// as this pass's to carry out: the flag is cleared under this same lock, so one
+/// rollback puts the alias back once however many passes run.
+///
+/// A deployment whose AppSpec named no `CurrentVersion` still has the weighted
+/// routing its increments added cleared, which is the part of the move this
+/// service knows it made; the alias then keeps invoking whatever it invokes.
+fn claim_due_restorations(
+    state: &mut ComAmazonawsCodedeployCodedeploy20141006State,
+) -> Vec<Restore> {
+    let owing: Vec<String> = state
+        .deployments
+        .values()
+        .filter(|deployment| deployment.awaits_alias_restore)
+        .map(|deployment| deployment.deployment_id.clone())
+        .collect();
+    let mut claimed = Vec::new();
+    for deployment_id in owing {
+        let Some(deployment) = state.deployments.get_mut(&deployment_id) else {
+            continue;
+        };
+        deployment.awaits_alias_restore = false;
+        if let Some(declared) = deployment.lambda_traffic_shift.as_ref() {
+            claimed.push(Restore {
+                function_name: declared.function_name.clone(),
+                alias_name: declared.alias_name.clone(),
+                alias_move: AliasMove {
+                    function_version: declared.current_version.clone(),
+                    additional_version_weights: ::std::collections::BTreeMap::new(),
+                },
+            });
+        }
+    }
+    claimed
 }
 
 /// The increment every deployment that is owed one at `now_ms` owes, CLAIMED as

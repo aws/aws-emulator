@@ -83,6 +83,20 @@ impl Emulator {
         Self::mounted(false, false, false, true)
     }
 
+    /// One emulator with AWS Lambda *and* Amazon S3 mounted beside CodeDeploy on
+    /// the SAME engine, for a suite about a revision that keeps its AppSpec in an
+    /// S3 object: the object belongs to S3 and the alias the deployment moves to
+    /// Lambda, so both are driven through their own front doors.
+    pub(crate) fn with_lambda_and_s3() -> Self {
+        let mut emulator = Self::mounted(false, true, false, false);
+        emulator
+            .router
+            .register_service(service_com_amazonaws_s3_amazons3::EmulatedService::new(
+                Arc::clone(&emulator.engine),
+            ));
+        emulator
+    }
+
     /// The one constructor behind all of them: CodeDeploy, and each of CloudWatch,
     /// AWS Lambda, IAM and the Amazon SNS/Amazon SQS pair the caller asks for, on
     /// one shared engine.
@@ -373,6 +387,70 @@ impl Emulator {
              {parsed:?}"
         );
         parsed
+    }
+
+    /// One request against the Amazon S3 emulator through the same front door,
+    /// answering its HTTP status, its `ETag` response header and its body.
+    ///
+    /// S3's model declares `restXml` with path-style addressing, so the bucket and
+    /// the key ride the URI, and the SigV4 credential scope is what routes the
+    /// request to the `s3` signing name; the suite verifies no signature. Only
+    /// meaningful on an [`Emulator::with_lambda_and_s3`].
+    pub(crate) async fn s3(
+        &self,
+        method: &str,
+        path: &str,
+        body: &[u8],
+    ) -> (u16, Option<String>, Vec<u8>) {
+        let host = "s3.us-east-1.amazonaws.com";
+        let request = ::http::Request::builder()
+            .method(method)
+            .uri(format!("https://{host}{path}"))
+            .header("host", host)
+            .header(
+                "authorization",
+                "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20260101/us-east-1/s3/\
+                 aws4_request, SignedHeaders=host, Signature=0000",
+            )
+            .body(bytes::Bytes::copy_from_slice(body))
+            .expect("the request is well formed");
+        let response = self.router.dispatch(request).await;
+        let status = response.status().as_u16();
+        let e_tag = response
+            .headers()
+            .get("etag")
+            .map(|value| String::from_utf8_lossy(value.as_bytes()).to_string());
+        (status, e_tag, response.body().to_vec())
+    }
+
+    /// Create `bucket` through S3's own `CreateBucket`; see [`Emulator::s3`].
+    pub(crate) async fn s3_bucket(&self, case: &str, bucket: &str) {
+        let (status, _, body) = self.s3("PUT", &format!("/{bucket}"), b"").await;
+        assert_eq!(
+            status,
+            200,
+            "setup {case:?}: CreateBucket {bucket} must succeed, got {status} with {:?}",
+            String::from_utf8_lossy(&body)
+        );
+    }
+
+    /// Write `body` at `key` in `bucket` through S3's own `PutObject`, answering
+    /// the entity tag S3 reported for it; see [`Emulator::s3`].
+    pub(crate) async fn s3_put_object(
+        &self,
+        case: &str,
+        bucket: &str,
+        key: &str,
+        body: &[u8],
+    ) -> String {
+        let (status, e_tag, answered) = self.s3("PUT", &format!("/{bucket}/{key}"), body).await;
+        assert_eq!(
+            status,
+            200,
+            "setup {case:?}: PutObject {bucket}/{key} must succeed, got {status} with {:?}",
+            String::from_utf8_lossy(&answered)
+        );
+        e_tag.unwrap_or_else(|| panic!("setup {case:?}: PutObject answered no ETag"))
     }
 }
 

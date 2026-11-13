@@ -119,11 +119,10 @@ async fn stopping_an_in_flight_deployment_makes_it_terminal() {
             Some("Succeeded"),
             "case {case:?}: expected the stop to have taken effect, got {stopped:?}"
         );
-        assert!(
-            stopped["statusMessage"]
-                .as_str()
-                .is_some_and(|message| message.contains(&deployment_id)),
-            "case {case:?}: expected a statusMessage naming the deployment, got {stopped:?}"
+        assert_eq!(
+            stopped["statusMessage"].as_str(),
+            Some("No more commands will be scheduled for execution in the deployment instances"),
+            "case {case:?}: expected the fixed statusMessage a stop answers with, got {stopped:?}"
         );
 
         let info = deployment_info(&emulator, &deployment_id).await;
@@ -140,6 +139,19 @@ async fn stopping_an_in_flight_deployment_makes_it_terminal() {
         assert!(
             info["rollbackInfo"].is_null(),
             "case {case:?}: expected no rollbackInfo without autoRollbackEnabled, got {info:?}"
+        );
+        // How the deployment ENDED: a caller stopped it, which is what the record
+        // attributes itself to.
+        assert_eq!(
+            (
+                info["errorInformation"]["code"].as_str(),
+                info["errorInformation"]["message"].as_str(),
+            ),
+            (
+                Some("MANUAL_STOP"),
+                Some("the deployment is cancelled due to an abort request"),
+            ),
+            "case {case:?}: expected the stop to be attributed to MANUAL_STOP, got {info:?}"
         );
         assert_eq!(
             info["revision"], *revision,
@@ -164,20 +176,26 @@ async fn stopping_an_in_flight_deployment_makes_it_terminal() {
     }
 }
 
-/// RULE: a deployment that already holds an outcome — it completed, or somebody
-/// stopped it — has nothing left to stop, so the call is refused with
-/// `DeploymentAlreadyCompletedException` and the stored record is untouched.
+/// RULE: a deployment that reached its OWN outcome — the clock completed it, or
+/// it failed — has nothing left to stop, so the call is refused with
+/// `DeploymentAlreadyCompletedException` naming the state it settled in, and the
+/// stored record is untouched; a deployment a stop already ended is in the state
+/// the caller is asking for, so a second stop is ANSWERED (idempotent) and leaves
+/// that record untouched too.
 #[tokio::test]
 async fn stopping_a_completed_deployment_is_refused() {
-    // Rows differ along HOW the deployment reached its outcome: the clock
-    // completing it — on a Lambda group, which resolves a target, so the clock's
-    // outcome is `Succeeded` — and a caller stopping it.
-    let cases: &[(&str, &str, &str)] = &[
-        ("clock-completed", "Lambda", "Succeeded"),
-        ("already-stopped", "Server", "Stopped"),
+    // Rows differ along HOW the deployment reached its outcome — the clock
+    // completing it (on a Lambda group, which resolves a target, so the clock's
+    // outcome is `Succeeded`), the clock failing it (an EC2/on-premises group that
+    // resolves none) and a caller stopping it — and so along whether a second stop
+    // is refused or answered.
+    let cases: &[(&str, &str, &str, bool)] = &[
+        ("clock-completed", "Lambda", "Succeeded", true),
+        ("clock-failed", "Server", "Failed", true),
+        ("already-stopped", "Server", "Stopped", false),
     ];
 
-    for (case, platform, terminal) in cases {
+    for (case, platform, terminal, refused) in cases {
         let emulator = Emulator::new();
         let group = seeded_group(&emulator, case, platform).await;
         let revision = s3_revision("stop-bucket", "app.zip");
@@ -200,6 +218,21 @@ async fn stopping_a_completed_deployment_is_refused() {
         let (status, body) = emulator
             .call("StopDeployment", json!({"deploymentId": deployment_id}))
             .await;
+        if !*refused {
+            assert_eq!(
+                (status, body["status"].as_str()),
+                (200, Some("Succeeded")),
+                "case {case:?}: expected a second stop of a stopped deployment to be answered, \
+                 got {status} {body:?}"
+            );
+            let after = deployment_info(&emulator, &deployment_id).await;
+            assert_eq!(
+                after, before,
+                "case {case:?}: expected the second stop to leave the record untouched, got \
+                 {after:?}"
+            );
+            continue;
+        }
         assert_eq!(
             status, 400,
             "case {case:?}: expected HTTP 400 for a completed deployment, got {status} {body:?}"
@@ -208,6 +241,14 @@ async fn stopping_a_completed_deployment_is_refused() {
             error_code(&body),
             "DeploymentAlreadyCompletedException",
             "case {case:?}: expected DeploymentAlreadyCompletedException, got {body:?}"
+        );
+        assert_eq!(
+            body["message"].as_str(),
+            Some(
+                format!("The deployment {deployment_id} is already in state {}", terminal.to_uppercase())
+                    .as_str()
+            ),
+            "case {case:?}: expected the refusal to name the state it settled in, got {body:?}"
         );
 
         let after = deployment_info(&emulator, &deployment_id).await;

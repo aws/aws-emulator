@@ -43,6 +43,11 @@ service-com-amazonaws-lambda-awsgirapiservice = { workspace = true }
 # `CreateRole` wrote — which needs the owning service's state TYPE
 # (`state::service_role`).
 service-com-amazonaws-iam-awsidentitymanagementv20100508 = { workspace = true }
+# A revision that names an S3 object keeps the deployment's AppSpec in that
+# object, so the revision is resolved against Amazon S3's own object store
+# through the shared engine, which needs the owning service's state TYPE
+# (`state::s3_revision`).
+service-com-amazonaws-s3-amazons3 = { workspace = true }
 # An Lambda revision IS the AppSpec file, "formatted as JSON or YAML stored as a
 # RawString", so the function, alias and versions a deployment shifts are read
 # out of it with a maintained YAML 1.2 implementation (YAML 1.2 is a superset of

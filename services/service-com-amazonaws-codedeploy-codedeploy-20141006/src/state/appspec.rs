@@ -65,6 +65,17 @@ const HOOKS_KEY: &str = "Hooks";
 /// written as an AppSpec from reaching the parser at all.
 const MAX_APP_SPEC_BYTES: usize = 64 * 1024;
 
+/// The longest revision content this emulator parses an AppSpec out of; see
+/// [`MAX_APP_SPEC_BYTES`].
+///
+/// Public so a reader that FETCHES the document rather than being handed it
+/// ([`super::s3_revision`]) can apply the same bound to the stored bytes BEFORE it
+/// copies them, instead of stating a second bound of its own.
+#[must_use]
+pub fn max_app_spec_bytes() -> usize {
+    MAX_APP_SPEC_BYTES
+}
+
 /// How deeply this emulator parses an AppSpec: the nesting a parser would walk,
 /// bounded on the TEXT before it sees it — the flow collection openers (`[`, `{`),
 /// the block sequence and complex-key indicators (`-`, `?`) standing on their own,

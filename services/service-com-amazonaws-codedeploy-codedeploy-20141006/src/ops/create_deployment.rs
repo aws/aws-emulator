@@ -357,6 +357,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .as_ref()
             .and_then(crate::state::lambda_traffic_shift::declared_in_revision);
 
+        // Whether this deployment's revision keeps its AppSpec in an S3 object,
+        // which the deployment fetches once it starts. Read here, before the store
+        // is taken, for the same reason the declared shift is.
+        let awaits_revision_fetch = requested_revision
+            .as_ref()
+            .map(crate::state::s3_revision::awaits_fetch);
+
         let outcome = crate::state::with_state(&*self.engine, |state| {
             let Some(application) = state.applications.get(&application_name) else {
                 return Err(CreateDeploymentErrorModeled::ApplicationDoesNotExistException(
@@ -575,6 +582,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 termination_wait_millis,
                 instance_termination_wait_time_started: false,
                 lambda_traffic_shift,
+                // Whether the deployment still has to FETCH its revision before it
+                // can perform anything: a revision that names an S3 object keeps
+                // the AppSpec in that object (`state::s3_revision`).
+                awaits_revision_fetch: awaits_revision_fetch.unwrap_or(false),
+                // Nothing has been shifted yet, so there is nothing to put back.
+                awaits_alias_restore: false,
                 // Nothing has been shifted yet: the clock owes each increment of
                 // the shift at the instant that increment falls due, and the last
                 // of them at the instant it owes the deployment completed traffic

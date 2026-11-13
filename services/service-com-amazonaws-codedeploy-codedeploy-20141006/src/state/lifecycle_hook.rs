@@ -47,6 +47,19 @@ pub const LIFECYCLE_EVENT_BEFORE_ALLOW_TRAFFIC: &str = "BeforeAllowTraffic";
 /// holds back until the shift is carried out.
 pub const LIFECYCLE_EVENT_AFTER_ALLOW_TRAFFIC: &str = "AfterAllowTraffic";
 
+/// The lifecycle event that MOVES the traffic, which sits between the two hooks
+/// above: the AWS CodeDeploy User Guide's lifecycle events for an Lambda
+/// deployment are BeforeAllowTraffic, AllowTraffic and AfterAllowTraffic, and only
+/// the two around it can carry a validation function — "the available lifecycle
+/// hooks are BeforeAllowTraffic and AfterAllowTraffic"
+/// (`smithy_query(query="doc",shape="PutLifecycleEventHookExecutionStatus")`).
+///
+/// So it is not a hook a revision declares, but it IS a lifecycle event of the
+/// deployment, and the one whose work this emulator performs: the alias move
+/// ([`super::lambda_traffic_shift`]). [`allow_traffic_event`] reports it from that
+/// work's own progress.
+pub const LIFECYCLE_EVENT_ALLOW_TRAFFIC: &str = "AllowTraffic";
+
 /// The lifecycle hooks a Lambda validation function reports on, per compute
 /// platform, from this service's own documentation: "For Lambda deployments, the
 /// available lifecycle hooks are BeforeAllowTraffic and AfterAllowTraffic. For
@@ -120,6 +133,38 @@ impl HookExecution {
     }
 }
 
+/// The `LifecycleEventStatus` of the lifecycle event that moves the traffic, for a
+/// deployment that performs a shift — `None` for one that performs none, which has
+/// no traffic to allow.
+///
+/// The event is as far along as the SHIFT is: every increment carried out
+/// (`Succeeded`), the deployment failed before that (`Failed`), a caller or an
+/// alarm stopped it so the rest of the move never ran (`Skipped`), the first
+/// increment under way or already applied (`InProgress`), and otherwise not
+/// reached yet (`Pending`).
+#[must_use]
+pub fn allow_traffic_event(deployment: &Deployment) -> Option<&'static str> {
+    deployment.lambda_traffic_shift.as_ref()?;
+    let moved = !deployment.traffic_increments.is_empty()
+        && deployment.traffic_increments_applied >= deployment.traffic_increments.len();
+    if moved {
+        return Some(super::LIFECYCLE_EVENT_STATUS_SUCCEEDED);
+    }
+    Some(match deployment.status.as_str() {
+        super::DEPLOYMENT_STATUS_FAILED => super::LIFECYCLE_EVENT_STATUS_FAILED,
+        super::DEPLOYMENT_STATUS_STOPPED => super::LIFECYCLE_EVENT_STATUS_SKIPPED,
+        // A deployment that reached `Succeeded` moved every increment, so the
+        // branch above has already answered for it.
+        _ if deployment.traffic_increments_applied > 0 => {
+            super::LIFECYCLE_EVENT_STATUS_IN_PROGRESS
+        }
+        _ if traffic_is_allowed(deployment) && deployment.is_started() => {
+            super::LIFECYCLE_EVENT_STATUS_IN_PROGRESS
+        }
+        _ => super::LIFECYCLE_EVENT_STATUS_PENDING,
+    })
+}
+
 /// The hook executions `revision` declares for a deployment of
 /// `compute_platform`, in the order that platform runs them.
 ///
@@ -134,10 +179,32 @@ pub fn declared_executions(
     compute_platform: &str,
     revision: &RevisionLocation,
 ) -> Vec<HookExecution> {
+    executions_of(
+        compute_platform,
+        &super::appspec::declared_hooks_in_revision(revision),
+    )
+}
+
+/// [`declared_executions`] for a deployment whose AppSpec document was fetched
+/// rather than carried by the request — a revision that names an S3 object (see
+/// [`super::s3_revision`]) — so both read one document the same way.
+#[must_use]
+pub fn declared_executions_in_app_spec(
+    compute_platform: &str,
+    content: &str,
+) -> Vec<HookExecution> {
+    executions_of(
+        compute_platform,
+        &super::appspec::declared_hooks_in_app_spec(content),
+    )
+}
+
+/// The hook executions `declared` describes for a deployment of
+/// `compute_platform`; see [`declared_executions`].
+fn executions_of(compute_platform: &str, declared: &[DeclaredHook]) -> Vec<HookExecution> {
     let Some(order) = platform_hooks(compute_platform) else {
         return Vec::new();
     };
-    let declared = super::appspec::declared_hooks_in_revision(revision);
     order
         .iter()
         .filter_map(|event| {

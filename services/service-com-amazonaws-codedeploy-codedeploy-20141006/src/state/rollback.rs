@@ -177,6 +177,15 @@ pub fn record_rollback(
     };
     if let Some(deployment) = state.deployments.get_mut(deployment_id) {
         deployment.rollback_info = Some(rollback_info.clone());
+        // A rollback of a deployment that had already moved some of the traffic
+        // puts the alias back the way that deployment found it. That is owed by
+        // the ROLLBACK itself, so it is owed whether or not this group also had a
+        // revision to create a rollback deployment of: "if you stop a deployment,
+        // the traffic is restored to the original version" is what a rollback of
+        // a traffic shift means, and the version it is restored to is the one the
+        // stopped deployment's own AppSpec was shifting from.
+        deployment.awaits_alias_restore = deployment.lambda_traffic_shift.is_some()
+            && deployment.traffic_increments_applied > 0;
     }
 
     // The rollback is a DEPLOYMENT of its own, created by the service rather than
@@ -203,6 +212,9 @@ pub fn record_rollback(
         // exactly as a client's own deployment of that revision reads them: a
         // rollback runs the lifecycle events of the revision it puts back.
         let hook_executions = lifecycle_hook::declared_executions(&compute_platform, &revision);
+        // A rollback redeploys a revision of its own, so it reaches for that
+        // revision's object exactly as a client's own deployment of it would.
+        let awaits_revision_fetch = super::s3_revision::awaits_fetch(&revision);
         // The rollback deploys the revision it redeploys, so its Lambda target is
         // the function THAT revision names.
         super::name_lambda_targets(&mut targets, declared_shift.as_ref());
@@ -251,6 +263,10 @@ pub fn record_rollback(
             termination_wait_millis,
             instance_termination_wait_time_started: false,
             lambda_traffic_shift: declared_shift,
+            awaits_revision_fetch,
+            // The rollback performs its own shift; it has nothing of its own to
+            // put back.
+            awaits_alias_restore: false,
             traffic_shift: lambda_traffic_shift::TrafficShiftProgress::Declared,
             // In ONE shift: a rollback undoes, so it re-points the alias at the
             // revision it redeploys instead of walking the increments the

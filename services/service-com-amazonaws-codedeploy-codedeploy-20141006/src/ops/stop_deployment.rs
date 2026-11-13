@@ -201,11 +201,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     },
                 ));
             };
-            // A deployment that already reached an outcome has nothing left to
-            // stop. `with_state` has brought the record up to the instants the
+            // A deployment that already reached its own OUTCOME has nothing left
+            // to stop. `with_state` has brought the record up to the instants the
             // clock owed it first, so this reads the status a reader would see at
             // this same instant.
-            if crate::state::deployment_is_terminal(&deployment.status) {
+            //
+            // A deployment a stop ALREADY ended is not one of those: asking for
+            // the state it is already in is the same request answered twice, so it
+            // is answered the same way rather than refused — `StopStatus` is about
+            // whether the stop has taken effect, and for this one it has.
+            if crate::state::deployment_is_terminal(&deployment.status)
+                && deployment.status != crate::state::DEPLOYMENT_STATUS_STOPPED
+            {
                 return Err(
                     StopDeploymentErrorModeled::DeploymentAlreadyCompletedException(
                         DeploymentAlreadyCompletedException {
@@ -216,6 +223,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                         },
                     ),
                 );
+            }
+            if deployment.status == crate::state::DEPLOYMENT_STATUS_STOPPED {
+                return Ok(None);
             }
 
             let stopped_at_ms = crate::state::now_ms();
@@ -238,6 +248,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 // terminal from here on and the clock owes it nothing further.
                 deployment.status = crate::state::DEPLOYMENT_STATUS_STOPPED.to_string();
                 deployment.complete_time_ms = Some(stopped_at_ms);
+                // How the deployment ENDED, which a reader of the record is owed
+                // exactly as it is owed the reason an alarm-stopped deployment
+                // ended (`state::alarm_gate`): a caller stopped this one.
+                deployment.error_information = Some(ErrorInformation {
+                    code: Some(crate::state::ERROR_CODE_MANUAL_STOP.to_string()),
+                    message: Some(crate::state::MANUAL_STOP_MESSAGE.to_string()),
+                });
             }
 
             Ok(rollback_info)
@@ -246,6 +263,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             crate::scaffolded::Scaffolded::validation(crate::state::STATE_UNAVAILABLE)
         })?;
         let rollback_info = outcome?;
+        // The traffic the stopped deployment had already moved goes back: a
+        // rollback of a deployment that was shifting traffic puts the alias back
+        // the way that deployment found it, from the one place an alias is written
+        // (`state::lambda_traffic_shift`). Called with this store unlocked, and a
+        // no-op for a stop that rolled nothing back.
+        crate::state::lambda_traffic_shift::apply_due_shifts(&*self.engine);
         // A rollback the stop created is a deployment of its own, in flight from
         // here: it owes its own alias restoration and its terminal status whether
         // or not anybody calls CodeDeploy again.
@@ -263,16 +286,23 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // winding instances down — the deployment is already terminal by the time
         // this answers — so reporting Pending would claim work no part of the
         // emulator is doing.
-        let status_message = match &rollback_info {
-            Some(info) => info.rollback_message.clone(),
-            None => Some(format!("Deployment {deployment_id} was stopped")),
-        };
+        //
+        // The message is the FIXED sentence CodeDeploy answers a stop with: what
+        // stopping a deployment means for the work still scheduled on it. It names
+        // neither the deployment nor the rollback, which is why the rollback this
+        // stop created is reported where a rollback is reported — on both records'
+        // `rollbackInfo.rollbackMessage` (`state::rollback`).
         Ok(StopDeploymentOutput {
             status: Some(STOP_STATUS_SUCCEEDED.to_string()),
-            status_message,
+            status_message: Some(STOP_STATUS_MESSAGE.to_string()),
         })
     }
 }
+
+/// The `statusMessage` CodeDeploy answers a stop with: no further lifecycle event
+/// is scheduled on the deployment that was stopped.
+const STOP_STATUS_MESSAGE: &str =
+    "No more commands will be scheduled for execution in the deployment instances";
 
 /// The `StopStatus` value for a stop that has already taken effect
 /// (`smithy_query(query="shape",shape="StopStatus")`: Pending | Succeeded).
