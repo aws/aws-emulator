@@ -66,6 +66,32 @@ pub const FORBIDDEN_MESSAGE: &str = "Forbidden";
 /// The status that sentence is answered with.
 pub const FORBIDDEN_STATUS: u16 = 403;
 
+/// Whether `status` is a CLIENT error: one of the `4xx` class, whose cause is the call rather
+/// than the api serving it.
+///
+/// One reading for both planes, so what a gateway refuses a caller with, what an HTTP api's
+/// stage counts in its `4xx` series and what a WebSocket stage meters as its client-error
+/// count cannot disagree. The class is the one HTTP defines: "4xx (Client Error): The request
+/// contains bad syntax or cannot be fulfilled" (RFC 9110 §15.5), so every status from 400 up
+/// to but not including 500 is one.
+pub fn is_client_error_status(status: u16) -> bool {
+    (FIRST_CLIENT_ERROR_STATUS..FIRST_SERVER_ERROR_STATUS).contains(&status)
+}
+
+/// Whether `status` is a SERVER error: one of the `5xx` class, "the server is aware that it has
+/// erred or is incapable of performing the requested method" (RFC 9110 §15.6) — the class
+/// beside [`is_client_error_status`]'s, read the same one way.
+pub fn is_server_error_status(status: u16) -> bool {
+    (FIRST_SERVER_ERROR_STATUS..FIRST_SERVER_ERROR_STATUS + STATUSES_PER_CLASS)
+        .contains(&status)
+}
+
+/// The lowest status of the client-error class and the lowest of the server-error class, and
+/// how many statuses a class holds (RFC 9110 §15.5, §15.6).
+const FIRST_CLIENT_ERROR_STATUS: u16 = 400;
+const FIRST_SERVER_ERROR_STATUS: u16 = 500;
+const STATUSES_PER_CLASS: u16 = 100;
+
 /// The status a request whose authorizer refused it, or was not even invoked, is answered
 /// with: "it returns a 401 Unauthorized response without calling the Lambda function"
 /// (`Authorizer$IdentitySource`).

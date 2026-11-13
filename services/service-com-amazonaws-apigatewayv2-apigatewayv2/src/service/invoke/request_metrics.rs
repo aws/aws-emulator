@@ -31,8 +31,11 @@
 //! shared engine, so one metric has one home and the publisher and its readers cannot drift.
 //! They never travel over `PutMetricData`, which refuses a publish into a namespace the
 //! services own ("you should not specify a namespace that begins with `AWS/`",
-//! `PutMetricDataInput$Namespace`). Storing them is also what owes every alarm over these
-//! series its evaluation, which is why the write itself is [`super::metrics`]'.
+//! `PutMetricDataInput$Namespace`). The namespace, the two stage-level dimensions, the
+//! `DetailedMetricsEnabled` reading and the write itself are this service's ONE set of them
+//! ([`crate::service::metrics`]), shared with the per-call series of a WEBSOCKET api's stage;
+//! storing a datapoint there is also what owes every alarm over these series its evaluation.
+//! What THIS module owns is which observations an answered REQUEST produces.
 
 use std::time::Duration;
 
@@ -40,18 +43,17 @@ use super::{RtRequest, RtResponse};
 
 use ::service_com_amazonaws_cloudwatch_graniteserviceversion20100801 as cloudwatch;
 
-/// The namespace API Gateway reports what the apis it serves did with the requests they
-/// answered in: the ONE namespace of the service, which an HTTP api's series share with every
-/// other kind of api AWS's API Gateway serves. The api's own identifier is what separates
-/// them, which is why [`API_ID_DIMENSION`] is part of every series below.
-pub const NAMESPACE: &str = "AWS/ApiGateway";
+use crate::service::metrics;
+use crate::service::metrics::{COUNT_UNIT, MILLISECONDS_UNIT};
 
 /// The dimension naming the api whose traffic a datapoint is about — `Api$ApiId`, "the API
-/// identifier".
-pub const API_ID_DIMENSION: &str = "ApiId";
+/// identifier". The api's own identifier is what separates an HTTP api's series from those of
+/// every other kind of api AWS's API Gateway serves inside the one namespace
+/// ([`metrics::METRIC_NAMESPACE`]), which is why it is part of every series below.
+pub use metrics::API_ID_DIMENSION;
 
 /// The dimension naming the stage that answered it — `Stage$StageName`.
-pub const STAGE_DIMENSION: &str = "Stage";
+pub use metrics::STAGE_DIMENSION;
 
 /// The dimension naming the verb half of the answering route's `RouteKey`.
 pub const METHOD_DIMENSION: &str = "Method";
@@ -74,23 +76,9 @@ pub const LATENCY_METRIC: &str = "Latency";
 /// How many payload bytes answering it carried, in and out.
 pub const DATA_PROCESSED_METRIC: &str = "DataProcessed";
 
-/// The unit a counter of requests is published in
-/// (`smithy_query(query="shape",shape="StandardUnit")`).
-const COUNT_UNIT: &str = "Count";
-
-/// The unit a latency is published in, which is the resolution the access-log record of the
-/// same request reports it at.
-const MILLISECONDS_UNIT: &str = "Milliseconds";
-
-/// The unit a payload size is published in.
+/// The unit a payload size is published in. The two the counters and the latency are published
+/// in are the crate's own ([`COUNT_UNIT`], [`MILLISECONDS_UNIT`]).
 const BYTES_UNIT: &str = "Bytes";
-
-/// The lowest status of the client-error class, and the lowest of the server-error class
-/// (RFC 9110 §15.5, §15.6) — the two classes the error counters count. A class holds
-/// [`STATUSES_PER_CLASS`] statuses.
-const FIRST_CLIENT_ERROR_STATUS: u16 = 400;
-const FIRST_SERVER_ERROR_STATUS: u16 = 500;
-const STATUSES_PER_CLASS: u16 = 100;
 
 /// What ONE request contributes to a counter it belongs to, and what it contributes to one it
 /// does not: a counter counts requests, so each one is a single observation, and a request
@@ -98,10 +86,6 @@ const STATUSES_PER_CLASS: u16 = 100;
 /// is what lets the `Average` of an error counter be the share of the traffic in that class.
 const ONE_REQUEST: f64 = 1.0;
 const NO_REQUEST: f64 = 0.0;
-
-/// The `StorageResolution` these datapoints are published at, in seconds: regular resolution,
-/// "which CloudWatch stores at 1-minute resolution" (`MetricDatum$StorageResolution`).
-const STANDARD_STORAGE_RESOLUTION_SECONDS: i32 = 60;
 
 /// Seconds hold a thousand milliseconds: a latency measured as a duration is reported in the
 /// unit [`MILLISECONDS_UNIT`] names, with the sub-millisecond part kept.
@@ -124,29 +108,19 @@ pub(super) fn published<Eng: Send + Sync + 'static>(
     let Some(planned) = planned(engine, req, response, latency) else {
         return;
     };
-    let timestamp_secs = cloudwatch::state::now_secs();
-    let mut data: Vec<super::metrics::Datapoint> =
+    let mut data: Vec<metrics::Datapoint> =
         Vec::with_capacity(planned.series.len() * planned.observations.len());
     for dimensions in &planned.series {
         for observation in &planned.observations {
-            let key = cloudwatch::state::MetricKey {
-                namespace: NAMESPACE.to_string(),
-                metric_name: observation.metric_name.to_string(),
-                dimensions: dimensions.clone(),
-            };
-            let datum = cloudwatch::state::StoredDatum {
-                timestamp_secs,
-                sample_count: 1.0,
-                sum: observation.value,
-                minimum: observation.value,
-                maximum: observation.value,
-                unit: Some(observation.unit.to_string()),
-                storage_resolution: STANDARD_STORAGE_RESOLUTION_SECONDS,
-            };
-            data.push((key, datum));
+            data.push(metrics::datapoint(
+                observation.metric_name,
+                dimensions.clone(),
+                observation.value,
+                observation.unit,
+            ));
         }
     }
-    // The one write this plane's datapoints go through, which is also what makes every alarm
+    // The one write this service's datapoints go through, which is also what makes every alarm
     // over the series they land in due for its evaluation ([`super::metrics`]).
     super::metrics::stored(engine, &planned.api_id, data);
 }
@@ -201,7 +175,9 @@ fn planned<Eng: Send + Sync + 'static>(
             .and_then(|deployment| {
                 super::matching_route(&deployment.configuration.routes, req.method(), &route_path)
             });
-        if let Some(route) = answering.filter(|route| detailed(stage, &route.route_key)) {
+        let answered_by = answering
+            .filter(|route| metrics::publishes_per_route(stage, &route.route_key));
+        if let Some(route) = answered_by {
             let (method, resource) = route_dimensions(&route.route_key);
             let mut route_series = stage_series;
             route_series.insert(METHOD_DIMENSION.to_string(), method);
@@ -227,29 +203,6 @@ fn api_series(api_id: &str) -> cloudwatch::state::DimensionSet {
         .collect()
 }
 
-/// Whether `stage` asks for the per-route series of the route `route_key` names.
-///
-/// `RouteSettings$DetailedMetricsEnabled` is read off the settings the stage states for THAT
-/// route key, and otherwise off its `DefaultRouteSettings` — "the default route settings for
-/// the stage", which is what governs a route the stage states nothing of its own for. The
-/// fallback is per MEMBER rather than per settings block: a route whose own settings state
-/// only a throttle states nothing about its metrics, so the stage's default is what decides
-/// them. A stage that states neither asks for no route's series, which is the setting a
-/// created stage carries.
-fn detailed(stage: &crate::state::Stage, route_key: &str) -> bool {
-    stage
-        .route_settings
-        .get(route_key)
-        .and_then(|settings| settings.detailed_metrics_enabled)
-        .or_else(|| {
-            stage
-                .default_route_settings
-                .as_ref()
-                .and_then(|settings| settings.detailed_metrics_enabled)
-        })
-        .unwrap_or(false)
-}
-
 /// The `Method` and `Resource` dimensions of ONE route's own series, read off its `RouteKey`.
 ///
 /// A route key is the verb and the path it answers for, written as one value — `GET /orders`,
@@ -267,9 +220,14 @@ fn route_dimensions(route_key: &str) -> (String, String) {
 
 /// What the series take of a request answered with `status`, in `latency`, carrying `bytes` of
 /// payload in and out.
+///
+/// Which class the status falls in is the crate's ONE reading of each
+/// ([`crate::service::data_plane::is_client_error_status`] and its server-error counterpart),
+/// so the counter a request lands in and the refusal classes the other data plane meters by
+/// cannot disagree about where a status belongs.
 fn observations(status: u16, latency: Duration, bytes: usize) -> Vec<Observation> {
-    let in_class = |first: u16| {
-        if status >= first && status < first.saturating_add(STATUSES_PER_CLASS) {
+    let counted = |in_class: bool| {
+        if in_class {
             ONE_REQUEST
         } else {
             NO_REQUEST
@@ -283,12 +241,12 @@ fn observations(status: u16, latency: Duration, bytes: usize) -> Vec<Observation
         },
         Observation {
             metric_name: CLIENT_ERROR_METRIC,
-            value: in_class(FIRST_CLIENT_ERROR_STATUS),
+            value: counted(crate::service::data_plane::is_client_error_status(status)),
             unit: COUNT_UNIT,
         },
         Observation {
             metric_name: SERVER_ERROR_METRIC,
-            value: in_class(FIRST_SERVER_ERROR_STATUS),
+            value: counted(crate::service::data_plane::is_server_error_status(status)),
             unit: COUNT_UNIT,
         },
         Observation {

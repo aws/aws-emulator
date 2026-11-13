@@ -98,11 +98,13 @@ service-com-amazonaws-apigatewaymanagementapi-apigatewaymanagementapi = { worksp
 # itself is `service-common`'s one shared evaluation.
 service-com-amazonaws-iam-awsidentitymanagementv20100508 = { workspace = true }
 service-com-amazonaws-sts-awssecuritytokenservicev20110615 = { workspace = true }
-# The CloudWatch METRIC STORE the request series a stage publishes land in
-# (`src/service/invoke/request_metrics.rs`): the counters and measurements of a request a
-# deployed stage answered go into the one store `ListMetrics` and `GetMetricStatistics`
-# read, so a metric has one home. They never travel over `PutMetricData`, which refuses a
-# publish into a namespace the services own.
+# The CloudWatch METRIC STORE the series a stage publishes land in (`src/service/metrics.rs`,
+# which owns the namespace and the one appender; the per-request series of an HTTP api's stage
+# are `src/service/invoke/request_metrics.rs` and the per-call series of a WEBSOCKET api's
+# stage are `src/service/websocket/transport.rs`): the counters and measurements of the calls a
+# deployed stage answered go into the one store `ListMetrics` and `GetMetricStatistics` read, so
+# a metric has one home. They never travel over `PutMetricData`, which refuses a publish into a
+# namespace the services own.
 service-com-amazonaws-cloudwatch-graniteserviceversion20100801 = { workspace = true }
 
 [build-dependencies]

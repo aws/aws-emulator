@@ -148,7 +148,7 @@ mod access_logs;
 /// measurements of that request.
 mod request_metrics;
 /// WHERE those datapoints land — the CloudWatch metric store — and the alarm wake-up each one
-/// written there owes.
+/// written there owes, which both data planes of this service store a datapoint through.
 mod metrics;
 // `pub(crate)` for the three steps BOTH data planes of this service perform, so the rule
 // each states is written once and the two protocols cannot drift apart:

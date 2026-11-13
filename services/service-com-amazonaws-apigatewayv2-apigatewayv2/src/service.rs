@@ -133,6 +133,10 @@ mod connections_endpoint;
 mod data_plane;
 mod invoke;
 mod jwt;
+// The `AWS/ApiGateway` series a stage publishes about the traffic it served, which is the
+// only way a client observes a data plane that answers over a socket rather than through a
+// response a later call can read.
+mod metrics;
 mod portal;
 // `pub` for the operations that authorize: every operation whose model declares
 // `AccessDeniedException` asks `authorization::authorize` before it reads this service's

@@ -56,7 +56,7 @@
 use std::collections::BTreeMap;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::time::SystemTime;
+use std::time::{Instant, SystemTime};
 
 use ::emulator_server::{ListenerConn, NativeHandler, TlsUpgrader};
 use ::futures_util::{SinkExt, StreamExt};
@@ -74,6 +74,10 @@ use ::tokio_tungstenite::tungstenite::{Error as SocketError, Message};
 
 use super::event::{Call, Connection};
 use super::{dispatch, event, integration};
+// The `AWS/ApiGateway` series this stage publishes about the traffic it serves: a frame
+// carried over this socket leaves no response a later caller can read, so the connections,
+// the messages, the backend latency and the failures are reported there as they happen.
+use crate::service::metrics::{self, CallOutcome, CloudWatchState, StageMetrics};
 use crate::state::ComAmazonawsApigatewayv2Apigatewayv2State as ServiceStore;
 
 /// The member a gateway frame carries its reason under, and the two members it names the
@@ -115,6 +119,10 @@ pub async fn open_for_api<Eng: Send + Sync + 'static>(
         registry: registry.clone(),
         api_id: api_id.to_string(),
         callback,
+        // The CloudWatch store this api's stages publish their own `AWS/ApiGateway` series
+        // to. `None` on an engine carrying no CloudWatch: the data plane then serves every
+        // call as it does otherwise and nothing is published.
+        metrics: metrics::cloudwatch_state(engine),
         // The core's own TLS server, for a client that dialled `wss://`. A core that cannot
         // prepare it leaves this `None`, and such a client is then refused at the first byte
         // rather than being answered in the clear.
@@ -149,6 +157,9 @@ struct StageSocket {
     registry: ::engine::ServiceState<connections::ComAmazonawsApigatewaymanagementapiApigatewaymanagementapiState>,
     api_id: String,
     callback: EmbeddedEmulator,
+    /// The store the stage's own `AWS/ApiGateway` series are appended to, or `None` when this
+    /// emulator carries no CloudWatch.
+    metrics: Option<::engine::ServiceState<CloudWatchState>>,
     upgrader: Option<TlsUpgrader>,
 }
 
@@ -160,9 +171,10 @@ impl NativeHandler for StageSocket {
         let registry = self.registry.clone();
         let api_id = self.api_id.clone();
         let callback = self.callback.clone();
+        let metrics = self.metrics.clone();
         let upgrader = self.upgrader.clone();
         Box::pin(async move {
-            serve_connection(state, registry, api_id, callback, upgrader, conn).await;
+            serve_connection(state, registry, api_id, callback, metrics, upgrader, conn).await;
         })
     }
 }
@@ -179,6 +191,7 @@ async fn serve_connection(
     registry: ::engine::ServiceState<connections::ComAmazonawsApigatewaymanagementapiApigatewaymanagementapiState>,
     api_id: String,
     callback: EmbeddedEmulator,
+    metrics: Option<::engine::ServiceState<CloudWatchState>>,
     upgrader: Option<TlsUpgrader>,
     conn: ListenerConn,
 ) {
@@ -205,7 +218,7 @@ async fn serve_connection(
         super::endpoint_http::serve(callback, conn).await;
         return;
     }
-    let (admitted, refusal) = match admission(&state, &callback, &api_id, &offer).await {
+    let (admitted, refusal) = match admission(&state, &callback, metrics, &api_id, &offer).await {
         Ok(admitted) => (Some(admitted), None),
         Err(refusal) => (None, Some(refusal)),
     };
@@ -412,10 +425,14 @@ fn socket_limits() -> ::tokio_tungstenite::tungstenite::protocol::WebSocketConfi
 }
 
 /// What the handshake resolved: the CONNECTION it offered, as every event of that
-/// connection reports it.
+/// connection reports it, and the publisher of the serving stage's own metric series.
 #[derive(Debug, Clone)]
 struct Admitted {
     connection: Connection,
+    /// Where every later call of this connection is reported: the stage that admitted it is
+    /// the stage its frames are counted under, so the publisher resolved for the handshake is
+    /// carried on rather than resolved again per frame.
+    metrics: StageMetrics,
 }
 
 /// How a handshake this endpoint does not complete is answered: an HTTP status, and the
@@ -508,8 +525,7 @@ impl Refusal {
 ///    precondition the authorizer's own function decides — a DENY is `403`
 ///    ([`super::connect_authorizer`]), and what it ALLOWS travels with the connection into
 ///    every later call's event;
-/// 4. the CONNECTION REQUEST is served by the `$connect` route's integration, PERFORMED
-///    ([`super::integration`]), and the handshake completes only on a `2xx` reply. A reply
+/// 4. the CONNECTION REQUEST is served by the `$connect` route's integration, PERFORMED///    ([`super::integration`]), and the handshake completes only on a `2xx` reply. A reply
 ///    OUTSIDE `2xx` refuses the handshake with the status that integration answered and the
 ///    body it answered, because `$connect` is where a backend admits or refuses a client; a
 ///    reply naming no status, or none at all, is the gateway's own `500`.
@@ -518,11 +534,18 @@ impl Refusal {
 /// event that request is served with carries it: `$connect` is where a handler learns the
 /// id it will later address the client by.
 ///
+/// Every step from 2 on is also METERED on the stage it resolved ([`metrics`]): the connection
+/// request is one message of the stage, the `$connect` route's integration counts the message
+/// it was sent, the integration that served it reports how long it took, a `4xx` refusal is a
+/// client error, and a connection request that was not admitted is a route that did not
+/// execute.
+///
 /// Nothing holds the store lock while a backend is awaited: every record the decision needs
 /// is read under one lock and owned from then on.
 async fn admission(
     state: &::engine::ServiceState<ServiceStore>,
     callback: &EmbeddedEmulator,
+    metrics_store: Option<::engine::ServiceState<CloudWatchState>>,
     api_id: &str,
     offer: &Offer,
 ) -> Result<Admitted, Refusal> {
@@ -532,7 +555,22 @@ async fn admission(
     let stage_name = super::super::data_plane::first_segment(offer.path())
         .unwrap_or_default()
         .to_string();
+    // A refusal from here on is METERED, so the publisher is built before the step that can
+    // refuse: a handshake refused before a stage of the api resolved belongs to no stage and
+    // is counted under none.
     let offered = offered(state, api_id, &stage_name, offer)?;
+    let metrics = StageMetrics::new(metrics_store, api_id, &stage_name);
+    let per_route_connect = offered.per_route_connect;
+    let route = per_route_connect.as_deref();
+    // The connection request reached a deployed stage, which is one message of that stage;
+    // `ConnectCount` is published below, where the `$connect` route's integration is sent it.
+    metrics.message(route);
+    // The refusal that route's own AUTHORIZATION owes by itself, read with the records above
+    // and answered here so it is metered on the stage it was refused at.
+    if let Some((status, message)) = offered.unauthorized {
+        metrics.served(route, refused_connection(status));
+        return Err(Refusal::gateway(status, message));
+    }
     let mut connection = offered.connection;
     if let Some((authorizer, identity)) = offered.authorizer {
         let decided = super::connect_authorizer::decided(
@@ -542,17 +580,34 @@ async fn admission(
             &identity,
         )
         .await
-        .map_err(|(status, message)| Refusal::gateway(status, message))?;
+        .map_err(|(status, message)| {
+            // An authorizer that refused, or one this configuration could not run at all, is
+            // a route that did not execute.
+            metrics.served(route, refused_connection(status));
+            Refusal::gateway(status, message)
+        })?;
         connection.authorizer_context = decided.context;
         connection.authorizer_principal = decided.principal_id;
     }
-    let Some(connect) = offered.connect else {
-        // No `$connect` route: there is nothing to refuse the connection.
-        return Ok(Admitted { connection });
+    let admitted = |connection: Connection| Admitted {
+        connection,
+        metrics: metrics.clone(),
     };
-    match integration::perform(callback, &connection, &connect, &Call::Connect).await {
+    let Some(connect) = offered.connect else {
+        // No `$connect` route: there is nothing to refuse the connection, and no integration
+        // was sent the connection request.
+        metrics.served(route, CallOutcome::default());
+        return Ok(admitted(connection));
+    };
+    // The connection request IS sent to the `$connect` route's integration from here.
+    metrics.connect_dispatched(route);
+    let began = Instant::now();
+    let performed = integration::perform(callback, &connection, &connect, &Call::Connect).await;
+    match performed {
         Ok(answered) if dispatch::is_success_status(answered.status_code.as_deref()) => {
-            Ok(Admitted { connection })
+            metrics.integration_latency(route, began.elapsed());
+            metrics.served(route, CallOutcome::default());
+            Ok(admitted(connection))
         }
         Ok(answered) => {
             // The STATUS the integration answered is what the handshake is refused with, and
@@ -571,9 +626,22 @@ async fn admission(
                 "refusing a WebSocket handshake: the connection request's integration did \
                  not reply successfully"
             );
+            // The integration ANSWERED — it refused the client rather than failing — so the
+            // call has a latency to report, and the refusal is metered by the status that
+            // reached the client.
+            metrics.integration_latency(route, began.elapsed());
             match status {
-                Some(status) => Err(Refusal::from_backend(status, answered.payload)),
-                None => Err(internal_server_error()),
+                Some(status) => {
+                    metrics.served(route, refused_connection(status));
+                    Err(Refusal::from_backend(status, answered.payload))
+                }
+                None => {
+                    metrics.served(
+                        route,
+                        refused_connection(super::super::data_plane::UNPLACEABLE_STATUS),
+                    );
+                    Err(internal_server_error())
+                }
             }
         }
         Err(unserved) => {
@@ -584,19 +652,45 @@ async fn admission(
                 "refusing a WebSocket handshake: the connection request's integration \
                  produced no reply"
             );
+            // The integration itself could not answer, which is the one failure that is the
+            // INTEGRATION's rather than the client's.
+            metrics.served(
+                route,
+                CallOutcome {
+                    integration_error: true,
+                    ..refused_connection(super::super::data_plane::UNPLACEABLE_STATUS)
+                },
+            );
             Err(internal_server_error())
         }
     }
 }
 
+/// What a CONNECTION REQUEST that was not admitted ended in, by the status the client was
+/// refused with: a `4xx` is a client error, and a connection request that was refused at all
+/// is a route whose execution did not reach a successful end.
+fn refused_connection(status: u16) -> CallOutcome {
+    CallOutcome {
+        client_error: super::super::data_plane::is_client_error_status(status),
+        execution_error: true,
+        integration_error: false,
+    }
+}
+
 /// What the handshake OFFERED, read out of the store under one lock: the connection it would
-/// establish, the authorizer decision its `$connect` route still owes, and that route's
-/// integration to perform.
+/// establish, the authorizer decision its `$connect` route still owes, that route's
+/// integration to perform, and whether the serving stage publishes per-route series for it.
 #[derive(Debug, Clone)]
 struct Offered {
     connection: Connection,
     authorizer: Option<super::OwedDecision>,
     connect: Option<integration::Selected>,
+    per_route_connect: Option<String>,
+    /// The refusal the connection request's AUTHORIZATION owes by itself — the handshake
+    /// missing an identity source, and a route whose authorizer the api does not hold — which
+    /// is answered by the caller rather than here, because a refusal of a resolved stage is
+    /// METERED on that stage ([`admission`]).
+    unauthorized: Option<super::HandshakeRefusal>,
 }
 
 /// Read everything the decision needs out of the store, or the refusal a step that resolves
@@ -639,14 +733,17 @@ fn offered(
         );
         return Err(forbidden());
     };
-    let authorizer = super::connect_authorization(
+    let authorization = super::connect_authorization(
         api,
         stage,
         deployed,
         |name: &str| offer.header(name),
         &offer.target,
-    )
-    .map_err(|(status, message)| Refusal::gateway(status, message))?;
+    );
+    let (authorizer, unauthorized) = match authorization {
+        Ok(authorizer) => (authorizer, None),
+        Err(refusal) => (None, Some(refusal)),
+    };
     Ok(Offered {
         connection: Connection {
             api_id: api_id.to_string(),
@@ -663,6 +760,11 @@ fn offered(
         },
         authorizer,
         connect: integration::select_route_key(deployed, dispatch::CONNECT_ROUTE_KEY),
+        // Whether the stage this handshake addressed publishes a per-route series for the
+        // route that serves a connection request, read under this same lock.
+        per_route_connect: metrics::publishes_per_route(stage, dispatch::CONNECT_ROUTE_KEY)
+            .then(|| dispatch::CONNECT_ROUTE_KEY.to_string()),
+        unauthorized,
     })
 }
 
@@ -715,6 +817,11 @@ const INTERNAL_MESSAGE: &str = "Internal server error";
 /// Carry one established connection: register it, dispatch every frame the client sends,
 /// write every payload posted to it, invoke the `$disconnect` route when it ends, and forget
 /// it.
+///
+/// Every message the connection carries is METERED on the stage that admitted it — each frame
+/// the client sent, and each frame written back to it, a reply and an out-of-band push alike
+/// (`MessageCount` is "the number of messages sent to the WebSocket API, either from or to the
+/// client").
 async fn carry_frames<S>(
     state: ::engine::ServiceState<ServiceStore>,
     registry: ::engine::ServiceState<connections::ComAmazonawsApigatewaymanagementapiApigatewaymanagementapiState>,
@@ -727,6 +834,7 @@ async fn carry_frames<S>(
     let (pushes, mut pushed): (Sender<Vec<u8>>, Receiver<Vec<u8>>) =
         channel(connections::CONNECTION_PUSH_DEPTH);
     let connection = accepted.connection;
+    let metrics = accepted.metrics;
     let api_id = connection.api_id.clone();
     // The id this connection was minted when the handshake was decided, which is the id the
     // `$connect` route's own event already reported.
@@ -781,6 +889,10 @@ async fn carry_frames<S>(
                 if outgoing.send(frame_of(frame)).await.is_err() {
                     break;
                 }
+                // A payload pushed to this connection is a message the api sent the client,
+                // and it belongs to no route: it was posted out of band through the
+                // `@connections` management API rather than dispatched to a route.
+                metrics.message(None);
             }
             frame = incoming.next() => {
                 let body = match frame {
@@ -864,10 +976,14 @@ async fn carry_frames<S>(
                     refused(&mut outgoing, CloseCode::Size, MESSAGE_TOO_BIG_REASON).await;
                     break;
                 }
-                if let Some(reply) = served_frame(&state, &callback, &connection, &body).await {
-                    if outgoing.send(frame_of(reply)).await.is_err() {
+                let served =
+                    served_frame(&state, &callback, &metrics, &connection, &body).await;
+                if let Some(served) = served {
+                    if outgoing.send(frame_of(served.reply)).await.is_err() {
                         break;
                     }
+                    // The reply reached the client, which is one more message of the stage.
+                    metrics.message(served.per_route.as_deref());
                 }
             }
         }
@@ -879,6 +995,7 @@ async fn carry_frames<S>(
     disconnected(
         &state,
         &callback,
+        &metrics,
         &connection,
         Call::Disconnect {
             status_code,
@@ -898,34 +1015,57 @@ async fn carry_frames<S>(
 ///
 /// "API Gateway invokes [the `$disconnect` route] when a client disconnects from your API",
 /// and the close is a one-way call: nothing can be sent back over a socket that has ended, so
-/// what the integration replied is logged and never answered.
+/// what the integration replied is logged and never answered. The call is a message of the
+/// stage like the others, and the integration that served it reports how long it took.
 async fn disconnected(
     state: &::engine::ServiceState<ServiceStore>,
     callback: &EmbeddedEmulator,
+    metrics: &StageMetrics,
     connection: &Connection,
     call: Call,
 ) {
     let selected = {
         let store = state.lock();
-        let Some((_api, _stage, deployed)) = integration::deployed(
+        let Some((_api, stage, deployed)) = integration::deployed(
             &store,
             &connection.api_id,
             &connection.stage_name,
         ) else {
             return;
         };
-        integration::select_route_key(deployed, dispatch::DISCONNECT_ROUTE_KEY)
+        integration::select_route_key(deployed, dispatch::DISCONNECT_ROUTE_KEY).map(|selected| {
+            let per_route = metrics::publishes_per_route(stage, &selected.route_key)
+                .then(|| selected.route_key.clone());
+            (selected, per_route)
+        })
     };
-    let Some(selected) = selected else {
+    let Some((selected, per_route)) = selected else {
         return;
     };
-    if let Err(unserved) = integration::perform(callback, connection, &selected, &call).await {
-        tracing::info!(
-            api_id = %connection.api_id,
-            connection_id = %connection.connection_id,
-            ?unserved,
-            "the $disconnect route's integration produced no reply"
-        );
+    let route = per_route.as_deref();
+    metrics.message(route);
+    let began = Instant::now();
+    match integration::perform(callback, connection, &selected, &call).await {
+        Ok(_answered) => {
+            metrics.integration_latency(route, began.elapsed());
+            metrics.served(route, CallOutcome::default());
+        }
+        Err(unserved) => {
+            tracing::info!(
+                api_id = %connection.api_id,
+                connection_id = %connection.connection_id,
+                ?unserved,
+                "the $disconnect route's integration produced no reply"
+            );
+            metrics.served(
+                route,
+                CallOutcome {
+                    execution_error: true,
+                    integration_error: true,
+                    ..CallOutcome::default()
+                },
+            );
+        }
     }
 }
 
@@ -999,37 +1139,91 @@ const MESSAGE_TOO_BIG_REASON: &str = "Message too big";
 ///   `MOCK` integration's selected response rendered. A route that declares none is one-way:
 ///   its integration still runs, and nothing is sent back.
 ///
-/// The store is read under one lock and released before the integration is performed: one
-/// connection's backend must not stall another connection's frame.
+/// Each of the three is METERED on the serving stage: the frame itself is one message, the
+/// integration that served it reports how long it took, a message the api routes nowhere is a
+/// client error, and an integration that produced no reply is an integration error of a route
+/// that did not execute. So is the fourth outcome, which answers the client nothing: a frame
+/// whose stage no longer serves anything is a message of the stage that it could not execute.
+///
+/// The store is read under one lock and released before the integration is performed — and
+/// before anything is published, so no store of this service is held while the metric store is
+/// written: one connection's backend must not stall another connection's frame.
 async fn served_frame(
     state: &::engine::ServiceState<ServiceStore>,
     callback: &EmbeddedEmulator,
+    metrics: &StageMetrics,
     connection: &Connection,
     body: &str,
-) -> Option<Vec<u8>> {
+) -> Option<Served> {
     let api_id = connection.api_id.as_str();
     let connection_id = connection.connection_id.as_str();
-    let selected = {
+    let serving = {
         let store = state.lock();
-        let (api, _stage, deployed) =
-            integration::deployed(&store, api_id, &connection.stage_name)?;
-        integration::select_message(api, deployed, body)
+        match integration::deployed(&store, api_id, &connection.stage_name) {
+            None => Serving::Undeployed,
+            Some((api, stage, deployed)) => match integration::select_message(api, deployed, body)
+            {
+                None => Serving::Unrouted,
+                Some(selected) => {
+                    // Whether this stage publishes a per-route series for the route that
+                    // serves the frame, read under the same lock the route was selected under.
+                    let per_route = metrics::publishes_per_route(stage, &selected.route_key)
+                        .then(|| selected.route_key.clone());
+                    Serving::Route(Box::new(selected), per_route)
+                }
+            },
+        }
     };
-    let Some(selected) = selected else {
-        tracing::info!(%api_id, %connection_id, "a WebSocket message selected no route");
-        return Some(
-            gateway_frame(super::super::data_plane::FORBIDDEN_MESSAGE, connection_id)
-                .into_bytes(),
-        );
+    let (selected, per_route) = match serving {
+        Serving::Undeployed => {
+            tracing::info!(
+                %api_id,
+                %connection_id,
+                "a WebSocket message reached a stage that no longer serves anything"
+            );
+            // The frame reached the api, so it is a message of the stage; nothing of the stage
+            // could execute it, and the client is answered nothing.
+            metrics.message(None);
+            metrics.served(
+                None,
+                CallOutcome {
+                    execution_error: true,
+                    ..CallOutcome::default()
+                },
+            );
+            return None;
+        }
+        Serving::Unrouted => {
+            tracing::info!(%api_id, %connection_id, "a WebSocket message selected no route");
+            // A message the api routes nowhere belongs to no route, and the frame it is
+            // answered with states the client's own error.
+            metrics.message(None);
+            metrics.served(
+                None,
+                CallOutcome {
+                    client_error: true,
+                    ..CallOutcome::default()
+                },
+            );
+            return Some(Served {
+                reply: gateway_frame(super::super::data_plane::FORBIDDEN_MESSAGE, connection_id)
+                    .into_bytes(),
+                per_route: None,
+            });
+        }
+        Serving::Route(selected, per_route) => (*selected, per_route),
     };
-    match integration::perform(
+    let route = per_route.as_deref();
+    metrics.message(route);
+    let began = Instant::now();
+    let performed = integration::perform(
         callback,
         connection,
         &selected,
         &Call::Message(body.to_string()),
     )
-    .await
-    {
+    .await;
+    match performed {
         Ok(answered) => {
             tracing::debug!(
                 %api_id,
@@ -1038,7 +1232,16 @@ async fn served_frame(
                 two_way = selected.two_way,
                 "a WebSocket message was served"
             );
-            selected.two_way.then_some(answered.payload).flatten()
+            metrics.integration_latency(route, began.elapsed());
+            metrics.served(route, CallOutcome::default());
+            selected
+                .two_way
+                .then_some(answered.payload)
+                .flatten()
+                .map(|reply| Served {
+                    reply,
+                    per_route: per_route.clone(),
+                })
         }
         Err(unserved) => {
             tracing::info!(
@@ -1047,9 +1250,49 @@ async fn served_frame(
                 ?unserved,
                 "a WebSocket message's route produced no reply"
             );
-            Some(gateway_frame(INTERNAL_MESSAGE, connection_id).into_bytes())
+            // The integration could not answer: that is the integration's own failure, and
+            // the route it fronts did not execute.
+            metrics.served(
+                route,
+                CallOutcome {
+                    execution_error: true,
+                    integration_error: true,
+                    ..CallOutcome::default()
+                },
+            );
+            Some(Served {
+                reply: gateway_frame(INTERNAL_MESSAGE, connection_id).into_bytes(),
+                per_route,
+            })
         }
     }
+}
+
+/// What SERVES one frame, read out of the store under one lock: the route the api selected for
+/// it and the route key the per-route series are published under when the stage asks for them,
+/// or the reason no route serves it.
+#[derive(Debug, Clone)]
+enum Serving {
+    /// The route that serves the frame, and `Some(route_key)` when its stage publishes
+    /// per-route series for it. BOXED, because a route and its integration are far larger
+    /// than the two reasons nothing serves the frame and would otherwise size this value for
+    /// every one of them.
+    Route(Box<integration::Selected>, Option<String>),
+    /// The api routes the frame nowhere: no route's key is selected and it holds no `$default`
+    /// route.
+    Unrouted,
+    /// The stage this connection was admitted on serves nothing any more — its deployment or
+    /// its api is gone.
+    Undeployed,
+}
+
+/// What ONE frame is answered with: the payload the client reads back, and the route it is
+/// attributed to when the serving stage publishes its per-route series (`None` for the
+/// gateway's own frame, which belongs to no route).
+#[derive(Debug, Clone)]
+struct Served {
+    reply: Vec<u8>,
+    per_route: Option<String>,
 }
 
 /// A frame the GATEWAY sends rather than a route: its reason, the connection it is about and

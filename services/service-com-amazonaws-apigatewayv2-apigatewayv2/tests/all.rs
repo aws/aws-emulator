@@ -303,6 +303,8 @@ mod websocket_endpoint_connections;
 mod websocket_handshake_data_plane;
 #[path = "all/websocket_lambda_routes.rs"]
 mod websocket_lambda_routes;
+#[path = "all/websocket_stage_metrics.rs"]
+mod websocket_stage_metrics;
 #[path = "all/websocket_message_refusals.rs"]
 mod websocket_message_refusals;
 #[path = "all/websocket_transport_data_plane.rs"]
