@@ -212,6 +212,38 @@ fn documents(arn: &str) -> Vec<(String, String)> {
         })
         .to_string(),
     ));
+    // The same GRANT written four ways, which is the dimension a store that decoded the
+    // document to a policy model and re-emitted it would collapse: a statement's `Action`
+    // and `Principal` are each a single value or a list of them, a principal is an account
+    // root ARN or the bare account id, and a document carries whatever padding its author
+    // wrote. Each form has to come back as it went in.
+    let principal_arn = format!("arn:aws:iam::{}:root", engine::EMULATOR_ACCOUNT_ID);
+    for (case, principal, granted) in [
+        ("scalar action, root ARN principal", format!("\"{principal_arn}\""), format!("\"{action}\"")),
+        ("listed action, root ARN principal", format!("\"{principal_arn}\""), format!("[\"{action}\"]")),
+        (
+            "listed action, listed account principal",
+            format!("[\"{}\"]", engine::EMULATOR_ACCOUNT_ID),
+            format!("[\"{action}\"]"),
+        ),
+    ] {
+        rows.push((
+            case.to_string(),
+            format!(
+                "{{\"Version\":\"2012-10-17\",\"Statement\":[{{\"Effect\":\"Allow\",\
+                 \"Principal\":{{\"AWS\":{principal}}},\"Action\":{granted},\
+                 \"Resource\":\"{arn}\"}}]}}"
+            ),
+        ));
+        rows.push((
+            format!("{case}, padded between every member"),
+            format!(
+                "{{\"Version\": \"2012-10-17\", \"Statement\": [{{\"Effect\": \"Allow\", \
+                 \"Principal\": {{\"AWS\": {principal}}}, \"Action\": {granted}, \
+                 \"Resource\": \"{arn}\"}}]}}"
+            ),
+        ));
+    }
     rows
 }
 

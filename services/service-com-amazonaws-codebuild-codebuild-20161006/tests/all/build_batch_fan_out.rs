@@ -12,8 +12,11 @@
 //!    declared identifier and publishes it in that identifier's build group
 //!    (`BuildGroup$currentBuildSummary`), where each build is a real build of the same
 //!    project that `BatchGetBuilds` resolves on its own and that names the batch it
-//!    belongs to through `Build$buildBatchArn`. A buildspec declaring no such section
-//!    declares no build, so the batch carries no group.
+//!    belongs to through `Build$buildBatchArn`. Ahead of them all stands the batch's OWN
+//!    group — `state::SOURCE_DOWNLOAD_IDENTIFIER`, the source download every declared
+//!    build is then built from — which the batchspec does not declare and the batch
+//!    reports first. A buildspec declaring no `batch` section declares no build at all,
+//!    so the batch carries no group.
 //! 2. A batch build is named by its ARN in every answer this service gives, so
 //!    `BatchGetBuildBatches` reports an identifier it could not resolve in the same ARN
 //!    form — which is what lets a client diff the ARNs it asked for against
@@ -79,13 +82,14 @@ async fn start_build_batch(router: &MultiServiceRouter, request: Value) -> Value
     body["buildBatch"].clone()
 }
 
-/// RULE 1: a batch build fans out into one build per identifier its batchspec declares,
-/// each published in its own build group and each a real, independently retrievable build
-/// of the same project that names the batch it belongs to.
+/// RULE 1: a batch build fans out into the source download it runs first and one build
+/// per identifier its batchspec declares, each published in its own build group and each a
+/// real, independently retrievable build of the same project that names the batch it
+/// belongs to.
 #[tokio::test]
 async fn a_batch_build_fans_out_into_the_builds_its_batchspec_declares() {
     // (case, the project's buildspec, this request's buildspecOverride, the identifiers
-    // the batch must publish, in order, with the identifiers each one waits for)
+    // the batchspec DECLARES, in order, with the identifiers each one waits for)
     type Row = (
         &'static str,
         String,
@@ -187,7 +191,16 @@ async fn a_batch_build_fans_out_into_the_builds_its_batchspec_declares() {
         ),
     ];
 
-    for (index, (case, buildspec, override_spec, expected)) in rows.into_iter().enumerate() {
+    for (index, (case, buildspec, override_spec, declared)) in rows.into_iter().enumerate() {
+        // The groups the batch publishes: its own source download first, then the
+        // declared ones. A batchspec that declared nothing publishes neither.
+        let expected: Vec<(&'static str, Vec<&'static str>)> = if declared.is_empty() {
+            Vec::new()
+        } else {
+            std::iter::once((state::SOURCE_DOWNLOAD_IDENTIFIER, Vec::new()))
+                .chain(declared)
+                .collect()
+        };
         let router = emulator();
         let project = format!("fan-out-{index}");
         create_project(
@@ -351,8 +364,9 @@ async fn a_batchspec_declaring_more_builds_than_the_ceiling_is_refused() {
             );
             assert_eq!(
                 reported_groups(&body["buildBatch"]).len(),
-                declared,
-                "case {case:?}: every declared build must be published, got {body}"
+                declared + 1,
+                "case {case:?}: every declared build must be published, beside the \
+                 batch's own source download, got {body}"
             );
         } else {
             assert_eq!(

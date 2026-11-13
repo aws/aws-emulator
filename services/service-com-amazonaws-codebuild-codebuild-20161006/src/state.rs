@@ -39,8 +39,8 @@ use std::collections::BTreeMap;
 use crate::ops::types::{
     Build, BuildArtifacts, BuildBatch, BuildBatchPhase, BuildPhase, CommandExecution,
     EnvironmentVariable, Fleet, FleetStatus, PhaseContext, Project, ProjectArtifacts, ProjectCache,
-    ProjectEnvironment, ProjectSource, Report, ReportExportConfig, ReportGroup, SSMSession, Sandbox,
-    SandboxSession, SandboxSessionPhase, SourceCredentialsInfo,
+    ProjectEnvironment, ProjectSource, Report, ReportExportConfig, ReportGroup, ResolvedArtifact,
+    SSMSession, Sandbox, SandboxSession, SandboxSessionPhase, SourceCredentialsInfo,
 };
 
 /// Where a build's output artifacts go, and whether that destination exists.
@@ -1033,6 +1033,26 @@ pub struct StoredBuildBatch {
     pub start_millis: i64,
     /// Epoch millis at which this batch build's terminal transition became due.
     pub settle_due_millis: i64,
+}
+
+/// What one build of a batch's build groups has come to, as a group's summary reports it:
+/// the build record's own status, whether it finished, and the artifacts it deployed.
+///
+/// Carried as a value rather than read off the build record where it is needed, because
+/// the batch record and its builds live in the same store: the builds are read and
+/// settled first ([`ComAmazonawsCodebuildCodebuild20161006State::settle_build_batch`])
+/// and the batch is then taken mutably, so no reader can refresh a group from a build
+/// that has not caught up.
+#[derive(Debug, Clone)]
+pub struct GroupBuildOutcome {
+    /// The build's `buildStatus`.
+    pub status: Option<String>,
+    /// Whether the build has finished, which is when its artifacts are deployed.
+    pub complete: bool,
+    /// The build's primary output artifacts.
+    pub artifacts: Option<BuildArtifacts>,
+    /// The build's secondary output artifacts.
+    pub secondary_artifacts: Option<Vec<BuildArtifacts>>,
 }
 
 /// A persisted report group: the modelled [`ReportGroup`] plus the instants its
@@ -2077,18 +2097,18 @@ impl ComAmazonawsCodebuildCodebuild20161006State {
         }
     }
 
-    /// The current `buildStatus` of each build one batch's groups name, keyed by that
-    /// build's ARN — each build first brought up to date with the transition the clock
-    /// already owes it ([`Self::settled_build`]).
+    /// What each build one batch's groups name has come to, keyed by that build's ARN —
+    /// each build first brought up to date with the transition the clock already owes it
+    /// ([`Self::settled_build`]).
     ///
     /// Read before the batch record is taken mutably, so one pass answers both: a
-    /// group's summary reports the build it names, and a build's status is the build
-    /// record's, never a second copy the batch keeps drifting from.
+    /// group's summary reports the build it names, and a build's status and artifacts are
+    /// the build record's, never a second copy the batch keeps drifting from.
     fn settled_group_build_statuses(
         &mut self,
         batch_id: &str,
         now_millis: i64,
-    ) -> BTreeMap<String, String> {
+    ) -> BTreeMap<String, GroupBuildOutcome> {
         let named: Vec<String> = self
             .build_batches
             .get(batch_id)
@@ -2105,19 +2125,24 @@ impl ComAmazonawsCodebuildCodebuild20161006State {
                     .collect()
             })
             .unwrap_or_default();
-        let mut statuses = BTreeMap::new();
+        let mut outcomes = BTreeMap::new();
         for arn in named {
             let Some(build_id) = build_id_from_arn(&arn).map(str::to_string) else {
                 continue;
             };
-            if let Some(status) = self
-                .settled_build(&build_id, now_millis)
-                .and_then(|stored| stored.build.build_status.clone())
-            {
-                statuses.insert(arn, status);
+            if let Some(stored) = self.settled_build(&build_id, now_millis) {
+                outcomes.insert(
+                    arn,
+                    GroupBuildOutcome {
+                        status: stored.build.build_status.clone(),
+                        complete: stored.build.build_complete,
+                        artifacts: stored.build.artifacts.clone(),
+                        secondary_artifacts: stored.build.secondary_artifacts.clone(),
+                    },
+                );
             }
         }
-        statuses
+        outcomes
     }
 
     /// Every batch build id this account holds, OLDEST FIRST, keeping only those
@@ -2556,27 +2581,55 @@ impl StoredBuild {
 }
 
 impl StoredBuildBatch {
-    /// Report each build group's build with the status that build's own record now
-    /// carries, keyed by the ARN the group names it by
+    /// Report each build group's build with what that build's own record now carries,
+    /// keyed by the ARN the group names it by
     /// ([`ComAmazonawsCodebuildCodebuild20161006State::settled_group_build_statuses`]).
     ///
     /// A group's `currentBuildSummary` is a SUMMARY of the build it names, so it is
     /// refreshed from that build rather than frozen at the instant the batch started it:
-    /// an ARN the statuses do not cover is left exactly as it was, so this is idempotent
+    /// an ARN the outcomes do not cover is left exactly as it was, so this is idempotent
     /// and adds nothing the build records do not say.
-    pub fn refresh_group_summaries(&mut self, statuses: &BTreeMap<String, String>) {
+    ///
+    /// A build that has FINISHED has deployed its artifacts to the destination the batch
+    /// runs with, so its summary then also reports those artifacts as RESOLVED ones
+    /// ([`resolved_artifact_of`]) — the primary one and the list of secondary ones, which
+    /// is how a client reaches what a group produced. A build still running has deployed
+    /// nothing, so its summary reports neither.
+    pub fn refresh_group_summaries(&mut self, outcomes: &BTreeMap<String, GroupBuildOutcome>) {
+        // The destination type the BATCH resolved, which is what its builds deploy to:
+        // read before the groups are taken mutably.
+        let artifacts_type = self
+            .build_batch
+            .artifacts
+            .as_ref()
+            .and_then(|artifacts| artifacts.r#type.clone());
         for group in self.build_batch.build_groups.iter_mut().flatten() {
+            let identifier = group.identifier.clone().unwrap_or_default();
             let Some(summary) = group.current_build_summary.as_mut() else {
                 continue;
             };
-            if let Some(status) = summary
-                .arn
-                .as_deref()
-                .and_then(|arn| statuses.get(arn))
-                .cloned()
-            {
+            let Some(outcome) = summary.arn.as_deref().and_then(|arn| outcomes.get(arn)) else {
+                continue;
+            };
+            if let Some(status) = outcome.status.clone() {
                 summary.build_status = Some(status);
             }
+            if !outcome.complete {
+                continue;
+            }
+            summary.primary_artifact = outcome.artifacts.as_ref().map(|artifacts| {
+                resolved_artifact_of(&identifier, artifacts_type.as_deref(), artifacts)
+            });
+            summary.secondary_artifacts = Some(
+                outcome
+                    .secondary_artifacts
+                    .iter()
+                    .flatten()
+                    .map(|artifacts| {
+                        resolved_artifact_of(&identifier, artifacts_type.as_deref(), artifacts)
+                    })
+                    .collect(),
+            );
         }
     }
 
@@ -3859,6 +3912,13 @@ fn terminal_batch_phase(fan_out: Option<bool>) -> &'static str {
 /// that fanned out got past `DOWNLOAD_BATCHSPEC` and its `IN_PROGRESS` phase ends in the
 /// status its own builds ended in (`fan_out`), while one that declared nothing never got
 /// a specification to act on at all (see [`BATCH_SPEC_NOT_DOWNLOADED_MESSAGE`]).
+///
+/// A batch that fanned out then does its OWN finishing work before it ends, which the
+/// model names and documents as a phase of its own: `COMBINE_ARTIFACTS`, where "build
+/// output artifacts are being combined and uploaded to the output location". That is the
+/// work the batch does after its builds have finished, so it fills the last span of the
+/// batch's life — the one span the batch takes beyond its deepest level of builds — and
+/// carries the outcome those builds settled on.
 fn terminal_batch_phases(
     start_millis: i64,
     due_millis: i64,
@@ -3885,6 +3945,12 @@ fn terminal_batch_phases(
     } else {
         buildspec::BUILD_STATUS_FAILED
     };
+    // The instant the batch's builds were all done and the batch's own combining work
+    // began: one span before the batch itself came due, which is the span
+    // `StartBuildBatch` allots the batch beyond its deepest level of builds.
+    let builds_done_millis = due_millis
+        .saturating_sub(BUILD_SETTLE_MILLIS)
+        .max(start_millis);
     vec![
         finished_batch_phase("SUBMITTED", "SUCCEEDED", start_millis, start_millis, None),
         finished_batch_phase(
@@ -3894,7 +3960,20 @@ fn terminal_batch_phases(
             start_millis,
             None,
         ),
-        finished_batch_phase("IN_PROGRESS", outcome, start_millis, due_millis, None),
+        finished_batch_phase(
+            "IN_PROGRESS",
+            outcome,
+            start_millis,
+            builds_done_millis,
+            None,
+        ),
+        finished_batch_phase(
+            "COMBINE_ARTIFACTS",
+            outcome,
+            builds_done_millis,
+            due_millis,
+            None,
+        ),
         open_batch_phase(outcome, due_millis),
     ]
 }
@@ -3950,9 +4029,13 @@ fn open_batch_phase(phase_type: &str, start_millis: i64) -> BuildBatchPhase {
 /// the checksums and the resolved location left absent because nothing was uploaded.
 ///
 /// Shared by `StartBuild` and `StartBuildBatch`, which project the same
-/// `ProjectArtifacts` onto the `BuildArtifacts` their records carry.
+/// `ProjectArtifacts` onto the `BuildArtifacts` their records carry. The destination's
+/// TYPE is the batch's own report of what it combines its artifacts to
+/// ([`batch_artifacts_of`]), so a build leaves it absent: no recorded build read states
+/// one.
 pub fn build_artifacts_of(artifacts: ProjectArtifacts) -> BuildArtifacts {
     BuildArtifacts {
+        r#type: None,
         location: artifacts.location,
         sha256sum: None,
         md5sum: None,
@@ -3960,6 +4043,80 @@ pub fn build_artifacts_of(artifacts: ProjectArtifacts) -> BuildArtifacts {
         encryption_disabled: artifacts.encryption_disabled,
         artifact_identifier: artifacts.artifact_identifier,
         bucket_owner_access: artifacts.bucket_owner_access,
+    }
+}
+
+/// The artifacts destination each build of a batch build carries, projected once for the
+/// whole fan-out: the primary artifacts and the secondary ones, as a BUILD reports them
+/// ([`build_artifacts_of`]) rather than as the batch does ([`batch_artifacts_of`]).
+#[derive(Debug, Clone, Default)]
+pub struct GroupArtifacts {
+    /// The build's primary output artifacts.
+    pub primary: Option<BuildArtifacts>,
+    /// The build's secondary output artifacts.
+    pub secondary: Option<Vec<BuildArtifacts>>,
+}
+
+/// A started BATCH build's view of its output artifacts — [`build_artifacts_of`] plus
+/// what a batch states about the destination it combines the artifacts of its builds to:
+/// the destination's TYPE, and its LOCATION as a stated value rather than an absent one.
+///
+/// Recorded behaviour of a batch build read: the batch's `artifacts` carries the
+/// destination type in the token form the service puts on the wire
+/// ([`wire_artifacts_type`]) and a `location` that is the empty string for a destination
+/// that names none — a batch reports the destination it RUNS WITH, the way it reports its
+/// cache, source and environment ([`effective_cache`] and its siblings), rather than
+/// omitting what the project configured.
+pub fn batch_artifacts_of(artifacts: ProjectArtifacts) -> BuildArtifacts {
+    let r#type = wire_artifacts_type(&artifacts.r#type);
+    let location = artifacts.location.clone().unwrap_or_default();
+    BuildArtifacts {
+        r#type: Some(r#type),
+        location: Some(location),
+        ..build_artifacts_of(artifacts)
+    }
+}
+
+/// An `ArtifactsType` in the token form CodeBuild puts on the wire for an artifact it
+/// REPORTS — the modelled value lowercased (`NO_ARTIFACTS` -> `no_artifacts`).
+///
+/// Recorded behaviour: a batch build read states the artifact type of both the batch's
+/// own `artifacts` and the `primaryArtifact` of each build group in this form, while the
+/// value an artifact is CONFIGURED with (`ProjectArtifacts$type`) is the modelled,
+/// upper-case one. So the token is derived from the configured value rather than written
+/// out: a destination type this service never saw before reports in the same form.
+pub fn wire_artifacts_type(configured: &str) -> String {
+    configured.to_ascii_lowercase()
+}
+
+/// One artifact a finished build of a batch RESOLVED: what a build group's summary
+/// reports for the artifacts that build produced (`BuildSummary$primaryArtifact` and
+/// `$secondaryArtifacts`).
+///
+/// A `ResolvedArtifact` "is an artifact that is built and deployed to the destination",
+/// so it is reported from the build's own artifacts record once that build finished:
+/// `type` is the destination's type in the form the wire states it
+/// ([`wire_artifacts_type`], taken from the batch's resolved artifacts), `identifier` is
+/// the group the build ran for — which is what a client correlates an artifact with — and
+/// `location` is stated only when the destination resolved one, since a destination that
+/// holds no artifacts deployed nothing anywhere.
+pub fn resolved_artifact_of(
+    identifier: &str,
+    artifacts_type: Option<&str>,
+    artifacts: &BuildArtifacts,
+) -> ResolvedArtifact {
+    ResolvedArtifact {
+        r#type: artifacts_type.map(str::to_string),
+        location: artifacts
+            .location
+            .clone()
+            .filter(|location| !location.is_empty()),
+        identifier: Some(
+            artifacts
+                .artifact_identifier
+                .clone()
+                .unwrap_or_else(|| identifier.to_string()),
+        ),
     }
 }
 
@@ -4266,16 +4423,67 @@ pub fn build_batch_config_violation(
     })
 }
 
+/// How long a batch build may run when nothing named a `timeoutInMins`.
+///
+/// `ProjectBuildBatchConfig$timeoutInMins` is optional, and a batch build started with a
+/// configuration that states none runs to the ceiling of the window the member is held to
+/// ([`BATCH_TIMEOUT_MAX_MINUTES`]) — the whole 36 hours a batch may take. Recorded
+/// behaviour: a batch started without a stated batch timeout reports that ceiling as the
+/// timeout it RUNS WITH, the way every other member a started run resolves a default for
+/// does ([`effective_source`] and its siblings).
+pub const DEFAULT_BATCH_TIMEOUT_MINUTES: i32 = BATCH_TIMEOUT_MAX_MINUTES;
+
+/// How many builds a batch build may fan out into when its configuration states no
+/// `restrictions.maximumBuildsAllowed`.
+///
+/// `BatchRestrictions$maximumBuildsAllowed` ("the maximum number of builds allowed") is
+/// optional and unconstrained in the model. Recorded behaviour: a batch started with a
+/// configuration that restricts nothing reports this count as the restriction it RUNS
+/// WITH.
+pub const DEFAULT_MAXIMUM_BUILDS_ALLOWED: i32 = 100;
+
+/// `buildBatchConfig` as a started batch build reports it: the configuration the batch
+/// RUNS WITH, which is the one it was started with and the documented defaults for the
+/// members it leaves unstated.
+///
+/// The same rule [`effective_cache`], [`effective_source`] and [`effective_environment`]
+/// apply to the other configuration objects a run carries: a started batch reports what
+/// it runs with rather than only the members the request or the project happened to
+/// carry, so a configuration that states no timeout runs to
+/// [`DEFAULT_BATCH_TIMEOUT_MINUTES`] and one that restricts nothing runs under
+/// [`DEFAULT_MAXIMUM_BUILDS_ALLOWED`]. Only members CodeBuild resolves a value for are
+/// filled: a member whose unset value is not a value the batch runs with — the batch's own
+/// service role, `combineArtifacts`, `batchReportMode`, the compute types and fleets a
+/// restriction may name — stays as stated.
+pub fn effective_build_batch_config(
+    config: Option<crate::ops::types::ProjectBuildBatchConfig>,
+) -> crate::ops::types::ProjectBuildBatchConfig {
+    let mut config = config.unwrap_or_default();
+    config.timeout_in_mins = Some(config.timeout_in_mins.unwrap_or(DEFAULT_BATCH_TIMEOUT_MINUTES));
+    let mut restrictions = config.restrictions.take().unwrap_or_default();
+    restrictions.maximum_builds_allowed = Some(
+        restrictions
+            .maximum_builds_allowed
+            .unwrap_or(DEFAULT_MAXIMUM_BUILDS_ALLOWED),
+    );
+    config.restrictions = Some(restrictions);
+    config
+}
+
 /// What CodeBuild states as the reason a project cannot be built as a BATCH, carried by
 /// the modelled `InvalidInputException`.
 ///
 /// Fixed text, under [`SANDBOX_NOT_FOUND_MESSAGE`]'s rule: it quotes neither the project
 /// the request named nor an ARN, so the sentence is the same for every project that is
-/// not batch-enabled. A project's own `buildBatchConfig` "defines the batch build options
-/// for the project", and it is what makes the project batch-capable: one that carries
-/// none has no batch build options at all, so a batch of it is a malformed request rather
-/// than a missing resource — the project itself exists. Recorded behaviour — the model
-/// states no message for the error.
+/// not batch-enabled. A batch build needs batch build options to run under, and they come
+/// from EITHER source that states them — the project's own `buildBatchConfig`, which
+/// "defines the batch build options for the project", or the `buildBatchConfigOverride`
+/// the start call carries for this one batch, the way every other `*Override` member
+/// overlays the stored project. Recorded behaviour: a start call that states the batch
+/// configuration itself is accepted for a project carrying none, and this refusal belongs
+/// to the one case where NEITHER source states one — a malformed request rather than a
+/// missing resource, since the project itself exists. The model states no message for the
+/// error.
 pub const PROJECT_NOT_BATCH_ENABLED_MESSAGE: &str =
     "BatchConfig must be configured on the project to use the BuildBatch feature";
 
@@ -4367,6 +4575,34 @@ pub fn build_store_id(entry: &str) -> &str {
 /// interact with dependent Amazon Web Services services on behalf of the Amazon Web
 /// Services account".
 pub const SERVICE_PRINCIPAL: &str = "codebuild.amazonaws.com";
+
+/// The webhook disposition `DeleteProject` reports for a project that carried no webhook:
+/// there was none to disconnect.
+///
+/// Recorded behaviour, which is also what declares the member at all: the operation's
+/// recorded 200 body is `{"webhookDeletedStatus": …}`, with this token for a project with
+/// no webhook attached.
+pub const WEBHOOK_NOT_DELETED_STATUS: &str = "no_webhook";
+
+/// The webhook disposition `DeleteProject` reports for a project whose webhook went with
+/// it: CodeBuild's half of the webhook was removed by this call.
+pub const WEBHOOK_DELETED_STATUS: &str = "successful";
+
+/// The disposition `DeleteProjectOutput$webhookDeletedStatus` reports, computed from the
+/// webhook state of the project this call deleted.
+///
+/// A project is "disconnected from its repository's events" by the webhook record
+/// CodeBuild keeps against it (`Webhook`), so deleting the project disconnects it: the
+/// call reports [`WEBHOOK_DELETED_STATUS`] when it removed such a record and
+/// [`WEBHOOK_NOT_DELETED_STATUS`] when there was none to remove — which includes a name
+/// this account holds no project for, since nothing there carried a webhook either.
+pub fn webhook_deleted_status(deleted_a_webhook: bool) -> &'static str {
+    if deleted_a_webhook {
+        WEBHOOK_DELETED_STATUS
+    } else {
+        WEBHOOK_NOT_DELETED_STATUS
+    }
+}
 
 /// What CodeBuild states as the reason the role a request hands it is one it cannot run a
 /// build under, carried by the modelled `InvalidInputException`.

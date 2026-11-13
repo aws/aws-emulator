@@ -21,6 +21,8 @@ mod batch_get_reports;
 mod build_artifacts_destination;
 #[path = "all/build_batch_fan_out.rs"]
 mod build_batch_fan_out;
+#[path = "all/build_batch_projection.rs"]
+mod build_batch_projection;
 #[path = "all/buildspec_execution.rs"]
 mod buildspec_execution;
 #[path = "all/buildspec_file_tree.rs"]
@@ -31,6 +33,8 @@ mod command_execution_lifecycle;
 mod delete_build_batch;
 #[path = "all/delete_fleet.rs"]
 mod delete_fleet;
+#[path = "all/delete_project_webhook_disposition.rs"]
+mod delete_project_webhook_disposition;
 #[path = "all/delete_report_group.rs"]
 mod delete_report_group;
 #[path = "all/fleet_lifecycle.rs"]

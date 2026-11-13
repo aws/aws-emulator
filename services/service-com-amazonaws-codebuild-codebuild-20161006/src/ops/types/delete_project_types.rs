@@ -20,5 +20,6 @@ pub struct DeleteProjectInput {
 #[smithy_macros::smithy(shape = "com.amazonaws.codebuild#DeleteProjectOutput")]
 #[derive(Debug, Clone, Default)]
 pub struct DeleteProjectOutput {
+    pub webhook_deleted_status: Option<String>,
 }
 

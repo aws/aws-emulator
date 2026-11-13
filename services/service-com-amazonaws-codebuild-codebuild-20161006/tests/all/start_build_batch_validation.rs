@@ -7,9 +7,11 @@
 //! Two rules, both answered with the operation's modelled `InvalidInputException`
 //! (client, HTTP 400) and with NOTHING persisted:
 //!
-//! 1. A batch build is a per-PROJECT capability. `Project$buildBatchConfig` is the
-//!    object "that defines the batch build options for the project", so a project
-//!    carrying none cannot be batch built — whatever the request itself carries.
+//! 1. A batch build runs under batch build options, and EITHER source states them: the
+//!    project's own `buildBatchConfig` — the object "that defines the batch build options
+//!    for the project" — or the `buildBatchConfigOverride` the start call carries for
+//!    this one batch, the way every other `*Override` member overlays the stored project.
+//!    Only a start where NEITHER states one is refused.
 //! 2. A batch build configuration's `timeoutInMins` is held to the 5..2160-minute
 //!    window the model pins on the sibling member that times the builds of the same
 //!    batch (`buildTimeoutInMinutesOverride` -> `BuildTimeOut`
@@ -84,18 +86,19 @@ async fn stored_project(router: &MultiServiceRouter, name: &str) -> Value {
     body["projects"][0].clone()
 }
 
-/// RULE: a project is batch-capable exactly when it carries its own
-/// `buildBatchConfig`; `StartBuildBatch` on one that does not is refused with
-/// `InvalidInputException` and mints no batch build.
+/// RULE: a batch build needs batch build options, which EITHER the project's own
+/// `buildBatchConfig` or the start call's `buildBatchConfigOverride` may state;
+/// `StartBuildBatch` where neither states one is refused with `InvalidInputException` and
+/// mints no batch build.
 ///
 /// The table spans the forms a project's batch configuration takes — absent, carrying
-/// only a service role, carrying only a timeout, carrying every member — and the
-/// request forms that must not change the answer: an idempotency token, and a
-/// `buildBatchConfigOverride`, which overrides batch options a project that has none
-/// cannot be given by the request.
+/// only a service role, carrying only a timeout, carrying every member — crossed with the
+/// request forms: the bare request, one carrying an idempotency token, and one carrying a
+/// `buildBatchConfigOverride`, which states the batch options a project that has none
+/// never got.
 #[tokio::test]
 async fn start_build_batch_requires_the_project_to_carry_a_batch_configuration() {
-    // (case, the project's CreateProject members, whether it is batch-enabled)
+    // (case, the project's CreateProject members, whether the PROJECT is batch-enabled)
     let projects: Vec<(&str, Value, bool)> = vec![
         ("no buildBatchConfig at all", json!({}), false),
         (
@@ -132,12 +135,14 @@ async fn start_build_batch_requires_the_project_to_carry_a_batch_configuration()
         let project = format!("batch-cap-{index}");
         create_project(&router, &project, configuration).await;
 
-        // (what the request adds to `projectName`)
-        let requests: [(&str, Value); 3] = [
-            ("the bare request", json!({})),
+        // (what the request adds to `projectName`, whether the REQUEST states the batch
+        // options itself)
+        let requests: [(&str, Value, bool); 3] = [
+            ("the bare request", json!({}), false),
             (
                 "the request carrying an idempotency token",
                 json!({"idempotencyToken": "token-1"}),
+                false,
             ),
             (
                 "the request carrying a batch configuration override",
@@ -145,16 +150,19 @@ async fn start_build_batch_requires_the_project_to_carry_a_batch_configuration()
                     "serviceRole": "arn:aws:iam::000000000000:role/service-role/batch",
                     "timeoutInMins": 30,
                 }}),
+                true,
             ),
         ];
-        for (form, extra) in requests {
+        let mut accepted_requests = 0;
+        for (form, extra, request_states_options) in requests {
             let request = merged(json!({"projectName": project.clone()}), extra);
             let (status, body) = call(&router, "StartBuildBatch", request.clone()).await;
-            if batch_capable {
+            if batch_capable || request_states_options {
+                accepted_requests += 1;
                 assert_eq!(
                     status, 200,
-                    "case {case:?} / {form}: a batch-enabled project must be batch \
-                     buildable, got {status} with {body}"
+                    "case {case:?} / {form}: a batch whose options either source states \
+                     must be buildable, got {status} with {body}"
                 );
                 assert_eq!(
                     body["buildBatch"]["buildBatchStatus"],
@@ -164,7 +172,7 @@ async fn start_build_batch_requires_the_project_to_carry_a_batch_configuration()
             } else {
                 assert_eq!(
                     status, 400,
-                    "case {case:?} / {form}: a project with no batch build options must be \
+                    "case {case:?} / {form}: a batch no source states options for must be \
                      refused, got {status} with {body}"
                 );
                 assert_eq!(
@@ -181,16 +189,16 @@ async fn start_build_batch_requires_the_project_to_carry_a_batch_configuration()
             }
         }
 
-        // What the store holds afterwards: a batch build per accepted request, and
-        // none at all for a project that was refused. The token row replays the first
-        // row's request, so an accepted project holds one batch per DISTINCT request.
+        // What the store holds afterwards: a batch build per accepted request, and none
+        // at all for a project every request was refused for. The token row replays the
+        // first row's request, so an accepted project holds one batch per DISTINCT
+        // request.
         let listed = listed_batches(&router, &project).await;
-        let expected = if batch_capable { 3 } else { 0 };
         assert_eq!(
             listed.len(),
-            expected,
-            "case {case:?}: expected {expected} batch build(s) to be listed for the \
-             project, got {listed:?}"
+            accepted_requests,
+            "case {case:?}: expected {accepted_requests} batch build(s) to be listed for \
+             the project, got {listed:?}"
         );
     }
 }
@@ -360,25 +368,33 @@ async fn a_batch_timeout_outside_the_published_window_is_refused_wherever_it_is_
 }
 
 /// RULE: a batch configuration that states NO timeout is accepted — the member is
-/// optional — wherever one is given, and a project stored without one is still batch
-/// buildable.
+/// optional — wherever one is given, and the batch that starts under it reports the
+/// configuration it RUNS WITH: the documented defaults resolved for the members the
+/// configuration left unstated, and every stated member as stated.
 #[tokio::test]
 async fn a_batch_configuration_that_states_no_timeout_is_accepted() {
     let router = emulator();
-    // (case, the buildBatchConfig members)
-    let configs: [(&str, Value); 3] = [
-        ("an empty configuration", json!({})),
+    // (case, the buildBatchConfig members, the maximumBuildsAllowed the batch must run
+    // under)
+    let configs: [(&str, Value, i32); 3] = [
+        (
+            "an empty configuration",
+            json!({}),
+            state::DEFAULT_MAXIMUM_BUILDS_ALLOWED,
+        ),
         (
             "a configuration with a service role only",
             json!({"serviceRole": "arn:aws:iam::000000000000:role/service-role/batch"}),
+            state::DEFAULT_MAXIMUM_BUILDS_ALLOWED,
         ),
         (
             "a configuration with restrictions only",
             json!({"restrictions": {"maximumBuildsAllowed": 2}}),
+            2,
         ),
     ];
 
-    for (index, (case, config)) in configs.into_iter().enumerate() {
+    for (index, (case, config, maximum_builds)) in configs.into_iter().enumerate() {
         let project = format!("batch-no-timeout-{index}");
         create_project(
             &router,
@@ -400,9 +416,17 @@ async fn a_batch_configuration_that_states_no_timeout_is_accepted() {
             "case {case:?}: a configuration stating no timeout must be accepted, got \
              {status} with {body}"
         );
-        assert!(
-            body["buildBatch"]["buildBatchConfig"]["timeoutInMins"].is_null(),
-            "case {case:?}: a configuration stating no timeout must report none, got {body}"
+        assert_eq!(
+            body["buildBatch"]["buildBatchConfig"]["timeoutInMins"],
+            json!(state::DEFAULT_BATCH_TIMEOUT_MINUTES),
+            "case {case:?}: a configuration stating no timeout must run to the resolved \
+             default, got {body}"
+        );
+        assert_eq!(
+            body["buildBatch"]["buildBatchConfig"]["restrictions"]["maximumBuildsAllowed"],
+            json!(maximum_builds),
+            "case {case:?}: expected the batch to run under {maximum_builds} builds \
+             allowed, got {body}"
         );
     }
 }

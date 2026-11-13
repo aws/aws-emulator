@@ -123,6 +123,7 @@ pub struct ProjectSourceVersion {
 #[smithy_macros::smithy(shape = "com.amazonaws.codebuild#BuildArtifacts")]
 #[derive(Debug, Clone, Default)]
 pub struct BuildArtifacts {
+    pub r#type: Option<String>,
     pub location: Option<String>,
     pub sha256sum: Option<String>,
     pub md5sum: Option<String>,

@@ -47,6 +47,13 @@
 //!
 //! * `name` (NonEmptyString, len 1..) **required** — The name of the build project.
 //!
+//! ## Output
+//!
+//! * `webhookDeletedStatus` (String) — The disposition of the deleted project's webhook.
+//!   Declared in this emulator's copy of the model from the operation's RECORDED 200
+//!   body, which carries this member although the published `DeleteProjectOutput`
+//!   declares none.
+//!
 //! ## Errors
 //!
 //! * `InvalidInputException` (HTTP 400) — The input value that was provided is not valid.
@@ -135,8 +142,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // never reused. The resource-based policy attached to the project does NOT
         // stay: it is meaningful only for a resource this account holds, which is why
         // `crate::state::ComAmazonawsCodebuildCodebuild20161006State::remove_project`
-        // drops it with the project.
-        let held = state.lock().remove_project(&input.name);
+        // drops it with the project. The webhook CodeBuild keeps against the project
+        // goes with it too — it is the record that connects the project to its
+        // repository's events — so its disposition is read from the project BEFORE the
+        // removal, inside the same critical section, and is what this call reports.
+        let (held, deleted_a_webhook) = {
+            let mut guard = state.lock();
+            let deleted_a_webhook = guard
+                .projects
+                .get(&input.name)
+                .is_some_and(|stored| stored.project.webhook.is_some());
+            (guard.remove_project(&input.name), deleted_a_webhook)
+        };
 
         if held {
             // The lock is dropped before the audit record is written, so a log consumer
@@ -152,6 +169,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             );
         }
 
-        Ok(DeleteProjectOutput {})
+        Ok(DeleteProjectOutput {
+            // What the delete did to the project's webhook
+            // (`crate::state::webhook_deleted_status`): a client that deletes a project
+            // reads this to find out whether it still has a provider-side hook to clean
+            // up itself.
+            webhook_deleted_status: Some(
+                crate::state::webhook_deleted_status(deleted_a_webhook).to_string(),
+            ),
+        })
     }
 }

@@ -300,6 +300,37 @@ fn declaration_of(entry: &::yaml_rust2::Yaml) -> Option<BatchBuildDeclaration> {
     })
 }
 
+/// The identifier of the build group a batch build runs its SOURCE DOWNLOAD in.
+///
+/// Recorded behaviour of a batch build read: a batch's `buildGroups` carries one group
+/// per build its batchspec declared AND, first, a group under this identifier — the build
+/// CodeBuild runs for the batch itself to fetch the source its declared builds are then
+/// built from. It is not declared by the batchspec, so it is the batch's own group rather
+/// than one [`batch_build_declarations`] can read.
+pub const SOURCE_DOWNLOAD_IDENTIFIER: &str = "DOWNLOAD_SOURCE";
+
+/// The specification the source-download build runs: the buildspec version marker and no
+/// phase at all.
+///
+/// That build's work is fetching the source, not building it — the project's own phases
+/// run in the builds the batchspec declares — so it runs a specification that declares no
+/// command.
+const SOURCE_DOWNLOAD_BUILDSPEC: &str = "version: 0.2";
+
+/// The build group a batch build runs its source download in
+/// ([`SOURCE_DOWNLOAD_IDENTIFIER`]), as the same declaration a batchspec entry produces:
+/// it waits for nothing (it is what everything else waits for), its failure is not
+/// ignored (nothing the batch declared could be built without the source), and it runs
+/// [`SOURCE_DOWNLOAD_BUILDSPEC`].
+pub fn source_download_declaration() -> BatchBuildDeclaration {
+    BatchBuildDeclaration {
+        identifier: SOURCE_DOWNLOAD_IDENTIFIER.to_string(),
+        depends_on: Vec::new(),
+        ignore_failure: false,
+        buildspec: Some(SOURCE_DOWNLOAD_BUILDSPEC.to_string()),
+    }
+}
+
 /// How many declared builds each of `declarations` waits behind — its LEVEL in the
 /// dependency graph the batchspec's `depends-on` members describe, aligned with
 /// `declarations`.
