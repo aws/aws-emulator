@@ -201,6 +201,8 @@ mod registry_resource_types_and_remediation_targets;
 mod conformance_pack_rule_evaluation;
 #[path = "all/recorder_discovers_iam_roles.rs"]
 mod recorder_discovers_iam_roles;
+#[path = "all/recorder_discovers_iam_managed_policies.rs"]
+mod recorder_discovers_iam_managed_policies;
 #[path = "all/conformance_pack_deletion.rs"]
 mod conformance_pack_deletion;
 #[path = "all/custom_lambda_rule_evaluation.rs"]

@@ -1597,6 +1597,10 @@ pub struct RecordedConfigurationState {
     pub supplementary_configuration: BTreeMap<String, String>,
     /// The tags recorded with that item.
     pub tags: BTreeMap<String, String>,
+    /// The relationships that item reported — the other resources the owning service
+    /// linked this one to at the instant it was captured, which a link that appeared or
+    /// went away is a change of.
+    pub relationships: Vec<RecordedRelationship>,
     /// When that item was captured.
     pub recorded_at: Option<SystemTime>,
 }

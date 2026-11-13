@@ -6,6 +6,11 @@
 
 use super::*;
 
+// `Relationship` is named here rather than in `state.rs`'s shared import list: it is the
+// modelled shape ONE projection of this module reports — the other resources a
+// configuration item links its own to — so it stays beside the state that holds them.
+use crate::ops::types::Relationship;
+
 /// One resource Config has discovered, as its configuration recorder captured it.
 ///
 /// A discovered resource SURVIVES its own deletion in Config's inventory —
@@ -51,6 +56,11 @@ pub struct DiscoveredResourceEntry {
     /// The tags the configuration item was recorded with
     /// (`PutResourceConfigRequest$Tags`).
     pub tags: BTreeMap<String, String>,
+    /// The other resources the OWNING service links this one to, as the configuration
+    /// item's `relationships` reports them (`ConfigurationItem$relationships`: "a list of
+    /// `relationship` objects"). Empty for a resource whose owning service reports no
+    /// link, which is what a recorder that observed none records.
+    pub relationships: Vec<RecordedRelationship>,
     /// When Config first recorded a configuration item for this resource, and when it
     /// captured the configuration item that is its CURRENT one — the instant that item
     /// reports as its `configurationItemCaptureTime`. Both are `None` for a resource no
@@ -189,11 +199,10 @@ impl DiscoveredResourceEntry {
     /// Of those four extra members, the resource's TAGS are reported — the tags the
     /// inventory recorded with the configuration item, which only the APIs that
     /// document dropping them (`BatchGetAggregateResourceConfig`: "The API does not
-    /// return tags and relationships") leave out — while `relationships` and
-    /// `relatedEvents` stay unset because nothing in this emulator knows them: a
-    /// relationship is another resource the owning service links this one to, and a
-    /// related event is a CloudTrail event id, neither of which a recorded
-    /// configuration item carries.
+    /// return tags and relationships") leave out — and `relationships` carries the links
+    /// the recorder OBSERVED for the resource, while `relatedEvents` stays unset because
+    /// nothing in this emulator knows them: a related event is a CloudTrail event id,
+    /// which a recorded configuration item does not carry.
     pub fn to_configuration_item(
         &self,
         aws_region: &str,
@@ -225,7 +234,15 @@ impl DiscoveredResourceEntry {
                     .collect()
             }),
             related_events: None,
-            relationships: None,
+            // The other resources the owning service links this one to, as the recorder
+            // observed them; a resource with no observed link reports none at all rather
+            // than an empty list.
+            relationships: (!self.relationships.is_empty()).then(|| {
+                self.relationships
+                    .iter()
+                    .map(RecordedRelationship::to_shape)
+                    .collect()
+            }),
             configuration: base.configuration,
             supplementary_configuration: base.supplementary_configuration,
             recording_frequency: base.recording_frequency,
@@ -280,6 +297,11 @@ impl DiscoveredResourceEntry {
             "resourceName": self.resource_name,
             "configurationItemStatus": self.configuration_item_status(),
             "configuration": self.configuration,
+            "relationships": self
+                .relationships
+                .iter()
+                .map(RecordedRelationship::digested)
+                .collect::<Vec<String>>(),
             "supplementaryConfiguration": self
                 .supplementary_configuration
                 .iter()
@@ -339,6 +361,7 @@ impl DiscoveredResourceEntry {
                 configuration: state.configuration.clone(),
                 supplementary_configuration: state.supplementary_configuration.clone(),
                 tags: state.tags.clone(),
+                relationships: state.relationships.clone(),
                 last_recorded_at: state.recorded_at,
                 // An earlier item is one the resource was still there for: the deletion
                 // belongs to the item that recorded it, which is the current one.
@@ -358,6 +381,7 @@ impl DiscoveredResourceEntry {
             configuration: self.configuration.clone(),
             supplementary_configuration: self.supplementary_configuration.clone(),
             tags: self.tags.clone(),
+            relationships: self.relationships.clone(),
             recorded_at: self.last_recorded_at,
         }
     }
@@ -369,6 +393,56 @@ impl DiscoveredResourceEntry {
         self.configuration != other.configuration
             || self.supplementary_configuration != other.supplementary_configuration
             || self.tags != other.tags
+            || self.relationships != other.relationships
             || self.deleted_at.is_some() != other.deleted_at.is_some()
+    }
+}
+
+/// One other resource the owning service links a recorded resource to, as the
+/// configuration item's `relationships` reports it.
+///
+/// The modelled `Relationship` leaves every member optional; what a recorder OBSERVES
+/// always names the related resource's type, its id and how the two are related, so those
+/// three are held outright and only the related resource's custom name — which not every
+/// resource has — is optional. Comparable and orderable, because a relationship that
+/// APPEARED or went away is a state of the resource its configuration item records, and
+/// the relationships a read reports come in one stable order.
+#[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub struct RecordedRelationship {
+    /// The related resource's type (`Relationship$resourceType`).
+    pub resource_type: String,
+    /// The related resource's id (`Relationship$resourceId`).
+    pub resource_id: String,
+    /// The related resource's custom name, where it has one
+    /// (`Relationship$resourceName`).
+    pub resource_name: Option<String>,
+    /// How the two resources are related (`Relationship$relationshipName`), in the
+    /// wording Config reports that relationship by.
+    pub relationship_name: String,
+}
+
+impl RecordedRelationship {
+    /// The modelled `Relationship`, read back out of state.
+    pub fn to_shape(&self) -> Relationship {
+        Relationship {
+            resource_type: Some(self.resource_type.clone()),
+            resource_id: Some(self.resource_id.clone()),
+            resource_name: self.resource_name.clone(),
+            relationship_name: Some(self.relationship_name.clone()),
+        }
+    }
+
+    /// This relationship as the configuration item's digest counts it
+    /// ([`DiscoveredResourceEntry::configuration_item_md5_hash`]): every member, so a
+    /// link that changed changes the digest, and rendered as ONE value so a member that
+    /// could run into the next cannot make two different relationships digest alike.
+    fn digested(&self) -> String {
+        ::serde_json::json!({
+            "resourceType": self.resource_type,
+            "resourceId": self.resource_id,
+            "resourceName": self.resource_name,
+            "relationshipName": self.relationship_name,
+        })
+        .to_string()
     }
 }

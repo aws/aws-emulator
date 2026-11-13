@@ -11696,6 +11696,7 @@ dependencies = [
  "hex",
  "http",
  "md-5 0.10.6",
+ "percent-encoding",
  "rand 0.9.5",
  "regex",
  "serde_json",

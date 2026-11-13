@@ -50,10 +50,11 @@ pub const SQS_QUEUE_RESOURCE_TYPE: &str = "AWS::SQS::Queue";
 /// group names, so a recording group of `allSupported` records exactly these — less the
 /// GLOBAL types, which such a group covers only when it asks for them
 /// ([`super::observed_iam::is_global_resource_type`]).
-pub const OBSERVABLE_RESOURCE_TYPES: [&str; 3] = [
+pub const OBSERVABLE_RESOURCE_TYPES: [&str; 4] = [
     S3_BUCKET_RESOURCE_TYPE,
     SQS_QUEUE_RESOURCE_TYPE,
     super::observed_iam::IAM_ROLE_RESOURCE_TYPE,
+    super::observed_iam::IAM_POLICY_RESOURCE_TYPE,
 ];
 
 /// The queue attributes a configuration item records as an Amazon SQS queue's
@@ -685,6 +686,13 @@ pub async fn run_due_recording_pass<Eng: Send + Sync + 'static>(
                 observed.push((resource_type, roles));
             }
         }
+        if resource_type == super::observed_iam::IAM_POLICY_RESOURCE_TYPE {
+            if let Some(policies) =
+                super::observed_iam::observed_iam_policies(callback, region, now).await
+            {
+                observed.push((resource_type, policies));
+            }
+        }
     }
 
     // The ACCOUNT's own configuration, read only while this account holds a rule whose
@@ -976,6 +984,9 @@ async fn observed_s3_buckets(
             tags,
             first_recorded_at: Some(now),
             last_recorded_at: Some(now),
+            // No S3 read above reports another resource this bucket is linked to, so the
+            // item records no relationship rather than one nothing observed.
+            relationships: Vec::new(),
             // The states this bucket has already left are kept by the store's own write
             // path, which carries them over from the item this one replaces.
             history: Vec::new(),
@@ -1128,6 +1139,9 @@ async fn observed_sqs_queues(
             tags,
             first_recorded_at: Some(now),
             last_recorded_at: Some(now),
+            // No Amazon SQS read above reports another resource this queue is linked to,
+            // so the item records no relationship rather than one nothing observed.
+            relationships: Vec::new(),
             // The states this queue has already left are kept by the store's own write
             // path, which carries them over from the item this one replaces.
             history: Vec::new(),

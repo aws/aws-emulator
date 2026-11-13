@@ -381,6 +381,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 // states this resource has already left are carried over by the store's
                 // own write path.
                 supplementary_configuration: ::std::collections::BTreeMap::new(),
+                // Nor does it carry a relationship: the call records one resource's
+                // configuration, and names no other resource this one is linked to.
+                relationships: Vec::new(),
                 history: Vec::new(),
             })
         };

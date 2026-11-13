@@ -397,6 +397,7 @@ mod tests {
                 .iter()
                 .map(|(key, value)| (key.to_string(), value.to_string()))
                 .collect(),
+            relationships: Vec::new(),
             recorded_at: Some(SystemTime::UNIX_EPOCH),
         }
     }

@@ -125,6 +125,9 @@ service-com-amazonaws-lambda-awsgirapiservice = { workspace = true }# `zip`: a f
 zip = { version = "9", default-features = false, features = ["deflate"] }
 # `base64`: a deployment package travels as base64 in `CreateFunction`'s `Code.ZipFile`.
 base64 = "0.22"
+# `percent-encoding`: IAM reports a policy version's document percent-encoded, so the suite
+# that reads a recorded managed policy back decodes it with this crate rather than by hand.
+percent-encoding = "2"
 
 [lints]
 workspace = true
