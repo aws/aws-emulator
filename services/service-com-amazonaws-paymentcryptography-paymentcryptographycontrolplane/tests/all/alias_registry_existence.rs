@@ -74,9 +74,9 @@ fn alias_names() -> Vec<String> {
 /// Assert `(status, body)` is the modelled not-found refusal naming `alias_name`.
 fn assert_unknown_alias_refusal(case: &str, status: u16, body: &Value, alias_name: &str) {
     assert_eq!(
-        status, 404,
-        "case {case}: an alias the registry does not hold must be refused with the \
-         modelled not-found status, got {status} {body}"
+        status, 400,
+        "case {case}: an alias the registry does not hold must be refused with this \
+         service's client-error status, got {status} {body}"
     );
     assert_eq!(
         error_code(body),
@@ -155,7 +155,8 @@ async fn deleting_an_alias_removes_it_and_frees_its_name() {
         );
         let (status, parsed) = call(&router, "GetKey", &json!({"KeyIdentifier": name})).await;
         assert_eq!(
-            status, 404,
+            error_code(&parsed),
+            "ResourceNotFoundException",
             "case {case}: a deleted alias must resolve no key, got {status} {parsed}"
         );
 

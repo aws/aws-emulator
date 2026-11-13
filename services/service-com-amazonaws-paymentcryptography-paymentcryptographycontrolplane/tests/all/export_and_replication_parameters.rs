@@ -366,8 +366,8 @@ async fn default_key_replication_regions_round_trip_and_new_keys_inherit_them() 
     )
     .await;
     assert_eq!(
-        status, 402,
-        "case past the bound: expected 402, got {status} {parsed}"
+        status, 400,
+        "case past the bound: expected 400, got {status} {parsed}"
     );
     assert_eq!(
         error_code(&parsed),

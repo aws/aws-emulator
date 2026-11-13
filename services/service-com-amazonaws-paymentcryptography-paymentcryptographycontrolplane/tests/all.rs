@@ -13,6 +13,8 @@
 // points it into `tests/all/`.
 #[path = "all/alias_name_conflict_sentence.rs"]
 mod alias_name_conflict_sentence;
+#[path = "all/client_error_status.rs"]
+mod client_error_status;
 #[path = "all/alias_registry_existence.rs"]
 mod alias_registry_existence;
 #[path = "all/export_and_replication_parameters.rs"]

@@ -352,8 +352,8 @@ async fn the_usage_switch_refuses_a_key_that_is_not_active() {
             let (status, parsed) =
                 call(&router, operation, &json!({"KeyIdentifier": identifier})).await;
             assert_eq!(
-                status, 404,
-                "case {case}: expected 404, got {status} {parsed}"
+                status, 400,
+                "case {case}: expected 400, got {status} {parsed}"
             );
             assert_eq!(
                 error_code(&parsed),
@@ -370,8 +370,8 @@ async fn the_usage_switch_refuses_a_key_that_is_not_active() {
         ok_call(&router, "DeleteKey", &json!({"KeyIdentifier": arn})).await;
         let (status, parsed) = call(&router, operation, &json!({"KeyIdentifier": arn})).await;
         assert_eq!(
-            status, 409,
-            "case {case}: expected 409, got {status} {parsed}"
+            status, 400,
+            "case {case}: expected 400, got {status} {parsed}"
         );
         assert_eq!(
             error_code(&parsed),
@@ -693,8 +693,8 @@ async fn a_replication_change_is_refused_outside_its_constraints() {
         )
         .await;
         assert_eq!(
-            status, 404,
-            "case {case}: expected 404, got {status} {parsed}"
+            status, 400,
+            "case {case}: expected 400, got {status} {parsed}"
         );
         assert_eq!(
             error_code(&parsed),
@@ -737,8 +737,8 @@ async fn a_replication_change_is_refused_outside_its_constraints() {
         )
         .await;
         assert_eq!(
-            status, 409,
-            "case {case}: expected 409, got {status} {parsed}"
+            status, 400,
+            "case {case}: expected 400, got {status} {parsed}"
         );
         assert_eq!(
             error_code(&parsed),
@@ -778,8 +778,8 @@ async fn a_replication_change_is_refused_outside_its_constraints() {
     )
     .await;
     assert_eq!(
-        status, 402,
-        "case past the bound: expected 402, got {status} {parsed}"
+        status, 400,
+        "case past the bound: expected 400, got {status} {parsed}"
     );
     assert_eq!(
         error_code(&parsed),

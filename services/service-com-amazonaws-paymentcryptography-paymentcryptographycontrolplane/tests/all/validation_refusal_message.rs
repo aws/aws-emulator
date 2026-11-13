@@ -284,7 +284,9 @@ async fn a_length_violation_states_the_bound_the_model_declares() {
     }
 
     // The bound itself is admitted: an alias name exactly at the maximum reaches the handler,
-    // which reports that no such alias exists.
+    // which reports that no such alias exists. Both answers carry this service's one
+    // client-error status, so what tells them apart is the error class: a refusal the
+    // constraint walk raised would be a `ValidationException`.
     let at_the_bound = format!("alias/{}", "x".repeat(ALIAS_NAME_MAX_LENGTH - 6));
     assert_eq!(
         at_the_bound.len(),
@@ -293,9 +295,10 @@ async fn a_length_violation_states_the_bound_the_model_declares() {
     );
     let (status, parsed) = call(&router, "GetAlias", &json!({"AliasName": at_the_bound})).await;
     assert_eq!(
-        status, 404,
-        "case an alias name at the declared maximum: it must reach the handler, got {status} \
-         {parsed}"
+        error_code(&parsed),
+        "ResourceNotFoundException",
+        "case an alias name at the declared maximum: it must reach the handler and be \
+         reported as absent rather than refused, got {status} {parsed}"
     );
 }
 
@@ -554,8 +557,8 @@ async fn an_answer_this_rule_does_not_own_is_left_exactly_as_its_renderer_wrote_
     )
     .await;
     assert_eq!(
-        status, 404,
-        "case an unknown alias: expected 404, got {status} {parsed}"
+        status, 400,
+        "case an unknown alias: expected 400, got {status} {parsed}"
     );
     assert_eq!(
         error_code(&parsed),
@@ -575,10 +578,11 @@ async fn an_answer_this_rule_does_not_own_is_left_exactly_as_its_renderer_wrote_
     }
 
     // The scaffold's own 501 is a class this model does not declare, so it keeps the member
-    // the framework wrote its text in.
+    // the framework wrote its text in. `UpdateAlias` is one of the operations still
+    // carrying the scaffold header (`grep '^//! SCAFFOLDED, NOT IMPLEMENTED:' src/ops/`).
     let (status, parsed) = call(
         &router,
-        "DeleteAlias",
+        "UpdateAlias",
         &json!({"AliasName": "alias/well-formed"}),
     )
     .await;

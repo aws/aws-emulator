@@ -13,7 +13,7 @@
 //! table — built from the Smithy model at compile time. You do not edit the
 //! entry; you edit the behavioral seams below.
 //!
-//! Five opt-in seams are yours to change; every one defaults to the framework's
+//! Six opt-in seams are yours to change; every one defaults to the framework's
 //! own behaviour, so an unedited service still routes and answers correctly:
 //!
 //! - `can_handle` — which requests this service claims. The default matches the
@@ -34,6 +34,11 @@
 //!   failure the orchestrator detects up front (e.g. a malformed `aws-chunked`
 //!   body). The default returns `None`, keeping the entry's protocol-correct
 //!   rendering. Return `Some(resp)` to reword it if desired.
+//! - `override_protocol` — the codec the dispatch sequence reads and answers one
+//!   request with. THIS service overrides it: the generated `awsJson1_0` protocol
+//!   with this service's own choice of the STATUS a modelled error is answered
+//!   with (see [`wire`]). Everything a request reads and every success it writes
+//!   is the generated protocol's, unchanged.
 //!
 //! The model-derived half of this service — its identity, wire protocol, routing
 //! table, and the default error renderers — lives in the generated `ServiceDefinition`
@@ -78,6 +83,8 @@ use smithy_server_runtime::{
 };
 use std::sync::Arc;
 
+pub mod wire;
+
 /// This service's own Smithy shape id, whose LOCAL name
 /// (`PaymentCryptographyControlPlane`) is what an `awsJson1_0` request names its target
 /// service by (`X-Amz-Target: PaymentCryptographyControlPlane.<Operation>`).
@@ -95,7 +102,15 @@ const RPC_SERVICE_SHAPE_ID: &str = "com.amazonaws.paymentcryptography#PaymentCry
 /// Generic over the engine type `Eng` so this file names no concrete engine; the
 /// router builds one shared engine and hands it to `new`.
 pub struct EmulatedService<Eng: Send + Sync + 'static> {
-    entry: crate::ServiceDefinition<Eng>,
+    /// The generated, model-derived half. Shared with [`Self::protocol`], which wraps
+    /// the protocol this entry carries, so the entry is held behind an `Arc` rather
+    /// than copied: there is exactly one routing table and one codec per mounted
+    /// service.
+    entry: Arc<crate::ServiceDefinition<Eng>>,
+    /// This service's wire protocol: the generated one, with this service's own choice
+    /// of the status a modelled error is answered with. Built once here, never per
+    /// request, because [`Service::override_protocol`] hands back a borrow of it.
+    protocol: wire::ClientErrorStatusProtocol<Eng>,
     /// The same modelled operations the generated table holds, each wrapped in
     /// [`StatedPerOperation`] so a refused request is worded and carried the way this
     /// service answers it. Keyed by the routing key the protocol resolves — the key the
@@ -168,8 +183,10 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
             untag_resource::UntagResource,
             update_alias::UpdateAlias,
         );
+        let entry = Arc::new(crate::ServiceDefinition::new(engine));
         Self {
-            entry: crate::ServiceDefinition::new(engine),
+            protocol: wire::ClientErrorStatusProtocol::new(Arc::clone(&entry)),
+            entry,
             stated,
         }
     }
@@ -270,7 +287,7 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
         // The model-derived half of this service — identity, protocol, routing
         // table, and the default error renderers — lives in the generated entry.
         // The router reads it through this one accessor. Do not edit the entry.
-        &self.entry
+        &*self.entry
     }
 
     fn can_handle(&self, parts: &http::request::Parts) -> bool {
@@ -358,6 +375,17 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
         // consume it on `None`.
         let _ = error;
         None
+    }
+
+    fn override_protocol(&self) -> Option<&dyn ServerHttpProtocol> {
+        // The model-derived protocol is `awsJson1_0`, and so is this one: it
+        // delegates every read and every success body to the generated codec and
+        // decides only the STATUS a modelled error is answered with, which this
+        // service answers as one value for the whole client-error class rather than
+        // as each error shape's `@httpError`. See `wire::error_status`. Held in a
+        // field (built once in `new`), as this seam requires — never constructed per
+        // request.
+        Some(&self.protocol)
     }
 }
 

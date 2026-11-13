@@ -704,8 +704,8 @@ async fn export_key_refuses_an_identifier_it_holds_no_key_for() {
         )
         .await;
         assert_eq!(
-            status, 404,
-            "case {case}: expected 404, got {status} {parsed}"
+            status, 400,
+            "case {case}: expected 400, got {status} {parsed}"
         );
         assert_eq!(
             error_code(&parsed),
@@ -1200,8 +1200,8 @@ async fn export_key_refuses_an_asymmetric_mechanism_whose_certificate_authority_
         )
         .await;
         assert_eq!(
-            status, 404,
-            "case {mechanism} with no such authority: expected 404, got {status} {parsed}"
+            status, 400,
+            "case {mechanism} with no such authority: expected 400, got {status} {parsed}"
         );
         assert_eq!(
             error_code(&parsed),
@@ -1250,8 +1250,14 @@ async fn export_key_refuses_an_asymmetric_mechanism_whose_certificate_authority_
         )
         .await;
         assert_eq!(
-            status, 404,
-            "case {mechanism} with no key under export: expected 404, got {status} {parsed}"
+            status, 400,
+            "case {mechanism} with no key under export: expected 400, got {status} {parsed}"
+        );
+        assert_eq!(
+            error_code(&parsed),
+            "ResourceNotFoundException",
+            "case {mechanism} with no key under export: expected ResourceNotFoundException, got \
+             {parsed}"
         );
     }
 }

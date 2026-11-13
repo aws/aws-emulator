@@ -4,7 +4,7 @@
 //!
 //! The rule under test: an alias name is unique in the account and region, so a
 //! `CreateAlias` naming a name the registry already holds is
-//! refused with `ConflictException` (HTTP 409) and the service's duplicate-name
+//! refused with `ConflictException` and the service's duplicate-name
 //! sentence — the fixed text `Alias `, the alias name exactly as the request supplied
 //! it, and the fixed text ` already exists.`. The name is the only variable part, and
 //! the rule does not depend on how the collision arose: a second create naming the
@@ -76,8 +76,8 @@ fn expected_sentence(alias_name: &str) -> String {
 /// Assert `(status, body)` is the modelled duplicate-name refusal for `alias_name`.
 fn assert_duplicate_name_refusal(case: &str, status: u16, body: &Value, alias_name: &str) {
     assert_eq!(
-        status, 409,
-        "case {case}: a taken alias name must be refused with 409, got {status} {body}"
+        status, 400,
+        "case {case}: a taken alias name must be refused with 400, got {status} {body}"
     );
     assert_eq!(
         error_code(body),

@@ -707,7 +707,7 @@ async fn an_alias_binds_a_key_and_resolves_in_every_identifier_form() {
         )
         .await;
         assert_eq!(
-            status, 409,
+            status, 400,
             "case {name}: re-creating a stored alias name must conflict, got {status} \
              {parsed}"
         );
@@ -734,7 +734,7 @@ async fn an_alias_binds_a_key_and_resolves_in_every_identifier_form() {
         )
         .await;
         assert_eq!(
-            status, 409,
+            status, 400,
             "case {name}: rebinding an alias to another key must conflict, got {status} \
              {parsed}"
         );
@@ -772,8 +772,13 @@ async fn an_alias_binds_a_key_and_resolves_in_every_identifier_form() {
     );
     let (status, parsed) = call(&router, "GetAlias", &json!({"AliasName": "alias/unbound"})).await;
     assert_eq!(
-        status, 404,
+        status, 400,
         "case unbound: the refused alias must not have been stored, got {status} {parsed}"
+    );
+    assert_eq!(
+        error_code(&parsed),
+        "ResourceNotFoundException",
+        "case unbound: expected ResourceNotFoundException, got {parsed}"
     );
 
     // An alias cannot be bound to a key that was never stored.
@@ -785,8 +790,8 @@ async fn an_alias_binds_a_key_and_resolves_in_every_identifier_form() {
     )
     .await;
     assert_eq!(
-        status, 404,
-        "case nowhere: binding to an unknown key must 404, got {status} {parsed}"
+        status, 400,
+        "case nowhere: binding to an unknown key must be refused, got {status} {parsed}"
     );
     assert_eq!(
         error_code(&parsed),
@@ -798,8 +803,9 @@ async fn an_alias_binds_a_key_and_resolves_in_every_identifier_form() {
     for identifier in ["alias/never-created", absent.as_str()] {
         let (status, parsed) = call(&router, "GetKey", &json!({"KeyIdentifier": identifier})).await;
         assert_eq!(
-            status, 404,
-            "case {identifier}: GetKey on an unknown identifier must 404, got {status} {parsed}"
+            status, 400,
+            "case {identifier}: GetKey on an unknown identifier must be refused, got {status} \
+             {parsed}"
         );
         assert_eq!(
             error_code(&parsed),
@@ -814,8 +820,13 @@ async fn an_alias_binds_a_key_and_resolves_in_every_identifier_form() {
     )
     .await;
     assert_eq!(
-        status, 404,
-        "case GetAlias unknown: expected 404, got {status} {parsed}"
+        status, 400,
+        "case GetAlias unknown: expected 400, got {status} {parsed}"
+    );
+    assert_eq!(
+        error_code(&parsed),
+        "ResourceNotFoundException",
+        "case GetAlias unknown: expected ResourceNotFoundException, got {parsed}"
     );
 }
 
@@ -1186,7 +1197,7 @@ async fn delete_key_schedules_the_deletion_and_restore_key_cancels_it() {
         )
         .await;
         assert_eq!(
-            status, 409,
+            status, 400,
             "case {case}: re-scheduling the deletion for {other_days} days must \
              conflict, got {status} {parsed}"
         );
@@ -1233,7 +1244,7 @@ async fn delete_key_schedules_the_deletion_and_restore_key_cancels_it() {
         // A key that is not pending deletion has nothing to restore.
         let (status, parsed) = call(&router, "RestoreKey", &json!({"KeyIdentifier": arn})).await;
         assert_eq!(
-            status, 409,
+            status, 400,
             "case {case}: restoring a key that is not pending deletion must conflict, \
              got {status} {parsed}"
         );
@@ -1318,8 +1329,13 @@ async fn delete_key_schedules_the_deletion_and_restore_key_cancels_it() {
     )
     .await;
     assert_eq!(
-        status, 404,
-        "case RestoreKey unknown: expected 404, got {status} {parsed}"
+        status, 400,
+        "case RestoreKey unknown: expected 400, got {status} {parsed}"
+    );
+    assert_eq!(
+        error_code(&parsed),
+        "ResourceNotFoundException",
+        "case RestoreKey unknown: expected ResourceNotFoundException, got {parsed}"
     );
 }
 
@@ -1376,7 +1392,7 @@ async fn an_elapsed_deletion_window_refuses_delete_and_restore() {
         for operation in ["DeleteKey", "RestoreKey"] {
             let (status, parsed) = call(&router, operation, &json!({"KeyIdentifier": arn})).await;
             assert_eq!(
-                status, 409,
+                status, 400,
                 "case {case}: {operation} on a deleted key must conflict, got {status} \
                  {parsed}"
             );
