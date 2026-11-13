@@ -462,35 +462,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let policy_document: Option<String> = if load_balancer {
             None
         } else {
-            match input
-                .policy_document
-                .as_deref()
-                .filter(|document| !document.trim().is_empty())
-            {
-                None => Some(FULL_ACCESS_POLICY.to_string()),
-                Some(document) => {
-                    // "VPC endpoint policy size: 20,480 characters" (the published Amazon
-                    // VPC quota for a VPC endpoint policy), asked BEFORE the document is
-                    // parsed so the work of reading it is bounded by the published limit
-                    // rather than by what a caller chose to send.
-                    if document.chars().count() > state::MAX_VPC_ENDPOINT_POLICY_CHARS {
-                        return Err(state::invalid_parameter_value(format!(
-                            "Invalid value for policyDocument: a VPC endpoint policy may \
-                             carry at most {max} characters",
-                            max = state::MAX_VPC_ENDPOINT_POLICY_CHARS,
-                        )));
-                    }
-                    // Read with the JSON parser this crate already depends on rather than a
-                    // hand-rolled shape check, so "valid JSON format" means what JSON means.
-                    if ::serde_json::from_str::<::serde_json::Value>(document).is_err() {
-                        return Err(state::invalid_parameter_value(
-                            "Invalid value for policyDocument: the policy must be in valid \
-                             JSON format",
-                        ));
-                    }
-                    Some(document.to_string())
-                }
-            }
+            // Read through the ONE reading of this member, which both bounds the document by
+            // the published policy quota and parses it, so a create and a modify cannot hold
+            // one caller's document to different terms. A request that named none gets the
+            // default, which is this operation's own answer to "no document".
+            Some(
+                state::requested_vpc_endpoint_policy(input.policy_document.as_deref())?
+                    .unwrap_or_else(|| FULL_ACCESS_POLICY.to_string()),
+            )
         };
 
         let endpoints = state::require_service_state(&*self.engine)?;
@@ -564,7 +543,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // interfaces in one zone. The member carries no `@required` and no documented
         // minimum, so a request naming none asks for an endpoint with no interface yet,
         // which is stored as such rather than refused for a bound the model does not state.
-        let mut placements: Vec<Placement> = Vec::with_capacity(requested_subnets.len());
+        let mut placements: Vec<EndpointPlacement> = Vec::with_capacity(requested_subnets.len());
         for subnet_id in &requested_subnets {
             let Some(subnet) = store
                 .subnets
@@ -574,13 +553,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 return Err(state::invalid_subnet_id_not_found(subnet_id));
             };
             let availability_zone = subnet.availability_zone.clone().unwrap_or_default();
-            if let Some(held) = placements
+            // The refusal names the subnet the REQUEST asked for — the one whose zone is
+            // already taken by a subnet named before it.
+            if placements
                 .iter()
-                .find(|placement| placement.availability_zone == availability_zone)
+                .any(|placement| placement.availability_zone == availability_zone)
             {
-                return Err(state::duplicate_subnets_in_same_zone(&held.subnet_id));
+                return Err(state::duplicate_subnets_in_same_zone(subnet_id));
             }
-            placements.push(Placement {
+            placements.push(EndpointPlacement {
                 subnet_id: subnet_id.clone(),
                 cidr_block: subnet.cidr_block.clone().unwrap_or_default(),
                 availability_zone,
@@ -1051,24 +1032,24 @@ fn created_state(gateway: bool) -> &'static str {
 /// The policy a request that named none gets: "If this parameter is not specified, we attach
 /// a default policy that allows full access to the service" (`PolicyDocument`) — every
 /// action, by every principal, on every resource of the service.
-const FULL_ACCESS_POLICY: &str =
+pub(crate) const FULL_ACCESS_POLICY: &str =
     r#"{"Statement":[{"Action":"*","Effect":"Allow","Principal":"*","Resource":"*"}]}"#;
 
 /// One subnet the endpoint is created in, as the resolution above read it off the stored
 /// subnet: what an endpoint network interface's zone and address range come from, beside the
 /// address the request asked for in that subnet, if it asked for one.
-struct Placement {
+pub(crate) struct EndpointPlacement {
     /// The subnet itself.
-    subnet_id: String,
+    pub(crate) subnet_id: String,
     /// Its IPv4 range, which the interface's private address comes out of.
-    cidr_block: String,
+    pub(crate) cidr_block: String,
     /// "The Availability Zone of the subnet" — one subnet per zone, so this is also the zone
     /// the endpoint's zonal DNS name is built for.
-    availability_zone: String,
+    pub(crate) availability_zone: String,
     /// That zone's id.
-    availability_zone_id: String,
+    pub(crate) availability_zone_id: String,
     /// `SubnetConfiguration$Ipv4` for this subnet, when the request carried one.
-    requested_address: Option<String>,
+    pub(crate) requested_address: Option<String>,
 }
 
 /// The DNS names an interface endpoint answers on.
@@ -1081,11 +1062,11 @@ struct Placement {
 /// (`CreateVpcEndpointRequest$PrivateDnsEnabled`) in that zone. Every part is derived: the
 /// endpoint's own id, the service name's labels, and the zones of the stored subnets — never
 /// a value read off a clock or a random source.
-fn dns_entries(
+pub(crate) fn dns_entries(
     endpoint_id: &str,
     service: &str,
     service_region: &str,
-    placements: &[Placement],
+    placements: &[EndpointPlacement],
     hosted_zone_id: &str,
     private_hosted_zone_id: Option<&str>,
 ) -> Vec<DnsEntry> {
@@ -1123,7 +1104,11 @@ fn dns_entries(
 /// The bound is exact up to the fixed widths of a minted id and hosted zone id, which is
 /// what a budget gate needs: a request is refused when storing it would pass the budget, not
 /// accounted to the byte.
-fn dns_payload_bound(service: &str, service_region: &str, placements: &[Placement]) -> usize {
+pub(crate) fn dns_payload_bound(
+    service: &str,
+    service_region: &str,
+    placements: &[EndpointPlacement],
+) -> usize {
     // `vpce-` and 17 hexadecimal digits (`ComAmazonawsEc2Amazonec2State::next_id`), and a
     // hosted zone id of `Z` and 13 (`mint_hosted_zone_id`).
     const MINTED_ID_BYTES: usize = 32;
@@ -1150,7 +1135,7 @@ fn dns_payload_bound(service: &str, service_region: &str, placements: &[Placemen
 /// them again ([`crate::state::ComAmazonawsEc2Amazonec2State::remove_network_interface`],
 /// the exact reverse of the insert), which gives their addresses, their bytes and the
 /// subnet's own available-address count back — leaving the store as the request found it.
-fn release_interfaces(
+pub(crate) fn release_interfaces(
     store: &mut crate::state::ComAmazonawsEc2Amazonec2State,
     network_interface_ids: &[String],
 ) {

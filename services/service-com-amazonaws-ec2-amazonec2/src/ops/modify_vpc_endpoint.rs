@@ -1,15 +1,31 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op ModifyVpcEndpoint
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `ModifyVpcEndpoint`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
+//! IMPLEMENTED: applies the changes the request carries to the STORED VPC endpoint it names —
+//! the subnets it serves and the endpoint network interface in each, the security groups
+//! those interfaces carry, the route tables a gateway endpoint is reached from and the route
+//! each of them holds for it, the policy attached to it and whether a private hosted zone is
+//! associated with its VPC — leaving every member the request does not carry as it was, and
+//! answers `Return` `true`. `DescribeVpcEndpoints` reports the record this operation left.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`ModifyVpcEndpoint::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! The attributes a request may change are the ones the endpoint's own TYPE has ("The
+//! attributes that you can modify depend on the type of VPC endpoint"), so a member that
+//! names nothing for the stored endpoint's type is refused rather than stored and reported
+//! back as though it had been honoured. Every bound is asked and every id resolved BEFORE
+//! anything is written, so a refused modification leaves the endpoint exactly as it was.
+//!
+//! Adding or removing a subnet stands up or tears down the endpoint network interface that
+//! subnet is served through, so an endpoint whose interfaces are being provisioned is left in
+//! the non-terminal `pending` state with the instant the clock owes it `available` recorded
+//! beside it — the same rule, off the same clock, as the state an endpoint that stands up
+//! interfaces is CREATED in (`crate::ops::create_vpc_endpoint`).
+//!
+//! A request member naming state this slice does not hold (an IPv6 address, a DNS record type
+//! for addresses it cannot assign) is answered with a 501 rather than an endpoint that
+//! silently lacks what was asked for — the same rule `CreateVpcEndpoint` follows for the same
+//! members.
+//!
+//! This is the ONLY file to touch for this operation.
 //!
 //! ## Shape of an operation
 //!
@@ -160,18 +176,946 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `ModifyVpcEndpoint` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(ModifyVpcEndpointErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("ModifyVpcEndpoint"))
+        use super::create_vpc_endpoint::{
+            EndpointPlacement, FULL_ACCESS_POLICY, dns_entries, dns_payload_bound,
+            release_interfaces,
+        };
+        use crate::scaffolded::Scaffolded;
+        use crate::state;
+
+        // Every list of ids the request carries, deduplicated — naming one id twice asks for
+        // it once — and bounded before any per-entry work is done, the bound every list of
+        // resource ids in this crate is held to.
+        let add_route_tables =
+            state::deduplicate_ids(input.add_route_table_ids.as_deref().unwrap_or_default());
+        let remove_route_tables =
+            state::deduplicate_ids(input.remove_route_table_ids.as_deref().unwrap_or_default());
+        let add_subnets =
+            state::deduplicate_ids(input.add_subnet_ids.as_deref().unwrap_or_default());
+        let remove_subnets =
+            state::deduplicate_ids(input.remove_subnet_ids.as_deref().unwrap_or_default());
+        let add_groups =
+            state::deduplicate_ids(input.add_security_group_ids.as_deref().unwrap_or_default());
+        let remove_groups = state::deduplicate_ids(
+            input
+                .remove_security_group_ids
+                .as_deref()
+                .unwrap_or_default(),
+        );
+        for (member, supplied, maximum) in [
+            (
+                "AddRouteTableIds",
+                add_route_tables.len(),
+                state::MAX_RESOURCE_IDS,
+            ),
+            (
+                "RemoveRouteTableIds",
+                remove_route_tables.len(),
+                state::MAX_RESOURCE_IDS,
+            ),
+            ("AddSubnetIds", add_subnets.len(), state::MAX_RESOURCE_IDS),
+            (
+                "RemoveSubnetIds",
+                remove_subnets.len(),
+                state::MAX_RESOURCE_IDS,
+            ),
+            (
+                "AddSecurityGroupIds",
+                add_groups.len(),
+                state::MAX_SECURITY_GROUPS_PER_INSTANCE,
+            ),
+            (
+                "RemoveSecurityGroupIds",
+                remove_groups.len(),
+                state::MAX_SECURITY_GROUPS_PER_INSTANCE,
+            ),
+        ] {
+            if supplied > maximum {
+                return Err(state::invalid_parameter_value(format!(
+                    "{member} carries {supplied} ids, above the maximum of {maximum}"
+                )));
+            }
+        }
+        // One id both added and removed asks for two incompatible things of the same
+        // resource, so the request is refused rather than one of the two silently winning.
+        for (kind, added, removed) in [
+            ("route table", &add_route_tables, &remove_route_tables),
+            ("subnet", &add_subnets, &remove_subnets),
+            ("security group", &add_groups, &remove_groups),
+        ] {
+            if let Some(conflicting) = added.iter().find(|asked| removed.contains(asked)) {
+                return Err(state::invalid_parameter_combination(format!(
+                    "The {kind} {conflicting} cannot be added and removed by the same request"
+                )));
+            }
+        }
+
+        // Request shapes this slice holds no state for, the same members
+        // `CreateVpcEndpoint` refuses for the same reason: each one CONTRADICTS what the
+        // endpoint would otherwise report, so it is answered with a 501 ("nobody has written
+        // this yet") rather than with an endpoint that silently lacks what was asked for.
+        if let Some(ip_address_type) = input
+            .ip_address_type
+            .as_deref()
+            .filter(|asked| *asked != state::IP_ADDRESS_TYPE_IPV4)
+        {
+            // An endpoint reached over IPv6 needs IPv6 addresses on its endpoint network
+            // interfaces, and a subnet of this slice holds no IPv6 range to take one from.
+            return Err(Scaffolded::not_implemented(&format!(
+                "ModifyVpcEndpoint to the {ip_address_type} IP address type"
+            )));
+        }
+        let requested_dns_options = input.dns_options.clone().unwrap_or_default();
+        if let Some(dns_record_ip_type) = requested_dns_options
+            .dns_record_ip_type
+            .as_deref()
+            .filter(|asked| *asked != state::DNS_RECORD_IP_TYPE_IPV4)
+        {
+            // "The DNS records created for the endpoint" (`DnsOptions$DnsRecordIpType`):
+            // every other value promises records for addresses this slice cannot assign.
+            return Err(Scaffolded::not_implemented(&format!(
+                "ModifyVpcEndpoint to the {dns_record_ip_type} DNS record IP type"
+            )));
+        }
+        if requested_dns_options.private_dns_preference.is_some()
+            || requested_dns_options.private_dns_specified_domains.is_some()
+        {
+            // "Only supported when private DNS is enabled and when the VPC endpoint type is
+            // ServiceNetwork or Resource"
+            // (`DnsOptionsSpecification$PrivateDnsPreference`) — types this slice creates no
+            // endpoint of.
+            return Err(Scaffolded::not_implemented(
+                "ModifyVpcEndpoint with a private DNS domain preference",
+            ));
+        }
+        if requested_dns_options
+            .private_dns_only_for_inbound_resolver_endpoint
+            .is_some()
+        {
+            // An inbound Resolver endpoint is a resource of another service entirely.
+            return Err(Scaffolded::not_implemented(
+                "ModifyVpcEndpoint with private DNS only for inbound resolver endpoints",
+            ));
+        }
+        let subnet_configurations: &[SubnetConfiguration] =
+            input.subnet_configurations.as_deref().unwrap_or_default();
+        if subnet_configurations
+            .iter()
+            .any(|configuration| configuration.ipv6.is_some())
+        {
+            // "The IPv6 address to assign to the endpoint network interface in the subnet"
+            // (`SubnetConfiguration$Ipv6`): the same missing IPv6 range as above.
+            return Err(Scaffolded::not_implemented(
+                "ModifyVpcEndpoint with an IPv6 subnet configuration",
+            ));
+        }
+
+        // "(Gateway endpoint) Specify true to reset the policy document to the default
+        // policy" (`ResetPolicy`) and "A policy to attach to the endpoint that controls
+        // access to the service" (`PolicyDocument`) name two different documents, so a
+        // request carrying both asks for no one policy.
+        let reset_policy = input.reset_policy.unwrap_or(false);
+        if reset_policy && input.policy_document.is_some() {
+            return Err(state::invalid_parameter_combination(
+                "ResetPolicy cannot be specified together with PolicyDocument",
+            ));
+        }
+        // The policy this call leaves attached, or `None` for a request that named none and
+        // therefore leaves the one the endpoint already carries.
+        let replacement_policy: Option<String> = if reset_policy {
+            // "The default policy allows full access to the service" (`ResetPolicy`) — the
+            // document the create attaches to an endpoint whose request named none, so a
+            // reset and a create agree on what "the default policy" is.
+            Some(FULL_ACCESS_POLICY.to_string())
+        } else {
+            // Read through the ONE reading of this member, which both bounds the document by
+            // the published policy quota and parses it, so a modify and a create cannot hold
+            // one caller's document to different terms.
+            state::requested_vpc_endpoint_policy(input.policy_document.as_deref())?
+        };
+
+        let endpoints = state::require_service_state(&*self.engine)?;
+        let region = state::request_region(ctx.parts());
+        let mut store = endpoints.lock();
+        // Every move the clock already owed is applied before this request reads the store,
+        // so what this modification is applied to is the endpoint as it ACTUALLY stands
+        // rather than as the call before it left it.
+        store.materialize_due_transitions();
+
+        // "The ID of the endpoint" (`VpcEndpointId`): a value that is not an endpoint id at
+        // all names nothing to look up, and a well-formed id this account holds no endpoint
+        // for has nothing to modify — the two refusals, in that order, that every reader of a
+        // `VpcEndpointId` in this crate answers.
+        let endpoint_id = input.vpc_endpoint_id.as_str();
+        if !state::vpc_endpoint_id_is_well_formed(endpoint_id) {
+            return Err(Scaffolded::service_error(
+                state::INVALID_VPC_ENDPOINT_ID_MALFORMED,
+                400,
+                state::invalid_id_message(endpoint_id),
+            ));
+        }
+        let Some(endpoint) = store.vpc_endpoints.get(endpoint_id).cloned() else {
+            return Err(state::id_not_found(
+                state::INVALID_VPC_ENDPOINT_ID_NOT_FOUND,
+                "VpcEndpoint Id",
+                endpoint_id,
+            ));
+        };
+
+        // "The attributes that you can modify depend on the type of VPC endpoint (interface,
+        // gateway, or Gateway Load Balancer)": which members mean anything for this call is a
+        // fact of the STORED endpoint's type.
+        let endpoint_type = endpoint.vpc_endpoint_type.clone().unwrap_or_default();
+        let gateway = endpoint_type == state::VPC_ENDPOINT_TYPE_GATEWAY;
+        let interface = endpoint_type == state::VPC_ENDPOINT_TYPE_INTERFACE;
+        let load_balancer = endpoint_type == state::VPC_ENDPOINT_TYPE_GATEWAY_LOAD_BALANCER;
+        if !(gateway || interface || load_balancer) {
+            return Err(Scaffolded::not_implemented(&format!(
+                "ModifyVpcEndpoint of an endpoint of type {endpoint_type}"
+            )));
+        }
+        let vpc_id = endpoint.vpc_id.clone().unwrap_or_default();
+
+        // Each member's own parenthetical in the doc above says which type it belongs to, and
+        // a member that names nothing for this endpoint's type is refused rather than stored
+        // and reported back as though it had been honoured.
+        if !gateway && !(add_route_tables.is_empty() && remove_route_tables.is_empty()) {
+            // "(Gateway endpoint) The IDs of the route tables" (`AddRouteTableIds`,
+            // `RemoveRouteTableIds`): every other type is reached through endpoint network
+            // interfaces in subnets rather than through a route.
+            return Err(state::invalid_parameter_combination(format!(
+                "Route table ids cannot be specified for a {endpoint_type} endpoint"
+            )));
+        }
+        if gateway
+            && !(add_subnets.is_empty()
+                && remove_subnets.is_empty()
+                && subnet_configurations.is_empty())
+        {
+            // "(Interface and Gateway Load Balancer endpoints) The IDs of the subnets in
+            // which to serve the endpoint" (`AddSubnetIds`): a gateway endpoint serves none.
+            return Err(state::invalid_parameter_combination(
+                "Subnet ids cannot be specified for a Gateway endpoint",
+            ));
+        }
+        if !interface && !(add_groups.is_empty() && remove_groups.is_empty()) {
+            // "(Interface endpoint) The IDs of the security groups to associate with the
+            // endpoint network interfaces" (`AddSecurityGroupIds`).
+            return Err(state::invalid_parameter_combination(format!(
+                "Security group ids cannot be specified for a {endpoint_type} endpoint"
+            )));
+        }
+        if !interface && input.private_dns_enabled.unwrap_or(false) {
+            // "(Interface endpoint) Indicates whether a private hosted zone is associated
+            // with the VPC" (`PrivateDnsEnabled`): there is no private hosted zone to
+            // associate for any other type. Asking for it to be OFF is what every other type
+            // already is, so only a request asking for it ON is refused.
+            return Err(state::invalid_parameter_combination(format!(
+                "PrivateDnsEnabled cannot be enabled for a {endpoint_type} endpoint"
+            )));
+        }
+        if load_balancer && (reset_policy || input.policy_document.is_some()) {
+            // "(Interface and gateway endpoints) A policy to attach to the endpoint"
+            // (`PolicyDocument`) — a Gateway Load Balancer endpoint is neither, and carries
+            // no policy at all.
+            return Err(state::invalid_parameter_combination(
+                "PolicyDocument cannot be specified for a GatewayLoadBalancer endpoint",
+            ));
+        }
+        if gateway && (input.ip_address_type.is_some() || input.dns_options.is_some()) {
+            // A gateway endpoint has no endpoint network interface to give an address type
+            // to and answers on no DNS name of its own, so it reports neither member.
+            return Err(state::invalid_parameter_combination(
+                "IpAddressType and DnsOptions cannot be specified for a Gateway endpoint",
+            ));
+        }
+
+        // ------------------------------------------------------------------
+        // What the change would leave behind — resolved before anything is written
+        // ------------------------------------------------------------------
+
+        // "(Interface endpoint) The IDs of the subnets from which to remove the endpoint"
+        // (`RemoveSubnetIds`): a subnet the endpoint is not in has no endpoint to remove.
+        let held_subnets: Vec<String> = endpoint.subnet_ids.clone().unwrap_or_default();
+        for subnet_id in &remove_subnets {
+            if !held_subnets.contains(subnet_id) {
+                return Err(state::invalid_parameter_value(format!(
+                    "Value ({subnet_id}) for parameter removeSubnetId is invalid. The \
+                     endpoint {endpoint_id} does not serve that subnet"
+                )));
+            }
+        }
+        let remaining: Vec<String> = held_subnets
+            .iter()
+            .filter(|subnet_id| !remove_subnets.contains(subnet_id))
+            .cloned()
+            .collect();
+
+        // "The subnet configurations for the endpoint" (`SubnetConfigurations`): each one
+        // configures one of the subnets the endpoint is served through once this call is
+        // done, so a configuration for any other subnet configures nothing, and a second one
+        // for a subnet already configured has no defined winner. The subnets this call leaves
+        // the endpoint with are read into a SET and the configurations into a map keyed by
+        // subnet BEFORE any placement is resolved, so the matching below costs one lookup per
+        // configuration rather than a walk of the subnets — the model bounds neither list, and
+        // the PRODUCT of the two is what an unbounded scan would cost.
+        let served_subnets: ::std::collections::BTreeSet<&str> = add_subnets
+            .iter()
+            .chain(remaining.iter())
+            .map(String::as_str)
+            .collect();
+        let mut configured: ::std::collections::BTreeMap<&str, &SubnetConfiguration> =
+            ::std::collections::BTreeMap::new();
+        for configuration in subnet_configurations {
+            let subnet_id = configuration.subnet_id.as_deref().unwrap_or_default();
+            if !served_subnets.contains(subnet_id) {
+                return Err(state::invalid_parameter_combination(format!(
+                    "The subnet configuration for '{subnet_id}' names a subnet the endpoint \
+                     is neither in nor being added to"
+                )));
+            }
+            if configured.insert(subnet_id, configuration).is_some() {
+                return Err(state::invalid_parameter_combination(format!(
+                    "The subnet '{subnet_id}' is configured more than once"
+                )));
+            }
+        }
+
+        // The subnets the endpoint keeps, each read off the stored subnet the way the create
+        // reads one: the subnet is what an endpoint network interface's Availability Zone and
+        // address range come from.
+        let mut placements: Vec<EndpointPlacement> = Vec::with_capacity(remaining.len());
+        for subnet_id in &remaining {
+            let held = store.subnets.get(subnet_id);
+            placements.push(EndpointPlacement {
+                subnet_id: subnet_id.clone(),
+                cidr_block: held
+                    .and_then(|subnet| subnet.cidr_block.clone())
+                    .unwrap_or_default(),
+                availability_zone: held
+                    .and_then(|subnet| subnet.availability_zone.clone())
+                    .unwrap_or_default(),
+                availability_zone_id: held
+                    .and_then(|subnet| subnet.availability_zone_id.clone())
+                    .unwrap_or_default(),
+                requested_address: None,
+            });
+        }
+        // Where the subnets this call ADDS start in that list: the endpoint network interface
+        // of each one is created below, while the ones before it already have theirs.
+        let kept = placements.len();
+
+        // "(Interface and Gateway Load Balancer endpoints) The IDs of the subnets in which to
+        // serve the endpoint" (`AddSubnetIds`): each subnet has to exist and has to be a
+        // subnet of the endpoint's OWN VPC, which is the only network its interfaces can sit
+        // in. "You can specify only one subnet per Availability Zone" (Amazon Web Services
+        // PrivateLink User Guide, "Interface endpoints"), so a subnet of a zone the endpoint
+        // is already served in is refused rather than given a second interface in that zone.
+        for subnet_id in &add_subnets {
+            let Some(subnet) = store
+                .subnets
+                .get(subnet_id)
+                .filter(|subnet| subnet.vpc_id.as_deref() == Some(vpc_id.as_str()))
+            else {
+                return Err(state::invalid_subnet_id_not_found(subnet_id));
+            };
+            let availability_zone = subnet.availability_zone.clone().unwrap_or_default();
+            let cidr_block = subnet.cidr_block.clone().unwrap_or_default();
+            let availability_zone_id = subnet.availability_zone_id.clone().unwrap_or_default();
+            // "You can specify only one subnet per Availability Zone", so the refusal names the
+            // subnet the REQUEST asked for — the one whose zone is already taken.
+            if placements
+                .iter()
+                .any(|placement| placement.availability_zone == availability_zone)
+            {
+                return Err(state::duplicate_subnets_in_same_zone(subnet_id));
+            }
+            placements.push(EndpointPlacement {
+                subnet_id: subnet_id.clone(),
+                cidr_block,
+                availability_zone,
+                availability_zone_id,
+                // "The IPv4 address to assign to the endpoint network interface in the
+                // subnet" (`SubnetConfiguration$Ipv4`), when the request chose one.
+                requested_address: configured
+                    .get(subnet_id.as_str())
+                    .and_then(|configuration| configuration.ipv4.clone())
+                    .filter(|address| !address.is_empty()),
+            });
+        }
+        if load_balancer && placements.len() > 1 {
+            // "For a Gateway Load Balancer endpoint, you can specify only one subnet"
+            // (`AddSubnetIds`).
+            return Err(state::invalid_parameter_value(
+                "A GatewayLoadBalancer endpoint can be served through only one subnet",
+            ));
+        }
+
+        // The address each interface the endpoint KEEPS is asked to move to, if the request
+        // configured one for its subnet. Every address this call will take — chosen for an
+        // added subnet or moved to in a kept one — is judged here, against the subnet's
+        // assignable range and against everything the account already holds, BEFORE any of
+        // them is taken, so a refusal cannot leave an address held by nothing.
+        let mut claimed: Vec<String> = Vec::new();
+        let mut readdresses: Vec<Readdress> = Vec::new();
+        for placement in &placements[..kept] {
+            let Some(asked) = configured
+                .get(placement.subnet_id.as_str())
+                .and_then(|configuration| configuration.ipv4.clone())
+                .filter(|address| !address.is_empty())
+            else {
+                continue;
+            };
+            let Some((network_interface_id, held_address)) = endpoint
+                .network_interface_ids
+                .iter()
+                .flatten()
+                .filter_map(|network_interface_id| {
+                    store
+                        .network_interfaces
+                        .get(network_interface_id)
+                        .map(|held| (network_interface_id, held))
+                })
+                .find(|(_, held)| held.subnet_id.as_deref() == Some(placement.subnet_id.as_str()))
+                .map(|(network_interface_id, held)| {
+                    (
+                        network_interface_id.clone(),
+                        held.private_ip_address.clone().unwrap_or_default(),
+                    )
+                })
+            else {
+                continue;
+            };
+            if held_address == asked {
+                // The interface already answers on that address: nothing to move.
+                continue;
+            }
+            if !state::is_assignable_subnet_address(&placement.cidr_block, &asked) {
+                return Err(state::invalid_parameter_value(format!(
+                    "Value ({asked}) for parameter ipv4 is invalid. Address does not fall \
+                     within the subnet's assignable address range {cidr}",
+                    cidr = placement.cidr_block,
+                )));
+            }
+            if store.subnet_address_in_use(&asked) || claimed.contains(&asked) {
+                return Err(Scaffolded::invalid_ip_address_in_use(&asked));
+            }
+            claimed.push(asked.clone());
+            readdresses.push(Readdress {
+                network_interface_id,
+                from: held_address,
+                to: asked,
+            });
+        }
+        for placement in &placements[kept..] {
+            let Some(asked) = placement.requested_address.as_deref() else {
+                continue;
+            };
+            if !state::is_assignable_subnet_address(&placement.cidr_block, asked) {
+                return Err(state::invalid_parameter_value(format!(
+                    "Value ({asked}) for parameter ipv4 is invalid. Address does not fall \
+                     within the subnet's assignable address range {cidr}",
+                    cidr = placement.cidr_block,
+                )));
+            }
+            if store.subnet_address_in_use(asked) || claimed.iter().any(|held| held == asked) {
+                return Err(Scaffolded::invalid_ip_address_in_use(asked));
+            }
+            claimed.push(asked.to_string());
+        }
+
+        // "(Interface endpoint) The IDs of the security groups to associate with the endpoint
+        // network interfaces" (`AddSecurityGroupIds`) and "to disassociate from" them
+        // (`RemoveSecurityGroupIds`): a group has to exist and has to be a group of the
+        // endpoint's own VPC — a security group only applies within its VPC — and one the
+        // endpoint does not carry has nothing to disassociate.
+        let mut groups: Vec<SecurityGroupIdentifier> = endpoint.groups.clone().unwrap_or_default();
+        for group_id in &remove_groups {
+            if !groups
+                .iter()
+                .any(|held| held.group_id.as_deref() == Some(group_id.as_str()))
+            {
+                return Err(state::invalid_parameter_value(format!(
+                    "Value ({group_id}) for parameter removeSecurityGroupId is invalid. The \
+                     endpoint {endpoint_id} is not associated with that security group"
+                )));
+            }
+        }
+        groups.retain(|held| {
+            !remove_groups
+                .iter()
+                .any(|removed| held.group_id.as_deref() == Some(removed.as_str()))
+        });
+        for group_id in &add_groups {
+            if !state::security_group_id_is_well_formed(group_id) {
+                return Err(state::invalid_group_id_malformed(group_id));
+            }
+            let Some(group) = store
+                .security_groups
+                .get(group_id)
+                .filter(|group| group.vpc_id.as_deref() == Some(vpc_id.as_str()))
+            else {
+                return Err(state::invalid_group_not_found(group_id));
+            };
+            if groups
+                .iter()
+                .any(|held| held.group_id.as_deref() == Some(group_id.as_str()))
+            {
+                return Err(state::invalid_parameter_value(format!(
+                    "Value ({group_id}) for parameter addSecurityGroupId is invalid. The \
+                     endpoint {endpoint_id} is already associated with that security group"
+                )));
+            }
+            groups.push(SecurityGroupIdentifier {
+                group_id: group.group_id.clone(),
+                group_name: group.group_name.clone(),
+            });
+        }
+        if groups.len() > state::MAX_SECURITY_GROUPS_PER_INSTANCE {
+            return Err(state::invalid_parameter_value(format!(
+                "The endpoint would carry {supplied} security groups, above the maximum of \
+                 {maximum} per network interface",
+                supplied = groups.len(),
+                maximum = state::MAX_SECURITY_GROUPS_PER_INSTANCE,
+            )));
+        }
+
+        // "(Gateway endpoint) The IDs of the route tables to associate with the endpoint"
+        // (`AddRouteTableIds`) and "to disassociate from the endpoint"
+        // (`RemoveRouteTableIds`): each table has to exist and has to route for the
+        // endpoint's own VPC — a table of another VPC routes traffic the endpoint cannot
+        // carry — and a table the endpoint is not associated with has nothing to
+        // disassociate.
+        let mut route_tables: Vec<String> = endpoint.route_table_ids.clone().unwrap_or_default();
+        for route_table_id in &remove_route_tables {
+            if !route_tables.contains(route_table_id) {
+                return Err(state::invalid_parameter_value(format!(
+                    "Value ({route_table_id}) for parameter removeRouteTableId is invalid. \
+                     The endpoint {endpoint_id} is not associated with that route table"
+                )));
+            }
+        }
+        route_tables.retain(|held| !remove_route_tables.contains(held));
+        for route_table_id in &add_route_tables {
+            if route_tables.contains(route_table_id) {
+                return Err(state::invalid_parameter_value(format!(
+                    "Value ({route_table_id}) for parameter addRouteTableId is invalid. The \
+                     endpoint {endpoint_id} is already associated with that route table"
+                )));
+            }
+            let Some(route_table) = store.route_tables.get(route_table_id) else {
+                return Err(state::invalid_route_table_id_not_found(route_table_id));
+            };
+            if route_table.vpc_id.as_deref() != Some(vpc_id.as_str()) {
+                return Err(state::invalid_parameter_value(format!(
+                    "route table {route_table_id} and VPC {vpc_id} belong to different \
+                     networks"
+                )));
+            }
+        }
+        // The destination of the route a gateway endpoint adds to each table it is associated
+        // with: "the route … uses the prefix list for the service as the destination" (Amazon
+        // Web Services PrivateLink User Guide, "Gateway endpoints"), read from the one
+        // catalogue of the prefix lists a Region publishes
+        // ([`crate::state::service_prefix_lists_in_region`]) — the same resolution the create
+        // makes, so the two agree about which list an endpoint's route is destined for.
+        let service_name = endpoint.service_name.clone().unwrap_or_default();
+        let endpoint_prefix_list = state::service_prefix_lists_in_region(&region)
+            .into_iter()
+            .find(|published| published.prefix_list_name == service_name)
+            .map(|published| published.prefix_list_id);
+        if !add_route_tables.is_empty() {
+            let Some(prefix_list_id) = endpoint_prefix_list.as_deref() else {
+                return Err(state::invalid_service_name(&service_name));
+            };
+            // Each named table has to have ROOM for that one route and must not already route
+            // its destination, asked here — before anything is written — so an endpoint is
+            // never left reporting a table it does not actually route to.
+            for route_table_id in &add_route_tables {
+                if store.route_table_holds_destination(route_table_id, prefix_list_id) {
+                    return Err(state::route_already_exists(prefix_list_id));
+                }
+                if store.route_count(route_table_id) >= state::MAX_ROUTES_PER_ROUTE_TABLE {
+                    return Err(state::route_limit_exceeded());
+                }
+            }
+        }
+        route_tables.extend(add_route_tables.iter().cloned());
+
+        // "(Interface endpoint) Indicates whether a private hosted zone is associated with
+        // the VPC" (`PrivateDnsEnabled`). "To use a private hosted zone, you must set the
+        // following VPC attributes to true: enableDnsHostnames and enableDnsSupport"
+        // (`CreateVpcEndpointRequest$PrivateDnsEnabled`) — a VPC without them cannot resolve
+        // the private name, so turning it ON is refused rather than recorded as an
+        // association that would never answer. A request that carries the member not at all
+        // leaves the endpoint's own setting as it was.
+        let private_dns_held = endpoint.private_dns_enabled.unwrap_or(false);
+        let private_dns_enabled = interface && input.private_dns_enabled.unwrap_or(private_dns_held);
+        if private_dns_enabled && !private_dns_held {
+            let attributes = store
+                .vpc_attributes_of(&vpc_id)
+                .ok_or_else(|| state::invalid_vpc_id_not_found(&vpc_id))?;
+            if !(attributes.enable_dns_support && attributes.enable_dns_hostnames) {
+                return Err(state::private_dns_unsupported_vpc(&vpc_id));
+            }
+        }
+
+        // What this call would retain beyond what the endpoint already holds: the policy it
+        // attaches and an upper bound on the DNS names the endpoint will answer on, against
+        // what the record gives back — the policy it carried and the names it answered on.
+        // The budget is asked about the NET change, since this call stores no further
+        // endpoint.
+        let endpoint_service = state::parse_endpoint_service_name(&service_name);
+        let service_region = endpoint.service_region.clone().unwrap_or_default();
+        let held_entries: Vec<DnsEntry> = endpoint.dns_entries.clone().unwrap_or_default();
+        let rebuild_dns = interface && endpoint_service.is_some();
+        let charge = replacement_policy
+            .as_deref()
+            .map_or(0, str::len)
+            .saturating_add(if rebuild_dns {
+                dns_payload_bound(
+                    &endpoint_service
+                        .as_ref()
+                        .map(|parsed| parsed.service.clone())
+                        .unwrap_or_default(),
+                    &service_region,
+                    &placements,
+                )
+            } else {
+                0
+            });
+        let refund = replacement_policy
+            .as_ref()
+            .map_or(0, |_| endpoint.policy_document.as_deref().map_or(0, str::len))
+            .saturating_add(if rebuild_dns {
+                state::dns_entry_list_bytes(&held_entries)
+            } else {
+                0
+            });
+        if store.would_exceed_stored_bytes_after_refund(charge, refund) {
+            return Err(state::resource_limit_exceeded(format!(
+                "This emulator holds {held} of at most {max} bytes of caller-supplied data, \
+                 so it cannot store this modification's {charge} bytes",
+                held = store.stored_bytes(),
+                max = state::MAX_STORED_BYTES,
+            )));
+        }
+
+        // Every parameter has been read and every id resolved, and nothing has been written
+        // yet: "If you have the required permissions, the error response is DryRunOperation"
+        // (`DryRun`), so a request that WOULD have worked stops here, and one that would have
+        // been refused was refused above with its own reason.
+        if input.dry_run.unwrap_or(false) {
+            return Err(state::dry_run_operation());
+        }
+
+        // ------------------------------------------------------------------
+        // The writes
+        // ------------------------------------------------------------------
+
+        // "We automatically add a route to the route table with a destination of the prefix
+        // list for the service and a target of the gateway endpoint" (Amazon Web Services
+        // PrivateLink User Guide, "Gateway endpoints"): a table this call associates carries
+        // that route from the moment the association exists, and one it disassociates stops
+        // carrying it — a route to an endpoint the table no longer reaches would route
+        // nothing. Both go through the store's own writers, so `DescribeRouteTables` reports
+        // them exactly as it reports a route a caller added.
+        let mut routed: Vec<&String> = Vec::with_capacity(add_route_tables.len());
+        if let Some(prefix_list_id) = endpoint_prefix_list.as_deref() {
+            for route_table_id in &add_route_tables {
+                let stored = store.insert_route(
+                    route_table_id,
+                    state::RouteSpec {
+                        destination_cidr_block: None,
+                        destination_ipv6_cidr_block: None,
+                        destination_prefix_list_id: Some(prefix_list_id.to_string()),
+                        // A VPC endpoint is reported as a route's `GatewayId`, the modelled
+                        // `Route` carrying no member of its own for one.
+                        target: state::RouteTarget::Gateway(endpoint_id.to_string()),
+                        origin: state::ROUTE_ORIGIN_CREATE_ROUTE,
+                    },
+                );
+                if !stored {
+                    // Unreachable: every bound the insert enforces was asked above and the
+                    // store is locked throughout. Answered rather than discarded, with the
+                    // routes this call had already added handed back, so a refused
+                    // modification leaves the store as the request found it.
+                    for done in &routed {
+                        store.drop_route_table_routes_to_gateway(done, endpoint_id);
+                    }
+                    return Err(state::route_limit_exceeded());
+                }
+                routed.push(route_table_id);
+            }
+        }
+        for route_table_id in &remove_route_tables {
+            store.drop_route_table_routes_to_gateway(route_table_id, endpoint_id);
+        }
+
+        // "An endpoint network interface is created … in an Availability Zone"
+        // (`CreateVpcEndpointRequest$SubnetIds`): one interface per subnet this call adds,
+        // taking a private address out of that subnet's own range through the store's one
+        // choice-and-take, so no two resources of a subnet can be handed the same address.
+        let interface_type = if load_balancer {
+            state::NETWORK_INTERFACE_TYPE_GATEWAY_LOAD_BALANCER_ENDPOINT
+        } else {
+            state::NETWORK_INTERFACE_TYPE_VPC_ENDPOINT
+        };
+        let endpoint_groups: Vec<GroupIdentifier> = groups
+            .iter()
+            .map(|group| GroupIdentifier {
+                group_id: group.group_id.clone(),
+                group_name: group.group_name.clone(),
+            })
+            .collect();
+        let mut added_interface_ids: Vec<String> = Vec::with_capacity(placements.len() - kept);
+        for placement in &placements[kept..] {
+            let address = match placement.requested_address.as_deref() {
+                // Judged against the subnet's range and against every address the account
+                // holds above, so the take itself cannot be refused for a reason the request
+                // has not already been told about.
+                Some(asked) if store.reserve_private_ip(asked) => asked.to_string(),
+                Some(asked) => {
+                    release_interfaces(&mut store, &added_interface_ids);
+                    for done in &routed {
+                        store.drop_route_table_routes_to_gateway(done, endpoint_id);
+                    }
+                    return Err(Scaffolded::invalid_ip_address_in_use(asked));
+                }
+                None => match store.mint_private_ip_in_cidr(&placement.cidr_block) {
+                    Some(free) => free,
+                    None => {
+                        release_interfaces(&mut store, &added_interface_ids);
+                        for done in &routed {
+                            store.drop_route_table_routes_to_gateway(done, endpoint_id);
+                        }
+                        return Err(Scaffolded::insufficient_free_addresses());
+                    }
+                },
+            };
+            let spec = state::NetworkInterfaceSpec {
+                subnet_id: placement.subnet_id.clone(),
+                vpc_id: vpc_id.clone(),
+                availability_zone: placement.availability_zone.clone(),
+                availability_zone_id: placement.availability_zone_id.clone(),
+                region: region.clone(),
+                // Filled in with the endpoint it serves below, as the create fills it in.
+                description: String::new(),
+                interface_type: interface_type.to_string(),
+                private_ip_addresses: vec![address.clone()],
+                groups: endpoint_groups.clone(),
+                // An endpoint network interface is attached to nothing a caller can see.
+                attachment: None,
+                requester: None,
+                // The endpoint carries the tags; its interfaces are not a tagged resource.
+                tags: Vec::new(),
+            };
+            match store.insert_network_interface(spec) {
+                Some(network_interface_id) => added_interface_ids.push(network_interface_id),
+                None => {
+                    store.release_private_ip(&address);
+                    release_interfaces(&mut store, &added_interface_ids);
+                    for done in &routed {
+                        store.drop_route_table_routes_to_gateway(done, endpoint_id);
+                    }
+                    return Err(state::network_interface_limit_exceeded());
+                }
+            }
+        }
+        // Each endpoint network interface names the endpoint it serves, and is managed by the
+        // service rather than by the caller — "Indicates whether the interface is being
+        // managed by Amazon" (`NetworkInterface$RequesterManaged`).
+        for network_interface_id in &added_interface_ids {
+            if let Some(stored) = store.network_interfaces.get_mut(network_interface_id) {
+                stored.description = Some(format!("VPC Endpoint Interface {endpoint_id}"));
+                stored.requester_managed = Some(true);
+            }
+        }
+
+        // "(Interface endpoint) The IDs of the subnets from which to remove the endpoint"
+        // (`RemoveSubnetIds`): the interface that subnet was served through goes with it,
+        // through the exact reverse of the insert — so its address, its bytes and the
+        // subnet's own available-address count all go back.
+        let kept_interface_ids: Vec<String> = endpoint
+            .network_interface_ids
+            .iter()
+            .flatten()
+            .filter(|network_interface_id| {
+                store
+                    .network_interfaces
+                    .get(network_interface_id.as_str())
+                    .and_then(|held| held.subnet_id.clone())
+                    .is_none_or(|subnet_id| !remove_subnets.contains(&subnet_id))
+            })
+            .cloned()
+            .collect();
+        for network_interface_id in endpoint.network_interface_ids.iter().flatten() {
+            if !kept_interface_ids.contains(network_interface_id) {
+                store.remove_network_interface(network_interface_id);
+            }
+        }
+
+        // The address an interface the endpoint keeps was asked to move to, judged above
+        // against the subnet's range and against everything the account holds.
+        for readdress in &readdresses {
+            if !store.reserve_private_ip(&readdress.to) {
+                // Unreachable: the address was free under this same lock.
+                continue;
+            }
+            store.release_private_ip(&readdress.from);
+            let moved_to = readdress.to.clone();
+            let private_dns = state::private_dns_name(&moved_to, &region);
+            if let Some(stored) = store
+                .network_interfaces
+                .get_mut(readdress.network_interface_id.as_str())
+            {
+                stored.private_ip_address = Some(moved_to.clone());
+                stored.private_dns_name = Some(private_dns.clone());
+                if let Some(addresses) = stored.private_ip_addresses.as_mut() {
+                    if let Some(primary) = addresses.first_mut() {
+                        primary.private_ip_address = Some(moved_to);
+                        primary.private_dns_name = Some(private_dns);
+                    }
+                }
+            }
+        }
+
+        // The security groups the endpoint now carries apply to every endpoint network
+        // interface it is served through: "the security groups to associate with the endpoint
+        // network interfaces" (`AddSecurityGroupIds`), so the groups the endpoint reports and
+        // the groups its interfaces carry cannot drift apart.
+        let mut final_interface_ids = kept_interface_ids;
+        final_interface_ids.extend(added_interface_ids.iter().cloned());
+        if interface {
+            for network_interface_id in &final_interface_ids {
+                if let Some(stored) = store.network_interfaces.get_mut(network_interface_id) {
+                    stored.groups = Some(endpoint_groups.clone());
+                }
+            }
+        }
+
+        // "(Interface endpoint) The DNS entries for the endpoint"
+        // (`VpcEndpoint$DnsEntries`): the names the endpoint answers on, rebuilt from the
+        // subnets it is now served through. The hosted zones are the endpoint's OWN — the
+        // ones its stored entries already name — so the names it answered on before this call
+        // keep resolving in the same zone, and a zone is minted only when the endpoint has
+        // none yet (a private hosted zone this call is the one to associate).
+        let mut rebuilt_entries: Option<Vec<DnsEntry>> = None;
+        if let Some(parsed) = endpoint_service.as_ref().filter(|_| interface) {
+            let endpoint_prefix = format!("{endpoint_id}.");
+            let zonal_prefix = format!("{endpoint_id}-");
+            let held_zone = held_entries
+                .iter()
+                .find(|entry| {
+                    entry.dns_name.as_deref().is_some_and(|name| {
+                        name.starts_with(&endpoint_prefix) || name.starts_with(&zonal_prefix)
+                    })
+                })
+                .and_then(|entry| entry.hosted_zone_id.clone());
+            let held_private_zone = held_entries
+                .iter()
+                .find(|entry| {
+                    entry
+                        .dns_name
+                        .as_deref()
+                        .is_some_and(|name| !name.starts_with(endpoint_id))
+                })
+                .and_then(|entry| entry.hosted_zone_id.clone());
+            let hosted_zone_id = match held_zone {
+                Some(held) => held,
+                None => store.mint_hosted_zone_id(),
+            };
+            let private_hosted_zone_id = if private_dns_enabled {
+                Some(match held_private_zone {
+                    Some(held) => held,
+                    None => store.mint_hosted_zone_id(),
+                })
+            } else {
+                None
+            };
+            rebuilt_entries = Some(dns_entries(
+                endpoint_id,
+                &parsed.service,
+                &service_region,
+                &placements,
+                &hosted_zone_id,
+                private_hosted_zone_id.as_deref(),
+            ));
+        }
+
+        // Whether this call stood up or tore down an endpoint network interface, which is
+        // what the endpoint is in service through: an endpoint whose interfaces are being
+        // provisioned is reported in the non-terminal `pending` state with `available` owed by
+        // the clock, exactly as one that stands them up at creation is
+        // ([`crate::ops::create_vpc_endpoint`]). The span is never zero, so a caller reading
+        // the endpoint straight after this call still sees it `pending`.
+        let interfaces_changed = !add_subnets.is_empty() || !remove_subnets.is_empty();
+
+        // The record itself, written through the one map `DescribeVpcEndpoints` reports from,
+        // so the modification this call made and the endpoint that describe shows cannot
+        // drift apart. Only the members the endpoint's own TYPE has are touched.
+        let released = refund;
+        let charged = replacement_policy
+            .as_deref()
+            .map_or(0, str::len)
+            .saturating_add(
+                rebuilt_entries
+                    .as_deref()
+                    .map_or(0, state::dns_entry_list_bytes),
+            );
+        if let Some(stored) = store.vpc_endpoints.get_mut(endpoint_id) {
+            if let Some(policy) = replacement_policy {
+                stored.policy_document = Some(policy);
+            }
+            if gateway {
+                stored.route_table_ids = Some(route_tables);
+            } else {
+                stored.subnet_ids = Some(
+                    placements
+                        .iter()
+                        .map(|placement| placement.subnet_id.clone())
+                        .collect(),
+                );
+                stored.network_interface_ids = Some(final_interface_ids);
+            }
+            if interface {
+                stored.groups = Some(groups);
+                stored.private_dns_enabled = Some(private_dns_enabled);
+                if let Some(entries) = rebuilt_entries {
+                    stored.dns_entries = Some(entries);
+                }
+            }
+            if interfaces_changed {
+                stored.state = Some(state::VPC_ENDPOINT_STATE_PENDING.to_string());
+            }
+        }
+        store.release_stored_bytes(released);
+        store.add_stored_bytes(charged);
+        if interfaces_changed {
+            store.vpc_endpoint_moves.insert(
+                endpoint_id.to_string(),
+                state::PendingStateMove::starting_now(state::VPC_ENDPOINT_STATE_AVAILABLE),
+            );
+        }
+
+        // "Returns true if the request succeeds; otherwise, it returns an error" (`Return`).
+        Ok(ModifyVpcEndpointOutput {
+            r#return: Some(true),
+        })
     }
+}
+
+/// One endpoint network interface the request asked to move to another private IPv4 address,
+/// resolved before anything is written.
+///
+/// The move is two writes against the one in-use pool — take the new address, hand the old one
+/// back — so both addresses are carried here and the pool is never left holding an address no
+/// interface has.
+struct Readdress {
+    /// The interface that moves.
+    network_interface_id: String,
+    /// The address it holds now, which goes back to the pool.
+    from: String,
+    /// `SubnetConfiguration$Ipv4` for its subnet: the address it moves to.
+    to: String,
 }

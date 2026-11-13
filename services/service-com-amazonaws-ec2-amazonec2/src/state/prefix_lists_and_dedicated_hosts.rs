@@ -1820,6 +1820,40 @@ pub const AWS_ENDPOINT_SERVICE_PREFIX: &str = "com.amazonaws.";
 /// "VPC endpoint policy size", which is what bounds the document a create reads and stores.
 pub const MAX_VPC_ENDPOINT_POLICY_CHARS: usize = 20_480;
 
+/// Read the `PolicyDocument` a request attaches to a VPC endpoint, or refuse it.
+///
+/// "(Interface and gateway endpoints) A policy to attach to the endpoint that controls access
+/// to the service. The policy must be in valid JSON format"
+/// (`CreateVpcEndpointRequest$PolicyDocument`). The ONE reading of that member, so the create
+/// and the modify cannot hold one caller's document to different terms: it is held to
+/// [`MAX_VPC_ENDPOINT_POLICY_CHARS`] BEFORE it is parsed, so the work of reading it is bounded
+/// by the published quota rather than by what a caller chose to send, and the parse itself is
+/// the JSON parser this crate already depends on rather than a hand-rolled shape check, so
+/// "valid JSON format" means what JSON means.
+///
+/// `None` is a request that named no document. What that means is the CALLER's: the default
+/// full-access policy for a create, and "leave the attached one alone" for a modify.
+pub fn requested_vpc_endpoint_policy<E>(
+    policy_document: Option<&str>,
+) -> Result<Option<String>, Scaffolded<E>> {
+    let Some(document) = policy_document.filter(|document| !document.trim().is_empty()) else {
+        return Ok(None);
+    };
+    if document.chars().count() > MAX_VPC_ENDPOINT_POLICY_CHARS {
+        return Err(invalid_parameter_value(format!(
+            "Invalid value for policyDocument: a VPC endpoint policy may carry at most {max} \
+             characters",
+            max = MAX_VPC_ENDPOINT_POLICY_CHARS,
+        )));
+    }
+    if ::serde_json::from_str::<::serde_json::Value>(document).is_err() {
+        return Err(invalid_parameter_value(
+            "Invalid value for policyDocument: the policy must be in valid JSON format",
+        ));
+    }
+    Ok(Some(document.to_string()))
+}
+
 /// The further label a partner or Marketplace endpoint service name carries between that
 /// prefix and its Region (`com.amazonaws.vpce.<region>.vpce-svc-…`).
 pub const PARTNER_ENDPOINT_SERVICE_LABEL: &str = "vpce.";
@@ -1886,13 +1920,18 @@ pub fn vpc_endpoint_limit_exceeded<E>() -> Scaffolded<E> {
 /// Availability Zone for an endpoint that has at most one network interface per zone.
 pub const DUPLICATE_SUBNETS_IN_SAME_ZONE: &str = "DuplicateSubnetsInSameZone";
 
-/// Refuse a request naming a second subnet of a zone the endpoint already has one in:
-/// HTTP 400 [`DUPLICATE_SUBNETS_IN_SAME_ZONE`], naming the subnet already placed there.
+/// Refuse a request naming a subnet in a zone the endpoint is already served in: HTTP 400
+/// [`DUPLICATE_SUBNETS_IN_SAME_ZONE`], naming the subnet the REQUEST asked for — the one whose
+/// zone is already taken — and stating the rule it breaks, the way EC2 words this refusal.
 pub fn duplicate_subnets_in_same_zone<E>(subnet_id: &str) -> Scaffolded<E> {
     Scaffolded::service_error(
         DUPLICATE_SUBNETS_IN_SAME_ZONE,
         400,
-        format!("Found another VPC endpoint subnet in the availability zone of {subnet_id}"),
+        format!(
+            "Found another VPC endpoint subnet in the availability zone of {subnet_id}. VPC \
+             endpoint subnets should be in different availability zones supported by the VPC \
+             endpoint service."
+        ),
     )
 }
 

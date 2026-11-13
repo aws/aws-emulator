@@ -2052,6 +2052,12 @@ mod instance_guest_console_user_data;
 // it leaves alone. Declared at the tail of this file, which is where every new ec2 suite
 #[path = "all/update_security_group_rule_descriptions_egress.rs"]
 mod update_security_group_rule_descriptions_egress;
+// `ModifyVpcEndpoint`: the subnets, security groups, route tables, policy and private hosted
+// zone the call applies to the stored endpoint it names, read back through
+// `DescribeVpcEndpoints` and `DescribeRouteTables`, beside what it refuses and what it leaves
+// alone. Declared at the tail of this file, which is where every new ec2 suite lands.
+#[path = "all/modify_vpc_endpoint.rs"]
+mod modify_vpc_endpoint;
 // How an instance, a network interface and a volume attachment are projected: the empty
 // reservation groupSet, the `attaching` attachment a launch makes and the volumes it hands
 // the instance as it completes, an interface's public hostname and requester, the zone a

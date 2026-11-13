@@ -911,6 +911,37 @@ impl ComAmazonawsEc2Amazonec2State {
         dropped
     }
 
+    /// Drop the routes of ONE table whose GATEWAY target is `gateway_id`, and answer how many
+    /// were dropped.
+    ///
+    /// [`Self::drop_routes_to_gateway`] narrowed to a single table: what a gateway endpoint
+    /// being disassociated from one of its route tables owes, since the endpoint is reached
+    /// from a table only through the route that points at it, while the endpoint itself and
+    /// its routes in every other table stay. Routes are removed through the same reading of a
+    /// route's target, so the two give-backs cannot disagree about which route belongs to an
+    /// endpoint.
+    pub fn drop_route_table_routes_to_gateway(
+        &mut self,
+        route_table_id: &str,
+        gateway_id: &str,
+    ) -> usize {
+        let mut dropped = 0usize;
+        if let Some(routes) = self
+            .route_tables
+            .get_mut(route_table_id)
+            .and_then(|route_table| route_table.routes.as_mut())
+        {
+            routes.retain(|route| {
+                let matched = route.gateway_id.as_deref() == Some(gateway_id);
+                if matched {
+                    dropped += 1;
+                }
+                !matched
+            });
+        }
+        dropped
+    }
+
     /// Drop every route of every table whose GATEWAY target is `gateway_id`, and answer how
     /// many were dropped.
     ///
@@ -920,20 +951,18 @@ impl ComAmazonawsEc2Amazonec2State {
     /// (`DeleteVpcEndpoints`) is that rule for a VPC endpoint, which is reported as a route's
     /// `GatewayId` ([`RouteTarget::Gateway`]). A route holds no bytes the byte budget counts,
     /// so there is nothing to give back for one.
+    ///
+    /// Every table is dropped from through [`Self::drop_route_table_routes_to_gateway`], so
+    /// "a route that targets this gateway" is read ONE way whether the give-back is for a
+    /// gateway that is going away or for one table it is being disassociated from.
     pub fn drop_routes_to_gateway(&mut self, gateway_id: &str) -> usize {
-        let mut dropped = 0usize;
-        for route_table in self.route_tables.values_mut() {
-            if let Some(routes) = route_table.routes.as_mut() {
-                routes.retain(|route| {
-                    let matched = route.gateway_id.as_deref() == Some(gateway_id);
-                    if matched {
-                        dropped += 1;
-                    }
-                    !matched
-                });
-            }
-        }
-        dropped
+        let route_table_ids: Vec<String> = self.route_tables.keys().cloned().collect();
+        route_table_ids
+            .iter()
+            .map(|route_table_id| {
+                self.drop_route_table_routes_to_gateway(route_table_id, gateway_id)
+            })
+            .sum()
     }
 }
 
