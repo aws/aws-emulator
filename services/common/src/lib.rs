@@ -250,11 +250,14 @@
 //! framework's error renderers do not write, for every service of that protocol whose
 //! errors must carry the request id an SDK reports.
 //!
-//! [`query_timestamps`] is the fourth: the rewrite that lets an `@httpQuery` timestamp bind
-//! in the `epoch-seconds` form its model declares, for every service whose time-ranged
-//! reads take their window in the query string — the generated schema carries no
-//! member-level `@timestampFormat`, so without it the framework reads such a member as
-//! RFC-3339 only and refuses the form every SDK sends.
+//! [`query_timestamps`] is the fourth: the reading that lets an `@httpQuery` timestamp bind
+//! in every form the wire names an instant in, for every service whose time-ranged reads
+//! take their window in the query string — the generated schema carries no member-level
+//! `@timestampFormat`, so without it the framework reads such a member as a `Z`-zoned
+//! RFC-3339 string only and refuses both the epoch-seconds number a model may declare and
+//! the numeric zone offset RFC 3339 equally admits. It also owns the answer a value that
+//! names no instant earns, which is the framework's envelope rather than a modelled error:
+//! such a value never becomes a modelled input.
 //!
 //! [`date_time_json`] is the BODY half of that same dropped trait: the `restJson1` codec
 //! with a timestamp whose model declares `date-time` read and written as the RFC 3339
@@ -542,8 +545,11 @@ pub mod page_tokens;
 /// fractional part — which the framework's XML writer drops for a whole value.
 pub mod query_decimal_floats;
 pub mod query_error_envelope;
-/// An `@httpQuery`-bound timestamp read in the `epoch-seconds` form the model declares (or
-/// documents), which the generated schema drops and the framework therefore refuses.
+/// A refusal whose clause QUOTES the value the request carried, where the framework's own
+/// walk elides a long one into a prefix AWS never emits.
+pub mod quoted_refusals;
+/// An `@httpQuery`-bound timestamp read in every form the wire names an instant in, which
+/// the generated schema narrows to one and the framework therefore refuses.
 pub mod query_timestamps;
 /// The ONE rendering of the envelope a service states around a refusal ANOTHER service
 /// answered it with: the called service, the status it answered, that call's request id and
@@ -579,6 +585,9 @@ pub mod sensitive_members;
 /// caller's store.
 pub mod service_principal_calls;
 pub mod shared_path;
+/// How AWS Signer states a refusal of an input member a request supplied nothing for, for
+/// the two service crates that are two views of that one endpoint.
+pub mod signer_input_refusals;
 /// The ONE home for the half of a constraint refusal the framework's walk cannot state —
 /// the COLLECTION a clause about a collection member is about — served as the
 /// per-operation wrapper that is the only layer with the request it has to be read from.

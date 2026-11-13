@@ -119,6 +119,9 @@ mod signature_expiry;
 #[path = "all/signature_revocation.rs"]
 mod signature_revocation;
 
+#[path = "all/signature_timestamp_forms.rs"]
+mod signature_timestamp_forms;
+
 #[path = "all/signing_job_artifact.rs"]
 mod signing_job_artifact;
 

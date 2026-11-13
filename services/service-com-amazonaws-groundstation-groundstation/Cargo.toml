@@ -8,8 +8,8 @@ build = "build.rs"
 
 [dependencies]
 engine = { workspace = true }
-# `service-common` carries the ONE rewrite that lets an `@httpQuery` timestamp bind in the
-# `epoch-seconds` form the model declares (`query_timestamps`), which
+# `service-common` carries the ONE reading that lets an `@httpQuery` timestamp bind in
+# every form the wire names an instant in (`query_timestamps`), which
 # `ListGroundStationReservations`' window needs — see `src/service.rs`.
 service-common = { path = "../common" }
 smithy-macros = { workspace = true }

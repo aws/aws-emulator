@@ -23,8 +23,8 @@
 //! - `override_operation` — which operation serves a request. EDITED HERE: the key and
 //!   the handler stay the generated table's, but `ListGroundStationReservations` — the one
 //!   operation of this service that binds a timestamp to the query string — is served
-//!   through [`EpochSecondsQueryTimestamps`], so the `epoch-seconds` form its members
-//!   declare binds.
+//!   through [`QueryTimestampForms`], so every form the wire names an instant in binds,
+//!   the `epoch-seconds` form its members declare among them.
 //! - `override_refusal` — how this service words a request the framework refused
 //!   before any handler ran. The default returns `None`, keeping the framework's
 //!   wording. See the inline note on that method for how to reword.
@@ -57,13 +57,14 @@
 //! the protocol's default RFC-3339 `date-time` form and refuses the declared one before
 //! the operation's handler runs.
 //!
-//! [`EpochSecondsQueryTimestamps`] closes that gap for the operations of this service that
-//! bind a timestamp to the query string: a query value that is a number is read as epoch
-//! seconds, anything else is left exactly as the client sent it, so the declared form
-//! binds and nothing else about the request changes. It is the SHARED wrapper in
-//! `service_common::query_timestamps` — the gap is the generated schema's, not this
-//! service's, so the rewrite is written once for every service whose model binds a
-//! timestamp to the query string.
+//! [`QueryTimestampForms`] closes that gap for the operations of this service that bind a
+//! timestamp to the query string: a query value in any form the wire names an instant in —
+//! the epoch-seconds number, and RFC 3339 with the numeric zone offset as well as with `Z` —
+//! binds that instant, a value the framework's own reader already takes is left exactly as
+//! the client sent it, and a value that names no instant is refused the way the protocol
+//! refuses one. It is the SHARED wrapper in `service_common::query_timestamps` — the gap is
+//! the generated schema's, not this service's, so the reading is written once for every
+//! service whose model binds a timestamp to the query string.
 //!
 //! # How an answer that carries no content is framed
 //!
@@ -84,7 +85,7 @@ use aws_smithy_runtime_api::http::{Request as WireRequest, Response as WireRespo
 use aws_smithy_schema::Schema;
 use aws_smithy_schema_server::{ProtocolError, ServerProtocol};
 use service_common::no_content_responses::without_content;
-use service_common::query_timestamps::EpochSecondsQueryTimestamps;
+use service_common::query_timestamps::QueryTimestampForms;
 use smithy_server_runtime::{http, ErasedOperation, OperationRoutingTable, Refusal, Refused, Service};
 use std::sync::Arc;
 
@@ -96,10 +97,10 @@ use std::sync::Arc;
 pub struct EmulatedService<Eng: Send + Sync + 'static> {
     entry: crate::ServiceDefinition<Eng>,
     /// The operations that bind a timestamp to the query string, each the generated
-    /// table's own operation wrapped in [`EpochSecondsQueryTimestamps`] and built from the
-    /// SAME shared engine, so a wrapped operation reads and writes the one store. Keyed by
-    /// the routing key the protocol resolves, which is the key the generated table uses.
-    epoch_seconds_query_timestamps: OperationRoutingTable,
+    /// table's own operation wrapped in [`QueryTimestampForms`] and built from the SAME
+    /// shared engine, so a wrapped operation reads and writes the one store. Keyed by the
+    /// routing key the protocol resolves, which is the key the generated table uses.
+    query_timestamp_forms: OperationRoutingTable,
 }
 
 impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
@@ -113,10 +114,10 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
         // a `(timestamp, @httpQuery(…))` input). Every other operation of this service
         // takes its timestamps in the body, where the protocol already reads the
         // epoch-seconds form, so wrapping them would change nothing.
-        let mut epoch_seconds_query_timestamps = OperationRoutingTable::new();
-        epoch_seconds_query_timestamps.add_operation(
+        let mut query_timestamp_forms = OperationRoutingTable::new();
+        query_timestamp_forms.add_operation(
             "ListGroundStationReservations",
-            ::std::boxed::Box::new(EpochSecondsQueryTimestamps::new(
+            ::std::boxed::Box::new(QueryTimestampForms::new(
                 crate::ops::list_ground_station_reservations::ListGroundStationReservations::new(
                     Arc::clone(&engine),
                 ),
@@ -124,7 +125,7 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
         );
         Self {
             entry: crate::ServiceDefinition::new(engine),
-            epoch_seconds_query_timestamps,
+            query_timestamp_forms,
         }
     }
 }
@@ -238,8 +239,8 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
     }
 
     /// Serve the request through the operation the generated table's own protocol names,
-    /// wrapped in [`EpochSecondsQueryTimestamps`] for the operations that bind a timestamp
-    /// to the query string so the `epoch-seconds` form their members declare binds.
+    /// wrapped in [`QueryTimestampForms`] for the operations that bind a timestamp to the
+    /// query string so every form the wire names an instant in binds.
     ///
     /// This is NOT a re-route: the key is the one the generated table's own protocol
     /// resolves, and the operation it names is the one served. Every other key resolves to
@@ -250,7 +251,7 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
         req: &aws_smithy_runtime_api::http::Request,
     ) -> Option<&dyn ErasedOperation> {
         let key = self.entry.protocol().routing_key(req).ok()?;
-        self.epoch_seconds_query_timestamps.get(key)
+        self.query_timestamp_forms.get(key)
     }
 
     fn override_refusal(&self, refusal: &Refusal) -> Option<Refused> {

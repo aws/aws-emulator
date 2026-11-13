@@ -21,8 +21,10 @@
 //!   for anything the model does not express: a signing name shared by several
 //!   services, or routing that keys on the access-key id.
 //! - `override_operation` — serve a request the model's routing key cannot name
-//!   correctly. The default returns `None`, so every request resolves through the
-//!   generated routing table. Return `Some(op)` to route one yourself.
+//!   correctly. EDITED HERE: the key and the handler stay the generated table's, but
+//!   `GetRevocationStatus` — whose `signatureTimestamp` is bound to the query string —
+//!   is served through [`QueryTimestampForms`], so every form the wire names an instant
+//!   in binds and a value that names none is refused the way the protocol refuses one.
 //! - `override_refusal` — how this service words a request the framework refused
 //!   before any handler ran. The default returns `None`, keeping the framework's
 //!   wording. See the inline note on that method for how to reword.
@@ -39,8 +41,28 @@
 //! table, and the default error renderers — lives in the generated `ServiceDefinition`
 //! and is reached, not edited, through the one `definition` method below. You
 //! do not write it; editing the entry would let this file drift from the model.
+//!
+//! # The timestamp in the query string
+//!
+//! `GetRevocationStatus` binds `signatureTimestamp` to the query string (`@httpQuery`,
+//! `@required`, target `Timestamp`, no `@timestampFormat` —
+//! `smithy_query(query="operation", operation="GetRevocationStatus")`), and that member
+//! decides the operation's answer: a revocation covers only signatures made at or after
+//! its effective time. A client renders an instant onto a query string in more forms than
+//! the schema the framework builds admits — it reads an `@httpQuery` timestamp as a
+//! `Z`-zoned RFC-3339 string only — so the operation is served through the SHARED
+//! [`QueryTimestampForms`] wrapper: every form the wire names an instant in (the
+//! epoch-seconds number, and RFC 3339 with the numeric zone offset as well as with `Z`)
+//! binds that instant, so this operation's own rules — and the modelled constraints of
+//! the request's OTHER members — are what decide the answer; and a value that names no
+//! instant at all is refused in the framework's envelope, since it never becomes a
+//! modelled input of this service.
 
-use smithy_server_runtime::{http, ErasedOperation, Refusal, Refused, Service};
+use service_common::query_timestamps::QueryTimestampForms;
+use service_common::quoted_refusals::QuotedRefusals;
+use smithy_server_runtime::{
+    http, ErasedOperation, OperationRoutingTable, Refusal, Refused, Service,
+};
 use std::sync::Arc;
 
 use aws_smithy_schema_server::constraints::{Violation, ViolationKind};
@@ -81,6 +103,11 @@ fn claims_modeled_path(parts: &http::request::Parts, path_segments: &[&str]) -> 
 /// router builds one shared engine and hands it to `new`.
 pub struct EmulatedService<Eng: Send + Sync + 'static> {
     entry: crate::ServiceDefinition<Eng>,
+    /// The operations that bind a timestamp to the query string, each the generated
+    /// table's own operation wrapped in [`QueryTimestampForms`] and built from the SAME
+    /// shared engine, so a wrapped operation reads the one store. Keyed by the routing key
+    /// the protocol resolves, which is the key the generated table uses.
+    query_timestamp_forms: OperationRoutingTable,
 }
 
 impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
@@ -88,8 +115,20 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
     /// generated [`ServiceDefinition`], which constructs each operation from it; the
     /// operation's behaviour lives in that operation's own `impl Operation`.
     pub fn new(engine: Arc<Eng>) -> Self {
+        // The one operation this service models, and it binds a timestamp to the query
+        // string (`signatureTimestamp`), so it is the whole of this table.
+        let mut query_timestamp_forms = OperationRoutingTable::new();
+        query_timestamp_forms.add_operation(
+            "GetRevocationStatus",
+            Box::new(QueryTimestampForms::over::<
+                crate::ops::get_revocation_status::GetRevocationStatus<Eng>,
+            >(QuotedRefusals::new(
+                crate::ops::get_revocation_status::GetRevocationStatus::new(Arc::clone(&engine)),
+            ))) as Box<dyn ErasedOperation>,
+        );
         Self {
             entry: crate::ServiceDefinition::new(engine),
+            query_timestamp_forms,
         }
     }
 }
@@ -133,16 +172,23 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
         }
     }
 
+    /// Serve the request through the operation the generated table's own protocol names,
+    /// wrapped in [`QueryTimestampForms`] so the `signatureTimestamp` this service's one
+    /// operation binds to the query string is read in every form the wire names an instant
+    /// in (see the module docs).
+    ///
+    /// This is NOT a re-route: the key is the one the generated table's own protocol
+    /// resolves, and the operation it names is the one served. A request the protocol can
+    /// name no operation for — this service's route declares five `@required` `@httpQuery`
+    /// members, so one of them absent matches no route — resolves to `None` here exactly
+    /// as it does for an unedited service, leaving [`Self::override_routing_error`] to
+    /// state the refusal it earns.
     fn override_operation(
         &self,
         req: &aws_smithy_runtime_api::http::Request,
     ) -> Option<&dyn ErasedOperation> {
-        // Return `Some(op)` to serve a request the model's routing key cannot name
-        // correctly; `None` (the default) lets the generated routing table resolve
-        // it. `req` is the whole request, so a decision that depends on the body —
-        // the `Action` form field on a query protocol, say — is reachable here.
-        let _ = req;
-        None
+        let key = self.entry.protocol().routing_key(req).ok()?;
+        self.query_timestamp_forms.get(key)
     }
 
     fn override_refusal(&self, refusal: &Refusal) -> Option<Refused> {
@@ -150,19 +196,27 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
         // required member, or a value outside a declared bound) to let this
         // service reword it.
         //
-        // What is reworded here is ONE class, and only for a LIST member: a
-        // required list the request supplied nothing for. The framework states
-        // that as "Value null at '<member>' failed to satisfy constraint: Member
-        // must not be null", which asserts the value was NULL — and for a list
-        // that is a claim the wire cannot support: a query-bound list that is
-        // absent and a query-bound EMPTY list are the same request, so "null"
-        // names a constraint the request may not have violated. This service
-        // therefore states the constraint such a member actually violated, naming
-        // it ([`missing_list_member_constraint`]), and leaves every other refusal
-        // — a single-value member that is absent, a value present but outside a
-        // bound — to the framework's own wording, which is accurate for those.
+        // Two classes are reworded, both of them a member the request supplied
+        // nothing for, because this service's own validator refuses an absent
+        // member in a voice of its own rather than in the framework's schema-fact
+        // clause ("Value null at '<member>' failed to satisfy constraint: Member
+        // must not be null"):
+        //
+        // - a LIST member, for which that clause asserts something the wire
+        //   cannot support — a query-bound list that is absent and a query-bound
+        //   EMPTY list are the same request, so "null" names a constraint the
+        //   request may not have violated. What is stated instead is the
+        //   constraint such a member actually violated, naming it
+        //   ([`missing_list_member_constraint`]).
+        // - a SINGLE-VALUE member, stated in the `Invalid <member>: …` voice this
+        //   service refuses its own rules in ([`absent_member_constraint`]).
+        //
+        // Every other refusal — a value present but outside a bound, a request
+        // that left several members out — keeps the framework's own wording,
+        // which is accurate for those.
         match refusal {
-            Refusal::Invalid(violations) => missing_member_refusal(violations),
+            Refusal::Invalid(violations) => missing_member_refusal(violations)
+                .or_else(|| absent_member_refusal(violations)),
             _ => None,
         }
     }
@@ -246,27 +300,26 @@ fn is_list_member(member_name: &str) -> bool {
         })
 }
 
-/// The constraint a required LIST member violated when the request supplied
-/// nothing for it, as a sentence naming the member.
-///
-/// A list is the case the framework's generic wording gets wrong. On the wire a
-/// query-bound list that is ABSENT and one that is EMPTY are the same request —
-/// an SDK serializing an empty list emits no parameter at all — so the refusal
-/// cannot claim the value was null; what it can state, and what the service
-/// states, is that the member must carry at least one element.
-pub fn missing_list_member_constraint(member_name: &str) -> String {
-    format!("{member_name} must not be null or empty")
-}
+/// The two sentences this endpoint states for an input member a request supplied
+/// nothing for, re-exported from the ONE home AWS Signer's wording has: this
+/// endpoint and the control plane
+/// (`services/service-com-amazonaws-signer-wallabyservice`) are two views of the
+/// same API, so a sentence written out in each could come to differ between them.
+/// Shared with the handler, so a member the boundary validator finds empty and
+/// one the handler finds empty are stated identically.
+pub use service_common::signer_input_refusals::{
+    absent_member_constraint, missing_list_member_constraint,
+};
 
 /// How this service states a refusal whose every violation is a required LIST
 /// member the request supplied nothing for: one clause per member, in the order
 /// the violations arrive (the model's member order), each naming the member and
 /// the constraint it actually violated.
 ///
-/// `None` for every other refusal, which keeps the framework's own wording: a
-/// single-value member that is absent really was null, and a value present but
-/// outside a declared bound is already described accurately, with the offending
-/// value echoed.
+/// `None` for every other refusal, which is then offered to
+/// [`absent_member_refusal`] and, failing that, keeps the framework's own
+/// wording: a value present but outside a declared bound is already described
+/// accurately, with the offending value echoed.
 fn missing_member_refusal(violations: &[Violation]) -> Option<Refused> {
     if violations.is_empty() {
         return None;
@@ -282,6 +335,27 @@ fn missing_member_refusal(violations: &[Violation]) -> Option<Refused> {
     Some(Refused {
         code: VALIDATION_EXCEPTION_CODE.to_string(),
         message: clauses.join("; "),
+    })
+}
+
+/// How this service states a refusal of ONE required single-value member the
+/// request supplied nothing for.
+///
+/// `None` for anything else — a LIST member ([`missing_member_refusal`]), a
+/// value that was PRESENT and outside a bound, and a request that left SEVERAL
+/// members out: the sentence states ONE rule, so a refusal carrying more than
+/// one violation keeps the framework's enumerating envelope rather than reading
+/// as though only one rule applied.
+fn absent_member_refusal(violations: &[Violation]) -> Option<Refused> {
+    let [violation] = violations else {
+        return None;
+    };
+    if violation.kind != ViolationKind::MissingRequiredMember || is_list_member(&violation.path) {
+        return None;
+    }
+    Some(Refused {
+        code: VALIDATION_EXCEPTION_CODE.to_string(),
+        message: absent_member_constraint(&violation.path),
     })
 }
 

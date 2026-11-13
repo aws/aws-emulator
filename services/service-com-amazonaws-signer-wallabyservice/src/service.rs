@@ -45,6 +45,16 @@
 //! every response of theirs passes through rather than once per operation. See
 //! [`NO_CONTENT_STATUS`] and [`EMPTY_BODY_LENGTH`].
 //!
+//! It is also where the operations that bind a TIMESTAMP to the query string are served
+//! through the shared [`QueryTimestampForms`] wrapper. A client renders an instant onto a
+//! query string in more forms than the schema the framework builds from the model admits
+//! — it reads an `@httpQuery` timestamp as a `Z`-zoned RFC-3339 string only — so without
+//! the wrapper a request carrying the epoch-seconds number, or the numeric zone offset RFC
+//! 3339 equally admits, is refused for its timestamp before any of the operation's own
+//! rules (or any other member's modelled bound) is applied. With it, every form names its
+//! instant, and a value that names NO instant is refused in the framework's own envelope,
+//! since such a value never becomes a modelled input of this service.
+//!
 //! The model-derived half of this service — its identity, wire protocol, routing
 //! table, and the default error renderers — lives in the generated `ServiceDefinition`
 //! and is reached, not edited, through the one `definition` method below. You
@@ -55,6 +65,8 @@ use aws_smithy_schema_server::constraints::{
     LengthTrait, PatternTrait, Violation, ViolationKind,
 };
 use aws_smithy_types::body::SdkBody;
+use service_common::query_timestamps::QueryTimestampForms;
+use service_common::quoted_refusals::QuotedRefusals;
 use smithy_server_runtime::{
     http, BoxFuture, ErasedOperation, Operation, OperationContext, OperationRoutingTable, Refusal,
     Refused, Service,
@@ -119,9 +131,53 @@ macro_rules! serve_no_content_answers {
         $(
             $table.add_operation(
                 <crate::ops::$module::$operation<Eng> as Operation>::NAME,
-                ::std::boxed::Box::new(NoContentAnswer::new(
+                ::std::boxed::Box::new(QuotedRefusals::over::<
+                    crate::ops::$module::$operation<Eng>,
+                >(NoContentAnswer::new(
+                    crate::ops::$module::$operation::new(::std::sync::Arc::clone(&$engine)),
+                ))) as ::std::boxed::Box<dyn ErasedOperation>,
+            );
+        )+
+    };
+}
+
+/// Wire one `crate::ops::<module>::<Operation>` per line into `table`, each wrapped in
+/// [`QuotedRefusals`] alone — the composition of an operation that neither answers
+/// without a document nor binds a timestamp to the query string.
+macro_rules! serve_quoted_refusals {
+    ($table:expr, $engine:expr, $($module:ident :: $operation:ident),+ $(,)?) => {
+        $(
+            $table.add_operation(
+                <crate::ops::$module::$operation<Eng> as Operation>::NAME,
+                ::std::boxed::Box::new(QuotedRefusals::new(
                     crate::ops::$module::$operation::new(::std::sync::Arc::clone(&$engine)),
                 )) as ::std::boxed::Box<dyn ErasedOperation>,
+            );
+        )+
+    };
+}
+
+/// The operations whose input binds a TIMESTAMP to the query string, and whose values
+/// therefore have to be read in every form the wire names an instant in (see the module
+/// docs and `service_common::query_timestamps`).
+///
+/// Source: the input members this model binds (`OPERATIONS.md`, the one place this
+/// crate's whole surface is stated) — `GetRevocationStatus`' `signatureTimestamp` and
+/// `ListSigningJobs`' `signatureExpiresBefore` / `signatureExpiresAfter` are the only
+/// `(timestamp, @httpQuery)` members of this service; every other timestamp it takes is
+/// bound to a body, which the protocol's own codec already reads in more than one form.
+/// Which NAMES are rewritten for a wrapped operation is read off that operation's own
+/// input schema by the wrapper, not written out here.
+macro_rules! serve_query_timestamp_forms {
+    ($table:expr, $engine:expr, $($module:ident :: $operation:ident),+ $(,)?) => {
+        $(
+            $table.add_operation(
+                <crate::ops::$module::$operation<Eng> as Operation>::NAME,
+                ::std::boxed::Box::new(QueryTimestampForms::over::<
+                    crate::ops::$module::$operation<Eng>,
+                >(QuotedRefusals::new(
+                    crate::ops::$module::$operation::new(::std::sync::Arc::clone(&$engine)),
+                ))) as ::std::boxed::Box<dyn ErasedOperation>,
             );
         )+
     };
@@ -382,19 +438,19 @@ fn is_query_bound_list_member(member_name: &str) -> bool {
     })
 }
 
-/// How this service states a required query-bound LIST member the request
-/// supplied nothing for, as a sentence naming the member.
-///
-/// A list is the case the framework's generic wording gets wrong: on the query
-/// string a list that is ABSENT and one that is EMPTY are the same request, so
-/// the refusal cannot claim the value was null. What it states instead is that
-/// the member must carry something — the one sentence for both forms of the same
-/// request. Shared with the handler
-/// ([`crate::ops::get_revocation_status`]), so a member the boundary validator
-/// finds empty and one a handler finds empty are stated identically.
-pub fn missing_list_member_constraint(member_name: &str) -> String {
-    format!("{member_name} must not be null or empty")
-}
+/// The two sentences this service states for an input member a request supplied nothing
+/// for, re-exported from the ONE home AWS Signer's wording has: this control plane and the
+/// data plane (`services/service-com-amazonaws-signerdata-signerdataplane`) are two views
+/// of the same API, so a sentence written out in each could come to differ between them.
+/// `missing_list_member_constraint` is shared with the handler
+/// ([`crate::ops::get_revocation_status`]), so a member the boundary validator finds empty
+/// and one a handler finds empty are stated identically; `absent_member_constraint` states
+/// an absent single-value member in the `Invalid <member>: …` voice every refusal of this
+/// service's own rules speaks ([`crate::state::invalid_arn_message`] states a value that is
+/// not ARN-shaped in it).
+pub use service_common::signer_input_refusals::{
+    absent_member_constraint, missing_list_member_constraint,
+};
 
 /// How this service states a refusal whose every violation is a query-bound LIST
 /// member the request supplied nothing for: one clause per member, in the order
@@ -420,6 +476,29 @@ fn missing_list_member_refusal(violations: &[Violation]) -> Option<Refused> {
     Some(Refused {
         code: VALIDATION_EXCEPTION_CODE.to_string(),
         message: clauses.join("; "),
+    })
+}
+
+/// How this service states a refusal of ONE required single-value member the request
+/// supplied nothing for.
+///
+/// `None` for anything else — a member whose value was PRESENT and outside a bound (which
+/// the clauses above state), a LIST member ([`missing_list_member_refusal`]), and a request
+/// that left SEVERAL members out: this service's sentences each state ONE rule, so a
+/// refusal carrying more than one violation keeps the framework's enumerating envelope
+/// rather than reading as though only one rule applied.
+fn absent_member_refusal(violations: &[Violation]) -> Option<Refused> {
+    let [violation] = violations else {
+        return None;
+    };
+    if violation.kind != ViolationKind::MissingRequiredMember
+        || is_query_bound_list_member(&violation.path)
+    {
+        return None;
+    }
+    Some(Refused {
+        code: VALIDATION_EXCEPTION_CODE.to_string(),
+        message: absent_member_constraint(&violation.path),
     })
 }
 
@@ -587,13 +666,25 @@ fn service_stated_constraint_refusal(violations: &[Violation]) -> Option<Refused
 /// router builds one shared engine and hands it to `new`.
 pub struct EmulatedService<Eng: Send + Sync + 'static> {
     entry: crate::ServiceDefinition<Eng>,
-    /// The operations whose modelled output carries no members, each wrapped in
-    /// [`NoContentAnswer`] so their successful answer carries no document and
-    /// states its length. Keyed by
-    /// the routing key the protocol resolves — the key the generated table uses
-    /// — and built from the SAME shared engine, so a wrapped operation reads and
-    /// writes the one store.
-    empty_answers: OperationRoutingTable,
+    /// EVERY operation of this service, each the generated table's own operation wrapped
+    /// in the layers this file adds in front of it, and built from the SAME shared engine
+    /// so a wrapped operation reads and writes the one store. Keyed by the routing key the
+    /// protocol resolves — the key the generated table uses.
+    ///
+    /// Three compositions, one per class of operation, all of them in this ONE table so
+    /// `override_operation` has one place to look and no operation can fall through the
+    /// gaps between several:
+    ///
+    /// - every operation is wrapped in [`QuotedRefusals`], so a refusal's clause quotes
+    ///   the value the request carried rather than the framework's prefix of it;
+    /// - the operations whose modelled output carries no members are wrapped in
+    ///   [`NoContentAnswer`] as well, so their successful answer carries no document and
+    ///   states its length;
+    /// - the operations that bind a timestamp to the query string are wrapped in
+    ///   [`QueryTimestampForms`] as well, OUTSIDE the restoring layer, so what reads the
+    ///   request's values is handed every timestamp in the form the framework's walk
+    ///   reads.
+    served: OperationRoutingTable,
 }
 
 impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
@@ -601,9 +692,13 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
     /// generated [`ServiceDefinition`], which constructs each operation from it; the
     /// operation's behaviour lives in that operation's own `impl Operation`.
     pub fn new(engine: Arc<Eng>) -> Self {
-        let mut empty_answers = OperationRoutingTable::new();
+        // Every operation this model binds, each in the composition its class calls for
+        // (see [`Self::served`]). The three lists together are the whole surface
+        // `OPERATION_INPUTS` names, so an operation added to the model and left out of
+        // them would be served by the generated table alone.
+        let mut served = OperationRoutingTable::new();
         serve_no_content_answers!(
-            empty_answers,
+            served,
             engine,
             cancel_signing_profile::CancelSigningProfile,
             revoke_signature::RevokeSignature,
@@ -611,9 +706,31 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
             tag_resource::TagResource,
             untag_resource::UntagResource,
         );
+        serve_query_timestamp_forms!(
+            served,
+            engine,
+            get_revocation_status::GetRevocationStatus,
+            list_signing_jobs::ListSigningJobs,
+        );
+        serve_quoted_refusals!(
+            served,
+            engine,
+            add_profile_permission::AddProfilePermission,
+            describe_signing_job::DescribeSigningJob,
+            get_signing_platform::GetSigningPlatform,
+            get_signing_profile::GetSigningProfile,
+            list_profile_permissions::ListProfilePermissions,
+            list_signing_platforms::ListSigningPlatforms,
+            list_signing_profiles::ListSigningProfiles,
+            list_tags_for_resource::ListTagsForResource,
+            put_signing_profile::PutSigningProfile,
+            remove_profile_permission::RemoveProfilePermission,
+            sign_payload::SignPayload,
+            start_signing_job::StartSigningJob,
+        );
         Self {
             entry: crate::ServiceDefinition::new(engine),
-            empty_answers,
+            served,
         }
     }
 
@@ -691,22 +808,23 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
     ) -> Option<&dyn ErasedOperation> {
         match self.entry.protocol().routing_key(req) {
             // NOT a re-route: the key is the one the generated table's own protocol
-            // resolves, and the operation it names is the one served — wrapped in
-            // `NoContentAnswer` so an answer with nothing to report carries no
-            // document and states its length. A key
-            // no wrapped operation holds resolves to `None` here, so every other
-            // request is served by the generated table unchanged.
-            Ok(key) => self.empty_answers.get(key),
+            // resolves, and the operation it names is the one served — through the
+            // wrappers this file puts in front of it (see [`Self::served`]). A key no
+            // wrapped operation holds resolves to `None` here, so a request this model
+            // does not name is served exactly as it is for an unedited service.
+            Ok(key) => self.served.get(key),
             // The request named no operation. One class of such request addresses an
             // operation this service serves: see
             // [`EmulatedService::operation_addressed_without_a_required_parameter`].
             Err(_) => {
                 let operation = self.operation_addressed_without_a_required_parameter(req)?;
-                // The generated table, not `empty_answers`: the request this names an
-                // operation for leaves a `@required` member out, so the walk refuses it
-                // before the handler and the answer carries an error document, whose
-                // length its own renderer states.
-                self.entry.routing_table().get(operation)
+                // Served through the same wrappers: the request this names an operation
+                // for leaves a `@required` member out, so the walk refuses it before the
+                // handler — and that refusal is one whose clause the restoring layer owns,
+                // just as it owns every other refusal of this service.
+                self.served
+                    .get(operation)
+                    .or_else(|| self.entry.routing_table().get(operation))
             }
         }
     }
@@ -735,11 +853,17 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
         // declares with that window (see
         // [`service_stated_constraint_refusal`]).
         //
-        // Every other refusal keeps the framework's own wording — a single-value
-        // member that really was absent, a value outside a bound this service
-        // publishes no sentence for — which is accurate for those.
+        // A single-value member the request supplied nothing for is reworded too,
+        // for the same reason: this service's own validator refuses it in the
+        // `Invalid <member>: …` voice rather than as a constraint on a `null`
+        // value (see [`absent_member_constraint`]).
+        //
+        // Every other refusal keeps the framework's own wording — a value outside
+        // a bound this service publishes no sentence for, a request that broke
+        // several rules at once — which is accurate for those.
         match refusal {
             Refusal::Invalid(violations) => missing_list_member_refusal(violations)
+                .or_else(|| absent_member_refusal(violations))
                 .or_else(|| service_stated_constraint_refusal(violations)),
             _ => None,
         }

@@ -31,11 +31,11 @@ use service_com_amazonaws_signerdata_signerdataplane::{
 };
 
 /// The region the test's ARNs are built for.
-const REGION: &str = "us-east-1";
+pub(crate) const REGION: &str = "us-east-1";
 
 /// A platform id that satisfies the model's `^[a-zA-Z0-9_-]+$` pattern. Taken from the
 /// `GetRevocationStatus` example embedded in the service's Smithy model.
-const PLATFORM: &str = "Notation-OCI-SHA384-ECDSA";
+pub(crate) const PLATFORM: &str = "Notation-OCI-SHA384-ECDSA";
 
 /// A second, different platform id — also pattern-valid — so platform scoping is
 /// exercised against a platform the scoped revocation does not name.
@@ -43,7 +43,7 @@ const OTHER_PLATFORM: &str = "AWSLambda-SHA384-ECDSA";
 
 /// The instant the tables hang their offsets off: the epoch second the model's own
 /// example uses for `signatureTimestamp`.
-fn base_instant() -> SystemTime {
+pub(crate) fn base_instant() -> SystemTime {
     UNIX_EPOCH + Duration::from_secs(1_700_000_000)
 }
 
@@ -62,18 +62,18 @@ fn at_offset_millis(millis: i64) -> SystemTime {
 }
 
 /// A signing-profile version ARN (model shape `Arn`, length 20..2048).
-fn profile_version_arn(name: &str) -> String {
+pub(crate) fn profile_version_arn(name: &str) -> String {
     engine::emulator_arn("signer", REGION, &format!("/signing-profiles/{name}/v1"))
 }
 
 /// A signing-job ARN (model shape `Arn`, length 20..2048).
-fn job_arn(name: &str) -> String {
+pub(crate) fn job_arn(name: &str) -> String {
     engine::emulator_arn("signer", REGION, &format!("/signing-jobs/{name}"))
 }
 
 /// A certificate hash (model shape `CertificateHash`, length 1..2048): the SHA-256 of
 /// `name`, which is the shape of hash the model's own example carries.
-fn certificate_hash(name: &str) -> String {
+pub(crate) fn certificate_hash(name: &str) -> String {
     use sha2::Digest;
     hex::encode(sha2::Sha256::digest(name.as_bytes()))
 }
@@ -81,13 +81,13 @@ fn certificate_hash(name: &str) -> String {
 /// The emulator under test: the shared engine (the only store), plus a router with this
 /// one service mounted, driven through the same `dispatch` the production front door
 /// uses.
-struct Emulator {
+pub(crate) struct Emulator {
     engine: Arc<engine::InMemoryEngine>,
     router: MultiServiceRouter,
 }
 
 impl Emulator {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let engine: Arc<engine::InMemoryEngine> = Arc::new(engine::InMemoryEngine::new());
         let mut router = MultiServiceRouter::new();
         router.set_request_authentication(false);
@@ -98,7 +98,7 @@ impl Emulator {
     /// Record a revocation in the shared engine state — the seam that stands in for the
     /// Signer control plane's `RevokeSignature` / `RevokeSigningProfile`, since the data
     /// plane models no write.
-    fn revoke(&self, kind: RevokedEntityKind, key: &str, record: RevocationRecord) {
+    pub(crate) fn revoke(&self, kind: RevokedEntityKind, key: &str, record: RevocationRecord) {
         self.engine
             .state::<ComAmazonawsSignerdataSignerdataplaneState>()
             .lock()
@@ -114,14 +114,14 @@ impl Emulator {
             .is_some()
     }
 
-    /// `GET /revocations?…`, returning the status and the raw body bytes.
+    /// `GET /revocations?…`, returning the whole response.
     ///
     /// Names and values go onto the query string EXACTLY as the caller gives them: this
     /// is the wire, so a test row states the wire form it wants (every value the tables
     /// below use is query-legal as written — RFC 3986 lets a query carry `:` and `/`
-    /// unescaped, which is how an SDK sends an ARN — and the one row that needs an
-    /// escape writes it, `%20`, itself). No codec here, hand-rolled or otherwise.
-    async fn get_raw(&self, params: &[(&str, String)]) -> (u16, bytes::Bytes) {
+    /// unescaped, which is how an SDK sends an ARN — and the rows that need an escape
+    /// write it, `%20`, themselves). No codec here, hand-rolled or otherwise.
+    async fn send(&self, params: &[(&str, String)]) -> http::Response<bytes::Bytes> {
         let query = params
             .iter()
             .map(|(name, value)| format!("{name}={value}"))
@@ -138,32 +138,56 @@ impl Emulator {
             .header("host", format!("data-signer.{REGION}.amazonaws.com"))
             .body(bytes::Bytes::new())
             .expect("build the GetRevocationStatus request");
-        let response = self.router.dispatch(request).await;
+        self.router.dispatch(request).await
+    }
+
+    /// The same read, as the status and the raw body bytes.
+    async fn get_raw(&self, params: &[(&str, String)]) -> (u16, bytes::Bytes) {
+        let response = self.send(params).await;
         let status = response.status().as_u16();
         (status, response.into_body())
     }
 
-    /// The same read, with the body parsed as JSON (restJson1).
-    async fn get(&self, params: &[(&str, String)]) -> (u16, Value) {
-        let (status, body) = self.get_raw(params).await;
-        let parsed = if body.is_empty() {
-            Value::Null
-        } else {
-            serde_json::from_slice(&body).unwrap_or_else(|e| {
-                panic!(
-                    "params {params:?}: response body must be JSON, got {:?} ({e})",
-                    String::from_utf8_lossy(&body)
-                )
-            })
-        };
-        (status, parsed)
+    /// The same read, as the status, the `x-amzn-errortype` the response names (the
+    /// header restJson1 resolves an error shape from) and the body parsed as JSON.
+    pub(crate) async fn get_with_error_type(
+        &self,
+        params: &[(&str, String)],
+    ) -> (u16, Option<String>, Value) {
+        let response = self.send(params).await;
+        let status = response.status().as_u16();
+        let error_type = response
+            .headers()
+            .get("x-amzn-errortype")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string);
+        (status, error_type, parse_body(params, &response.into_body()))
     }
+
+    /// The same read, with the body parsed as JSON (restJson1).
+    pub(crate) async fn get(&self, params: &[(&str, String)]) -> (u16, Value) {
+        let (status, body) = self.get_raw(params).await;
+        (status, parse_body(params, &body))
+    }
+}
+
+/// One response body, as the JSON a restJson1 answer carries (`Null` for an empty body).
+fn parse_body(params: &[(&str, String)], body: &[u8]) -> Value {
+    if body.is_empty() {
+        return Value::Null;
+    }
+    serde_json::from_slice(body).unwrap_or_else(|e| {
+        panic!(
+            "params {params:?}: response body must be JSON, got {:?} ({e})",
+            String::from_utf8_lossy(body)
+        )
+    })
 }
 
 
 /// A `signatureTimestamp` query value: the ISO 8601 (`date-time`) rendering a
 /// `@httpQuery`-bound timestamp carries by default.
-fn timestamp_param(at: SystemTime) -> String {
+pub(crate) fn timestamp_param(at: SystemTime) -> String {
     let since_epoch = at
         .duration_since(UNIX_EPOCH)
         .expect("the test's instants are after the epoch");
@@ -176,7 +200,7 @@ fn timestamp_param(at: SystemTime) -> String {
 }
 
 /// The full, valid query of one request.
-fn params(
+pub(crate) fn params(
     signature_timestamp: SystemTime,
     platform_id: &str,
     profile: &str,
@@ -196,7 +220,7 @@ fn params(
 }
 
 /// The `revokedEntities` of a 200 response.
-fn revoked_entities(status: u16, body: &Value, case: &str) -> Vec<String> {
+pub(crate) fn revoked_entities(status: u16, body: &Value, case: &str) -> Vec<String> {
     assert_eq!(
         status, 200,
         "case {case}: expected HTTP 200, got {status} with {body}"
@@ -690,6 +714,10 @@ async fn a_missing_required_query_parameter_is_a_validation_error() {
 /// `ValidationException`. The rows walk each published bound — the `platformId` pattern
 /// `^[a-zA-Z0-9_-]+$` and the `Arn` length range 20..2048 — on the bound itself and one
 /// step past it.
+///
+/// A `signatureTimestamp` that names no instant is NOT one of these: it never becomes a
+/// modelled input, so it is refused by the protocol rather than for a modelled constraint
+/// (`tests/all/signature_timestamp_forms.rs`).
 #[tokio::test]
 async fn a_value_outside_a_modelled_constraint_is_a_validation_error() {
     let emulator = Emulator::new();
@@ -747,8 +775,6 @@ async fn a_value_outside_a_modelled_constraint_is_a_validation_error() {
             arn_of_length(2049),
             400,
         ),
-        // A `signatureTimestamp` that is not a timestamp at all is refused the same way.
-        ("signatureTimestamp not a timestamp", "signatureTimestamp", "yesterday".to_string(), 400),
     ];
 
     for (what, parameter, value, expected_status) in cases {

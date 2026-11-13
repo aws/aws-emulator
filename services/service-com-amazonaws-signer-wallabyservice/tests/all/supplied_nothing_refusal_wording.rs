@@ -8,9 +8,11 @@
 //! SAME request on the wire — an SDK serializing an empty list emits no
 //! parameter at all — so the refusal names the member and states that it must
 //! carry something (`<member> must not be null or empty`) rather than claiming
-//! the value was null. Every OTHER refusal keeps the framework's own
-//! constraint wording, which is accurate for it: a single-value member that
-//! really was absent, and a value present but outside a declared bound.
+//! the value was null. A SINGLE-VALUE member the request supplied nothing for is
+//! refused by this service's own validator too, in the `Invalid <member>: …` voice
+//! it refuses its own rules in (`Invalid <member>: value must not be null`). Every
+//! OTHER refusal keeps the framework's own constraint wording, which is accurate
+//! for it: a value present but outside a declared bound.
 //!
 //! The cases are tables. They span what the rule generalises over — which member
 //! misses, whether it misses by being omitted or by carrying nothing, how many
@@ -46,6 +48,12 @@ const BASE_EPOCH_SECS: i64 = 1_700_000_000;
 /// supplied nothing for, with the member's own name in it.
 fn supplied_nothing(member: &str) -> String {
     format!("{member} must not be null or empty")
+}
+
+/// The sentence this service states for a SINGLE-VALUE member a request supplied
+/// nothing for, with the member's own name in it.
+fn absent_member(member: &str) -> String {
+    format!("Invalid {member}: value must not be null")
 }
 
 /// The query string of one case: the `@httpQuery` parameters it carries, in the
@@ -306,22 +314,27 @@ async fn a_list_member_that_carries_entries_is_served() {
     }
 }
 
-/// Every other refusal keeps the framework's own constraint wording: a
-/// single-value member that really was absent, and a value present but outside
-/// its declared bound. None of them is stated as a member that supplied nothing.
+/// A member the request supplied nothing for is refused in this service's own voice, and
+/// every OTHER refusal keeps the framework's own constraint wording: a value present but
+/// outside its declared bound. Neither of them is stated as the list sentence.
+///
+/// The rows differ along the class of refusal (a single-value member absent, a value
+/// present and outside its bound) and the member at fault, which is what the two wordings
+/// are chosen between.
 #[tokio::test]
 async fn every_other_refusal_keeps_the_constraint_wording() {
     let router = emulator();
 
-    // One row per required SINGLE-VALUE member omitted — absence of a value that
-    // is not a list really is a null value — plus two rows for a value that is
-    // present and outside the declared 20..2048 length of an ARN member.
+    // One row per required SINGLE-VALUE member omitted — refused in the `Invalid
+    // <member>: …` voice — plus two rows for a value that is present and outside the
+    // declared 20..2048 length of an ARN member, which keeps the framework's clause.
     let mut rows: Vec<Row> = Vec::new();
     for member in ["signatureTimestamp", "platformId", "profileVersionArn", "jobArn"] {
         rows.push(Row {
             case: "a member omitted",
             member,
             params: without(member),
+            stated: Stated::AbsentMember,
         });
     }
     for member in ["profileVersionArn", "jobArn"] {
@@ -335,6 +348,7 @@ async fn every_other_refusal_keeps_the_constraint_wording() {
             case: "a value shorter than its bound",
             member,
             params,
+            stated: Stated::FrameworkClause,
         });
     }
 
@@ -342,6 +356,7 @@ async fn every_other_refusal_keeps_the_constraint_wording() {
         case,
         member,
         params,
+        stated,
     } in &rows
     {
         let answer = get_revocations(&router, params).await;
@@ -355,14 +370,24 @@ async fn every_other_refusal_keeps_the_constraint_wording() {
             "case {case:?} ({member}): expected a ValidationException, got {:?}",
             answer.body
         );
-        assert!(
-            answer.message().contains("failed to satisfy constraint"),
-            "case {case:?} ({member}): expected the framework's constraint wording, got {:?}",
-            answer.message()
-        );
+        match stated {
+            Stated::AbsentMember => assert_eq!(
+                answer.message(),
+                absent_member(member),
+                "case {case:?} ({member}): expected this service's absent-member sentence, \
+                 got {:?}",
+                answer.message()
+            ),
+            Stated::FrameworkClause => assert!(
+                answer.message().contains("failed to satisfy constraint"),
+                "case {case:?} ({member}): expected the framework's constraint wording, got \
+                 {:?}",
+                answer.message()
+            ),
+        }
         assert!(
             !answer.message().contains("must not be null or empty"),
-            "case {case:?} ({member}): expected the constraint wording kept, got {:?}",
+            "case {case:?} ({member}): expected the list sentence NOT to be stated, got {:?}",
             answer.message()
         );
         assert!(
@@ -373,10 +398,19 @@ async fn every_other_refusal_keeps_the_constraint_wording() {
     }
 }
 
-/// One row of the table of refusals that keep the framework's wording: what the
-/// case is, the member it is about, and the request that provokes it.
+/// Which wording a row expects.
+enum Stated {
+    /// This service's own sentence for a member the request supplied nothing for.
+    AbsentMember,
+    /// The framework's constraint clause, which states the bound a present value broke.
+    FrameworkClause,
+}
+
+/// One row of the table: what the case is, the member it is about, the request that
+/// provokes it, and which wording that refusal carries.
 struct Row {
     case: &'static str,
     member: &'static str,
     params: Params,
+    stated: Stated,
 }

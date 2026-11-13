@@ -8,6 +8,10 @@ build = "build.rs"
 
 [dependencies]
 engine = { workspace = true }
+# `service-common` carries the ONE reading that lets an `@httpQuery` timestamp bind in
+# every form the wire names an instant in (`query_timestamps`), which
+# `GetRevocationStatus`' `signatureTimestamp` needs — see `src/service.rs`.
+service-common = { path = "../common" }
 smithy-macros = { workspace = true }
 aws-smithy-schema = { workspace = true }
 aws-smithy-schema-server = { workspace = true }
