@@ -75,6 +75,7 @@ pub mod pg_server;
 pub mod pg_sessions;
 pub mod pg_wire;
 pub mod read_only;
+pub mod replication;
 pub mod row_locks;
 pub mod server_statements;
 pub mod session_transactions;

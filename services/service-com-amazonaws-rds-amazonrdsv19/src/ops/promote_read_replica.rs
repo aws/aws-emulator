@@ -2,6 +2,7 @@
 
 //! @op PromoteReadReplica
 //!
+//!
 //! Promoting a read replica ENDS its replication: a DB instance is a read replica exactly
 //! while it carries the source `CreateDBInstanceReadReplica` gave it
 //! (`ReadReplicaSourceDBInstanceIdentifier`), so the promotion clears that source and the

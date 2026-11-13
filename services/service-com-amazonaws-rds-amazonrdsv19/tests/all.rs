@@ -293,6 +293,8 @@ mod query_error_envelope;
 mod rds_s3_integration;
 #[path = "all/read_only_engine_endpoints.rs"]
 mod read_only_engine_endpoints;
+#[path = "all/read_replica_replication_and_promotion.rs"]
+mod read_replica_replication_and_promotion;
 #[path = "all/reboot_db_shard_group.rs"]
 mod reboot_db_shard_group;
 #[path = "all/refusal_class_by_cause.rs"]

@@ -65,6 +65,21 @@ pub const DB_INSTANCE_STATUS_STOPPED: &str = "stopped";
 /// [`STATUS_TRANSITION_DELAY`] later.
 pub const DB_INSTANCE_STATUS_STARTING: &str = "starting";
 
+/// The one `DBInstanceStatusInfo$StatusType` a DB instance reports: the member documents
+/// "this value is currently \"read replication\"".
+pub const READ_REPLICATION_STATUS_TYPE: &str = "read replication";
+
+/// The `DBInstanceStatusInfo$Status` of a read replica that is replaying its source's
+/// writes, from the values the member publishes for the read-replication status type:
+/// "replicating, replication stop point set, replication stop point reached, error,
+/// stopped, or terminated".
+///
+/// The only one of them this service can report: nothing it does sets a stop point, stops
+/// the replication or breaks it, so every replica it holds is replicating until the
+/// relationship itself ends (a promotion, a delete), after which the instance is no read
+/// replica and reports no status info at all.
+pub const READ_REPLICATION_STATUS_REPLICATING: &str = "replicating";
+
 /// The DB instance statuses a reboot is accepted from, in the order Amazon RDS lists them
 /// in the refusal it answers a request made in any other status with
 /// ([`reboot_db_instance_state_message`]).

@@ -79,6 +79,20 @@ const OBJECT_MODIFIERS: [&str; 9] = [
     "CONCURRENTLY",
 ];
 
+/// Whether a PostgreSQL boolean parameter's value reads as ON.
+///
+/// The values PostgreSQL takes for one are `on`, `true`, `yes` and `1` (and their `off`,
+/// `false`, `no`, `0` opposites), and a `SET` may carry the value quoted. The ONE reading of
+/// such a value, so the parameter that puts a session into read-only mode and the `SET` that
+/// a standby refuses cannot disagree about what the value says.
+#[must_use]
+pub fn setting_is_on(value: &str) -> bool {
+    matches!(
+        value.trim().trim_matches('\'').to_ascii_lowercase().as_str(),
+        "on" | "true" | "yes" | "1"
+    )
+}
+
 /// The command a read-only session refuses `tokens`, under the name the server's refusal
 /// reports for it — or `None` for a statement such a session serves.
 #[must_use]
@@ -120,6 +134,27 @@ pub fn refused_command(tokens: &[Token]) -> Option<String> {
 /// <table> (<columns>) FROM …`, whose direction comes after the column list.
 const MAX_COMMAND_WORDS: usize = 24;
 
+/// Whether the command NAMED by `verb` is one of the writing commands above.
+///
+/// The same catalogue read from the other end: [`refused_command`] reads a statement's
+/// tokens to decide whether a read-only session may run it, and this reads the command name
+/// a statement's ANSWER reports (`INSERT`, `CREATE TABLE`, `COPY FROM`) to decide whether
+/// that statement can have changed the data behind the endpoint — which is what a source DB
+/// instance's read replicas have to be given ([`super::replication`]).
+#[must_use]
+pub fn verb_writes(verb: &str) -> bool {
+    let named = verb
+        .split_whitespace()
+        .next()
+        .unwrap_or_default()
+        .to_ascii_uppercase();
+    SINGLE_WORD_COMMANDS
+        .iter()
+        .any(|(keyword, _)| *keyword == named)
+        || OBJECT_COMMANDS.contains(&named.as_str())
+        || matches!(named.as_str(), "COPY" | "LOAD")
+}
+
 /// How `wire`'s engine refuses `command` on a read-only session.
 ///
 /// PostgreSQL names the command it refused and reports the condition's own SQLSTATE;
@@ -141,20 +176,61 @@ pub fn refusal(wire: EngineWire, command: &str) -> EngineError {
     }
 }
 
-/// How PostgreSQL refuses a session's attempt to put ITSELF back into read-write mode while
-/// the engine it is on is replaying from a primary.
+/// How PostgreSQL refuses a session's attempt to put the TRANSACTION IT IS IN back into
+/// read-write mode while the engine it is on is replaying from a primary.
 ///
 /// "cannot set transaction read-write mode during recovery" is the server's own sentence for
-/// it, under the same condition a write is refused with: a standby has no read-write mode to
-/// move to, so the session cannot grant itself one.
+/// it: a standby has no read-write mode to move to, so the session cannot grant itself one.
+/// The condition is `feature_not_supported` — the engine does not have the mode at all,
+/// which is not the same condition as a write refused on a read-only transaction
+/// ([`POSTGRES_READ_ONLY_SQLSTATE`]), and a client that branches on the SQLSTATE sees the
+/// one the server sends.
+///
+/// WHICH statements it answers: the ones that set the current transaction's mode —
+/// `SET transaction_read_only = off`, `SET TRANSACTION READ WRITE`, `BEGIN READ WRITE`,
+/// `START TRANSACTION READ WRITE` ([`asks_for_read_write_transaction`]). Setting the
+/// session's DEFAULT for later transactions (`default_transaction_read_only`, `SET SESSION
+/// CHARACTERISTICS AS TRANSACTION READ WRITE`) is NOT one of them: the parameter takes the
+/// value, and the engine still refuses every write under it, which is why a session-level
+/// override cannot make a standby writable.
 #[must_use]
 pub fn postgres_cannot_leave_read_only() -> EngineError {
     EngineError::new(
-        EngineErrorKind::ReadOnlySqlTransaction,
+        EngineErrorKind::FeatureNotSupported,
         "cannot set transaction read-write mode during recovery".to_string(),
     )
-    .with_sqlstate(POSTGRES_READ_ONLY_SQLSTATE)
 }
+
+/// Whether `tokens` ask for the CURRENT transaction's read-write mode: `SET TRANSACTION
+/// READ WRITE`, `BEGIN [WORK | TRANSACTION] READ WRITE` and `START TRANSACTION READ WRITE`,
+/// in any of the orders those statements accept their characteristics in (`BEGIN ISOLATION
+/// LEVEL SERIALIZABLE READ WRITE`).
+///
+/// `SET SESSION CHARACTERISTICS AS TRANSACTION READ WRITE` is NOT one of them: it sets the
+/// session's default for the transactions AFTER this one, which a standby takes (see
+/// [`postgres_cannot_leave_read_only`]). Nor is `READ ONLY`, which asks for the mode a
+/// standby is already in.
+#[must_use]
+pub fn asks_for_read_write_transaction(tokens: &[Token]) -> bool {
+    let words = keywords(tokens, MAX_TRANSACTION_MODE_WORDS);
+    let names_a_transaction = match words.first().map(String::as_str) {
+        Some("BEGIN" | "START") => true,
+        // `SET TRANSACTION ...` sets this transaction's mode; `SET SESSION CHARACTERISTICS
+        // AS TRANSACTION ...` sets the session's default.
+        Some("SET") => {
+            words.get(1).map(String::as_str) == Some("TRANSACTION")
+        }
+        _ => false,
+    };
+    names_a_transaction
+        && words
+            .windows(2)
+            .any(|pair| pair[0] == "READ" && pair[1] == "WRITE")
+}
+
+/// How many leading keywords carry a transaction's characteristics: the longest form is a
+/// `BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ WRITE NOT DEFERRABLE`.
+const MAX_TRANSACTION_MODE_WORDS: usize = 16;
 
 /// The leading `count` keywords of `tokens`, uppercased: the words that name the command.
 fn keywords(tokens: &[Token], count: usize) -> Vec<String> {

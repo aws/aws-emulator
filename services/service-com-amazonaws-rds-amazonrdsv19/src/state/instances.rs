@@ -266,6 +266,37 @@ impl DbInstanceRecord {
         )
     }
 
+    /// `StatusInfos`: "The status of a read replica. If the DB instance isn't a read
+    /// replica, the value is blank."
+    ///
+    /// So an instance reports one entry exactly while it REPLICATES another — the
+    /// relationship [`Self::read_replica_source_db_instance_identifier`] holds, which
+    /// `PromoteReadReplica` clears — and an instance that replicates nothing reports no
+    /// member at all, which is the blank value the member documents. The entry's
+    /// `StatusType` "is currently \"read replication\"", `Normal` "indicates whether the
+    /// instance is operating normally (TRUE) or is in an error state (FALSE)" and `Status`
+    /// is one of the values the member publishes for that status type
+    /// ([`READ_REPLICATION_STATUS_REPLICATING`]).
+    ///
+    /// Nothing this service does stops or breaks the replication it set up — the replica's
+    /// storage is loaded from the source's and the replica stays attached to it until a
+    /// promotion or a delete ends the relationship — so a replica this store holds is
+    /// replicating normally, and `Message` ("details of the error if there is an error for
+    /// the instance ... if the instance isn't in an error state, this value is blank") is
+    /// left out rather than carrying an error nothing reported.
+    pub fn status_infos(&self) -> Option<Vec<DBInstanceStatusInfo>> {
+        self.read_replica_source_db_instance_identifier
+            .as_ref()
+            .map(|_| {
+                vec![DBInstanceStatusInfo {
+                    status_type: Some(READ_REPLICATION_STATUS_TYPE.to_string()),
+                    normal: Some(true),
+                    status: Some(READ_REPLICATION_STATUS_REPLICATING.to_string()),
+                    message: None,
+                }]
+            })
+    }
+
     /// `PendingModifiedValues`: what this service has accepted for the instance and not
     /// finished applying.
     ///
@@ -455,6 +486,9 @@ impl DbInstanceRecord {
             read_replica_source_db_instance_identifier: self
                 .read_replica_source_db_instance_identifier
                 .clone(),
+            // `StatusInfos`: the replication status of a READ REPLICA, and blank for an
+            // instance that is not one ([`Self::status_infos`]).
+            status_infos: self.status_infos(),
             license_model: self.license_model.clone(),
             iops: self.iops,
             storage_throughput: Some(self.storage_throughput),

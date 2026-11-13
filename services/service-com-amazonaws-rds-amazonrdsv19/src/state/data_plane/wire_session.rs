@@ -962,6 +962,35 @@ impl SessionFacts {
         self.tls.is_some()
     }
 
+    /// Whether the transaction this session's next statement runs in is READ-ONLY, which is
+    /// what decides whether a statement that writes is refused
+    /// ([`read_only::refused_command`]).
+    ///
+    /// TWO things put a transaction in that mode, and PostgreSQL refuses a write under
+    /// either with the same condition (`read_only_sql_transaction`): the ENDPOINT serves no
+    /// writes — a standby, whose mode no session can leave
+    /// ([`read_only::postgres_cannot_leave_read_only`]) — or the session's own read-only
+    /// mode is on, which `SET transaction_read_only`, `SET default_transaction_read_only`
+    /// and the instance's own parameter group set, and which a session on a writable
+    /// endpoint may turn off again.
+    ///
+    /// The session's setting is read for the PostgreSQL wire, whose parameters these are:
+    /// MySQL's `read_only` is the SERVER's and has no session scope at all, which is what
+    /// [`mysql_set`] answers a session that assigns one.
+    #[must_use]
+    pub fn read_only_transaction(&self) -> bool {
+        if self.read_only {
+            return true;
+        }
+        self.wire == EngineWire::Postgres
+            && ["transaction_read_only", "default_transaction_read_only"]
+                .iter()
+                .any(|name| {
+                    self.setting(name)
+                        .is_some_and(|value| read_only::setting_is_on(&value))
+                })
+    }
+
     /// The value of the setting `name` for this session: what it `SET` for itself, else
     /// what the server reports.
     #[must_use]
@@ -1272,13 +1301,26 @@ pub fn run_statement(
         return Ok(StatementAnswer::new(String::new(), ResultSet::default()));
     }
     let words = leading_words(&tokens, 3);
-    // An endpoint that serves no writes refuses the statements that write, exactly as the
-    // engine it runs on refuses them. Decided before anything else is served, so no
-    // statement of a read-only session reaches the storage its engine only replays.
-    if facts.read_only {
+    // A statement that writes is refused whenever the transaction it would run in is
+    // read-only — the endpoint serves no writes, or the session's own read-only mode is on
+    // ([`SessionFacts::read_only_transaction`]) — exactly as the engine it runs on refuses
+    // it. Decided before anything else is served, so no write of a read-only session
+    // reaches the storage behind it.
+    if facts.read_only_transaction() {
         if let Some(command) = read_only::refused_command(&tokens) {
             return Err(read_only::refusal(facts.wire, &command));
         }
+    }
+    // And on a STANDBY, the statements that would put the transaction they open, or the one
+    // the session is in, into read-write mode: such an engine has no read-write mode, so
+    // PostgreSQL refuses them in those words
+    // ([`read_only::postgres_cannot_leave_read_only`]) rather than opening a transaction
+    // whose every write it would then refuse.
+    if facts.read_only
+        && facts.wire == EngineWire::Postgres
+        && read_only::asks_for_read_write_transaction(&tokens)
+    {
+        return Err(read_only::postgres_cannot_leave_read_only());
     }
     // A `COPY` that names a FILE or a program on the host is a capability no Amazon RDS
     // instance serves, so it is refused before anything is served for it.
@@ -1916,17 +1958,14 @@ fn postgres_set(facts: &SessionFacts, tokens: &[Token]) -> Result<StatementAnswe
         return Ok(StatementAnswer::new("SET", ResultSet::default()));
     };
     let lowered = name.to_ascii_lowercase();
-    // A session on a standby cannot put itself into read-write mode: there is no read-write
-    // mode on an engine that is replaying a primary's writes.
+    // A session on a standby cannot put the transaction it is in into read-write mode:
+    // there is no read-write mode on an engine that is replaying a primary's writes. The
+    // session's DEFAULT for later transactions (`default_transaction_read_only`) is not
+    // that parameter and is taken — the writes under it are refused all the same, which is
+    // what makes the override useless rather than refused.
     if facts.read_only
-        && matches!(
-            lowered.as_str(),
-            "transaction_read_only" | "default_transaction_read_only"
-        )
-        && !matches!(
-            value.trim().trim_matches('\'').to_ascii_lowercase().as_str(),
-            "on" | "true" | "yes" | "1"
-        )
+        && lowered == "transaction_read_only"
+        && !read_only::setting_is_on(&value)
     {
         return Err(read_only::postgres_cannot_leave_read_only());
     }

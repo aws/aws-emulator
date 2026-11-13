@@ -535,6 +535,15 @@ async fn serve_query(
     if answer.databases_changed {
         facts.databases = database.database_names();
     }
+    // What the source has COMMITTED is what its read replicas hold: carried over once the
+    // statement is through and the session has no transaction still open, so a write still
+    // inside a transaction reaches no replica until that transaction commits.
+    if super::replication::publishes_changes(&answer.verb)
+        && !database.in_transaction(facts.connection_id)
+    {
+        super::replication::apply_to_read_replicas(&context.state, &context.target, database)
+            .await;
+    }
     if answer.result.columns.is_empty() {
         return write_ok(
             conn,

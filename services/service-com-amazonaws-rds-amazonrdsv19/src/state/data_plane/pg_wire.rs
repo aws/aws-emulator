@@ -511,6 +511,7 @@ async fn serve_session(
                         if let Some(target) = copy_target(&session_facts, &statement) {
                             if !serve_copy_in(
                                 &mut conn,
+                                &context,
                                 &database_handle,
                                 &session_facts,
                                 &target,
@@ -723,7 +724,7 @@ async fn run_simple_query(
         // `COPY … FROM STDIN` is not a statement the engine runs on its own: it puts this
         // session into the protocol's copy-in mode, where the client streams the rows.
         if let Some(target) = copy_target(facts, &statement) {
-            if !serve_copy_in(conn, database, facts, &target).await? {
+            if !serve_copy_in(conn, context, database, facts, &target).await? {
                 return Ok(true);
             }
             continue;
@@ -758,8 +759,13 @@ fn copy_target(facts: &SessionFacts, sql: &str) -> Option<super::pg_copy::CopyTa
 ///
 /// Returns whether the copy succeeded. A copy that failed leaves the session the way any
 /// failed statement does: the error is reported and the caller answers `ReadyForQuery`.
+///
+/// The rows it loaded are a change of the instance's data like any other, so a copy that
+/// committed is carried over to this instance's read replicas
+/// ([`super::replication`]) exactly as a statement's write is.
 async fn serve_copy_in(
     conn: &mut ::emulator_server::ListenerConn,
+    context: &wire_session::SessionContext,
     database: &Arc<InstanceDatabase>,
     facts: &SessionFacts,
     target: &super::pg_copy::CopyTarget,
@@ -830,6 +836,14 @@ async fn serve_copy_in(
     };
     match loaded {
         Ok(rows) => {
+            if !database.in_transaction(facts.connection_id) {
+                super::replication::apply_to_read_replicas(
+                    &context.state,
+                    &context.target,
+                    database,
+                )
+                .await;
+            }
             let mut tag = Vec::new();
             put_cstring(&mut tag, &format!("COPY {rows}"));
             send(conn, b'C', &tag).await?;
@@ -849,6 +863,11 @@ async fn serve_copy_in(
 /// instance has NOW: a parameter group modified under a live session is visible to it from
 /// the next statement on, which is what "applied immediately" means. The session's own row
 /// in `pg_stat_activity` is marked with the statement for as long as it runs.
+///
+/// A statement that COMMITTED a change is then carried over to the read replicas of this
+/// instance ([`super::replication`]): that is the replication a replica is kept up to date
+/// by, and it happens after the client's answer is computed, as the engines' own
+/// asynchronous replication does.
 async fn run_statement(
     context: &wire_session::SessionContext,
     database: &Arc<InstanceDatabase>,
@@ -889,6 +908,15 @@ async fn run_statement(
     // A statement that created or dropped a database changed what this session may name.
     if answer.databases_changed {
         facts.databases = database.database_names();
+    }
+    // What the source has COMMITTED is what its read replicas hold: carried over once the
+    // statement is through and the session has no transaction still open, so a write still
+    // inside a transaction reaches no replica until that transaction commits.
+    if super::replication::publishes_changes(&answer.verb)
+        && !database.in_transaction(facts.connection_id)
+    {
+        super::replication::apply_to_read_replicas(&context.state, &context.target, database)
+            .await;
     }
     Ok(answer)
 }
