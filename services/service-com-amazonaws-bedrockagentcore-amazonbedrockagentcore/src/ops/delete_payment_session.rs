@@ -1,15 +1,8 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op DeletePaymentSession
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `DeletePaymentSession`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
-//!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`DeletePaymentSession::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! Removes one payment session a payment manager owns, for the user the session belongs
+//! to, and reports the status the model fixes for a successful hard delete.
 //!
 //! ## Shape of an operation
 //!
@@ -125,6 +118,27 @@ impl From<DeletePaymentSessionErrorModeled> for DeletePaymentSessionError {
     }
 }
 
+/// The modelled server error for an engine that does not carry this service's state, which
+/// is the only way the store can be out of reach: the handler removes nothing in that case.
+fn missing_state() -> DeletePaymentSessionError {
+    DeletePaymentSessionErrorModeled::InternalServerException(InternalServerException {
+        message: Some("the shared engine does not carry this service's state".to_string()),
+    })
+    .into()
+}
+
+/// The wire name of the input member a mismatched user is reported against.
+const USER_ID_MEMBER: &str = "userId";
+
+/// The modelled `ResourceNotFoundException` for a session this manager holds none of,
+/// worded by the store ([`crate::state::payment_session_not_found_message`]).
+fn not_found(message: String) -> DeletePaymentSessionError {
+    DeletePaymentSessionErrorModeled::ResourceNotFoundException(ResourceNotFoundException {
+        message: Some(message),
+    })
+    .into()
+}
+
 /// The `DeletePaymentSession` operation.
 ///
 /// Owns the shared engine (the constructor seam) and implements
@@ -161,18 +175,63 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `DeletePaymentSession` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(DeletePaymentSessionErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("DeletePaymentSession"))
+        // Every member this operation needs is bound into `input` by the centralized
+        // request walk, the `@httpHeader` member included.
+        let _ = ctx;
+        // The payment manager is resolved against the plane that OWNS it before anything
+        // is removed, so a request naming a manager the account does not hold deletes
+        // nothing. The resolution and the sentence both live in `crate::state`; this
+        // operation only says which of its own modelled errors carries each.
+        crate::state::payment_manager_resolved(&*self.engine, &input.payment_manager_arn).map_err(
+            |denial| match denial {
+                Some(message) => DeletePaymentSessionErrorModeled::AccessDeniedException(
+                    AccessDeniedException {
+                        message: Some(message.to_string()),
+                    },
+                )
+                .into(),
+                None => missing_state(),
+            },
+        )?;
+        let state = crate::state::service_state(&*self.engine).ok_or_else(missing_state)?;
+
+        let mut store = state.lock();
+        // `userId` is documented as "the user ID making the delete request. Must match the
+        // session's userId", so the session is RESOLVED before anything is removed and the
+        // request's user is checked against the one the session belongs to: a delete for
+        // another user's session removes nothing. The member is optional, so a request that
+        // names no user disagrees with none.
+        let acts_for_another_user = {
+            let held = store
+                .resolve_payment_session(&input.payment_manager_arn, &input.payment_session_id)
+                .map_err(not_found)?;
+            !held.acts_for(input.user_id.as_deref())
+        };
+        if acts_for_another_user {
+            return Err(DeletePaymentSessionErrorModeled::ValidationException(
+                ValidationException {
+                    message: crate::state::PAYMENT_SESSION_USER_MISMATCH_MESSAGE.to_string(),
+                    // `ValidationExceptionReason`'s value for a member that fails a rule
+                    // the service states (source: smithy_query query="shape"
+                    // shape="ValidationExceptionReason").
+                    reason: "FieldValidationFailed".to_string(),
+                    field_list: Some(vec![ValidationExceptionField {
+                        name: USER_ID_MEMBER.to_string(),
+                        message: crate::state::PAYMENT_SESSION_USER_MISMATCH_MESSAGE.to_string(),
+                    }]),
+                },
+            )
+            .into());
+        }
+        store
+            .remove_payment_session(&input.payment_manager_arn, &input.payment_session_id)
+            .map_err(not_found)?;
+
+        Ok(DeletePaymentSessionOutput {
+            // "The status of the deletion. Always DELETED for successful hard delete" — the
+            // member reports what this call did to the session, not the state the clock had
+            // left it in, so every success answers the one value.
+            status: crate::state::PAYMENT_SESSION_STATUS_DELETED.to_string(),
+        })
     }
 }

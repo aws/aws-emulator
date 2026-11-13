@@ -1,15 +1,8 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op GetPaymentSession
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `GetPaymentSession`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
-//!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`GetPaymentSession::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! Reports one payment session a payment manager owns, exactly as
+//! `CreatePaymentSession` stored it. A reporting operation: it writes nothing.
 //!
 //! ## Shape of an operation
 //!
@@ -126,6 +119,15 @@ impl From<GetPaymentSessionErrorModeled> for GetPaymentSessionError {
     }
 }
 
+/// The modelled server error for an engine that does not carry this service's state, which
+/// is the only way the store can be out of reach.
+fn missing_state() -> GetPaymentSessionError {
+    GetPaymentSessionErrorModeled::InternalServerException(InternalServerException {
+        message: Some("the shared engine does not carry this service's state".to_string()),
+    })
+    .into()
+}
+
 /// The `GetPaymentSession` operation.
 ///
 /// Owns the shared engine (the constructor seam) and implements
@@ -162,18 +164,40 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `GetPaymentSession` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(GetPaymentSessionErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("GetPaymentSession"))
+        // Every member this operation needs is bound into `input` by the centralized
+        // request walk, the two `@httpHeader` members included.
+        let _ = ctx;
+        // The payment manager is resolved against the plane that OWNS it before the
+        // session is looked up, so a request naming a manager the account does not hold is
+        // denied rather than told the session is missing. The resolution and the sentence
+        // both live in `crate::state`; this operation only says which of its own modelled
+        // errors carries each.
+        crate::state::payment_manager_resolved(&*self.engine, &input.payment_manager_arn).map_err(
+            |denial| match denial {
+                Some(message) => GetPaymentSessionErrorModeled::AccessDeniedException(
+                    AccessDeniedException {
+                        message: Some(message.to_string()),
+                    },
+                )
+                .into(),
+                None => missing_state(),
+            },
+        )?;
+        let state = crate::state::service_state(&*self.engine).ok_or_else(missing_state)?;
+
+        let store = state.lock();
+        let record = store
+            .resolve_payment_session(&input.payment_manager_arn, &input.payment_session_id)
+            .map_err(|message| {
+                GetPaymentSessionErrorModeled::ResourceNotFoundException(
+                    ResourceNotFoundException {
+                        message: Some(message),
+                    },
+                )
+            })?;
+
+        Ok(GetPaymentSessionOutput {
+            payment_session: record.session(),
+        })
     }
 }

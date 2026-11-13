@@ -28,7 +28,10 @@ pub struct ListPaymentSessionsOutput {
     pub next_token: Option<String>,
 }
 
-#[smithy_macros::smithy(shape = "com.amazonaws.bedrockagentcore#PaymentSessionSummary")]
+/// Declared WITHOUT `#[smithy_macros::smithy(shape = ...)]`: its `createdAt` and
+/// `updatedAt` target `DateTimestamp` (`@timestampFormat("date-time")`), which the derive
+/// drops, so this shape's schema and serializer are hand-written in
+/// [`super::date_time_wire`].
 #[derive(Debug, Clone)]
 pub struct PaymentSessionSummary {
     pub payment_session_id: String,

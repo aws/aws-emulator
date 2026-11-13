@@ -42,13 +42,26 @@
 //!
 //! Each member list below is the model's, member for member: same shape ids, same wire
 //! names, same order (the member index is that position), same shape types.
+//!
+//! The PAYMENTS plane's `PaymentSession`, its `AvailableLimits` and the
+//! `PaymentSessionSummary` a listing reports are here for the same reason, and they are
+//! NESTED shapes rather than operation outputs: the codec renders each member from the
+//! member schema of the structure that declares it, so the format has to be attached where
+//! the `createdAt` / `updatedAt` member lives, not on the response that carries it. Those
+//! three carry a `DeserializableStruct` impl as well, which the operation outputs that
+//! nest them require of every member type the derive builds them from; nothing in this
+//! emulator reads such a response back.
 
-use ::aws_smithy_schema::serde::{SerdeError, SerializableStruct, ShapeSerializer};
+use ::aws_smithy_schema::serde::{
+    SerdeError, SerializableStruct, ShapeDeserializer, ShapeSerializer,
+};
 use ::aws_smithy_schema::traits::TimestampFormat;
 use ::aws_smithy_schema::{Schema, ShapeId, ShapeType};
+use ::aws_smithy_schema_server::{missing_member, DeserializableStruct};
 
 use super::{
-    GetBrowserSessionOutput, GetCodeInterpreterSessionOutput, StartBrowserSessionOutput,
+    Amount, AvailableLimits, GetBrowserSessionOutput, GetCodeInterpreterSessionOutput,
+    PaymentSession, PaymentSessionSummary, SessionLimits, StartBrowserSessionOutput,
     StartCodeInterpreterSessionOutput, StopCodeInterpreterSessionOutput,
 };
 
@@ -697,5 +710,404 @@ impl SerializableStruct for GetBrowserSessionOutput {
             s.write_timestamp(&Self::M_LAST_UPDATED_AT, last_updated_at)?;
         }
         Ok(())
+    }
+}
+
+impl AvailableLimits {
+    pub const M_AVAILABLE_SPEND_AMOUNT: Schema = Schema::new_member(
+        ShapeId::from_static(
+            "com.amazonaws.bedrockagentcore#AvailableLimits$availableSpendAmount",
+            NS,
+            "availableSpendAmount",
+        ),
+        ShapeType::Structure,
+        "availableSpendAmount",
+        0,
+    );
+
+    /// Targets `DateTimestamp`, hence the format the derive cannot attach.
+    pub const M_UPDATED_AT: Schema = Schema::new_member(
+        ShapeId::from_static(
+            "com.amazonaws.bedrockagentcore#AvailableLimits$updatedAt",
+            NS,
+            "updatedAt",
+        ),
+        ShapeType::Timestamp,
+        "updatedAt",
+        1,
+    )
+    .with_timestamp_format(TimestampFormat::DateTime);
+
+    pub const SCHEMA: Schema = Schema::new_struct(
+        ShapeId::from_static(
+            "com.amazonaws.bedrockagentcore#AvailableLimits",
+            NS,
+            "AvailableLimits",
+        ),
+        ShapeType::Structure,
+        &[&Self::M_AVAILABLE_SPEND_AMOUNT, &Self::M_UPDATED_AT],
+    );
+}
+
+pub static AVAILABLE_LIMITS_SCHEMA: &Schema = &AvailableLimits::SCHEMA;
+
+impl SerializableStruct for AvailableLimits {
+    fn serialize_members(&self, s: &mut dyn ShapeSerializer) -> Result<(), SerdeError> {
+        if let Some(amount) = self.available_spend_amount.as_ref() {
+            s.write_struct(&Self::M_AVAILABLE_SPEND_AMOUNT, amount)?;
+        }
+        if let Some(updated_at) = self.updated_at.as_ref() {
+            s.write_timestamp(&Self::M_UPDATED_AT, updated_at)?;
+        }
+        Ok(())
+    }
+}
+
+impl DeserializableStruct for AvailableLimits {
+    fn deserialize(d: &mut dyn ShapeDeserializer) -> Result<Self, SerdeError> {
+        let mut available_spend_amount = None;
+        let mut updated_at = None;
+        d.read_struct(&Self::SCHEMA, &mut |member, d| {
+            match member.member_index() {
+                Some(0) => available_spend_amount = Some(Amount::deserialize(d)?),
+                Some(1) => updated_at = Some(d.read_timestamp(&Self::M_UPDATED_AT)?),
+                _ => {}
+            }
+            Ok(())
+        })?;
+        Ok(Self {
+            available_spend_amount,
+            updated_at,
+        })
+    }
+}
+
+impl PaymentSession {
+    pub const M_PAYMENT_SESSION_ID: Schema = Schema::new_member(
+        ShapeId::from_static(
+            "com.amazonaws.bedrockagentcore#PaymentSession$paymentSessionId",
+            NS,
+            "paymentSessionId",
+        ),
+        ShapeType::String,
+        "paymentSessionId",
+        0,
+    );
+
+    pub const M_PAYMENT_MANAGER_ARN: Schema = Schema::new_member(
+        ShapeId::from_static(
+            "com.amazonaws.bedrockagentcore#PaymentSession$paymentManagerArn",
+            NS,
+            "paymentManagerArn",
+        ),
+        ShapeType::String,
+        "paymentManagerArn",
+        1,
+    );
+
+    pub const M_LIMITS: Schema = Schema::new_member(
+        ShapeId::from_static(
+            "com.amazonaws.bedrockagentcore#PaymentSession$limits",
+            NS,
+            "limits",
+        ),
+        ShapeType::Structure,
+        "limits",
+        2,
+    );
+
+    pub const M_USER_ID: Schema = Schema::new_member(
+        ShapeId::from_static(
+            "com.amazonaws.bedrockagentcore#PaymentSession$userId",
+            NS,
+            "userId",
+        ),
+        ShapeType::String,
+        "userId",
+        3,
+    );
+
+    pub const M_EXPIRY_TIME_IN_MINUTES: Schema = Schema::new_member(
+        ShapeId::from_static(
+            "com.amazonaws.bedrockagentcore#PaymentSession$expiryTimeInMinutes",
+            NS,
+            "expiryTimeInMinutes",
+        ),
+        ShapeType::Integer,
+        "expiryTimeInMinutes",
+        4,
+    );
+
+    /// Targets `DateTimestamp`, hence the format the derive cannot attach.
+    pub const M_CREATED_AT: Schema = Schema::new_member(
+        ShapeId::from_static(
+            "com.amazonaws.bedrockagentcore#PaymentSession$createdAt",
+            NS,
+            "createdAt",
+        ),
+        ShapeType::Timestamp,
+        "createdAt",
+        5,
+    )
+    .with_timestamp_format(TimestampFormat::DateTime);
+
+    pub const M_AVAILABLE_LIMITS: Schema = Schema::new_member(
+        ShapeId::from_static(
+            "com.amazonaws.bedrockagentcore#PaymentSession$availableLimits",
+            NS,
+            "availableLimits",
+        ),
+        ShapeType::Structure,
+        "availableLimits",
+        6,
+    );
+
+    /// Targets `DateTimestamp`, hence the format the derive cannot attach.
+    pub const M_UPDATED_AT: Schema = Schema::new_member(
+        ShapeId::from_static(
+            "com.amazonaws.bedrockagentcore#PaymentSession$updatedAt",
+            NS,
+            "updatedAt",
+        ),
+        ShapeType::Timestamp,
+        "updatedAt",
+        7,
+    )
+    .with_timestamp_format(TimestampFormat::DateTime);
+
+    pub const SCHEMA: Schema = Schema::new_struct(
+        ShapeId::from_static(
+            "com.amazonaws.bedrockagentcore#PaymentSession",
+            NS,
+            "PaymentSession",
+        ),
+        ShapeType::Structure,
+        &[
+            &Self::M_PAYMENT_SESSION_ID,
+            &Self::M_PAYMENT_MANAGER_ARN,
+            &Self::M_LIMITS,
+            &Self::M_USER_ID,
+            &Self::M_EXPIRY_TIME_IN_MINUTES,
+            &Self::M_CREATED_AT,
+            &Self::M_AVAILABLE_LIMITS,
+            &Self::M_UPDATED_AT,
+        ],
+    );
+}
+
+pub static PAYMENT_SESSION_SCHEMA: &Schema = &PaymentSession::SCHEMA;
+
+impl SerializableStruct for PaymentSession {
+    fn serialize_members(&self, s: &mut dyn ShapeSerializer) -> Result<(), SerdeError> {
+        s.write_string(&Self::M_PAYMENT_SESSION_ID, self.payment_session_id.as_str())?;
+        s.write_string(
+            &Self::M_PAYMENT_MANAGER_ARN,
+            self.payment_manager_arn.as_str(),
+        )?;
+        if let Some(limits) = self.limits.as_ref() {
+            s.write_struct(&Self::M_LIMITS, limits)?;
+        }
+        s.write_string(&Self::M_USER_ID, self.user_id.as_str())?;
+        s.write_integer(&Self::M_EXPIRY_TIME_IN_MINUTES, self.expiry_time_in_minutes)?;
+        s.write_timestamp(&Self::M_CREATED_AT, &self.created_at)?;
+        if let Some(available_limits) = self.available_limits.as_ref() {
+            s.write_struct(&Self::M_AVAILABLE_LIMITS, available_limits)?;
+        }
+        s.write_timestamp(&Self::M_UPDATED_AT, &self.updated_at)?;
+        Ok(())
+    }
+}
+
+impl DeserializableStruct for PaymentSession {
+    fn deserialize(d: &mut dyn ShapeDeserializer) -> Result<Self, SerdeError> {
+        let mut payment_session_id = None;
+        let mut payment_manager_arn = None;
+        let mut limits = None;
+        let mut user_id = None;
+        let mut expiry_time_in_minutes = None;
+        let mut created_at = None;
+        let mut available_limits = None;
+        let mut updated_at = None;
+        d.read_struct(&Self::SCHEMA, &mut |member, d| {
+            match member.member_index() {
+                Some(0) => {
+                    payment_session_id = Some(d.read_string(&Self::M_PAYMENT_SESSION_ID)?);
+                }
+                Some(1) => {
+                    payment_manager_arn = Some(d.read_string(&Self::M_PAYMENT_MANAGER_ARN)?);
+                }
+                Some(2) => limits = Some(SessionLimits::deserialize(d)?),
+                Some(3) => user_id = Some(d.read_string(&Self::M_USER_ID)?),
+                Some(4) => {
+                    expiry_time_in_minutes =
+                        Some(d.read_integer(&Self::M_EXPIRY_TIME_IN_MINUTES)?);
+                }
+                Some(5) => created_at = Some(d.read_timestamp(&Self::M_CREATED_AT)?),
+                Some(6) => available_limits = Some(AvailableLimits::deserialize(d)?),
+                Some(7) => updated_at = Some(d.read_timestamp(&Self::M_UPDATED_AT)?),
+                _ => {}
+            }
+            Ok(())
+        })?;
+        Ok(Self {
+            payment_session_id: payment_session_id
+                .ok_or_else(|| missing_member("paymentSessionId"))?,
+            payment_manager_arn: payment_manager_arn
+                .ok_or_else(|| missing_member("paymentManagerArn"))?,
+            limits,
+            user_id: user_id.ok_or_else(|| missing_member("userId"))?,
+            expiry_time_in_minutes: expiry_time_in_minutes
+                .ok_or_else(|| missing_member("expiryTimeInMinutes"))?,
+            created_at: created_at.ok_or_else(|| missing_member("createdAt"))?,
+            available_limits,
+            updated_at: updated_at.ok_or_else(|| missing_member("updatedAt"))?,
+        })
+    }
+}
+
+impl PaymentSessionSummary {
+    pub const M_PAYMENT_SESSION_ID: Schema = Schema::new_member(
+        ShapeId::from_static(
+            "com.amazonaws.bedrockagentcore#PaymentSessionSummary$paymentSessionId",
+            NS,
+            "paymentSessionId",
+        ),
+        ShapeType::String,
+        "paymentSessionId",
+        0,
+    );
+
+    pub const M_PAYMENT_MANAGER_ARN: Schema = Schema::new_member(
+        ShapeId::from_static(
+            "com.amazonaws.bedrockagentcore#PaymentSessionSummary$paymentManagerArn",
+            NS,
+            "paymentManagerArn",
+        ),
+        ShapeType::String,
+        "paymentManagerArn",
+        1,
+    );
+
+    pub const M_USER_ID: Schema = Schema::new_member(
+        ShapeId::from_static(
+            "com.amazonaws.bedrockagentcore#PaymentSessionSummary$userId",
+            NS,
+            "userId",
+        ),
+        ShapeType::String,
+        "userId",
+        2,
+    );
+
+    pub const M_EXPIRY_TIME_IN_MINUTES: Schema = Schema::new_member(
+        ShapeId::from_static(
+            "com.amazonaws.bedrockagentcore#PaymentSessionSummary$expiryTimeInMinutes",
+            NS,
+            "expiryTimeInMinutes",
+        ),
+        ShapeType::Integer,
+        "expiryTimeInMinutes",
+        3,
+    );
+
+    /// Targets `DateTimestamp`, hence the format the derive cannot attach.
+    pub const M_CREATED_AT: Schema = Schema::new_member(
+        ShapeId::from_static(
+            "com.amazonaws.bedrockagentcore#PaymentSessionSummary$createdAt",
+            NS,
+            "createdAt",
+        ),
+        ShapeType::Timestamp,
+        "createdAt",
+        4,
+    )
+    .with_timestamp_format(TimestampFormat::DateTime);
+
+    /// Targets `DateTimestamp`, hence the format the derive cannot attach.
+    pub const M_UPDATED_AT: Schema = Schema::new_member(
+        ShapeId::from_static(
+            "com.amazonaws.bedrockagentcore#PaymentSessionSummary$updatedAt",
+            NS,
+            "updatedAt",
+        ),
+        ShapeType::Timestamp,
+        "updatedAt",
+        5,
+    )
+    .with_timestamp_format(TimestampFormat::DateTime);
+
+    pub const SCHEMA: Schema = Schema::new_struct(
+        ShapeId::from_static(
+            "com.amazonaws.bedrockagentcore#PaymentSessionSummary",
+            NS,
+            "PaymentSessionSummary",
+        ),
+        ShapeType::Structure,
+        &[
+            &Self::M_PAYMENT_SESSION_ID,
+            &Self::M_PAYMENT_MANAGER_ARN,
+            &Self::M_USER_ID,
+            &Self::M_EXPIRY_TIME_IN_MINUTES,
+            &Self::M_CREATED_AT,
+            &Self::M_UPDATED_AT,
+        ],
+    );
+}
+
+pub static PAYMENT_SESSION_SUMMARY_SCHEMA: &Schema = &PaymentSessionSummary::SCHEMA;
+
+impl SerializableStruct for PaymentSessionSummary {
+    fn serialize_members(&self, s: &mut dyn ShapeSerializer) -> Result<(), SerdeError> {
+        s.write_string(&Self::M_PAYMENT_SESSION_ID, self.payment_session_id.as_str())?;
+        s.write_string(
+            &Self::M_PAYMENT_MANAGER_ARN,
+            self.payment_manager_arn.as_str(),
+        )?;
+        s.write_string(&Self::M_USER_ID, self.user_id.as_str())?;
+        s.write_integer(&Self::M_EXPIRY_TIME_IN_MINUTES, self.expiry_time_in_minutes)?;
+        s.write_timestamp(&Self::M_CREATED_AT, &self.created_at)?;
+        s.write_timestamp(&Self::M_UPDATED_AT, &self.updated_at)?;
+        Ok(())
+    }
+}
+
+impl DeserializableStruct for PaymentSessionSummary {
+    fn deserialize(d: &mut dyn ShapeDeserializer) -> Result<Self, SerdeError> {
+        let mut payment_session_id = None;
+        let mut payment_manager_arn = None;
+        let mut user_id = None;
+        let mut expiry_time_in_minutes = None;
+        let mut created_at = None;
+        let mut updated_at = None;
+        d.read_struct(&Self::SCHEMA, &mut |member, d| {
+            match member.member_index() {
+                Some(0) => {
+                    payment_session_id = Some(d.read_string(&Self::M_PAYMENT_SESSION_ID)?);
+                }
+                Some(1) => {
+                    payment_manager_arn = Some(d.read_string(&Self::M_PAYMENT_MANAGER_ARN)?);
+                }
+                Some(2) => user_id = Some(d.read_string(&Self::M_USER_ID)?),
+                Some(3) => {
+                    expiry_time_in_minutes =
+                        Some(d.read_integer(&Self::M_EXPIRY_TIME_IN_MINUTES)?);
+                }
+                Some(4) => created_at = Some(d.read_timestamp(&Self::M_CREATED_AT)?),
+                Some(5) => updated_at = Some(d.read_timestamp(&Self::M_UPDATED_AT)?),
+                _ => {}
+            }
+            Ok(())
+        })?;
+        Ok(Self {
+            payment_session_id: payment_session_id
+                .ok_or_else(|| missing_member("paymentSessionId"))?,
+            payment_manager_arn: payment_manager_arn
+                .ok_or_else(|| missing_member("paymentManagerArn"))?,
+            user_id: user_id.ok_or_else(|| missing_member("userId"))?,
+            expiry_time_in_minutes: expiry_time_in_minutes
+                .ok_or_else(|| missing_member("expiryTimeInMinutes"))?,
+            created_at: created_at.ok_or_else(|| missing_member("createdAt"))?,
+            updated_at: updated_at.ok_or_else(|| missing_member("updatedAt"))?,
+        })
     }
 }

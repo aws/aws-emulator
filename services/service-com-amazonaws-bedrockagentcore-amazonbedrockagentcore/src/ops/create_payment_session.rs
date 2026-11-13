@@ -1,15 +1,9 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op CreatePaymentSession
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `CreatePaymentSession`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
-//!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`CreatePaymentSession::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! Opens a payment session under a payment manager: the call mints the
+//! `paymentSessionId`, records the window and the spending limits it asked for, and every
+//! later read of the plane reports what was stored here.
 //!
 //! ## Shape of an operation
 //!
@@ -139,6 +133,15 @@ impl From<CreatePaymentSessionErrorModeled> for CreatePaymentSessionError {
     }
 }
 
+/// The modelled server error for an engine that does not carry this service's state, which
+/// is the only way the store can be out of reach: the handler writes nothing in that case.
+fn missing_state() -> CreatePaymentSessionError {
+    CreatePaymentSessionErrorModeled::InternalServerException(InternalServerException {
+        message: Some("the shared engine does not carry this service's state".to_string()),
+    })
+    .into()
+}
+
 /// The `CreatePaymentSession` operation.
 ///
 /// Owns the shared engine (the constructor seam) and implements
@@ -175,18 +178,64 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `CreatePaymentSession` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(CreatePaymentSessionErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("CreatePaymentSession"))
+        // Every member this operation needs is bound into `input` by the centralized
+        // request walk, the two `@httpHeader` members included.
+        let _ = ctx;
+        // A payment manager is created through the CONTROL plane, so whether the account
+        // holds the one this request names is resolved against the component that owns it,
+        // BEFORE anything is written: a session under a manager the account does not hold
+        // would be a session nothing owns. The resolution and the sentence both live in
+        // `crate::state`; this operation only says which of its own modelled errors carries
+        // each.
+        crate::state::payment_manager_resolved(&*self.engine, &input.payment_manager_arn).map_err(
+            |denial| match denial {
+                Some(message) => CreatePaymentSessionErrorModeled::AccessDeniedException(
+                    AccessDeniedException {
+                        message: Some(message.to_string()),
+                    },
+                )
+                .into(),
+                None => missing_state(),
+            },
+        )?;
+        let state = crate::state::service_state(&*self.engine).ok_or_else(missing_state)?;
+
+        let mut store = state.lock();
+
+        // `clientToken` is an `@idempotencyToken` whose documented effect is that a token
+        // matching an earlier request is ignored rather than refused: answer with the
+        // session that token already opened under this manager, so no second session is
+        // opened.
+        if let Some(token) = input.client_token.as_deref() {
+            if let Some(opened) =
+                store.payment_session_for_token(&input.payment_manager_arn, token)
+            {
+                return Ok(CreatePaymentSessionOutput {
+                    payment_session: opened.session(),
+                });
+            }
+        }
+
+        let seq = store.next_seq();
+        let record = crate::state::PaymentSessionRecord::created(
+            seq,
+            input.payment_manager_arn.clone(),
+            // `PaymentSession$userId` is `@required` while the request's own `userId` is
+            // optional, and `UserId` admits the empty value: a session opened without a
+            // user is associated with none rather than with one this emulator invented.
+            input.user_id.clone().unwrap_or_default(),
+            input.agent_name.clone(),
+            input.limits.clone(),
+            input.expiry_time_in_minutes,
+            ::std::time::SystemTime::now(),
+        );
+        // Built from what is about to be stored, so the response and the store cannot
+        // disagree.
+        let output = CreatePaymentSessionOutput {
+            payment_session: record.session(),
+        };
+        store.insert_payment_session(record, input.client_token);
+
+        Ok(output)
     }
 }

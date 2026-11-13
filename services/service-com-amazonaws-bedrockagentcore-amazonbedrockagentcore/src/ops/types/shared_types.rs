@@ -789,7 +789,10 @@ pub struct Amount {
     pub currency: String,
 }
 
-#[smithy_macros::smithy(shape = "com.amazonaws.bedrockagentcore#PaymentSession")]
+/// Declared WITHOUT `#[smithy_macros::smithy(shape = ...)]`: its `createdAt` and
+/// `updatedAt` target `DateTimestamp` (`@timestampFormat("date-time")`), which the derive
+/// drops, so this shape's schema and serializer are hand-written in
+/// [`super::date_time_wire`].
 #[derive(Debug, Clone)]
 pub struct PaymentSession {
     pub payment_session_id: String,
@@ -802,7 +805,8 @@ pub struct PaymentSession {
     pub updated_at: ::aws_smithy_types::DateTime,
 }
 
-#[smithy_macros::smithy(shape = "com.amazonaws.bedrockagentcore#AvailableLimits")]
+/// Declared WITHOUT the derive for the same reason as [`PaymentSession`]: its `updatedAt`
+/// targets `DateTimestamp`, so [`super::date_time_wire`] carries its schema and serializer.
 #[derive(Debug, Clone, Default)]
 pub struct AvailableLimits {
     pub available_spend_amount: Option<Amount>,

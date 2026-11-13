@@ -83,6 +83,13 @@
 //! The AgentCore A/B TESTING plane is a concern of its own, so it lives in
 //! [`ab_tests`]: the tests `CreateABTest` minted, what `ListABTests` reports from them,
 //! and the bound that plane grows under ([`MAX_AB_TESTS`]).
+//!
+//! The AgentCore PAYMENTS plane is a concern of its own too, in [`payment_sessions`]: the
+//! payment sessions `CreatePaymentSession` opened under a payment manager, what the reads
+//! of the plane report from them, and the bound it grows under ([`MAX_PAYMENT_SESSIONS`]).
+//! A payment manager itself belongs to the CONTROL plane, so this plane resolves one
+//! against that plane's own store ([`payment_manager_resolved`]) rather than its own
+//! records, exactly as the browser plane resolves a browser.
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::time::{Duration, SystemTime};
@@ -104,6 +111,11 @@ pub use browser::*;
 /// work a memory container holds, derived from the messages its events carry.
 mod extraction_jobs;
 pub use extraction_jobs::*;
+
+/// The payments plane: [`PaymentSessionRecord`], the payment sessions
+/// `CreatePaymentSession` opens under a payment manager and every later read of one reports.
+mod payment_sessions;
+pub use payment_sessions::*;
 
 use crate::ops::types::{
     Branch, Certificate, Event, ExtractionConfig, IngestPayloadType, MemoryContent, MemoryRecord,
@@ -358,6 +370,14 @@ pub struct ComAmazonawsBedrockagentcoreAmazonbedrockagentcoreState {
     /// started, so a replayed token answers with that job instead of starting a second
     /// one. Bounded by [`MAX_BATCH_EVALUATION_IDEMPOTENCY_RECORDS`].
     pub batch_evaluation_idempotency: BTreeMap<String, String>,
+    /// The payment sessions `CreatePaymentSession` opened, keyed by the
+    /// `paymentSessionId` this emulator minted for each one. Bounded by
+    /// [`MAX_PAYMENT_SESSIONS`]; see [`payment_sessions`].
+    pub payment_sessions: BTreeMap<String, PaymentSessionRecord>,
+    /// The `paymentSessionId` each `CreatePaymentSession` `clientToken` already opened, so
+    /// a replayed token answers with that session instead of opening a second one. Bounded
+    /// by [`MAX_PAYMENT_SESSION_IDEMPOTENCY_RECORDS`].
+    pub payment_session_idempotency: BTreeMap<String, String>,
 }
 
 impl ComAmazonawsBedrockagentcoreAmazonbedrockagentcoreState {
@@ -1888,6 +1908,8 @@ pub enum NotFoundResource {
     Browser,
     /// A batch evaluation job, addressed by `batchEvaluationId`.
     BatchEvaluation,
+    /// A payment session a payment manager owns, addressed by `paymentSessionId`.
+    PaymentSession,
 }
 
 impl NotFoundResource {
@@ -1902,6 +1924,7 @@ impl NotFoundResource {
             Self::CustomEvaluator => "Custom evaluator",
             Self::Browser => "Browser",
             Self::BatchEvaluation => "Batch Evaluation",
+            Self::PaymentSession => "Payment session",
         }
     }
 

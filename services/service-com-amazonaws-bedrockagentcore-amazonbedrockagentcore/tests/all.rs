@@ -45,6 +45,8 @@ mod memory_records;
 mod on_demand_evaluation;
 #[path = "all/parent_existence_preconditions.rs"]
 mod parent_existence_preconditions;
+#[path = "all/payment_sessions.rs"]
+mod payment_sessions;
 #[path = "all/resource_not_found_messages.rs"]
 mod resource_not_found_messages;
 #[path = "all/service_claim.rs"]

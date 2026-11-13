@@ -1,15 +1,8 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op ListPaymentSessions
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `ListPaymentSessions`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
-//!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`ListPaymentSessions::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! Reports the payment sessions a payment manager owns, newest first, one page at a
+//! time. A reporting operation: it writes nothing.
 //!
 //! ## Shape of an operation
 //!
@@ -90,6 +83,18 @@
 #[allow(unused_imports)]
 use super::types::*;
 
+/// The list this operation's `nextToken` belongs to, so a token minted by another
+/// paginated operation does not silently resume this one.
+const PAGE_KIND: &str = "payment-sessions";
+
+/// The page size a request that names no `maxResults` takes, and the most sessions one page
+/// carries.
+///
+/// `maxResults` targets a plain `Integer` here with no modelled range (source: smithy_query
+/// query="operation" operation="ListPaymentSessions"), so this ceiling is the EMULATOR's
+/// own: it bounds the work and the response size of one call, whatever a caller asks for.
+const MAX_PAGE_RESULTS: i32 = 100;
+
 // `#[operation_error]` below expands to an invocation of the LOCAL declarative
 // `smithy!` macro, which this line is what emits into the module. Without it the
 // expansion fails with `cannot find macro 'smithy' in this scope` and the
@@ -123,6 +128,15 @@ impl From<ListPaymentSessionsErrorModeled> for ListPaymentSessionsError {
     fn from(modeled: ListPaymentSessionsErrorModeled) -> Self {
         crate::scaffolded::Scaffolded::Modeled(modeled)
     }
+}
+
+/// The modelled server error for an engine that does not carry this service's state, which
+/// is the only way the store can be out of reach.
+fn missing_state() -> ListPaymentSessionsError {
+    ListPaymentSessionsErrorModeled::InternalServerException(InternalServerException {
+        message: Some("the shared engine does not carry this service's state".to_string()),
+    })
+    .into()
 }
 
 /// The `ListPaymentSessions` operation.
@@ -161,18 +175,58 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `ListPaymentSessions` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(ListPaymentSessionsErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("ListPaymentSessions"))
+        // Every member this operation needs is bound into `input` by the centralized
+        // request walk, the two `@httpHeader` members included.
+        let _ = ctx;
+        // The payment manager is resolved against the plane that OWNS it before anything
+        // is listed, so a request naming a manager the account does not hold is denied
+        // rather than served an empty page. The resolution and the sentence both live in
+        // `crate::state`; this operation only says which of its own modelled errors carries
+        // each.
+        crate::state::payment_manager_resolved(&*self.engine, &input.payment_manager_arn).map_err(
+            |denial| match denial {
+                Some(message) => ListPaymentSessionsErrorModeled::AccessDeniedException(
+                    AccessDeniedException {
+                        message: Some(message.to_string()),
+                    },
+                )
+                .into(),
+                None => missing_state(),
+            },
+        )?;
+        let state = crate::state::service_state(&*self.engine).ok_or_else(missing_state)?;
+
+        let offset = match input.next_token.as_deref() {
+            None => 0,
+            Some(token) => crate::state::decode_next_token(PAGE_KIND, token).ok_or_else(|| {
+                ListPaymentSessionsErrorModeled::ValidationException(ValidationException {
+                    message: "nextToken is not a token this operation issued".to_string(),
+                    reason: "CannotParse".to_string(),
+                    field_list: None,
+                })
+            })?,
+        };
+        let max_results = input
+            .max_results
+            .unwrap_or(MAX_PAGE_RESULTS)
+            .clamp(1, MAX_PAGE_RESULTS) as usize;
+
+        let store = state.lock();
+        let sessions = store
+            .payment_sessions_newest_first(&input.payment_manager_arn, input.user_id.as_deref());
+        // Rendered page-first: only the summaries of this page are built, however many
+        // sessions the manager owns.
+        let (payment_sessions, next_token) = crate::state::paginate_with(
+            &sessions,
+            PAGE_KIND,
+            offset,
+            max_results,
+            |session| session.summary(),
+        );
+
+        Ok(ListPaymentSessionsOutput {
+            payment_sessions,
+            next_token,
+        })
     }
 }
