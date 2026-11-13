@@ -744,6 +744,10 @@ impl Served {
 /// function is invoked over ([`super::lambda_target`]). The store's guard is released before
 /// that invocation, so one client's handler cannot stall another client's request.
 ///
+/// A load balancer whose own attribute collection has it drop invalid header fields removes
+/// them from the request here, before its listener's rules or its targets see any of it
+/// ([`super::invalid_header_fields`]).
+///
 /// A listener that HANDS THE CONNECTION ON — a `forward` to an `alb` target group — is
 /// served by going round again on the load balancer it was handed to: the same request,
 /// decided by that load balancer's own web ACL and answered by its own listener, which is
@@ -782,7 +786,7 @@ pub async fn serve<Eng: Send + Sync + 'static>(
         // A load balancer the clock still owes its move out of `provisioning` is not serving
         // traffic on the name it published yet. Read, never written: this plane moves no
         // status.
-        let published_name = {
+        let (published_name, drops_invalid_header_fields) = {
             let store = state.lock();
             let Some(record) = store.load_balancers.get(&load_balancer_arn) else {
                 return rendered(&Served::status(PROVISIONING_STATUS));
@@ -794,11 +798,21 @@ pub async fn serve<Eng: Send + Sync + 'static>(
                 return rendered(&Served::status(PROVISIONING_STATUS));
             };
             listener_arn = listener.arn.clone();
-            record.dns_name.clone()
+            (
+                record.dns_name.clone(),
+                super::invalid_header_fields::drops_invalid_header_fields(record),
+            )
         };
         // The host the CLIENT addressed, for a request this plane did not receive from the
         // client directly ([`DataPlaneRequest::addressed_the_published_name`]).
         request.addressed_the_published_name(&published_name);
+        // What this load balancer's own attribute collection has it REMOVE from the request
+        // before anything behind it sees it ([`super::invalid_header_fields`]): the headers
+        // whose names are no valid header field. Each load balancer in a chain reads its
+        // own attribute, because the removal is the load balancer's.
+        if drops_invalid_header_fields {
+            super::invalid_header_fields::dropped(&mut request.headers);
+        }
 
         // The web ACL `AssociateWebACL` bound to this load balancer, which decides the
         // request BEFORE the listener's own action — the load balancer's ARN is the one the

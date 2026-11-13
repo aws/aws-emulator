@@ -65,7 +65,8 @@
 //! [`override_operation`](Service::override_operation) hands back the plane that answers it
 //! out of that load balancer's listener configuration; [`data_plane`] is what resolves and
 //! serves it, and [`lambda_target`] is the half of it that INVOKES a `lambda` target group's
-//! function. A
+//! function, while [`invalid_header_fields`] is the header fields that plane REMOVES from a
+//! request before anything behind the load balancer sees them. A
 //! request that plane serves is decided first by the WAFv2 web ACL `AssociateWebACL` put
 //! in front of the load balancer ([`web_acl`]), which is what refuses it at the edge.
 //!
@@ -91,6 +92,8 @@ pub mod shared_endpoint;
 pub mod data_plane;
 
 pub mod lambda_target;
+
+pub mod invalid_header_fields;
 
 pub mod target_group_selection;
 
