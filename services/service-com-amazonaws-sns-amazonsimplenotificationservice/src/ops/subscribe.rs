@@ -258,15 +258,55 @@ fn endpoint_matches_protocol(protocol: &str, endpoint: &str) -> bool {
     }
 }
 
-/// The sentence SNS refuses an `Endpoint` that is not in the form the requested
-/// `Protocol` requires with.
+/// The sentence SNS refuses an `Endpoint` it READ as the kind of reference the requested
+/// `Protocol` takes and did not accept with.
 ///
 /// `Invalid parameter:` plus the input MEMBER whose value was not accepted, and nothing
-/// else: the sentence is the same whichever protocol was asked for and whatever the
-/// value was, so neither the protocol, nor the form its endpoint takes, nor any part of
-/// the request is in it. One sentence for one condition is what lets a client tell this
-/// refusal from the other conditions SNS groups under `InvalidParameter` on `Subscribe`.
+/// else: neither the protocol, nor the form its endpoint takes, nor any part of the value
+/// the caller sent is in it. This is the sentence for a value whose FORM SNS could make
+/// sense of — an ARN, for the protocols whose endpoint is one — and for a request that
+/// carries no endpoint at all, which is a member with no value rather than a reference
+/// SNS could not read.
 const INVALID_ENDPOINT_REFUSAL: &str = "Invalid parameter: Endpoint";
+
+/// The endpoint FORM SNS names for a protocol whose endpoint is the ARN of the AWS
+/// service the protocol string itself names, as the refusal states it: the service,
+/// spelled as AWS spells its own name, followed by ` endpoint ARN`.
+///
+/// This is the sentence for a value SNS could not read as an ARN at all — a bare resource
+/// name, a partial `<account>:<type>:<name>` reference, a console or queue URL, anything
+/// without an ARN's six `arn:`-led fields: there is no member value to report back on, so
+/// the refusal states the form the protocol requires instead. A value that IS an ARN —
+/// of another service, or of the same service naming another kind of resource — is one
+/// SNS read and did not accept, and takes [`INVALID_ENDPOINT_REFUSAL`].
+///
+/// `application` is absent on purpose: its endpoint is this service's OWN platform
+/// endpoint ARN rather than another service's, so the protocol names no service to state,
+/// and every value it refuses keeps the member-named sentence.
+const ARN_ENDPOINT_FORMS: &[(&str, &str)] = &[
+    ("sqs", "SQS endpoint ARN"),
+    ("lambda", "Lambda endpoint ARN"),
+    ("firehose", "Firehose endpoint ARN"),
+];
+
+/// The message `Subscribe` refuses `endpoint` for `protocol` with: the FORM
+/// [`ARN_ENDPOINT_FORMS`] gives the protocol when the value is not an ARN at all, and
+/// [`INVALID_ENDPOINT_REFUSAL`] otherwise.
+///
+/// The ARN-shape question is the shared [`state::arn_shape_reason`], so a value one call
+/// of this service reads as an ARN is not one another reads as something else.
+fn endpoint_refusal(protocol: &str, endpoint: Option<&str>) -> String {
+    let required_form = ARN_ENDPOINT_FORMS
+        .iter()
+        .find(|(named, _)| *named == protocol)
+        .map(|(_, form)| *form);
+    match (required_form, endpoint) {
+        (Some(form), Some(value)) if state::arn_shape_reason(value).is_some() => {
+            format!("Invalid parameter: {form}")
+        }
+        _ => INVALID_ENDPOINT_REFUSAL.to_string(),
+    }
+}
 
 /// The refusal for a subscription record whose attribute map would cross the
 /// per-record byte ceiling, or `None` when it fits.
@@ -423,13 +463,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> Subscribe<Eng> {
         if !valid_endpoint {
             return Err(SubscribeErrorModeled::InvalidParameterException(
                 InvalidParameterException {
-                    // SNS names the INPUT MEMBER whose value it did not accept, and
-                    // nothing else: not the protocol, not the form that protocol's
-                    // endpoint takes, and no part of the value the caller sent. Recorded
-                    // evidence: an `sqs` subscription of a value that is not a queue ARN
-                    // and a `lambda` subscription of one that is not a function ARN are
-                    // both answered `400 InvalidParameter` with exactly this sentence.
-                    message: Some(INVALID_ENDPOINT_REFUSAL.to_string()),
+                    // Which sentence depends on what SNS could make of the VALUE, not on
+                    // which protocol was asked for: a value it could not read as the
+                    // reference the protocol takes is answered with the FORM required,
+                    // and one it read and did not accept with the input member's name.
+                    message: Some(endpoint_refusal(&protocol, input.endpoint.as_deref())),
                 },
             )
             .into());

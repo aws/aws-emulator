@@ -172,6 +172,9 @@ mod sqs_subscription_delivery;
 #[path = "all/state_roundtrip.rs"]
 mod state_roundtrip;
 
+#[path = "all/subscribe_endpoint_form_refusals.rs"]
+mod subscribe_endpoint_form_refusals;
+
 #[path = "all/subscription_attributes.rs"]
 mod subscription_attributes;
 

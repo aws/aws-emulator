@@ -628,6 +628,11 @@ async fn an_absent_required_member_is_refused_by_the_layer_that_judges_it() {
 
 /// The endpoint forms each protocol takes, from the `SubscribeInput$Endpoint` doc, with a
 /// value that is NOT in that form: `(protocol, a good endpoint, a bad one)`.
+///
+/// Each bad value is one SNS can still READ as the kind of reference its protocol takes —
+/// an ARN, for the protocols whose endpoint is one — so every row is refused by the
+/// member-named sentence. A value SNS cannot read as an ARN at all is the other half of
+/// the rule, and lives with it in `subscribe_endpoint_form_refusals`.
 const ENDPOINTS: &[(&str, &str, &str)] = &[
     ("http", "http://example.test/hook", "ftp://example.test/hook"),
     ("https", "https://example.test/hook", "http://example.test/hook"),
@@ -656,10 +661,10 @@ const ENDPOINTS: &[(&str, &str, &str)] = &[
     ),
 ];
 
-/// An `Endpoint` that is not in the form the requested `Protocol` requires is refused
-/// with the sentence naming the input MEMBER and nothing else — not the protocol, not the
-/// form it wanted, and no part of the value — whatever protocol was asked for; the
-/// endpoint each protocol does take is subscribed.
+/// An `Endpoint` SNS reads as the kind of reference the requested `Protocol` takes and
+/// does not accept is refused with the sentence naming the input MEMBER and nothing else —
+/// not the protocol, not the form it wanted, and no part of the value — whatever protocol
+/// was asked for; the endpoint each protocol does take is subscribed.
 #[tokio::test]
 async fn a_subscribe_endpoint_that_does_not_match_its_protocol_names_the_member() {
     let sns = Sns::new();
