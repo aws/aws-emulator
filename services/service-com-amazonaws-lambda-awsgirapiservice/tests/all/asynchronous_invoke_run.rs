@@ -31,6 +31,20 @@
 //! `Timeout` a handler is given above all — is far above what the work takes. So how fast the
 //! host runs decides nothing a row asserts: a slow host is waited for, and only a delivery
 //! nothing is working on fails a row.
+//!
+//! Waiting is not enough on its own, because one of those bounds is NOT this suite's to wait
+//! out: a delivery attempt is given up on once the run it started has been in flight for
+//! longer than the attempt waits for it, and the capacity handlers run in — the run memory of
+//! this process and the host it runs on — belongs to the whole test binary while this target
+//! runs its suites in PARALLEL. A sibling suite that deliberately fills that capacity (one
+//! that drives a burst of simultaneous callers, say) therefore starves the runs of any suite
+//! running handlers beside it, and an attempt whose run was starved records a function this
+//! emulator found no capacity for rather than what the handler did — a failure decided by how
+//! loaded the host is. So every test here drives its deliveries inside the ONE invocation
+//! stream the suites that run handlers share ([`one_invocation_stream_at_a_time`]): this
+//! suite's deliveries then cost the rest of the target one stream of runs instead of all of
+//! it, and no run of its own is starved by a suite that holds that capacity. It bounds
+//! nothing a row asserts — each test drives exactly the same requests either way.
 
 use std::io::Write as _;
 use std::sync::Arc;
@@ -53,6 +67,9 @@ use smithy_server_runtime::MultiServiceRouter;
 // sleep of its own: it looks at `GetFunctionConfiguration` until the state the clock owes is
 // the one reported.
 use crate::event_source_poll_authorization::wait_until_active;
+// The one stream of invocations the suites of this target that RUN handlers share; see the
+// module documentation above.
+use crate::invoke_request_id::one_invocation_stream_at_a_time;
 
 /// Where `CreateFunction` is bound.
 const FUNCTIONS_URI: &str = "/2015-03-31/functions";
@@ -566,8 +583,13 @@ fn delivery_cases() -> Vec<Delivery> {
 /// An accepted asynchronous invocation is answered with the queueing receipt and then
 /// DELIVERED: the handler runs with the event the call carried, and the attempt's own
 /// outcome lands on the entry the call queued.
+///
+/// Every row of the table runs a handler, so the whole table is one stream of invocations for
+/// the reason the module documentation gives: the capacity those runs claim is the whole
+/// process's and this target runs its suites in parallel.
 #[tokio::test]
 async fn an_accepted_asynchronous_invocation_runs_the_function_with_its_event() {
+    let _stream = one_invocation_stream_at_a_time().await;
     let engine = Arc::new(engine::InMemoryEngine::new());
     let router = router_on(&engine);
     create_function(
@@ -641,8 +663,13 @@ async fn an_accepted_asynchronous_invocation_runs_the_function_with_its_event() 
 ///
 /// One row per condition a run cannot start on that a caller can create: a runtime this
 /// emulator embeds no engine for, and a package that is not a readable archive.
+///
+/// Driven inside the shared invocation stream for the reason the module documentation gives:
+/// an attempt that waits for capacity a sibling suite holds is one whose entry records that
+/// capacity rather than the condition the row is about.
 #[tokio::test]
 async fn an_event_whose_function_cannot_run_records_why_rather_than_a_result() {
+    let _stream = one_invocation_stream_at_a_time().await;
     let cases: &[(&str, &str, Vec<u8>, &str)] = &[
         (
             "a runtime with no engine",
@@ -714,8 +741,11 @@ async fn an_event_whose_function_cannot_run_records_why_rather_than_a_result() {
 
 /// Every delivery is of ONE accepted event: two acceptances are two runs, and a `Value`
 /// recorded for one is never recorded for the other.
+///
+/// Driven inside the shared invocation stream, for the reason the module documentation gives.
 #[tokio::test]
 async fn each_accepted_event_is_delivered_once_and_on_its_own() {
+    let _stream = one_invocation_stream_at_a_time().await;
     let engine = Arc::new(engine::InMemoryEngine::new());
     let router = router_on(&engine);
     create_function(
@@ -783,8 +813,11 @@ async fn each_accepted_event_is_delivered_once_and_on_its_own() {
 /// through the state the handler leaves rather than through the accepting call. This row
 /// drives that end to end over the one effect a contained run can have on this emulator: the
 /// run's own answer, which the entry keeps.
+///
+/// Driven inside the shared invocation stream, for the reason the module documentation gives.
 #[tokio::test]
 async fn the_accepting_call_reports_nothing_about_the_run_it_queued() {
+    let _stream = one_invocation_stream_at_a_time().await;
     let engine = Arc::new(engine::InMemoryEngine::new());
     let router = router_on(&engine);
     create_function(
