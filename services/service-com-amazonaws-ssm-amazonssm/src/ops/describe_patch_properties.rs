@@ -1,15 +1,13 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op DescribePatchProperties
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `DescribePatchProperties`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`DescribePatchProperties::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! Reports the values the patch metadata Patch Manager publishes for the operating system
+//! a request names carries for the patch property it names
+//! ([`crate::state::patch_properties`]), each value once, in ascending order and paged by
+//! the value a page stopped on, and refuses a property that operating system does not
+//! publish. A read: the store is only read, so two reads of one property report the same
+//! values.
 //!
 //! ## Shape of an operation
 //!
@@ -107,10 +105,21 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-ssm-amazonssm.json");
 // here — hence the `DescribePatchPropertiesError` alias below. An operation that models no errors
 // generates an UNINHABITED enum here, which is correct and expected: there is nothing
 // to construct until the model says otherwise.
-#[smithy_macros::operation_error("com.amazonaws.ssm#DescribePatchProperties")]
+//
+// `ValidationException` is widened in through `extra_errors`: this SERVICE models it
+// ("The request isn't valid. Verify that you entered valid contents for the command and
+// try again") though this operation shape does not list it, and it is what a property the
+// named operating system has no notion of is refused with — through the modelled shape
+// rather than the scaffold's synthetic one, so the refusal carries the members the model
+// gives it.
+#[smithy_macros::operation_error(
+    "com.amazonaws.ssm#DescribePatchProperties",
+    extra_errors = ["ValidationException"]
+)]
 #[derive(Debug)]
 pub enum DescribePatchPropertiesErrorModeled {
     InternalServerError(InternalServerError),
+    ValidationException(ValidationException),
 }
 
 /// This operation's error channel, as the generated `impl Operation` names it
@@ -162,20 +171,88 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
     async fn handle(
         &self,
         input: Self::Input,
-        ctx: &smithy_server_runtime::OperationContext<'_>,
+        _ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `DescribePatchProperties` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(DescribePatchPropertiesErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("DescribePatchProperties"))
+        use crate::state::patch_properties::{page_size, unsupported_property_rejection};
+        use crate::state::INVALID_NEXT_TOKEN;
+
+        let Some(state) = crate::state::service_state(&*self.engine) else {
+            return Err(
+                DescribePatchPropertiesErrorModeled::InternalServerError(InternalServerError {
+                    message: Some(
+                        "this service is mounted on an engine that holds no state".to_string(),
+                    ),
+                })
+                .into(),
+            );
+        };
+
+        let page_size = page_size(input.max_results).map_err(|why| {
+            DescribePatchPropertiesErrorModeled::ValidationException(ValidationException {
+                message: Some(why),
+                reason_code: None,
+            })
+        })?;
+
+        // `OperatingSystem`, `Property` and `PatchSet` are modelled enums, so a value
+        // outside their sets is refused by the boundary walk before this handler runs.
+        // Which properties an operating system has at all is not modelled, though: the
+        // operation's doc lists them per operating system, and a property outside that
+        // operating system's list names nothing its patches carry.
+        if let Some(why) =
+            unsupported_property_rejection(&input.operating_system, &input.property)
+        {
+            return Err(DescribePatchPropertiesErrorModeled::ValidationException(
+                ValidationException {
+                    message: Some(why),
+                    reason_code: None,
+                },
+            )
+            .into());
+        }
+
+        // The patch set is Windows's: it is "not applicable for the Linux or macOS
+        // operating systems", so for every other operating system it selects nothing and
+        // the store ignores it.
+        let values = state.lock().patch_property_values(
+            &input.operating_system,
+            &input.property,
+            input.patch_set.as_deref(),
+        );
+
+        // The token is the value the next page starts at, so a value this catalogue does
+        // not publish for the property asked about was not issued here.
+        let resume_at = match input.next_token.as_deref() {
+            None | Some("") => 0,
+            Some(token) => values
+                .iter()
+                .position(|value| value.name == token)
+                .ok_or_else(|| {
+                    DescribePatchPropertiesErrorModeled::ValidationException(ValidationException {
+                        message: Some(INVALID_NEXT_TOKEN.to_string()),
+                        reason_code: None,
+                    })
+                })?,
+        };
+
+        let mut properties = Vec::new();
+        let mut next_token = None;
+        for value in values.into_iter().skip(resume_at) {
+            if properties.len() == page_size {
+                // The page is full and a value is still waiting: hand the caller the
+                // value it resumes at, so the next request continues where this stopped.
+                next_token = Some(value.name);
+                break;
+            }
+            // A value is reported as the map of attributes the catalogue holds for it:
+            // the value itself, and the product family a product of an operating system
+            // that publishes families belongs to.
+            properties.push(value.to_entry());
+        }
+
+        Ok(DescribePatchPropertiesOutput {
+            properties: Some(properties),
+            next_token,
+        })
     }
 }

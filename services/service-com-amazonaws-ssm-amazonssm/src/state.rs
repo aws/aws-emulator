@@ -106,6 +106,13 @@
 //! ([`patch_baselines::PREDEFINED_BASELINES`]), which is the default until a register says
 //! otherwise — so every operating system has a default and the read invents none.
 //!
+//! Beside the baselines is the **patch metadata Patch Manager publishes**
+//! ([`patch_properties`]): the products, product families, classifications and severities
+//! the patches available for an operating system carry, which exist in every account and
+//! Region without anybody creating them and which `DescribePatchProperties` reports
+//! ([`ComAmazonawsSsmAmazonssmState::patch_property_values`]) — so what that read answers
+//! is a projection of the one catalogue, the same for every caller.
+//!
 //! Then the **resource data sync configurations** ([`resource_data_syncs`]), keyed by
 //! `(region, sync name)`: `CreateResourceDataSync` persists one,
 //! `ListResourceDataSync` reports what a Region holds, `UpdateResourceDataSync`
@@ -215,6 +222,11 @@ pub mod ops_item_related_items;
 /// The patch baselines Patch Manager holds, the ones Systems Manager predefines, and
 /// which of them is the default for an operating system.
 pub mod patch_baselines;
+
+/// The patch metadata Patch Manager publishes for an operating system — the products,
+/// product families, classifications and severities its available patches carry — which
+/// `DescribePatchProperties` reports.
+pub mod patch_properties;
 
 /// The resource data sync configurations this service holds: the record a create
 /// persists, the configuration rules it is held to, and how a listing, an update and a
