@@ -171,6 +171,8 @@ mod refusal_selection;
 mod resource_tagging;
 #[path = "all/state_roundtrip.rs"]
 mod state_roundtrip;
+#[path = "all/subscription_not_found_uniformity.rs"]
+mod subscription_not_found_uniformity;
 #[path = "all/tag_contract.rs"]
 mod tag_contract;
 #[path = "all/tag_map_constraint_message.rs"]
