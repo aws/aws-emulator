@@ -87,6 +87,10 @@ service-com-amazonaws-ebs-ebs = { workspace = true }
 # either fact.
 service-com-amazonaws-iam-awsidentitymanagementv20100508 = { workspace = true }
 service-com-amazonaws-sts-awssecuritytokenservicev20110615 = { workspace = true }
+# A certificate is ACM's resource: `CreateClientVpnEndpoint` resolves the server and client
+# root certificates it is given against that service's own `DescribeCertificate`, over the
+# emulator's in-process callback, rather than keeping a second copy of them.
+aws-sdk-acm = { version = "1", default-features = false, features = ["rt-tokio", "behavior-version-latest"] }
 
 [build-dependencies]
 emulator-core-build-support = { workspace = true }
@@ -108,6 +112,10 @@ roxmltree = "0.20"
 # Decoder used only by the tests, to prove the console screenshot really decodes
 # as a JPEG of the screen geometry the handler reports.
 zune-jpeg = "0.4"
+# The ACM service, so the Client VPN tests can create the certificate an endpoint presents
+# through the service that OWNS certificates, and read the refusal for one it does not hold.
+# TEST-ONLY — `src/` reaches that service over the in-process callback instead.
+service-com-amazonaws-acm-certificatemanager = { workspace = true }
 
 [lints]
 workspace = true

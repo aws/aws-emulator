@@ -1598,6 +1598,11 @@ pub struct ComAmazonawsEc2Amazonec2State {
     /// ensure the idempotency of the request"
     /// (`AssociateClientVpnTargetNetworkRequest$ClientToken`).
     pub client_vpn_target_network_client_tokens: HashMap<String, String>,
+    /// A `CreateClientVpnEndpoint` `ClientToken` and the `ClientVpnEndpointId` that request
+    /// minted, so a repeat of the same request answers with that endpoint instead of creating
+    /// a second one — "Unique, case-sensitive identifier that you provide to ensure the
+    /// idempotency of the request" (`CreateClientVpnEndpointRequest$ClientToken`).
+    pub client_vpn_endpoint_client_tokens: HashMap<String, String>,
     /// The IAM roles each ACM certificate is associated with for ACM for Nitro Enclaves, by
     /// the certificate's ARN, as [`EnclaveCertificateRecord`]s: the roles themselves beside
     /// the two facts of the certificate's uploaded bundle that every report of an association
@@ -3421,6 +3426,7 @@ impl Default for ComAmazonawsEc2Amazonec2State {
             client_vpn_connections: BTreeMap::new(),
             client_vpn_route_client_tokens: HashMap::new(),
             client_vpn_target_network_client_tokens: HashMap::new(),
+            client_vpn_endpoint_client_tokens: HashMap::new(),
             // A fresh account has associated no IAM role with an ACM certificate, so no
             // certificate bundle has been uploaded for an enclave either.
             enclave_certificate_iam_roles: BTreeMap::new(),

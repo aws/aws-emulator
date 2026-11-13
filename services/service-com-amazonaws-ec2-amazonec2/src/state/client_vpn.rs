@@ -171,6 +171,129 @@ pub fn require_known_client_vpn_endpoint<E>(
     require_client_vpn_endpoint::<E>(store, id).map(|_| ())
 }
 
+// ---------------------------------------------------------------------------
+// What CREATING a Client VPN endpoint is held to
+// ---------------------------------------------------------------------------
+
+/// The `ResourceType` a Client VPN endpoint is tagged under
+/// (`smithy_query(query="shape",shape="ResourceType")` lists `client-vpn-endpoint`), which is
+/// the only type a `TagSpecification` of this resource's own create may name.
+pub const RESOURCE_TYPE_CLIENT_VPN_ENDPOINT: &str = "client-vpn-endpoint";
+
+/// The prefix lengths a Client VPN endpoint's client CIDR range may carry: "Client CIDR range
+/// must have a size of at least /22 and must not be greater than /12"
+/// (`CreateClientVpnEndpointRequest$ClientCidrBlock`). A size of "at least /22" is a prefix no
+/// LONGER than 22 (the range's end), and "not greater than /12" is a prefix no SHORTER than 12
+/// (its start), so the published sentence is this one range.
+pub const CLIENT_VPN_CLIENT_CIDR_PREFIX_LENGTHS: ::std::ops::RangeInclusive<u32> = 12..=22;
+
+/// "openvpn" — the one `VpnProtocol` the model declares
+/// (`smithy_query(query="shape",shape="VpnProtocol")`), which is what every Client VPN
+/// endpoint reports as `ClientVpnEndpoint$VpnProtocol`.
+pub const CLIENT_VPN_PROTOCOL_OPENVPN: &str = "openvpn";
+
+/// The transport protocol an endpoint created without one speaks: "Default value: udp"
+/// (`CreateClientVpnEndpointRequest$TransportProtocol`).
+pub const CLIENT_VPN_DEFAULT_TRANSPORT_PROTOCOL: &str = "udp";
+
+/// The ports a Client VPN endpoint may be reached on: "Valid Values: 443 | 1194"
+/// (`CreateClientVpnEndpointRequest$VpnPort`).
+pub const CLIENT_VPN_PORTS: [i32; 2] = [443, 1194];
+
+/// The port an endpoint created without one listens on: "Default Value: 443"
+/// (`CreateClientVpnEndpointRequest$VpnPort`).
+pub const CLIENT_VPN_DEFAULT_PORT: i32 = 443;
+
+/// The session durations a Client VPN endpoint may be given: "Valid values: 8 | 10 | 12 | 24"
+/// (`CreateClientVpnEndpointRequest$SessionTimeoutHours`).
+pub const CLIENT_VPN_SESSION_TIMEOUT_HOURS: [i32; 4] = [8, 10, 12, 24];
+
+/// The session duration an endpoint created without one runs on: "Default value: 24"
+/// (`CreateClientVpnEndpointRequest$SessionTimeoutHours`).
+pub const CLIENT_VPN_DEFAULT_SESSION_TIMEOUT_HOURS: i32 = 24;
+
+/// How many DNS servers one endpoint may be given: "A Client VPN endpoint can have up to two
+/// DNS servers" (`CreateClientVpnEndpointRequest$DnsServers`).
+pub const MAX_CLIENT_VPN_DNS_SERVERS: usize = 2;
+
+/// The IP address type an endpoint created without one carries: "ipv4 (default)"
+/// (`CreateClientVpnEndpointRequest$EndpointIpAddressType` and `$TrafficIpAddressType`, which
+/// publish the same default).
+pub const CLIENT_VPN_DEFAULT_IP_ADDRESS_TYPE: &str = "ipv4";
+
+/// The `ClientVpnAuthenticationType` whose option names a client root certificate chain
+/// (`smithy_query(query="shape",shape="ClientVpnAuthenticationType")`).
+pub const CLIENT_VPN_AUTHENTICATION_CERTIFICATE: &str = "certificate-authentication";
+
+/// The `ClientVpnAuthenticationType` whose option names an Active Directory.
+pub const CLIENT_VPN_AUTHENTICATION_DIRECTORY_SERVICE: &str = "directory-service-authentication";
+
+/// The `ClientVpnAuthenticationType` whose option names a SAML identity provider.
+pub const CLIENT_VPN_AUTHENTICATION_FEDERATED: &str = "federated-authentication";
+
+/// "applied" — the `ClientVpnEndpointAttributeStatusCode` an attribute this store has already
+/// written carries (`smithy_query(query="shape",shape="ClientVpnEndpointAttributeStatusCode")`
+/// declares `applying | applied`). The configuration is in force the moment the call that
+/// carried it returns: nothing here propagates an attribute to anywhere else, so there is no
+/// `applying` phase to report for one.
+pub const CLIENT_VPN_ATTRIBUTE_STATUS_APPLIED: &str = "applied";
+
+/// Refuse a client CIDR range of a size Client VPN does not serve: HTTP 400
+/// `InvalidParameterValue`, in the sentence `ClientCidrBlock` documents its rule with —
+/// "Client CIDR range must have a size of at least /22 and must not be greater than /12" —
+/// with the two prefix lengths taken from [`CLIENT_VPN_CLIENT_CIDR_PREFIX_LENGTHS`] rather
+/// than written into the sentence twice.
+///
+/// A bare sentence carrying no part of the request, as the refusals of this surface read
+/// ([`client_vpn_certificate_not_found`] is the one a recorded response pins): what was wrong
+/// with the value is the SIZE the rule names, which the sentence states.
+pub fn client_vpn_client_cidr_size_refusal<E>() -> Scaffolded<E> {
+    // The SMALLEST range the rule admits is the one with the LONGEST prefix (the range's end),
+    // and the largest is the one with the shortest (its start).
+    invalid_parameter_value(format!(
+        "Client CIDR range must have a size of at least /{longest_prefix} and must not be \
+         greater than /{shortest_prefix}",
+        longest_prefix = CLIENT_VPN_CLIENT_CIDR_PREFIX_LENGTHS.end(),
+        shortest_prefix = CLIENT_VPN_CLIENT_CIDR_PREFIX_LENGTHS.start(),
+    ))
+}
+
+/// Refuse a certificate ARN the account holds no ACM certificate for: HTTP 400
+/// `InvalidParameterValue`, in the wording this surface answers.
+///
+/// The message names no part of the request, for the reason
+/// [`invalid_certificate_arn_malformed`] gives for its own: what was wrong with the value is
+/// that it names no certificate at all, whatever it says.
+pub fn client_vpn_certificate_not_found<E>() -> Scaffolded<E> {
+    invalid_parameter_value("Certificate not found")
+}
+
+/// Refuse a request that carried none of a parameter this surface requires: HTTP 400
+/// `MissingParameter`, naming the member in the sentence EC2 answers for one of this
+/// operation's `@required` members that a request left out — `The request must include the
+/// <Member> parameter. Add the required parameter and retry the request.`
+///
+/// The member is named as the MODEL spells it, which is how the sentence a recorded refusal of
+/// this operation pins names it, and the sentence carries nothing else of the request: what was
+/// wrong is that the parameter was not there.
+pub fn missing_required_parameter<E>(member: &str) -> Scaffolded<E> {
+    missing_parameter(format!(
+        "The request must include the {member} parameter. Add the required parameter and retry \
+         the request."
+    ))
+}
+
+/// The DNS name clients reach the Client VPN endpoint `endpoint_id` at, in `region`.
+///
+/// "The DNS name to be used by clients when establishing their VPN session"
+/// (`CreateClientVpnEndpointResult$DnsName`): one name per endpoint, derived from the endpoint's
+/// own id and the Region it was created in — the form the AWS Client VPN documentation's own
+/// names take (`cvpn-endpoint-0123456789abcdef0.prod.clientvpn.us-east-2.amazonaws.com`) — so
+/// the create and every later describe of one endpoint report the same name.
+pub fn client_vpn_endpoint_dns_name(endpoint_id: &str, region: &str) -> String {
+    format!("{endpoint_id}.prod.clientvpn.{region}.amazonaws.com")
+}
+
 /// One target network association: the modelled [`crate::ops::types::TargetNetwork`] every
 /// operation that reports one answers with, plus the move the clock owes it.
 ///
@@ -289,8 +412,7 @@ impl ComAmazonawsEc2Amazonec2State {
     /// Store a Client VPN endpoint and answer the `ClientVpnEndpointId` it was given — or
     /// `None` when one of the store's bounds would be crossed and NOTHING was stored.
     ///
-    /// The seam `CreateClientVpnEndpoint` is to call — still a scaffold, so today only the
-    /// crate's tests seed through it; it is not dead code.
+    /// The seam `CreateClientVpnEndpoint` calls.
     ///
     /// The id is minted here rather than taken from `view`, exactly as
     /// [`Self::insert_ipam_internet_registry_association`] mints an association's, so no

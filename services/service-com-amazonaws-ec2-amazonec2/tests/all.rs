@@ -15,6 +15,12 @@
 // exactly that. The lines above are the file header, which no landing edits.
 #[path = "all/prefix_lists.rs"]
 mod prefix_lists;
+// What `CreateClientVpnEndpoint` persists — the endpoint it stores from the request's members,
+// the certificates it resolves against Certificate Manager, and what it refuses. Declared
+// beside `prefix_lists` for the reason the note above gives: the sorted neighbourhood and the
+// tail of this file are where every new ec2 suite inserts its lines.
+#[path = "all/create_client_vpn_endpoint.rs"]
+mod create_client_vpn_endpoint;
 // The WORDING of EC2's duplicate-resource and unreadable-id refusals: the fixed sentence of
 // each error class, with only the variable parts EC2 interpolates. Declared beside
 // `prefix_lists` for the reason the note above gives: the sorted neighbourhood and the tail

@@ -95,12 +95,14 @@ pub fn invalid_role_arn_malformed<E>() -> Scaffolded<E> {
 /// [`CERTIFICATE_ARN_CHARS`]. The ACCOUNT is not held to this emulator's own, for the reason
 /// [`iam_role_arn_is_well_formed`] gives: the certificate is the caller's.
 ///
-/// The ONE reading of a `CertificateArn` member in this crate, so every operation of the
-/// enclave certificate surface accepts exactly the same set of values. It is deliberately
-/// narrower than ACM's `Arn` pattern in two ways that pattern leaves open and a real
-/// certificate ARN never uses: the Region segment may not be empty, and the resource id is
-/// one segment, so `…:certificate/<a>/<b>` is not one of these either.
-pub fn enclave_certificate_arn_is_well_formed(arn: &str) -> bool {
+/// The ONE reading of a `CertificateArn` member in this crate, so every operation that takes a
+/// certificate ARN accepts exactly the same set of values — the enclave certificate surface
+/// whose refusals are declared beside it, and [`super::acm_certificates`], which resolves one
+/// against the service that holds it. It is deliberately narrower than ACM's `Arn` pattern in
+/// two ways that pattern leaves open and a real certificate ARN never uses: the Region segment
+/// may not be empty, and the resource id is one segment, so `…:certificate/<a>/<b>` is not one
+/// of these either.
+pub fn acm_certificate_arn_is_well_formed(arn: &str) -> bool {
     if !CERTIFICATE_ARN_CHARS.contains(&arn.chars().count()) {
         return false;
     }
@@ -141,7 +143,7 @@ pub fn enclave_certificate_arn_is_well_formed(arn: &str) -> bool {
 /// certificate, so it is answered the same refusal as any other value that is not a
 /// certificate ARN.
 pub fn require_enclave_certificate_arn<E>(requested: &str) -> Result<&str, Scaffolded<E>> {
-    if enclave_certificate_arn_is_well_formed(requested) {
+    if acm_certificate_arn_is_well_formed(requested) {
         Ok(requested)
     } else {
         Err(invalid_certificate_arn_malformed())

@@ -1,15 +1,13 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op CreateClientVpnEndpoint
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `CreateClientVpnEndpoint`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
+//! IMPLEMENTED: creates ONE Client VPN endpoint of the account from the client CIDR range,
+//! the certificates and the options the request names — resolving every certificate ARN it
+//! carries against the certificates ACM holds for the account — and answers it
+//! `pending-associate`, the state an endpoint with no target network sits in until
+//! `AssociateClientVpnTargetNetwork` gives it one.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`CreateClientVpnEndpoint::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! This is the ONLY file to touch for this operation.
 //!
 //! ## Shape of an operation
 //!
@@ -214,18 +212,749 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `CreateClientVpnEndpoint` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(CreateClientVpnEndpointErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
+        use crate::scaffolded::Scaffolded;
+        use crate::state;
+
+        // The Region the request was signed for: the endpoint's DNS name names it, and the
+        // credential scope is the only thing a request says about the Region it is asking in.
+        let region = state::request_region(ctx.parts());
+
+        // "Checks whether you have the required permissions for the action, without actually
+        // making the request, and provides an error response. If you have the required
+        // permissions, the error response is DryRunOperation"
+        // (`CreateClientVpnEndpointRequest$DryRun`). That is a PERMISSION check and nothing
+        // else: every caller of this emulator is permitted, so a dry run reports that outcome
+        // FIRST and neither reads nor writes anything — not the certificates the request names
+        // and not the members it carries. Answered here for the reason `CreateClientVpnRoute`
+        // answers its own here: it is what the real service answers a dry run of a Client VPN
+        // call with for a request whose other members it never got to.
+        if input.dry_run.unwrap_or(false) {
+            return Err(Scaffolded::dry_run_operation());
+        }
+
+        // "The tags to apply to the Client VPN endpoint during creation"
+        // (`CreateClientVpnEndpointRequest$TagSpecifications`) — the shared reader refuses a
+        // specification naming any other resource type and holds the payload to the
+        // documented bounds.
+        let tags: Vec<Tag> = state::tags_from_specifications(
+            input.tag_specifications.as_deref(),
+            state::RESOURCE_TYPE_CLIENT_VPN_ENDPOINT,
+            Self::NAME,
+        )?;
+
+        // "Unique, case-sensitive identifier that you provide to ensure the idempotency of the
+        // request" (`CreateClientVpnEndpointRequest$ClientToken`). The model puts no `@length`
+        // on it and the index keeps it for the process's lifetime, so the bound this crate
+        // holds every client token to is enforced here.
+        if input
+            .client_token
+            .as_ref()
+            .is_some_and(|token| token.chars().count() > state::MAX_CLIENT_TOKEN_CHARS)
+        {
+            return Err(state::invalid_parameter_value(format!(
+                "clientToken accepts at most {max} characters",
+                max = state::MAX_CLIENT_TOKEN_CHARS,
+            )));
+        }
+
+        // ---------------------------------------------------------------
+        // The parameters the request had to carry
+        // ---------------------------------------------------------------
+        // `AuthenticationOptions`, `ConnectionLogOptions` and `ServerCertificateArn` are
+        // modelled `@required` AND `@clientOptional`, so a request that leaves one out reaches
+        // this handler rather than being refused at the boundary. A parameter the request did
+        // not carry AT ALL is reported as the parameter it left out, before anything else: the
+        // caller has to add it, which is a different fix from correcting one it did send.
+        if input.authentication_options.is_empty() {
+            return Err(state::missing_required_parameter("AuthenticationOptions"));
+        }
+        // "The IPv4 address range, in CIDR notation, from which to assign client IP addresses"
+        // (`CreateClientVpnEndpointRequest$ClientCidrBlock`): the endpoint hands every
+        // connecting client an address out of this range, so there is no endpoint without one.
+        let Some(requested_cidr) = input
+            .client_cidr_block
+            .as_deref()
+            .filter(|block| !block.is_empty())
+        else {
+            return Err(state::missing_parameter(
+                "The request must contain the parameter clientCidrBlock",
+            ));
+        };
+        // "The name of the CloudWatch Logs log group. Required if connection logging is
+        // enabled" (`ConnectionLogOptions$CloudwatchLogGroup`): logging with nowhere to log to
+        // is refused rather than stored as a destination nothing names.
+        let connection_log_enabled = input.connection_log_options.enabled.unwrap_or(false);
+        let connection_log_group = input
+            .connection_log_options
+            .cloudwatch_log_group
+            .as_deref()
+            .filter(|group| !group.is_empty());
+        if connection_log_enabled && connection_log_group.is_none() {
+            return Err(state::missing_parameter(
+                "The request must contain the parameter connectionLogOptions.cloudwatchLogGroup",
+            ));
+        }
+
+        // "Information about the authentication method to be used to authenticate clients"
+        // (`CreateClientVpnEndpointRequest$AuthenticationOptions`): each option names the one
+        // thing its own kind authenticates against — a client root certificate chain, an
+        // Active Directory, or a SAML provider — so an option that names none of them is
+        // reported as the parameter it left out. The `ClientVpnAuthenticationType` enum itself
+        // is refused at the boundary, so only a request that names no type at all reaches the
+        // first arm.
         //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("CreateClientVpnEndpoint"))
+        // An endpoint presents ONE client certificate chain, joins ONE directory and trusts ONE
+        // SAML provider, so a second option of a kind the request already named is refused
+        // rather than stored beside the first. That also bounds the list: the model puts no
+        // `@length` on it (`smithy_query(query="shape",shape="ClientVpnAuthenticationRequestList")`),
+        // and with one option per kind a request can ask this handler for at most as many
+        // certificates as there are kinds.
+        let mut authentication_options: Vec<ClientVpnAuthentication> =
+            Vec::with_capacity(input.authentication_options.len());
+        let mut client_root_certificate_arns: Vec<String> = Vec::new();
+        let mut kinds_named: ::std::collections::BTreeSet<&str> =
+            ::std::collections::BTreeSet::new();
+        for option in &input.authentication_options {
+            let named = |value: Option<&String>| {
+                value
+                    .map(String::as_str)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string)
+            };
+            let Some(kind) = option.r#type.as_deref().filter(|kind| !kind.is_empty()) else {
+                return Err(state::missing_parameter(
+                    "The request must contain the parameter authenticationOptions.type",
+                ));
+            };
+            if !kinds_named.insert(kind) {
+                return Err(state::invalid_parameter_value(format!(
+                    "A Client VPN endpoint can have only one authenticationOptions entry of type \
+                     {kind}"
+                )));
+            }
+            match kind {
+                state::CLIENT_VPN_AUTHENTICATION_CERTIFICATE => {
+                    let Some(chain_arn) = named(
+                        option
+                            .mutual_authentication
+                            .as_ref()
+                            .and_then(|mutual| mutual.client_root_certificate_chain_arn.as_ref()),
+                    ) else {
+                        return Err(state::missing_parameter(
+                            "The request must contain the parameter authenticationOptions.\
+                             mutualAuthentication.clientRootCertificateChainArn",
+                        ));
+                    };
+                    client_root_certificate_arns.push(chain_arn.clone());
+                    authentication_options.push(ClientVpnAuthentication {
+                        r#type: Some(kind.to_string()),
+                        mutual_authentication: Some(CertificateAuthentication {
+                            client_root_certificate_chain: Some(chain_arn),
+                        }),
+                        ..Default::default()
+                    });
+                }
+                state::CLIENT_VPN_AUTHENTICATION_DIRECTORY_SERVICE => {
+                    let Some(directory_id) = named(
+                        option
+                            .active_directory
+                            .as_ref()
+                            .and_then(|directory| directory.directory_id.as_ref()),
+                    ) else {
+                        return Err(state::missing_parameter(
+                            "The request must contain the parameter authenticationOptions.\
+                             activeDirectory.directoryId",
+                        ));
+                    };
+                    authentication_options.push(ClientVpnAuthentication {
+                        r#type: Some(kind.to_string()),
+                        active_directory: Some(DirectoryServiceAuthentication {
+                            directory_id: Some(directory_id),
+                        }),
+                        ..Default::default()
+                    });
+                }
+                state::CLIENT_VPN_AUTHENTICATION_FEDERATED => {
+                    let federated = option.federated_authentication.as_ref();
+                    let Some(saml_provider_arn) =
+                        named(federated.and_then(|federated| federated.saml_provider_arn.as_ref()))
+                    else {
+                        return Err(state::missing_parameter(
+                            "The request must contain the parameter authenticationOptions.\
+                             federatedAuthentication.samlProviderArn",
+                        ));
+                    };
+                    authentication_options.push(ClientVpnAuthentication {
+                        r#type: Some(kind.to_string()),
+                        federated_authentication: Some(FederatedAuthentication {
+                            saml_provider_arn: Some(saml_provider_arn),
+                            self_service_saml_provider_arn: named(federated.and_then(
+                                |federated| federated.self_service_saml_provider_arn.as_ref(),
+                            )),
+                        }),
+                        ..Default::default()
+                    });
+                }
+                other => {
+                    return Err(state::invalid_parameter_value(format!(
+                        "Value ({other}) for parameter authenticationOptions.type is invalid"
+                    )))
+                }
+            }
+        }
+
+        // ---------------------------------------------------------------
+        // The values those parameters carry
+        // ---------------------------------------------------------------
+        // The client range has to be an IPv4 CIDR block that names its own range — a value
+        // that is not a block at all, and one whose host bits are set so that it names an
+        // ADDRESS INSIDE a range instead of the range, are both refused — and it is stored in
+        // the canonical spelling of that range, so one range reads one way however the request
+        // spelled it. The same reading `CreateClientVpnRoute` gives its own destination.
+        let client_cidr_block = state::canonical_ipv4_cidr(requested_cidr)
+            .ok()
+            .filter(|_| state::cidr_block_names_its_range(requested_cidr))
+            .ok_or_else(|| {
+                state::invalid_parameter_value(format!(
+                    "Value ({requested_cidr}) for parameter clientCidrBlock is invalid. This is \
+                     not a valid CIDR block."
+                ))
+            })?;
+        // "Client CIDR range must have a size of at least /22 and must not be greater than
+        // /12" (`CreateClientVpnEndpointRequest$ClientCidrBlock`), which is the one range
+        // [`crate::state::CLIENT_VPN_CLIENT_CIDR_PREFIX_LENGTHS`] holds.
+        let prefix_length = state::cidr_block_prefix_length(&client_cidr_block).unwrap_or_default();
+        if !state::CLIENT_VPN_CLIENT_CIDR_PREFIX_LENGTHS.contains(&prefix_length) {
+            return Err(state::client_vpn_client_cidr_size_refusal());
+        }
+
+        // "A Client VPN endpoint can have up to two DNS servers. If no DNS server is
+        // specified, the DNS address configured on the device is used"
+        // (`CreateClientVpnEndpointRequest$DnsServers`) — so an endpoint given none reports
+        // none, and each address given has to be an address.
+        let dns_servers: Vec<String> = input
+            .dns_servers
+            .iter()
+            .flatten()
+            .filter(|server| !server.is_empty())
+            .cloned()
+            .collect();
+        if dns_servers.len() > state::MAX_CLIENT_VPN_DNS_SERVERS {
+            return Err(state::invalid_parameter_value(format!(
+                "A Client VPN endpoint can have up to {max} DNS servers",
+                max = state::MAX_CLIENT_VPN_DNS_SERVERS,
+            )));
+        }
+        if let Some(server) = dns_servers
+            .iter()
+            .find(|server| server.parse::<::std::net::IpAddr>().is_err())
+        {
+            return Err(state::invalid_parameter_value(format!(
+                "Value ({server}) for parameter dnsServers is invalid. This is not a valid IP \
+                 address."
+            )));
+        }
+
+        // "The port number to assign to the Client VPN endpoint for TCP and UDP traffic. Valid
+        // Values: 443 | 1194 Default Value: 443" (`CreateClientVpnEndpointRequest$VpnPort`).
+        let vpn_port = input.vpn_port.unwrap_or(state::CLIENT_VPN_DEFAULT_PORT);
+        if !state::CLIENT_VPN_PORTS.contains(&vpn_port) {
+            return Err(state::invalid_parameter_value(format!(
+                "Value ({vpn_port}) for parameter vpnPort is invalid. Valid values are {valid}.",
+                valid = valid_values(&state::CLIENT_VPN_PORTS),
+            )));
+        }
+        // "The maximum VPN session duration time in hours. Valid values: 8 | 10 | 12 | 24
+        // Default value: 24" (`CreateClientVpnEndpointRequest$SessionTimeoutHours`).
+        let session_timeout_hours = input
+            .session_timeout_hours
+            .unwrap_or(state::CLIENT_VPN_DEFAULT_SESSION_TIMEOUT_HOURS);
+        if !state::CLIENT_VPN_SESSION_TIMEOUT_HOURS.contains(&session_timeout_hours) {
+            return Err(state::invalid_parameter_value(format!(
+                "Value ({session_timeout_hours}) for parameter sessionTimeoutHours is invalid. \
+                 Valid values are {valid}.",
+                valid = valid_values(&state::CLIENT_VPN_SESSION_TIMEOUT_HOURS),
+            )));
+        }
+
+        // "You cannot specify both TransitGatewayConfiguration and VpcId/SecurityGroupIds"
+        // (`CreateClientVpnEndpointRequest$TransitGatewayConfiguration`): the endpoint's
+        // traffic leaves through a Transit Gateway attachment or through a VPC, never both.
+        let security_group_ids =
+            state::deduplicate_ids(input.security_group_ids.as_deref().unwrap_or_default());
+        let requested_vpc = input
+            .vpc_id
+            .as_deref()
+            .filter(|vpc_id| !vpc_id.is_empty())
+            .map(str::to_string);
+        let transit_gateway = input.transit_gateway_configuration.as_ref();
+        if transit_gateway.is_some() && (requested_vpc.is_some() || !security_group_ids.is_empty())
+        {
+            return Err(Scaffolded::invalid_parameter_combination(
+                "You cannot specify both TransitGatewayConfiguration and VpcId/SecurityGroupIds",
+            ));
+        }
+        // "The IDs of one or more security groups to apply to the target network. You must also
+        // specify the ID of the VPC that contains the security groups"
+        // (`CreateClientVpnEndpointRequest$SecurityGroupIds`).
+        if requested_vpc.is_none() && !security_group_ids.is_empty() {
+            return Err(Scaffolded::invalid_parameter_combination(
+                "You must specify the ID of the VPC that contains the security groups",
+            ));
+        }
+
+        // ---------------------------------------------------------------
+        // The certificates the endpoint presents
+        // ---------------------------------------------------------------
+        // "The ARN of the server certificate" (`$ServerCertificateArn`) and "the ARN of the
+        // client certificate" (`CertificateAuthenticationRequest$ClientRootCertificateChainArn`)
+        // name certificates ACM holds, so an endpoint is only created to present certificates
+        // the account really has — resolved by ASKING that service
+        // ([`crate::state::acm_certificate_is_absent`]), which is the one record of them. An
+        // EMPTY ARN gets no check of its own: it is a value the account holds no certificate
+        // for, so it is answered exactly as any other such value is.
+        //
+        // Resolved after every value the request carries has been read — those are this
+        // operation's own, and cost no call — and BEFORE this service's own store is locked, so
+        // no lock is held across the call into another service. The server certificate goes
+        // first, because it is the one every endpoint presents.
+        for certificate_arn in
+            ::std::iter::once(&input.server_certificate_arn).chain(&client_root_certificate_arns)
+        {
+            if state::acm_certificate_is_absent(ctx, &region, certificate_arn).await {
+                return Err(state::client_vpn_certificate_not_found());
+            }
+        }
+
+        // "Checks whether you have the required permissions for the action" was answered at
+        // the top of this handler, and the certificates were resolved above, so from here on
+        // the request is one that would write.
+
+        let state_handle = state::require_service_state(&*self.engine)?;
+        let mut store = state_handle.lock();
+        // The clock-owed moves this call is allowed to apply: each was due at its instant
+        // whether or not anybody called, so a VPC that has reached `available` reads as such
+        // here too.
+        store.materialize_due_transitions();
+
+        // "The ID of the VPC to associate with the Client VPN endpoint. If no security group
+        // IDs are specified in the request, the default security group for the VPC is applied"
+        // (`CreateClientVpnEndpointRequest$VpcId`): a VPC of the account, so an id naming none
+        // is refused rather than stored as a dangling reference.
+        let security_group_ids = match requested_vpc.as_deref() {
+            None => Vec::new(),
+            Some(vpc_id) => {
+                if !store.vpcs.contains_key(vpc_id) {
+                    return Err(state::invalid_vpc_id_not_found(vpc_id));
+                }
+                if security_group_ids.is_empty() {
+                    let Some(default_group) = store
+                        .security_group_id_for_name(vpc_id, state::DEFAULT_SECURITY_GROUP_NAME)
+                    else {
+                        return Err(Scaffolded::internal_error(format!(
+                            "the VPC '{vpc_id}' has no {name} security group",
+                            name = state::DEFAULT_SECURITY_GROUP_NAME,
+                        )));
+                    };
+                    vec![default_group]
+                } else {
+                    for group_id in &security_group_ids {
+                        if !state::security_group_id_is_well_formed(group_id) {
+                            return Err(Scaffolded::invalid_id(group_id));
+                        }
+                        let Some(group) = store.security_groups.get(group_id) else {
+                            return Err(state::invalid_group_not_found(group_id));
+                        };
+                        // A group applies to the endpoint's target network, so one of another
+                        // VPC is refused rather than applied to a network it is not in.
+                        if group.vpc_id.as_deref() != Some(vpc_id) {
+                            return Err(state::invalid_parameter_value(format!(
+                                "The security group '{group_id}' and the VPC '{vpc_id}' belong \
+                                 to different networks"
+                            )));
+                        }
+                    }
+                    security_group_ids
+                }
+            }
+        };
+
+        // "Use this parameter to associate the endpoint with a Transit Gateway instead of a
+        // VPC" (`$TransitGatewayConfiguration`): a Transit Gateway of the account, resolved
+        // the one way this crate resolves a `TransitGatewayId`.
+        let transit_gateway_configuration = match transit_gateway {
+            None => None,
+            Some(configuration) => {
+                let transit_gateway_id = configuration
+                    .transit_gateway_id
+                    .as_deref()
+                    .filter(|id| !id.is_empty())
+                    .unwrap_or_default();
+                if !store.transit_gateways.contains_key(transit_gateway_id) {
+                    return Err(state::invalid_transit_gateway_id_not_found(
+                        transit_gateway_id,
+                    ));
+                }
+                Some(TransitGatewayConfigurationDescribeEndpointStructure {
+                    transit_gateway_id: Some(transit_gateway_id.to_string()),
+                    // "The ID of the Transit Gateway attachment"
+                    // (`TransitGatewayConfigurationDescribeEndpointStructure$TransitGatewayAttachmentId`):
+                    // nothing in this emulator creates that attachment yet — every operation
+                    // of the Transit Gateway Client VPN attachment surface is still a scaffold
+                    // — so no id is reported for an attachment nothing holds.
+                    transit_gateway_attachment_id: None,
+                    availability_zones: configuration.availability_zones.clone(),
+                    availability_zone_ids: configuration.availability_zone_ids.clone(),
+                })
+            }
+        };
+
+        // The endpoint as it will be STORED, which is what every later describe reports: every
+        // member a caller chose, read off the values resolved above, and every member this
+        // service owns derived here rather than taken from the request.
+        let endpoint = ClientVpnEndpoint {
+            // Minted by the store at the insert, with the DNS name derived from it.
+            client_vpn_endpoint_id: None,
+            dns_name: None,
+            description: input
+                .description
+                .as_deref()
+                .filter(|description| !description.is_empty())
+                .map(str::to_string),
+            // Written by the insert: an endpoint with no target network is
+            // `pending-associate`.
+            status: None,
+            creation_time: Some(state::iso8601_utc(::std::time::SystemTime::now())),
+            // "The date and time the Client VPN endpoint was deleted"
+            // (`ClientVpnEndpoint$DeletionTime`): nothing has deleted it.
+            deletion_time: None,
+            client_cidr_block: Some(client_cidr_block),
+            dns_servers: (!dns_servers.is_empty()).then_some(dns_servers),
+            // "By default, split-tunnel on a VPN endpoint is disabled"
+            // (`$SplitTunnel`).
+            split_tunnel: Some(input.split_tunnel.unwrap_or(false)),
+            vpn_protocol: Some(state::CLIENT_VPN_PROTOCOL_OPENVPN.to_string()),
+            transport_protocol: Some(
+                input
+                    .transport_protocol
+                    .as_deref()
+                    .filter(|protocol| !protocol.is_empty())
+                    .unwrap_or(state::CLIENT_VPN_DEFAULT_TRANSPORT_PROTOCOL)
+                    .to_string(),
+            ),
+            vpn_port: Some(vpn_port),
+            // "Information about the associated target networks" — a create associates none,
+            // and `DescribeClientVpnTargetNetworks` is what reports the ones an association
+            // adds.
+            associated_target_networks: None,
+            server_certificate_arn: Some(input.server_certificate_arn.clone()),
+            authentication_options: Some(authentication_options),
+            connection_log_options: Some(ConnectionLogResponseOptions {
+                enabled: Some(connection_log_enabled),
+                cloudwatch_log_group: connection_log_group.map(str::to_string),
+                cloudwatch_log_stream: input
+                    .connection_log_options
+                    .cloudwatch_log_stream
+                    .as_deref()
+                    .filter(|stream| !stream.is_empty())
+                    .map(str::to_string),
+                include_authorization_policy_context: input
+                    .connection_log_options
+                    .include_authorization_policy_context,
+            }),
+            tags: Some(tags),
+            security_group_ids: (!security_group_ids.is_empty()).then_some(security_group_ids),
+            vpc_id: requested_vpc,
+            // "The URL of the self-service portal" (`$SelfServicePortalUrl`): nothing in this
+            // emulator serves a self-service portal, so there is no URL to report for one —
+            // whichever way `SelfServicePortal` asked for it.
+            self_service_portal_url: None,
+            client_connect_options: input.client_connect_options.as_ref().map(|options| {
+                ClientConnectResponseOptions {
+                    enabled: Some(options.enabled.unwrap_or(false)),
+                    lambda_function_arn: options
+                        .lambda_function_arn
+                        .as_deref()
+                        .filter(|arn| !arn.is_empty())
+                        .map(str::to_string),
+                    status: Some(ClientVpnEndpointAttributeStatus {
+                        code: Some(state::CLIENT_VPN_ATTRIBUTE_STATUS_APPLIED.to_string()),
+                        message: None,
+                    }),
+                }
+            }),
+            session_timeout_hours: Some(session_timeout_hours),
+            client_login_banner_options: input.client_login_banner_options.as_ref().map(
+                |options| ClientLoginBannerResponseOptions {
+                    enabled: Some(options.enabled.unwrap_or(false)),
+                    banner_text: options
+                        .banner_text
+                        .as_deref()
+                        .filter(|text| !text.is_empty())
+                        .map(str::to_string),
+                },
+            ),
+            client_route_enforcement_options: input.client_route_enforcement_options.as_ref().map(
+                |options| ClientRouteEnforcementResponseOptions {
+                    enforced: Some(options.enforced.unwrap_or(false)),
+                },
+            ),
+            // "The default value is true" (`$DisconnectOnSessionTimeout`).
+            disconnect_on_session_timeout: Some(input.disconnect_on_session_timeout.unwrap_or(true)),
+            endpoint_ip_address_type: Some(
+                input
+                    .endpoint_ip_address_type
+                    .as_deref()
+                    .filter(|kind| !kind.is_empty())
+                    .unwrap_or(state::CLIENT_VPN_DEFAULT_IP_ADDRESS_TYPE)
+                    .to_string(),
+            ),
+            traffic_ip_address_type: Some(
+                input
+                    .traffic_ip_address_type
+                    .as_deref()
+                    .filter(|kind| !kind.is_empty())
+                    .unwrap_or(state::CLIENT_VPN_DEFAULT_IP_ADDRESS_TYPE)
+                    .to_string(),
+            ),
+            transit_gateway_configuration,
+            device_posture_options: input.device_posture_options.as_ref().map(|options| {
+                DevicePostureResponseOptions {
+                    trust_providers: options.trust_providers.as_ref().map(|providers| {
+                        providers
+                            .iter()
+                            .map(|provider| ClientVpnTrustProvider {
+                                trust_provider_type: provider.trust_provider_type.clone(),
+                                tenant_id: provider.tenant_id.clone(),
+                                public_signing_key_url: provider.public_signing_key_url.clone(),
+                            })
+                            .collect()
+                    }),
+                }
+            }),
+        };
+
+        // Idempotency: one token names the one endpoint it created, so a replay of the SAME
+        // request reports that endpoint and creates nothing. Read before the store's ceilings,
+        // which a replay does not have to clear because it stores nothing.
+        if let Some(endpoint_id) = input
+            .client_token
+            .as_deref()
+            .and_then(|token| store.client_vpn_endpoint_client_tokens.get(token).cloned())
+        {
+            let Some(stored) = store.client_vpn_endpoints.get(&endpoint_id) else {
+                return Err(Scaffolded::internal_error(format!(
+                    "a client token names Client VPN endpoint '{endpoint_id}', which is not stored"
+                )));
+            };
+            // A token is only idempotent for the REQUEST it was first given with: replayed
+            // with other members it names an endpoint the caller did not ask for, which EC2
+            // refuses rather than answers. The comparison is against the STORED endpoint,
+            // which carries every member the first create resolved, so no second copy of the
+            // request is kept anywhere.
+            if !same_endpoint_request(stored, &endpoint) {
+                return Err(state::idempotent_parameter_mismatch());
+            }
+            return Ok(CreateClientVpnEndpointOutput {
+                client_vpn_endpoint_id: stored.client_vpn_endpoint_id.clone(),
+                status: stored.status.clone(),
+                dns_name: stored.dns_name.clone(),
+            });
+        }
+
+        // A count ceiling first, then the byte budget: a record count on its own admits
+        // gigabytes, because each record holds strings the caller chose the length of.
+        if !store.has_client_vpn_endpoint_capacity() {
+            return Err(Scaffolded::request_limit_exceeded(format!(
+                "This emulator holds {max} Client VPN endpoints, which is as many as it stores",
+                max = state::MAX_STORED_RECORDS_PER_STORE,
+            )));
+        }
+        let Some(endpoint_id) = store.insert_client_vpn_endpoint(endpoint) else {
+            return Err(Scaffolded::request_limit_exceeded(
+                "This emulator cannot store another Client VPN endpoint",
+            ));
+        };
+        let Some(stored) = store.client_vpn_endpoints.get_mut(&endpoint_id) else {
+            return Err(Scaffolded::internal_error(format!(
+                "the newly created endpoint '{endpoint_id}' could not be read back"
+            )));
+        };
+        // The DNS name is derived from the id the store just minted, so it is written ONTO the
+        // stored endpoint rather than answered to this caller alone: the create and every
+        // later describe report one name for one endpoint.
+        stored.dns_name = Some(state::client_vpn_endpoint_dns_name(&endpoint_id, &region));
+        // Read the response back OUT of the store, so the caller sees what a later
+        // `DescribeClientVpnEndpoints` will see rather than the request object.
+        let output = CreateClientVpnEndpointOutput {
+            client_vpn_endpoint_id: stored.client_vpn_endpoint_id.clone(),
+            status: stored.status.clone(),
+            dns_name: stored.dns_name.clone(),
+        };
+        // The token is recorded with the endpoint it created, so a replay of this request
+        // reports that endpoint instead of creating a second one.
+        if let Some(token) = input.client_token.clone() {
+            store
+                .client_vpn_endpoint_client_tokens
+                .insert(token, endpoint_id);
+        }
+        Ok(output)
     }
+}
+
+/// `values` as the "443 | 1194" list a refusal names a closed value set with.
+fn valid_values(values: &[i32]) -> String {
+    values
+        .iter()
+        .map(i32::to_string)
+        .collect::<Vec<String>>()
+        .join(" | ")
+}
+
+/// Whether the endpoint `stored` is the one `requested` asks for — every member a CALLER
+/// chooses, compared against the endpoint a `ClientToken` already created.
+///
+/// The members this service owns (the id, the status, the DNS name, the creation time and the
+/// VPN protocol) are left out: they are what the store derived for the first request, not what
+/// either request asked for. A list a caller names as a SET (the security groups) is compared
+/// as one, so the same groups in another order are the same request, and the tags are compared
+/// through the crate's shared [`crate::state::same_tags`], which every create of this crate
+/// that honors a `ClientToken` compares its tags through.
+fn same_endpoint_request(stored: &ClientVpnEndpoint, requested: &ClientVpnEndpoint) -> bool {
+    let group_set = |endpoint: &ClientVpnEndpoint| -> ::std::collections::BTreeSet<String> {
+        endpoint
+            .security_group_ids
+            .iter()
+            .flatten()
+            .cloned()
+            .collect()
+    };
+    stored.client_cidr_block == requested.client_cidr_block
+        && stored.server_certificate_arn == requested.server_certificate_arn
+        && stored.description == requested.description
+        && stored.transport_protocol == requested.transport_protocol
+        && stored.vpn_port == requested.vpn_port
+        && stored.split_tunnel == requested.split_tunnel
+        && stored.dns_servers == requested.dns_servers
+        && stored.vpc_id == requested.vpc_id
+        && group_set(stored) == group_set(requested)
+        && stored.session_timeout_hours == requested.session_timeout_hours
+        && stored.disconnect_on_session_timeout == requested.disconnect_on_session_timeout
+        && stored.endpoint_ip_address_type == requested.endpoint_ip_address_type
+        && stored.traffic_ip_address_type == requested.traffic_ip_address_type
+        && authentication_signature(stored) == authentication_signature(requested)
+        && connection_log_signature(stored) == connection_log_signature(requested)
+        && client_connect_signature(stored) == client_connect_signature(requested)
+        && login_banner_signature(stored) == login_banner_signature(requested)
+        && route_enforcement_signature(stored) == route_enforcement_signature(requested)
+        && transit_gateway_signature(stored) == transit_gateway_signature(requested)
+        && device_posture_signature(stored) == device_posture_signature(requested)
+        && crate::state::same_tags(
+            stored.tags.as_deref().unwrap_or_default(),
+            requested.tags.as_deref().unwrap_or_default(),
+        )
+}
+
+/// What the authentication options of `endpoint` authenticate against, in the order they were
+/// given: the kind, and the certificate chain, directory or SAML providers that kind names.
+fn authentication_signature(
+    endpoint: &ClientVpnEndpoint,
+) -> Vec<(String, String, String, String)> {
+    endpoint
+        .authentication_options
+        .iter()
+        .flatten()
+        .map(|option| {
+            let text = |value: Option<&String>| value.cloned().unwrap_or_default();
+            (
+                text(option.r#type.as_ref()),
+                text(
+                    option
+                        .mutual_authentication
+                        .as_ref()
+                        .and_then(|mutual| mutual.client_root_certificate_chain.as_ref()),
+                ),
+                text(
+                    option
+                        .active_directory
+                        .as_ref()
+                        .and_then(|directory| directory.directory_id.as_ref()),
+                ),
+                text(
+                    option
+                        .federated_authentication
+                        .as_ref()
+                        .and_then(|federated| federated.saml_provider_arn.as_ref()),
+                ),
+            )
+        })
+        .collect()
+}
+
+/// The connection logging `endpoint` was configured with.
+fn connection_log_signature(
+    endpoint: &ClientVpnEndpoint,
+) -> (Option<bool>, Option<String>, Option<String>, Option<bool>) {
+    let options = endpoint.connection_log_options.as_ref();
+    (
+        options.and_then(|options| options.enabled),
+        options.and_then(|options| options.cloudwatch_log_group.clone()),
+        options.and_then(|options| options.cloudwatch_log_stream.clone()),
+        options.and_then(|options| options.include_authorization_policy_context),
+    )
+}
+
+/// The connection-authorization handler `endpoint` was configured with.
+fn client_connect_signature(endpoint: &ClientVpnEndpoint) -> (Option<bool>, Option<String>) {
+    let options = endpoint.client_connect_options.as_ref();
+    (
+        options.and_then(|options| options.enabled),
+        options.and_then(|options| options.lambda_function_arn.clone()),
+    )
+}
+
+/// The login banner `endpoint` was configured with.
+fn login_banner_signature(endpoint: &ClientVpnEndpoint) -> (Option<bool>, Option<String>) {
+    let options = endpoint.client_login_banner_options.as_ref();
+    (
+        options.and_then(|options| options.enabled),
+        options.and_then(|options| options.banner_text.clone()),
+    )
+}
+
+/// Whether `endpoint` was created with client route enforcement on.
+fn route_enforcement_signature(endpoint: &ClientVpnEndpoint) -> Option<bool> {
+    endpoint
+        .client_route_enforcement_options
+        .as_ref()
+        .and_then(|options| options.enforced)
+}
+
+/// The Transit Gateway `endpoint` was created against, and the zones it serves there.
+fn transit_gateway_signature(
+    endpoint: &ClientVpnEndpoint,
+) -> (Option<String>, Option<Vec<String>>, Option<Vec<String>>) {
+    let configuration = endpoint.transit_gateway_configuration.as_ref();
+    (
+        configuration.and_then(|configuration| configuration.transit_gateway_id.clone()),
+        configuration.and_then(|configuration| configuration.availability_zones.clone()),
+        configuration.and_then(|configuration| configuration.availability_zone_ids.clone()),
+    )
+}
+
+/// The device trust providers `endpoint` evaluates connecting devices against.
+fn device_posture_signature(endpoint: &ClientVpnEndpoint) -> Vec<(String, String, String)> {
+    endpoint
+        .device_posture_options
+        .iter()
+        .flat_map(|options| options.trust_providers.iter().flatten())
+        .map(|provider| {
+            let text = |value: Option<&String>| value.cloned().unwrap_or_default();
+            (
+                text(provider.trust_provider_type.as_ref()),
+                text(provider.tenant_id.as_ref()),
+                text(provider.public_signing_key_url.as_ref()),
+            )
+        })
+        .collect()
 }
