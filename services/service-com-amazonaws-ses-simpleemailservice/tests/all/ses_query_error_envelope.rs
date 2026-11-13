@@ -189,11 +189,8 @@ async fn every_refusal_names_the_request_it_refuses_in_the_query_error_envelope(
             // A NON-400 refusal: the scaffold signal, so the rule is pinned off the 400
             // class as well.
             case: "an operation this emulator has not implemented yet",
-            action: "TestRenderTemplate",
-            params: vec![
-                field("TemplateName", "envelope-template"),
-                field("TemplateData", "{}"),
-            ],
+            action: "DeleteCustomVerificationEmailTemplate",
+            params: vec![field("TemplateName", "envelope-template")],
             status: 501,
             code: Some("NotImplemented"),
         },

@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op TestRenderTemplate
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `TestRenderTemplate`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`TestRenderTemplate::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! Renders one of this account's email templates over the replacement values the request
+//! carries, and answers with the MIME message that rendering composes: a preview of the
+//! message a send naming the same template and the same replacement values would compose.
+//!
+//! A READ of the account's templates — the preview is computed, nothing is recorded, and a
+//! later caller sees exactly what it saw before. What it answers is the one rendering this
+//! service performs ([`crate::state::template_rendering`]), so a template renders the same
+//! way here as in the send it previews.
 //!
 //! ## Shape of an operation
 //!
@@ -150,18 +150,88 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `TestRenderTemplate` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(TestRenderTemplateErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("TestRenderTemplate"))
+        // `ctx` carries only request metadata; this operation needs none of it.
+        let _ = ctx;
+        let Some(state) = crate::state::service_state(&*self.engine) else {
+            // See `verify_email_identity.rs`: an engine with no store for this
+            // service cannot serve the operation at all, and every error this
+            // operation models is a client error, so none of them fits.
+            return Err(crate::scaffolded::Scaffolded::not_implemented(
+                "TestRenderTemplate",
+            ));
+        };
+
+        // The template the request names, TAKEN out of the store: the rendering below is
+        // driven by the request's own replacement values, so it runs with the store's lock
+        // released rather than holding every other caller behind one caller's template.
+        let stored = state.lock().templates.get(&input.template_name).cloned();
+        let Some(stored) = stored else {
+            // "Indicates that the Template object you specified does not exist in your
+            // Amazon SES account": the rendering reports the lookup IT made over the
+            // account's templates, which is why this sentence names the account as well.
+            return Err(
+                TestRenderTemplateErrorModeled::TemplateDoesNotExistException(
+                    TemplateDoesNotExistException {
+                        template_name: Some(input.template_name.clone()),
+                        message: Some(
+                            crate::state::template_rendering::
+                                missing_rendering_template_message(&input.template_name),
+                        ),
+                    },
+                )
+                .into(),
+            );
+        };
+
+        // "Creates a preview of the MIME content of an email when provided with a template
+        // and a set of replacement data": the preview is the stored template's parts
+        // rendered over the request's replacement values, composed into the one message
+        // those parts make. The rendering is performed off this worker and under its own
+        // budget ([`crate::state::template_rendering::RENDER_TIMEOUT`]), so the serving
+        // runtime answers every other caller while it runs.
+        match crate::state::template_rendering::rendered_template_within_budget(
+            stored.subject_part,
+            stored.text_part,
+            stored.html_part,
+            input.template_data,
+            ::std::time::SystemTime::now(),
+        )
+        .await
+        {
+            Ok(rendered_template) => Ok(TestRenderTemplateOutput {
+                rendered_template: Some(rendered_template),
+            }),
+            // "Indicates that one or more of the replacement values for the specified
+            // template was not specified": the tag the rendering reached and the data holds
+            // no value for is what the refusal names.
+            Err(crate::state::template_rendering::RenderingFailure::MissingAttribute(
+                attribute,
+            )) => Err(
+                TestRenderTemplateErrorModeled::MissingRenderingAttributeException(
+                    MissingRenderingAttributeException {
+                        template_name: Some(input.template_name.clone()),
+                        message: Some(
+                            crate::state::template_rendering::
+                                missing_rendering_attribute_message(attribute.as_deref()),
+                        ),
+                    },
+                )
+                .into(),
+            ),
+            // "Indicates that one or more of the replacement values you provided is
+            // invalid. This error may occur when the TemplateData object contains invalid
+            // JSON."
+            Err(crate::state::template_rendering::RenderingFailure::InvalidRenderingData(
+                reason,
+            )) => Err(
+                TestRenderTemplateErrorModeled::InvalidRenderingParameterException(
+                    InvalidRenderingParameterException {
+                        template_name: Some(input.template_name.clone()),
+                        message: Some(reason),
+                    },
+                )
+                .into(),
+            ),
+        }
     }
 }

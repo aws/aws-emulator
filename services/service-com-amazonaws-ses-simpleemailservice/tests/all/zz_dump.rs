@@ -60,10 +60,6 @@ async fn operations_this_slice_left_unimplemented_still_answer_501() {
             &[("TemplateName", "a-template")],
         ),
         (
-            "TestRenderTemplate",
-            &[("TemplateName", "a-template"), ("TemplateData", "{}")],
-        ),
-        (
             "SendBounce",
             &[
                 ("OriginalMessageId", "0000014fbe1c09cf-id"),

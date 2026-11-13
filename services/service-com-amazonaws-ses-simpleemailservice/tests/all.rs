@@ -129,6 +129,8 @@ mod ses_template_deletion;
 mod ses_template_listing;
 #[path = "all/ses_template_update.rs"]
 mod ses_template_update;
+#[path = "all/ses_test_render_template.rs"]
+mod ses_test_render_template;
 #[path = "all/ses_tracking_options_conflict_refusal.rs"]
 mod ses_tracking_options_conflict_refusal;
 #[path = "all/ses_tracking_options_refusal_message.rs"]

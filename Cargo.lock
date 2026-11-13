@@ -19227,6 +19227,8 @@ dependencies = [
  "aws-smithy-schema 0.2.1",
  "aws-smithy-types",
  "bytes",
+ "chrono",
+ "handlebars",
  "hex",
  "http",
  "ipnet",

@@ -62,6 +62,11 @@ pub mod s3_action_authorization;
 pub mod templates;
 pub use templates::*;
 
+/// How an email template is RENDERED against a request's replacement values, and the MIME
+/// message the rendered parts compose — the ONE rendering every operation of this service
+/// that renders a template performs.
+pub mod template_rendering;
+
 /// What the account's ACTIVE receipt rule set does with a message this account has just
 /// accepted for one of its own recipients — the receiving half of this service.
 pub mod inbound_delivery;
@@ -3174,6 +3179,21 @@ pub fn unverified_from_address_message(from_email_address: &str) -> String {
 /// identically.
 pub fn missing_event_destination_message(configuration_set_name: &str) -> String {
     format!("No EventDestination found for {configuration_set_name}")
+}
+
+/// How this service states a template this account holds none under, for every operation
+/// that resolves one in the account's template store itself — the reads, the replacement and
+/// the sends that name a template.
+///
+/// `TemplateDoesNotExistException` is "Indicates that the Template object you specified does
+/// not exist in your Amazon SES account", and the sentence the service answers for it names
+/// the template the request asked for, bare. One wording, for the same reason as
+/// [`illegal_address_message`]: those operations report the absence identically. The RENDERING
+/// of a template reports its own lookup instead
+/// ([`template_rendering::missing_rendering_template_message`]), which is the lookup that
+/// operation made.
+pub fn missing_template_message(template_name: &str) -> String {
+    format!("Template {template_name} does not exist.")
 }
 
 /// 64 bits of entropy this process did not choose, salting a minted id so it is

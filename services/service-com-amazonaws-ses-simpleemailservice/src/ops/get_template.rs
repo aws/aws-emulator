@@ -150,9 +150,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             return Err(GetTemplateErrorModeled::TemplateDoesNotExistException(
                 TemplateDoesNotExistException {
                     template_name: Some(input.template_name.clone()),
-                    message: Some(format!(
-                        "Template {} does not exist.",
-                        input.template_name
+                    message: Some(crate::state::missing_template_message(
+                        &input.template_name,
                     )),
                 },
             )

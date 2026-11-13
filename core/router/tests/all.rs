@@ -1807,6 +1807,8 @@ mod cloudformation_rest_api_token_authorizer_credentials;
 // see both ends of it.
 #[path = "all/kafka_msk_own_refusals_precede_the_subnet_lookup.rs"]
 mod kafka_msk_own_refusals_precede_the_subnet_lookup;
+// `cloudformation_monitored_alb_search_estate` and `cloudformation_domain_endpoint_outputs`
+// are declared once, in the sorted span above.
 #[path = "all/cloudfront_edge_generated_headers.rs"]
 mod cloudfront_edge_generated_headers;
 // Declared beside those two, in the same quiet span and for the same reason. This one pins
@@ -1837,6 +1839,8 @@ mod elbv2_lambda_target_published_address;
 // can wire it and then read the group back.
 #[path = "all/logs_vended_group_lambda_subscriber_permission.rs"]
 mod logs_vended_group_lambda_subscriber_permission;
+// are declared once, in the span above: two branches each re-added the pair here after both
+// had removed it, which declares each of them twice and compiles nowhere.
 // Declared in the appended tail, which is where every new suite inserts its lines. Both
 // suites exist under tests/all/ and had lost their declaration when two branches removed
 // the same duplicated pair, which compiles them nowhere.

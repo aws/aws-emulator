@@ -16,7 +16,7 @@ emulator-server = { workspace = true }
 emulator-telemetry = { workspace = true }
 aws-smithy-runtime-api = { workspace = true }
 aws-smithy-types = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["time", "sync"] }
 bytes = { workspace = true }
 http = { workspace = true }
 serde_json = { workspace = true }
@@ -33,6 +33,20 @@ ipnet = "2"
 # `SendRawEmail`'s `RawMessage` carries — its header block, the address lists on
 # its From:, To:, Cc: and Bcc: lines, and its textual part.
 mailparse = "0.16"
+# The maintained Handlebars implementation, which RENDERS an email template of this account
+# over the replacement values a request carries (`state::template_rendering`): a template's
+# subject line and body parts are written in that language, so the substitution is performed
+# by a maintained engine rather than by one written here. A library that computes over data:
+# it opens nothing, starts nothing and reaches nothing, and the module that drives it bounds
+# the template it is handed, the repetitions the data can ask for and the bytes it may
+# produce. Already in this workspace's build and lockfile (the alerting templates of the
+# Amazon OpenSearch Service crate render through it), so no new capability class arrives with
+# this declaration.
+handlebars = { version = "6", default-features = false }
+# The UTC calendar rendering of the `Date` header the MIME message a template renders to
+# carries (`state::template_rendering`), from the maintained calendar crate this workspace
+# already formats instants with rather than by laying the RFC 5322 date form out here.
+chrono = { version = "0.4", default-features = false, features = ["std"] }
 # `email_address`: the ONE reading of a caller-supplied email address and domain name,
 # shared with every other service whose model documents a member as one — the form this
 # service documents (`UserName@[SubDomain.]Domain.TopLevelDomain`) is read through it

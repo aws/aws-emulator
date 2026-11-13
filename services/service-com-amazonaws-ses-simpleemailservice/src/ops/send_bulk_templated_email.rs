@@ -408,7 +408,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 SendBulkTemplatedEmailErrorModeled::TemplateDoesNotExistException(
                     TemplateDoesNotExistException {
                         template_name: Some(input.template.clone()),
-                        message: Some(format!("Template {} does not exist.", input.template)),
+                        message: Some(crate::state::missing_template_message(&input.template)),
                     },
                 )
                 .into(),
