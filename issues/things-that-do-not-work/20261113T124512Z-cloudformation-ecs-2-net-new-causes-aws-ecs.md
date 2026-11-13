@@ -1,0 +1,39 @@
+Issue-Severity: HIGH
+Issue-Corpus: simparity-behavioral-aws-v1
+Issue-Corpus-Kind: behavioral
+Issue-Trace-Ids: cloudformation__ecs.cfn-ecs-task-definition-tag-update-in-place-retained-new-revision-then-inactive cloudformation__ecs.deploy-ecs-task-definition-invalid-fargate-cpu-rejected
+Issue-Key: cloudformation__ecs.cfn-ecs-task-definition-tag-update-in-place-retained-new-revision-then-inactive|_expect#19|AssertionError|raise AssertionError(
+Issue-Key: cloudformation__ecs.deploy-ecs-task-definition-invalid-fargate-cpu-rejected|run#14|AssertionError|assert match is not None, f"the task definition failure reason is not an ECS error: {reason!r}"
+Issue-Commit: 6ec43c73f71e6013077e783d53ce3ba5d179d34d
+
+# cloudformation__ecs: 2 net-new causes — AWS::ECS::TaskDefinition property updates answer NotImplemented and roll the stack back, and the Fargate-invalid cpu CREATE_FAILED reason carries neither ECS's message nor its error envelope
+
+> _Note: this issue was identified against the code base at commit `6ec43c73f71e6013077e783d53ce3ba5d179d34d`. If you are an issue fixer working on this, the code base you are currently working in can have drifted, so you might need to trace the issue back to the current code base._
+
+## Operation
+UpdateStack
+
+## Description
+Two distinct root causes in the CloudFormation provider for AWS::ECS::TaskDefinition. Both are net-new: neither failing check is marked ALREADY FILED or OWNED in the replay report.
+
+Cause 1 of 2: updating an AWS::ECS::TaskDefinition resource's properties in a stack is refused as NotImplemented, so UpdateStack ends UPDATE_ROLLBACK_COMPLETE.
+AWS: recorded behavior only for the CFN resource provider; Smithy (ecs) RegisterTaskDefinition takes `family` + `tags` and mints a NEW revision of the family on every call (there is no in-place mutation API, and no error is modelled for 'change an existing revision'). CloudFormation therefore handles a TaskDefinition property change (here the resource's Tags) by registering the next revision, pointing the logical resource at it, leaving the previous revision retained, and the stack reaches StackStatus 'UPDATE_COMPLETE'; the superseded revision is deregistered to INACTIVE when it is no longer referenced.
+Emulator: the stack ends 'UPDATE_ROLLBACK_COMPLETE' with StackStatusReason 'The following resource(s) failed to update: [TaskDef]. ' and a per-resource UPDATE_FAILED event whose reason is the emulator's own text 'NotImplemented: this emulator does not change the properties of an existing AWS::ECS::TaskDefinition in place; the resource was left as it is.' — note 'NotImplemented' and the phrase 'this emulator' are not AWS wording for any resource-status reason; AWS's variable parts of an update-failure reason are the logical resource ids, never a statement about the emulator.
+Why: any stack that revises a task definition — the single most common ECS stack update there is (new image tag, new tags, new cpu/memory) — cannot be updated at all. The client sees a rollback, concludes its template is wrong, and has no path to deploy a new revision through IaC.
+Fix: the CloudFormation resource provider for AWS::ECS::TaskDefinition — its Update handler must register a new revision via ECS RegisterTaskDefinition (replacement semantics with retention of the old revision) instead of returning a NotImplemented stub, and the CFN engine must then report UPDATE_COMPLETE.
+Traces: cloudformation__ecs.cfn-ecs-task-definition-tag-update-in-place-retained-new-revision-then-inactive.
+
+Cause 2 of 2: the CREATE_FAILED ResourceStatusReason for a Fargate-invalid cpu is the emulator's own sentence and carries no AWS service-error envelope.
+AWS: Smithy (ecs) RegisterTaskDefinition models ClientException (HTTP 400) and InvalidParameterException (HTTP 400); a FARGATE-compatible definition whose task-level cpu is not one of Fargate's fixed (cpu, memory) pairs is refused with ClientException/400 and the message 'Invalid request provided: Create TaskDefinition: Invalid \'cpu\' setting for task. For more information, see the Troubleshooting section of the Amazon ECS Developer Guide.' CloudFormation relays that refusal verbatim inside its resource-handler envelope, so the CREATE_FAILED ResourceStatusReason reads '<message> (Service: AmazonECS; Status Code: 400; Error Code: ClientException; Request ID: <id>; Proxy: null)', optionally wrapped as 'Resource handler returned message: "..." (RequestToken: <token>, HandlerErrorCode: InvalidRequest)'. Fixed text: the message above, 'Service: ', 'Status Code: ', 'Error Code: ', 'Request ID: ', 'Proxy: null'. Variable parts: only the request id/token (and the status/code values 400/ClientException, which come from the modelled error).
+Emulator: the stack does roll back, but the CREATE_FAILED reason is 'Resource handler returned message: "No Fargate configuration exists for given values: 100 CPU, 512 memory. See the Amazon ECS documentation for the valid values." (RequestToken: <token>, HandlerErrorCode: InvalidRequest)' — a different message and, critically, no '(Service: ...; Status Code: ...; Error Code: ...; Request ID: ...; Proxy: null)' section at all, so the failure cannot be attributed to a service, a status or an error code.
+Why: tooling and operators parse the service/status/error-code envelope out of ResourceStatusReason to decide whether a rollback was a client error worth re-templating or a throttle/5xx worth retrying. With the envelope missing and the message reworded, every such classifier mis-handles the failure, and log/alert matchers keyed on ECS's documented wording never fire.
+Fix: the CloudFormation resource provider for AWS::ECS::TaskDefinition (its error relay into the stack-event ResourceStatusReason) plus RegisterTaskDefinition's Fargate cpu/memory validation message in the ECS crate, which must produce ECS's wording and error class.
+Traces: cloudformation__ecs.deploy-ecs-task-definition-invalid-fargate-cpu-rejected. Note: the open issue 20261109T144605Z-cloudformation-ecs-5-net-new-causes-ecs-capacity.md lists this check id, but its recorded cause was 'the stack reaches CREATE_COMPLETE instead of ROLLBACK_COMPLETE'; the stack now rolls back and the surviving divergence is the reason text/envelope described here, which that issue does not cover.
+
+## Evidence
+Cause 1: AssertionError: stack ended 'UPDATE_ROLLBACK_COMPLETE' ('The following resource(s) failed to update: [TaskDef]. '), expected 'UPDATE_COMPLETE'; failed events: [('TaskDef', 'UPDATE_FAILED', 'NotImplemented: this emulator does not change the properties of an existing AWS::ECS::TaskDefinition in place; the resource was left as it is.')]
+Cause 2: AssertionError: the task definition failure reason is not an ECS error: 'Resource handler returned message: "No Fargate configuration exists for given values: 100 CPU, 512 memory. See the Amazon ECS documentation for the valid values." (RequestToken: <token>, HandlerErrorCode: InvalidRequest)'. Expected (message, status, code) = ("Invalid request provided: Create TaskDefinition: Invalid 'cpu' setting for task. For more information, see the Troubleshooting section of the Amazon ECS Developer Guide.", '400', 'ClientException') parsed out of the '(Service: ...; Status Code: ...; Error Code: ...; Request ID: ...; Proxy: null)' envelope.
+
+## Steps to Reproduce
+Cause 1: CreateStack with an AWS::ECS::TaskDefinition (Family, one container, RequiresCompatibilities=[FARGATE], Cpu='256', Memory='512', Tags=[{k,v}]); wait CREATE_COMPLETE; UpdateStack with only the resource's Tags changed; poll DescribeStacks and DescribeStackEvents.
+Cause 2: CreateStack with a single AWS::ECS::TaskDefinition declaring RequiresCompatibilities=[FARGATE], NetworkMode=awsvpc, Cpu='100', Memory='512'; after ROLLBACK_COMPLETE read DescribeStackEvents and inspect the CREATE_FAILED event's ResourceStatusReason for the ECS message and the (Service/Status Code/Error Code/Request ID/Proxy) envelope.
