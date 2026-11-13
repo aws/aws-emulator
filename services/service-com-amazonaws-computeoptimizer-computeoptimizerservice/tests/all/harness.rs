@@ -22,12 +22,13 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use aws_smithy_types::DateTime;
 use bytes::Bytes;
 use serde_json::{json, Value};
 use service_com_amazonaws_computeoptimizer_computeoptimizerservice::ops::types::RESOURCE_TYPE_VALUES;
 use service_com_amazonaws_computeoptimizer_computeoptimizerservice::state::{
-    METRIC_STATISTIC_MAXIMUM, RESOURCE_TYPE_AUTO_SCALING_GROUP, SCOPE_ACCOUNT_ID,
-    SCOPE_RESOURCE_ARN,
+    service_state, METRIC_STATISTIC_MAXIMUM, RESOURCE_TYPE_AUTO_SCALING_GROUP, SCOPE_ACCOUNT_ID,
+    SCOPE_RESOURCE_ARN, ANALYSIS_DELAY,
 };
 use service_com_amazonaws_computeoptimizer_computeoptimizerservice::EmulatedService;
 use smithy_server_runtime::MultiServiceRouter;
@@ -535,6 +536,70 @@ pub(crate) async fn opt_in(router: &MultiServiceRouter) {
     )
     .await;
     assert_eq!(status, 200, "opting in: expected 200, got {status}: {body}");
+}
+
+/// Make the analysis the account's enrollment started DUE, without waiting for the clock to
+/// reach the instant it becomes due.
+///
+/// The service derives that instant from the stored enrollment record — `ANALYSIS_DELAY`
+/// after `Enrollment::last_updated_timestamp`, which is what every reader gates its records
+/// on (`Enrollment::analysis_visible`) — so a suite that needs the analysis READABLE moves
+/// the stored instant back a span instead of sleeping for one: the condition is then true
+/// however fast or loaded the host is, and nothing in the suite depends on elapsed time.
+pub(crate) fn make_analysis_due(engine: &Arc<engine::InMemoryEngine>) {
+    let state = service_state(&**engine).expect("the engine bears this service's state");
+    let mut store = state.lock();
+    let written = store
+        .enrollment
+        .last_updated_timestamp
+        .as_ref()
+        .map(DateTime::as_secs_f64)
+        .expect("the account must be opted in before its analysis can be made due");
+    store.enrollment.last_updated_timestamp =
+        Some(DateTime::from_secs_f64(written - ANALYSIS_DELAY.as_secs_f64()));
+}
+
+/// Read the recommendation summaries, asserting the call succeeded. The summary set is
+/// answered whole, so ONE call is the whole set.
+pub(crate) async fn summary_set(
+    router: &MultiServiceRouter,
+    case: &str,
+    request: Value,
+) -> Value {
+    let (status, body) = call(router, "GetRecommendationSummaries", request.clone()).await;
+    assert_eq!(
+        status, 200,
+        "case {case:?}: the summaries for {request} must be served, got {status}: {body}"
+    );
+    body
+}
+
+/// The resource types a summary answer reports, in the order it reports them.
+pub(crate) fn summary_resource_types(case: &str, body: &Value) -> Vec<String> {
+    body["recommendationSummaries"]
+        .as_array()
+        .unwrap_or_else(|| {
+            panic!("case {case:?}: recommendationSummaries must be a list, got {body}")
+        })
+        .iter()
+        .map(|summary| {
+            summary["recommendationResourceType"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string()
+        })
+        .collect()
+}
+
+/// The summary of one resource type in an answer.
+pub(crate) fn summary_of<'a>(case: &str, body: &'a Value, resource_type: &str) -> &'a Value {
+    body["recommendationSummaries"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or_default()
+        .iter()
+        .find(|summary| summary["recommendationResourceType"] == json!(resource_type))
+        .unwrap_or_else(|| panic!("case {case:?}: {resource_type} must be summarised, got {body}"))
 }
 
 /// Write one preference, asserting it was accepted.

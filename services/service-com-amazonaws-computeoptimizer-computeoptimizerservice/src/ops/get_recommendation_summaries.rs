@@ -10,12 +10,31 @@
 //! rightsized resources carry each `Finding` the service reports for that resource type and
 //! why, how many of its resources the analysis found idle at each `IdleFinding`, how many run
 //! each `CurrentPerformanceRisk`, and what adopting the rightsizing recommendations, the idle
-//! ones, and both together would save per month — one page at a time: at most `maxResults`
-//! summaries plus an opaque `nextToken` while summaries remain.
+//! ones, and both together would save per month.
 //!
 //! A summary is a COUNT ROLL-UP, so the summaries an enrolled account reads are that whole
 //! vocabulary and not the part of it the analysis holds a row of: a resource type nothing of
 //! which has been analysed is summarised with counts of zero.
+//!
+//! ## Why this answer is not paged
+//!
+//! `maxResults` bounds no page here, because this answer has none: the summary set is BOUNDED
+//! by the resource-type vocabulary — one row per `RecommendationSourceType` the service
+//! reports on (`crate::state::TRACKED_SOURCE_TYPES`), whatever the account holds of it — and
+//! the whole of it is answered at once, with `nextToken` "null when there are no more pages
+//! of recommendation summaries to return".
+//!
+//! That is RECORDED behaviour, not an inference from the member's documentation: the call this
+//! rule was taken from (corpus fixture `compute-optimizer-recommendation-summaries-and-export-job-listing`,
+//! step `task#3`) names a `maxResults` SMALLER than that vocabulary and is answered with every
+//! row of it and no token — replaying it with the size honoured as a page size diverges on
+//! exactly the rows past that size, and passes once the whole set is answered. Note also that
+//! this crate's own default page (`crate::state::DEFAULT_PAGE_SIZE`) is larger than the
+//! vocabulary, so no default ever split this answer; a reader whose list GROWS with the
+//! account's resources (`GetRecommendationPreferences`, the per-resource readers) is the one
+//! `crate::state::page_size` sizes a page for. The `nextToken` member stays the cursor the
+//! model declares: one naming a group of the vocabulary resumes the answer at that group, and
+//! a value that is not one of this operation's tokens is refused.
 //!
 //! Every number is computed from the stored rows, so a count, a saving and a percentage
 //! can never disagree with each other or with the per-resource findings those same rows
@@ -210,11 +229,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let account_id = crate::state::requested_account_id(input.account_ids.as_deref())
             .map_err(invalid_parameter)?;
 
-        // A `nextToken` this operation did not issue cannot name a page boundary, and
-        // neither can one naming a group this operation does not report — the token names
-        // the group the next page STARTS at, so it is resolved to that group's position in
-        // the reported order ([`crate::state::TRACKED_SOURCE_TYPES`]) rather than compared
-        // against the groups, which only an order-by-name walk could do.
+        // A `nextToken` names the group the next page STARTS at, so it is resolved to that
+        // group's position in the reported order ([`crate::state::TRACKED_SOURCE_TYPES`]) and
+        // the answer resumes there; a token naming no group this operation reports names no
+        // page and is refused, the rule this service's other readers refuse an unknown token
+        // by. This answer is never split (below), so the operation hands no token out —
+        // `nextToken` is "null when there are no more pages ... to return" — but the member
+        // stays the cursor the model declares rather than a value the request may not carry.
         let resume_at = match input.next_token.as_deref() {
             None => 0,
             Some(token) => {
@@ -233,18 +254,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             }
         };
 
-        // `maxResults` is modelled 0..1000 (the boundary refuses anything outside that).
-        // Whatever it asks for, the page is capped at `MAX_PAGE_SIZE` so no number a
-        // request carries can size the response or the allocation that builds it; and a
-        // request naming no size (or naming the range's lower bound `0`, which the service
-        // documents no meaning for) gets `DEFAULT_PAGE_SIZE` plus a `nextToken` to walk
-        // the rest — the same rule `GetRecommendationPreferences` pages by.
-        let page_size = crate::state::page_size(
-            input.max_results,
-            crate::state::DEFAULT_PAGE_SIZE,
-            crate::state::MAX_PAGE_SIZE,
-        );
-
         let guard = state.lock();
         // "The account is not opted in to Compute Optimizer": the service analyses an
         // account's resources only once it has opted in, so an account that never did —
@@ -262,8 +271,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             );
         }
 
-        let mut recommendation_summaries: Vec<RecommendationSummary> = Vec::new();
-        let mut next_token = None;
+        let mut recommendation_summaries: Vec<RecommendationSummary> = Vec::with_capacity(
+            crate::state::TRACKED_SOURCE_TYPES.len().saturating_sub(resume_at),
+        );
         // The databases the account holds an analysis for, by the crate's one rule for it
         // ([`crate::state::analysed_databases`]): a summary of the account's Amazon Aurora and
         // RDS databases counts exactly the databases `GetRDSDatabaseRecommendations` reports
@@ -315,11 +325,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 .get(resource_type)
                 .map(Vec::as_slice)
                 .unwrap_or_default();
-            if recommendation_summaries.len() >= page_size {
-                // The page is full and this resource type is the next page's first.
-                next_token = Some(crate::state::encode_summary_page_token(resource_type));
-                break;
-            }
             recommendation_summaries.push(summarise(
                 resource_type,
                 &account_id,
@@ -329,7 +334,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         }
 
         Ok(GetRecommendationSummariesOutput {
-            next_token,
+            // The whole set is above, so there is no page to advance to: "This value is null
+            // when there are no more pages of recommendation summaries to return."
+            next_token: None,
             recommendation_summaries: Some(recommendation_summaries),
         })
     }
@@ -394,9 +401,6 @@ fn summarise(
     // for it rather than because this account has none.
     let reports_idle = crate::state::reports_idle_recommendations(resource_type);
     RecommendationSummary {
-        // Every tracked resource type has a `Finding` vocabulary, so this is the counts at
-        // it; a resource type the service names none for would carry no counts at all
-        // rather than an empty list of them.
         summaries: (!finding_summaries.is_empty()).then_some(finding_summaries),
         // "Describes the findings summary of the idle resources" — reported for a resource
         // type the idle analysis covers, whether or not it found any of this account's
@@ -406,6 +410,8 @@ fn summarise(
         account_id: Some(account_id.to_string()),
         savings_opportunity: reports_rightsizing
             .then(|| savings_opportunity(rightsizing_savings, current_monthly_cost)),
+        // What dropping the idle resources would save: stated by a group the idle analysis
+        // covers, whether or not it found any of this account's resources of it idle.
         idle_savings_opportunity: reports_idle
             .then(|| savings_opportunity(idle_savings, idle_monthly_cost)),
         // "The savings opportunity for recommendations of a given resource type": every

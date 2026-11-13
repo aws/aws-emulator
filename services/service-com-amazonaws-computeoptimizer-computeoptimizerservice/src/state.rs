@@ -1859,10 +1859,16 @@ pub const SOURCE_TYPE_AURORA_DB_CLUSTER_STORAGE: &str = "AuroraDBClusterStorage"
 /// configuration of its own — the recommendation options, the costs and the performance
 /// risk a database recommendation carries are its INSTANCE's
 /// (`RDSDBRecommendation$instanceFinding`, whose group is
-/// [`SOURCE_TYPE_RDS_DB_INSTANCE`]). See [`reports_rightsizing_recommendations`].
+/// [`SOURCE_TYPE_RDS_DB_INSTANCE`]) — and the commercial software licenses
+/// ([`SOURCE_TYPE_LICENSE`]), whose analysis reads which license EDITION the workload asks
+/// for (`LicenseRecommendation$finding`, a `LicenseFinding`) and records neither a
+/// performance risk nor a saving of its own: `LicenseRecommendation` declares no
+/// `currentPerformanceRisk` and no `savingsOpportunity`, each saving it states belonging to
+/// one `LicenseRecommendationOption`. See [`reports_rightsizing_recommendations`].
 pub const CLASSIFIED_ONLY_SOURCE_TYPES: &[&str] = &[
     SOURCE_TYPE_RDS_DB_INSTANCE_STORAGE,
     SOURCE_TYPE_AURORA_DB_CLUSTER_STORAGE,
+    SOURCE_TYPE_LICENSE,
 ];
 
 /// Every `RecommendationSourceType` this service TRACKS — the whole vocabulary
@@ -1928,15 +1934,17 @@ pub const TRACKED_SOURCE_TYPES: &[&str] = &[
 /// EC2 instance count is reported under `OPTIMIZED` while an EBS volume count is reported
 /// under `Optimized`, each as the surface that produced the finding names it.
 ///
-/// Each vocabulary is narrowed to the values `Summary$name` can carry, the model's `Finding`
-/// enum: a license's documented `InsufficientMetrics` is a `LicenseFinding` value outside
-/// it, so a license whose metrics the analysis could not read is counted at no finding at all
-/// — and is no catalog row either ([`ObservedLicensedInstance::to_analysed_resource`]), so a
-/// count and the rows behind it still agree.
+/// A vocabulary is the resource type's own and not the `Finding` enum `Summary$name` targets,
+/// so it can name a classification that enum does not: a license is counted at the three
+/// `LicenseFinding` values the operation's own documentation names for it
+/// ("Commercial software licenses in an account that are InsufficientMetrics, NotOptimized or
+/// Optimized"), `InsufficientMetrics` included, and the licenses at it are counted from the
+/// catalog rows that carry that finding
+/// ([`ObservedLicensedInstance::to_analysed_resource`]).
 ///
 /// An empty slice for a `RecommendationSourceType` this service does not track
-/// ([`TRACKED_SOURCE_TYPES`]) and for any other string, so a caller reports no counts for
-/// it rather than an invented vocabulary.
+/// ([`TRACKED_SOURCE_TYPES`]) and for any other string — so a caller reports no counts for one
+/// rather than an invented vocabulary.
 pub fn findings_reported_for(resource_type: &str) -> &'static [(&'static str, &'static str)] {
     match resource_type {
         // The `Finding` vocabulary, in the instance surface's own spelling.
@@ -1945,6 +1953,11 @@ pub fn findings_reported_for(resource_type: &str) -> &'static [(&'static str, &'
             (FINDING_OVERPROVISIONED, SUMMARY_FINDING_OVERPROVISIONED),
             (FINDING_OPTIMIZED, SUMMARY_FINDING_OPTIMIZED),
         ],
+        // The `Finding` vocabulary again, for every group the service classifies by whether
+        // the configuration it runs is the one its workload asks for and gives no finding
+        // enum of its own — an Auto Scaling group's capacity, a NAT gateway, a table, the
+        // three kinds of cluster, a desktop and an inference endpoint — counted in the
+        // instance surface's upper-snake spelling.
         SOURCE_TYPE_AUTO_SCALING_GROUP
         | SOURCE_TYPE_NAT_GATEWAY
         | SOURCE_TYPE_DYNAMODB_TABLE
@@ -1967,10 +1980,16 @@ pub fn findings_reported_for(resource_type: &str) -> &'static [(&'static str, &'
             (FINDING_NOT_OPTIMIZED, FINDING_NOT_OPTIMIZED),
             (FINDING_OPTIMIZED, FINDING_OPTIMIZED),
         ],
-        // `LicenseFinding`.
+        // `LicenseFinding`, the whole of it: a license the analysis could not read is
+        // counted at `InsufficientMetrics` rather than at nothing, which is the third
+        // classification the operation documents for a license.
         SOURCE_TYPE_LICENSE => &[
-            (FINDING_NOT_OPTIMIZED, FINDING_NOT_OPTIMIZED),
             (FINDING_OPTIMIZED, FINDING_OPTIMIZED),
+            (FINDING_NOT_OPTIMIZED, FINDING_NOT_OPTIMIZED),
+            (
+                LICENSE_FINDING_INSUFFICIENT_METRICS,
+                LICENSE_FINDING_INSUFFICIENT_METRICS,
+            ),
         ],
         // `RDSInstanceFinding`: a database's own finding vocabulary, which names no
         // `NotOptimized` — that is its STORAGE's classification (`RDSStorageFinding`), and
@@ -3676,12 +3695,12 @@ fn seed_analysed_resources() -> Vec<AnalysedResource> {
     // `GetLicenseRecommendations` reports, projected the same way
     // ([`ObservedLicensedInstance::to_analysed_resource`]), so a summary of the account's
     // licenses counts exactly the licenses that reader reports and agrees with it on each
-    // one's finding and what adopting its recommendation saves. A license whose metrics were
-    // insufficient carries a finding no `Summary` can hold, so it is no row at all.
+    // one's finding, whichever of the three `LicenseFinding` classifications that reader
+    // reports for it.
     .chain(
         observed_licensed_instances()
             .iter()
-            .filter_map(ObservedLicensedInstance::to_analysed_resource),
+            .map(ObservedLicensedInstance::to_analysed_resource),
     )
     .collect()
 }
@@ -3692,16 +3711,20 @@ pub const METRIC_REASON_MEMORY_OVERPROVISIONED: &str = "MemoryOverprovisioned";
 /// See [`METRIC_REASON_MEMORY_OVERPROVISIONED`].
 pub const METRIC_REASON_MEMORY_UNDERPROVISIONED: &str = "MemoryUnderprovisioned";
 
-/// The opaque `nextToken` `GetRecommendationSummaries` hands out: the
-/// `RecommendationSourceType` the next page starts at, hex-encoded so a client can
-/// neither read nor construct one. A token from the other paginated reader decodes to
-/// nothing here (and this one to nothing there), so neither can resume the other's walk.
+/// The `nextToken` shape `GetRecommendationSummaries` RESUMES a read at: the
+/// `RecommendationSourceType` the answer starts from, hex-encoded so a client can neither
+/// read nor construct one.
+///
+/// The operation answers the whole summary set at once ([`TRACKED_SOURCE_TYPES`]) and so hands
+/// no token out; the format lives here beside [`decode_summary_page_token`] so the two cannot
+/// drift apart, and a token from the other paginated reader decodes to nothing here (and this
+/// one to nothing there), so neither can resume the other's walk.
 pub fn encode_summary_page_token(resource_type: &str) -> String {
     ::hex::encode(::serde_json::json!({ "summariesFrom": resource_type }).to_string())
 }
 
-/// The resource type a `nextToken` this operation issued stands for, or `None` for a
-/// token it did not.
+/// The resource type a `nextToken` of this operation's cursor stands for, or `None` for a
+/// value that is not one ([`encode_summary_page_token`] states the format).
 pub fn decode_summary_page_token(token: &str) -> Option<String> {
     let bytes = ::hex::decode(token).ok()?;
     let decoded = ::serde_json::from_slice::<::serde_json::Value>(&bytes).ok()?;

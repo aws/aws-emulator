@@ -58,7 +58,18 @@ const SUMMARISED_RESOURCE_TYPES: &[(&str, &[&str], bool)] = &[
         &["Underprovisioned", "Overprovisioned", "Optimized"],
         true,
     ),
-    ("License", &["NotOptimized", "Optimized"], true),
+    // A license's analysis reads which license EDITION its workload asks for and reaches a
+    // `LicenseFinding` only: `LicenseRecommendation` declares no `currentPerformanceRisk` and
+    // no `savingsOpportunity` of its own, so a license is CLASSIFIED and not rightsized. Its
+    // vocabulary is the whole of `LicenseFinding`, `InsufficientMetrics` included, which the
+    // operation documents for a license ("Commercial software licenses in an account that are
+    // InsufficientMetrics, NotOptimized or Optimized") — a classification outside the model's
+    // `Finding` enum, so a summary's vocabulary is the resource type's own and not that enum.
+    (
+        "License",
+        &["Optimized", "NotOptimized", "InsufficientMetrics"],
+        false,
+    ),
     (
         "RdsDBInstance",
         &["Underprovisioned", "Overprovisioned", "Optimized"],

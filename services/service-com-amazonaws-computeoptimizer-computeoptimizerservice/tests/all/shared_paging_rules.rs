@@ -16,12 +16,17 @@
 //!   previous page stopped at, with a `nextToken` handed out exactly when the sequence
 //!   continues past the page, resuming where it stopped.
 //!
-//! Both are asserted over a TABLE of every paginated reader this service has, each with its
-//! own default and ceiling (the twelve rows below), crossed with the page sizes the rule
-//! generalises over: none at all, the range's lower bound, one item, one short of the
-//! sequence, exactly the sequence, one past it, and the reader's own ceiling. Nothing here
-//! asserts a page size the recorded calls happened to use; what is asserted is that no reader
-//! answers a page size differently from the others.
+//! Both are asserted over a TABLE of every reader of this service whose page the request
+//! sizes, each with its own default and ceiling (the eleven rows below), crossed with the
+//! page sizes the rule generalises over: none at all, the range's lower bound, one item, one
+//! short of the sequence, exactly the sequence, one past it, and the reader's own ceiling.
+//! Nothing here asserts a page size the recorded calls happened to use; what is asserted is
+//! that no reader answers a page size differently from the others.
+//!
+//! `GetRecommendationSummaries` is NOT one of them: its answer is one row per
+//! `RecommendationSourceType` the service reports on, a set the vocabulary BOUNDS rather than
+//! the account's resources growing, so it is answered whole and hands out no page boundary
+//! at all (`tests/all/summary_block_sets.rs` states that rule).
 
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -65,9 +70,9 @@ struct PagedReader {
     cap: usize,
 }
 
-/// Every paginated reader this service has, each with the default and the ceiling it applies
-/// the shared page-size rule with: ten of them page at the service's own default under the
-/// model's 0..1000 ceiling, while `GetIdleRecommendations` and
+/// Every reader of this service whose page a request sizes, each with the default and the
+/// ceiling it applies the shared page-size rule with: nine of them page at the service's own
+/// default under the model's 0..1000 ceiling, while `GetIdleRecommendations` and
 /// `GetEnrollmentStatusesForOrganization` are bounded lower by what their own members
 /// document.
 fn readers() -> Vec<PagedReader> {
@@ -157,14 +162,6 @@ fn readers() -> Vec<PagedReader> {
             request: json!({"resourceType": "Ec2Instance"}),
             items: "recommendationPreferencesDetails",
             identity: &["scope", "value"],
-            default_page: DEFAULT_PAGE_SIZE,
-            cap: MAX_PAGE_SIZE,
-        },
-        PagedReader {
-            operation: "GetRecommendationSummaries",
-            request: json!({}),
-            items: "recommendationSummaries",
-            identity: &["recommendationResourceType"],
             default_page: DEFAULT_PAGE_SIZE,
             cap: MAX_PAGE_SIZE,
         },

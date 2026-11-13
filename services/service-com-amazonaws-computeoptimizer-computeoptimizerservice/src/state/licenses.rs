@@ -385,21 +385,17 @@ impl ObservedLicensedInstance {
     }
 
     /// This licensed instance as a row of the findings catalog, i.e. as
-    /// `GetRecommendationSummaries` aggregates it — or `None` for one whose finding the
-    /// catalog cannot hold.
+    /// `GetRecommendationSummaries` aggregates it.
     ///
     /// The projection is what keeps one license's analysis in ONE place: the summary reader
     /// and `GetLicenseRecommendations` both answer from this observation, so they cannot
     /// disagree about a license's finding or what adopting its recommendation saves. A
-    /// license whose metrics were insufficient carries `InsufficientMetrics`, which is a
-    /// `LicenseFinding` value and NOT one of the `Finding` values a catalog row and a
-    /// `Summary` can carry ([`findings_reported_for`]), so it is no row at all — the same
-    /// rule a Lambda function the analysis reached no finding for follows.
-    pub fn to_analysed_resource(&self) -> Option<AnalysedResource> {
+    /// license whose metrics were insufficient is a row like any other, carrying the
+    /// `InsufficientMetrics` classification that reader reports for it: a summary of the
+    /// account's licenses counts a license at each of the three `LicenseFinding` values
+    /// ([`findings_reported_for`]), so the count at that one has to have rows behind it.
+    pub fn to_analysed_resource(&self) -> AnalysedResource {
         let finding = self.finding();
-        if finding == LICENSE_FINDING_INSUFFICIENT_METRICS {
-            return None;
-        }
         let current_monthly_cost = self
             .license_monthly_cost(&self.license_edition)
             .unwrap_or_default();
@@ -407,7 +403,7 @@ impl ObservedLicensedInstance {
             .recommended_license_edition()
             .and_then(|edition| self.license_monthly_cost(edition))
             .unwrap_or(current_monthly_cost);
-        Some(AnalysedResource {
+        AnalysedResource {
             account_id: self.account_id.clone(),
             resource_type: SOURCE_TYPE_LICENSE.to_string(),
             // The catalog records a resource's REGION-FREE identity
@@ -431,7 +427,7 @@ impl ObservedLicensedInstance {
             inferred_workload_types: Vec::new(),
             // A license is not a database, so there is no database configuration to record.
             rds_database: None,
-        })
+        }
     }
 }
 

@@ -954,9 +954,10 @@ async fn paging_walks_the_same_recommendations_in_the_same_order() {
 }
 
 /// The two readers of one license agree: `GetRecommendationSummaries` counts exactly the
-/// licenses this reader reports a `Finding` for, and totals exactly the savings their
-/// options carry. `InsufficientMetrics` is a `LicenseFinding` value that `Summary$name`
-/// cannot carry, so a license the analysis could not read is counted by neither.
+/// licenses this reader reports at each `LicenseFinding` — `InsufficientMetrics`, the
+/// classification of a license whose metrics the analysis could not read, included — and a
+/// license summary states those counts alone, because a license's analysis reaches a
+/// classification and no recommended configuration of its own to price or rate.
 #[tokio::test]
 async fn the_summary_of_the_account_s_licenses_agrees_with_this_reader() {
     let router = emulator();
@@ -976,8 +977,8 @@ async fn the_summary_of_the_account_s_licenses_agrees_with_this_reader() {
         .find(|summary| summary["recommendationResourceType"] == json!("License"))
         .unwrap_or_else(|| panic!("the account's licenses must be summarised, got {summaries}"));
 
-    // Rows: each `Finding` a license summary reports a count at.
-    for finding in ["NotOptimized", "Optimized"] {
+    // Rows: each `LicenseFinding` a license summary reports a count at.
+    for finding in FINDINGS {
         let counted = license_summary["summaries"]
             .as_array()
             .cloned()
@@ -988,8 +989,13 @@ async fn the_summary_of_the_account_s_licenses_agrees_with_this_reader() {
             .unwrap_or_else(|| panic!("case {finding:?}: no count in {license_summary}"));
         let expected = reported
             .iter()
-            .filter(|recommendation| text(recommendation, "finding") == finding)
+            .filter(|recommendation| text(recommendation, "finding") == *finding)
             .count() as f64;
+        assert!(
+            expected > 0.0,
+            "case {finding:?}: this fixture must hold a license at that finding for the count \
+             to be observable, got {expected}"
+        );
         assert_eq!(
             counted, expected,
             "case {finding:?}: the summary counts the licenses this reader reports at that \
@@ -997,20 +1003,15 @@ async fn the_summary_of_the_account_s_licenses_agrees_with_this_reader() {
         );
     }
 
-    let reported_savings: f64 = reported
-        .iter()
-        .flat_map(options)
-        .map(|option| option_savings(&option))
-        .sum();
-    let summarised_savings = number(
-        &license_summary["savingsOpportunity"]["estimatedMonthlySavings"],
-        "value",
-    );
-    assert!(
-        reported_savings > 0.0 && (reported_savings - summarised_savings).abs() <= 0.02,
-        "the summary totals the savings this reader reports, expected {reported_savings}, got \
-         {summarised_savings}"
-    );
+    // What a license recommendation would save belongs to the OPTION it recommends
+    // (`LicenseRecommendationOption$savingsOpportunity`), and a license carries no
+    // performance risk at all, so the summary prices and rates nothing beside its counts.
+    for block in ["savingsOpportunity", "currentPerformanceRiskRatings"] {
+        assert!(
+            license_summary[block].is_null(),
+            "a license summary reports no {block}, got {license_summary}"
+        );
+    }
 }
 
 /// Reading license recommendations is a READ: two identical calls answer identically, and

@@ -5,9 +5,9 @@
 //!
 //! The rule under test: the groups a summary page reports are the whole
 //! `RecommendationSourceType` vocabulary `RecommendationSummary$recommendationResourceType`
-//! names, in the order the model declares it, and paging walks that one order — so a client
-//! that indexes the response, or derives the tracked resource-type set from it, reads the
-//! same groups in the same places however it pages.
+//! names, in the order the model declares it, and that vocabulary BOUNDS the answer — so a
+//! client that indexes the response, or derives the tracked resource-type set from it, reads
+//! the same groups in the same places whatever size it asks for.
 //!
 //! That the entries exist at all for an account whose analysis has produced nothing, and what
 //! each of them counts, is asserted in `tests/all/summary_resource_type_surface.rs` and
@@ -19,45 +19,14 @@
 //! `MultiServiceRouter::dispatch` the emulator's front door uses.
 
 use std::collections::BTreeSet;
-use std::time::Duration;
 
-use serde_json::{json, Value};
+use serde_json::json;
 use service_com_amazonaws_computeoptimizer_computeoptimizerservice::ops::types::RECOMMENDATION_SOURCE_TYPE_VALUES;
-use service_com_amazonaws_computeoptimizer_computeoptimizerservice::state::{
-    ANALYSIS_DELAY, TRACKED_SOURCE_TYPES,
+use service_com_amazonaws_computeoptimizer_computeoptimizerservice::state::TRACKED_SOURCE_TYPES;
+
+use crate::harness::{
+    emulator_with_engine, make_analysis_due, opt_in, summary_resource_types, summary_set,
 };
-
-use crate::harness::{call, emulator, opt_in};
-
-/// Read one page of summaries, asserting the call succeeded.
-async fn summaries(
-    router: &smithy_server_runtime::MultiServiceRouter,
-    request: Value,
-) -> Vec<Value> {
-    let (status, body) = call(router, "GetRecommendationSummaries", request.clone()).await;
-    assert_eq!(
-        status, 200,
-        "summaries for {request}: expected 200, got {status}: {body}"
-    );
-    body["recommendationSummaries"]
-        .as_array()
-        .unwrap_or_else(|| {
-            panic!("summaries for {request}: recommendationSummaries must be a list, got {body}")
-        })
-        .clone()
-}
-
-/// The resource types one response reports, in the order it reports them.
-fn resource_types_of(reported: &[Value]) -> Vec<&str> {
-    reported
-        .iter()
-        .map(|summary| {
-            summary["recommendationResourceType"]
-                .as_str()
-                .unwrap_or_default()
-        })
-        .collect()
-}
 
 /// The resource types the service rolls findings up for are EXACTLY the model's
 /// `RecommendationSourceType` vocabulary — no value missing and none invented, each once — so
@@ -77,69 +46,44 @@ fn the_tracked_resource_types_are_the_modelled_vocabulary() {
     );
 }
 
-/// One page reports the tracked vocabulary in the order the model declares it, and paging
-/// walks that same order whatever page size is asked for — including a size that divides the
-/// vocabulary unevenly, where a page boundary falls inside it.
+/// One answer reports the tracked vocabulary in the order the model declares it, and the size
+/// a request asks for changes neither the order nor the set: the summary set is bounded by
+/// that vocabulary, so it is answered whole with no `nextToken` to walk.
 #[tokio::test]
-async fn the_summaries_are_reported_and_paged_in_the_tracked_order() {
-    let router = emulator();
+async fn the_summaries_are_reported_in_the_tracked_order() {
+    let (router, engine) = emulator_with_engine();
     opt_in(&router).await;
-    // Read with the analysis the enrollment started due, so the counts differ between groups
-    // and this order is not the order of an all-zero response alone.
-    tokio::time::sleep(ANALYSIS_DELAY + Duration::from_millis(100)).await;
+    // Read with the analysis the enrollment started DUE, so the counts differ between groups
+    // and this order is not the order of an all-zero response alone. The due instant is
+    // derived from the stored enrollment record, so it is moved rather than waited for.
+    make_analysis_due(&engine);
 
-    let unpaged = summaries(&router, json!({})).await;
+    let whole = summary_set(&router, "the whole set", json!({})).await;
     assert_eq!(
-        resource_types_of(&unpaged),
+        summary_resource_types("the whole set", &whole),
         TRACKED_SOURCE_TYPES.to_vec(),
-        "expected one summary per tracked resource type, in the tracked order, got {unpaged:?}"
+        "expected one summary per tracked resource type, in the tracked order, got {whole}"
     );
 
-    // Rows: page sizes that divide the vocabulary evenly and unevenly, one page per entry,
-    // and one page holding the lot.
-    for page_size in [1, 3, 5, TRACKED_SOURCE_TYPES.len()] {
-        let case = format!("maxResults={page_size}");
-        let mut walked: Vec<Value> = Vec::new();
-        let mut next_token: Option<String> = None;
-        loop {
-            let mut request = json!({"maxResults": page_size});
-            if let Some(token) = &next_token {
-                request["nextToken"] = json!(token);
-            }
-            let (status, body) = call(&router, "GetRecommendationSummaries", request.clone()).await;
-            assert_eq!(
-                status, 200,
-                "case {case:?}: expected 200 from {request}, got {status}: {body}"
-            );
-            let page = body["recommendationSummaries"]
-                .as_array()
-                .cloned()
-                .unwrap_or_default();
-            assert!(
-                page.len() <= page_size,
-                "case {case:?}: a page holds at most {page_size} summaries, got {}",
-                page.len()
-            );
-            walked.extend(page);
-            assert!(
-                walked.len() <= TRACKED_SOURCE_TYPES.len(),
-                "case {case:?}: paging must terminate within the vocabulary, got {} entries",
-                walked.len()
-            );
-            next_token = body["nextToken"].as_str().map(ToString::to_string);
-            if next_token.is_none() {
-                break;
-            }
-        }
+    // Rows: sizes smaller than the vocabulary, one that divides it unevenly, and one holding
+    // the lot — none of which moves a group out of the reported order.
+    for max_results in [1, 3, 5, TRACKED_SOURCE_TYPES.len()] {
+        let case = format!("maxResults={max_results}");
+        let answer = summary_set(&router, &case, json!({"maxResults": max_results})).await;
+        assert!(
+            answer["nextToken"].is_null(),
+            "case {case:?}: the whole vocabulary is answered, so there is no page to advance \
+             to, got {answer}"
+        );
         assert_eq!(
-            resource_types_of(&walked),
+            summary_resource_types(&case, &answer),
             TRACKED_SOURCE_TYPES.to_vec(),
-            "case {case:?}: paging must walk exactly the tracked vocabulary, in the tracked \
+            "case {case:?}: the answer must be exactly the tracked vocabulary, in the tracked \
              order"
         );
         assert_eq!(
-            walked, unpaged,
-            "case {case:?}: paging must not change what each summary says"
+            answer, whole,
+            "case {case:?}: the size asked for must not change what each summary says"
         );
     }
 }

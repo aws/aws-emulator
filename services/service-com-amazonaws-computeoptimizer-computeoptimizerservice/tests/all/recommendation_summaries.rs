@@ -44,14 +44,14 @@ fn caller_account() -> String {
 /// Overprovisioned, or Optimized. Commercial software licenses in an account that are
 /// InsufficientMetrics, NotOptimized or Optimized. Amazon Aurora and Amazon RDS databases
 /// in an account that are Underprovisioned, Overprovisioned, Optimized, or NotOptimized" —
-/// restricted to what `Summary$name` can carry, the model's `Finding` enum (`NotOptimized`
-/// | `Optimized` | `Overprovisioned` | `Underprovisioned`), which is why a license's
-/// documented `InsufficientMetrics` (a `LicenseFinding` value) is not expected here — and
-/// vocabulary of the resource type's OWN recommendations, which is why a database
+/// each group counted at the vocabulary of its OWN recommendations, which is why a database
 /// instance is counted at the three `RDSInstanceFinding` values while its storage is counted
 /// at the `RDSStorageFinding` values THAT storage can reach — the three provisioning
 /// classifications for the storage a DB instance provisions, and the `Optimized`/`NotOptimized`
-/// pair for an Aurora cluster's storage, which the service does not size. A tracked resource
+/// pair for an Aurora cluster's storage, which the service does not size — and a license at
+/// the three `LicenseFinding` classifications the documentation names for one,
+/// `InsufficientMetrics` included, a classification the model's `Finding` enum does not list.
+/// A tracked resource
 /// type the documentation names no vocabulary for is counted at the generic classification
 /// pair.
 ///
@@ -73,7 +73,10 @@ const FINDINGS_BY_RESOURCE_TYPE: &[(&str, &[&str])] = &[
         "EcsService",
         &["Underprovisioned", "Overprovisioned", "Optimized"],
     ),
-    ("License", &["NotOptimized", "Optimized"]),
+    (
+        "License",
+        &["Optimized", "NotOptimized", "InsufficientMetrics"],
+    ),
     (
         "RdsDBInstance",
         &["Underprovisioned", "Overprovisioned", "Optimized"],
@@ -574,21 +577,22 @@ async fn account_ids_selects_one_account_and_refuses_more_than_one() {
     }
 }
 
-/// Paging never changes WHAT is summarised: walking the summaries `maxResults` at a time
-/// yields exactly the unpaged list, in the same order, with a `nextToken` on every page
-/// but the last and none on it. A forged token is refused.
+/// `maxResults` never changes WHAT is summarised: the summary set is bounded by the
+/// resource-type vocabulary, so every request is answered with the whole set in one answer,
+/// in the same order and with no `nextToken` — whatever size it asks for. A token, which this
+/// operation therefore never hands out, is refused.
 #[tokio::test]
-async fn paging_walks_the_same_summaries_in_the_same_order() {
+async fn the_summary_set_is_answered_whole_whatever_size_is_asked_for() {
     let router = analysed_emulator().await;
 
     let unpaged = summaries_of(&get_summaries(&router, json!({})).await);
     assert!(
         unpaged.len() > 2,
-        "this test needs several summaries to page over, got {}",
+        "this test needs several summaries for a size to be observable, got {}",
         unpaged.len()
     );
 
-    // Rows: the smallest page, a page that divides the set unevenly, one that holds it
+    // Rows: the smallest size, a size that divides the set unevenly, one that holds it
     // all, the modelled upper bound of `maxResults`, its lower bound `0` (no size asked
     // for) and the member left out entirely.
     let page_sizes: [Option<i64>; 6] = [
@@ -601,50 +605,20 @@ async fn paging_walks_the_same_summaries_in_the_same_order() {
     ];
     for page_size in page_sizes {
         let case = format!("maxResults={page_size:?}");
-        let mut walked: Vec<Value> = Vec::new();
-        let mut next_token: Option<String> = None;
-        let mut pages = 0;
-        loop {
-            let mut request = json!({});
-            if let Some(size) = page_size {
-                request["maxResults"] = json!(size);
-            }
-            if let Some(token) = &next_token {
-                request["nextToken"] = json!(token);
-            }
-            let body = get_summaries(&router, request).await;
-            let page = summaries_of(&body);
-            pages += 1;
-            assert!(
-                pages <= unpaged.len() + 1,
-                "case {case:?}: paging must terminate, got {pages} pages"
-            );
-            if let Some(size) = page_size.filter(|size| *size > 0) {
-                assert!(
-                    page.len() as i64 <= size,
-                    "case {case:?}: a page holds at most {size} summaries, got {}",
-                    page.len()
-                );
-            }
-            walked.extend(page);
-            next_token = body["nextToken"].as_str().map(ToString::to_string);
-            if next_token.is_none() {
-                break;
-            }
+        let mut request = json!({});
+        if let Some(size) = page_size {
+            request["maxResults"] = json!(size);
         }
+        let body = get_summaries(&router, request).await;
         assert_eq!(
-            walked, unpaged,
-            "case {case:?}: paging must walk exactly the unpaged summaries, in order"
+            summaries_of(&body),
+            unpaged,
+            "case {case:?}: the size asked for must not change what is summarised"
         );
-        let expected_pages = match page_size.filter(|size| *size > 0) {
-            // One page per whole `size`, plus one more for any remainder.
-            Some(size) => unpaged.len().div_ceil(size as usize),
-            None => 1,
-        };
-        assert_eq!(
-            pages, expected_pages,
-            "case {case:?}: expected {expected_pages} page(s) for {} summaries, got {pages}",
-            unpaged.len()
+        assert!(
+            body["nextToken"].is_null(),
+            "case {case:?}: the whole set is answered, so there is no page to advance to, \
+             got {body}"
         );
     }
 

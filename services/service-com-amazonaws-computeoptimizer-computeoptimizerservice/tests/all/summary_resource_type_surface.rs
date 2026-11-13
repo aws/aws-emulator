@@ -50,11 +50,11 @@ fn caller_account() -> String {
 /// Optimized. Amazon ECS services in an account that are Underprovisioned, Overprovisioned,
 /// or Optimized. Commercial software licenses in an account that are InsufficientMetrics,
 /// NotOptimized or Optimized. Amazon Aurora and Amazon RDS databases in an account that are
-/// Underprovisioned, Overprovisioned, Optimized, or NotOptimized." `Summary$name` targets
-/// the model's `Finding` enum, so a license's documented `InsufficientMetrics` — a
-/// `LicenseFinding` value — is not a count a `Summary` can carry; and each group is counted
+/// Underprovisioned, Overprovisioned, Optimized, or NotOptimized." Each group is counted
 /// at the vocabulary of its OWN recommendations, so a database instance carries the three
-/// `RDSInstanceFinding` values while its storage carries the four of `RDSStorageFinding`. A
+/// `RDSInstanceFinding` values while its storage carries the four of `RDSStorageFinding`, and
+/// a license carries the three `LicenseFinding` classifications the documentation names for
+/// one — `InsufficientMetrics` included, which the model's `Finding` enum does not list. A
 /// resource type the documentation names no vocabulary for is counted at the generic
 /// classification pair.
 ///
@@ -79,7 +79,10 @@ const FINDINGS_BY_RESOURCE_TYPE: &[(&str, &[&str])] = &[
         "EcsService",
         &["Underprovisioned", "Overprovisioned", "Optimized"],
     ),
-    ("License", &["NotOptimized", "Optimized"]),
+    (
+        "License",
+        &["Optimized", "NotOptimized", "InsufficientMetrics"],
+    ),
     (
         "RdsDBInstance",
         &["Underprovisioned", "Overprovisioned", "Optimized"],
