@@ -213,24 +213,31 @@ impl InspectedRequest {
             .iter()
             .map(|(name, value)| (name.to_string(), value.to_string()))
             .collect();
-        // The address the request came from. A request served in process crossed no
-        // socket from a remote peer, so there is no connection address; one that
-        // traversed a proxy still states where it came from, in its forwarded-for header.
-        let client_ip = headers
-            .iter()
-            .find(|(name, _)| name.eq_ignore_ascii_case(FORWARDED_FOR_HEADER))
-            .and_then(|(_, value)| value.split(',').next())
-            .map(str::trim)
-            .filter(|address| address.parse::<IpAddr>().is_ok())
-            .unwrap_or(IN_PROCESS_CLIENT_IP)
-            .to_string();
+        Self::of_parts(req.method(), uri_path, query_string, headers, body)
+    }
+
+    /// The same reading, for a protected resource's service that read the request off a
+    /// SOCKET of its own rather than through this emulator's front door — an endpoint served
+    /// on a core-owned listener, where the request arrives as its own method, target and
+    /// header list rather than as an already-routed request.
+    ///
+    /// The fields mean exactly what [`Self::of_http`] states they do, and the address the
+    /// request came from is derived the one way ([`client_ip_of`]), so the two callers cannot
+    /// differ on what a `FieldToMatch` names.
+    pub fn of_parts(
+        method: &str,
+        uri_path: &str,
+        query_string: &str,
+        headers: Vec<(String, String)>,
+        body: Vec<u8>,
+    ) -> Self {
         Self {
-            method: req.method().to_string(),
+            method: method.to_string(),
             uri_path: uri_path.to_string(),
             query_string: query_string.to_string(),
+            client_ip: client_ip_of(&headers),
             headers,
             body,
-            client_ip,
         }
     }
 
@@ -287,6 +294,25 @@ impl InspectedRequest {
             headers: Some(headers),
         }
     }
+}
+
+/// The address one inbound request came from, as every protected resource's service reads
+/// it: the first address its forwarded-for header states, and [`IN_PROCESS_CLIENT_IP`] for a
+/// request that states none.
+///
+/// A request served in process crossed no socket from a remote peer, so there is no
+/// connection address; one that traversed a proxy still states where it came from, in its
+/// forwarded-for header. THE one reading of it, so no two callers can differ on the address
+/// an `IPSetReferenceStatement` or a rate-based rule aggregates on.
+pub fn client_ip_of(headers: &[(String, String)]) -> String {
+    headers
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case(FORWARDED_FOR_HEADER))
+        .and_then(|(_, value)| value.split(',').next())
+        .map(str::trim)
+        .filter(|address| address.parse::<IpAddr>().is_ok())
+        .unwrap_or(IN_PROCESS_CLIENT_IP)
+        .to_string()
 }
 
 /// `value` cut to at most `budget` bytes, on a character boundary.

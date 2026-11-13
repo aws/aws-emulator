@@ -9655,6 +9655,7 @@ dependencies = [
  "service-com-amazonaws-rdsdata-rdsdataservice",
  "service-com-amazonaws-secretsmanager-secretsmanager",
  "service-com-amazonaws-sts-awssecuritytokenservicev20110615",
+ "service-com-amazonaws-wafv2-awswaf-20190729",
  "service-common",
  "sha2 0.10.9",
  "sqlparser",

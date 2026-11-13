@@ -105,6 +105,8 @@ mod functions;
 mod graphql_api_create_rules;
 #[path = "all/graphql_api_lifecycle.rs"]
 mod graphql_api_lifecycle;
+#[path = "all/graphql_api_query_endpoint.rs"]
+mod graphql_api_query_endpoint;
 #[path = "all/graphql_api_realtime_endpoint.rs"]
 mod graphql_api_realtime_endpoint;
 #[path = "all/graphql_api_update.rs"]

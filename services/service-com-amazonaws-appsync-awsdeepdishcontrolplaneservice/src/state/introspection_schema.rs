@@ -177,6 +177,51 @@ fn node_text(node: &apollo_parser::SyntaxNode) -> String {
 }
 
 impl GraphqlApiRecord {
+    /// The type this API's schema binds as the root of its QUERY operations.
+    ///
+    /// Which type holds them is the schema's own binding: the type its `schema` definition
+    /// binds, and the type named [`DEFAULT_QUERY_TYPE`] for a schema that binds none, which
+    /// is GraphQL's own default. The same rule gives [`Self::mutation_root_type`] and
+    /// [`Self::subscription_root_type`] theirs, so every reader of a root operation type
+    /// reads it one way.
+    pub fn query_root_type(&self) -> String {
+        self.bound_root_type(
+            |declarations| declarations.query.clone(),
+            DEFAULT_QUERY_TYPE,
+        )
+    }
+
+    /// The type this API's schema binds as the root of its MUTATION operations; see
+    /// [`Self::query_root_type`].
+    pub fn mutation_root_type(&self) -> String {
+        self.bound_root_type(
+            |declarations| declarations.mutation.clone(),
+            DEFAULT_MUTATION_TYPE,
+        )
+    }
+
+    /// The type this API's schema binds as the root of its SUBSCRIPTION operations; see
+    /// [`Self::query_root_type`].
+    pub fn subscription_root_type(&self) -> String {
+        self.bound_root_type(
+            |declarations| declarations.subscription.clone(),
+            DEFAULT_SUBSCRIPTION_TYPE,
+        )
+    }
+
+    /// The type the stored schema document binds for one root operation, or GraphQL's
+    /// default name for it where the document binds none.
+    fn bound_root_type(
+        &self,
+        bound: impl Fn(&SchemaDeclarations) -> Option<String>,
+        default_name: &str,
+    ) -> String {
+        self.schema_document
+            .as_deref()
+            .and_then(|document| bound(&schema_declarations(document)))
+            .unwrap_or_else(|| default_name.to_string())
+    }
+
     /// The SUBSCRIPTION fields this API's schema declares, in the order the schema
     /// declares them — the fields a real-time client may start a subscription on.
     ///
@@ -189,13 +234,9 @@ impl GraphqlApiRecord {
     /// Read from the stored document and the stored types, so the fields reported are the
     /// ones the schema that was CREATED declares and cannot drift from it.
     pub fn subscription_fields(&self) -> Vec<String> {
-        let bound = self
-            .schema_document
-            .as_deref()
-            .and_then(|document| schema_declarations(document).subscription);
-        let named = bound.as_deref().unwrap_or(DEFAULT_SUBSCRIPTION_TYPE);
+        let named = self.subscription_root_type();
         self.types
-            .get(named)
+            .get(&named)
             .map(|record| {
                 record
                     .parsed

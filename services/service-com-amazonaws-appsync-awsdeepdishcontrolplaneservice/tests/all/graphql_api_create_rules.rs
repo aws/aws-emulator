@@ -654,37 +654,27 @@ async fn dns_records_and_uris_name_the_same_hosts() {
         .await;
         let api_id = created["apiId"].as_str().unwrap_or_default().to_string();
 
-        // The DNS records: the two endpoint keys AppSync publishes. The GraphQL one is
-        // the API's endpoint host label under AppSync's own domain — a bare hostname, no
-        // scheme and no path. Source: `GraphqlApi$dns`, "The DNS records for the API",
-        // keyed as `uris` is.
+        // The DNS records: the two endpoint keys AppSync publishes. Each is the address
+        // that endpoint is SERVED on — a `host:port` of this emulator — because the whole
+        // purpose of either value is that a client dials it: one POSTs GraphQL documents to
+        // the GraphQL endpoint and a subscriber dials the real-time one. Source:
+        // `GraphqlApi$dns`, "The DNS records for the API", keyed as `uris` is.
         let dns = created["dns"].clone();
-        let graphql_host = dns["GRAPHQL"].as_str().unwrap_or_default().to_string();
-        let label = graphql_host.split('.').next().unwrap_or_default().to_string();
-        assert!(
-            !label.is_empty()
-                && label
-                    .chars()
-                    .all(|c| c.is_ascii_lowercase() || ('2'..='7').contains(&c)),
-            "case {case}: the endpoint host label must be an opaque base-32 token, got {label:?}"
-        );
-        assert_eq!(
-            dns["GRAPHQL"].as_str(),
-            Some(format!("{label}.appsync-api.{REGION}.amazonaws.com").as_str()),
-            "case {case}: dns.GRAPHQL must be the API's appsync-api hostname, got {dns:?}"
-        );
-        // The REALTIME record is the address the API's real-time endpoint is SERVED on:
-        // a `host:port` of this emulator, because the whole purpose of the value is that
-        // a subscriber dials it.
-        let realtime = dns["REALTIME"].as_str().unwrap_or_default().to_string();
-        let (realtime_host, realtime_port) = realtime
-            .rsplit_once(':')
-            .map(|(host, port)| (host.to_string(), port.to_string()))
-            .unwrap_or_default();
-        assert!(
-            !realtime_host.is_empty() && realtime_port.parse::<u16>().is_ok_and(|port| port > 0),
-            "case {case}: dns.REALTIME must be the host:port the endpoint is served on, \
-             got {realtime:?}"
+        for endpoint in ["GRAPHQL", "REALTIME"] {
+            let published = dns[endpoint].as_str().unwrap_or_default().to_string();
+            let (host, port) = published
+                .rsplit_once(':')
+                .map(|(host, port)| (host.to_string(), port.to_string()))
+                .unwrap_or_default();
+            assert!(
+                !host.is_empty() && port.parse::<u16>().is_ok_and(|port| port > 0),
+                "case {case}: dns.{endpoint} must be the host:port the endpoint is served \
+                 on, got {published:?}"
+            );
+        }
+        assert_ne!(
+            dns["GRAPHQL"], dns["REALTIME"],
+            "case {case}: the two endpoints are served on sockets of their own, got {dns:?}"
         );
 
         // And the URIs are those records: HTTPS for the GraphQL endpoint, a WebSocket URL

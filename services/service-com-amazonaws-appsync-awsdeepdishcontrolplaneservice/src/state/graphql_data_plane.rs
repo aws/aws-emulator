@@ -1,22 +1,21 @@
 // SPDX-License-Identifier: CC0-1.0
 
-//! A GraphQL API's REAL-TIME data plane as STATE: the socket each `GraphqlApi` is served on,
-//! the connections open on it, and the subscriptions those connections hold.
+//! A GraphQL API's DATA plane as STATE: the two sockets each `GraphqlApi` is served on,
+//! the connections open on the real-time one, and the subscriptions those connections hold.
 //!
-//! `GraphqlApi$uris`'s `REALTIME` entry is not a label. It is the address a subscriber
-//! dials: the client completes a WebSocket opening handshake against it and then exchanges
-//! frames over it, so the endpoint is a SOCKET, which the core owns
-//! (`engine.listeners()`). This module holds the handle that socket's life hangs off,
-//! together with the records of what is open on it, so the address the API publishes is one
-//! this emulator answers on and the records a frame is answered from are read under the
-//! same lock as the API itself.
+//! Neither entry of `GraphqlApi$uris` is a label. The `GRAPHQL` one is the address a client
+//! POSTs a GraphQL document to, and the `REALTIME` one the address a subscriber dials —
+//! completing a WebSocket opening handshake against it and then exchanging frames — so each
+//! endpoint is a SOCKET, which the core owns (`engine.listeners()`). This module holds the
+//! handles those sockets' lives hang off, together with the records of what is open on
+//! them, so the addresses the API publishes are ones this emulator answers on and the
+//! records a request is answered from are read under the same lock as the API itself.
 //!
 //! It is the GraphQL family's counterpart of [`super::event_data_plane`] and keeps the same
-//! three invariants — one listener per API, opened when the API is created and dropped when
-//! it is deleted; a connection id MINTED here rather than taken from what a client sent;
-//! and a subscription that belongs to the CONNECTION that asked for it, so closing a
-//! connection takes its subscriptions with it. An Event API's plane holds two sockets (a
-//! publish endpoint as well), which is the only structural difference.
+//! three invariants — the listeners of one API, opened when the API is created and dropped
+//! when it is deleted; a connection id MINTED here rather than taken from what a client
+//! sent; and a subscription that belongs to the CONNECTION that asked for it, so closing a
+//! connection takes its subscriptions with it.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -28,8 +27,11 @@ use super::event_data_plane::{
     authority_of, uuid_from, SubscribeRefusal, CONNECTIONS_PER_API, SUBSCRIPTIONS_PER_CONNECTION,
 };
 
-/// The socket one GraphQL API's real-time endpoint is served on, and what is open on it.
+/// The sockets one GraphQL API's endpoints are served on, and what is open on them.
 struct ApiSocket {
+    /// The socket the API's GraphQL endpoint (`GraphqlApi$uris`'s `GRAPHQL` entry) is
+    /// served on.
+    graphql: Arc<ResourceListener>,
     /// The socket the API's real-time endpoint (`GraphqlApi$uris`'s `REALTIME` entry) is
     /// served on.
     realtime: Arc<ResourceListener>,
@@ -49,12 +51,12 @@ struct ConnectionRecord {
     subscriptions: BTreeMap<String, String>,
 }
 
-/// The GraphQL API real-time plane's records: the socket each API is served on, the
+/// The GraphQL API data plane's records: the sockets each API is served on, the
 /// connections open on them, and the counter this plane's connection ids are minted from.
 #[derive(Default)]
 pub struct GraphqlDataPlane {
-    /// The socket each GraphQL API's real-time endpoint is served on, keyed by `apiId`.
-    /// Holding the handle is what keeps the port open; removing the entry closes it.
+    /// The sockets each GraphQL API's endpoints are served on, keyed by `apiId`.
+    /// Holding the handles is what keeps the ports open; removing the entry closes them.
     apis: BTreeMap<String, ApiSocket>,
     /// Drives [`Self::mint_connection_id`]: how many connections this plane has accepted.
     connection_seed: u64,
@@ -65,13 +67,14 @@ pub struct GraphqlDataPlane {
 // what is open on it, not a handle's internals.
 impl std::fmt::Debug for GraphqlDataPlane {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let apis: BTreeMap<&String, (String, usize, usize)> = self
+        let apis: BTreeMap<&String, (String, String, usize, usize)> = self
             .apis
             .iter()
             .map(|(api_id, socket)| {
                 (
                     api_id,
                     (
+                        authority_of(&socket.graphql),
                         authority_of(&socket.realtime),
                         socket.connections.len(),
                         socket
@@ -92,27 +95,33 @@ impl std::fmt::Debug for GraphqlDataPlane {
 }
 
 impl GraphqlDataPlane {
-    /// Remember the socket `api_id`'s real-time endpoint is served on, and answer the
-    /// `host:port` it landed on — the authority that API publishes as its `REALTIME`
-    /// endpoint.
+    /// Remember the sockets `api_id`'s endpoints are served on, and answer the `host:port`
+    /// each landed on — the authorities that API publishes as its `GRAPHQL` and `REALTIME`
+    /// endpoints, in that order.
     ///
-    /// Replaces any socket the API already held, so re-opening closes the old port rather
-    /// than leaving two sockets answering for one API.
-    pub fn remember_listener(&mut self, api_id: &str, realtime: Arc<ResourceListener>) -> String {
-        let authority = authority_of(&realtime);
+    /// Replaces any sockets the API already held, so re-opening closes the old ports rather
+    /// than leaving two sockets answering for one endpoint of one API.
+    pub fn remember_listeners(
+        &mut self,
+        api_id: &str,
+        graphql: Arc<ResourceListener>,
+        realtime: Arc<ResourceListener>,
+    ) -> (String, String) {
+        let authorities = (authority_of(&graphql), authority_of(&realtime));
         self.apis.insert(
             api_id.to_string(),
             ApiSocket {
+                graphql,
                 realtime,
                 connections: BTreeMap::new(),
             },
         );
-        authority
+        authorities
     }
 
-    /// Close `api_id`'s socket and forget everything open on it — what an API being deleted
-    /// does to its real-time plane. Dropping the handle severs every connection, and the
-    /// task serving each one then ends.
+    /// Close `api_id`'s sockets and forget everything open on them — what an API being
+    /// deleted does to its data plane. Dropping the handles severs every connection, and
+    /// the task serving each one then ends.
     pub fn forget_api(&mut self, api_id: &str) {
         self.apis.remove(api_id);
     }

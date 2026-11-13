@@ -111,6 +111,11 @@ aws-sdk-rdsdata = { version = "1", default-features = false, features = ["rt-tok
 # database's schema holds, with the same maintained SQL parser (and PostgreSQL dialect) the
 # Data API itself parses statements with, rather than by scanning the text here.
 sqlparser = { version = "0.59", default-features = false, features = ["std"] }
+# The WAFv2 service, for the web ACL in front of a GraphQL API: `AssociateWebACL` binds one
+# to "an AppSync GraphQL API" by the API's own ARN, so the API's `GRAPHQL` endpoint asks THAT
+# service what its web ACL decides about each request it is handed
+# (`src/service/graphql_api/query.rs`), rather than holding a second reading of a rule tree.
+service-com-amazonaws-wafv2-awswaf-20190729 = { workspace = true }
 
 [build-dependencies]
 emulator-core-build-support = { workspace = true }

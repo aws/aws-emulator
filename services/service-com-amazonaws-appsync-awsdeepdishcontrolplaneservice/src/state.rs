@@ -249,8 +249,14 @@ impl GraphqlApiRecord {
                 .is_empty())
             .then(|| self.additional_authentication_providers.clone()),
             xray_enabled: self.xray_enabled,
-            // Associating a WAF web ACL and a custom domain are their own
-            // operations, still unimplemented, so nothing can have set either.
+            // The web ACL in front of this API is WAFv2's own record — `AssociateWebACL`
+            // binds one to the API's ARN, `DisassociateWebACL` takes it away and
+            // `GetWebACLForResource` is the read of it — so nothing of this store holds
+            // one, and this projection reports no association of its own. The API's own
+            // endpoint asks WAF about that record on every request it serves
+            // ([`crate::service::graphql_api::query`]), so what the edge enforces and what
+            // WAF reports cannot disagree. Associating a custom domain is its own
+            // operation.
             waf_web_acl_arn: None,
             lambda_authorizer_config: self.lambda_authorizer_config.clone(),
             // "The DNS records for the API" — the hostnames the endpoints in
@@ -3210,33 +3216,24 @@ pub const GRAPHQL_ENDPOINT: &str = "GRAPHQL";
 /// [`REALTIME_ENDPOINT`].
 pub const HTTP_ENDPOINT: &str = "HTTP";
 
-/// The DNS records AppSync publishes for a GRAPHQL API it created: one hostname per
-/// endpoint, both on the API's own endpoint host label — except the REALTIME one, which
-/// is the address the API's real-time socket is SERVED on.
+/// The DNS records AppSync publishes for a GRAPHQL API it created: the address each of the
+/// API's two endpoints is SERVED on — the GraphQL one under [`GRAPHQL_ENDPOINT`] and the
+/// real-time one under [`REALTIME_ENDPOINT`] — which `uris` is derived from, so the two
+/// members can never disagree about where the API is served.
 ///
-/// `http_endpoint` is the key the HTTPS endpoint is published under — a GraphQL API
-/// publishes it as [`GRAPHQL_ENDPOINT`] and derives its `uris` from these records — so a
-/// create and an update cannot drift on the hostname shape.
-///
-/// `realtime_authority` is the `host:port` the API's real-time endpoint is reached at
+/// Both values are the `host:port` that endpoint is reached at
 /// ([`crate::service::graphql_api`]). AWS publishes the API's
-/// `<label>.appsync-realtime-api.<region>.amazonaws.com` hostname there; this emulator
-/// publishes the address that endpoint is REACHED at, because the whole purpose of the
-/// value is that a client dials it — a subscriber completes a WebSocket handshake against
+/// `<label>.appsync-api.<region>.amazonaws.com` and
+/// `<label>.appsync-realtime-api.<region>.amazonaws.com` hostnames there; this emulator
+/// publishes the addresses those endpoints are REACHED at, because the whole purpose of
+/// either value is that a client dials it — a client POSTs a GraphQL document to
+/// `https://<value>/graphql` and a subscriber completes a WebSocket handshake against
 /// `wss://<value>/graphql` — and no client on this machine resolves an AWS hostname
 /// (`service_common::data_plane_addressing`). An Event API publishes the addresses of both
 /// its endpoints the same way ([`event_api_dns`]).
-pub fn api_dns(
-    host_label: &str,
-    region: &str,
-    http_endpoint: &str,
-    realtime_authority: &str,
-) -> BTreeMap<String, String> {
+pub fn api_dns(graphql_authority: &str, realtime_authority: &str) -> BTreeMap<String, String> {
     BTreeMap::from([
-        (
-            http_endpoint.to_string(),
-            format!("{host_label}.appsync-api.{region}.amazonaws.com"),
-        ),
+        (GRAPHQL_ENDPOINT.to_string(), graphql_authority.to_string()),
         (
             REALTIME_ENDPOINT.to_string(),
             realtime_authority.to_string(),

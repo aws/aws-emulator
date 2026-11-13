@@ -227,7 +227,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // its own, so the guard is out of scope before the socket below is opened: opening
         // one is the core's work and is awaited, and no state guard may be held across an
         // await.
-        let (api_id, host_label) = {
+        let api_id = {
             let mut guard = state.lock();
 
             // The store is bounded, so a repeated create cannot grow it without limit:
@@ -252,34 +252,27 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             while guard.graphql_apis.contains_key(&api_id) {
                 api_id = guard.mint_id();
             }
-            // The endpoints are published on a host label of their own, minted the same
-            // way and independently of the `apiId`: an AppSync endpoint hostname cannot
-            // be derived from the API's id.
-            let mut host_label = guard.mint_id();
-            while host_label == api_id {
-                host_label = guard.mint_id();
-            }
-            (api_id, host_label)
+            api_id
         };
 
-        // The API's REAL-TIME endpoint is a DATA plane — a subscriber completes a WebSocket
-        // handshake against it and then exchanges frames — and the core owns the socket it
-        // is served on ([`crate::service::graphql_api`]): it is opened for the id just
-        // minted, and the address it landed on is what this API publishes as its `REALTIME`
-        // endpoint, so the value a caller hands a WebSocket client is an address that
-        // client can reach. A socket that could not be opened leaves the API UNCREATED
-        // rather than publishing an endpoint nothing serves.
-        let realtime_authority =
-            match crate::service::graphql_api::open_for_api(&*self.engine, &api_id).await {
-                Ok(authority) => authority,
+        // Both of the API's endpoints are a DATA plane — a client POSTs GraphQL documents
+        // to one and a subscriber exchanges frames over the other — and the core owns the
+        // sockets they are served on ([`crate::service::graphql_api`]): they are opened for
+        // the id just minted, and the addresses they landed on are what this API publishes
+        // as its `GRAPHQL` and `REALTIME` endpoints, so the values a caller hands a GraphQL
+        // or WebSocket client are addresses that client can reach. A socket that could not
+        // be opened leaves the API UNCREATED rather than publishing an endpoint nothing
+        // serves.
+        let (graphql_authority, realtime_authority) =
+            match crate::service::graphql_api::open_for_api(&self.engine, &api_id).await {
+                Ok(authorities) => authorities,
                 Err(reason) => {
                     state.lock().graphql_data_plane.forget_api(&api_id);
                     return Err(CreateGraphqlApiErrorModeled::InternalFailureException(
                         InternalFailureException {
                             message: Some(format!(
-                                "this emulator could not open the socket a GraphQL API's \
-                                 real-time endpoint is served on, so no API was created: \
-                                 {reason}"
+                                "this emulator could not open the sockets a GraphQL API's \
+                                 endpoints are served on, so no API was created: {reason}"
                             )),
                         },
                     )
@@ -314,16 +307,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 &region,
                 &crate::state::api_resource(&api_id),
             ),
-            // The endpoint records are built the same way for either kind of API
-            // (`crate::state::api_dns`); a GraphQL API publishes its HTTPS endpoint
-            // under the `GRAPHQL` key, which `uris` is derived from, and its real-time
-            // endpoint at the address that endpoint is served on.
-            dns: crate::state::api_dns(
-                &host_label,
-                &region,
-                crate::state::GRAPHQL_ENDPOINT,
-                &realtime_authority,
-            ),
+            // The endpoint records are the addresses the API's two endpoints are SERVED
+            // on (`crate::state::api_dns`), which `uris` is derived from.
+            dns: crate::state::api_dns(&graphql_authority, &realtime_authority),
             api_id: api_id.clone(),
             name: input.name,
             authentication_type: input.authentication_type,
