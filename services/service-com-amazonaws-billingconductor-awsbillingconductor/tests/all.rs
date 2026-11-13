@@ -141,6 +141,8 @@ mod pricing_rule_billing_periods;
 mod pricing_rule_core_loop;
 #[path = "all/pricing_rule_custom_tier_usage_ranges.rs"]
 mod pricing_rule_custom_tier_usage_ranges;
+#[path = "all/pricing_rule_delete_reader_agreement.rs"]
+mod pricing_rule_delete_reader_agreement;
 #[path = "all/pricing_rule_lifecycle.rs"]
 mod pricing_rule_lifecycle;
 #[path = "all/pricing_rule_rate_exclusivity.rs"]

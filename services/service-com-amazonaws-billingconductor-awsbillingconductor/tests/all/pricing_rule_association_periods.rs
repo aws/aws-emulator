@@ -88,6 +88,38 @@ pub(crate) fn shift_period(period: &str, months: i64) -> String {
     period_from_months(period_months(period) + months)
 }
 
+/// The periods a suite probes around an association: well before it, just before it, the
+/// period it started in, the one after, the current period, the one after that, and the
+/// extremes of the modelled `BillingPeriod` pattern `^\d{4}-(0?[1-9]|1[012])$`.
+///
+/// Shared by the suites that hold the readers of an association to each other
+/// (`tests/all/pricing_rule_delete_reader_agreement.rs`,
+/// `tests/all/association_delete_gate_spans_billing_periods.rs`).
+pub(crate) fn probe_periods(start: &str, now: &str) -> Vec<String> {
+    vec![
+        "1970-01".to_string(),
+        shift_period(start, -13),
+        shift_period(start, -1),
+        start.to_string(),
+        shift_period(start, 1),
+        now.to_string(),
+        shift_period(now, 1),
+        "9999-12".to_string(),
+    ]
+}
+
+/// `POST /delete-pricing-rule` — the write that can strand an association
+/// (`smithy_query(query="operation",operation="DeletePricingRule")`).
+pub(crate) const DELETE_RULE_PATH: &str = "/delete-pricing-rule";
+
+/// `POST /delete-pricing-plan`, which takes a plan and the associations it holds out of
+/// existence.
+pub(crate) const DELETE_PLAN_PATH: &str = "/delete-pricing-plan";
+
+/// `PUT /disassociate-pricing-rules`, which ends an association from the period the call
+/// is made in onward.
+pub(crate) const DISASSOCIATE_PATH: &str = "/disassociate-pricing-rules";
+
 /// A live emulator holding only this service, with the engine kept so a row can
 /// backdate an association the wire could only make now.
 ///
@@ -343,7 +375,12 @@ impl Emulator {
 
     /// The rule ARNs `ListPricingRulesAssociatedToPricingPlan` reports for `plan` in
     /// `period` (`None` names no period at all).
-    async fn rules_for_plan(&self, case: &str, plan: &str, period: Option<&str>) -> Vec<String> {
+    pub(crate) async fn rules_for_plan(
+        &self,
+        case: &str,
+        plan: &str,
+        period: Option<&str>,
+    ) -> Vec<String> {
         let mut body = json!({"PricingPlanArn": plan});
         if let Some(period) = period {
             body["BillingPeriod"] = json!(period);
@@ -361,7 +398,30 @@ impl Emulator {
 
     /// The plan ARNs `ListPricingPlansAssociatedWithPricingRule` reports for `rule`
     /// in `period`.
-    async fn plans_for_rule(&self, case: &str, rule: &str, period: Option<&str>) -> Vec<String> {
+    pub(crate) async fn plans_for_rule(
+        &self,
+        case: &str,
+        rule: &str,
+        period: Option<&str>,
+    ) -> Vec<String> {
+        let (status, plans) = self.plans_for_rule_answer(rule, period).await;
+        assert_eq!(
+            status, 200,
+            "case {case}: ListPricingPlansAssociatedWithPricingRule expected 200, got {status} \
+             with {plans:?}"
+        );
+        plans
+    }
+
+    /// The STATUS `ListPricingPlansAssociatedWithPricingRule` answers for `rule` in
+    /// `period`, beside the plan ARNs it reports — the rule-side reader as an existence
+    /// probe too, since it answers the modelled 404 for a rule the store does not hold
+    /// (`tests/all/pricing_rule_delete_reader_agreement.rs`).
+    pub(crate) async fn plans_for_rule_answer(
+        &self,
+        rule: &str,
+        period: Option<&str>,
+    ) -> (u16, Vec<String>) {
         let mut body = json!({"PricingRuleArn": rule});
         if let Some(period) = period {
             body["BillingPeriod"] = json!(period);
@@ -369,12 +429,7 @@ impl Emulator {
         let (status, answer) = self
             .post("/list-pricing-plans-associated-with-pricing-rule", &body)
             .await;
-        assert_eq!(
-            status, 200,
-            "case {case}: ListPricingPlansAssociatedWithPricingRule expected 200, got {status} \
-             with {answer:?}"
-        );
-        arns(&answer, "PricingPlanArns")
+        (status, arns(&answer, "PricingPlanArns"))
     }
 
     /// The `Size` `ListPricingPlans` reports for `plan` in `period`.
@@ -430,6 +485,76 @@ impl Emulator {
             .unwrap_or_else(|| {
                 panic!("case {case}: ListPricingRules reported no count: {answer:?}")
             })
+    }
+
+    /// Does `ListPricingRules` report `rule` for `period`? The period-scoped existence
+    /// probe for a pricing rule: a rule is reported exactly while the store holds it and
+    /// the period is one from its creation onward, so this is what decides whether a rule
+    /// ARN another reader reports resolves at all
+    /// (`tests/all/pricing_rule_delete_reader_agreement.rs`,
+    /// `tests/all/association_delete_gate_spans_billing_periods.rs`).
+    pub(crate) async fn rule_is_reported(
+        &self,
+        case: &str,
+        rule: &str,
+        period: Option<&str>,
+    ) -> bool {
+        let mut body = json!({"Filters": {"Arns": [rule]}});
+        if let Some(period) = period {
+            body["BillingPeriod"] = json!(period);
+        }
+        let (status, answer) = self.post("/list-pricing-rules", &body).await;
+        assert_eq!(
+            status, 200,
+            "case {case}: ListPricingRules expected 200, got {status} with {answer:?}"
+        );
+        answer["PricingRules"]
+            .as_array()
+            .is_some_and(|rules| !rules.is_empty())
+    }
+
+    /// The INVARIANT every reader of one pricing rule association is held to: over each
+    /// period of `periods`, the readers of `plan`'s associations agree with each other,
+    /// and every rule ARN they report names a rule the store still reports for that
+    /// period — so no reader hands a caller an ARN that resolves to nothing.
+    ///
+    /// The three readers of one association are
+    /// `ListPricingRulesAssociatedToPricingPlan` ([`Self::rules_for_plan`]),
+    /// `PricingPlanListElement.Size` ([`Self::plan_size`]) and the inverse index
+    /// `ListPricingPlansAssociatedWithPricingRule` ([`Self::plans_for_rule_answer`],
+    /// which answers the modelled 404 for a rule the store does not hold);
+    /// `ListPricingRules` ([`Self::rule_is_reported`]) is what decides whether the ARN
+    /// they report resolves.
+    pub(crate) async fn assert_readers_agree(&self, case: &str, plan: &str, periods: &[String]) {
+        for period in periods {
+            let reported = self.rules_for_plan(case, plan, Some(period)).await;
+            let size = self.plan_size(case, plan, Some(period)).await;
+            let expected_size =
+                i64::try_from(reported.len()).expect("a small count fits in an i64");
+            assert_eq!(
+                size, expected_size,
+                "case {case}: in {period} ListPricingPlans counts Size {size} for {plan} while \
+                 the plan-side listing reports {reported:?}"
+            );
+            for rule in &reported {
+                assert!(
+                    self.rule_is_reported(case, rule, Some(period)).await,
+                    "case {case}: the plan {plan} reports the rule {rule} for {period}, but \
+                     ListPricingRules does not report that rule then"
+                );
+                let (status, plans) = self.plans_for_rule_answer(rule, Some(period)).await;
+                assert_eq!(
+                    status, 200,
+                    "case {case}: the plan {plan} reports the rule {rule} for {period}, but the \
+                     rule-side reader answered {status} with {plans:?}"
+                );
+                assert!(
+                    plans.iter().any(|named| named == plan),
+                    "case {case}: the rule-side reader of {rule} in {period} reports {plans:?}, \
+                     which omits {plan}"
+                );
+            }
+        }
     }
 }
 

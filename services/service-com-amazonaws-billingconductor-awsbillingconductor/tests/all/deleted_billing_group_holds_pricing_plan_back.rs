@@ -38,12 +38,11 @@ use serde_json::json;
 
 use crate::association_delete_gate_spans_billing_periods::{
     assert_every_reported_plan_resolves, error_code, plan_is_stored, reported_plan,
-    DELETE_PLAN_PATH,
 };
 use crate::billing_group_billing_periods::{
     current_period, primary_account_id, Emulator as GroupEmulator,
 };
-use crate::pricing_rule_association_periods::shift_period;
+use crate::pricing_rule_association_periods::{shift_period, DELETE_PLAN_PATH};
 
 /// How a row spells the plan its delete addresses: both spellings the modelled
 /// `PricingPlanArn` pattern admits name the same record.

@@ -46,25 +46,14 @@ use service_com_amazonaws_billingconductor_awsbillingconductor::state::MAX_BILLI
 use crate::billing_group_billing_periods::{
     current_period, primary_account_id, Emulator as GroupEmulator,
 };
-use crate::pricing_rule_association_periods::{arns, shift_period, Emulator as PlanEmulator};
-
-/// `POST /delete-pricing-plan` — one of the two operations under test
-/// (`smithy_query(query="operation",operation="DeletePricingPlan")`).
-pub(crate) const DELETE_PLAN_PATH: &str = "/delete-pricing-plan";
-
-/// `POST /delete-pricing-rule` — the other one.
-const DELETE_RULE_PATH: &str = "/delete-pricing-rule";
-
-/// `PUT /disassociate-pricing-rules`, which ends an association from the period the call
-/// is made in onward.
-const DISASSOCIATE_PATH: &str = "/disassociate-pricing-rules";
+use crate::pricing_rule_association_periods::{
+    probe_periods, shift_period, Emulator as PlanEmulator, DELETE_PLAN_PATH, DELETE_RULE_PATH,
+    DISASSOCIATE_PATH,
+};
 
 /// The plan-side reader of a rule association, which is also the existence probe for a
 /// pricing plan: 200 for a stored plan, 404 for one that is not stored.
 const LIST_RULES_OF_PLAN_PATH: &str = "/list-pricing-rules-associated-to-pricing-plan";
-
-/// `POST /list-pricing-rules` — the period-scoped reader of a pricing rule.
-const LIST_RULES_PATH: &str = "/list-pricing-rules";
 
 /// The wire error code of a failure response (`__type`), without any namespace.
 pub(crate) fn error_code(body: &Value) -> String {
@@ -513,35 +502,16 @@ async fn a_naming_generation_the_version_bound_dropped_holds_the_plan_back_no_lo
     assert_every_reported_plan_resolves(em, case, &group, &probed).await;
 }
 
-/// The rules the plan associates in `period`, as the plan-side reader reports them.
+/// The rules the plan associates in `period`, as the plan-side reader reports them —
+/// through the shared harness, so one association has one reader.
 async fn rules_of_plan(em: &PlanEmulator, case: &str, plan: &str, period: &str) -> Vec<String> {
-    let (status, answer) = em
-        .post(
-            LIST_RULES_OF_PLAN_PATH,
-            &json!({"PricingPlanArn": plan, "BillingPeriod": period}),
-        )
-        .await;
-    assert_eq!(
-        status, 200,
-        "case {case:?}: ListPricingRulesAssociatedToPricingPlan expected 200, got {status} with \
-         {answer:?}"
-    );
-    arns(&answer, "PricingRuleArns")
+    em.rules_for_plan(case, plan, Some(period)).await
 }
 
 /// Does the store still hold the pricing rule `rule`? `ListPricingRules` filtered to its
-/// ARN reports it exactly while it is stored.
+/// ARN reports it exactly while it is stored ([`PlanEmulator::rule_is_reported`]).
 async fn rule_is_stored(em: &PlanEmulator, case: &str, rule: &str) -> bool {
-    let (status, answer) = em
-        .post(LIST_RULES_PATH, &json!({"Filters": {"Arns": [rule]}}))
-        .await;
-    assert_eq!(
-        status, 200,
-        "case {case:?}: ListPricingRules expected 200, got {status} with {answer:?}"
-    );
-    answer["PricingRules"]
-        .as_array()
-        .is_some_and(|rules| !rules.is_empty())
+    em.rule_is_reported(case, rule, None).await
 }
 
 #[tokio::test]
@@ -594,6 +564,9 @@ async fn a_rule_a_plan_associated_in_an_earlier_period_cannot_be_deleted() {
                 "case {case:?}: no period reported the association, so none may report the \
                  deleted rule"
             );
+            // No reader of this plan's associations may disagree with another either.
+            em.assert_readers_agree(&case, &plan, &probe_periods(&start, &now))
+                .await;
             continue;
         }
 
@@ -636,5 +609,7 @@ async fn a_rule_a_plan_associated_in_an_earlier_period_cannot_be_deleted() {
             "case {case:?}: expected the period {start} to still report the association, got \
              {reported:?}"
         );
+        em.assert_readers_agree(&case, &plan, &probe_periods(&start, &now))
+            .await;
     }
 }

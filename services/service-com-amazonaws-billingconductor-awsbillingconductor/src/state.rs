@@ -3600,6 +3600,17 @@ impl ComAmazonawsBillingconductorAwsbillingconductorState {
     /// it: its name-index entry and the idempotency entries that named it, so a
     /// `ClientToken` cannot replay into the ARN of a rule that no longer exists.
     /// `None` when no such rule is stored.
+    ///
+    /// The associations pricing PLANS hold to the rule are not stripped here, unlike the
+    /// associations [`Self::remove_billing_group`] and [`Self::remove_custom_line_item`]
+    /// strip: an association names a resource that exists is enforced for a pricing rule
+    /// one step earlier, by refusing the delete outright while any billing period reports
+    /// an association to it ([`Self::pricing_plans_referencing_rule_in_any_period`]), so
+    /// no association a plan still holds can name a rule this removal took away — and the
+    /// ended associations a read of a closed period reports keep the periods they really
+    /// were in force in. A plan's own associations go with the plan
+    /// ([`Self::remove_pricing_plan`]), which is what makes the rule deletable again.
+    /// `tests/all/pricing_rule_delete_reader_agreement.rs` holds the readers to it.
     pub fn remove_pricing_rule(&mut self, rule_arn: &str) -> Option<PricingRuleRecord> {
         let removed = self.pricing_rules.remove(rule_arn)?;
         self.pricing_rule_names.remove(&removed.name);
