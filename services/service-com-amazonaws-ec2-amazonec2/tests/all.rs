@@ -2071,3 +2071,8 @@ mod launch_template_key_and_version_resolution;
 // the successes with none of those. Declared beside `prefix_lists` for the reason the note
 #[path = "all/served_call_audit_records.rs"]
 mod served_call_audit_records;
+// What a SUCCESSFUL body carries: the association members an Elastic IP reports through every
+// read that reports it (and the filters that select on those same stored values), and the
+// envelope's single `<return>true</return>` beside an operation's modelled output. Declared
+#[path = "all/associated_address_reads_and_return_flag.rs"]
+mod associated_address_reads_and_return_flag;
