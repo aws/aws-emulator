@@ -12,6 +12,8 @@
 //! * The JOBS and COMMANDS planes word it `<Family> <id> cannot be found.`
 //!   ([`plane_not_found`]).
 //! * The AUTHORIZER family words it `Authorizer <name> not found`.
+//! * The DEVICE DEFENDER family words it `Audit task <id> does not exist.`
+//!   ([`missing_audit_task_message`]).
 //! * The BULK THING REGISTRATION task family words it with a sentence that carries no
 //!   variable part at all ([`MISSING_THING_REGISTRATION_TASK_MESSAGE`]): the task id is
 //!   not interpolated.
@@ -101,6 +103,16 @@ pub fn missing_job_execution_message(thing_name: &str, job_id: &str) -> String {
 /// FIXED text with no variable part: this family keeps the requested id out of the
 /// refusal, so nothing of the request is echoed back.
 pub const MISSING_THING_REGISTRATION_TASK_MESSAGE: &str = "Task doesn't exist";
+
+/// How this service states that a `taskId` names no Device Defender audit task this
+/// account holds — for a reader of one and for a cancel of one.
+///
+/// The DEVICE DEFENDER family states the miss of the resource the request named, so the
+/// variable part is the id the request asked about and the rest is fixed: the audit is
+/// either an audit this account started or no audit at all.
+pub fn missing_audit_task_message(task_id: &str) -> String {
+    format!("Audit task {task_id} does not exist.")
+}
 
 /// How this service refuses an `indexName` that is no fleet index of this service at all.
 ///

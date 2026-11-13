@@ -1,15 +1,19 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op StartOnDemandAuditTask
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `StartOnDemandAuditTask`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`StartOnDemandAuditTask::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! Starts an on-demand Device Defender audit over the checks the request targets.
+//!
+//! Every targeted name must be an audit check this account has ENABLED ("the checks you
+//! specify must be enabled for your account or an exception occurs"), which is checked
+//! before anything is written, so a refused request starts no audit.
+//!
+//! The audit is PERFORMED by this call: each targeted check is evaluated over the
+//! account's resources and what it amounted to is recorded on the task
+//! ([`crate::state::audit_tasks`]). The task is answered in the non-terminal status AWS
+//! answers a fresh audit in and the clock is what completes it
+//! (`crate::state::AUDIT_SPAN`), so `DescribeAuditTask` derives the status it reports from
+//! the recorded due instant and writes nothing.
 //!
 //! ## Shape of an operation
 //!
@@ -110,6 +114,18 @@ impl From<StartOnDemandAuditTaskErrorModeled> for StartOnDemandAuditTaskError {
     }
 }
 
+/// Refuse this request as invalid, with the operation's modelled `InvalidRequestException`
+/// ("The request is not valid", HTTP 400).
+///
+/// The message names the member and the rule it broke; the rules themselves live with the
+/// audit the request asked for ([`crate::state::AuditTaskRefusal`]).
+fn invalid_request(message: String) -> StartOnDemandAuditTaskError {
+    StartOnDemandAuditTaskErrorModeled::InvalidRequestException(InvalidRequestException {
+        message: Some(message),
+    })
+    .into()
+}
+
 /// The `StartOnDemandAuditTask` operation.
 ///
 /// Owns the shared engine (the constructor seam) and implements
@@ -146,18 +162,49 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `StartOnDemandAuditTask` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(StartOnDemandAuditTaskErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("StartOnDemandAuditTask"))
+        // An audit is account-wide, so no request metadata selects what is audited.
+        let _ = ctx;
+
+        let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
+            StartOnDemandAuditTaskErrorModeled::InternalFailureException(InternalFailureException {
+                message: Some("the IoT emulator has no state store attached".to_string()),
+            })
+        })?;
+
+        let started_at = ::std::time::SystemTime::now();
+        let mut store = state.lock();
+
+        // Which checks may be targeted is the account's own configuration, so the rule is
+        // checked against the store and ahead of every write.
+        crate::state::targetable_checks(&store, &input.target_check_names)
+            .map_err(|refusal| invalid_request(refusal.message()))?;
+        if store.audit_tasks.len() >= crate::state::MAX_AUDIT_TASKS {
+            return Err(StartOnDemandAuditTaskErrorModeled::LimitExceededException(
+                LimitExceededException {
+                    message: Some(crate::state::too_many_audit_tasks_message()),
+                },
+            )
+            .into());
+        }
+
+        // The audit this call starts is PERFORMED here: each targeted check is evaluated
+        // over the resources the account holds right now, and what each amounted to is what
+        // the task then reports.
+        let checks = crate::state::run_checks(&store, &input.target_check_names, started_at);
+        let task = crate::state::AuditTask::on_demand(
+            // "The ID of the on-demand audit you started" — minted here, unique to this
+            // audit, and within `AuditTaskId`'s modelled length and pattern (a canonical
+            // UUID is 36 characters of 40, of hex digits and hyphens).
+            crate::state::fresh_uuid(),
+            started_at,
+            checks,
+        );
+        // The response is built from the record that is about to be persisted, so what this
+        // call reports and what the next `DescribeAuditTask` reads are one value.
+        let output = StartOnDemandAuditTaskOutput {
+            task_id: Some(task.task_id.clone()),
+        };
+        store.audit_tasks.insert(task.task_id.clone(), task);
+        Ok(output)
     }
 }

@@ -59,6 +59,8 @@ mod job_execution_read;
 mod job_targeting;
 #[path = "all/not_found_wording.rs"]
 mod not_found_wording;
+#[path = "all/on_demand_audit_task.rs"]
+mod on_demand_audit_task;
 #[path = "all/ota_update_deployment.rs"]
 mod ota_update_deployment;
 #[path = "all/ota_update_job_document.rs"]

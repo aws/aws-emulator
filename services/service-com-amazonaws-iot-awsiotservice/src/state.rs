@@ -116,6 +116,12 @@
 //! enabled, no notification target enabled, no role), which is why the field has a
 //! default and the reader never has to create what it reports (see
 //! [`audit_configuration`]).
+//!
+//! It also holds the account's DEVICE DEFENDER AUDIT TASKS, keyed by `taskId` — the id is
+//! the audit's identity and the `@httpLabel` of `/audit/tasks/{taskId}` on every
+//! single-audit operation. One record carries what the audit amounted to over the account's
+//! resources, check by check, so `DescribeAuditTask` after `StartOnDemandAuditTask` reports
+//! the audit that call performed (see [`audit_tasks`]).
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::time::{Duration, SystemTime};
@@ -923,6 +929,17 @@ pub struct ComAmazonawsIotAwsiotserviceState {
     /// records why the record is bounded by its own catalogs: one entry per audit check
     /// and one per modelled notification type, whatever a caller sends.
     pub audit_configuration: AccountAuditConfiguration,
+    /// Every DEVICE DEFENDER AUDIT TASK that exists, keyed by `taskId`.
+    ///
+    /// The id is the audit's identity — `StartOnDemandAuditTask` answers it as "The ID of
+    /// the on-demand audit you started" and the model binds it as the `@httpLabel` of
+    /// `/audit/tasks/{taskId}` on every single-audit operation — so a `BTreeMap` keyed by
+    /// id is the audit store itself. `BTreeMap` (not `HashMap`) because `ListAuditTasks` is
+    /// `@paginated` and a page boundary is only meaningful over a stable order.
+    ///
+    /// A caller grows this store, so it is bounded: [`audit_tasks::MAX_AUDIT_TASKS`] is the
+    /// ceiling `StartOnDemandAuditTask` refuses past.
+    pub audit_tasks: BTreeMap<String, AuditTask>,
 }
 
 impl ComAmazonawsIotAwsiotserviceState {
@@ -2871,16 +2888,28 @@ pub use audit_configuration::{
     is_audit_check, AccountAuditConfiguration, AuditConfigurationRefusal, AUDIT_CHECK_NAMES,
 };
 
+// What a DEVICE DEFENDER AUDIT does — which checks one may target, what each check
+// amounts to over this account's resources, and what a reader of the audit reports —
+// lives in `state/audit_tasks.rs`, beside the audit configuration that decides which
+// checks may run at all. Its names are re-exported here so a handler reaches them as
+// `crate::state::<name>`.
+pub mod audit_tasks;
+pub use audit_tasks::{
+    run_checks, targetable_checks, too_many_audit_tasks_message, AuditCheckRun, AuditTask,
+    AuditTaskRefusal, AUDIT_SPAN, AUDIT_TASK_COMPLETED, AUDIT_TASK_IN_PROGRESS, MAX_AUDIT_TASKS,
+    ON_DEMAND_AUDIT_TASK_TYPE,
+};
+
 // How a request that named a resource this service does not hold is REFUSED — the fixed
 // sentence each resource family states such a miss with — lives in `state/not_found.rs`,
 // beside the store accessor for the same reason the rules engine does. Its names are
 // re-exported here so a handler reaches them as `crate::state::<name>`.
 pub mod not_found;
 pub use not_found::{
-    missing_authorizer_message, missing_command_message, missing_job_execution_job_message,
-    missing_job_execution_message, missing_job_message, missing_thing_group_message,
-    missing_thing_message, missing_thing_type_message, unrecognized_index_name_message,
-    MISSING_THING_REGISTRATION_TASK_MESSAGE,
+    missing_audit_task_message, missing_authorizer_message, missing_command_message,
+    missing_job_execution_job_message, missing_job_execution_message, missing_job_message,
+    missing_thing_group_message, missing_thing_message, missing_thing_type_message,
+    unrecognized_index_name_message, MISSING_THING_REGISTRATION_TASK_MESSAGE,
 };
 
 /// This service's store in the shared engine: call it with a handler's `&*self.engine`.
