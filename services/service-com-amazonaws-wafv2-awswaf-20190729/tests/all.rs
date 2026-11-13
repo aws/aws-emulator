@@ -131,6 +131,8 @@ mod rule_group_capacity_refusal;
 mod rule_group_deletion;
 #[path = "all/rule_group_lifecycle.rs"]
 mod rule_group_lifecycle;
+#[path = "all/rule_group_override_staging.rs"]
+mod rule_group_override_staging;
 #[path = "all/rule_group_updates.rs"]
 mod rule_group_updates;
 #[path = "all/sampled_requests.rs"]
