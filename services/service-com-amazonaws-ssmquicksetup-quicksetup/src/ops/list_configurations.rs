@@ -159,6 +159,22 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
+        // The caller's own identity-based policies are evaluated before the store is
+        // read: against the manager ARN this listing was scoped to when it names one,
+        // and otherwise against IAM's own spelling of "no particular resource"
+        // (`crate::state::identity_authorization`).
+        if let Some(denied) = crate::state::identity_authorization::access_denied(
+            &*self.engine,
+            ctx,
+            Self::NAME,
+            input
+                .manager_arn
+                .as_deref()
+                .unwrap_or(crate::state::identity_authorization::ANY_RESOURCE),
+        ) {
+            return Err(ListConfigurationsErrorModeled::AccessDeniedException(denied).into());
+        }
+
         // Quick Setup is a regional control plane, so this listing reports the
         // configurations of the managers created through the endpoint of the Region this
         // request was signed for and no others.

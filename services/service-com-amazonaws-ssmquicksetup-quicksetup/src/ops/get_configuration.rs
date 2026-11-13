@@ -170,6 +170,20 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
+        // The caller's own identity-based policies are evaluated before the request's own
+        // input is judged and before anything is looked up. This route's label is a
+        // configuration id rather than an ARN, so the request names no resource ARN and
+        // is judged against IAM's own spelling of "no particular resource"
+        // (`crate::state::identity_authorization::ANY_RESOURCE`).
+        if let Some(denied) = crate::state::identity_authorization::access_denied(
+            &*self.engine,
+            ctx,
+            Self::NAME,
+            crate::state::identity_authorization::ANY_RESOURCE,
+        ) {
+            return Err(GetConfigurationErrorModeled::AccessDeniedException(denied).into());
+        }
+
         // Quick Setup is a regional control plane: a configuration is served only by
         // the endpoint of the Region whose manager deployed it, so the Region this
         // request was signed for is part of the lookup.

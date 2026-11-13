@@ -202,6 +202,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
+        // The caller's own identity-based policies are evaluated before the request's own
+        // input is judged and before anything is tagged, against the ARN the request
+        // carried (`crate::state::identity_authorization`).
+        if let Some(denied) = crate::state::identity_authorization::access_denied(
+            &*self.engine,
+            ctx,
+            Self::NAME,
+            &input.resource_arn,
+        ) {
+            return Err(TagResourceErrorModeled::AccessDeniedException(denied).into());
+        }
+
         // Every constraint `TagsMap` states on a key and a value is refused by the
         // centralized walk before this body runs, so what is checked here is only what
         // the model cannot say (see `tags_rejection`).

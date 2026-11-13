@@ -136,9 +136,23 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
         // The input is `smithy.api#Unit`, so there is nothing to read from it, and the
-        // catalog is the same for every caller: no request metadata and no store entry
-        // takes part in the answer.
-        let _ = (&input, ctx, &self.engine);
+        // catalog is the same for every authorized caller: no request metadata and no
+        // store entry takes part in the answer.
+        let _ = &input;
+
+        // WHO is asking does take part: AWS decides a signed call at the IAM layer, so
+        // the caller's own identity-based policies are evaluated before the catalog is
+        // reported. This operation addresses no resource of its own, so it is judged
+        // against IAM's own spelling of "no particular resource"
+        // (`crate::state::identity_authorization::ANY_RESOURCE`).
+        if let Some(denied) = crate::state::identity_authorization::access_denied(
+            &*self.engine,
+            ctx,
+            Self::NAME,
+            crate::state::identity_authorization::ANY_RESOURCE,
+        ) {
+            return Err(ListQuickSetupTypesErrorModeled::AccessDeniedException(denied).into());
+        }
 
         Ok(ListQuickSetupTypesOutput {
             quick_setup_type_list: Some(

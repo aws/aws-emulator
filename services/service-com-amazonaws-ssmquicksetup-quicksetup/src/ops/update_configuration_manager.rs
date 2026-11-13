@@ -168,6 +168,20 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
+        // The caller's own identity-based policies are evaluated before anything is read
+        // or written, against the ARN the request carried
+        // (`crate::state::identity_authorization`).
+        if let Some(denied) = crate::state::identity_authorization::access_denied(
+            &*self.engine,
+            ctx,
+            Self::NAME,
+            &input.manager_arn,
+        ) {
+            return Err(
+                UpdateConfigurationManagerErrorModeled::AccessDeniedException(denied).into(),
+            );
+        }
+
         // Quick Setup is a regional control plane: a manager is served only by the
         // endpoint of the Region its ARN carries, so the Region this request was signed
         // for is part of the lookup.

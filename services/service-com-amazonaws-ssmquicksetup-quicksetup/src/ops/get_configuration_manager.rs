@@ -164,6 +164,22 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
+        // AWS decides a signed call at the IAM layer, ahead of the service looking at the
+        // resource it names, so the CALLER's own identity-based policies are evaluated
+        // before this manager is read — against the ARN the request carried, so the
+        // decision is the same whether or not it names anything
+        // (`crate::state::identity_authorization`).
+        if let Some(denied) = crate::state::identity_authorization::access_denied(
+            &*self.engine,
+            ctx,
+            Self::NAME,
+            &input.manager_arn,
+        ) {
+            return Err(
+                GetConfigurationManagerErrorModeled::AccessDeniedException(denied).into(),
+            );
+        }
+
         // Quick Setup is a regional control plane: a manager is served only by the
         // endpoint of the Region its ARN carries, so the Region this request was signed
         // for is part of the lookup.

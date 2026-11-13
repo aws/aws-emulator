@@ -145,10 +145,7 @@ impl From<CreateConfigurationManagerErrorModeled> for CreateConfigurationManager
 /// every rule here.
 fn definitions_rejection(input: &CreateConfigurationManagerInput) -> Option<String> {
     if input.configuration_definitions.is_empty() {
-        return Some(
-            "ConfigurationDefinitions must carry at least one configuration definition"
-                .to_string(),
-        );
+        return Some(crate::state::NO_CONFIGURATION_DEFINITIONS_MESSAGE.to_string());
     }
     let too_many = |member: &str, actual: usize, cap: usize| {
         (actual > cap).then(|| {
@@ -315,6 +312,22 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
+        // AWS decides a signed call at the IAM layer, ahead of the service looking at the
+        // request's own input, so the CALLER's own identity-based policies are evaluated
+        // before anything here is judged or stored. A create addresses no resource yet,
+        // so it is judged against IAM's own spelling of "no particular resource"
+        // (`crate::state::identity_authorization::ANY_RESOURCE`).
+        if let Some(denied) = crate::state::identity_authorization::access_denied(
+            &*self.engine,
+            ctx,
+            Self::NAME,
+            crate::state::identity_authorization::ANY_RESOURCE,
+        ) {
+            return Err(
+                CreateConfigurationManagerErrorModeled::AccessDeniedException(denied).into(),
+            );
+        }
+
         // `Name`'s and `Description`'s patterns, every definition's `Type` pattern and
         // every parameter and tag key/value length are MODELLED constraints, so the
         // centralized walk has already refused anything outside them with a 400

@@ -143,6 +143,19 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // for, exactly as the region the writer keyed it under was.
         let _ = &input;
 
+        // The caller's own identity-based policies are evaluated before the settings are
+        // read. This operation addresses no resource of its own, so it is judged against
+        // IAM's own spelling of "no particular resource"
+        // (`crate::state::identity_authorization::ANY_RESOURCE`).
+        if let Some(denied) = crate::state::identity_authorization::access_denied(
+            &*self.engine,
+            ctx,
+            Self::NAME,
+            crate::state::identity_authorization::ANY_RESOURCE,
+        ) {
+            return Err(GetServiceSettingsErrorModeled::AccessDeniedException(denied).into());
+        }
+
         let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
             GetServiceSettingsErrorModeled::InternalServerException(InternalServerException {
                 message: Some("the Quick Setup service settings store is unavailable".to_string()),

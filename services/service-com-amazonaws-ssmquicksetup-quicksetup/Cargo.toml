@@ -35,8 +35,13 @@ regex = "1.13"
 hex = { workspace = true }
 # The IAM store a definition's `LocalDeploymentAdministrationRoleArn` is resolved against,
 # to decide whether the service that deploys a LOCAL configuration may assume that role
-# (`state::local_administration_role`).
+# (`state::local_administration_role`), and the store holding the identity-based policies
+# in force on the CALLING principal (`state::identity_authorization`).
 service-com-amazonaws-iam-awsidentitymanagementv20100508 = { workspace = true }
+# The STS store, for the identity an access key id speaks for: the principal
+# `sts:GetCallerIdentity` answers for the credentials a request signed with, which is the
+# principal whose identity-based policies authorize the request.
+service-com-amazonaws-sts-awssecuritytokenservicev20110615 = { workspace = true }
 
 [build-dependencies]
 emulator-core-build-support = { workspace = true }

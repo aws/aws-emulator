@@ -150,6 +150,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
+        // The caller's own identity-based policies are evaluated before the resource's
+        // tags are read, against the ARN the request carried
+        // (`crate::state::identity_authorization`).
+        if let Some(denied) = crate::state::identity_authorization::access_denied(
+            &*self.engine,
+            ctx,
+            Self::NAME,
+            &input.resource_arn,
+        ) {
+            return Err(ListTagsForResourceErrorModeled::AccessDeniedException(denied).into());
+        }
+
         // `ResourceArn` is this request's only input, and the route matches only a
         // request carrying it, so nothing is left for this handler to refuse as a bad
         // request: an ARN naming nothing is the 404 below, never a 400.

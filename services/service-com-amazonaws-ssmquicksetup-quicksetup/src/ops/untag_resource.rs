@@ -202,6 +202,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
+        // The caller's own identity-based policies are evaluated before the request's own
+        // input is judged and before any tag is removed, against the ARN the request
+        // carried (`crate::state::identity_authorization`).
+        if let Some(denied) = crate::state::identity_authorization::access_denied(
+            &*self.engine,
+            ctx,
+            Self::NAME,
+            &input.resource_arn,
+        ) {
+            return Err(UntagResourceErrorModeled::AccessDeniedException(denied).into());
+        }
+
         // Nothing the model says about `TagKeys`' elements constrains them, so every
         // key the walk admits reaches here; what is checked below is only what the
         // model cannot say (see `tag_keys_rejection`).

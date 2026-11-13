@@ -16,6 +16,10 @@ use std::time::{Duration, SystemTime};
 /// by the service that deploys it: its own concern, so its own module.
 pub mod local_administration_role;
 
+/// Whether the CALLER's own identity-based IAM policies let a request perform the action
+/// it asks for: its own concern, so its own module.
+pub mod identity_authorization;
+
 use crate::ops::types::{
     ConfigurationDefinition, ConfigurationDefinitionSummary, ConfigurationManagerSummary,
     ConfigurationSummary, Filter, ServiceSettings, StatusSummary,
@@ -788,6 +792,18 @@ pub const NO_DEPLOYMENT_TARGET_MESSAGE: &str =
 /// [`missing_parameter_message`] builds for every other parameter a definition must
 /// provide, this one being the parameter every type's table requires.
 pub const NO_DEPLOYMENT_REGION_MESSAGE: &str = "TargetRegions must be defined in parameters.";
+
+/// Why a create whose `ConfigurationDefinitions` list carries no definition at all is
+/// refused.
+///
+/// `CreateConfigurationManagerInput$ConfigurationDefinitions` is `@required` and its
+/// target `ConfigurationDefinitionsInputList` carries no `@length`, so the EMPTY list
+/// reaches the handler and the non-empty rule is the service's rather than the model's: a
+/// configuration manager is the deployment of its definitions, so one with none to deploy
+/// is refused. Recorded behavior supplies the sentence, which is wholly fixed text —
+/// nothing in it is interpolated from the request or the environment.
+pub const NO_CONFIGURATION_DEFINITIONS_MESSAGE: &str =
+    "At least 1 configuration definition must be provided.";
 
 /// Why a configuration definition whose parameters leave out one the documented table
 /// for its own configuration type requires is refused.

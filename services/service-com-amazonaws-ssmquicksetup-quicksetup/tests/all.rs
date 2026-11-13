@@ -31,6 +31,8 @@ mod configuration_token_region_scope;
 mod constraint_refusal_wording;
 #[path = "all/date_time_timestamps.rs"]
 mod date_time_timestamps;
+#[path = "all/definition_refusal_wording.rs"]
+mod definition_refusal_wording;
 #[path = "all/deployment_target_count.rs"]
 mod deployment_target_count;
 #[path = "all/deployment_target_parameters.rs"]
@@ -45,6 +47,8 @@ mod first_class_parameters;
 mod iam_role_arn_pattern;
 #[path = "all/idempotent_mutations.rs"]
 mod idempotent_mutations;
+#[path = "all/identity_policy_authorization.rs"]
+mod identity_policy_authorization;
 #[path = "all/list_tags_for_resource.rs"]
 mod list_tags_for_resource;
 #[path = "all/local_deployment_roles.rs"]

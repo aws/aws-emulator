@@ -167,6 +167,19 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
+        // The caller's own identity-based policies are evaluated before the request's own
+        // input is judged and before anything is written. This operation addresses no
+        // resource of its own, so it is judged against IAM's own spelling of "no
+        // particular resource" (`crate::state::identity_authorization::ANY_RESOURCE`).
+        if let Some(denied) = crate::state::identity_authorization::access_denied(
+            &*self.engine,
+            ctx,
+            Self::NAME,
+            crate::state::identity_authorization::ANY_RESOURCE,
+        ) {
+            return Err(UpdateServiceSettingsErrorModeled::AccessDeniedException(denied).into());
+        }
+
         let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
             UpdateServiceSettingsErrorModeled::InternalServerException(
                 InternalServerException {
