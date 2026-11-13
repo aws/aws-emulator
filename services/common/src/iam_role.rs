@@ -395,6 +395,104 @@ pub async fn role_withholds_action_through(
         })
 }
 
+/// Whether IAM ANSWERED that the permissions in force on the role `role_arn` names DENY
+/// `action` on `resource` — an EXPLICIT deny, a statement about this role that says no.
+///
+/// The narrower half of [`role_withholds_action`], for a service whose work a role is expected
+/// to be provisioned for OUT OF BAND: a role record exists in this emulator's IAM only where a
+/// client created it here, and a client that created one for a background job routinely attaches
+/// no permissions policy at all, so a policy set that merely says NOTHING about the action is no
+/// evidence about what the role may do. A statement that denies it is: that is an answer about
+/// this role, and the service must not make the call.
+///
+/// `false` — deny nothing — for everything that is NOT such an answer, for the reasons
+/// [`role_withholds_action`] gives: a value that names no role of this account, a policy set
+/// that allows or merely does not mention the action, an answer this emulator could not read,
+/// and any failure of the hop at all, including an emulator with no IAM mounted.
+///
+/// The hop is the SAME one [`role_withholds_action`] makes — the simulation of a principal's
+/// policies, reached over the in-process callback — so there is still one route to what IAM
+/// answers about a role's permissions, and the two readings differ only in which decision they
+/// act on.
+pub async fn role_denies_action(
+    ctx: &smithy_server_runtime::OperationContext<'_>,
+    region: &str,
+    role_arn: &str,
+    action: &str,
+    resource: &str,
+) -> bool {
+    if role_name(role_arn).is_none() {
+        return false;
+    }
+    let answer = crate::iam_client::iam_client(ctx, region)
+        .simulate_principal_policy()
+        .policy_source_arn(role_arn)
+        .action_names(action)
+        .resource_arns(resource)
+        .send()
+        .await;
+    let Ok(answer) = answer else {
+        return false;
+    };
+    // One result per action asked about, each carrying the decision over the resources asked
+    // about; the pair here is one action and one resource, so the FIRST result is the answer,
+    // and an answer that reports no result at all is one nothing can be read from.
+    answer
+        .evaluation_results()
+        .first()
+        .map(::aws_sdk_iam::types::EvaluationResult::eval_decision)
+        .is_some_and(|decision| {
+            matches!(
+                decision,
+                ::aws_sdk_iam::types::PolicyEvaluationDecisionType::ExplicitDeny
+            )
+        })
+}
+
+/// Whether IAM ANSWERED that the role `role_arn` names carries identity-based policies AT ALL
+/// — an inline policy embedded in it or a managed policy attached to it.
+///
+/// This is the question a service asks before it reads an IMPLICIT deny as an answer: a role
+/// whose policy set says nothing about an action says nothing about it because the set is
+/// EMPTY, which is the routine state of a role provisioned out of band, and a role that states
+/// permissions is the authority on what it may do. A caller that acts only on a statement which
+/// says no does not need it ([`role_denies_action`]).
+///
+/// `false` — read no implicit deny — for everything that is NOT an answer of "it carries
+/// these": a value that names no role of this account, an answer this emulator could not read,
+/// and any failure of either hop, including an emulator with no IAM mounted.
+///
+/// Two hops, the two lists IAM publishes for a role's identity-based policies
+/// (`ListRolePolicies` and `ListAttachedRolePolicies`), asked through the same in-process
+/// client every other reading here uses ([`crate::iam_client`]).
+pub async fn role_states_permissions(
+    ctx: &smithy_server_runtime::OperationContext<'_>,
+    region: &str,
+    role_arn: &str,
+) -> bool {
+    let Some(role) = role_name(role_arn) else {
+        return false;
+    };
+    let client = crate::iam_client::iam_client(ctx, region);
+    let inline = client
+        .list_role_policies()
+        .role_name(role)
+        .send()
+        .await
+        .map(|answer| !answer.policy_names().is_empty())
+        .unwrap_or(false);
+    if inline {
+        return true;
+    }
+    client
+        .list_attached_role_policies()
+        .role_name(role)
+        .send()
+        .await
+        .map(|answer| !answer.attached_policies().is_empty())
+        .unwrap_or(false)
+}
+
 /// What IAM answers about a role of this account, as the two readings above share ONE hop.
 enum RoleAnswer {
     /// IAM holds a role under that name, and reported this trust document for it (`None`

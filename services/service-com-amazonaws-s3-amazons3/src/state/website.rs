@@ -97,6 +97,43 @@ pub struct WebsiteRedirect {
     pub replace_key_with: Option<String>,
 }
 
+/// The prefixes a value of the object member `WebsiteRedirectLocation` has to begin with.
+///
+/// "If the bucket is configured as a website, redirects requests for this object to another
+/// object in the same bucket or to an external URL"
+/// (`PutObjectRequest$WebsiteRedirectLocation`, bound to the `x-amz-website-redirect-location`
+/// header): the value is the `Location` the website endpoint would later answer with, so it
+/// has to be addressable — an absolute URL under either scheme, or a path on the website host
+/// itself. The three are the ones S3's own refusal of a value outside them names
+/// ([`INVALID_REDIRECT_LOCATION_MESSAGE`]); the model types the member as a plain string
+/// (`smithy_query(query="shape",shape="WebsiteRedirectLocation")`), so nothing refuses a
+/// value that is none of them before this does.
+pub const WEBSITE_REDIRECT_LOCATION_PREFIXES: [&str; 3] = ["http://", "https://", "/"];
+
+/// The error code S3 answers a `WebsiteRedirectLocation` outside
+/// [`WEBSITE_REDIRECT_LOCATION_PREFIXES`] with, and the HTTP status it is rendered at: a
+/// value in a named header that is not valid for the request, which is a 400.
+pub const INVALID_REDIRECT_LOCATION_CODE: &str = "InvalidRedirectLocation";
+/// See [`INVALID_REDIRECT_LOCATION_CODE`].
+pub const INVALID_REDIRECT_LOCATION_STATUS: u16 = 400;
+/// See [`INVALID_REDIRECT_LOCATION_CODE`] — the sentence that code carries, which is ENTIRELY
+/// fixed text: it states the requirement rather than anything about the value submitted.
+pub const INVALID_REDIRECT_LOCATION_MESSAGE: &str =
+    "The website redirect location must have a prefix of 'http://' or 'https://' or '/'.";
+
+/// Whether `value` is a website redirect location S3 stores on an object: one beginning with
+/// one of [`WEBSITE_REDIRECT_LOCATION_PREFIXES`].
+///
+/// The ONE reading for every write that carries the member — the single-request writes, the
+/// copy and the initiation of a multipart upload — so a value one of them refuses cannot be
+/// stored by another.
+#[must_use]
+pub fn website_redirect_location_is_addressable(value: &str) -> bool {
+    WEBSITE_REDIRECT_LOCATION_PREFIXES
+        .iter()
+        .any(|prefix| value.starts_with(prefix))
+}
+
 /// One `RoutingRule` of a bucket's website configuration: when a redirect is applied, and
 /// where to.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

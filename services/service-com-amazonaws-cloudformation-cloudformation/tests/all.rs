@@ -41,6 +41,8 @@ mod bucket_metrics_and_lifecycle_configurations;
 mod bucket_notification_configuration;
 #[path = "all/bucket_property_updates.rs"]
 mod bucket_property_updates;
+#[path = "all/bucket_replacement_cleanup.rs"]
+mod bucket_replacement_cleanup;
 #[path = "all/bucket_replication_configuration.rs"]
 mod bucket_replication_configuration;
 #[path = "all/built_in_types_in_submitted_hierarchies.rs"]

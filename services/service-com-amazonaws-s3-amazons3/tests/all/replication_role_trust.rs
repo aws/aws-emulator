@@ -5,18 +5,23 @@
 //! assumes when replicating objects" (`ReplicationConfiguration$Role`).
 //!
 //! The rule under test: every copy a replication configuration calls for is made by S3
-//! assuming that role, so a role whose trust policy does not let the Amazon S3 service
-//! principal assume it replicates NOTHING — no replica is written to any destination, no
-//! delete marker is replicated — and the source version reports the failure
+//! assuming that role and acting as it, so a role whose trust policy does not let the Amazon
+//! S3 service principal assume it replicates NOTHING — no replica is written to any
+//! destination, no delete marker is replicated — and the source version reports the failure
 //! (`x-amz-replication-status: FAILED`, "if one or more destinations fails replication the
-//! header will return FAILED", `HeadObjectOutput$ReplicationStatus`). The configuration
-//! itself is still accepted and reported back: the role is resolved when the copy is made,
-//! not when the configuration is stored.
+//! header will return FAILED", `HeadObjectOutput$ReplicationStatus`). The role's own
+//! PERMISSIONS decide the same thing one destination at a time: a role denied the read of the
+//! source's versions copies nothing anywhere, and one denied the write of a destination's
+//! objects leaves that destination untouched while the rest of the configuration still
+//! applies. The configuration itself is still accepted and reported back: the role is
+//! resolved when the copy is made, not when the configuration is stored.
 //!
 //! A role nothing can be shown about is not held against the replication: this emulator
-//! refuses only what IAM ANSWERED, so a role of this account IAM holds no record of leaves
-//! the copies to be made — which is why every other replication suite in this crate, which
-//! mounts S3 alone, still replicates under a role no IAM record backs.
+//! refuses only what IAM ANSWERED, so a role of this account IAM holds no record of — and one
+//! IAM holds no identity policy for — leaves the copies to be made, which is why every other
+//! replication suite in this crate, which mounts S3 alone, still replicates under a role no IAM
+//! record backs. A role that STATES permissions is the authority on what it may do, so the
+//! replication actions have to be allowed by them.
 //!
 //! Each suite is a TABLE whose rows differ along what the rule generalises over: which
 //! principal the trust document names, in which form (one string or a list), which action
@@ -149,6 +154,25 @@ impl Emulator {
         assert_eq!(
             status, 200,
             "case {case:?}: creating the role must succeed, got {status} with {body}"
+        );
+    }
+
+    /// Embed `document` in the role [`ROLE_NAME`] as an inline permissions policy through
+    /// IAM's own `PutRolePolicy` — the policies a simulation of what the role may DO reads.
+    async fn put_role_policy(&self, case: &str, name: &str, document: &str) {
+        let (status, body) = self
+            .iam(
+                "PutRolePolicy",
+                &[
+                    ("RoleName", ROLE_NAME.to_string()),
+                    ("PolicyName", name.to_string()),
+                    ("PolicyDocument", document.to_string()),
+                ],
+            )
+            .await;
+        assert_eq!(
+            status, 200,
+            "case {case:?}: embedding the policy must succeed, got {status} with {body}"
         );
     }
 
@@ -567,6 +591,349 @@ async fn a_delete_marker_is_replicated_only_under_a_role_iam_shows_s3_can_assume
             assert_eq!(
                 marker, None,
                 "case {case:?}: expected no marker in the destination, got {marker:?}"
+            );
+        }
+    }
+}
+
+/// The source bucket of every permissions row, and its destination.
+const PERMISSION_SOURCE: &str = "permission-role-source";
+/// See [`PERMISSION_SOURCE`].
+const PERMISSION_DESTINATION: &str = "permission-role-destination";
+
+/// How long a poll waits for a replication to settle before the suite calls it stuck, and how
+/// often it looks. The deadline is far longer than the span this emulator gives AWS's
+/// asynchronous replication, so a loaded host cannot fail a row; what is asserted is the
+/// CONDITION (a terminal status), never the time it took.
+const SETTLE_DEADLINE: Duration = Duration::from_secs(30);
+/// See [`SETTLE_DEADLINE`].
+const POLL_INTERVAL: Duration = Duration::from_millis(50);
+
+/// The statements a role whose policy GRANTS the replication is written with: the actions the
+/// Amazon S3 User Guide (*Setting up permissions for replication*) names, on the source's
+/// versions and on the destination's objects.
+fn granting_statements() -> String {
+    format!(
+        "{{\"Effect\":\"Allow\",\"Action\":\
+         [\"s3:GetObjectVersionForReplication\",\"s3:GetObjectVersionAcl\"],\
+         \"Resource\":{}}},\
+         {{\"Effect\":\"Allow\",\"Action\":[\"s3:ReplicateObject\",\"s3:ReplicateDelete\"],\
+         \"Resource\":{}}}",
+        objects_of(PERMISSION_SOURCE),
+        objects_of(PERMISSION_DESTINATION)
+    )
+}
+
+/// A policy document carrying `statements`.
+fn policy(statements: &str) -> String {
+    format!("{{\"Version\":\"2012-10-17\",\"Statement\":[{statements}]}}")
+}
+
+/// The granting policy with `extra` statements after it — what a row that DENIES one action
+/// states beside the grant.
+fn granting_policy_with(extra: &str) -> String {
+    if extra.is_empty() {
+        return policy(&granting_statements());
+    }
+    policy(&format!("{},{extra}", granting_statements()))
+}
+
+/// One statement: `effect` for `actions` on `resources`, both written as JSON so a row may
+/// name one value or a list.
+fn statement(effect: &str, actions: &str, resources: &str) -> String {
+    format!(
+        "{{\"Effect\":\"{effect}\",\"Action\":{actions},\"Resource\":{resources}}}"
+    )
+}
+
+/// The objects of `bucket` as a policy's `Resource` names them, quoted for a JSON document.
+fn objects_of(bucket: &str) -> String {
+    format!("\"arn:aws:s3:::{bucket}/*\"")
+}
+
+/// Poll the source version until its replication reports a TERMINAL status — `COMPLETED` or
+/// `FAILED` — and report which. The wait is for the condition, bounded by
+/// [`SETTLE_DEADLINE`].
+async fn settled_replication_status(emulator: &Emulator, key: &str, case: &str) -> String {
+    let deadline = ::std::time::Instant::now() + SETTLE_DEADLINE;
+    loop {
+        let read = emulator.head_object(PERMISSION_SOURCE, key).await;
+        let status = read.header("x-amz-replication-status").unwrap_or_default();
+        if status == "COMPLETED" || status == "FAILED" {
+            return status;
+        }
+        assert!(
+            ::std::time::Instant::now() < deadline,
+            "case {case:?}: the replication never reached a terminal status; the last one read \
+             was {status:?}"
+        );
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
+}
+
+/// One row of the permissions table: what the role's own policy says, and what the
+/// replication of a write and of a delete marker under it must then do.
+struct PermissionRow {
+    case: &'static str,
+    /// The inline permissions policy embedded in the role, or `None` for a role carrying
+    /// none at all.
+    policy: Option<String>,
+    /// Whether the object copy is made.
+    replicated: bool,
+    /// Whether a delete marker laid on the source is replicated.
+    marker_replicated: bool,
+}
+
+/// The permissions table: the rows differ along what the rule generalises over — whether the
+/// role STATES permissions at all, which ACTION a statement names (each replication action, a
+/// wildcard over them, another action), which RESOURCE it names (this destination's objects,
+/// the source's, another bucket's), and which EFFECT it states.
+///
+/// The actions are the ones replication is performed under (Amazon S3 User Guide, *Setting up
+/// permissions for replication*): `s3:GetObjectVersionForReplication` on the source's versions,
+/// `s3:ReplicateObject` and `s3:ReplicateDelete` on the destination's objects. A role that
+/// states permissions has to be ALLOWED them — a copy its policies do not allow is one AWS
+/// would not make either — while a role IAM holds no identity policy for is held back only by a
+/// statement that denies one of them.
+fn permission_rows() -> Vec<PermissionRow> {
+    vec![
+        PermissionRow {
+            // Nothing IAM answered denies anything, and an empty policy set is no evidence:
+            // a replication role is routinely provisioned out of band.
+            case: "a role carrying no permissions policy at all",
+            policy: None,
+            replicated: true,
+            marker_replicated: true,
+        },
+        PermissionRow {
+            case: "a policy granting the replication actions on the right resources",
+            policy: Some(granting_policy_with("")),
+            replicated: true,
+            marker_replicated: true,
+        },
+        PermissionRow {
+            case: "a policy granting everything through wildcards",
+            policy: Some(policy(&statement("Allow", "\"s3:*\"", "\"*\""))),
+            replicated: true,
+            marker_replicated: true,
+        },
+        PermissionRow {
+            case: "a grant beside a deny of the write of a replica at the destination",
+            policy: Some(granting_policy_with(&statement(
+                "Deny",
+                "\"s3:ReplicateObject\"",
+                &objects_of(PERMISSION_DESTINATION),
+            ))),
+            replicated: false,
+            // The marker is a replicated DELETE, which that statement says nothing about.
+            marker_replicated: true,
+        },
+        PermissionRow {
+            case: "a grant beside a deny of every replication action at the destination",
+            policy: Some(granting_policy_with(&statement(
+                "Deny",
+                "\"s3:Replicate*\"",
+                &objects_of(PERMISSION_DESTINATION),
+            ))),
+            replicated: false,
+            marker_replicated: false,
+        },
+        PermissionRow {
+            case: "a grant beside a deny of the replicated delete alone",
+            policy: Some(granting_policy_with(&statement(
+                "Deny",
+                "\"s3:ReplicateDelete\"",
+                &objects_of(PERMISSION_DESTINATION),
+            ))),
+            replicated: true,
+            marker_replicated: false,
+        },
+        PermissionRow {
+            case: "a grant beside a deny at ANOTHER bucket's objects",
+            policy: Some(granting_policy_with(&statement(
+                "Deny",
+                "\"s3:ReplicateObject\"",
+                &objects_of("some-other-bucket"),
+            ))),
+            replicated: true,
+            marker_replicated: true,
+        },
+        PermissionRow {
+            case: "a grant beside a deny of the read of the source's versions",
+            policy: Some(granting_policy_with(&statement(
+                "Deny",
+                "\"s3:GetObjectVersionForReplication\"",
+                &objects_of(PERMISSION_SOURCE),
+            ))),
+            // Every copy begins with that read, so nothing is copied and no marker is laid.
+            replicated: false,
+            marker_replicated: false,
+        },
+        PermissionRow {
+            case: "a policy stating permissions that do not reach the destination at all",
+            policy: Some(policy(&statement(
+                "Allow",
+                "\"s3:GetObjectVersionForReplication\"",
+                &objects_of(PERMISSION_SOURCE),
+            ))),
+            // The role states what it may do and the destination write is not among it.
+            replicated: false,
+            marker_replicated: false,
+        },
+        PermissionRow {
+            case: "a policy granting the object copy but not the replicated delete",
+            policy: Some(policy(&format!(
+                "{},{}",
+                statement(
+                    "Allow",
+                    "\"s3:GetObjectVersionForReplication\"",
+                    &objects_of(PERMISSION_SOURCE)
+                ),
+                statement(
+                    "Allow",
+                    "\"s3:ReplicateObject\"",
+                    &objects_of(PERMISSION_DESTINATION)
+                )
+            ))),
+            replicated: true,
+            marker_replicated: false,
+        },
+        PermissionRow {
+            case: "a policy about another action entirely",
+            policy: Some(policy(&statement(
+                "Allow",
+                "\"s3:PutObject\"",
+                &objects_of(PERMISSION_DESTINATION),
+            ))),
+            replicated: false,
+            marker_replicated: false,
+        },
+    ]
+}
+
+/// RULE: a write is copied to a destination only where the role the configuration names may
+/// make that copy — the read of the source's versions and the write of the destination's
+/// objects — and a copy that could not be made settles the source version on `FAILED` with the
+/// destination left untouched. A role that states permissions has to be allowed them; one IAM
+/// holds no identity policy for is held back only by a statement that denies them.
+#[tokio::test]
+async fn a_write_is_replicated_only_where_the_roles_permissions_allow_it() {
+    for row in permission_rows() {
+        let emulator = Emulator::new();
+        emulator.create_role(row.case, &s3_trust()).await;
+        if let Some(document) = row.policy.as_deref() {
+            emulator
+                .put_role_policy(row.case, "replication", document)
+                .await;
+        }
+        emulator.versioned_bucket(row.case, PERMISSION_SOURCE).await;
+        emulator
+            .versioned_bucket(row.case, PERMISSION_DESTINATION)
+            .await;
+        let configured = emulator
+            .put_replication(
+                PERMISSION_SOURCE,
+                &role_arn(),
+                PERMISSION_DESTINATION,
+                "<DeleteMarkerReplication><Status>Enabled</Status></DeleteMarkerReplication>",
+            )
+            .await;
+        assert_eq!(
+            configured.status,
+            200,
+            "case {:?}: the configuration must be accepted whatever the role may do, got {} \
+             with {:?}",
+            row.case,
+            configured.status,
+            text(&configured)
+        );
+
+        let key = "replicated/object.bin";
+        let body = b"the bytes a replication copies".to_vec();
+        let written = emulator.put_object(PERMISSION_SOURCE, key, &body).await;
+        assert_eq!(
+            written.status,
+            200,
+            "case {:?}: the write must be accepted, got {} with {:?}",
+            row.case,
+            written.status,
+            text(&written)
+        );
+
+        let expected = if row.replicated { "COMPLETED" } else { "FAILED" };
+        let settled = settled_replication_status(&emulator, key, row.case).await;
+        assert_eq!(
+            settled, expected,
+            "case {:?}: expected the source version to settle on {expected:?}, got {settled:?}",
+            row.case
+        );
+
+        let replica = emulator.get_object(PERMISSION_DESTINATION, key).await;
+        if row.replicated {
+            assert_eq!(
+                replica.status,
+                200,
+                "case {:?}: expected the copy in the destination, got {} with {:?}",
+                row.case,
+                replica.status,
+                text(&replica)
+            );
+            assert_eq!(
+                replica.body.as_ref(),
+                body.as_slice(),
+                "case {:?}: expected the replica to carry the source's bytes, got {:?}",
+                row.case,
+                text(&replica)
+            );
+        } else {
+            assert_eq!(
+                replica.status,
+                404,
+                "case {:?}: expected the destination to hold nothing, got {} with {:?}",
+                row.case,
+                replica.status,
+                text(&replica)
+            );
+        }
+
+        // And the DELETE half of the same grant, on a key of its own so the object copy above
+        // is left as it is: the marker reaches the destination only where the role is not
+        // denied the replicated delete there.
+        let marked = "marked/object.bin";
+        let seeded = emulator
+            .put_object(PERMISSION_SOURCE, marked, b"bytes to delete")
+            .await;
+        assert_eq!(
+            seeded.status,
+            200,
+            "case {:?}: the write to delete must be accepted, got {} with {:?}",
+            row.case,
+            seeded.status,
+            text(&seeded)
+        );
+        let deleted = emulator.delete_object(PERMISSION_SOURCE, marked).await;
+        assert_eq!(
+            deleted.status,
+            204,
+            "case {:?}: the delete must be accepted, got {} with {:?}",
+            row.case,
+            deleted.status,
+            text(&deleted)
+        );
+        let read = emulator.get_object(PERMISSION_DESTINATION, marked).await;
+        let marker = read.header("x-amz-delete-marker");
+        if row.marker_replicated && row.replicated {
+            assert_eq!(
+                marker.as_deref(),
+                Some("true"),
+                "case {:?}: expected the marker to be replicated, got {marker:?}",
+                row.case
+            );
+        } else if !row.marker_replicated {
+            assert_eq!(
+                marker, None,
+                "case {:?}: expected no marker in the destination, got {marker:?}",
+                row.case
             );
         }
     }

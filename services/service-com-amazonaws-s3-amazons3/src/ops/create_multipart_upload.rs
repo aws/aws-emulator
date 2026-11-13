@@ -482,14 +482,36 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             None => Vec::new(),
         };
 
+        // The REDIRECT the website endpoint would answer for the object this upload becomes,
+        // judged before the upload is recorded: the member carries the same rule here as on a
+        // single-request write — "redirects requests for this object to another object in the
+        // same bucket or to an external URL"
+        // (`CreateMultipartUploadRequest$WebsiteRedirectLocation`) — so a value that addresses
+        // neither is refused through the one reading every write of the member shares
+        // ([`crate::state::website_redirect_location_is_addressable`]), and no upload is
+        // initiated.
+        if let Some(location) = input.website_redirect_location.as_deref() {
+            if !crate::state::website_redirect_location_is_addressable(location) {
+                return Err(crate::scaffolded::Scaffolded::invalid_redirect_location());
+            }
+        }
+
         // The `ChecksumType` this upload is SETTLED with, decided here — at the one request
         // that settles it — from the algorithm the initiation named and the type it asked
         // for ([`crate::state::settle_multipart_checksum_type`]). An initiation naming a
         // type the algorithm does not admit (a full-object checksum of a multipart object
-        // under an algorithm whose part checksums do not combine into one) names a parameter
-        // that is not valid for the request, which is `InvalidRequest` (400) with the
-        // sentence the modelled shape states for itself — this operation declares no error
-        // shapes, so it goes out through the unmodelled channel, and nothing is recorded.
+        // under an algorithm whose part checksums do not combine into one, or a composition
+        // under the algorithm that is always a full-object checksum) names a parameter that is
+        // not valid for the request, which is `InvalidRequest` (400) — carrying the sentence
+        // S3 publishes for THAT pair
+        // ([`crate::state::incompatible_checksum_pair_message`]), which names the type and the
+        // algorithm the request stated and so says which of the two headers has to change.
+        // This operation declares no error shapes, so it goes out through the unmodelled
+        // channel, and nothing is recorded.
+        //
+        // A `ChecksumType` outside the two values the enum publishes is no pair to word that
+        // sentence from — it names no type at all — so it keeps the generic sentence the
+        // modelled shape states for any invalid parameter.
         //
         // An initiation that named no algorithm settles no type: no checksum is computed for
         // such an upload at all (`crate::state::multipart_checksum`), so reporting a type
@@ -500,10 +522,16 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     algorithm,
                     input.checksum_type.as_deref(),
                 ) else {
+                    let requested = input.checksum_type.as_deref().unwrap_or_default();
+                    let message = if crate::ops::types::CHECKSUM_TYPE_VALUES.contains(&requested) {
+                        crate::state::incompatible_checksum_pair_message(requested, algorithm)
+                    } else {
+                        crate::state::INVALID_REQUEST_MESSAGE.to_string()
+                    };
                     return Err(crate::scaffolded::Scaffolded::unmodeled(
                         crate::state::INVALID_REQUEST_CODE,
                         crate::state::INVALID_REQUEST_STATUS,
-                        crate::state::INVALID_REQUEST_MESSAGE,
+                        message,
                     ));
                 };
                 Some(settled.to_string())

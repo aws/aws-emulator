@@ -856,6 +856,22 @@ pub fn settle_multipart_checksum_type(
     }
 }
 
+/// The message S3 refuses a request naming a `ChecksumType` its `ChecksumAlgorithm` cannot
+/// produce with.
+///
+/// The fixed text is "The ", " checksum type cannot be used with the " and " checksum
+/// algorithm."; the two variable parts come from the request — the type as the enum spells it
+/// (upper case, [`CHECKSUM_TYPE_FULL_OBJECT`] / [`CHECKSUM_TYPE_COMPOSITE`]) and the algorithm
+/// rendered LOWER case, the spelling the `x-amz-checksum-*` member names carry it in. The
+/// sentence therefore says which of the two headers has to change, in whichever direction the
+/// pair is impossible ([`settle_multipart_checksum_type`] decides that it is).
+pub fn incompatible_checksum_pair_message(checksum_type: &str, algorithm: &str) -> String {
+    format!(
+        "The {checksum_type} checksum type cannot be used with the {} checksum algorithm.",
+        algorithm.to_ascii_lowercase()
+    )
+}
+
 /// The RAW digest bytes the `ChecksumAlgorithm` value `algorithm` computes over `data`, or
 /// `None` for a value this emulator has no implementation of.
 ///

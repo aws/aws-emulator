@@ -95,6 +95,9 @@ pub mod request_authorization;
 // requests this service serves on its objects — see `service/request_metrics.rs`.
 pub mod request_metrics;
 pub mod sigv4;
+// The WEBSITE ENDPOINT a bucket configured for static website hosting is served on, which is
+// a different endpoint from the REST API's — see `service/website_endpoint.rs`.
+pub mod website_endpoint;
 pub mod wire;
 
 use smithy_server_runtime::{
@@ -1231,6 +1234,14 @@ fn front_door<Eng: Send + Sync + 'static>(
         invalid_bucket_name::REFUSE_INVALID_BUCKET_NAME,
         Box::new(invalid_bucket_name::RefuseInvalidBucketName::new()),
     );
+    // And the WEBSITE ENDPOINT, the one surface of this service that is not the REST API at
+    // all: a request addressed to a bucket's website host is served from here
+    // ([`website_endpoint`]), under a key of the same kind as the refusals above, because no
+    // modelled route can name an endpoint.
+    table.add_operation(
+        website_endpoint::WEBSITE_ENDPOINT,
+        Box::new(website_endpoint::WebsiteEndpoint::new(Arc::clone(engine))),
+    );
     table
 }
 
@@ -1770,6 +1781,13 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
     }
 
     fn can_handle(&self, parts: &http::request::Parts) -> bool {
+        // The WEBSITE ENDPOINT is this service's before anything about a credential is read:
+        // such a request is addressed to a bucket's website host ([`website_endpoint`]), which
+        // no other service of this emulator is reached under, and it is ANONYMOUS by design —
+        // so no credential scope names a service for the router to resolve it by.
+        if website_endpoint::addressed_bucket(parts).is_some() {
+            return true;
+        }
         // This service signs as `s3` — a signing name it SHARES with S3 Control, whose
         // own endpoint is `s3-control`. The router's routing key comes from the SigV4
         // credential scope first, so both services resolve to `s3`, and matching on the
@@ -1854,6 +1872,15 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
         // worded from that bucket's own configuration, and the seam that words it is handed
         // no request to read it from.
         sigv4::remember(req, first_path_segment(&self.path_style_path(req)));
+        // The WEBSITE ENDPOINT answers the requests addressed to a bucket's website host, and
+        // the model's routing table cannot name it at all: the endpoint is not the REST API, so
+        // the same method and path mean something else there (`GET /` is the bucket's index
+        // document, not a listing). Resolved FIRST, so nothing of the REST surface — the
+        // bucket-name refusal, a session token, a subresource — is applied to a request that
+        // never addressed it. See [`website_endpoint`].
+        if website_endpoint::addressed_bucket_of(req).is_some() {
+            return self.door.get(website_endpoint::WEBSITE_ENDPOINT);
+        }
         // A request addressing a bucket by a name S3 can address no bucket by is refused for
         // the NAME, whichever operation its address names; see
         // [`Self::refuses_the_bucket_name`] and [`invalid_bucket_name`]. First, because a

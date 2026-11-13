@@ -765,9 +765,11 @@ impl ComAmazonawsS3Amazons3State {
     ///
     /// Every one of those copies is made under the role the configuration names, so `access`
     /// — what IAM answered about that role ([`replication::role_access`]) — decides whether
-    /// any of them can be made at all: a role S3 cannot assume copies NOTHING, to no
-    /// destination, and the source version reports [`REPLICATION_STATUS_FAILED`], which is
-    /// the terminal outcome of a replication whose role withholds it.
+    /// any of them can be made at all: a role S3 cannot act as copies NOTHING, to no
+    /// destination, and a role whose permissions do not let it write ONE destination's objects
+    /// leaves that destination untouched while the others are still copied to. Either way the
+    /// source version reports [`REPLICATION_STATUS_FAILED`], which is the terminal outcome of a
+    /// replication whose role withholds any part of it.
     ///
     /// Called by the write that recorded the version, AFTER the store accepted it, so a
     /// refused write replicates nothing. A REPLICA is never replicated again, because the
@@ -788,7 +790,7 @@ impl ComAmazonawsS3Amazons3State {
         &mut self,
         bucket: &str,
         key: &str,
-        access: replication::RoleAccess,
+        access: &replication::RoleAccess,
     ) -> Option<ObjectReplication> {
         // The tag set alone, because that is all the SELECTION needs: a bucket with no
         // configuration — and a key no rule covers — pays no copy of the object at all.
@@ -804,21 +806,28 @@ impl ComAmazonawsS3Amazons3State {
         // More destinations than one write replicates to is work this emulator does not do:
         // the copies past the ceiling are not made, and the source version says so.
         let mut every_copy_made = asked <= MAX_REPLICATION_DESTINATIONS_PER_WRITE;
-        // And a role S3 cannot assume performs no copy at all: the destinations the
+        // And a role S3 cannot act as performs no copy at all: the destinations the
         // configuration names are left untouched, whatever they could have held, because
         // the copy into each of them would have been made under that role.
-        let targets: Vec<replication::ReplicationTarget> = match access {
-            replication::RoleAccess::Assumable => destinations
+        let targets: Vec<replication::ReplicationTarget> = if access.copies_nothing() {
+            every_copy_made = false;
+            Vec::new()
+        } else {
+            destinations
                 .into_iter()
                 .take(MAX_REPLICATION_DESTINATIONS_PER_WRITE)
-                .collect(),
-            replication::RoleAccess::Withheld => {
-                every_copy_made = false;
-                Vec::new()
-            }
+                .collect()
         };
         let mut copied_bytes = 0usize;
         for target in targets {
+            // A destination the ROLE may not write a replica into holds none: the copy would
+            // have been made under that role, and IAM answered that it may not make it there.
+            // The other destinations are still copied to, so one denied destination fails the
+            // replication without hiding what the rest of the configuration did.
+            if !access.may_replicate_object(&target.bucket) {
+                every_copy_made = false;
+                continue;
+            }
             // A destination this emulator cannot hold a version in replicates nothing: a
             // bucket it does not hold, one whose versioning is not enabled, and the SOURCE
             // bucket itself (a bucket cannot be its own destination, which would replace
@@ -896,7 +905,8 @@ impl ComAmazonawsS3Amazons3State {
     ///
     /// A marker is replicated under the configuration's role like every other copy, so
     /// `access` ([`replication::role_access`]) decides whether it is laid at all: a role S3
-    /// cannot assume marks no destination.
+    /// cannot act as marks no destination, and one denied the replicated delete at a
+    /// destination leaves that destination unmarked.
     ///
     /// Called by the delete that laid the marker. The PERMANENT delete of one version never
     /// reaches here, which is the published rule: a delete naming a version id is not
@@ -908,14 +918,17 @@ impl ComAmazonawsS3Amazons3State {
         &mut self,
         bucket: &str,
         key: &str,
-        access: replication::RoleAccess,
+        access: &replication::RoleAccess,
     ) -> usize {
-        if access == replication::RoleAccess::Withheld {
+        if access.copies_nothing() {
             return 0;
         }
         let marked: Vec<String> = replication::destinations(self, bucket, key, &[])
             .into_iter()
             .filter(|target| target.delete_markers && target.bucket != bucket)
+            // A destination the ROLE may not lay a replicated delete in is left unmarked, the
+            // same reading the copy of a version takes of that role's permissions.
+            .filter(|target| access.may_replicate_delete(&target.bucket))
             .map(|target| target.bucket)
             .take(MAX_REPLICATION_DESTINATIONS_PER_WRITE)
             .collect();

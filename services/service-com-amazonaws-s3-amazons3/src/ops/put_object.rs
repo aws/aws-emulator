@@ -580,6 +580,19 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> PutObject<Eng> {
             }
         }
 
+        // The REDIRECT the website endpoint would answer for this object, judged before
+        // anything is stored: "redirects requests for this object to another object in the
+        // same bucket or to an external URL"
+        // (`PutObjectRequest$WebsiteRedirectLocation`), so a value that addresses neither is
+        // one no redirect could be built from — refused with the code and the fixed sentence
+        // S3 answers it with ([`crate::state::website_redirect_location_is_addressable`]),
+        // which leaves the key uncreated.
+        if let Some(location) = input.website_redirect_location.as_deref() {
+            if !crate::state::website_redirect_location_is_addressable(location) {
+                return Err(crate::scaffolded::Scaffolded::invalid_redirect_location());
+            }
+        }
+
         // The encryption configuration this write ASKED for, taken from the modelled
         // members the request carried: `ServerSideEncryption` and the three that qualify
         // it, or — for a write supplying its OWN key — that key's algorithm and digest.
@@ -1129,9 +1142,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> PutObject<Eng> {
         // (`PutBucketReplication`), so the copy is made here — after the store accepted the
         // write, and while it is still held — and the source version records what it did. A
         // bucket with no replication configuration, and a key no enabled rule covers, owes
-        // nothing; a configuration whose role S3 cannot assume copies nothing and the
-        // source version reports that failure.
-        let _ = store.replicate_write(&input.bucket, &input.key, replication_role);
+        // nothing; a configuration whose role S3 cannot act as, or whose role may not write a
+        // destination's objects, copies nothing there and the source version reports that
+        // failure.
+        let _ = store.replicate_write(&input.bucket, &input.key, &replication_role);
 
         // The object event this write produced, and the notifications the bucket's event
         // notification configuration owes for it — rendered while the store is still

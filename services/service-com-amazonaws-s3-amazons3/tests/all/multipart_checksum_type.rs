@@ -17,10 +17,11 @@
 //!    the parts' checksums — for every other algorithm. The settled type is what the
 //!    initiation reports and what a read of the upload reports.
 //! 2. An initiation asking for a type the algorithm does not admit is refused 400
-//!    `InvalidRequest` and records no upload: a full-object checksum of a multipart object is
-//!    only available under the CRC-based algorithms (the ones whose part checksums combine
-//!    into the whole object's), and the one algorithm that is always a full-object checksum
-//!    admits no composition.
+//!    `InvalidRequest`, carrying the sentence that names the TYPE the request asked for and
+//!    the ALGORITHM it named, and records no upload: a full-object checksum of a multipart
+//!    object is only available under the CRC-based algorithms (the ones whose part checksums
+//!    combine into the whole object's), and the one algorithm that is always a full-object
+//!    checksum admits no composition.
 //! 3. The settled type is the one the completed object carries, with the part-count suffix a
 //!    composition carries and none on a full-object checksum — and a read of the object
 //!    reports the same pair.
@@ -40,11 +41,19 @@ const FULL_OBJECT: &str = "FULL_OBJECT";
 /// The code and status S3 answers "a parameter or header in your request isn't valid" with:
 /// `InvalidRequest`, HTTP 400 (Amazon S3 *Error responses*, list of error codes).
 const INVALID_REQUEST: &str = "InvalidRequest";
-/// See [`INVALID_REQUEST`] — the sentence the modelled `InvalidRequest` shape states for
-/// itself (`smithy_query(query="shape",shape="com.amazonaws.s3#InvalidRequest")`).
-const INVALID_REQUEST_MESSAGE: &str =
-    "A parameter or header in your request isn't valid. For details, see the description of \
-     this API operation.";
+
+/// The sentence S3 refuses an (algorithm, type) pair that cannot exist with: the fixed text
+/// "The ", " checksum type cannot be used with the " and " checksum algorithm.", with the type
+/// as the request stated it and the algorithm rendered lower case — the spelling the
+/// `x-amz-checksum-*` member names carry it in. Written here from the published sentence rather
+/// than read off the handler, and in both directions: the type a pair is impossible in is
+/// whichever one the request asked for.
+fn incompatible_pair_message(checksum_type: &str, algorithm: &str) -> String {
+    format!(
+        "The {checksum_type} checksum type cannot be used with the {} checksum algorithm.",
+        algorithm.to_ascii_lowercase()
+    )
+}
 
 /// One row of the checksum-type table: a `ChecksumAlgorithm` value, the type an initiation
 /// naming it and no type settles, and which of the two types it admits when a request asks
@@ -250,8 +259,8 @@ async fn an_initiation_settles_the_checksum_type_its_algorithm_admits() {
                 );
                 assert_eq!(
                     initiated.error_message(),
-                    INVALID_REQUEST_MESSAGE,
-                    "case {case:?}: expected the published message, got {:?}",
+                    incompatible_pair_message(requested.unwrap_or_default(), row.algorithm),
+                    "case {case:?}: expected the sentence that names the pair, got {:?}",
                     initiated.error_message()
                 );
                 // A refused initiation records nothing: the key it named holds no upload at

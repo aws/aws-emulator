@@ -345,7 +345,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // synchronous and holds the guard throughout.
         let replication_role =
             crate::state::replication::role_access(&*self.engine, ctx, &input.bucket).await;
-        let output = self.store(input, ctx, &correlation, replication_role)?;
+        let output = self.store(input, ctx, &correlation, &replication_role)?;
         // Recorded LAST, so the response carries the pair the notifications already named
         // this call by.
         correlation.answer();
@@ -364,7 +364,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> CompleteMultipart
         input: CompleteMultipartUploadInput,
         ctx: &smithy_server_runtime::OperationContext<'_>,
         correlation: &crate::state::request_ids::RequestCorrelation,
-        replication_role: crate::state::replication::RoleAccess,
+        replication_role: &crate::state::replication::RoleAccess,
     ) -> Result<CompleteMultipartUploadOutput, CompleteMultipartUploadError> {
         // A completion needs nothing from the request beyond its deserialized input: the
         // upload it assembles is named by the bucket, the key and the upload id, and the

@@ -1517,6 +1517,24 @@ impl<E> Scaffolded<E> {
         )))
     }
 
+    /// The refusal S3 answers a write whose `WebsiteRedirectLocation` is not an addressable
+    /// one with: `InvalidRedirectLocation` at
+    /// [`crate::state::INVALID_REDIRECT_LOCATION_STATUS`], carrying the FIXED sentence that
+    /// code publishes ([`crate::state::INVALID_REDIRECT_LOCATION_MESSAGE`]) — the member is
+    /// `@sensitive`-free but the sentence states the requirement rather than the value, so
+    /// nothing of the request is interpolated into it.
+    ///
+    /// The ONE place that refusal is built, so every write carrying the member — a single
+    /// request, a copy, a browser form and the initiation of a multipart upload — refuses the
+    /// same value identically, and before anything is stored.
+    pub fn invalid_redirect_location() -> Self {
+        Self::unmodeled(
+            crate::state::INVALID_REDIRECT_LOCATION_CODE,
+            crate::state::INVALID_REDIRECT_LOCATION_STATUS,
+            crate::state::INVALID_REDIRECT_LOCATION_MESSAGE,
+        )
+    }
+
     /// The refusal S3 answers a request whose conditional header did not hold with:
     /// `PreconditionFailed` at [`crate::state::PRECONDITION_FAILED_STATUS`], the FIXED
     /// sentence that code publishes, and the `<Condition>` naming the header that failed.

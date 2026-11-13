@@ -234,7 +234,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // key in it.
         let replication_role =
             crate::state::replication::role_access(&*self.engine, ctx, &input.bucket).await;
-        let output = self.store(input, ctx, &correlation, replication_role)?;
+        let output = self.store(input, ctx, &correlation, &replication_role)?;
         // Recorded LAST, so the response carries the pair the notifications already named
         // this call by.
         correlation.answer();
@@ -253,7 +253,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> DeleteObjects<Eng
         input: DeleteObjectsInput,
         ctx: &smithy_server_runtime::OperationContext<'_>,
         correlation: &crate::state::request_ids::RequestCorrelation,
-        replication_role: crate::state::replication::RoleAccess,
+        replication_role: &crate::state::replication::RoleAccess,
     ) -> Result<DeleteObjectsOutput, DeleteObjectsError> {
         // "If the account ID that you provide does not match the actual owner of the
         // bucket, the request fails with the HTTP status code 403 Forbidden (access

@@ -2654,9 +2654,15 @@ pub async fn reconcile(
     // The deletions already opened, carried across the two walks: a logical id cannot be in
     // both, and sharing the set is what keeps that true of the records as well.
     let mut opened = BTreeSet::new();
-    // A deployment is not a `DeleteStack`, so no `DeletionMode` chose for it: a resource an
-    // owning service refuses to delete is this deployment's failure. The relation these two
-    // walks are judged against is EMPTY: what they take down is what this deployment
+    // A deployment is not a `DeleteStack`, so no `DeletionMode` chose for it. The two walks
+    // are judged differently because they happen in different PHASES: the old half of a
+    // REPLACEMENT is taken down in the update's cleanup phase, after the replacement is
+    // already in force — "the stack update was successful, but CloudFormation is cleaning up
+    // the old resources" — so a delete the owning service refuses there is reported on that
+    // resource and leaves the update complete, with the old physical resource orphaned
+    // ([`OnRefusal::Orphan`]); a resource the deployment no longer declares at all is part of
+    // the change itself, so a refusal of its delete is this deployment's failure. The relation
+    // these two walks are judged against is EMPTY: what they take down is what this deployment
     // replaced or dropped, and the dependency relation of a template being deployed is not
     // the one in force on the stack ([`Dependencies`]).
     let no_relation = Dependencies::new();
@@ -2664,7 +2670,7 @@ pub async fn reconcile(
         stack_id: &stack.stack_id,
         held: &held,
         needs: &no_relation,
-        on_refusal: OnRefusal::Stop,
+        on_refusal: OnRefusal::Orphan,
         policies: Policies::Ignored,
     };
     let mut deleted = delete_pass(ctx, region, &replacements, &replacement_walk, &mut opened).await;
@@ -2680,6 +2686,9 @@ pub async fn reconcile(
             &removals,
             &Teardown {
                 policies: removal_policies,
+                // A resource the deployment no longer declares is removed BY the change, not
+                // after it: a delete its owning service refuses is this deployment's failure.
+                on_refusal: OnRefusal::Stop,
                 ..replacement_walk
             },
             &mut opened,
@@ -2990,6 +2999,17 @@ pub enum OnRefusal {
     /// it stays exactly as it is — and the walk carries on with the rest, so the teardown
     /// reports no failure of its own.
     Abandon,
+    /// The refusal is REPORTED on the resource (`DELETE_FAILED`, carrying why) and is not the
+    /// teardown's failure: the resource is left where it is, the stack stops recording it, and
+    /// the walk carries on with the rest.
+    ///
+    /// This is the CLEANUP of a resource an update REPLACED, which runs after the replacement
+    /// is already in force: "UPDATE_COMPLETE_CLEANUP_IN_PROGRESS — the stack update was
+    /// successful, but CloudFormation is cleaning up the old resources" (the stack status of
+    /// that phase), so the change the update made cannot be undone by a delete that failed
+    /// afterwards — the old physical resource is simply left behind, no longer held by the
+    /// stack.
+    Orphan,
 }
 
 /// Delete the resources a stack created, newest first — the reverse of the order they were
@@ -3641,6 +3661,22 @@ async fn delete_pass(
                         Some(reason),
                     ));
                     outcome.resources[index].materialised = false;
+                    continue;
+                }
+                if on_refusal == OnRefusal::Orphan {
+                    // ORPHANED: the refusal is reported on the resource and is not this
+                    // teardown's failure — the change this cleanup follows is already in
+                    // force, so there is nothing for the refusal to undo. The stack stops
+                    // recording the resource, which is what leaves the old physical resource
+                    // behind rather than held under a logical id the stack now records a
+                    // different resource under.
+                    outcome.resources[index].materialised = false;
+                    let resource = &outcome.resources[index];
+                    outcome.transitions.push(ResourceTransition::finished(
+                        resource,
+                        super::resource_status::DELETE_FAILED,
+                        Some(reason),
+                    ));
                     continue;
                 }
                 // The refusal is this teardown's FAILURE, and the resource is reported as the

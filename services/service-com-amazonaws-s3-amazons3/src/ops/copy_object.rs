@@ -372,7 +372,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // synchronous and holds the guard throughout.
         let replication_role =
             crate::state::replication::role_access(&*self.engine, ctx, &input.bucket).await;
-        let output = self.store(input, ctx, &correlation, replication_role)?;
+        let output = self.store(input, ctx, &correlation, &replication_role)?;
         // Recorded LAST, so the response carries the pair the notifications already named
         // this call by.
         correlation.answer();
@@ -391,7 +391,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> CopyObject<Eng> {
         input: CopyObjectInput,
         ctx: &smithy_server_runtime::OperationContext<'_>,
         correlation: &crate::state::request_ids::RequestCorrelation,
-        replication_role: crate::state::replication::RoleAccess,
+        replication_role: &crate::state::replication::RoleAccess,
     ) -> Result<CopyObjectOutput, CopyObjectError> {
         let Some(state) = crate::state::service_state(&*self.engine) else {
             // Without the store neither the source can be read nor the copy recorded, and
@@ -956,6 +956,20 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> CopyObject<Eng> {
 
         // Taken again for the write, now that the cross-service decision above is made.
         let mut store = state.lock();
+
+        // The REDIRECT the website endpoint would answer for the destination object, judged
+        // before anything is written: the member carries the same rule here as on a
+        // single-request write — "redirects requests for this object to another object in the
+        // same bucket or to an external URL"
+        // (`CopyObjectRequest$WebsiteRedirectLocation`) — so a value that addresses neither is
+        // refused through the one reading every write of the member shares
+        // ([`crate::state::website_redirect_location_is_addressable`]), leaving the
+        // destination key exactly as it was.
+        if let Some(location) = input.website_redirect_location.as_deref() {
+            if !crate::state::website_redirect_location_is_addressable(location) {
+                return Err(crate::scaffolded::Scaffolded::invalid_redirect_location());
+            }
+        }
 
         // S3 refuses a copy of an object onto ITSELF that would change nothing about it:
         // the request names no new metadata, no new tag set, no storage class, no website

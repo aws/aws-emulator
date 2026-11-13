@@ -17,8 +17,9 @@
 //! * every copy is made UNDER THE ROLE the configuration names — "the Identity and Access
 //!   Management (IAM) role that Amazon S3 assumes when replicating objects"
 //!   (`ReplicationConfiguration$Role`) — so a role whose trust policy does not let the
-//!   Amazon S3 service principal assume it replicates nothing at all and the source version
-//!   reports the failure ([`RoleAccess`]);
+//!   Amazon S3 service principal assume it, or whose own permissions deny it the replication
+//!   actions, replicates nothing where they are denied and the source version reports the
+//!   failure ([`RoleAccess`]);
 //! * a rule covers the keys its `Prefix`, or its `Filter`, selects: "An object key name
 //!   prefix that identifies the object or objects to which the rule applies"
 //!   (`ReplicationRule$Prefix`) and "a filter that identifies the subset of objects to
@@ -68,70 +69,232 @@ pub const DELETE_MARKER_REPLICATION_ENABLED: &str = "Enabled";
 /// service principal.
 pub const REPLICATION_SERVICE_PRINCIPAL: &str = "s3.amazonaws.com";
 
-/// Whether the role a bucket's replication configuration names is one Amazon S3 can assume
-/// — the role EVERY copy that configuration calls for is made under.
+/// What the role a bucket's replication configuration names lets Amazon S3 DO — the role
+/// EVERY copy that configuration calls for is made under.
 ///
 /// Read once per write ([`role_access`]) and handed to the two places that act on a
 /// configuration ([`super::ComAmazonawsS3Amazons3State::replicate_write`] and
 /// [`super::ComAmazonawsS3Amazons3State::replicate_delete_marker`]), so one write cannot
-/// copy a version under a role another part of the same write found unassumable.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RoleAccess {
-    /// Nothing IAM answered withholds the role from S3: the copies the configuration calls
-    /// for are made, which is also the answer for a bucket that replicates nothing at all.
-    Assumable,
-    /// IAM holds the role the configuration names and the trust policy it carries does not
-    /// admit [`REPLICATION_SERVICE_PRINCIPAL`]: S3 cannot assume it, so no copy can be made
-    /// under it and the replication of every covered version fails.
-    Withheld,
+/// copy a version under a role another part of the same write found it could not use.
+///
+/// Two levels, because a replication is authorized in two places: whether S3 may act as the
+/// role at all ([`Self::copies_nothing`]), and what the role's own permissions allow it to do
+/// at each destination ([`Self::may_replicate_object`], [`Self::may_replicate_delete`]). A
+/// role that is denied one destination still replicates to the others, which is why the
+/// destinations are carried rather than collapsed into one verdict.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct RoleAccess {
+    /// Whether the replication is withheld WHOLE: IAM holds the role the configuration names
+    /// and its trust policy does not admit [`REPLICATION_SERVICE_PRINCIPAL`], so S3 cannot
+    /// assume it, or the role's own permissions DENY it the read of the source's versions — in
+    /// either case no copy can be made under it, to any destination.
+    withheld: bool,
+    /// The destination buckets the role may not write a REPLICA into
+    /// ([`REPLICATE_OBJECT_ACTION`] denied there).
+    unwritable: Vec<String>,
+    /// The destination buckets the role may not lay a replicated DELETE MARKER in
+    /// ([`REPLICATE_DELETE_ACTION`] denied there).
+    unmarkable: Vec<String>,
 }
 
-/// Whether Amazon S3 can assume the role the bucket named `bucket` replicates under,
-/// resolved against the account's IAM records.
+impl RoleAccess {
+    /// Nothing IAM answered withholds anything: every copy the configuration calls for is
+    /// made. Also the answer for a bucket that replicates nothing at all, and the one an
+    /// emulator with no IAM mounted gives.
+    #[must_use]
+    pub fn unrestricted() -> Self {
+        Self::default()
+    }
+
+    /// The replication is withheld WHOLE — see [`Self::withheld`].
+    #[must_use]
+    pub fn withheld() -> Self {
+        Self {
+            withheld: true,
+            ..Self::default()
+        }
+    }
+
+    /// Whether NO copy can be made under this role, whatever the configuration names.
+    #[must_use]
+    pub fn copies_nothing(&self) -> bool {
+        self.withheld
+    }
+
+    /// Whether a replica may be written into the destination bucket named `bucket`.
+    #[must_use]
+    pub fn may_replicate_object(&self, bucket: &str) -> bool {
+        !self.withheld && !self.unwritable.iter().any(|held| held == bucket)
+    }
+
+    /// Whether a replicated delete marker may be laid in the destination bucket named
+    /// `bucket`.
+    #[must_use]
+    pub fn may_replicate_delete(&self, bucket: &str) -> bool {
+        !self.withheld && !self.unmarkable.iter().any(|held| held == bucket)
+    }
+}
+
+/// The action the role needs on a DESTINATION's objects for a replica to be written there:
+/// "s3:ReplicateObject" is the permission replication performs the copy under (Amazon S3 User
+/// Guide, *Setting up permissions for replication*), so a role DENIED it at a destination
+/// writes nothing there.
+pub const REPLICATE_OBJECT_ACTION: &str = "s3:ReplicateObject";
+
+/// The action the role needs on a DESTINATION's objects for a replicated delete marker to be
+/// laid there — the delete half of the same grant ("s3:ReplicateDelete", same guide section).
+pub const REPLICATE_DELETE_ACTION: &str = "s3:ReplicateDelete";
+
+/// The action the role needs on the SOURCE's object versions for any copy to be made at all:
+/// replication reads the version it copies, and "s3:GetObjectVersionForReplication" is the
+/// permission that read is performed under (same guide section). A role denied it replicates
+/// nothing, to any destination, because every copy begins with that read.
+pub const GET_OBJECT_VERSION_FOR_REPLICATION_ACTION: &str = "s3:GetObjectVersionForReplication";
+
+/// What the role the bucket named `bucket` replicates under lets Amazon S3 do, resolved
+/// against the account's IAM records.
 ///
-/// A replication is carried out by S3 assuming that role, so the role is what decides
-/// whether the copies a configuration calls for can be made at all — which is why this is
-/// asked per WRITE rather than when the configuration is stored: the trust policy in force
-/// at the moment of the copy is the one that governs it.
+/// A replication is carried out by S3 assuming that role and acting as it, so the role is
+/// what decides whether the copies a configuration calls for can be made at all — which is
+/// why this is asked per WRITE rather than when the configuration is stored: the trust policy
+/// and the permissions in force at the moment of the copy are the ones that govern it.
 ///
 /// IAM is reached the way any emulated service reaches another, through the in-process
-/// callback, by the reading every service resolving a caller-supplied role shares
-/// (`service_common::iam_role`). The store is locked only for the read of the stored ARN and
-/// released before that hop, so this service's own guard is never held across it — and
-/// nothing is withheld that IAM did not answer: a role IAM holds nothing under, an answer
-/// this emulator could not read and an emulator with no IAM mounted all leave the
-/// replication to proceed.
+/// callback, by the readings every service resolving a caller-supplied role shares
+/// (`service_common::iam_role`): whether the role's trust policy admits the S3 service
+/// principal, and whether the permissions in force on it let it read the source's versions and
+/// write each destination's objects. The store is locked only for the read of the stored
+/// configuration and released before those hops, so this service's own guard is never held
+/// across one.
+///
+/// Nothing is withheld that IAM did not answer. A role that STATES permissions is the authority
+/// on what it may do, so the replication actions have to be allowed by them; a role IAM holds
+/// no identity policy for is held back only by a statement that DENIES one of those actions,
+/// because an empty policy set is no evidence about a role whose permissions were provisioned
+/// elsewhere ([`withheld`]). A value that names no role of this account, a role IAM holds no
+/// record of, an answer this emulator could not read and an emulator with no IAM mounted all
+/// leave the replication to proceed.
+///
+/// At most [`super::MAX_REPLICATION_DESTINATIONS_PER_WRITE`] destinations are asked about, the
+/// same ceiling the fan-out the answer governs is bounded by, so one configuration cannot make
+/// one write pay an unbounded number of hops.
 pub async fn role_access<Eng: ::std::marker::Send + ::std::marker::Sync + 'static>(
     engine: &Eng,
     ctx: &smithy_server_runtime::OperationContext<'_>,
     bucket: &str,
 ) -> RoleAccess {
     let Some(state) = super::service_state(engine) else {
-        return RoleAccess::Assumable;
+        return RoleAccess::unrestricted();
     };
-    let role = {
+    let configured = {
         let store = state.lock();
         store
             .bucket(bucket)
             .and_then(super::Bucket::replication)
-            .map(|configuration| configuration.role.clone())
+            .map(|configuration| {
+                let mut destinations: Vec<String> = Vec::new();
+                for rule in &configuration.rules {
+                    if let Some(named) = destination_bucket(&rule.destination.bucket) {
+                        if !destinations.iter().any(|held| held == named) {
+                            destinations.push(named.to_string());
+                        }
+                    }
+                }
+                destinations.truncate(super::MAX_REPLICATION_DESTINATIONS_PER_WRITE);
+                (configuration.role.clone(), destinations)
+            })
     };
     // A bucket carrying no replication configuration replicates nothing, so it names no
     // role to resolve and pays no hop for one.
-    let Some(role) = role else {
-        return RoleAccess::Assumable;
+    let Some((role, destinations)) = configured else {
+        return RoleAccess::unrestricted();
     };
+    let region = super::request_region(ctx.parts());
     if ::service_common::iam_role::held_role_is_unassumable(
         ctx,
-        &super::request_region(ctx.parts()),
+        &region,
         &role,
         REPLICATION_SERVICE_PRINCIPAL,
     )
     .await
     {
-        RoleAccess::Withheld
+        return RoleAccess::withheld();
+    }
+    // Whether the role STATES permissions at all, asked once: a role IAM holds no identity
+    // policy for says nothing about what it may do — a replication role is routinely
+    // provisioned out of band — so only a statement that DENIES an action is acted on for it,
+    // while a role that states permissions is the authority on what it may do and has to allow
+    // the action.
+    let states_permissions =
+        ::service_common::iam_role::role_states_permissions(ctx, &region, &role).await;
+    // The SOURCE read every copy begins with: a role that may not read the versions of the
+    // bucket being replicated copies nothing anywhere.
+    if withheld(
+        ctx,
+        &region,
+        &role,
+        GET_OBJECT_VERSION_FOR_REPLICATION_ACTION,
+        &super::object_arn(bucket, "*"),
+        states_permissions,
+    )
+    .await
+    {
+        return RoleAccess::withheld();
+    }
+    let mut access = RoleAccess::unrestricted();
+    for destination in destinations {
+        let objects = super::object_arn(&destination, "*");
+        if withheld(
+            ctx,
+            &region,
+            &role,
+            REPLICATE_OBJECT_ACTION,
+            &objects,
+            states_permissions,
+        )
+        .await
+        {
+            access.unwritable.push(destination.clone());
+        }
+        if withheld(
+            ctx,
+            &region,
+            &role,
+            REPLICATE_DELETE_ACTION,
+            &objects,
+            states_permissions,
+        )
+        .await
+        {
+            access.unmarkable.push(destination);
+        }
+    }
+    access
+}
+
+/// Whether the role `role_arn` names may not perform `action` on `resource`, under the one
+/// rule every replication question above is asked by.
+///
+/// `states_permissions` is what decides which answer counts
+/// ([`::service_common::iam_role::role_states_permissions`]): a role that states permissions
+/// has to be ALLOWED the action, the way any principal acting under a policy set does
+/// (`role_withholds_action`); a role IAM holds no identity policy for is only held back by a
+/// statement that says NO (`role_denies_action`), because an empty policy set is no evidence
+/// about a role whose permissions were provisioned elsewhere.
+async fn withheld(
+    ctx: &smithy_server_runtime::OperationContext<'_>,
+    region: &str,
+    role_arn: &str,
+    action: &str,
+    resource: &str,
+    states_permissions: bool,
+) -> bool {
+    if states_permissions {
+        ::service_common::iam_role::role_withholds_action(ctx, region, role_arn, action, resource)
+            .await
     } else {
-        RoleAccess::Assumable
+        ::service_common::iam_role::role_denies_action(ctx, region, role_arn, action, resource)
+            .await
     }
 }
 

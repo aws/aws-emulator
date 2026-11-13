@@ -360,7 +360,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // — the store work below is synchronous and holds the guard throughout.
         let replication_role =
             crate::state::replication::role_access(&*self.engine, ctx, &input.bucket).await;
-        let output = self.store(input, ctx, &correlation, replication_role)?;
+        let output = self.store(input, ctx, &correlation, &replication_role)?;
         // Recorded LAST, so the response carries the pair the notifications already named
         // this call by.
         correlation.answer();
@@ -379,7 +379,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> DeleteObject<Eng>
         input: DeleteObjectInput,
         ctx: &smithy_server_runtime::OperationContext<'_>,
         correlation: &crate::state::request_ids::RequestCorrelation,
-        replication_role: crate::state::replication::RoleAccess,
+        replication_role: &crate::state::replication::RoleAccess,
     ) -> Result<DeleteObjectNoContent, DeleteObjectError> {
         let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
             crate::scaffolded::Scaffolded::unmodeled(

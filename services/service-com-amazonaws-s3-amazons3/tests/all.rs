@@ -217,6 +217,8 @@ mod multipart_upload_listing;
 mod not_modified_version_headers;
 #[path = "all/notification_destination_validation.rs"]
 mod notification_destination_validation;
+#[path = "all/notification_filter_delivery.rs"]
+mod notification_filter_delivery;
 #[path = "all/notification_wildcard_event_overlap.rs"]
 mod notification_wildcard_event_overlap;
 #[path = "all/object_acl.rs"]
@@ -393,6 +395,10 @@ mod version_listing_owner;
 mod version_listing_resume_markers;
 #[path = "all/versioned_removal_event_split.rs"]
 mod versioned_removal_event_split;
+#[path = "all/website_redirect_location.rs"]
+mod website_redirect_location;
+#[path = "all/website_endpoint.rs"]
+mod website_endpoint;
 #[path = "all/write_checksum_header_count.rs"]
 mod write_checksum_header_count;
 #[path = "all/write_response_identity.rs"]
