@@ -37,7 +37,7 @@
 use smithy_server_runtime::MultiServiceRouter;
 
 use crate::hosted_zone_records::{create_zone_ok, router, Reply};
-use crate::refusal_message_rules::message_of;
+use crate::refusal_message_rules::{assert_identity_only_at, message_of};
 use crate::traffic_policies::{create_policy, document_with_start_endpoint, get_policy};
 use crate::traffic_policy_comment_updates::update_comment;
 use crate::traffic_policy_deletion::delete_policy;
@@ -70,40 +70,9 @@ pub(crate) const NO_SUCH_POLICY_MESSAGE: &str = "The policy does not exist.";
 /// `pub(crate)` so every suite that drives the traffic-policy-instance refusal asserts the
 /// body shape through the SAME check rather than growing a second copy of it.
 pub(crate) fn assert_identity_only(reply: &Reply, case: &str, code: &str) {
-    assert_eq!(
-        reply.status, 404,
-        "case {case:?}: expected HTTP 404, got {} with body {}",
-        reply.status, reply.body
-    );
-    assert_eq!(
-        reply.error_code(),
-        code,
-        "case {case:?}: expected the code {code:?}, got {:?}; body {}",
-        reply.error_code(),
-        reply.body
-    );
-    assert_eq!(
-        reply.first("Error/Type"),
-        Some("Sender"),
-        "case {case:?}: expected the fault Type \"Sender\", got {:?}; body {}",
-        reply.first("Error/Type"),
-        reply.body
-    );
-    assert_eq!(
-        reply.first("Error/Message"),
-        None,
-        "case {case:?}: the refusal must carry no Message element, got {:?}; body {}",
-        reply.first("Error/Message"),
-        reply.body
-    );
-    // Read off the raw body as well, so an EMPTY `<Message/>` — which carries no
-    // text and so does not reach the flattened element paths — cannot pass
-    // either.
-    assert!(
-        !reply.body.contains("<Message"),
-        "case {case:?}: the body must carry no Message element at all, got {}",
-        reply.body
-    );
+    // The body shape belongs to the error CLASS, so it is asserted through the one shared
+    // check; these two classes are reported HTTP 404.
+    assert_identity_only_at(reply, case, 404, code);
 }
 
 /// Assert that `reply` is the traffic-policy not-found refusal: HTTP 404, the `Error`

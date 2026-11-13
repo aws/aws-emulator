@@ -90,7 +90,9 @@ use super::types::*;
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::state::{no_such_cidr_collection, MAX_CIDR_BLOCKS_PER_COLLECTION};
+use crate::state::{
+    cidr_collection_version_mismatch, no_such_cidr_collection, MAX_CIDR_BLOCKS_PER_COLLECTION,
+};
 
 /// The `Action` that puts a CIDR block in a location of the collection: "PUT: Create
 /// a CIDR block within the specified collection" (`CidrCollectionChangeAction`).
@@ -100,16 +102,6 @@ const PUT: &str = "PUT";
 /// block from the collection" — so a block the collection does not hold is already in
 /// the state the change asks for.
 const DELETE_IF_EXISTS: &str = "DELETE_IF_EXISTS";
-
-/// The refusal text this operation answers a `CollectionVersion` that is not the
-/// collection's current one with (`CidrCollectionVersionMismatchException`, HTTP 409).
-///
-/// The sentence the model states for this error class. The version a caller sends is
-/// the one it read, so what it can act on is that the collection moved on since —
-/// never which version it is now, which the read it repeats reports.
-const VERSION_MISMATCH_MESSAGE: &str =
-    "The CIDR collection version you provided, doesn't match the one in the ListCidrCollections \
-     operation.";
 
 /// The refusal text this operation answers a `PUT` of a block the collection already
 /// holds in ANOTHER location with (`CidrBlockInUseException`, HTTP 400).
@@ -248,15 +240,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // intervening update: If the value in the request matches the value of
         // CollectionVersion in the collection, Route 53 updates the collection" — a
         // request that states no version is held to nothing and applies as it stands.
+        // The refusal is MESSAGELESS: the service answers this class by its identity
+        // alone, which `cidr_collection_version_mismatch` is the one place to word.
         if input
             .collection_version
             .is_some_and(|asked| asked != held.version)
         {
             return Err(
                 ChangeCidrCollectionErrorModeled::CidrCollectionVersionMismatchException(
-                    CidrCollectionVersionMismatchException {
-                        message: Some(VERSION_MISMATCH_MESSAGE.to_string()),
-                    },
+                    cidr_collection_version_mismatch(),
                 )
                 .into(),
             );

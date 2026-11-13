@@ -19,6 +19,10 @@ mod checker_ip_ranges;
 mod cidr_collections;
 #[path = "all/cidr_collection_blocks.rs"]
 mod cidr_collection_blocks;
+// Declared beside the block suite: this one is the BODY shape the two CIDR-collection
+// refusals the service reports by their error class alone answer with.
+#[path = "all/cidr_collection_refusal_bodies.rs"]
+mod cidr_collection_refusal_bodies;
 // Declared beside the block suite: this one is the metadata-only read over a
 // collection's locations — what it reports, how it pages and what it refuses.
 #[path = "all/cidr_location_listing.rs"]

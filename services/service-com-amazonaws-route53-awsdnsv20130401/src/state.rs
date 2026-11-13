@@ -55,6 +55,7 @@ pub mod account_vpcs;
 /// half of the customer managed key the KSK was created from.
 pub mod signing_key;
 
+use crate::ops::types::change_cidr_collection_types::CidrCollectionVersionMismatchException;
 use crate::ops::types::create_cidr_collection_types::CidrCollection;
 use crate::ops::types::list_cidr_blocks_types::CidrBlockSummary;
 use crate::ops::types::create_reusable_delegation_set_types::HostedZoneNotFound;
@@ -3405,6 +3406,20 @@ pub fn invalid_pagination_token(token: &str) -> InvalidPaginationToken {
 /// which is the one thing the request named.
 pub fn no_such_cidr_collection() -> NoSuchCidrCollectionException {
     NoSuchCidrCollectionException { message: None }
+}
+
+/// The modelled `CidrCollectionVersionMismatchException` (HTTP 409) for a change
+/// held to a collection version that is not the collection's current one.
+///
+/// The ONE place this service words that refusal. MESSAGELESS, like
+/// [`no_such_cidr_collection`] above it: Route 53 reports this optimistic-concurrency
+/// refusal as the error's identity alone — the `Error` element carries `Type` and `Code`
+/// and no `Message` child — so this shape's optional `message` member is left unset and
+/// the serializer emits no element for it. It takes no argument because a refusal with no
+/// message has nothing to take from the request: the version a caller sent is the one it
+/// read, and the version the collection is at now is what the read it repeats reports.
+pub fn cidr_collection_version_mismatch() -> CidrCollectionVersionMismatchException {
+    CidrCollectionVersionMismatchException { message: None }
 }
 
 /// The modelled `NoSuchHostedZone` (HTTP 404) for a zone id that names no zone

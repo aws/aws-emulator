@@ -143,7 +143,10 @@ async fn listed_blocks(router: &MultiServiceRouter, uri: &str) -> (Reply, Vec<(S
 }
 
 /// The `Version` the listing reports for the collection `id`.
-async fn listed_version(router: &MultiServiceRouter, id: &str) -> String {
+///
+/// `pub(crate)` for the same reason [`create_collection`] is: a sibling suite that has to
+/// know the version a change is held to reads it through the SAME listing.
+pub(crate) async fn listed_version(router: &MultiServiceRouter, id: &str) -> String {
     let listed = call(router, "GET", "/2013-04-01/cidrcollection", "").await;
     assert_eq!(
         listed.status, 200,

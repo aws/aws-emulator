@@ -30,6 +30,10 @@
 //! The harness (`router`, `call`, `Reply`) and every request builder come from
 //! the suites that own those operations, so these tests drive the service
 //! through the same router a socket-served request goes through.
+//!
+//! The readers every refusal-wording suite shares live here too: [`message_of`], for a
+//! refusal whose message is the thing under test, and [`assert_identity_only_at`], for one
+//! the service answers by its error class alone.
 
 use service_com_amazonaws_route53_awsdnsv20130401::state::TRAFFIC_POLICY_FORMAT_VERSION;
 
@@ -55,6 +59,53 @@ pub(crate) fn message_of(reply: &Reply, case: &str) -> String {
             )
         })
         .to_string()
+}
+
+/// Assert that `reply` reports a refusal by its IDENTITY ALONE: the given status, the
+/// `Error` element carrying `Type` `Sender` and the expected `Code`, and no `Message`
+/// element anywhere in the body.
+///
+/// Which refusals the service answers this way is a fact of the error CLASS, not of the
+/// status it carries — so the status is a parameter and this one check serves every class
+/// the service reports without a message.
+///
+/// `pub(crate)` so every suite that drives such a refusal asserts the body shape through
+/// the SAME check rather than growing a second copy of it.
+pub(crate) fn assert_identity_only_at(reply: &Reply, case: &str, status: u16, code: &str) {
+    assert_eq!(
+        reply.status, status,
+        "case {case:?}: expected HTTP {status}, got {} with body {}",
+        reply.status, reply.body
+    );
+    assert_eq!(
+        reply.error_code(),
+        code,
+        "case {case:?}: expected the code {code:?}, got {:?}; body {}",
+        reply.error_code(),
+        reply.body
+    );
+    assert_eq!(
+        reply.first("Error/Type"),
+        Some("Sender"),
+        "case {case:?}: expected the fault Type \"Sender\", got {:?}; body {}",
+        reply.first("Error/Type"),
+        reply.body
+    );
+    assert_eq!(
+        reply.first("Error/Message"),
+        None,
+        "case {case:?}: the refusal must carry no Message element, got {:?}; body {}",
+        reply.first("Error/Message"),
+        reply.body
+    );
+    // Read off the raw body as well, so an EMPTY `<Message/>` — which carries no
+    // text and so does not reach the flattened element paths — cannot pass
+    // either.
+    assert!(
+        !reply.body.contains("<Message"),
+        "case {case:?}: the body must carry no Message element at all, got {}",
+        reply.body
+    );
 }
 
 // ---------------------------------------------------------------------------
