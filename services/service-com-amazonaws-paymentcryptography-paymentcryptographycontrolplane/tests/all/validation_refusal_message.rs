@@ -19,12 +19,17 @@
 //! where it goes, whether a handler or the framework produced the body.
 //!
 //! Each test is a TABLE spanning the class the rule generalises over — the constraint class,
-//! the member, the operation (an implemented one and a still-scaffolded one), the number of
-//! broken constraints, the number of offending list elements — rather than only the operations
-//! and values one report happened to cite. Every call goes through the real
-//! `MultiServiceRouter` (`POST /` with `X-Amz-Target: PaymentCryptographyControlPlane.<Op>`,
-//! awsJson1_0), through the same harness `key_lifecycle` uses, so what these tests assert is
-//! what a signed SDK request observes.
+//! the member, the operation, the number of broken constraints, the number of offending list
+//! elements — rather than only the operations and values one report happened to cite. Every
+//! call goes through the real `MultiServiceRouter` (`POST /` with
+//! `X-Amz-Target: PaymentCryptographyControlPlane.<Op>`, awsJson1_0), through the same harness
+//! `key_lifecycle` uses, so what these tests assert is what a signed SDK request observes.
+//!
+//! No row states whether the operation it names is IMPLEMENTED: that is not a rule about how
+//! this service words an answer, and an operation implemented later would turn such a row
+//! false. Where the subject has to be an operation that still answers the scaffold's own 501,
+//! it is taken from the crate's own census of scaffold markers at run time
+//! ([`scaffolded_operations`]), so the suite follows the census instead of contradicting it.
 
 use serde_json::{json, Value};
 use smithy_server_runtime::MultiServiceRouter;
@@ -169,14 +174,119 @@ async fn assert_refused(
     );
 }
 
+// ---------------------------------------------------------------------------------------
+// The operations that still answer the scaffold's own 501 — read from this crate's own
+// census, never named in an assertion.
+// ---------------------------------------------------------------------------------------
+
+/// The marker line a `src/ops/*.rs` carries while its operation is an unimplemented scaffold:
+/// the machine-readable record of which operations answer the framework's own 501, deleted by
+/// whoever replaces that file's `Err(..)` with real behaviour.
+const SCAFFOLD_MARKER: &str = "//! SCAFFOLDED, NOT IMPLEMENTED:";
+
+/// The line every `src/ops/*.rs` opens with, carrying the operation's shape name — the name
+/// an `awsJson1_0` request targets it by.
+const OPERATION_MARKER: &str = "//! @op ";
+
+/// This crate's `src/ops/` directory, read at test time the way `src/service.rs`'s own suite
+/// reads the model that generated the crate.
+const OPS_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/src/ops");
+
+/// This crate's scaffold census: the operation name of every `src/ops/*.rs` still carrying
+/// [`SCAFFOLD_MARKER`], in name order.
+///
+/// The subject of the 501 row below is taken from the census rather than named in the
+/// assertion. A named one would make this suite assert that THAT operation is still
+/// unimplemented — so implementing it, which its own open stub issue asks for, would fail a
+/// suite about how refusals are worded, for a reason that has nothing to do with the rule.
+/// An operation implemented tomorrow leaves the census, and the rule is asserted over the
+/// operations that remain.
+fn scaffolded_operations() -> Vec<String> {
+    let mut scaffolded: Vec<String> = Vec::new();
+    let entries = std::fs::read_dir(OPS_DIR).expect("this crate's operations live in src/ops");
+    for entry in entries {
+        let path = entry.expect("a readable directory entry").path();
+        if path.extension().and_then(std::ffi::OsStr::to_str) != Some("rs") {
+            continue;
+        }
+        let source = std::fs::read_to_string(&path).expect("an operation module is readable");
+        if !source
+            .lines()
+            .any(|line| line.starts_with(SCAFFOLD_MARKER))
+        {
+            continue;
+        }
+        let named = source
+            .lines()
+            .find_map(|line| line.strip_prefix(OPERATION_MARKER))
+            .unwrap_or_else(|| {
+                panic!(
+                    "case {}: an operation module names its operation in its `@op` line",
+                    path.display()
+                )
+            });
+        scaffolded.push(named.trim().to_string());
+    }
+    scaffolded.sort();
+    scaffolded
+}
+
+/// A request the modelled-constraint walk ACCEPTS for `operation`: every `@required` member
+/// present, every value inside its member's declared constraints, so the call reaches the
+/// handler and is answered by whatever that handler does rather than refused before it.
+///
+/// Source for each row's members and for every enumerated value in it:
+/// `smithy_query(query="operation",operation="DeleteResourcePolicy,\
+/// GetCertificateSigningRequest,GetParametersForImport,GetPublicKeyCertificate,\
+/// GetResourcePolicy,ImportKey,PutResourcePolicy")` and
+/// `smithy_query(query="shape",shape="KeyMaterialType,KeyAlgorithm,SigningAlgorithmType,\
+/// CertificateSubjectType,ImportKeyMaterial,RootCertificatePublicKey,KeyAttributes,KeyUsage,\
+/// KeyClass")`, both against this crate's model.
+fn accepted_request(operation: &str) -> Option<Value> {
+    let request = match operation {
+        "DeleteResourcePolicy" | "GetResourcePolicy" => {
+            json!({"ResourceArn": well_formed_key_arn()})
+        }
+        "GetCertificateSigningRequest" => json!({
+            "KeyIdentifier": WELL_FORMED_KEY_IDENTIFIER,
+            "SigningAlgorithm": "SHA256",
+            "CertificateSubject": {"CommonName": "payments"},
+        }),
+        "GetParametersForImport" => json!({
+            "KeyMaterialType": "ROOT_PUBLIC_KEY_CERTIFICATE",
+            "WrappingKeyAlgorithm": "RSA_2048",
+        }),
+        "GetPublicKeyCertificate" => json!({"KeyIdentifier": WELL_FORMED_KEY_IDENTIFIER}),
+        "ImportKey" => json!({
+            "KeyMaterial": {
+                "RootCertificatePublicKey": {
+                    "KeyAttributes": {
+                        "KeyUsage": "TR31_S0_ASYMMETRIC_KEY_FOR_DIGITAL_SIGNATURE",
+                        "KeyClass": "PUBLIC_KEY",
+                        "KeyAlgorithm": "RSA_2048",
+                        "KeyModesOfUse": {"Verify": true},
+                    },
+                    "PublicKeyCertificate": "a-root-public-key-certificate",
+                },
+            },
+        }),
+        "PutResourcePolicy" => json!({
+            "ResourceArn": well_formed_key_arn(),
+            "Policy": "{\"Version\":\"2012-10-17\",\"Statement\":[]}",
+        }),
+        _ => return None,
+    };
+    Some(request)
+}
+
 #[tokio::test]
 async fn a_pattern_violation_quotes_the_expression_without_its_whole_value_anchors() {
     let router = router();
     // One row per (operation, member, rejected value), spanning the two string members whose
-    // `@pattern` a request can break directly, an operation that is implemented and one that
-    // is still a 501 stub (a refusal is the service's words either way), and values that miss
-    // the expression in different ways: a missing prefix, a disallowed character, the wrong
-    // case, and a name that is only a prefix.
+    // `@pattern` a request can break directly, several operations of the two resources those
+    // members name (a refusal is the service's words whatever the handler behind it does), and
+    // values that miss the expression in different ways: a missing prefix, a disallowed
+    // character, the wrong case, and a name that is only a prefix.
     let rows: Vec<(&str, Value, &str, String, &str)> = vec![
         (
             "GetAlias",
@@ -438,7 +548,8 @@ async fn a_constraint_broken_by_a_list_element_is_stated_once_at_the_list() {
 async fn an_absent_required_member_is_stated_as_the_null_it_was() {
     let router = router();
     // One row per shape of absence: the only member an operation declares, one of two, and a
-    // list member — over an implemented operation and a scaffolded one.
+    // list member — over several operations, since the walk that refuses runs before any
+    // handler.
     let rows: Vec<(&str, Value, &str)> = vec![
         ("GetAlias", json!({}), "aliasName"),
         ("CreateAlias", json!({}), "aliasName"),
@@ -578,37 +689,47 @@ async fn an_answer_this_rule_does_not_own_is_left_exactly_as_its_renderer_wrote_
     }
 
     // The scaffold's own 501 is a class this model does not declare, so it keeps the member
-    // the framework wrote its text in. `GetResourcePolicy` is one of the operations still
-    // carrying the scaffold header (`grep '^//! SCAFFOLDED, NOT IMPLEMENTED:' src/ops/`), and
-    // the ARN below satisfies its modelled `ResourceArn` pattern so the request reaches the
-    // stub rather than the boundary.
-    let (status, parsed) = call(
-        &router,
-        "GetResourcePolicy",
-        &json!({
-            "ResourceArn": format!(
-                "arn:aws:payment-cryptography:us-east-1:{}:key/abcdefghij123456",
-                engine::emulator_account_id()
-            ),
-        }),
-    )
-    .await;
-    assert_eq!(
-        status, 501,
-        "case a scaffolded operation: expected 501, got {status} {parsed}"
-    );
-    assert_eq!(
-        error_code(&parsed),
-        "NotImplemented",
-        "case a scaffolded operation: expected NotImplemented, got {parsed}"
-    );
+    // the framework wrote its text in. One row per operation this crate's scaffold census
+    // still names (`scaffolded_operations`), each called with a request the
+    // modelled-constraint walk accepts, so what answers is the handler and not a refusal.
+    // No operation is named here: an operation implemented later leaves the census, and the
+    // rule stays asserted over the ones that remain.
+    let scaffolded = scaffolded_operations();
     assert!(
-        parsed.get("message").and_then(Value::as_str).is_some(),
-        "case a scaffolded operation: the framework's own member must survive, got {parsed}"
+        !scaffolded.is_empty(),
+        "case the scaffold census: these rows need an operation that still answers the \
+         scaffold's own 501, and the census names none — delete them together with the last \
+         scaffold rather than leaving them to pass over nothing"
     );
-    assert!(
-        parsed.get("Message").is_none(),
-        "case a scaffolded operation: a class this model does not declare must not be \
-         rewritten, got {parsed}"
-    );
+    for operation in scaffolded {
+        let body = accepted_request(&operation).unwrap_or_else(|| {
+            panic!(
+                "case the scaffolded {operation}: this crate's scaffold census names it, so \
+                 `accepted_request` needs a request the modelled-constraint walk accepts for it"
+            )
+        });
+        let (status, parsed) = call(&router, &operation, &body).await;
+        assert_eq!(
+            status, 501,
+            "case the scaffolded {operation}: expected 501, got {status} {parsed}"
+        );
+        assert_eq!(
+            error_code(&parsed),
+            "NotImplemented",
+            "case the scaffolded {operation}: expected NotImplemented, got {parsed}"
+        );
+        assert!(
+            parsed
+                .get("message")
+                .and_then(Value::as_str)
+                .is_some_and(|stated| stated.contains(&operation)),
+            "case the scaffolded {operation}: the framework's own member must survive, \
+             naming the operation the request targeted, got {parsed}"
+        );
+        assert!(
+            parsed.get("Message").is_none(),
+            "case the scaffolded {operation}: a class this model does not declare must not be \
+             rewritten, got {parsed}"
+        );
+    }
 }
