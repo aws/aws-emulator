@@ -133,6 +133,8 @@ mod support_case_lifecycle;
 mod support_cases;
 #[path = "all/tags.rs"]
 mod tags;
+#[path = "all/timestream_rate_class.rs"]
+mod timestream_rate_class;
 #[path = "all/unasked_page_size.rs"]
 mod unasked_page_size;
 #[path = "all/utilization_report.rs"]

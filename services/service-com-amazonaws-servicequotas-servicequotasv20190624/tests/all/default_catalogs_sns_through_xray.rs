@@ -99,8 +99,12 @@ const CATALOGS: &[Catalog] = &[
     Catalog {
         service_code: "timestream",
         service_name: "Amazon Timestream",
-        quota_count: 31,
-        withdrawn: &["DatabasesPerAccount"],
+        quota_count: 29,
+        // Beside the descriptive stand-in: the two codes this catalog used to key the
+        // scheduled-query and batch-load creation rates on, which the recorded listing
+        // publishes those two rates under OTHER codes, so no quota of this service is
+        // attributable to them.
+        withdrawn: &["DatabasesPerAccount", "L-0C6E4BCB", "L-16B72159"],
     },
     Catalog {
         service_code: "vpc",
@@ -284,16 +288,15 @@ const ROWS: &[Row] = &[
     Row {
         service_code: "timestream",
         quota_code: "L-F07A9AB4",
-        quota_name: "Rate of WriteRecords requests",
-        value: 1000.0,
+        quota_name: "ListBatchLoadTasks request rate",
+        value: 5.0,
         unit: "None",
-        adjustable: true,
-        description: "The maximum number of WriteRecords requests you can make per second in \
-                      this account in the current Region.",
+        adjustable: false,
+        description: "Maximum number of ListBatchLoadTasks requests per second.",
         period: Some((1, "SECOND")),
         metric: Metric::Calls {
             usage_service: "Timestream",
-            api: "WriteRecords",
+            api: "ListBatchLoadTasks",
         },
         resource_scope_type: None,
     },
