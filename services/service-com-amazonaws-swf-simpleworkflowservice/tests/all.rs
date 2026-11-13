@@ -101,3 +101,5 @@ mod unknown_resource_messages;
 mod workflow_execution_lifecycle;
 #[path = "all/workflow_type_undeprecation.rs"]
 mod workflow_type_undeprecation;
+#[path = "all/wrong_kind_task_token_refusals.rs"]
+mod wrong_kind_task_token_refusals;

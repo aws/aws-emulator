@@ -26,8 +26,10 @@ use super::workflow_execution_lifecycle::{
     error_code, full_defaults, i64_at, seeded, string_at, whole_history, Emulator,
 };
 
-/// The workflow type every run in this suite is started with.
-const WORKFLOW_TYPE: (&str, &str) = ("cross-kind-wf", "1.0");
+/// The workflow type every run in this suite is started with. `pub(crate)` so the
+/// sibling suite that carries the same rule across domains starts its runs from the same
+/// type rather than seeding a second one.
+pub(crate) const WORKFLOW_TYPE: (&str, &str) = ("cross-kind-wf", "1.0");
 
 /// The `defaultTaskList` that type carries, so every run's decision tasks wait there.
 const DECIDER_LIST: &str = "cross-kind-deciders";
@@ -38,14 +40,15 @@ const ACTIVITY_TYPE: (&str, &str) = ("cross-kind-activity", "1.0");
 /// The activity type's `defaultTaskList`, where a scheduled activity task waits.
 const ACTIVITY_LIST: &str = "cross-kind-activities";
 
-/// The `workflowId` of this suite's single run.
-const WORKFLOW_ID: &str = "cross-kind-wf-1";
+/// The `workflowId` of this suite's single run, and of the sibling suite's one run per
+/// domain: a `workflowId` is scoped to its domain, so one name serves both.
+pub(crate) const WORKFLOW_ID: &str = "cross-kind-wf-1";
 
 /// The operations that take a `taskToken` and refuse one that addresses no task they can
 /// act on, with the fixed text each one's fault carries. The activity-side operations are
 /// the three terminal responses the task's own doc names plus the heartbeat; the
 /// decision-side one is the decider's completion.
-const ACTIVITY_SIDE: [&str; 4] = [
+pub(crate) const ACTIVITY_SIDE: [&str; 4] = [
     "RespondActivityTaskCompleted",
     "RespondActivityTaskFailed",
     "RespondActivityTaskCanceled",
@@ -53,17 +56,17 @@ const ACTIVITY_SIDE: [&str; 4] = [
 ];
 
 /// The fixed text an activity-side refusal carries, with the id the token addresses.
-fn unknown_activity(scheduled_event_id: i64) -> String {
+pub(crate) fn unknown_activity(scheduled_event_id: i64) -> String {
     format!("Unknown activity, scheduledEventId = {scheduled_event_id}")
 }
 
 /// The fixed text the decision-side refusal carries, with the id the token addresses.
-fn unknown_decision_task(scheduled_event_id: i64) -> String {
+pub(crate) fn unknown_decision_task(scheduled_event_id: i64) -> String {
     format!("Unknown decision task, scheduledEventId = {scheduled_event_id}")
 }
 
 /// Register the domain, the workflow type and the activity type this suite uses.
-async fn seed(emulator: &Emulator, domain: &str) {
+pub(crate) async fn seed(emulator: &Emulator, domain: &str) {
     seeded(
         emulator,
         domain,
@@ -91,7 +94,11 @@ async fn seed(emulator: &Emulator, domain: &str) {
 
 /// Poll one decision task that must be waiting, and return
 /// `(its taskToken, the scheduledEventId of the task it handed over)`.
-async fn poll_decision_task(emulator: &Emulator, case: &str, domain: &str) -> (String, i64) {
+pub(crate) async fn poll_decision_task(
+    emulator: &Emulator,
+    case: &str,
+    domain: &str,
+) -> (String, i64) {
     let task = emulator
         .ok(
             case,
@@ -122,7 +129,7 @@ async fn poll_decision_task(emulator: &Emulator, case: &str, domain: &str) -> (S
 /// Poll one activity task that must be waiting, and return
 /// `(its taskToken, the scheduledEventId of the task it handed over)`, reading that id
 /// back out of the run's own history.
-async fn poll_activity_task(
+pub(crate) async fn poll_activity_task(
     emulator: &Emulator,
     case: &str,
     domain: &str,
