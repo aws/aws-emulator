@@ -243,7 +243,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // no transfer the service could run, so it is refused rather than
             // stored: `SourceConfiguration` and `DestinationConfiguration` each
             // carry one optional member per end type, and the model cannot say
-            // which one a given `type` requires.
+            // which one a given `type` requires. The reason names the `type` the
+            // request carried, so it is stated within the maximum of the member
+            // it travels on ([`invalid`]).
             for (index, source) in input.sources.iter().enumerate() {
                 if let Some(message) = source_configuration_error(index, source) {
                     return Err(invalid(message));

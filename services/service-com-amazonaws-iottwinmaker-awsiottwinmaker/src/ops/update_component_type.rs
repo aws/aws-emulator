@@ -527,10 +527,18 @@ fn vanished(workspace_id: &str, component_type_id: &str) -> UpdateComponentTypeE
 /// rule that refused the request produced.
 ///
 /// The message is built from the REQUEST — the member and the id or name the
-/// service could not resolve — so a caller is told what to change.
+/// service could not resolve — and is stated within the maximum of the member it
+/// travels on ([`crate::state::clamped_message`]), whatever text of the request
+/// it names. A value outside a `dataType`'s modelled value list is resolved by
+/// the boundary validator before this handler runs, so the branch naming one is
+/// this handler's own defence rather than what answers such a request on the
+/// wire.
 fn validation_exception(message: String) -> UpdateComponentTypeError {
     UpdateComponentTypeErrorModeled::ValidationException(ValidationException {
-        message: Some(message),
+        message: Some(crate::state::clamped_message(
+            message,
+            crate::state::ERROR_MESSAGE_MAX_CHARS,
+        )),
     })
     .into()
 }

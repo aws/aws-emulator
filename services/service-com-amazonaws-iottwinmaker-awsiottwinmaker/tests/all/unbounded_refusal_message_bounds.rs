@@ -14,7 +14,8 @@
 //! `TwinMakerArn` is bounded at the very 2048 characters the reason has to fit
 //! in; a `syncSource` label, a plain pattern string the model does not bound at
 //! all; and a set of tag keys, each bounded at 128 characters but named as many
-//! at a time as the request carried.
+//! at a time as the request carried — as the two tagging calls report them, and
+//! as each create that takes a `tags` map of its own does.
 //!
 //! A modelled ENUMERATION value is the one kind of request text that cannot
 //! reach such a reason: the value list is a constraint the boundary validator
@@ -137,8 +138,10 @@ fn workspace_not_found(workspace: &str) -> String {
 
 /// The reserved-namespace reason a tag writer words for the `keys` it refused,
 /// stated on `member` — the one construction every tag writer of this service
-/// reports.
-fn reserved_keys_reason(member: &str, keys: &[String]) -> String {
+/// reports, BEFORE the bound of the member it travels on is applied, which is
+/// why this suite words it rather than reading the service's own (already
+/// bounded) construction of it.
+pub(crate) fn reserved_keys_reason(member: &str, keys: &[String]) -> String {
     let mut named: Vec<&str> = keys.iter().map(String::as_str).collect();
     named.sort_unstable();
     named.dedup();
@@ -155,10 +158,25 @@ fn reserved_keys_reason(member: &str, keys: &[String]) -> String {
 /// modelled `TagKey` admits, so the reason naming them all is as long as a legal
 /// request can make it.
 fn reserved_keys(count: usize) -> Vec<String> {
+    reserved_keys_padded(count, TAG_KEY_MAX, 'k')
+}
+
+/// `count` distinct keys in the reserved namespace, each padded to `chars`
+/// characters with `filler` and named so their sorted order — the order a reason
+/// reports them in — is the order they are built in.
+///
+/// The ONE construction of a row's key set, so a suite about how the reason is
+/// MEASURED (`tests/all/unbounded_member_refusal_bounds.rs`, which pads with
+/// multi-byte letters) builds its keys the same way this one does.
+pub(crate) fn reserved_keys_padded(count: usize, chars: usize, filler: char) -> Vec<String> {
     (0..count)
         .map(|index| {
             let head = format!("{RESERVED_TAG_KEY_PREFIX}{index:03}");
-            format!("{head}{}", "k".repeat(TAG_KEY_MAX - head.chars().count()))
+            let padding = chars.saturating_sub(head.chars().count());
+            format!(
+                "{head}{}",
+                std::iter::repeat_n(filler, padding).collect::<String>()
+            )
         })
         .collect()
 }
@@ -275,23 +293,32 @@ enum OutOfEnum {
     TransferSourceType,
     /// `ListMetadataTransferJobs$destinationType`.
     TransferDestinationType,
+    /// `ListMetadataTransferJobs`' `state` filter.
+    TransferJobState,
     /// `CreateMetadataTransferJob`'s `sources[].type`.
     TransferSourceEndType,
     /// `CreateMetadataTransferJob`'s `destination.type`.
     TransferDestinationEndType,
     /// `ListSyncResources`' `resourceType` filter.
     SyncResourceType,
+    /// `ListSyncResources`' `state` filter.
+    SyncResourceState,
+    /// The `dataType.type` a `CreateComponentType` definition declares.
+    DefinitionDataType,
     /// `UpdatePricingPlan$pricingMode`.
     PricingMode,
 }
 
 /// Every member the rows drive an out-of-enum value at.
-const OUT_OF_ENUM: [OutOfEnum; 6] = [
+const OUT_OF_ENUM: [OutOfEnum; 9] = [
     OutOfEnum::TransferSourceType,
     OutOfEnum::TransferDestinationType,
+    OutOfEnum::TransferJobState,
     OutOfEnum::TransferSourceEndType,
     OutOfEnum::TransferDestinationEndType,
     OutOfEnum::SyncResourceType,
+    OutOfEnum::SyncResourceState,
+    OutOfEnum::DefinitionDataType,
     OutOfEnum::PricingMode,
 ];
 
@@ -335,12 +362,49 @@ impl OutOfEnum {
                     }))
                     .await
             }
+            OutOfEnum::TransferJobState => {
+                emulator
+                    .list_metadata_transfer_jobs(json!({
+                        "sourceType": "s3",
+                        "destinationType": "s3",
+                        "filters": [{"state": value}],
+                    }))
+                    .await
+            }
             OutOfEnum::SyncResourceType => {
                 emulator
                     .list_sync_resources(
                         WORKSPACE,
                         SYNC_SOURCE_SITEWISE,
                         json!({"filters": [{"resourceType": value}]}),
+                    )
+                    .await
+            }
+            OutOfEnum::SyncResourceState => {
+                emulator
+                    .list_sync_resources(
+                        WORKSPACE,
+                        SYNC_SOURCE_SITEWISE,
+                        json!({"filters": [{"state": value}]}),
+                    )
+                    .await
+            }
+            // The definition also declares a `defaultValue` of another type than
+            // the `dataType` beside it, so a writer that got past the value list
+            // would word a reason naming the `type` the request carried.
+            OutOfEnum::DefinitionDataType => {
+                emulator
+                    .create_component_type(
+                        WORKSPACE,
+                        "com.example.outofenum",
+                        json!({
+                            "propertyDefinitions": {
+                                "Reading": {
+                                    "dataType": {"type": value},
+                                    "defaultValue": {"stringValue": "of another type"},
+                                },
+                            },
+                        }),
                     )
                     .await
             }
@@ -416,6 +480,13 @@ async fn an_out_of_enum_value_is_refused_at_the_boundary() {
         (200, Some(PRICING_MODE_BASIC)),
         "a refused plan update leaves the account on the plan it was on, got {plan:?}"
     );
+    let component_type = emulator
+        .get_component_type(WORKSPACE, "com.example.outofenum")
+        .await;
+    assert_eq!(
+        component_type.status, 404,
+        "a refused create stores no component type, got {component_type:?}"
+    );
 }
 
 /// One tagging operation, which addresses a resource by an ARN the model bounds
@@ -488,6 +559,55 @@ async fn a_tagging_refusal_fits_its_modelled_member() {
     }
 }
 
+/// One operation that takes a `tags` map on a CREATE, and so refuses a key in
+/// the reserved namespace before anything is stored — the same reason the
+/// tagging calls report, built by each create's own refusal builder.
+#[derive(Debug, Clone, Copy)]
+enum TaggedCreate {
+    Workspace,
+    Scene,
+    ComponentType,
+}
+
+/// The creates the rule is asserted over.
+const TAGGED_CREATES: [TaggedCreate; 3] = [
+    TaggedCreate::Workspace,
+    TaggedCreate::Scene,
+    TaggedCreate::ComponentType,
+];
+
+impl TaggedCreate {
+    /// Drive this create with `tags`, every other member being one the service
+    /// accepts. The reserved-key rule is decided on the request alone, before
+    /// the store is reached, so no row depends on what the store holds.
+    async fn send(self, emulator: &Emulator, tags: serde_json::Value) -> Resp {
+        match self {
+            TaggedCreate::Workspace => {
+                emulator
+                    .create_workspace_with("msgboundstagged", json!({"tags": tags}))
+                    .await
+            }
+            TaggedCreate::Scene => {
+                emulator
+                    .create_scene(
+                        WORKSPACE,
+                        json!({
+                            "sceneId": "taggedScene",
+                            "contentLocation": "s3://bucket/tagged.json",
+                            "tags": tags,
+                        }),
+                    )
+                    .await
+            }
+            TaggedCreate::ComponentType => {
+                emulator
+                    .create_component_type(WORKSPACE, "com.example.tagged", json!({"tags": tags}))
+                    .await
+            }
+        }
+    }
+}
+
 /// RULE: a refusal that names the reserved tag keys a request carried states
 /// them within the 2048 characters the member it travels on admits, however many
 /// keys the request named — the keys are bounded one at a time, not as the set a
@@ -496,9 +616,11 @@ async fn a_tagging_refusal_fits_its_modelled_member() {
 async fn a_reserved_tag_key_refusal_fits_its_modelled_member() {
     let emulator = Emulator::new();
 
-    // The rows differ along HOW MANY keys the reason names — one, and the
-    // largest set the model admits — and along which member carries them.
-    for count in [1, TAG_KEYS_MAX] {
+    // The rows differ along HOW MANY keys the reason names — one, a set whose
+    // reason is already past what the member admits, and the largest set the
+    // model admits — and along which operation reports it: the two tagging
+    // calls, and the creates that take a `tags` map of their own.
+    for count in [1, 20, TAG_KEYS_MAX] {
         let keys = reserved_keys(count);
         let tags: serde_json::Map<String, serde_json::Value> = keys
             .iter()
@@ -507,7 +629,10 @@ async fn a_reserved_tag_key_refusal_fits_its_modelled_member() {
 
         let case = format!("TagResource with {count} reserved tag keys");
         let refused = emulator
-            .tag_resource(&workspace_arn(WORKSPACE), serde_json::Value::Object(tags))
+            .tag_resource(
+                &workspace_arn(WORKSPACE),
+                serde_json::Value::Object(tags.clone()),
+            )
             .await;
         assert_eq!(
             (refused.status, refused.error_type.as_deref()),
@@ -547,6 +672,29 @@ async fn a_reserved_tag_key_refusal_fits_its_modelled_member() {
             &reserved_keys_reason("tagKeys", &keys),
             ERROR_MESSAGE_MAX,
         );
+
+        for create in TAGGED_CREATES {
+            let case = format!("{create:?} with {count} reserved tag keys");
+            let refused = create
+                .send(&emulator, serde_json::Value::Object(tags.clone()))
+                .await;
+            assert_eq!(
+                (refused.status, refused.error_type.as_deref()),
+                (400, Some("ValidationException")),
+                "case {case:?}: expected 400 ValidationException, got {refused:?}"
+            );
+            let reported = refused
+                .member("message")
+                .as_str()
+                .unwrap_or_default()
+                .to_string();
+            assert_within_bound(
+                &case,
+                &reported,
+                &reserved_keys_reason("tags", &keys),
+                ERROR_MESSAGE_MAX,
+            );
+        }
     }
 }
 

@@ -206,10 +206,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 .iter()
                 .flat_map(|tags| tags.keys().map(String::as_str)),
         ) {
-            return Err(CreateSyncJobErrorModeled::ValidationException(ValidationException {
-                message: Some(message),
-            })
-            .into());
+            return Err(validation(message).into());
         }
 
         // The sync job reads its source and writes the workspace AS the role
@@ -254,18 +251,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // `@length` at all, so the reason is stated within the maximum of the
         // member it travels on ([`crate::state::clamped_message`]).
         if input.sync_source != crate::state::SYNC_SOURCE_SITEWISE {
-            return Err(CreateSyncJobErrorModeled::ValidationException(
-                ValidationException {
-                    message: Some(crate::state::clamped_message(
-                        format!(
-                            "syncSource {} is not supported; the only supported syncSource is {}",
-                            input.sync_source,
-                            crate::state::SYNC_SOURCE_SITEWISE
-                        ),
-                        crate::state::ERROR_MESSAGE_MAX_CHARS,
-                    )),
-                },
-            )
+            return Err(validation(format!(
+                "syncSource {} is not supported; the only supported syncSource is {}",
+                input.sync_source,
+                crate::state::SYNC_SOURCE_SITEWISE
+            ))
             .into());
         }
 
@@ -292,17 +282,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // so a workspace that already syncs from it holds the job this call
         // would create, and that is a conflict rather than a second job.
         if workspace.sync_jobs.contains_key(&input.sync_source) {
-            return Err(CreateSyncJobErrorModeled::ConflictException(
-                ConflictException {
-                    message: Some(crate::state::clamped_message(
-                        format!(
-                            "workspace {} already has a sync job for sync source {}",
-                            input.workspace_id, input.sync_source
-                        ),
-                        crate::state::ERROR_MESSAGE_MAX_CHARS,
-                    )),
-                },
-            )
+            return Err(conflict(format!(
+                "workspace {} already has a sync job for sync source {}",
+                input.workspace_id, input.sync_source
+            ))
             .into());
         }
 
@@ -350,4 +333,37 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             state: reported_state,
         })
     }
+}
+
+/// One refusal of this operation's modelled `ValidationException`, with the
+/// message the rule that refused the request produced.
+///
+/// The message is built from the REQUEST — the member and the value the service
+/// does not accept — and is stated within the maximum of the member it travels
+/// on ([`crate::state::clamped_message`]), whatever text of the request it
+/// names: the model gives `SyncSource` no `@length` at all, and a `tags` map
+/// carries up to fifty keys of its own.
+fn validation(message: String) -> CreateSyncJobErrorModeled {
+    CreateSyncJobErrorModeled::ValidationException(ValidationException {
+        message: Some(crate::state::clamped_message(
+            message,
+            crate::state::ERROR_MESSAGE_MAX_CHARS,
+        )),
+    })
+}
+
+/// One refusal of this operation's modelled `ConflictException`, with the reason
+/// the identity it would have taken is already taken.
+///
+/// Stated within the maximum of the member it travels on, as [`validation`] is:
+/// the reason names the same `syncSource` the request carried, which the model
+/// bounds the length of nowhere, so both refusals of this handler state their
+/// reason through one construction.
+fn conflict(message: String) -> CreateSyncJobErrorModeled {
+    CreateSyncJobErrorModeled::ConflictException(ConflictException {
+        message: Some(crate::state::clamped_message(
+            message,
+            crate::state::ERROR_MESSAGE_MAX_CHARS,
+        )),
+    })
 }

@@ -259,10 +259,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 .iter()
                 .flat_map(|tags| tags.keys().map(String::as_str)),
         ) {
-            return Err(CreateComponentTypeErrorModeled::ValidationException(ValidationException {
-                message: Some(message),
-            })
-            .into());
+            return Err(validation_exception(message));
         }
 
         // The Region this request is signed for picks the store it writes to,
@@ -530,10 +527,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 /// rule that refused the request produced.
 ///
 /// The message is built from the REQUEST — the member and the id or name the
-/// service could not resolve — so a caller is told what to change.
+/// service could not resolve — and is stated within the maximum of the member it
+/// travels on ([`crate::state::clamped_message`]), whatever text of the request
+/// it names: a `tags` map carries up to fifty keys of its own, and a value
+/// outside a `dataType`'s modelled value list is resolved by the boundary
+/// validator before this handler runs, so the branch naming one is this
+/// handler's own defence rather than what answers such a request on the wire.
 fn validation_exception(message: String) -> CreateComponentTypeError {
     CreateComponentTypeErrorModeled::ValidationException(ValidationException {
-        message: Some(message),
+        message: Some(crate::state::clamped_message(
+            message,
+            crate::state::ERROR_MESSAGE_MAX_CHARS,
+        )),
     })
     .into()
 }
