@@ -46,6 +46,11 @@ type Problem = (String, String);
 /// refusal must report, in order.
 type RefusalRow = (&'static str, Value, Vec<Problem>);
 
+/// One row of the update-refusal table: the case, a builder of the request body
+/// from the id of the input the row's own channel holds, and the problems the
+/// refusal must report.
+type UpdateRefusalRow = (&'static str, fn(&str) -> Value, Vec<Problem>);
+
 /// `CreateChannel` with `body`.
 async fn create(router: &MultiServiceRouter, body: Value) -> (u16, Value) {
     call(router, "POST", "/prod/channels", Some(body)).await
@@ -251,32 +256,31 @@ async fn a_create_refuses_a_configuration_it_could_not_run() {
 /// The table spans the attachment counts the rule generalises over — none, one
 /// resolvable entry, two entries resolving to two different inputs, and two
 /// entries resolving to the same one.
+///
+/// Each row gets an account of its own: an input is attached to at most one
+/// channel at a time, so a row's inputs are free only while no earlier row's
+/// channel still holds them.
 #[tokio::test]
 async fn a_create_accepts_a_configuration_it_can_run() {
-    let router = medialive();
-    let first = attachable_input(&router, "first").await;
-    let second = attachable_input(&router, "second").await;
-
-    let table: Vec<(&str, Vec<Value>)> = vec![
+    // Each entry is the attachment's name and WHICH of the row's two inputs it
+    // names, so the ids are the ones that row's own account minted.
+    let table: Vec<(&str, Vec<(&str, usize)>)> = vec![
         ("no attachment at all", vec![]),
-        ("one resolvable attachment", vec![attachment("a", Some(&first))]),
-        (
-            "two attachments on two inputs",
-            vec![
-                attachment("a", Some(&first)),
-                attachment("b", Some(&second)),
-            ],
-        ),
-        (
-            "two attachments on one input",
-            vec![
-                attachment("a", Some(&first)),
-                attachment("b", Some(&first)),
-            ],
-        ),
+        ("one resolvable attachment", vec![("a", 0)]),
+        ("two attachments on two inputs", vec![("a", 0), ("b", 1)]),
+        ("two attachments on one input", vec![("a", 0), ("b", 0)]),
     ];
 
-    for (case, attachments) in table {
+    for (case, entries) in table {
+        let router = medialive();
+        let inputs = [
+            attachable_input(&router, "first").await,
+            attachable_input(&router, "second").await,
+        ];
+        let attachments: Vec<Value> = entries
+            .iter()
+            .map(|(name, input)| attachment(name, Some(&inputs[*input])))
+            .collect();
         let body = json!({
             "name": case,
             "encoderSettings": channel_encoder_settings(),
@@ -365,46 +369,55 @@ async fn a_reference_resolves_against_the_inputs_the_account_holds() {
 /// The table spans the update shapes the rule generalises over: an attachment
 /// list whose entries do not all resolve (at either position), an entry naming no
 /// input, and a `DryRun` update, which is checked by the same rule.
+///
+/// Each row seeds its baseline channel in an account of its own, because an
+/// input is attached to at most one channel at a time.
 #[tokio::test]
 async fn an_update_refuses_a_configuration_it_could_not_run() {
-    let router = medialive();
-    let held = attachable_input(&router, "held").await;
-    let baseline = json!({
-        "name": "baseline",
-        "encoderSettings": channel_encoder_settings(),
-        "inputAttachments": [attachment("held", Some(&held))],
-    });
-
-    let table: Vec<RefusalRow> = vec![
+    // Each row builds its request from the id of the input ITS OWN account
+    // minted and its channel already holds, so no row depends on another's.
+    let table: Vec<UpdateRefusalRow> = vec![
         (
             "an attachment naming an id nothing minted",
-            json!({ "inputAttachments": [attachment("ghost", Some(UNMINTED_INPUT_ID))] }),
+            |_held| json!({ "inputAttachments": [attachment("ghost", Some(UNMINTED_INPUT_ID))] }),
             vec![unresolvable_attachment(0, UNMINTED_INPUT_ID)],
         ),
         (
             "an unresolvable attachment after a resolvable one",
-            json!({ "inputAttachments": [
-                attachment("held", Some(&held)),
-                attachment("ghost", Some(UNMINTED_INPUT_ID)),
-            ] }),
+            |held| {
+                json!({ "inputAttachments": [
+                    attachment("held", Some(held)),
+                    attachment("ghost", Some(UNMINTED_INPUT_ID)),
+                ] })
+            },
             vec![unresolvable_attachment(1, UNMINTED_INPUT_ID)],
         ),
         (
             "an attachment naming no input at all",
-            json!({ "inputAttachments": [attachment("nameless", None)] }),
+            |_held| json!({ "inputAttachments": [attachment("nameless", None)] }),
             vec![nameless_attachment(0)],
         ),
         (
             "a checked-only update whose attachment does not resolve",
-            json!({
-                "dryRun": true,
-                "inputAttachments": [attachment("ghost", Some(UNMINTED_INPUT_ID))],
-            }),
+            |_held| {
+                json!({
+                    "dryRun": true,
+                    "inputAttachments": [attachment("ghost", Some(UNMINTED_INPUT_ID))],
+                })
+            },
             vec![unresolvable_attachment(0, UNMINTED_INPUT_ID)],
         ),
     ];
 
-    for (case, request, expected) in table {
+    for (case, build, expected) in table {
+        let router = medialive();
+        let held = attachable_input(&router, "held").await;
+        let baseline = json!({
+            "name": "baseline",
+            "encoderSettings": channel_encoder_settings(),
+            "inputAttachments": [attachment("held", Some(&held))],
+        });
+        let request = build(&held);
         let (status, created) = create(&router, baseline.clone()).await;
         assert_eq!(
             status, 201,
@@ -440,31 +453,45 @@ async fn an_update_refuses_a_configuration_it_could_not_run() {
 /// update that names no attachment at all keeps the ones the channel had, which
 /// is what makes the check one on the configuration the update WOULD leave
 /// rather than on the request alone.
+///
+/// Each row seeds its baseline channel in an account of its own, because an
+/// input is attached to at most one channel at a time.
 #[tokio::test]
 async fn an_update_accepts_a_configuration_it_can_run() {
-    let router = medialive();
-    let held = attachable_input(&router, "held").await;
-    let other = attachable_input(&router, "other").await;
-
-    let table: Vec<(&str, Value, Value)> = vec![
+    // Each row builds its request, and the attachments it expects to read back,
+    // from the two inputs ITS OWN account minted: `held`, which the baseline
+    // channel attaches, and `other`, which nothing attaches.
+    type Row = (&'static str, fn(&str, &str) -> (Value, Value));
+    let table: Vec<Row> = vec![
         (
             "no attachment member at all",
-            json!({ "name": "renamed" }),
-            json!([attachment("held", Some(&held))]),
+            |held, _other| {
+                (
+                    json!({ "name": "renamed" }),
+                    json!([attachment("held", Some(held))]),
+                )
+            },
         ),
         (
             "another resolvable attachment",
-            json!({ "inputAttachments": [attachment("other", Some(&other))] }),
-            json!([attachment("other", Some(&other))]),
+            |_held, other| {
+                (
+                    json!({ "inputAttachments": [attachment("other", Some(other))] }),
+                    json!([attachment("other", Some(other))]),
+                )
+            },
         ),
         (
             "an empty attachment list",
-            json!({ "inputAttachments": [] }),
-            json!([]),
+            |_held, _other| (json!({ "inputAttachments": [] }), json!([])),
         ),
     ];
 
-    for (case, request, expected) in table {
+    for (case, build) in table {
+        let router = medialive();
+        let held = attachable_input(&router, "held").await;
+        let other = attachable_input(&router, "other").await;
+        let (request, expected) = build(&held, &other);
         let (status, created) = create(
             &router,
             json!({

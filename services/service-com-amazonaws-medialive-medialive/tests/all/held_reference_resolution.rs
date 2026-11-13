@@ -11,13 +11,16 @@
 //! names is one it adds.
 //!
 //! The reference that can lose its resource under a live user is the input
-//! security group: `DeleteInputSecurityGroup` is a soft delete that deletes a
-//! group an input or a channel still uses, while the deletes of the other
-//! resources an input or a channel references (an SdiSource an input holds, an
-//! input a channel attaches, a cluster or a channel placement group a channel is
-//! placed in) refuse while that user exists. So that group is what every row
-//! here takes away, on both sides of the rule: `UpdateInput`'s merged input
-//! configuration and `UpdateChannel`'s merged channel configuration.
+//! security group a CHANNEL names: `DeleteInputSecurityGroup` is a soft delete,
+//! and the group's own precondition is about the INPUTS using it ("The list of
+//! inputs currently using this Input Security Group"), so a group a channel
+//! names in `ChannelSecurityGroups` can still be deleted out from under it. The
+//! deletes of the other resources an input or a channel references (an
+//! SdiSource an input holds, an input a channel attaches, the group an input
+//! names, a cluster or a channel placement group a channel is placed in) refuse
+//! while that user exists, so what the channel rows take away is that group,
+//! and the input rows span the other half of the same rule: an entry the input
+//! already holds is not re-resolved, and only an entry the update ADDS is.
 //!
 //! Every test drives the service the way a client does — through
 //! `MultiServiceRouter::dispatch` with real HTTP requests — so what is asserted
@@ -52,9 +55,10 @@ const SEEDED_NAME: &str = "ingest";
 /// One input security group this account created and then deleted — a reference
 /// that resolved when it was stored and does not resolve any more.
 ///
-/// `DeleteInputSecurityGroup` deletes a group a resource still uses, so this is
-/// also how the reference a row takes away is taken away: the group is deleted
-/// AFTER the resource naming it was written.
+/// `DeleteInputSecurityGroup` is refused while INPUTS still use the group, so
+/// this seeding is the CHANNEL side's: a channel's `ChannelSecurityGroups` entry
+/// is not one of the group's inputs, so the group is deleted AFTER the channel
+/// naming it was written and that channel's reference stops resolving.
 async fn delete_group(router: &MultiServiceRouter, case: &str, id: &str) {
     let (status, body) = call(
         router,
@@ -99,9 +103,17 @@ fn pull_sources() -> Value {
     ])
 }
 
-/// One input of `input_type` naming an input security group this account then
-/// deletes, answering its id and the id of the group that has gone.
-async fn input_whose_group_has_gone(
+/// One input of `input_type` naming an input security group this account HOLDS,
+/// answering its id and the group's id.
+///
+/// The group is not deleted here, unlike [`channel_whose_group_has_gone`] on the
+/// channel side: `DeleteInputSecurityGroup` refuses a group while inputs still
+/// use it ("The list of inputs currently using this Input Security Group"), so
+/// an input naming a group that has gone is a state this service does not let a
+/// caller reach. What the input rows below therefore span is the other half of
+/// the resolution rule: an entry the input already holds is never re-resolved by
+/// an update that leaves it alone, and only an entry the update ADDS is.
+async fn input_holding_group(
     router: &MultiServiceRouter,
     case: &str,
     input_type: &str,
@@ -126,7 +138,6 @@ async fn input_whose_group_has_gone(
         .as_str()
         .unwrap_or_default()
         .to_string();
-    delete_group(router, case, &group).await;
     (id, group)
 }
 
@@ -138,8 +149,8 @@ async fn input_whose_group_has_gone(
 const PULLED_FROM_TYPES: [&str; 4] = ["URL_PULL", "RTMP_PULL", "MP4_FILE", "TS_FILE"];
 
 /// One row of the input table: the patch an `UpdateInput` sends for an input
-/// whose stored `InputSecurityGroups` entry no longer resolves, and what the
-/// service must answer.
+/// that already names an `InputSecurityGroups` entry, and what the service must
+/// answer.
 struct InputRow {
     case: &'static str,
     /// The `InputType` the row's input is created with.
@@ -154,15 +165,16 @@ struct InputRow {
     /// The `Name` the input must report afterwards.
     name: &'static str,
     /// The message a refused row's `BadRequestException` must carry, given the
-    /// gone group and the held one; `None` on an accepted row.
+    /// group the input was seeded with and a second one this account holds;
+    /// `None` on an accepted row.
     message: Option<fn(&str, &str) -> String>,
 }
 
-/// Rule: `UpdateInput` resolves only the `InputSecurityGroups` entries it ADDS,
-/// so an input that already names a group whose delete this service accepted can
-/// still be updated — the entries it already holds are the configuration it
-/// already claims — while an entry naming an id this account never held is
-/// refused with the modelled `BadRequestException` (400) and nothing is written.
+/// Rule: `UpdateInput` resolves only the `InputSecurityGroups` entries it ADDS —
+/// the entries the input already holds are the configuration it already claims,
+/// so an update that leaves them alone is never refused for them — while an
+/// entry naming an id this account never held is refused with the modelled
+/// `BadRequestException` (400) and nothing is written.
 #[tokio::test]
 async fn an_input_update_resolves_only_the_security_groups_it_adds() {
     let table: [InputRow; 11] = [
@@ -185,7 +197,7 @@ async fn an_input_update_resolves_only_the_security_groups_it_adds() {
             message: None,
         },
         InputRow {
-            case: "the gone group restated adds nothing",
+            case: "the seeded group restated adds nothing",
             input_type: "RTMP_PUSH",
             patch: |gone, _| json!({ "inputSecurityGroups": [gone] }),
             status: 200,
@@ -194,7 +206,7 @@ async fn an_input_update_resolves_only_the_security_groups_it_adds() {
             message: None,
         },
         InputRow {
-            case: "a held group added beside the gone one",
+            case: "a second group added beside the seeded one",
             input_type: "RTMP_PUSH",
             patch: |gone, held| json!({ "inputSecurityGroups": [gone, held] }),
             status: 200,
@@ -203,7 +215,7 @@ async fn an_input_update_resolves_only_the_security_groups_it_adds() {
             message: None,
         },
         InputRow {
-            case: "the gone group replaced by a held one",
+            case: "the seeded group replaced by another one",
             input_type: "RTMP_PUSH",
             patch: |_, held| json!({ "inputSecurityGroups": [held] }),
             status: 200,
@@ -221,7 +233,7 @@ async fn an_input_update_resolves_only_the_security_groups_it_adds() {
             message: None,
         },
         InputRow {
-            case: "a rename of a pulled-from input holding the gone group",
+            case: "a rename of a pulled-from input holding the seeded group",
             input_type: "URL_PULL",
             patch: |_, _| json!({ "name": "renamed" }),
             status: 200,
@@ -230,7 +242,7 @@ async fn an_input_update_resolves_only_the_security_groups_it_adds() {
             message: None,
         },
         InputRow {
-            case: "a pulled-from input clears the gone group",
+            case: "a pulled-from input clears the seeded group",
             input_type: "URL_PULL",
             patch: |_, _| json!({ "inputSecurityGroups": [] }),
             status: 200,
@@ -239,7 +251,7 @@ async fn an_input_update_resolves_only_the_security_groups_it_adds() {
             message: None,
         },
         InputRow {
-            case: "an unminted id added beside the gone one",
+            case: "an unminted id added beside the seeded one",
             input_type: "RTMP_PUSH",
             patch: |gone, _| json!({ "inputSecurityGroups": [gone, UNMINTED_GROUP_ID] }),
             status: 400,
@@ -254,7 +266,7 @@ async fn an_input_update_resolves_only_the_security_groups_it_adds() {
             }),
         },
         InputRow {
-            case: "an unminted id replacing the gone one, beside a rename",
+            case: "an unminted id replacing the seeded one, beside a rename",
             input_type: "RTMP_PUSH",
             patch: |_, _| {
                 json!({ "name": "renamed", "inputSecurityGroups": [UNMINTED_GROUP_ID] })
@@ -290,7 +302,7 @@ async fn an_input_update_resolves_only_the_security_groups_it_adds() {
     for row in table {
         let case = row.case;
         let router = medialive();
-        let (id, gone) = input_whose_group_has_gone(&router, case, row.input_type).await;
+        let (id, gone) = input_holding_group(&router, case, row.input_type).await;
         let held = input_security_group(&router).await;
         let before = describe_input(&router, case, &id).await;
 

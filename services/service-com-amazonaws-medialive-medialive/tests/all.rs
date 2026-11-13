@@ -185,6 +185,9 @@ mod idempotency_token_after_terminal_delete;
 #[path = "all/identity_name_rule.rs"]
 mod identity_name_rule;
 
+#[path = "all/input_attachment_lifecycle.rs"]
+mod input_attachment_lifecycle;
+
 #[path = "all/input_configuration_validation.rs"]
 mod input_configuration_validation;
 

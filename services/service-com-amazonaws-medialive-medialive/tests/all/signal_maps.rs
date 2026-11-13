@@ -811,10 +811,13 @@ struct Graph {
 /// `Sources`, with the channel listed among the input's `Destinations`; an input
 /// no discovered channel attaches is not part of the graph.
 ///
-/// The rows differ along how many inputs a channel attaches, how many channels
-/// attach one input, and how far from the entry point the attachment is — which
-/// is what the rule generalises over. The issue's recorded case (one channel,
-/// one attached input, entered at the channel) is the first row.
+/// The rows differ along how many inputs a channel attaches and how far from
+/// the entry point the attachment is — which is what the rule generalises over.
+/// No row shares one input between two channels: an input is attached to at most
+/// one channel at a time, so that graph cannot be created; a channel reached
+/// through another channel is covered by the linked-channel row instead. The
+/// issue's recorded case (one channel, one attached input, entered at the
+/// channel) is the first row.
 #[tokio::test]
 async fn signal_map_discovery_traces_a_channel_to_the_inputs_it_attaches() {
     let table = [
@@ -853,27 +856,6 @@ async fn signal_map_discovery_traces_a_channel_to_the_inputs_it_attaches() {
             entry: 0,
             resources: 1,
             neighbors: (0, 0),
-        },
-        Graph {
-            // The shared input is the only link between the two channels, so
-            // the second channel is discovered THROUGH it.
-            case: "one input shared by two channels",
-            inputs: &["shared"],
-            channels: &[
-                Node {
-                    name: "first",
-                    attaches: &[0],
-                    follows: None,
-                },
-                Node {
-                    name: "second",
-                    attaches: &[0],
-                    follows: None,
-                },
-            ],
-            entry: 0,
-            resources: 3,
-            neighbors: (1, 0),
         },
         Graph {
             case: "the followed channel's input too",

@@ -1244,9 +1244,12 @@ async fn a_resource_create_answers_the_status_the_wire_carries() {
 ///
 /// The rows differ along what the rule generalises over: how many whitelist
 /// rules the group carries, whether it has tags, and WHAT CURRENTLY USES IT —
-/// nothing (so the group was `IDLE`), an input or a channel (so it was `IN_USE`)
-/// — because the terminal state takes precedence over the state derived from
-/// the group's users on a read, and the derived one is what the delete reports.
+/// nothing (so the group was `IDLE`), a channel (so it was `IN_USE`), or an
+/// input whose own delete was accepted first (so it is `IDLE` again) — because
+/// the terminal state takes precedence over the state derived from the group's
+/// users on a read, and the derived one is what the delete reports. No row
+/// deletes a group an input still uses: that delete is refused with its own
+/// conflict (the `input_attachment_lifecycle` suite covers that refusal).
 #[tokio::test]
 async fn a_deleted_group_reaches_the_terminal_deleted_state() {
     // Every member `DescribeInputSecurityGroupResponse` declares
@@ -1282,10 +1285,10 @@ async fn a_deleted_group_reaches_the_terminal_deleted_state() {
             "IDLE",
         ),
         (
-            "an input uses it",
+            "an input used it and was deleted",
             json!({ "whitelistRules": [{ "cidr": "198.51.100.0/24" }] }),
-            Some("input"),
-            "IN_USE",
+            Some("deleted input"),
+            "IDLE",
         ),
         (
             "a channel uses it",
@@ -1311,13 +1314,13 @@ async fn a_deleted_group_reaches_the_terminal_deleted_state() {
         let id = created["id"].as_str().unwrap_or_default().to_string();
 
         match referenced_by {
-            Some("input") => {
+            Some("deleted input") => {
                 let (status, body) = call(
                     &router,
                     "POST",
                     "/prod/inputs",
                     Some(json!({
-                        "name": "uses-the-group",
+                        "name": "used-the-group",
                         "type": "URL_PULL",
                         "sources": pull_sources(),
                         "inputSecurityGroups": [id.clone()],
@@ -1328,6 +1331,16 @@ async fn a_deleted_group_reaches_the_terminal_deleted_state() {
                     status, 201,
                     "case {case:?}: CreateInput: expected 201, got {status}: {body}"
                 );
+                let input_id = body["input"]["id"].as_str().unwrap_or_default().to_string();
+                // Accepting the input's delete releases the group, so the group
+                // has no current user by the time the group's delete runs.
+                let (status, body) =
+                    call(&router, "DELETE", &format!("/prod/inputs/{input_id}"), None).await;
+                assert_eq!(
+                    status, 200,
+                    "case {case:?}: DeleteInput: expected 200, got {status}: {body}"
+                );
+                wait_for_the_clock();
             }
             Some("channel") => {
                 let (status, body) = call(

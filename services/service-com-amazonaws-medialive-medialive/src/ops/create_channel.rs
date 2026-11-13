@@ -277,6 +277,28 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             return Err(unprocessable(problems));
         }
 
+        // An input is attached to at most ONE channel at a time, so a request
+        // whose `InputAttachments` names an input another channel already
+        // attaches would double-book that input: it is refused with this
+        // operation's modelled `ConflictException`, naming the input the caller
+        // supplied, and no channel is created. Checked AFTER the structural
+        // validation above (a configuration this service could not run is
+        // refused for being unprocessable, whatever it attaches) and BEFORE
+        // anything is minted, so the refusal costs no channel id — a `DryRun`
+        // included, since a validate-only request is answered every refusal the
+        // real create would answer.
+        if let Some(input_id) = state.double_booked_input(
+            input.input_attachments.as_deref().unwrap_or_default(),
+            // A create holds no channel yet, so every attachment it names is one
+            // it ADDS.
+            None,
+        ) {
+            return Err(CreateChannelErrorModeled::ConflictException(ConflictException {
+                message: Some(crate::state::input_already_attached_message(&input_id)),
+            })
+            .into());
+        }
+
         // The store is bounded, so a create loop cannot grow the emulator's heap
         // without limit: once it is full the operation's own modelled throttle is
         // the answer, not another channel.

@@ -321,9 +321,10 @@ const INPUT_SECURITY_GROUP: &str = "InputSecurityGroup";
 /// terminal `DELETED` state it then keeps.
 ///
 /// The refusal is THIS operation's: it is reported through the batch's recorded
-/// per-resource failure channel. The single-resource
-/// `DeleteInputSecurityGroup` deletes an in-use group instead, because it models
-/// no conflict error and no recording shows it refusing — see the note in
+/// per-resource failure channel, with its own `BAD_REQUEST` code and its own
+/// wording, naming the resources that still use the group. The
+/// single-resource `DeleteInputSecurityGroup` refuses the same precondition
+/// through its own error channel instead — see
 /// `ops::delete_input_security_group`.
 fn delete_input_security_group(
     state: &mut State,

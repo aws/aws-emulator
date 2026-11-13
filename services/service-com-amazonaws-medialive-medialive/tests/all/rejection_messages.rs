@@ -127,8 +127,10 @@ struct BusyInput {
 /// `ConflictException` (409) carrying "Input <InputId> is busy, it cannot be
 /// deleted" — the request's own id and nothing about the channels that hold it.
 ///
-/// The rows differ along what the message must NOT depend on: the input's type,
-/// how many channels attach it and through how many attachments each.
+/// The rows differ along what the message must NOT depend on: the input's type
+/// and through how many attachments its channel holds it. No row has two
+/// channels hold one input: an input is attached to at most one channel at a
+/// time, so the second `CreateChannel` is refused with its own conflict.
 #[tokio::test]
 async fn a_busy_input_refusal_names_only_the_input_the_request_asked_about() {
     let table: [BusyInput; 3] = [
@@ -145,7 +147,7 @@ async fn a_busy_input_refusal_names_only_the_input_the_request_asked_about() {
             attachments_per_channel: 1,
         },
         BusyInput {
-            case: "rtmp push held by three channels",
+            case: "rtmp push held by one channel",
             input: || {
                 json!({
                     "name": "push-attached",
@@ -153,7 +155,7 @@ async fn a_busy_input_refusal_names_only_the_input_the_request_asked_about() {
                     "destinations": [{ "streamName": "live/a" }],
                 })
             },
-            channels: 3,
+            channels: 1,
             attachments_per_channel: 1,
         },
         BusyInput {

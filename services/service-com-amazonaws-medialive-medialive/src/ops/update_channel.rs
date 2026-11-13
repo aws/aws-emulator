@@ -343,6 +343,22 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             return Err(unprocessable(problems));
         }
 
+        // The same rule `CreateChannel` applies to a new channel's attachments:
+        // an input is attached to at most ONE channel at a time, so an update
+        // whose `InputAttachments` would attach an input ANOTHER channel already
+        // holds is refused with this operation's modelled `ConflictException`
+        // and the channel keeps the attachments it had. The channel being
+        // updated goes in beside the merged list, so re-declaring (or keeping)
+        // its own attachments is never a conflict with itself.
+        if let Some(input_id) =
+            state.double_booked_input(input_attachments, Some(input.channel_id.as_str()))
+        {
+            return Err(UpdateChannelErrorModeled::ConflictException(ConflictException {
+                message: Some(crate::state::input_already_attached_message(&input_id)),
+            })
+            .into());
+        }
+
         // Every refusal this update could earn has now been answered, so a
         // validate-only request is done: the channel keeps the configuration it
         // already had and its state is not moved, so there is no updated channel

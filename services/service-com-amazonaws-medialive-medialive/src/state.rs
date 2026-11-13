@@ -249,6 +249,14 @@ pub mod channel_configurations;
 
 pub use channel_configurations::ChannelConfiguration;
 
+/// The IN-USE slice: the one rule a write that would hand a resource to a second
+/// holder, or take one out from under its holder, is refused by — an input is
+/// attached to at most one channel at a time, and an input security group is not
+/// deleted while inputs still use it — plus the messages those refusals carry.
+pub mod in_use_conflicts;
+
+pub use in_use_conflicts::{input_already_attached_message, input_security_group_in_use_message};
+
 /// The channel ALERT slice: one channel's alert log, the state an alert is in,
 /// the `StateFilter` a read narrows it with and the set-time order a read
 /// reports it in. Its store is the `alerts` member of [`ChannelRecord`] below,

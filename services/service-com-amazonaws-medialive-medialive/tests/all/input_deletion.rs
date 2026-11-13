@@ -76,10 +76,12 @@ struct Row {
 /// repeated delete is idempotent and no other input is touched.
 ///
 /// The rows differ along the SHAPE of the input (which per-pipeline list its
-/// `InputType` family ingests through) and along how many channels attach it and
-/// through how many attachments each — which is what the rule generalises over —
+/// `InputType` family ingests through) and along whether a channel attaches it
+/// and through how many attachments — which is what the rule generalises over —
 /// because the rule is about whether ANY channel attaches the input, not about
-/// any one input type or any one attachment.
+/// any one input type or any one attachment. No row attaches one input to two
+/// channels: an input is attached to at most one channel at a time, so the
+/// second `CreateChannel` would be refused with its own conflict.
 #[tokio::test]
 async fn deleting_an_input_is_refused_while_a_channel_attaches_it() {
     let table: [Row; 4] = [
@@ -96,7 +98,7 @@ async fn deleting_an_input_is_refused_while_a_channel_attaches_it() {
             attachments_per_channel: 1,
         },
         Row {
-            case: "rtmp push attached to two channels",
+            case: "rtmp push attached to one channel",
             input: || {
                 json!({
                     "name": "push-attached",
@@ -104,7 +106,7 @@ async fn deleting_an_input_is_refused_while_a_channel_attaches_it() {
                     "destinations": [{ "streamName": "live/a" }, { "streamName": "live/b" }],
                 })
             },
-            channels: 2,
+            channels: 1,
             attachments_per_channel: 1,
         },
         Row {

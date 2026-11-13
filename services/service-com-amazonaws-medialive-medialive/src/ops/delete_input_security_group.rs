@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op DeleteInputSecurityGroup
-//! Deletes an input security group: the delete answers with the group and the
-//! state its users imply, and the group moves to the terminal `DELETED` state
-//! every read after the call reports.
+//! Deletes an input security group: refused while inputs still use the group,
+//! otherwise the delete answers with the group and the state its users imply,
+//! and the group moves to the terminal `DELETED` state every read after the
+//! call reports.
 //!
 //! ## Shape of an operation
 //!
@@ -71,6 +72,8 @@
 //! * `NotFoundException` (HTTP 404) — Placeholder documentation for NotFoundException
 //! * `TooManyRequestsException` (HTTP 429) — Placeholder documentation for
 //!   TooManyRequestsException
+//! * `ConflictException` (HTTP 409) — widened in through `extra_errors` (see below): the
+//!   refusal a group inputs still use earns.
 
 #[allow(unused_imports)]
 use super::types::*;
@@ -86,10 +89,20 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-medialive-medialive.jso
 // here — hence the `DeleteInputSecurityGroupError` alias below. An operation that models no errors
 // generates an UNINHABITED enum here, which is correct and expected: there is nothing
 // to construct until the model says otherwise.
-#[smithy_macros::operation_error("com.amazonaws.medialive#DeleteInputSecurityGroup")]
+//
+// `ConflictException` is widened in through `extra_errors`: this SERVICE models the
+// shape (`@httpError 409`, and `DeleteInput`/`DeleteChannel` list it) and the recorded
+// wire answer to a delete of a group inputs still use is exactly that 409, which the
+// operation's own error list does not carry. The wire is the authority where it and the
+// model's error list disagree.
+#[smithy_macros::operation_error(
+    "com.amazonaws.medialive#DeleteInputSecurityGroup",
+    extra_errors = ["ConflictException"]
+)]
 #[derive(Debug)]
 pub enum DeleteInputSecurityGroupErrorModeled {
     BadGatewayException(BadGatewayException),
+    ConflictException(ConflictException),
     BadRequestException(BadRequestException),
     ForbiddenException(ForbiddenException),
     GatewayTimeoutException(GatewayTimeoutException),
@@ -168,10 +181,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // ran.
         state.settle(now);
 
-        let Some(group) = state
+        // The id is resolved FIRST: an id this account holds no group for names
+        // nothing a precondition could be about, so it is answered not found
+        // rather than with a state conflict.
+        if !state
             .input_security_groups
-            .get_mut(&input.input_security_group_id)
-        else {
+            .contains_key(&input.input_security_group_id)
+        {
             return Err(DeleteInputSecurityGroupErrorModeled::NotFoundException(
                 NotFoundException {
                     message: Some(crate::state::not_found_message(
@@ -185,7 +201,41 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 },
             )
             .into());
-        };
+        }
+
+        // A group an input still uses cannot be deleted out from under it: the
+        // group is what admits the stream pushed to that input, so the delete is
+        // refused while `InputSecurityGroup$Inputs` ("The list of inputs
+        // currently using this Input Security Group") is not empty, and the
+        // group is left exactly as it was. The refusal names only the group the
+        // request asked about; which inputs still use it is state the caller did
+        // not supply, and `DescribeInputSecurityGroup` is what reports it.
+        //
+        // Resolved through the SAME derived list every read of the group reports
+        // that member from — and the one the batch path refuses on
+        // (`ops::batch_delete::delete_input_security_group`, which reports it
+        // through the batch's own per-resource failure channel) — so the two
+        // cannot disagree about which groups are still in use.
+        if !state
+            .inputs_using_security_group(&input.input_security_group_id)
+            .is_empty()
+        {
+            return Err(DeleteInputSecurityGroupErrorModeled::ConflictException(
+                ConflictException {
+                    message: Some(crate::state::input_security_group_in_use_message(
+                        &input.input_security_group_id,
+                    )),
+                },
+            )
+            .into());
+        }
+
+        let group = state
+            .input_security_groups
+            .get_mut(&input.input_security_group_id)
+            // The lookup above already resolved the id, so this is that group;
+            // the fallback keeps the handler total rather than asserting it.
+            .ok_or_else(unavailable)?;
 
         // `DELETED` is terminal and the group keeps it: the record stays in the
         // account, so `DescribeInputSecurityGroup` goes on reporting it in that
@@ -194,14 +244,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // stored one, and neither the model nor this operation's documentation
         // ("Deletes an Input Security Group") gives a second delete a refusal.
         //
-        // DELIBERATELY unlike `BatchDelete`'s per-group delete
-        // (`ops::batch_delete::delete_input_security_group`), which refuses a
-        // group a resource still uses with its own `BAD_REQUEST` failure result:
-        // that refusal belongs to the batch's recorded per-resource failure
-        // channel, while THIS operation models no conflict error, its doc states
-        // no such precondition, and no recording shows it refusing — so a group
-        // something still uses is deleted here. Change one of the two only with
-        // evidence for that path.
+        // A group whose users have all gone is deleted, however it got there:
+        // the precondition above is about the group's CURRENT users, so a group
+        // whose inputs were deleted first is deletable, which is what makes the
+        // ordinary teardown order (channels, inputs, then the group) work.
         crate::state::delete_input_security_group(group);
 
         // The response is the group, read back out of the store — never assembled
