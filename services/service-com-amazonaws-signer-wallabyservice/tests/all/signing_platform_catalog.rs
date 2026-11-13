@@ -38,8 +38,8 @@ use service_com_amazonaws_signer_wallabyservice::ops::types::{
     ENCRYPTION_ALGORITHM_VALUES, IMAGE_FORMAT_VALUES,
 };
 use service_com_amazonaws_signer_wallabyservice::state::{
-    ERROR_CODE_PLATFORM_NOT_FOUND, PLATFORM_CATEGORY_AWS, PLATFORM_CATEGORY_AWS_IOT,
-    PLATFORM_CATEGORY_EXTERNAL, SIGNING_PLATFORM_CATALOG,
+    ERROR_CODE_PLATFORM_NOT_FOUND, PLATFORM_CATEGORY_AWS, PLATFORM_CATEGORY_EXTERNAL,
+    SIGNING_PLATFORM_CATALOG,
 };
 use service_com_amazonaws_signer_wallabyservice::EmulatedService;
 use smithy_server_runtime::MultiServiceRouter;
@@ -230,9 +230,10 @@ async fn every_published_platform_is_reported_with_its_full_contract() {
         );
 
         // The category the catalog publishes the platform in. The model's
-        // `Category` enum names only the IoT one, while the catalog publishes
-        // `AWS` and `External` beside it, so the category is a per-platform fact
-        // served as published rather than clamped to the enum.
+        // `Category` enum names only the IoT one, which the catalog publishes no
+        // platform in at all: it publishes `AWS` and `External` instead, so the
+        // category is a per-platform fact served as published rather than clamped
+        // to the enum.
         let category = got.str_member("category");
         assert_eq!(
             category, entry.category,
@@ -240,12 +241,7 @@ async fn every_published_platform_is_reported_with_its_full_contract() {
             entry.category, got.body["category"]
         );
         assert!(
-            [
-                PLATFORM_CATEGORY_AWS_IOT,
-                PLATFORM_CATEGORY_AWS,
-                PLATFORM_CATEGORY_EXTERNAL
-            ]
-            .contains(&category.as_str()),
+            [PLATFORM_CATEGORY_AWS, PLATFORM_CATEGORY_EXTERNAL].contains(&category.as_str()),
             "case {case:?}: expected a category the service publishes, got {category:?}"
         );
 

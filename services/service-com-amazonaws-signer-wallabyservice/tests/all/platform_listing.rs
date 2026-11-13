@@ -40,8 +40,7 @@ use std::sync::Arc;
 use bytes::Bytes;
 use serde_json::{json, Value};
 use service_com_amazonaws_signer_wallabyservice::state::{
-    PlatformListing, PLATFORM_CATEGORY_AWS, PLATFORM_CATEGORY_AWS_IOT, PLATFORM_CATEGORY_EXTERNAL,
-    SIGNING_PLATFORM_CATALOG,
+    PlatformListing, PLATFORM_CATEGORY_AWS, PLATFORM_CATEGORY_EXTERNAL, SIGNING_PLATFORM_CATALOG,
 };
 use service_com_amazonaws_signer_wallabyservice::EmulatedService;
 use smithy_server_runtime::MultiServiceRouter;
@@ -61,6 +60,13 @@ const ERROR_CODE_INVALID_NEXT_TOKEN: &str = "InvalidNextToken";
 
 /// The modelled error shape a refused request is answered with (HTTP 400).
 const ERROR_SHAPE_VALIDATION: &str = "ValidationException";
+
+/// The one value this model's `Category` enum names
+/// (`smithy_query(query="shape",shape="Category")`, mirrored in
+/// `crate::ops::types::CATEGORY_VALUES`). The published catalog publishes no
+/// platform in it, so a listing filtered on it selects nothing: a filter value is
+/// matched against what the catalog publishes, not against the modelled enum.
+const MODELLED_CATEGORY: &str = "AWSIoT";
 
 /// The members the model declares for a `SigningPlatform`, as it spells them on
 /// the wire (`smithy_query(query="shape",shape="SigningPlatform")`). Every one of
@@ -262,12 +268,12 @@ fn filter_cases() -> Vec<FilterCase> {
             expect_platforms: true,
         },
         FilterCase {
-            case: "the IoT device category",
+            case: "the only category the model's enum names, which no platform is published in",
             filter: Filter {
-                category: Some(PLATFORM_CATEGORY_AWS_IOT),
+                category: Some(MODELLED_CATEGORY),
                 ..Filter::default()
             },
-            expect_platforms: true,
+            expect_platforms: false,
         },
         FilterCase {
             case: "the category of a platform AWS does not own",
@@ -326,9 +332,9 @@ fn filter_cases() -> Vec<FilterCase> {
             expect_platforms: true,
         },
         FilterCase {
-            case: "a target naming a device format",
+            case: "a target naming a device signing template",
             filter: Filter {
-                target: Some("TI-CC3220SF"),
+                target: Some("SHA1-RSA-TISHA1"),
                 ..Filter::default()
             },
             expect_platforms: true,
@@ -336,7 +342,7 @@ fn filter_cases() -> Vec<FilterCase> {
         FilterCase {
             case: "a category and the partner inside it",
             filter: Filter {
-                category: Some(PLATFORM_CATEGORY_AWS_IOT),
+                category: Some(PLATFORM_CATEGORY_AWS),
                 partner: Some("AmazonFreeRTOS"),
                 ..Filter::default()
             },
@@ -346,7 +352,7 @@ fn filter_cases() -> Vec<FilterCase> {
             case: "a partner and one of its targets",
             filter: Filter {
                 partner: Some("AmazonFreeRTOS"),
-                target: Some("Default"),
+                target: Some("SHA256-ECDSA"),
                 ..Filter::default()
             },
             expect_platforms: true,
@@ -372,7 +378,7 @@ fn filter_cases() -> Vec<FilterCase> {
         FilterCase {
             case: "a published category in the wrong case",
             filter: Filter {
-                category: Some("awsiot"),
+                category: Some("aws"),
                 ..Filter::default()
             },
             expect_platforms: false,
@@ -684,7 +690,7 @@ fn refusal_cases(issued: &str, issued_for_profiles: &str) -> Vec<RefusalCase> {
         RefusalCase {
             case: "an issued token replayed under a category filter",
             token: issued.to_string(),
-            filters: "&category=AWSIoT",
+            filters: "&category=External",
         },
         RefusalCase {
             case: "an issued token replayed under a partner filter",
@@ -722,11 +728,11 @@ fn refusal_cases(issued: &str, issued_for_profiles: &str) -> Vec<RefusalCase> {
         RefusalCase {
             case: "a cursor of this listing resuming at a platform its filters exclude",
             token: PlatformListing {
-                category: Some(PLATFORM_CATEGORY_AWS_IOT.to_string()),
+                category: Some(PLATFORM_CATEGORY_EXTERNAL.to_string()),
                 ..PlatformListing::default()
             }
             .page_token("AWSLambda-SHA384-ECDSA"),
-            filters: "&category=AWSIoT",
+            filters: "&category=External",
         },
     ]
 }

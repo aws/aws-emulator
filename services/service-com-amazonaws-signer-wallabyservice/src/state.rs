@@ -1488,14 +1488,14 @@ pub fn tagging_refused_message(profile_name: &str, status: &str) -> String {
 const UNRECORDED_OUTCOME: &str = "The signing job recorded no outcome for its work";
 
 /// The `category` the AWS-owned code-signing platforms are published in — the
-/// IoT device-management and Lambda ones.
+/// IoT device-management one, the Lambda one and the two FreeRTOS ones.
 ///
 /// `Category` is modelled as an enum with exactly ONE value, `AWSIoT`
 /// (`smithy_query(query="shape", shape="Category")`, mirrored in
 /// [`crate::ops::types::CATEGORY_VALUES`]) — but the recorded catalog reports
-/// `AWS` for the IoT device-management and Lambda platforms and
+/// `AWS` for every AWS-owned platform, device-signing ones included, and
 /// [`PLATFORM_CATEGORY_EXTERNAL`] for the container-registry one, so the enum
-/// does not name every category the service publishes, the category is a
+/// names NO category the service actually publishes, the category is a
 /// per-platform fact of the catalog, and a published value outside the enum is
 /// served as published rather than clamped to a value the enum happens to name.
 pub const PLATFORM_CATEGORY_AWS: &str = "AWS";
@@ -1507,12 +1507,6 @@ pub const PLATFORM_CATEGORY_AWS: &str = "AWS";
 /// Recorded behaviour, like [`PLATFORM_CATEGORY_AWS`]: a value outside this
 /// model's `Category` enum, published verbatim.
 pub const PLATFORM_CATEGORY_EXTERNAL: &str = "External";
-
-/// The `category` the device-signing platforms are published in — the value
-/// this model's `Category` enum names, which the catalog publishes BESIDE
-/// [`PLATFORM_CATEGORY_AWS`] and [`PLATFORM_CATEGORY_EXTERNAL`] rather than
-/// instead of them.
-pub const PLATFORM_CATEGORY_AWS_IOT: &str = "AWSIoT";
 
 /// Which of AWS Signer's two signing workflows a platform's profiles are signed
 /// through.
@@ -1671,8 +1665,9 @@ fn default_value(values: &[&'static str]) -> String {
 /// rule against.
 ///
 /// Source: the signing platforms AWS Signer publishes, in the order it publishes
-/// them — AWS IoT Device Management, the container-registry platform, AWS Lambda
-/// and the two FreeRTOS ones — each with the `platformId`, `displayName`,
+/// them — AWS IoT Device Management, the container-registry platform, AWS Lambda,
+/// the TI CC3220SF FreeRTOS one and the default FreeRTOS one — each with the
+/// `platformId`, `displayName`,
 /// `partner`, `target`, `category`, algorithm options, image formats,
 /// `maxSizeInMB` and `revocationSupported` the service reports for it. The model
 /// defines the `SigningPlatform` shape and this operation's pagination but NOT
@@ -1757,28 +1752,28 @@ pub const SIGNING_PLATFORM_CATALOG: &[SigningPlatformEntry] = &[
         workflow: SigningWorkflow::CodeSigningJob,
     },
     SigningPlatformEntry {
-        platform_id: "AmazonFreeRTOS-Default",
-        display_name: Some("AmazonFreeRTOS SHA256-ECDSA"),
-        category: PLATFORM_CATEGORY_AWS_IOT,
+        platform_id: "AmazonFreeRTOS-TI-CC3220SF",
+        display_name: Some("Amazon FreeRTOS SHA1-RSA CC3220SF-Format"),
+        category: PLATFORM_CATEGORY_AWS,
         partner: "AmazonFreeRTOS",
-        target: "Default",
-        encryption_algorithms: &["ECDSA"],
-        hash_algorithms: &["SHA256"],
-        image_formats: &["JSON"],
+        target: "SHA1-RSA-TISHA1",
+        encryption_algorithms: &["RSA"],
+        hash_algorithms: &["SHA1"],
+        image_formats: &["JSONEmbedded"],
         max_size_in_mb: 16,
         revocation_supported: false,
         requires_signing_material: true,
         workflow: SigningWorkflow::CodeSigningJob,
     },
     SigningPlatformEntry {
-        platform_id: "AmazonFreeRTOS-TI-CC3220SF",
-        display_name: Some("AmazonFreeRTOS SHA1-RSA CC3220SF-Format"),
-        category: PLATFORM_CATEGORY_AWS_IOT,
+        platform_id: "AmazonFreeRTOS-Default",
+        display_name: Some("Amazon FreeRTOS SHA256-ECDSA"),
+        category: PLATFORM_CATEGORY_AWS,
         partner: "AmazonFreeRTOS",
-        target: "TI-CC3220SF",
-        encryption_algorithms: &["RSA"],
-        hash_algorithms: &["SHA1"],
-        image_formats: &["JSON"],
+        target: "SHA256-ECDSA",
+        encryption_algorithms: &["ECDSA", "RSA"],
+        hash_algorithms: &["SHA256"],
+        image_formats: &["JSONEmbedded"],
         max_size_in_mb: 16,
         revocation_supported: false,
         requires_signing_material: true,

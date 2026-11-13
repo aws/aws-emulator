@@ -15,7 +15,7 @@
 //! * an image-format override naming any other value the enum admits is refused
 //!   400 `ValidationException`, naming the member, the value and the formats it may
 //!   carry, and stores no profile — again on every published platform, including
-//!   the ones that publish that format themselves;
+//!   any that publishes that format itself;
 //! * so no signing job can ever snapshot an image format a customer may not
 //!   select, because no profile holds one.
 //!
@@ -220,7 +220,9 @@ async fn an_image_format_override_must_be_one_a_customer_may_select() {
     let (mut accepted_rows, mut refused_rows) = (0usize, 0usize);
     // The two halves of the platform-independence claim: a format a customer may
     // select is accepted even by a platform that does not publish it, and one a
-    // customer may not select is refused even by a platform that does.
+    // customer may not select is refused even by a platform that does — the second
+    // half only where the published catalog holds such a platform at all, which is
+    // why it is checked against the catalog below rather than assumed.
     let (mut accepted_unpublished, mut refused_published) = (0usize, 0usize);
 
     for (platform_ordinal, entry) in SIGNING_PLATFORM_CATALOG.iter().enumerate() {
@@ -282,10 +284,22 @@ async fn an_image_format_override_must_be_one_a_customer_may_select() {
          {refused_rows} refused"
     );
     assert!(
-        accepted_unpublished > 0 && refused_published > 0,
+        accepted_unpublished > 0,
         "expected the table to pin that the option set is the member's own, not the platform's: \
-         got {accepted_unpublished} accepted rows for a format the platform does not publish and \
-         {refused_published} refused rows for a format it does"
+         got {accepted_unpublished} accepted rows for a format the platform does not publish"
+    );
+    // The other half holds exactly where the catalog publishes a format a customer
+    // may not select: every such row must have been refused, and a catalog that
+    // publishes none of them cannot show a refusal of one.
+    let published_unselectable = SIGNING_PLATFORM_CATALOG
+        .iter()
+        .flat_map(|entry| entry.image_formats)
+        .filter(|format| !SELECTABLE_IMAGE_FORMATS.contains(format))
+        .count();
+    assert_eq!(
+        refused_published, published_unselectable,
+        "expected every published format a customer may not select to be refused: the catalog \
+         publishes {published_unselectable} of them and {refused_published} were refused"
     );
 }
 

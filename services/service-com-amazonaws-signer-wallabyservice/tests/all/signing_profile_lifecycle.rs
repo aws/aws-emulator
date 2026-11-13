@@ -283,7 +283,7 @@ fn profile_cases() -> Vec<ProfileCase> {
                     "signingImageFormat": "JSONDetached",
                 },
             }),
-            platform_display_name: Some("AmazonFreeRTOS SHA1-RSA CC3220SF-Format"),
+            platform_display_name: Some("Amazon FreeRTOS SHA1-RSA CC3220SF-Format"),
         },
         // A YEARS period, one tag, and overrides naming exactly the algorithms
         // this platform publishes as allowed.
@@ -301,7 +301,7 @@ fn profile_cases() -> Vec<ProfileCase> {
                 },
                 "tags": { "only": "one" },
             }),
-            platform_display_name: Some("AmazonFreeRTOS SHA256-ECDSA"),
+            platform_display_name: Some("Amazon FreeRTOS SHA256-ECDSA"),
         },
     ]
 }
