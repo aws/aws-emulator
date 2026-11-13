@@ -194,7 +194,7 @@ impl Portal {
         portal
             .state()
             .lock()
-            .put_account(ACCOUNT_ID, ACCOUNT_NAME, ACCOUNT_EMAIL, [ROLE_NAME]);
+            .put_account(ACCOUNT_ID, ACCOUNT_NAME, ACCOUNT_EMAIL);
         portal
     }
 
@@ -204,12 +204,13 @@ impl Portal {
         state::service_state(&*self.engine).expect("the portal store is reachable")
     }
 
-    /// Seed an active session for `access_token`, assigned to the fixture account.
+    /// Seed an active session for `access_token`, assigned the fixture role in the
+    /// fixture account.
     fn sign_in(&self, access_token: &str) {
         self.state().lock().put_session(
             access_token,
             "someone@example.com",
-            [ACCOUNT_ID],
+            [(ACCOUNT_ID, [ROLE_NAME])],
             SESSION_TTL,
         );
     }

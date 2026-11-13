@@ -236,8 +236,9 @@ impl ComAmazonawsSsoSwbportalserviceState {
     ///    an assignment made or withdrawn since the token was first presented is in force;
     /// 3. a sign-in this store was GIVEN (one seeded through
     ///    [`Self::put_session`](ComAmazonawsSsoSwbportalserviceState::put_session))
-    ///    reports the accounts seeded beside it, skipping an assignment whose account this
-    ///    store holds no record of — there is nothing to report for it.
+    ///    reports its own assignments — the accounts, and in each the roles assigned to
+    ///    its subject — skipping an assignment whose account this store holds no record
+    ///    of, since there is nothing to report for it.
     ///
     /// A record this store merely REMEMBERED of a minted sign-in ([`Session::federated`])
     /// never answers in step 3: the mint's record is what says whether such a token still
@@ -272,16 +273,27 @@ impl ComAmazonawsSsoSwbportalserviceState {
         resolved
     }
 
-    /// A sign-in held in THIS store, with the accounts stored beside it.
+    /// A sign-in held in THIS store, with the accounts its own assignments name and, in
+    /// each, the roles those assignments grant its subject.
     fn seeded_sign_in(&self, session: &Session) -> SignedIn {
         SignedIn {
             subject: session.subject.clone(),
             expires_at: session.expires_at,
             accounts: session
-                .accounts
+                .assignments
                 .iter()
-                .filter_map(|account_id| self.accounts.get(account_id))
-                .map(|account| (account.account_id.clone(), account.clone()))
+                .filter_map(|(account_id, roles)| {
+                    let record = self.accounts.get(account_id)?;
+                    Some((
+                        account_id.clone(),
+                        Account {
+                            account_id: account_id.clone(),
+                            account_name: record.account_name.clone(),
+                            email_address: record.email_address.clone(),
+                            roles: roles.clone(),
+                        },
+                    ))
+                })
                 .collect(),
         }
     }
@@ -303,7 +315,11 @@ impl ComAmazonawsSsoSwbportalserviceState {
             .entry(access_token.to_string())
             .or_insert_with(|| Session {
                 subject: signed_in.subject.clone(),
-                accounts: signed_in.accounts.keys().cloned().collect(),
+                assignments: signed_in
+                    .accounts
+                    .iter()
+                    .map(|(account_id, account)| (account_id.clone(), account.roles.clone()))
+                    .collect(),
                 active: true,
                 expires_at: signed_in.expires_at,
                 // A COPY of a sign-in minted elsewhere: it is kept for the `Logout` that

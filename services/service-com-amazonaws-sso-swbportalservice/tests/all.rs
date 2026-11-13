@@ -35,3 +35,5 @@ mod route_path_agreement;
 mod state_roundtrip;
 #[path = "all/unauthorized_rejection.rs"]
 mod unauthorized_rejection;
+#[path = "all/user_role_assignment.rs"]
+mod user_role_assignment;

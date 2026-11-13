@@ -11,7 +11,7 @@
 //! Each test sweeps that rule over a table: the operations × the token classes × the
 //! rest of the request. The recorded case (one bogus token on one operation) is one row.
 
-use super::portal_session::{body_json, body_text, error_code, error_message, Portal};
+use super::portal_session::{body_json, body_text, error_code, error_message, roles_of, Portal};
 use bytes::Bytes;
 use http::{Response, StatusCode};
 use service_com_amazonaws_sso_swbportalservice::state::INVALID_SESSION_MESSAGE;
@@ -223,7 +223,7 @@ async fn a_session_that_stopped_being_usable_is_refused_with_the_same_constant()
     portal.state().lock().put_session(
         "tok-expired",
         "expired@example.com",
-        [KNOWN_ACCOUNT],
+        [(KNOWN_ACCOUNT, roles_of(KNOWN_ACCOUNT))],
         Duration::ZERO,
     );
     let logged_out = portal.logout(Some("tok-logged-out")).await;

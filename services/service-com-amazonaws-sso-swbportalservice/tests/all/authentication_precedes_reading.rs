@@ -25,7 +25,7 @@
 //! pre-handler refusal is an absent required member, which `route_path_agreement.rs`
 //! and `portal_session.rs` pin).
 
-use super::portal_session::{body_json, body_text, error_code, error_message, Portal};
+use super::portal_session::{body_json, body_text, error_code, error_message, roles_of, Portal};
 use bytes::Bytes;
 use http::{Response, StatusCode};
 use service_com_amazonaws_sso_swbportalservice::state::{self, INVALID_SESSION_MESSAGE};
@@ -147,7 +147,7 @@ async fn portal_with_unusable_sessions() -> Portal {
     portal.state().lock().put_session(
         "tok-expired",
         "expired@example.com",
-        [KNOWN_ACCOUNT],
+        [(KNOWN_ACCOUNT, roles_of(KNOWN_ACCOUNT))],
         Duration::ZERO,
     );
     let ended = portal.logout(Some("tok-logged-out")).await;

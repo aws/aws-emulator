@@ -29,7 +29,7 @@
 //! pins those `max_result` rows (0, 101, -1 — one past each published bound) as the
 //! modelled 400 an AUTHENTICATED caller earns.
 
-use super::portal_session::{body_json, body_text, error_code, error_message, Portal};
+use super::portal_session::{body_json, body_text, error_code, error_message, roles_of, Portal};
 use bytes::Bytes;
 use http::{Response, StatusCode};
 use std::time::Duration;
@@ -228,7 +228,7 @@ async fn portal_with_unusable_sessions() -> Portal {
     portal.state().lock().put_session(
         "tok-expired",
         "expired@example.com",
-        [KNOWN_ACCOUNT],
+        [(KNOWN_ACCOUNT, roles_of(KNOWN_ACCOUNT))],
         Duration::ZERO,
     );
     let ended = portal.logout(Some("tok-logged-out")).await;

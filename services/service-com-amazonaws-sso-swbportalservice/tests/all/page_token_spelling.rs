@@ -101,12 +101,15 @@ fn portal() -> Portal {
     {
         let store = portal.state();
         let mut store = store.lock();
-        for (account_id, name, email, roles) in ASSIGNED {
-            store.put_account(*account_id, *name, *email, roles.iter().copied());
+        for (account_id, name, email, _) in ASSIGNED {
+            store.put_account(*account_id, *name, *email);
         }
     }
-    let assigned: Vec<&str> = ASSIGNED.iter().map(|(id, ..)| *id).collect();
-    portal.sign_in(ACCESS_TOKEN, &assigned);
+    let assignments: Vec<(&str, Vec<String>)> = ASSIGNED
+        .iter()
+        .map(|(account_id, ..)| (*account_id, roles_of(account_id)))
+        .collect();
+    portal.sign_in_assigned(ACCESS_TOKEN, assignments);
     portal
 }
 

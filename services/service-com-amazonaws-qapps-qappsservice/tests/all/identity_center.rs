@@ -48,11 +48,11 @@ pub(crate) fn federate(engine: &Arc<engine::InMemoryEngine>, access_key_id: &str
     let state = portal::service_state(&**engine).expect("the portal store is reachable");
     let mut store = state.lock();
     let access_token = access_token_for(access_key_id);
-    store.put_account(ACCOUNT, "Emulator", "qapps@example.com", [ROLE]);
+    store.put_account(ACCOUNT, "Emulator", "qapps@example.com");
     store.put_session(
         &access_token,
         format!("{access_key_id}@example.com"),
-        [ACCOUNT],
+        [(ACCOUNT, [ROLE])],
         SESSION_TTL,
     );
     store.issued_credentials.insert(

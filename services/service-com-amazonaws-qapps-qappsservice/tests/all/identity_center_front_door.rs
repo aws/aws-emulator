@@ -497,9 +497,14 @@ async fn only_an_identity_center_credential_is_served() {
     {
         let state = emulator.portal();
         let mut store = state.lock();
-        store.put_account(ACCOUNT, "Emulator", "qapps@example.com", [ROLE]);
+        store.put_account(ACCOUNT, "Emulator", "qapps@example.com");
         let access_token = access_token_for(lapsed);
-        store.put_session(&access_token, "lapsed@example.com", [ACCOUNT], SESSION_TTL);
+        store.put_session(
+            &access_token,
+            "lapsed@example.com",
+            [(ACCOUNT, [ROLE])],
+            SESSION_TTL,
+        );
         store.issued_credentials.insert(
             (access_token, ACCOUNT.to_string(), ROLE.to_string()),
             RoleCredentialRecord {
@@ -565,8 +570,13 @@ async fn a_user_signed_in_through_the_portal_is_served() {
     {
         let state = emulator.portal();
         let mut store = state.lock();
-        store.put_account(ACCOUNT, "Emulator", "qapps@example.com", [ROLE]);
-        store.put_session("portal-token", "analyst@example.com", [ACCOUNT], SESSION_TTL);
+        store.put_account(ACCOUNT, "Emulator", "qapps@example.com");
+        store.put_session(
+            "portal-token",
+            "analyst@example.com",
+            [(ACCOUNT, [ROLE])],
+            SESSION_TTL,
+        );
     }
 
     let (status, credentials) = emulator.role_credentials("portal-token").await;

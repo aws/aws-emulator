@@ -35,11 +35,12 @@ const PORTAL_HOST: &str = "portal.sso.us-east-1.amazonaws.com";
 /// setting in IAM Identity Center, so the fixture picks one rather than the service.
 const SESSION_TTL: Duration = Duration::from_secs(8 * 60 * 60);
 
-/// The accounts and the roles assigned in them: `(account id, name, email, roles)`.
+/// The accounts the fixture holds and the roles it assigns the signed-in user in them:
+/// `(account id, name, email, roles)`.
 ///
-/// Rows differ along everything a listing generalises over — how many roles an account
-/// has (none, one, several), where its id sorts, and the shape of a role name — so no
-/// assertion below can be satisfied by a single canned answer.
+/// Rows differ along everything a listing generalises over — how many roles the user is
+/// assigned in an account (none, one, several), where its id sorts, and the shape of a
+/// role name — so no assertion below can be satisfied by a single canned answer.
 const FIXTURE: &[(&str, &str, &str, &[&str])] = &[
     (
         "111111111111",
@@ -64,7 +65,7 @@ fn every_account() -> Vec<&'static str> {
 
 /// The roles [`FIXTURE`] assigns in `account_id`, ascending — the order a role listing
 /// must report them in.
-fn roles_of(account_id: &str) -> Vec<String> {
+pub(crate) fn roles_of(account_id: &str) -> Vec<String> {
     let mut roles: Vec<String> = FIXTURE
         .iter()
         .find(|(id, ..)| *id == account_id)
@@ -90,8 +91,8 @@ impl Portal {
         {
             let store = portal.state();
             let mut store = store.lock();
-            for (account_id, name, email, roles) in FIXTURE {
-                store.put_account(*account_id, *name, *email, roles.iter().copied());
+            for (account_id, name, email, _) in FIXTURE {
+                store.put_account(*account_id, *name, *email);
             }
         }
         portal
@@ -103,12 +104,33 @@ impl Portal {
         state::service_state(&*self.engine).expect("the portal store is reachable")
     }
 
-    /// Seed an active session for `access_token`, assigned to `accounts`.
+    /// Seed an active session for `access_token`, assigned to `accounts` with the roles
+    /// [`FIXTURE`] assigns its user in each of them.
     pub(crate) fn sign_in(&self, access_token: &str, accounts: &[&str]) {
+        let assignments: Vec<(&str, Vec<String>)> = accounts
+            .iter()
+            .map(|account_id| (*account_id, roles_of(account_id)))
+            .collect();
+        self.sign_in_assigned(access_token, assignments);
+    }
+
+    /// Seed an active session for `access_token` holding exactly `assignments`:
+    /// `(account id, the roles assigned to THIS session's user in that account)`.
+    ///
+    /// The roles are a property of the (user, account) assignment, so a suite that needs
+    /// two sessions to differ in them — or accounts outside [`FIXTURE`] — seeds them here
+    /// rather than on the account.
+    pub(crate) fn sign_in_assigned<A, I, R, S>(&self, access_token: &str, assignments: A)
+    where
+        A: IntoIterator<Item = (I, R)>,
+        I: Into<String>,
+        R: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
         self.state().lock().put_session(
             access_token,
             format!("{access_token}@example.com"),
-            accounts.iter().copied(),
+            assignments,
             SESSION_TTL,
         );
     }
@@ -690,10 +712,12 @@ async fn an_unusable_access_token_is_unauthorized_everywhere() {
     let portal = Portal::new();
     // An expired session: `put_session` dates the expiry from now, so a zero ttl is
     // already past without any waiting.
-    portal
-        .state()
-        .lock()
-        .put_session("tok-expired", "expired@example.com", ["111111111111"], Duration::ZERO);
+    portal.state().lock().put_session(
+        "tok-expired",
+        "expired@example.com",
+        [("111111111111", roles_of("111111111111"))],
+        Duration::ZERO,
+    );
     portal.sign_in("tok-live", &["111111111111"]);
 
     let uris: &[(&str, &str)] = &[

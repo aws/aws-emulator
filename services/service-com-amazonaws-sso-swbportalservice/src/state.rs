@@ -41,16 +41,22 @@ pub use sign_in::*;
 /// One IAM Identity Center sign-in session, keyed in [`ComAmazonawsSsoSwbportalserviceState::sessions`]
 /// by the access token `CreateToken` issued for it.
 ///
-/// `accounts` is the set of account ids the session's user is assigned to, held as a
-/// `BTreeSet` so a listing walks it in a deterministic (account-id) order and a page
-/// cursor over that order stays stable between calls.
+/// `assignments` holds BOTH dimensions of the IAM Identity Center assignments the
+/// session's user has — the accounts and, in each, the roles — as a `BTreeMap` of
+/// `BTreeSet`s, so each listing walks a deterministic (account-id, then role-name) order
+/// and a page cursor over that order stays stable between calls.
 #[derive(Debug, Clone)]
 pub struct Session {
     /// Who the session signed in as. Reported by no operation; it is what the
     /// assignments belong to.
     pub subject: String,
-    /// The account ids this session may see, ascending.
-    pub accounts: BTreeSet<String>,
+    /// The accounts this session may see, each with the role names assigned to
+    /// [`Self::subject`] in that account, ascending.
+    ///
+    /// The roles are held HERE and not on the account, because an assignment binds a
+    /// permission set to a principal in an account: a second user signed in to the same
+    /// account reports the roles its OWN assignment names, not this one's.
+    pub assignments: BTreeMap<String, BTreeSet<String>>,
     /// Cleared by `Logout`, which invalidates the server-side sign-in session.
     pub active: bool,
     /// When the sign-in session stops being usable, whether or not anyone logs out.
@@ -138,9 +144,16 @@ pub fn unauthorized_response(
         .ok()
 }
 
-/// An AWS account the portal can report, with the roles assigned in it.
+/// An AWS account ONE sign-in may report, with the roles assigned to that sign-in's user
+/// in it.
 ///
-/// `roles` is a `BTreeSet`: role names are unique within an account and a listing of
+/// A role is a property of the (user, account) assignment rather than of the account: IAM
+/// Identity Center assigns a permission set to a principal IN an account, and the portal
+/// reports the role that is assigned to the user. So this is the per-sign-in view a
+/// listing is built from ([`SignedIn::accounts`]) and never a record the store holds
+/// account-wide — what the store holds about the account ITSELF is [`AccountRecord`].
+///
+/// `roles` is a `BTreeSet`: role names are unique within an assignment and a listing of
 /// them must be deterministically ordered for its page cursor to resume correctly.
 #[derive(Debug, Clone)]
 pub struct Account {
@@ -156,8 +169,24 @@ pub struct Account {
     /// The account's email address, on the same footing as [`Self::account_name`]
     /// (`AccountInfo$emailAddress` is optional too).
     pub email_address: Option<String>,
-    /// The role names assigned in this account, ascending.
+    /// The role names assigned to this sign-in's user in this account, ascending.
     pub roles: BTreeSet<String>,
+}
+
+/// What this store records about an AWS ACCOUNT itself, keyed in
+/// [`ComAmazonawsSsoSwbportalserviceState::accounts`] by account id: the display name and
+/// the email address the portal reports for it.
+///
+/// No role names live here. A role is the permission set an assignment grants a principal
+/// in the account, so it belongs to the (user, account) pair and is held on the sign-in's
+/// own assignment ([`Session::assignments`]); a set held on the account could only report
+/// one role list to every user assigned to it.
+#[derive(Debug, Clone, Default)]
+pub struct AccountRecord {
+    /// The account's display name, reported as [`Account::account_name`].
+    pub account_name: Option<String>,
+    /// The account's email address, reported as [`Account::email_address`].
+    pub email_address: Option<String>,
 }
 
 /// A role credential `GetRoleCredentials` minted, stored so the same session asking
@@ -236,54 +265,74 @@ pub struct ComAmazonawsSsoSwbportalserviceState {
     /// ([`Self::invalidate_session`]) or a role credential minted for it
     /// ([`Self::remember_sign_in`]).
     pub sessions: HashMap<String, Session>,
-    /// Accounts by account id, ascending (a `BTreeMap`, so listings and their cursors
-    /// are deterministic). The accounts a SEEDED session reports; a sign-in the emulator
-    /// minted carries the accounts its own assignments name.
-    pub accounts: BTreeMap<String, Account>,
+    /// Account records by account id, ascending (a `BTreeMap`, so listings and their
+    /// cursors are deterministic). What a SEEDED session reports for the accounts its
+    /// assignments name; a sign-in the emulator minted carries the accounts its own
+    /// assignments name, with the organization's records of each.
+    pub accounts: BTreeMap<String, AccountRecord>,
     /// Role credentials already minted, by [`IssuedCredentialKey`].
     pub issued_credentials: HashMap<IssuedCredentialKey, RoleCredentialRecord>,
 }
 
 impl ComAmazonawsSsoSwbportalserviceState {
-    /// Seed (or replace) an account and the roles assigned in it.
+    /// Seed (or replace) the record of an account the portal can report.
     ///
-    /// The portal models no create API, so this is one of the two ways the assignments an
+    /// The portal models no create API, so this is one of the two ways the records an
     /// administrator would have made reach the emulator: a test, or whatever stands an
     /// emulator up, calls it through [`service_state`]. The other is the administrator's
     /// own IAM Identity Center records, which are read where they live
     /// ([`federated_sign_in`]) rather than copied in here.
+    ///
+    /// Only the account's OWN data is seeded here. Who is assigned which role in it comes
+    /// with the sign-in ([`Self::put_session`]), because that is whose assignment it is.
     pub fn put_account(
         &mut self,
         account_id: impl Into<String>,
         account_name: impl Into<String>,
         email_address: impl Into<String>,
-        roles: impl IntoIterator<Item = impl Into<String>>,
     ) {
-        let account_id = account_id.into();
-        let account = Account {
-            account_id: account_id.clone(),
-            account_name: Some(account_name.into()),
-            email_address: Some(email_address.into()),
-            roles: roles.into_iter().map(Into::into).collect(),
-        };
-        self.accounts.insert(account_id, account);
+        self.accounts.insert(
+            account_id.into(),
+            AccountRecord {
+                account_name: Some(account_name.into()),
+                email_address: Some(email_address.into()),
+            },
+        );
     }
 
-    /// Seed (or replace) an active sign-in session for `access_token`, assigned to
-    /// `accounts` and usable for `ttl` from now.
+    /// Seed (or replace) an active sign-in session for `access_token`, holding the
+    /// `assignments` its user has — `(account id, the roles assigned to that user in that
+    /// account)` — and usable for `ttl` from now.
+    ///
+    /// Both dimensions are the sign-in's own, so two sign-ins seeded on one account can
+    /// carry different roles there, which is what an administrator assigning two users
+    /// different permission sets in one account produces.
     ///
     /// `ttl` is the caller's: the sign-in session length is a directory setting in IAM
     /// Identity Center, not something this API fixes.
-    pub fn put_session(
+    pub fn put_session<A, I, R, S>(
         &mut self,
         access_token: impl Into<String>,
         subject: impl Into<String>,
-        accounts: impl IntoIterator<Item = impl Into<String>>,
+        assignments: A,
         ttl: Duration,
-    ) {
+    ) where
+        A: IntoIterator<Item = (I, R)>,
+        I: Into<String>,
+        R: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
         let session = Session {
             subject: subject.into(),
-            accounts: accounts.into_iter().map(Into::into).collect(),
+            assignments: assignments
+                .into_iter()
+                .map(|(account_id, roles)| {
+                    (
+                        account_id.into(),
+                        roles.into_iter().map(Into::into).collect(),
+                    )
+                })
+                .collect(),
             active: true,
             expires_at: expiry_after(SystemTime::now(), ttl),
             // A sign-in this store was GIVEN: no mint elsewhere in the emulator holds a

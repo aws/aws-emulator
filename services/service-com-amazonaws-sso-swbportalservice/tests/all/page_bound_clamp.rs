@@ -207,8 +207,9 @@ fn role_name(index: usize) -> String {
     format!("Role-{index:03}")
 }
 
-/// An emulator holding [`TOTAL`] accounts assigned to one session, the first of them
-/// carrying [`TOTAL`] roles, so both paginated listings are longer than any page.
+/// An emulator holding [`TOTAL`] accounts assigned to one session, with [`TOTAL`] roles
+/// assigned to that session's user in the first of them, so both paginated listings are
+/// longer than any page.
 fn wide_portal() -> Portal {
     let portal = Portal::new();
     let ids: Vec<String> = (0..TOTAL).map(account_id).collect();
@@ -216,21 +217,26 @@ fn wide_portal() -> Portal {
         let store = portal.state();
         let mut store = store.lock();
         for (index, id) in ids.iter().enumerate() {
+            store.put_account(
+                id.clone(),
+                format!("Account-{index}"),
+                format!("account-{index}@example.com"),
+            );
+        }
+    }
+    let assignments: Vec<(String, Vec<String>)> = ids
+        .iter()
+        .enumerate()
+        .map(|(index, id)| {
             let roles: Vec<String> = if index == 0 {
                 (0..TOTAL).map(role_name).collect()
             } else {
                 Vec::new()
             };
-            store.put_account(
-                id.clone(),
-                format!("Account-{index}"),
-                format!("account-{index}@example.com"),
-                roles,
-            );
-        }
-    }
-    let assigned: Vec<&str> = ids.iter().map(String::as_str).collect();
-    portal.sign_in(ACCESS_TOKEN, &assigned);
+            (id.clone(), roles)
+        })
+        .collect();
+    portal.sign_in_assigned(ACCESS_TOKEN, assignments);
     portal
 }
 
