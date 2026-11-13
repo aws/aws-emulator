@@ -875,8 +875,8 @@ fn reserved_instances_spec_for_target(
 /// (`AcceptReservedInstancesExchangeQuoteRequest$ReservedInstanceIds`).
 pub const RESERVED_INSTANCE_OFFERING_CLASS_CONVERTIBLE: &str = "convertible";
 
-/// `InvalidReservedInstancesID.NotFound` (HTTP 400): EC2's code for a `reservedInstancesId`
-/// the REPORT of this account's purchases cannot resolve.
+/// `InvalidReservedInstancesID.NotFound` (HTTP 400): EC2's code for a reserved-instances id
+/// that resolves to no purchase of this account, whichever operation read it.
 ///
 /// ONE code for both halves of that — a value that is not a Reserved Instances id at all, and
 /// a well-formed id the account holds nothing under — because that is the code the recorded
@@ -885,12 +885,13 @@ pub const RESERVED_INSTANCE_OFFERING_CLASS_CONVERTIBLE: &str = "convertible";
 /// [`invalid_reserved_instances_id`] of this module's other operations: that one is what
 /// `DeleteQueuedReservedInstances` was recorded answering for its own `reservedInstancesId`
 /// member, and `DescribeReservedInstances` words its own member's refusal the way this one
-/// does. The EXCHANGE API words its own differently again
-/// ([`INVALID_RESERVED_INSTANCE_ID`]).
+/// does. The EXCHANGE API carries this same code for a value outside the id form
+/// ([`reserved_instances_id_malformed`]) and its own spelling for a well-formed id it cannot
+/// resolve ([`INVALID_RESERVED_INSTANCE_ID`]).
 pub const INVALID_RESERVED_INSTANCES_ID_NOT_FOUND: &str = "InvalidReservedInstancesID.NotFound";
 
-/// `InvalidReservedInstanceId` (HTTP 400): EC2's code for a `reservedInstanceId` the EXCHANGE
-/// API cannot resolve to a Reserved Instance of this account.
+/// `InvalidReservedInstanceId` (HTTP 400): EC2's code for a WELL-FORMED `reservedInstanceId`
+/// the EXCHANGE API cannot resolve to a Reserved Instance of this account.
 ///
 /// The exchange API's own spelling of that refusal, which is neither
 /// [`INVALID_RESERVED_INSTANCES_ID_NOT_FOUND`] nor the `InvalidParameterValue` of
@@ -898,13 +899,15 @@ pub const INVALID_RESERVED_INSTANCES_ID_NOT_FOUND: &str = "InvalidReservedInstan
 /// Instances id refusal the same way, and the recorded contract of
 /// `GetReservedInstancesExchangeQuote` and `AcceptReservedInstancesExchangeQuote` carries
 /// this one — which is why both of them answer it through
-/// [`invalid_reserved_instance_id`] rather than each keeping a spelling of its own.
+/// [`invalid_reserved_instance_id`] rather than each keeping a spelling of its own. A value
+/// outside the id form is answered [`INVALID_RESERVED_INSTANCES_ID_NOT_FOUND`] instead, which
+/// is what those same recordings show for a value of that kind.
 pub const INVALID_RESERVED_INSTANCE_ID: &str = "InvalidReservedInstanceId";
 
-/// Refuse a `reservedInstanceId` the exchange API cannot resolve to a Reserved Instance of
-/// this account: HTTP 400 [`INVALID_RESERVED_INSTANCE_ID`], in the SENTENCE the recorded
-/// refusals of the two exchange operations carry — a space, then the id the request named in
-/// square brackets, and nothing else.
+/// Refuse a WELL-FORMED `reservedInstanceId` the exchange API cannot resolve to a Reserved
+/// Instance of this account: HTTP 400 [`INVALID_RESERVED_INSTANCE_ID`], in the SENTENCE the
+/// recorded refusals of the two exchange operations carry — a space, then the id the request
+/// named in square brackets, and nothing else.
 ///
 /// That sentence has almost no fixed text, which is unusual for an EC2 message and is why it
 /// is worded in one place: it is what the recorded refusals show. Two independent recorded
@@ -917,16 +920,42 @@ pub const INVALID_RESERVED_INSTANCE_ID: &str = "InvalidReservedInstanceId";
 /// (`ec2.op-contract-acceptReservedInstancesExchangeQuote-b`). The only part built from the
 /// request is the id, so nothing of one recording's values is written here.
 ///
-/// ONE wording for both halves of that refusal — a value that is not a Reserved Instances id
-/// at all, and one inside the UUID form ([`reserved_instances_id_is_well_formed`]) the
-/// account holds nothing under — because the code does not tell them apart either. Only the
-/// first [`MAX_ECHOED_RESOURCE_ID_CHARS`] characters of the value are named
+/// This is the refusal of a value that IS a Reserved Instances id
+/// ([`reserved_instances_id_is_well_formed`]) and names no purchase of this account: a value
+/// outside that form is not an id to look up at all, and is answered
+/// [`reserved_instances_id_malformed`] BEFORE any lookup, the order and the pair of answers
+/// every id member of this service carries. Only the first
+/// [`MAX_ECHOED_RESOURCE_ID_CHARS`] characters of the value are named
 /// ([`echoed_resource_id`]).
 pub fn invalid_reserved_instance_id<E>(reserved_instance_id: &str) -> Scaffolded<E> {
     Scaffolded::service_error(
         INVALID_RESERVED_INSTANCE_ID,
         400,
         format!(" [{id}]", id = echoed_resource_id(reserved_instance_id)),
+    )
+}
+
+/// The resource type a Reserved Instances purchase is named by, as the tag API spells it
+/// (`ResourceType`'s `reserved-instances` member) — and as every refusal that names the
+/// RESOURCE rather than a member spells it.
+pub const RESOURCE_TYPE_RESERVED_INSTANCES: &str = "reserved-instances";
+
+/// Refuse a `reservedInstanceId` that is not a Reserved Instances id at all: HTTP 400
+/// [`INVALID_RESERVED_INSTANCES_ID_NOT_FOUND`], in the sentence EC2 words a malformed id of
+/// this resource with — the fixed text `The <resource type> ID '` … `' is malformed`, around
+/// the value the REQUEST sent ([`echoed_resource_id`] bounds the echo).
+///
+/// A value outside the id form names nothing in ANY account, so it is refused before there is
+/// anything to look up — which is what tells it apart from a well-formed id this account
+/// holds no purchase under ([`invalid_reserved_instance_id`]), the other half of the pair.
+pub fn reserved_instances_id_malformed<E>(reserved_instances_id: &str) -> Scaffolded<E> {
+    Scaffolded::service_error(
+        INVALID_RESERVED_INSTANCES_ID_NOT_FOUND,
+        400,
+        format!(
+            "The {RESOURCE_TYPE_RESERVED_INSTANCES} ID '{id}' is malformed",
+            id = echoed_resource_id(reserved_instances_id)
+        ),
     )
 }
 
@@ -942,7 +971,7 @@ pub fn reserved_instances_id_does_not_exist<E>(reserved_instance_id: &str) -> Sc
         INVALID_RESERVED_INSTANCES_ID_NOT_FOUND,
         400,
         format!(
-            "The reserved-instances ID '{id}' does not exist",
+            "The {RESOURCE_TYPE_RESERVED_INSTANCES} ID '{id}' does not exist",
             id = echoed_resource_id(reserved_instance_id)
         ),
     )

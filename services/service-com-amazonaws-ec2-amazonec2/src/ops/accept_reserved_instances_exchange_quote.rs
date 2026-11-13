@@ -27,8 +27,14 @@
 //! as a Reserved Instances id and name a Convertible purchase of this account that is in
 //! effect, a target configuration must name an offering this service publishes and may not
 //! carry the `InstanceCount` the model reserves, and the target offerings must be worth at
-//! least what is being exchanged. Everything about a Reserved Instance that more than one
-//! operation needs lives in [`crate::state::reserved_instances`].
+//! least what is being exchanged. A value outside the Reserved Instances id form names no
+//! purchase in ANY account and is refused `InvalidReservedInstancesID.NotFound` ("The
+//! reserved-instances ID '<id>' is malformed") before any lookup, while one inside that form
+//! the account holds nothing under is refused the exchange API's own
+//! `InvalidReservedInstanceId` — and the `DryRun` probe is answered ahead of both, since it
+//! is about the CALLER's permission rather than the value the request carries. Everything
+//! about a Reserved Instance that more than one operation needs lives in
+//! [`crate::state::reserved_instances`].
 //!
 //! ## Shape of an operation
 //!
@@ -100,7 +106,8 @@ use crate::state::{
     echoed_resource_id, invalid_parameter_value, invalid_reserved_instance_id,
     invalid_reserved_instances_offering_id, missing_parameter, request_region,
     require_service_state, reserved_instances_exchange_shares,
-    reserved_instances_id_is_well_formed, reserved_instances_limit_exceeded,
+    reserved_instances_id_is_well_formed, reserved_instances_id_malformed,
+    reserved_instances_limit_exceeded,
     reserved_instances_not_convertible, reserved_instances_not_exchangeable,
     reserved_instances_spec_for_offering, reserved_instances_value,
     reserved_instances_value_text,
@@ -204,14 +211,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 input.reserved_instance_ids.len()
             )));
         }
-        // A value that is not a Reserved Instances id at all is refused before there is
-        // anything to look up, the way this service answers every unreadable resource id.
-        for reserved_instance_id in &input.reserved_instance_ids {
-            if !reserved_instances_id_is_well_formed(reserved_instance_id) {
-                return Err(invalid_reserved_instance_id(reserved_instance_id));
-            }
-        }
-        let reserved_instance_ids = deduplicate_ids(&input.reserved_instance_ids);
 
         // An exchange is INTO something: "the configuration of the target Convertible
         // Reserved Instance to exchange for your current Convertible Reserved Instances"
@@ -250,13 +249,23 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // required permissions for the action, WITHOUT ACTUALLY MAKING THE REQUEST … if you
         // have the required permissions, the error response is DryRunOperation" ($DryRun).
         // So a probe whose target configuration names an offering this service does not
-        // publish, or whose `reservedInstanceId` the account holds nothing under, is still
-        // answered `DryRunOperation` — this operation's recorded contract — while the
-        // parameter checks above, which read nothing but the request itself, still have
-        // their say.
+        // publish, or whose `reservedInstanceId` is no Reserved Instances id at all or names
+        // a purchase the account does not hold, is still answered `DryRunOperation` — this
+        // operation's recorded contract — while the parameter checks above, which read
+        // nothing but the request's own shape, still have their say.
         if input.dry_run == Some(true) {
             return Err(dry_run_operation());
         }
+
+        // A value outside the Reserved Instances id form names no purchase in ANY account:
+        // the `.NotFound` code this service answers for an unresolvable reserved-instances id,
+        // in the sentence EC2 words a malformed id of this resource with, before any lookup.
+        for reserved_instance_id in &input.reserved_instance_ids {
+            if !reserved_instances_id_is_well_formed(reserved_instance_id) {
+                return Err(reserved_instances_id_malformed(reserved_instance_id));
+            }
+        }
+        let reserved_instance_ids = deduplicate_ids(&input.reserved_instance_ids);
 
         let state = require_service_state(&*self.engine)?;
         let mut store = state.lock();

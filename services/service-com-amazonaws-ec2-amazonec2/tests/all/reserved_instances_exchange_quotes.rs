@@ -19,11 +19,15 @@
 //! 3. AN EXCHANGE THAT CANNOT BE PERFORMED IS REPORTED, NOT REFUSED: "if the exchange cannot
 //!    be performed, the reason is returned in the response" — `isValidExchange` is `false`
 //!    with a `validationFailureReason`, and the call still answers HTTP 200;
-//! 4. ONLY A VALUE THAT NAMES NOTHING IS AN ERROR: a `reservedInstanceId` this account holds
-//!    no purchase under is `InvalidReservedInstanceId`, and an `offeringId` this service
-//!    publishes no offering under is `InvalidReservedInstancesOfferingId`;
+//! 4. ONLY A VALUE THAT NAMES NOTHING IS AN ERROR, and the refusal is the one EC2 words for
+//!    the value at fault: a `reservedInstanceId` outside the Reserved Instances id form is
+//!    `InvalidReservedInstancesID.NotFound` with "The reserved-instances ID '<id>' is
+//!    malformed", a well-formed one this account holds no purchase under is
+//!    `InvalidReservedInstanceId`, and an `offeringId` this service publishes no offering
+//!    under is `InvalidReservedInstancesOfferingId`;
 //! 5. A QUOTE IS A READ: it writes nothing — every purchase is where it was, twice over —
-//!    and `DryRun` answers the permission probe;
+//!    and `DryRun` answers the permission probe ahead of every refusal a `reservedInstanceId`
+//!    would otherwise draw;
 //!
 //! Each table row is a distinct input along what its rule generalises over — how many
 //! reservations a purchase holds, what they cost, how many target configurations they are
@@ -34,14 +38,15 @@ use std::collections::BTreeMap;
 use std::time::SystemTime;
 
 use ec2::state::{
-    ComAmazonawsEc2Amazonec2State as Ec2State, RESERVED_INSTANCE_STATE_ACTIVE,
-    RESERVED_INSTANCE_STATE_RETIRED, ReservedInstancesOfferingTerms, ReservedInstancesSpec,
-    encode_reserved_instances_offering_id,
+    ComAmazonawsEc2Amazonec2State as Ec2State, INVALID_RESERVED_INSTANCE_ID,
+    INVALID_RESERVED_INSTANCES_ID_NOT_FOUND, INVALID_RESERVED_INSTANCES_OFFERING_ID,
+    MAX_ECHOED_RESOURCE_ID_CHARS, RESERVED_INSTANCE_STATE_ACTIVE, RESERVED_INSTANCE_STATE_RETIRED,
+    ReservedInstancesOfferingTerms, ReservedInstancesSpec, encode_reserved_instances_offering_id,
 };
 use service_com_amazonaws_ec2_amazonec2 as ec2;
 use smithy_server_runtime::MultiServiceRouter;
 
-use super::ec2_query::{call, error_code, indexed, member};
+use super::ec2_query::{call, error_code, error_message, indexed, member};
 use super::wire::{Param, param};
 
 /// The Region every call here is signed for: a Reserved Instance is reported in a zone of the
@@ -611,53 +616,125 @@ async fn an_exchange_that_cannot_be_performed_is_reported_with_its_reason() {
     }
 }
 
-/// RULE 4: a value that names no purchase and one that names no offering are errors.
+/// One row of the refusal table below: what the request names, and the refusal it must draw.
+struct Refusal {
+    /// What this row is, named in every assertion it makes.
+    case: &'static str,
+    /// The `reservedInstanceId` values the request carries.
+    ids: Vec<String>,
+    /// The `offeringId` of each target configuration the request carries.
+    offering_ids: Vec<String>,
+    /// The EC2 error code the refusal must carry.
+    code: &'static str,
+    /// The whole message the refusal must carry.
+    message: String,
+}
+
+/// RULE 4: a value that names no purchase and one that names no offering are errors, each in
+/// the refusal EC2 words for the value at fault.
+///
+/// The rows differ in which member names nothing and HOW: a `reservedInstanceId` outside the
+/// Reserved Instances id form — spanning a value of no id form at all, an id of another EC2
+/// resource, a UUID whose fields are the wrong length, one carrying a digit that is not
+/// hexadecimal, and a value far longer than any id EC2 issues, which is echoed only as far as
+/// the bound — one INSIDE that form the account holds nothing under, and an offering id this
+/// service never published. The id form is one refusal and the lookup another, so the two
+/// carry different codes.
 #[tokio::test]
 async fn a_value_that_names_nothing_is_refused() {
     let (router, engine) = super::ec2_query::emulator();
     let held = seed(&engine, (2, 500.0, 0.0));
     let published = offering_id((600.0, 0.0));
+    let far_too_long = "r".repeat(4 * MAX_ECHOED_RESOURCE_ID_CHARS);
 
-    // Rows differ in which member names nothing and how: a purchase id outside the UUID form
-    // a Reserved Instances id takes, one inside it the account holds nothing under, and an
-    // offering id this service never published.
-    let rows: [(&str, Vec<&str>, Vec<String>, &str); 4] = [
-        (
-            "a purchase id that is not a UUID",
-            vec!["not-a-uuid"],
-            vec![published.clone()],
-            "InvalidReservedInstanceId",
-        ),
-        (
-            "a purchase id the account holds nothing under",
-            vec!["b847fa93-e282-4f55-b59a-1342f5bd7c02"],
-            vec![published.clone()],
-            "InvalidReservedInstanceId",
-        ),
-        (
-            "an offering id this service never published",
-            vec![held.as_str()],
-            vec!["rio-0123456789abcdef".to_string()],
-            "InvalidReservedInstancesOfferingId",
-        ),
-        (
-            "an offering id that is not an id at all",
-            vec![held.as_str()],
-            vec!["not-an-offering".to_string()],
-            "InvalidReservedInstancesOfferingId",
-        ),
+    let rows: Vec<Refusal> = vec![
+        Refusal {
+            case: "a purchase id of no id form at all",
+            ids: vec!["not-a-uuid".to_string()],
+            offering_ids: vec![published.clone()],
+            code: INVALID_RESERVED_INSTANCES_ID_NOT_FOUND,
+            message: "The reserved-instances ID 'not-a-uuid' is malformed".to_string(),
+        },
+        Refusal {
+            case: "a purchase id of another EC2 resource form",
+            ids: vec!["i-0123456789abcdef0".to_string()],
+            offering_ids: vec![published.clone()],
+            code: INVALID_RESERVED_INSTANCES_ID_NOT_FOUND,
+            message: "The reserved-instances ID 'i-0123456789abcdef0' is malformed".to_string(),
+        },
+        Refusal {
+            case: "a UUID with a field of the wrong length",
+            ids: vec!["b847fa93-e282-4f55-b59a-1342f5bd7c0".to_string()],
+            offering_ids: vec![published.clone()],
+            code: INVALID_RESERVED_INSTANCES_ID_NOT_FOUND,
+            message: "The reserved-instances ID 'b847fa93-e282-4f55-b59a-1342f5bd7c0' is \
+                      malformed"
+                .to_string(),
+        },
+        Refusal {
+            case: "a UUID carrying a digit that is not hexadecimal",
+            ids: vec!["b847fa93-e282-4f55-b59a-1342f5bd7c0z".to_string()],
+            offering_ids: vec![published.clone()],
+            code: INVALID_RESERVED_INSTANCES_ID_NOT_FOUND,
+            message: "The reserved-instances ID 'b847fa93-e282-4f55-b59a-1342f5bd7c0z' is \
+                      malformed"
+                .to_string(),
+        },
+        Refusal {
+            case: "a purchase id far longer than any id EC2 issues",
+            ids: vec![far_too_long],
+            offering_ids: vec![published.clone()],
+            code: INVALID_RESERVED_INSTANCES_ID_NOT_FOUND,
+            message: format!(
+                "The reserved-instances ID '{}' is malformed",
+                "r".repeat(MAX_ECHOED_RESOURCE_ID_CHARS)
+            ),
+        },
+        Refusal {
+            case: "a purchase id the account holds nothing under",
+            ids: vec!["b847fa93-e282-4f55-b59a-1342f5bd7c02".to_string()],
+            offering_ids: vec![published.clone()],
+            code: INVALID_RESERVED_INSTANCE_ID,
+            message: " [b847fa93-e282-4f55-b59a-1342f5bd7c02]".to_string(),
+        },
+        Refusal {
+            case: "an offering id this service never published",
+            ids: vec![held.clone()],
+            offering_ids: vec!["rio-0123456789abcdef".to_string()],
+            code: INVALID_RESERVED_INSTANCES_OFFERING_ID,
+            message: "The Reserved Instances offering ID 'rio-0123456789abcdef' does not exist"
+                .to_string(),
+        },
+        Refusal {
+            case: "an offering id that is not an id at all",
+            ids: vec![held.clone()],
+            offering_ids: vec!["not-an-offering".to_string()],
+            code: INVALID_RESERVED_INSTANCES_OFFERING_ID,
+            message: "The Reserved Instances offering ID 'not-an-offering' does not exist"
+                .to_string(),
+        },
     ];
 
-    for (case, ids, offering_ids, expected) in rows {
-        let (status, body) = quote(&router, &ids, &offering_ids, &[]).await;
+    for row in rows {
+        let case = row.case;
+        let ids: Vec<&str> = row.ids.iter().map(String::as_str).collect();
+        let (status, body) = quote(&router, &ids, &row.offering_ids, &[]).await;
         assert_eq!(
             status, 400,
             "case {case:?}: expected HTTP 400, got {status} with body {body}"
         );
         assert_eq!(
             error_code(&body),
-            expected,
-            "case {case:?}: expected {expected}, got {body}"
+            row.code,
+            "case {case:?}: expected {code}, got {body}",
+            code = row.code
+        );
+        assert_eq!(
+            error_message(&body),
+            row.message,
+            "case {case:?}: expected the message {message:?}, got {actual:?}",
+            message = row.message,
+            actual = error_message(&body)
         );
     }
 
@@ -695,14 +772,19 @@ async fn a_quote_writes_nothing_and_a_dry_run_answers_the_probe() {
         "a quote must leave every purchase as it was"
     );
 
-    // Rows differ in what the probe names: a purchase the account holds, and one it does
-    // not. "Checks whether you have the required permissions … without actually making the
-    // request", so both answer the same thing.
+    // Rows differ in what the probe names: a purchase the account holds, one it does not, and
+    // a value that is no Reserved Instances id at all. "Checks whether you have the required
+    // permissions … without actually making the request", so all three answer the same thing
+    // — the probe is answered ahead of every refusal the value would otherwise draw.
     for (case, id) in [
         ("a quote that would have been served", held.clone()),
         (
             "a quote naming a purchase the account does not hold",
             "b847fa93-e282-4f55-b59a-1342f5bd7c02".to_string(),
+        ),
+        (
+            "a quote naming a value that is no Reserved Instances id",
+            "ri-000000000000000000".to_string(),
         ),
     ] {
         let (status, body) = quote(
@@ -720,6 +802,12 @@ async fn a_quote_writes_nothing_and_a_dry_run_answers_the_probe() {
             error_code(&body),
             "DryRunOperation",
             "case {case:?}: expected DryRunOperation, got {body}"
+        );
+        assert_eq!(
+            error_message(&body),
+            "Request would have succeeded, but DryRun flag is set.",
+            "case {case:?}: expected EC2's dry-run sentence, got {:?}",
+            error_message(&body)
         );
     }
     assert_eq!(

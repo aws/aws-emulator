@@ -34,9 +34,9 @@ use std::time::SystemTime;
 
 use ec2::state::{
     ComAmazonawsEc2Amazonec2State as Ec2State, INVALID_PARAMETER_VALUE,
-    INVALID_RESERVED_INSTANCE_ID, INVALID_RESERVED_INSTANCES_OFFERING_ID,
-    MAX_ECHOED_RESOURCE_ID_CHARS, MISSING_PARAMETER, RESERVED_INSTANCE_SCOPE_REGION,
-    RESERVED_INSTANCE_SCOPE_ZONE, RESERVED_INSTANCE_STATE_ACTIVE,
+    INVALID_RESERVED_INSTANCE_ID, INVALID_RESERVED_INSTANCES_ID_NOT_FOUND,
+    INVALID_RESERVED_INSTANCES_OFFERING_ID, MAX_ECHOED_RESOURCE_ID_CHARS, MISSING_PARAMETER,
+    RESERVED_INSTANCE_SCOPE_REGION, RESERVED_INSTANCE_SCOPE_ZONE, RESERVED_INSTANCE_STATE_ACTIVE,
     RESERVED_INSTANCE_STATE_QUEUED, RESERVED_INSTANCE_STATE_RETIRED, ReservedInstancesOfferingTerms,
     ReservedInstancesSpec, availability_zones_in_region, decode_reserved_instances_offering_id,
     encode_reserved_instances_offering_id, reserved_instances_id_is_well_formed,
@@ -595,8 +595,9 @@ async fn an_exchange_refuses_what_it_cannot_act_on_and_exchanges_nothing() {
             Named::Literal("not-a-valid-reserved-instance-id"),
             &[("m5.large", None, 600.0)],
             &[],
-            INVALID_RESERVED_INSTANCE_ID,
-            " [not-a-valid-reserved-instance-id]".to_string(),
+            INVALID_RESERVED_INSTANCES_ID_NOT_FOUND,
+            "The reserved-instances ID 'not-a-valid-reserved-instance-id' is malformed"
+                .to_string(),
         ),
         (
             "an id of another EC2 resource form",
@@ -604,8 +605,8 @@ async fn an_exchange_refuses_what_it_cannot_act_on_and_exchanges_nothing() {
             Named::Literal("i-0123456789abcdef0"),
             &[("m5.large", None, 600.0)],
             &[],
-            INVALID_RESERVED_INSTANCE_ID,
-            " [i-0123456789abcdef0]".to_string(),
+            INVALID_RESERVED_INSTANCES_ID_NOT_FOUND,
+            "The reserved-instances ID 'i-0123456789abcdef0' is malformed".to_string(),
         ),
         (
             "a UUID with a field of the wrong length",
@@ -613,8 +614,9 @@ async fn an_exchange_refuses_what_it_cannot_act_on_and_exchanges_nothing() {
             Named::Literal("b847fa93-e282-4f55-b59a-1342f5bd7c0"),
             &[("m5.large", None, 600.0)],
             &[],
-            INVALID_RESERVED_INSTANCE_ID,
-            " [b847fa93-e282-4f55-b59a-1342f5bd7c0]".to_string(),
+            INVALID_RESERVED_INSTANCES_ID_NOT_FOUND,
+            "The reserved-instances ID 'b847fa93-e282-4f55-b59a-1342f5bd7c0' is malformed"
+                .to_string(),
         ),
         (
             "a value far longer than any id EC2 issues",
@@ -622,8 +624,11 @@ async fn an_exchange_refuses_what_it_cannot_act_on_and_exchanges_nothing() {
             Named::Owned(long_id.clone()),
             &[("m5.large", None, 600.0)],
             &[],
-            INVALID_RESERVED_INSTANCE_ID,
-            format!(" [{}]", "r".repeat(MAX_ECHOED_RESOURCE_ID_CHARS)),
+            INVALID_RESERVED_INSTANCES_ID_NOT_FOUND,
+            format!(
+                "The reserved-instances ID '{}' is malformed",
+                "r".repeat(MAX_ECHOED_RESOURCE_ID_CHARS)
+            ),
         ),
         (
             "a well-formed id the account holds nothing under",
@@ -816,29 +821,34 @@ async fn an_exchange_refuses_a_target_that_is_not_a_published_convertible_offeri
 /// The rule: "checks whether you have the required permissions for the action, without
 /// actually making the request … If you have the required permissions, the error response is
 /// DryRunOperation" ($DryRun) — so a dry run reports HTTP 412 `DryRunOperation` and exchanges
-/// nothing, for a request that would have gone through and for one naming a purchase this
-/// account does not hold alike: the probe is about the CALLER's permission, not about the
-/// resource.
+/// nothing, for a request that would have gone through, for one naming a purchase this
+/// account does not hold and for one naming no Reserved Instances id at all: the probe is
+/// about the CALLER's permission, not about the value the request carries, so it is answered
+/// ahead of every refusal a `reservedInstanceId` would otherwise draw.
 #[tokio::test]
 async fn a_dry_run_reports_the_permission_answer_and_exchanges_nothing() {
-    let cases: &[(&str, bool)] = &[
-        ("a dry run of an exchange that would go through", true),
-        ("a dry run naming a purchase this account does not hold", false),
+    // Rows differ in what the probe's `reservedInstanceId` names: the seeded purchase, a
+    // well-formed id of no purchase, and a value outside the Reserved Instances id form.
+    let cases: &[(&str, Named)] = &[
+        ("a dry run of an exchange that would go through", Named::Seeded),
+        (
+            "a dry run naming a purchase this account does not hold",
+            Named::Literal("B847FA93-E282-4F55-B59A-1342F5BD7C02"),
+        ),
+        (
+            "a dry run naming a value that is no Reserved Instances id",
+            Named::Literal("ri-000000000000000000"),
+        ),
     ];
 
-    for (case, hold) in cases {
+    for (case, named) in cases {
         let (router, engine) = super::ec2_query::emulator();
         let seeded = seed(&engine, ("m5.large", Some("us-east-1a"), 2, 500.0));
-        let named = if *hold {
-            seeded.clone()
-        } else {
-            "B847FA93-E282-4F55-B59A-1342F5BD7C02".to_string()
-        };
         let before = purchases(&engine);
 
         let (status, body) = accept(
             &router,
-            &[&named],
+            &[named.as_str(&seeded)],
             &[offering_id(("m5.large", None, 600.0))],
             &[param("DryRun", "true")],
         )
