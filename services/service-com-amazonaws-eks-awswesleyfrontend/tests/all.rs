@@ -135,6 +135,8 @@ mod identity_provider_disassociation;
 mod insights_listing;
 #[path = "all/insights_refresh.rs"]
 mod insights_refresh;
+#[path = "all/kubernetes_api.rs"]
+mod kubernetes_api;
 #[path = "all/list_pod_identity_associations.rs"]
 mod list_pod_identity_associations;
 #[path = "all/marketplace_addon_install.rs"]

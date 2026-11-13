@@ -29,7 +29,8 @@
 //!    (400), decided by the cluster's own record of what it issued, never by inspecting
 //!    the request;
 //! 4. the cluster must hold a pod identity association for the (namespace, service
-//!    account) pair the token names — otherwise `AccessDeniedException` (400);
+//!    account) pair the token names — otherwise `ResourceNotFoundException` (404), the
+//!    answer a token whose association was deleted, or never created, gets;
 //! 5. the credentials are minted through the emulator's credential store, so the
 //!    session they identify is one the emulator will accept, and the session record is
 //!    stored under its access key id with the instant it expires.
@@ -133,10 +134,9 @@
 use super::types::*;
 
 use crate::state::{
-    parse_service_account_token, PodIdentitySession, ServiceAccountIdentity, TokenMalformation,
-    TokenRejection, KEY_ID_HEADER, PODS_AUDIENCE, SESSION_DURATION,
+    parse_service_account_token, PodIdentitySession, TokenMalformation, TokenRejection,
+    KEY_ID_HEADER, PODS_AUDIENCE, SESSION_DURATION,
 };
-use emulator_server::aws_credentials::{AWS_SESSION, SECRET_ACCESS_KEY, SESSION_TOKEN};
 use std::time::SystemTime;
 
 // `#[operation_error]` below expands to an invocation of the LOCAL declarative
@@ -260,7 +260,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         // The whole authorization decision reads state: the cluster, its token signing
         // key, and its associations.
-        let (association, identity) = {
+        let (association, identity, cluster_arn) = {
             let guard = state.lock();
             // RESOLVING THE KEY THE HEADER NAMES is the last layer of reading that
             // header: a `kid` is resolved through the OIDC provider of the cluster the
@@ -292,34 +292,19 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 .association_for(&identity.namespace, &identity.service_account)
                 .cloned()
                 .ok_or_else(|| {
-                    refused(&caller_akid, &input.cluster_name, "AccessDeniedException");
-                    access_denied(&input.cluster_name, &identity)
+                    refused(&caller_akid, &input.cluster_name, "ResourceNotFoundException");
+                    no_association()
                 })?;
-            (association, identity)
+            (association, identity, cluster.arn.clone())
         };
 
-        // The credentials this call returns: created in the emulator's credential store,
-        // so the emulator accepts requests signed with them, and so neither the id nor
-        // the secrets are chosen here.
-        let minted = ctx.credential_store().create(&AWS_SESSION);
-        let (Some(secret_access_key), Some(session_token)) = (
-            minted.secret(SECRET_ACCESS_KEY).map(str::to_string),
-            minted.secret(SESSION_TOKEN).map(str::to_string),
-        ) else {
-            if let Err(error) = ctx.credential_store().delete(&minted.id) {
-                ::tracing::warn!(
-                    operation = Self::NAME,
-                    access_key_id = %minted.id,
-                    error = ?error,
-                    "a credential minted for a failed exchange could not be deleted"
-                );
-            }
-            return Err(internal_server_error(
-                "a session credential was created without its secrets",
-            ));
-        };
-        let expiration = now + SESSION_DURATION;
-
+        // The credentials this call returns: a SESSION OF THE ROLE the association binds
+        // the service account to, minted where every session of this emulator is minted
+        // and recorded where every service resolves a temporary credential's principal —
+        // so what the pod may then do is what that role's policies allow, narrowed by the
+        // association's own policy (see [`crate::state::vend_pod_identity_session`]).
+        // Neither the id nor the secrets are chosen here.
+        //
         // The role session name AWS documents for this value:
         // `eks-<clustername>-<podname>-<random UUID>`. The pod name comes from the
         // token's record of the pod it was projected into; a token issued without one (a
@@ -328,20 +313,51 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .pod_name
             .clone()
             .unwrap_or_else(|| identity.service_account.clone());
-        let assume_role_id = format!(
-            "{}:eks-{}-{pod_name}-{}",
-            association.role_id,
+        let session_name = format!(
+            "eks-{}-{pod_name}-{}",
             input.cluster_name,
             crate::state::random_uuid()
         );
+        // "EKS Pod Identity adds session tags" — unless the association turns them off:
+        // "disableSessionTags" (`PodIdentityAssociation$disableSessionTags`).
+        let tags = match association.disable_session_tags {
+            Some(true) => Vec::new(),
+            _ => crate::state::session_tags(&input.cluster_name, &cluster_arn, &identity),
+        };
+        let plan = crate::state::PodIdentitySessionPlan {
+            role_arn: association.role_arn.clone(),
+            target_role_arn: association.target_role_arn.clone(),
+            session_name,
+            fallback_role_id: association.role_id.clone(),
+            duration: SESSION_DURATION,
+            tags,
+            inline_policy: association.policy.clone(),
+            external_id: association.external_id.clone(),
+        };
+        let vended = crate::state::vend_pod_identity_session(
+            &*self.engine,
+            ctx.credential_store(),
+            now,
+            &plan,
+        )
+        .map_err(|refusal| match refusal {
+            crate::state::SessionRefusal::TargetRoleNotTrusted => {
+                refused(&caller_akid, &input.cluster_name, "AccessDeniedException");
+                target_role_not_trusted()
+            }
+            crate::state::SessionRefusal::Unvendable => {
+                internal_server_error("a session of the association's role could not be vended")
+            }
+        })?;
+        let expiration = vended.expires_at;
 
         let session = PodIdentitySession {
-            access_key_id: minted.id.clone(),
+            access_key_id: vended.access_key_id.clone(),
             expiration,
             cluster_name: input.cluster_name.clone(),
             association_id: association.association_id.clone(),
             assumed_role_arn: association.role_arn.clone(),
-            assume_role_id: assume_role_id.clone(),
+            assume_role_id: vended.assume_role_id.clone(),
             namespace: identity.namespace.clone(),
             service_account: identity.service_account.clone(),
             eks_node_name: input.eks_node_name.clone(),
@@ -365,8 +381,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             service_account = ?identity.service_account,
             association_id = %association.association_id,
             role_arn = %association.role_arn,
-            assume_role_id = %assume_role_id,
-            access_key_id = %minted.id,
+            assume_role_id = %vended.assume_role_id,
+            access_key_id = %vended.access_key_id,
             expires_at = crate::state::epoch_seconds(expiration),
             "issued EKS Pod Identity credentials"
         );
@@ -382,13 +398,16 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 association_id: association.association_id,
             },
             assumed_role_user: AssumedRoleUser {
-                arn: association.role_arn,
-                assume_role_id,
+                // The ARN of the SESSION, which is what AWS reports for an assumed-role
+                // identity — the role's own ARN is the `roleArn` the caller already holds
+                // on the association.
+                arn: vended.assumed_role_user_arn,
+                assume_role_id: vended.assume_role_id,
             },
             credentials: Credentials {
-                access_key_id: minted.id,
-                secret_access_key,
-                session_token,
+                access_key_id: vended.access_key_id,
+                secret_access_key: vended.secret_access_key,
+                session_token: vended.session_token,
                 expiration: ::aws_smithy_types::DateTime::from(expiration),
             },
         })
@@ -477,17 +496,40 @@ fn token_rejection(rejection: TokenRejection) -> AssumeRoleForPodIdentityError {
 }
 
 /// The cluster holds no pod identity association for the service account the token
-/// names, so there is no role to assume.
-fn access_denied(
-    cluster_name: &str,
-    identity: &ServiceAccountIdentity,
-) -> AssumeRoleForPodIdentityError {
+/// names, so there is no role to assume: the modelled `ResourceNotFoundException` (404),
+/// which is what a token whose association was deleted — or never created — is answered
+/// with.
+///
+/// ONE fixed sentence, naming nothing of the request: what is missing is an association
+/// for the identity the TOKEN names, and the token is `@sensitive`, so neither the
+/// namespace nor the service account it carries is echoed back to a caller that did not
+/// send them. It is the same answer whether the association was deleted or never existed,
+/// because the state the exchange resolves against is the same.
+fn no_association() -> AssumeRoleForPodIdentityError {
+    AssumeRoleForPodIdentityErrorModeled::ResourceNotFoundException(ResourceNotFoundException {
+        message: Some(
+            "The token included in the request has no service account role association for it."
+                .to_string(),
+        ),
+    })
+    .into()
+}
+
+/// The association names a TARGET role its own role may not assume, so there is no
+/// credential to vend: the modelled `AccessDeniedException` (400), which is the failure of
+/// a permission rather than of the token or of a resource that is missing.
+///
+/// ONE fixed sentence: what is missing is a grant in the TARGET role's trust policy for
+/// the association's role and the external id the control plane generated for the chain,
+/// and neither value is the caller's to be told about — the caller holds a pod's token,
+/// not the association.
+fn target_role_not_trusted() -> AssumeRoleForPodIdentityError {
     AssumeRoleForPodIdentityErrorModeled::AccessDeniedException(AccessDeniedException {
-        message: Some(format!(
-            "The cluster {cluster_name} has no EKS Pod Identity association for the service \
-             account {} in namespace {}.",
-            identity.service_account, identity.namespace
-        )),
+        message: Some(
+            "The target role of the EKS Pod Identity association cannot be assumed by the \
+             association's role with the association's external ID."
+                .to_string(),
+        ),
     })
     .into()
 }

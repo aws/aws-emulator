@@ -10,13 +10,23 @@ build = "build.rs"
 # The shared reading of a URI path label and of a caller-supplied IAM principal ARN, plus
 # `iam_authorization` — the ONE evaluation of IAM policy documents against an action on a
 # resource, so every service that enforces authorization decides alike
-# (`src/service/identity_authorization.rs`).
+# (`src/service/identity_authorization.rs`) — and the ONE reading of an ARN, which is where
+# the account and partition a session of the association's role is named in come from
+# (`src/state/role_session.rs`).
 service-common = { path = "../common" }
 # The two services the authorization gate reads the caller and its permissions through: STS
 # resolves the access key id a request presents to the principal it speaks for, and IAM holds
 # the identity-based policy documents and the permissions boundary in force on that principal.
 # Read through those services' own accessors, so a document their operations wrote takes effect
 # on the next request.
+#
+# They are also what the credentials this service VENDS are made of: those credentials are a
+# SESSION OF THE ROLE the pod identity association binds the service account to — "the
+# temporary security credentials … have the permissions of the role" — so they are minted
+# through the token service's own role-session mint and recorded where every service resolves
+# a temporary credential's principal, and the role's own name and id (which the vended
+# `assumedRoleUser` is built from) come from IAM, the service that holds the role
+# (`src/state/role_session.rs`).
 service-com-amazonaws-iam-awsidentitymanagementv20100508 = { workspace = true }
 service-com-amazonaws-sts-awssecuritytokenservicev20110615 = { workspace = true }
 engine = { workspace = true }

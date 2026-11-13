@@ -371,6 +371,8 @@ mod served_envelope_values;
 mod service_principal_object_access;
 #[path = "all/service_set_tag_keys.rs"]
 mod service_set_tag_keys;
+#[path = "all/session_scoped_object_authorization.rs"]
+mod session_scoped_object_authorization;
 #[path = "all/signature_refusal_wording.rs"]
 mod signature_refusal_wording;
 #[path = "all/sse_kms_data_key_authorization.rs"]

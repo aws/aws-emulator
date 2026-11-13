@@ -472,8 +472,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         let association = record.to_association();
         guard.pod_identity_associations.insert(
-            (region, input.cluster_name, association_id),
+            (region.clone(), input.cluster_name.clone(), association_id),
             record,
+        );
+        // The store's lock is released before the EKS Auth plane is programmed
+        // with the set this service now holds: that plane is what resolves a
+        // pod identity token to this association, so a created association can be
+        // exchanged for credentials as soon as this call returns.
+        drop(guard);
+        crate::state::pod_identity_plane::program_cluster_associations_on(
+            &*self.engine,
+            &store,
+            &(region, input.cluster_name),
         );
 
         Ok(CreatePodIdentityAssociationOutput {

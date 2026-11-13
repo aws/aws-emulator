@@ -190,6 +190,25 @@ async fn described_broker(router: &MultiServiceRouter, broker_id: &str) -> (u16,
     (status, payload)
 }
 
+/// [`described_broker`], read again until the broker reports the state Amazon MQ owes a
+/// created one (`RUNNING`), or the polls run out.
+///
+/// The broker's own `CREATION_IN_PROGRESS` -> `RUNNING` move is owed on ITS clock, which the
+/// stack reaching `CREATE_COMPLETE` says nothing about: the condition is waited for rather
+/// than assumed to have happened by then.
+async fn described_running_broker(router: &MultiServiceRouter, broker_id: &str) -> (u16, Value) {
+    let mut last = described_broker(router, broker_id).await;
+    for _ in 0..POLLS {
+        let running = last.1.get("brokerState").and_then(Value::as_str) == Some("RUNNING");
+        if last.0 != 200 || running {
+            return last;
+        }
+        tokio::time::sleep(POLL_INTERVAL).await;
+        last = described_broker(router, broker_id).await;
+    }
+    last
+}
+
 /// Submit one template as a stack create.
 async fn create_stack(router: &MultiServiceRouter, case: &str, stack: &str, template: &str) {
     let (status, body) = cloudformation(
@@ -846,7 +865,7 @@ async fn a_broker_is_created_with_the_password_its_reference_resolves_to() {
     // declared it.
     let broker_id = output(case, &described, "BrokerId");
     let broker_arn = output(case, &described, "BrokerArn");
-    let (status, broker) = described_broker(&router, &broker_id).await;
+    let (status, broker) = described_running_broker(&router, &broker_id).await;
     assert_eq!(
         status, 200,
         "case {case:?}: expected Amazon MQ to resolve the broker id {broker_id:?} the stack \

@@ -137,6 +137,16 @@ pub struct ComAmazonawsEksAwswesleyfrontendState {
     /// back leaves nothing behind for ever and this map holds at most the
     /// deletions of that window.
     pub cluster_deletions: BTreeMap<(String, String), SystemTime>,
+    /// The Kubernetes API plane of each cluster, by that cluster's
+    /// `(region, name)` key: the objects its API server holds, the address it is
+    /// published at, and the listener that keeps that address open
+    /// ([`kubernetes_api`]).
+    ///
+    /// It is keyed like [`Self::clusters`] and holds at most one entry per stored
+    /// cluster, so [`MAX_STORED_CLUSTERS`] bounds how many ports one store can
+    /// hold open; dropping an entry closes that cluster's port, which is what
+    /// `DeleteCluster` does.
+    pub kubernetes_api: BTreeMap<(String, String), kubernetes_api::KubernetesApiPlane>,
     // An asynchronous update is not a field here — it lives on the cluster it
     // updates ([`ClusterRecord::updates`]).
 }
@@ -159,6 +169,7 @@ impl Default for ComAmazonawsEksAwswesleyfrontendState {
             addon_catalog: seed_addon_catalog(),
             minted_updates: 0,
             cluster_deletions: BTreeMap::new(),
+            kubernetes_api: BTreeMap::new(),
         }
     }
 }

@@ -4641,10 +4641,16 @@ mod control_plane_logs;
 mod derived_identifiers;
 mod eks_anywhere_subscriptions;
 mod fargate_networking;
+// The three slices of the cluster's DATA plane are modules of their own rather
+// than glob re-exports: the Kubernetes API surface names its own `serve` and
+// `publish`, which say what they are only under the module that owns them.
+pub mod kubernetes_api;
+pub mod kubernetes_objects;
 mod nodegroup_capacity;
 mod nodegroups;
 mod pass_role;
 mod peers;
+pub mod pod_identity_plane;
 mod store;
 mod taggable_resources;
 pub use addon_catalog::*;
@@ -4659,6 +4665,7 @@ pub use control_plane_logs::*;
 pub use derived_identifiers::*;
 pub use eks_anywhere_subscriptions::*;
 pub use fargate_networking::*;
+pub use kubernetes_api::KubernetesApiPlane;
 pub use nodegroup_capacity::*;
 pub use nodegroups::*;
 pub use pass_role::*;

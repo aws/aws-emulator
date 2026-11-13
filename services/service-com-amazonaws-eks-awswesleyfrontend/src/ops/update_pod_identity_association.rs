@@ -394,9 +394,20 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         record.modified_at = now;
         // The create's own token stays where it is; only the update slot moves.
         record.update_request_token = input.client_request_token.clone();
+        let association = record.to_association();
+
+        // The store's lock is released before the EKS Auth plane is programmed
+        // with the set this service now holds, so an association re-pointed at
+        // another IAM role is exchanged for THAT role from here on.
+        drop(guard);
+        crate::state::pod_identity_plane::program_cluster_associations_on(
+            &*self.engine,
+            &store,
+            &(key.0.clone(), key.1.clone()),
+        );
 
         Ok(UpdatePodIdentityAssociationOutput {
-            association: Some(record.to_association()),
+            association: Some(association),
         })
     }
 }

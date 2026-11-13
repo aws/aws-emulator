@@ -232,13 +232,15 @@ impl CertificateAuthorityRecord {
     /// is created. Its `data` is the cluster's own `certificateAuthority.data`,
     /// so the two are one value rather than two copies.
     ///
-    /// `None` when the certificate material does not issue
-    /// ([`mint_certificate_authority_data`]): a cluster whose root of trust could
-    /// not be issued has no certificate authority to report, so the create says
-    /// so rather than seeding one with nothing in it.
-    pub fn initial_for_cluster(cluster_arn: &str, now: SystemTime) -> Option<Self> {
+    /// `data` is the authority the create provisioned
+    /// ([`provision_cluster_authority`], whose validity window is the one
+    /// computed here because both are taken from the same `now`), rather than
+    /// material minted inside: the SAME authority has to sign the certificate the
+    /// cluster's Kubernetes API server presents at the endpoint published beside
+    /// this member, and the key that signs both lives only inside that one call.
+    pub fn initial_for_cluster(cluster_arn: &str, now: SystemTime, data: String) -> Self {
         let not_after = now + CA_VALIDITY;
-        Some(Self {
+        Self {
             id: derive_certificate_authority_id(cluster_arn, 0),
             created_at: now,
             created_by: CA_BY_EKS.to_string(),
@@ -250,10 +252,10 @@ impl CertificateAuthorityRecord {
             not_before: now,
             not_after,
             rollback_available_until: None,
-            data: mint_certificate_authority_data(now, not_after)?,
+            data,
             client_request_token: None,
             update_id: None,
-        })
+        }
     }
 
     /// A successor CA appended to a cluster's trust bundle by the caller, so

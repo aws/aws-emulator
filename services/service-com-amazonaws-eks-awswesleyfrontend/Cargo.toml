@@ -83,16 +83,45 @@ rcgen = "0.13"
 # authority record reports, so the two instants are converted from the record's
 # `SystemTime`s into the date-time type rcgen takes.
 time = { version = "0.3.55", default-features = false, features = ["std"] }
+# The EKS Auth plane in the same shared engine: a cluster this service creates is
+# registered there, its pod identity associations are programmed there, and the
+# projected service account tokens its Kubernetes API server issues are minted
+# there — that plane is what `AssumeRoleForPodIdentity` resolves a token against
+# (`src/state/pod_identity_plane.rs`).
+service-com-amazonaws-eksauth-eksauthfrontend = { workspace = true }
+# A cluster's Kubernetes API server is reached over HTTP/1.1 on the core-owned
+# listener the cluster publishes as its `endpoint`
+# (`src/state/kubernetes_api.rs`), so the framing on that connection is the
+# `hyper` server's rather than this emulator's. `hyper-util` carries the tokio IO
+# and timer adapters for it, and `http-body-util` the bounded body read.
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http-body-util = { version = "0.1", default-features = false }
+# That listener is handed the connection in the clear, so the TLS a client of the
+# published endpoint dials is terminated here under a certificate the CLUSTER's own
+# certificate authority issued — the one whose PEM `certificateAuthority.data`
+# publishes, which is what lets a kubeconfig built from `DescribeCluster` verify the
+# endpoint beside it. `tokio-rustls` drives that handshake on the core's connection.
+rustls = { workspace = true }
+tokio-rustls = "0.26"
 
 [dev-dependencies]
 # The clock-owed `CREATING` -> `ACTIVE` test waits with `tokio::time::sleep`, so
 # this target declares tokio's `time` feature rather than inheriting it
-# transitively from another crate's feature set.
-tokio = { workspace = true, features = ["time"] }
+# transitively from another crate's feature set. The Kubernetes API suite dials the
+# published endpoint, so it declares the socket and stream features too.
+tokio = { workspace = true, features = ["time", "net", "io-util"] }
 # The certificate-authority suite decodes what a cluster reports as its
 # `certificateAuthority.data` and reads the X.509 certificate inside it the way a
 # TLS client would, rather than matching on its text.
 x509-cert = "0.2"
+# The Kubernetes API suite dials the address a cluster publishes as its `endpoint`
+# the way a kubeconfig-built client does: over TLS, trusting nothing but the
+# certificate authority the cluster published beside it. `tokio-rustls` runs the
+# client side of that handshake and `tokio` reads the HTTP/1.1 exchange on it.
+tokio-rustls = "0.26"
+rustls = { workspace = true }
+rustls-pemfile = "2"
 
 [build-dependencies]
 emulator-core-build-support = { workspace = true }

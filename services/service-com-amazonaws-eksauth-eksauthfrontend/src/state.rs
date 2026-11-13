@@ -270,6 +270,71 @@ impl ComAmazonawsEksauthEksauthfrontendState {
         Ok(cluster.upsert_association(namespace, service_account, role_arn, role_id))
     }
 
+    /// Program the pod identity associations the EKS control plane holds for
+    /// `cluster_name` into this plane, registering the cluster if it is not registered
+    /// yet, and answer how many were programmed.
+    ///
+    /// This is the registration seam [`Self::associate_pod_identity`] is for a caller that
+    /// has no control plane behind it, with the difference that matters for what
+    /// `AssumeRoleForPodIdentity` REPORTS: the association id and ARN are the ones the
+    /// control plane published, not ones minted here, so the `podIdentityAssociation` this
+    /// service answers with is the resource that control plane created.
+    ///
+    /// It takes the WHOLE set, so one call states what the cluster holds: an association
+    /// the control plane created appears, one it re-pointed at another role is re-pointed
+    /// here, and one it deleted is gone — which is what makes an exchange against a
+    /// deleted association resolve to nothing. An entry naming something no Kubernetes
+    /// identity or IAM role could be is skipped, on the same rules as the other seam.
+    pub fn program_pod_identity_associations(
+        &mut self,
+        cluster_name: &str,
+        region: &str,
+        programmed: &[ProgrammedAssociation],
+    ) -> usize {
+        let eligible: Vec<&ProgrammedAssociation> = programmed
+            .iter()
+            .filter(|association| {
+                is_role_arn(&association.role_arn)
+                    && is_dns_label(&association.namespace)
+                    && is_dns_subdomain(&association.service_account)
+            })
+            .collect();
+        // The role ids are state the whole service shares, so they are resolved — and
+        // minted for a role this service has not seen — before the cluster is borrowed.
+        let role_ids: Vec<String> = eligible
+            .iter()
+            .map(|association| self.role_id(&association.role_arn))
+            .collect();
+        let Some(cluster) = self.register_cluster(cluster_name, region) else {
+            return 0;
+        };
+        cluster.associations = eligible
+            .iter()
+            .zip(role_ids)
+            .map(|(association, role_id)| PodIdentityAssociationRecord {
+                association_id: association.association_id.clone(),
+                association_arn: association.association_arn.clone(),
+                namespace: association.namespace.clone(),
+                service_account: association.service_account.clone(),
+                role_arn: association.role_arn.clone(),
+                role_id,
+                policy: association.policy.clone(),
+                target_role_arn: association.target_role_arn.clone(),
+                external_id: association.external_id.clone(),
+                disable_session_tags: association.disable_session_tags,
+            })
+            .collect();
+        cluster.associations.len()
+    }
+
+    /// Forget the cluster registered under `name` — what the EKS control plane deleting a
+    /// cluster does to this plane: the tokens its Kubernetes API server issued and the
+    /// associations it held go with it, so nothing a deleted cluster issued names anybody
+    /// afterwards. Answers whether a cluster was there.
+    pub fn forget_cluster(&mut self, name: &str) -> bool {
+        self.clusters.remove(name).is_some()
+    }
+
     /// The id IAM gave the role named by `role_arn`, minting and recording one the first
     /// time this service sees the role.
     pub fn role_id(&mut self, role_arn: &str) -> String {
@@ -393,6 +458,15 @@ impl Cluster {
             service_account: service_account.to_string(),
             role_arn: role_arn.to_string(),
             role_id,
+            // The seam a caller with no control plane behind it drives records the
+            // binding and nothing else: an association's session policy, target role
+            // and external id are the control plane's to publish, and
+            // [`ComAmazonawsEksauthEksauthfrontendState::program_pod_identity_associations`]
+            // is what carries them here.
+            policy: None,
+            target_role_arn: None,
+            external_id: None,
+            disable_session_tags: None,
         });
         self.associations
             .last()
@@ -459,7 +533,10 @@ impl Cluster {
             "kubernetes.io": {
                 "namespace": request.namespace,
                 "serviceaccount": { "name": request.service_account },
-                "pod": request.pod_name.as_ref().map(|name| ::serde_json::json!({ "name": name })),
+                "pod": request.pod_name.as_ref().map(|name| ::serde_json::json!({
+                    "name": name,
+                    "uid": request.pod_uid,
+                })),
             },
         });
         let token = format!(
@@ -474,6 +551,7 @@ impl Cluster {
                 namespace: request.namespace.clone(),
                 service_account: request.service_account.clone(),
                 pod_name: request.pod_name.clone(),
+                pod_uid: request.pod_uid.clone(),
                 audience: request.audience.clone(),
                 issued_at: request.issued_at,
                 expires_at: request.expires_at,
@@ -542,6 +620,7 @@ impl Cluster {
             namespace: issued.namespace.clone(),
             service_account: issued.service_account.clone(),
             pod_name: issued.pod_name.clone(),
+            pod_uid: issued.pod_uid.clone(),
         })
     }
 
@@ -667,6 +746,9 @@ pub struct IssuedToken {
     pub service_account: String,
     /// The pod the token was projected into, when it was issued for one.
     pub pod_name: Option<String>,
+    /// That pod's `metadata.uid`, when the token was bound to a pod — one of the
+    /// session tags EKS Pod Identity puts on the session it vends.
+    pub pod_uid: Option<String>,
     /// The audiences the token was issued to; only [`PODS_AUDIENCE`] is the one
     /// `AssumeRoleForPodIdentity` accepts.
     pub audience: Vec<String>,
@@ -865,6 +947,8 @@ pub struct ServiceAccountIdentity {
     pub service_account: String,
     /// The pod the token was projected into, when it was issued for one.
     pub pod_name: Option<String>,
+    /// That pod's `metadata.uid`, when the token was bound to a pod.
+    pub pod_uid: Option<String>,
 }
 
 /// What [`Cluster::issue_service_account_token`] mints a token for.
@@ -873,6 +957,11 @@ pub struct ServiceAccountTokenRequest {
     pub namespace: String,
     pub service_account: String,
     pub pod_name: Option<String>,
+    /// The `metadata.uid` of the pod the token is projected into, when the request bound
+    /// it to one — the second half of the `kubernetes.io/pod` claim a projected token
+    /// carries. Descriptive only, like every other claim: who a token names comes from
+    /// the issuing cluster's record.
+    pub pod_uid: Option<String>,
     pub audience: Vec<String>,
     pub issued_at: SystemTime,
     pub expires_at: SystemTime,
@@ -888,10 +977,18 @@ impl ServiceAccountTokenRequest {
             namespace: namespace.to_string(),
             service_account: service_account.to_string(),
             pod_name: Some(pod_name.to_string()),
+            pod_uid: None,
             audience: vec![PODS_AUDIENCE.to_string()],
             issued_at: now,
             expires_at: now + Duration::from_secs(60 * 60),
         }
+    }
+
+    /// The same token, bound to the pod whose `metadata.uid` is `pod_uid` — what a
+    /// `TokenRequest` carrying a `boundObjectRef` naming a Pod object is issued for.
+    pub fn bound_to_pod_uid(mut self, pod_uid: &str) -> Self {
+        self.pod_uid = Some(pod_uid.to_string());
+        self
     }
 
     /// The same token, expiring at `expires_at` instead.
@@ -915,6 +1012,37 @@ impl ServiceAccountTokenRequest {
     }
 }
 
+/// One pod identity association as the EKS control plane published it, for
+/// [`ComAmazonawsEksauthEksauthfrontendState::program_pod_identity_associations`] to
+/// program into this plane.
+///
+/// It carries the association's own identity — the id and ARN that control plane minted —
+/// because that is what this service reports back in `podIdentityAssociation`: an id
+/// minted here instead would name a resource no `DescribePodIdentityAssociation` could
+/// read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProgrammedAssociation {
+    pub association_id: String,
+    pub association_arn: String,
+    pub namespace: String,
+    pub service_account: String,
+    pub role_arn: String,
+    /// The association's own session policy, when it carries one: "the permissions for
+    /// the Pod Identity association" (`PodIdentityAssociation$policy`), which scopes the
+    /// session this service vends down to the intersection of the role's policies and it.
+    pub policy: Option<String>,
+    /// The role the association chains into, when it names one
+    /// (`PodIdentityAssociation$targetRoleArn`).
+    pub target_role_arn: Option<String>,
+    /// The external id the control plane generated for that chain
+    /// (`PodIdentityAssociation$externalId`), which the target role's trust policy
+    /// conditions on.
+    pub external_id: Option<String>,
+    /// Whether the association turns the pod identity session tags off
+    /// (`PodIdentityAssociation$disableSessionTags`).
+    pub disable_session_tags: Option<bool>,
+}
+
 /// One pod identity association: a (namespace, service account) pair in a cluster bound
 /// to an IAM role.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -926,6 +1054,14 @@ pub struct PodIdentityAssociationRecord {
     pub role_arn: String,
     /// The IAM role's own id — the first half of `assumedRoleUser.assumeRoleId`.
     pub role_id: String,
+    /// See [`ProgrammedAssociation::policy`].
+    pub policy: Option<String>,
+    /// See [`ProgrammedAssociation::target_role_arn`].
+    pub target_role_arn: Option<String>,
+    /// See [`ProgrammedAssociation::external_id`].
+    pub external_id: Option<String>,
+    /// See [`ProgrammedAssociation::disable_session_tags`].
+    pub disable_session_tags: Option<bool>,
 }
 
 /// One session `AssumeRoleForPodIdentity` minted: the credentials it returned, when they
@@ -1039,7 +1175,6 @@ pub(crate) fn epoch_seconds(at: SystemTime) -> u64 {
 }
 
 /// This service's store in the shared engine: call it with a handler's `&*self.engine`.
-///
 /// Answer `None` with a modelled server error, never with a fresh engine.
 pub fn service_state<Eng: Send + Sync + 'static>(
     engine: &Eng,
@@ -1048,3 +1183,13 @@ pub fn service_state<Eng: Send + Sync + 'static>(
         .downcast_ref::<::engine::InMemoryEngine>()
         .map(::engine::InMemoryEngine::state::<ComAmazonawsEksauthEksauthfrontendState>)
 }
+
+// ---------------------------------------------------------------------------
+// The slice of this module that lives in a file of its own, under `state/`: what
+// the credentials this service vends ARE — a session of the role the association
+// binds the service account to, minted where every session of this emulator is
+// minted and recorded where every service resolves one.
+// ---------------------------------------------------------------------------
+
+mod role_session;
+pub use role_session::*;

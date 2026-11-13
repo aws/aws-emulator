@@ -210,15 +210,28 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             input.cluster_name.clone(),
             input.association_id.clone(),
         );
-        match guard.pod_identity_associations.remove(&key) {
+        let deleted = match guard.pod_identity_associations.remove(&key) {
             // "The full description of the EKS Pod Identity association that was
             // deleted": the record as it stood when it was removed.
-            Some(record) => Ok(DeletePodIdentityAssociationOutput {
-                association: Some(record.to_association()),
-            }),
-            None => Err(not_found(crate::state::pod_identity_association_not_found(
-                &input.association_id,
-            ))),
-        }
+            Some(record) => record,
+            None => {
+                return Err(not_found(crate::state::pod_identity_association_not_found(
+                    &input.association_id,
+                )))
+            }
+        };
+        // The store's lock is released before the EKS Auth plane is programmed, so
+        // what that plane is told is the set this service holds NOW — without this
+        // association, which is what makes an exchange against the deleted
+        // association resolve to nothing.
+        drop(guard);
+        crate::state::pod_identity_plane::program_cluster_associations_on(
+            &*self.engine,
+            &store,
+            &(key.0.clone(), key.1.clone()),
+        );
+        Ok(DeletePodIdentityAssociationOutput {
+            association: Some(deleted.to_association()),
+        })
     }
 }

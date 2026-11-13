@@ -258,6 +258,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             let released_capacity = guard.remove_nodegroups_for_cluster(&key.0, &key.1);
             // And so is a Fargate profile, for the same reason.
             guard.remove_fargate_profiles_for_cluster(&key.0, &key.1);
+            // The cluster's Kubernetes API plane goes with it too: dropping the
+            // plane closes the port it was published at and severs what is in
+            // flight, so a deleted cluster stops answering the Kubernetes API, and
+            // the objects its API server held are gone with the cluster that held
+            // them.
+            guard.kubernetes_api.remove(&key);
             record.status = STATUS_DELETING.to_string();
             // The cluster is gone, so the `CREATING` -> `ACTIVE` move the clock owed it is
             // no longer owed to anybody.
@@ -287,6 +293,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // ([`crate::state::release_nodegroup_capacity`]).
         for capacity in &released_capacity {
             crate::state::release_nodegroup_capacity(ctx, &key.0, capacity).await;
+        }
+        // The EKS Auth plane loses the cluster with the cluster: the tokens its
+        // API server issued and the associations it held name nobody once there is
+        // no cluster to exchange them for.
+        if let Some(plane) = crate::state::pod_identity_plane::auth_plane(&*self.engine) {
+            crate::state::pod_identity_plane::forget_cluster(&plane, &key.1);
         }
         store.lock().finish_cluster_deletion(&key);
 

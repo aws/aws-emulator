@@ -678,26 +678,45 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // counts against the cluster's two-CA ceiling — and the cluster's
         // `certificateAuthority.data` is that record's `data`, not a second copy.
         //
+        // Provisioning it also issues the certificate the cluster's Kubernetes API
+        // server presents at the endpoint published beside that member: a client
+        // "adds [the data] to the certificate-authority-data section of the
+        // kubeconfig file" and then reaches the API server over TLS, so the two have
+        // to be the authority and a certificate it signed. The key that signs lives
+        // only inside that one call ([`state::provision_cluster_authority`]).
+        //
         // A cluster is reachable only through the certificate its clients verify it
         // by, so material that does not issue is reported rather than provisioning a
         // control plane nothing could trust. Nothing is written at this point.
-        let initial_authority = CertificateAuthorityRecord::initial_for_cluster(&arn, now)
-            .ok_or_else(|| {
-                CreateClusterError::from(CreateClusterErrorModeled::ServerException(
-                    ServerException {
-                        cluster_name: Some(input.name.clone()),
-                        message: Some(
-                            "the cluster certificate authority's certificate could not be issued"
-                                .to_string(),
-                        ),
-                        ..Default::default()
-                    },
-                ))
-            })?;
+        let provisioned = state::provision_cluster_authority(
+            now,
+            now + state::CA_VALIDITY,
+            &state::kubernetes_api::api_server_certificate_names(&resource_id, &region),
+        )
+        .ok_or_else(|| {
+            CreateClusterError::from(CreateClusterErrorModeled::ServerException(
+                ServerException {
+                    cluster_name: Some(input.name.clone()),
+                    message: Some(
+                        "the cluster certificate authority's certificate could not be issued"
+                            .to_string(),
+                    ),
+                    ..Default::default()
+                },
+            ))
+        })?;
+        let initial_authority = CertificateAuthorityRecord::initial_for_cluster(
+            &arn,
+            now,
+            provisioned.data.clone(),
+        );
 
         let record = ClusterRecord {
             name: input.name.clone(),
-            endpoint: Some(state::derive_cluster_endpoint(&resource_id, &region)),
+            // The address the cluster's Kubernetes API server answers on, which is
+            // published once the listener for it is open (below): a cluster
+            // announces no endpoint before there is one to dial.
+            endpoint: None,
             identity: Some(Identity {
                 oidc: Some(OIDC {
                     issuer: Some(state::derive_oidc_issuer(&resource_id, &region)),
@@ -934,6 +953,24 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     }
                 }
             }
+        }
+
+        // The address this cluster's Kubernetes API server is reached at. It is
+        // opened here, once the cluster is in the store and the lock is released:
+        // `Cluster$endpoint` is "the endpoint for your Kubernetes API server", so
+        // the value published for it has to be an address this emulator answers
+        // that API on, under a certificate the authority provisioned above signed
+        // (see [`state::kubernetes_api`]). The endpoint is reported from the moment
+        // the clock owes the cluster `ACTIVE`, like every other member that only
+        // exists once there is a control plane.
+        state::kubernetes_api::publish(&*self.engine, &store, &key, provisioned.api_server, now)
+            .await;
+
+        // The cluster is registered on the EKS Auth plane, which is what answers
+        // `AssumeRoleForPodIdentity` for the tokens this cluster's API server
+        // issues: a cluster that plane does not hold can exchange none of them.
+        if let Some(plane) = state::pod_identity_plane::auth_plane(&*self.engine) {
+            state::pod_identity_plane::register_cluster(&plane, &region, &key.1);
         }
 
         // A log type this create enabled exports its control plane logs to CloudWatch Logs

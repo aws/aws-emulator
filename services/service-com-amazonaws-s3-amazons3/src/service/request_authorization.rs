@@ -259,6 +259,15 @@ pub struct Caller {
     /// document in force, and the call carries the two source condition keys a grant to such
     /// a principal is scoped by.
     pub service_principal: Option<ServicePrincipalCall>,
+    /// The session tags the principal carries, as the mint attached them when the session
+    /// was minted: the values `aws:PrincipalTag/<key>` holds for a request this credential
+    /// signs.
+    pub tags: Vec<(String, String)>,
+    /// Set when the principal's session tags are KNOWN — a session this emulator's token
+    /// registry holds — which is what lets a clause over a tag key the principal does NOT
+    /// carry be decided rather than left undecided. A long-term credential's tags live in
+    /// IAM and are not read here, so such a caller declares nothing about them.
+    pub tags_known: bool,
 }
 
 impl Caller {
@@ -342,6 +351,10 @@ pub fn request_caller<Eng: Send + Sync + 'static>(
                 caller.role_arn.clone(),
                 caller.session_policies.clone(),
                 caller.multi_factor_auth_present(),
+                // The tags are the registry's record of the session, so they are known
+                // exactly for a credential it minted.
+                caller.kind.is_some(),
+                caller.tags.clone(),
             )
         }),
         // No STS store on this engine: the credential names no session, so it speaks for the
@@ -351,11 +364,15 @@ pub fn request_caller<Eng: Send + Sync + 'static>(
             None,
             sts_store::SessionPolicies::default(),
             None,
+            false,
+            Vec::new(),
         )),
     };
     // An expired session credential speaks for nobody: it carries no documents and no
     // principal spelling, so every action it asks for falls to the implicit deny.
-    let Ok((arn, role_arn, session_policies, multi_factor_auth_present)) = resolved else {
+    let Ok((arn, role_arn, session_policies, multi_factor_auth_present, tags_known, tags)) =
+        resolved
+    else {
         return Caller {
             arn: EXPIRED_CREDENTIAL_PRINCIPAL.to_string(),
             ..Caller::default()
@@ -367,6 +384,8 @@ pub fn request_caller<Eng: Send + Sync + 'static>(
         account_principals: iam::account_principals(&arn),
         arn,
         multi_factor_auth_present,
+        tags,
+        tags_known,
         ..Caller::default()
     };
     // An assumed-role session is also named by the ARN of the ROLE it is a session of, which
@@ -479,6 +498,17 @@ pub fn denial(
     context.extend(authorization::multi_factor_auth_conditions(
         caller.multi_factor_auth_present,
     ));
+    // The session tags the principal carries, which is what an ABAC policy conditioned on
+    // `aws:PrincipalTag/<key>` is decided against. The family is DECLARED only for a
+    // session whose tags are known in full, so a clause over a tag the principal does not
+    // carry is decided as absent there and stays undecided for a credential whose tags this
+    // gate cannot read.
+    for (key, value) in &caller.tags {
+        context.push((
+            format!("{PRINCIPAL_TAG_CONDITION_KEY_FAMILY}{key}"),
+            value.clone(),
+        ));
+    }
     if let Some(route) = &through {
         context.extend(authorization::access_point_conditions(route));
     }
@@ -487,7 +517,12 @@ pub fn denial(
     // other request is judged against the list as it stands — borrowed rather than copied,
     // since that is the common case.
     let published: ::std::borrow::Cow<'_, [&str]> = match &caller.service_principal {
-        None => ::std::borrow::Cow::Borrowed(PUBLISHED_CONDITION_KEYS),
+        None if !caller.tags_known => ::std::borrow::Cow::Borrowed(PUBLISHED_CONDITION_KEYS),
+        None => {
+            let mut published = PUBLISHED_CONDITION_KEYS.to_vec();
+            published.push(PRINCIPAL_TAG_CONDITION_KEY_FAMILY);
+            ::std::borrow::Cow::Owned(published)
+        }
         Some(call) => {
             context.extend(authorization::service_principal_conditions(
                 &call.source_arn,
@@ -495,6 +530,9 @@ pub fn denial(
             ));
             let mut published = PUBLISHED_CONDITION_KEYS.to_vec();
             published.extend(authorization::SERVICE_PRINCIPAL_CONDITION_KEYS);
+            if caller.tags_known {
+                published.push(PRINCIPAL_TAG_CONDITION_KEY_FAMILY);
+            }
             ::std::borrow::Cow::Owned(published)
         }
     };
@@ -606,6 +644,11 @@ pub fn denial(
 /// The reason clause IAM publishes for a request an identity-based document explicitly
 /// denies — the identity half of [`state::RESOURCE_POLICY_DENY_REASON`].
 const IDENTITY_POLICY_DENY_REASON: &str = "with an explicit deny in an identity-based policy";
+
+/// The condition-key FAMILY the calling principal's session tags are named in, each member
+/// after the tag key it carries: `aws:PrincipalTag/tenant` holds the value of the session
+/// tag `tenant`.
+const PRINCIPAL_TAG_CONDITION_KEY_FAMILY: &str = "aws:PrincipalTag/";
 
 /// One decision's request: `action` on `resource`, asked for the principal spellings
 /// `principals`, in the condition context `conditions`, declaring the keys `published`.

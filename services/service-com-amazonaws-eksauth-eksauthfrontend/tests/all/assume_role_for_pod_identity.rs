@@ -311,13 +311,6 @@ async fn every_seeded_association_exchanges_its_token_for_credentials_from_state
             "case {seed:?}: expected the stored association, got {}",
             body["podIdentityAssociation"]
         );
-        assert_eq!(
-            body["assumedRoleUser"]["arn"].as_str(),
-            Some(seed.role_arn),
-            "case {seed:?}: expected the association's role ARN, got {}",
-            body["assumedRoleUser"]["arn"]
-        );
-
         // `<roleId>:eks-<clustername>-<podname>-<random UUID>`, as the model documents.
         let assume_role_id = body["assumedRoleUser"]["assumeRoleId"]
             .as_str()
@@ -337,6 +330,25 @@ async fn every_seeded_association_exchanges_its_token_for_credentials_from_state
         assert!(
             is_uuid(uuid),
             "case {seed:?}: expected a UUID after the pod name, got {uuid:?}"
+        );
+
+        // `assumedRoleUser.arn` is the ARN of the SESSION the exchange vended — what AWS
+        // reports for an assumed-role identity — not the ARN of the role, which the
+        // caller already holds on the association: the credentials ARE a session of that
+        // role, so they speak under its assumed-role identity.
+        let role_name = seed
+            .role_arn
+            .rsplit_once('/')
+            .map(|(_path, name)| name)
+            .unwrap_or_default();
+        assert_eq!(
+            body["assumedRoleUser"]["arn"].as_str(),
+            Some(
+                format!("arn:aws:sts::000000000000:assumed-role/{role_name}/{session_name}")
+                    .as_str()
+            ),
+            "case {seed:?}: expected the session's assumed-role ARN, got {}",
+            body["assumedRoleUser"]["arn"]
         );
 
         // The credentials, and the session persisted behind them.
@@ -502,7 +514,8 @@ async fn an_unregistered_cluster_is_answered_on_the_token() {
 }
 
 /// A token the cluster issued, for a service account it holds no association for, is
-/// refused: there is no role to assume.
+/// refused as a not-found: there is no association resource to resolve, which is what a
+/// token whose association was DELETED is answered with too — the state is the same.
 #[tokio::test]
 async fn a_service_account_without_an_association_is_denied() {
     let harness = Harness::seeded();
@@ -525,8 +538,17 @@ async fn a_service_account_without_an_association_is_denied() {
         let (status, body) = harness.assume("demo-cluster", &token).await;
         assert_eq!(
             error_code(status, &body),
-            "400 AccessDeniedException",
-            "case {case:?}: expected the modeled 400, got {status} {body}"
+            "404 ResourceNotFoundException",
+            "case {case:?}: expected the modeled 404, got {status} {body}"
+        );
+        assert_eq!(
+            body["message"].as_str(),
+            Some(
+                "The token included in the request has no service account role association \
+                 for it."
+            ),
+            "case {case:?}: the refusal states that the token has no association, got \
+             {status} {body}"
         );
     }
 }

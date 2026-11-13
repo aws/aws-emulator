@@ -512,10 +512,18 @@ async fn the_callers_identity_policies_decide_the_credential_exchange() {
                     row.case,
                     reply.body
                 );
-                assert_eq!(
-                    served["assumedRoleUser"]["arn"].as_str(),
-                    Some(ROLE_ARN),
-                    "case {:?}: expected the associated role, got {}",
+                // `assumedRoleUser.arn` is the ARN of the SESSION the exchange vended of
+                // the associated role — what AWS reports for an assumed-role identity —
+                // so it names that role under the `sts` assumed-role form rather than the
+                // `iam` role ARN the association already carries.
+                let role_name = ROLE_ARN.rsplit_once('/').map_or(ROLE_ARN, |(_path, name)| name);
+                assert!(
+                    served["assumedRoleUser"]["arn"]
+                        .as_str()
+                        .is_some_and(|arn| arn.starts_with(&format!(
+                            "arn:aws:sts::000000000000:assumed-role/{role_name}/"
+                        ))),
+                    "case {:?}: expected a session of the associated role, got {}",
                     row.case,
                     reply.body
                 );

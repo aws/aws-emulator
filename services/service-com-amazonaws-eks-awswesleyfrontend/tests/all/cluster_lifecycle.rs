@@ -44,6 +44,31 @@ pub(crate) async fn describe(router: &MultiServiceRouter, name: &str) -> Answer 
     .await
 }
 
+/// How long a suite waits for the clock-owed `CREATING` -> `ACTIVE` move the emulator
+/// owes in [`CLUSTER_ACTIVATION_DELAY`]: far above that span, so the deadline is reached
+/// only when the move is not coming at all rather than when the host is slow.
+const ACTIVATION_DEADLINE: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// How often the condition is looked at again while waiting for it.
+const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// `DescribeCluster` the cluster `name` until it reports `ACTIVE`, or the deadline passes
+/// — the wait is for the CONDITION, so a loaded host only makes it slower.
+pub(crate) async fn describe_when_active(router: &MultiServiceRouter, name: &str) -> Answer {
+    let deadline = std::time::Instant::now() + ACTIVATION_DEADLINE;
+    loop {
+        let described = describe(router, name).await;
+        if described.cluster()["status"] == serde_json::json!("ACTIVE") {
+            return described;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "cluster {name:?}: the clock owes a new cluster ACTIVE, got {described:?}"
+        );
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
+}
+
 pub(crate) async fn delete(router: &MultiServiceRouter, name: &str) -> Answer {
     call(
         router,
@@ -412,11 +437,11 @@ async fn a_created_cluster_reads_back_exactly_as_stored() {
     );
 
     // Once the clock has provisioned the control plane, every member that
-    // describes it is reported — for every row, whatever that row asked for.
-    tokio::time::sleep(CLUSTER_ACTIVATION_DELAY + std::time::Duration::from_millis(250)).await;
+    // describes it is reported — for every row, whatever that row asked for. Each
+    // row is read again until the move the clock owes it has been materialised.
     for (case, request) in &cases {
         let name = request["name"].as_str().expect("the case names its cluster");
-        let described = describe(&router, name).await;
+        let described = describe_when_active(&router, name).await;
         assert_eq!(
             described.cluster()["status"],
             serde_json::json!("ACTIVE"),
@@ -427,11 +452,21 @@ async fn a_created_cluster_reads_back_exactly_as_stored() {
             .as_str()
             .unwrap_or_default()
             .to_owned();
+        // The endpoint is the address this emulator SERVES the cluster's
+        // Kubernetes API on — a host and port of its own, not a name under
+        // Amazon EKS's zone, which resolves nowhere on this machine. The
+        // `kubernetes_api` suite drives the API behind it.
+        let authority = endpoint
+            .strip_prefix("https://")
+            .unwrap_or_default()
+            .to_owned();
         assert!(
             endpoint.starts_with("https://")
-                && endpoint.ends_with(&format!(".{REGION}.eks.amazonaws.com")),
-            "case {case:?}: an ACTIVE cluster reports its regional API server \
-             endpoint, got {endpoint:?}"
+                && authority
+                    .rsplit_once(':')
+                    .is_some_and(|(_host, port)| port.parse::<u16>().is_ok()),
+            "case {case:?}: an ACTIVE cluster reports the host and port its API \
+             server is served at, got {endpoint:?}"
         );
         assert!(
             described.cluster()["certificateAuthority"]["data"]
@@ -481,25 +516,42 @@ async fn the_cluster_arn_carries_the_region_the_request_is_signed_for() {
             "case {region:?}: expected arn {expected:?}, got {:?}",
             answer.cluster()["arn"]
         );
-        // The endpoint host is regional too, and is reported once the clock has
-        // provisioned the control plane behind it: the cluster is read back in
-        // the region it was created in.
-        tokio::time::sleep(CLUSTER_ACTIVATION_DELAY + std::time::Duration::from_millis(250)).await;
-        let described = call(
-            &router,
-            region,
-            "GET",
-            &format!("/clusters/{}", encode_label("regional")),
-            "",
-        )
-        .await;
+        // The endpoint is reported once the clock has provisioned the control
+        // plane behind it, and names the address this emulator serves that
+        // cluster's Kubernetes API at, whichever region the cluster lives in:
+        // the cluster is read back in the region it was created in, until the
+        // move the clock owes it has been materialised.
+        let deadline = std::time::Instant::now() + ACTIVATION_DEADLINE;
+        let described = loop {
+            let described = call(
+                &router,
+                region,
+                "GET",
+                &format!("/clusters/{}", encode_label("regional")),
+                "",
+            )
+            .await;
+            if described.cluster()["endpoint"].is_string() {
+                break described;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "case {region:?}: the clock owes this cluster its published endpoint, got \
+                 {described:?}"
+            );
+            tokio::time::sleep(POLL_INTERVAL).await;
+        };
         let endpoint = described.cluster()["endpoint"]
             .as_str()
             .unwrap_or_default()
             .to_owned();
         assert!(
-            endpoint.ends_with(&format!(".{region}.eks.amazonaws.com")),
-            "case {region:?}: expected a {region} endpoint host, got {endpoint:?}"
+            endpoint
+                .strip_prefix("https://")
+                .and_then(|authority| authority.rsplit_once(':'))
+                .is_some_and(|(_host, port)| port.parse::<u16>().is_ok()),
+            "case {region:?}: expected the address the API server is served at, got \
+             {endpoint:?}"
         );
     }
 }

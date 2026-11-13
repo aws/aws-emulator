@@ -373,9 +373,14 @@ fn form_encode(value: &str) -> String {
     encoded
 }
 
-/// The text of the first `<name>…</name>` element of an awsQuery response. A copy, for the
-/// same reason as [`form_encode`].
-fn xml_element(body: &str, name: &str) -> Option<String> {
+/// Percent-encode one `application/x-www-form-urlencoded` component, leaving only RFC 3986's
+/// unreserved characters literal — so a policy document's braces and quotes survive the round
+/// trip.
+///
+/// `pub(crate)`: the suite that drives a SESSION-scoped assume
+/// ([`super::session_scoped_object_authorization`]) reads the same answers, so the readings
+/// below are shared rather than copied again.
+pub(crate) fn xml_element(body: &str, name: &str) -> Option<String> {
     let open = format!("<{name}>");
     let close = format!("</{name}>");
     let start = body.find(&open)? + open.len();
@@ -406,7 +411,7 @@ fn resource_statement(effect: &str, principal: &str, actions: Value, resources: 
 
 /// An identity-based document carrying `statements` — the inline policy a role holds, whose
 /// statements name no principal because the document is attached to one.
-fn identity_document(statements: Vec<Value>) -> String {
+pub(crate) fn identity_document(statements: Vec<Value>) -> String {
     json!({"Version": "2012-10-17", "Statement": statements}).to_string()
 }
 
@@ -421,14 +426,14 @@ fn identity_statement(effect: &str, actions: Value, resources: Value) -> Value {
 
 /// The ARN of the object `key` of `bucket` — S3's own ARN form, which carries neither a
 /// Region nor an account.
-fn object_arn(bucket: &str, key: &str) -> String {
+pub(crate) fn object_arn(bucket: &str, key: &str) -> String {
     format!("arn:aws:s3:::{bucket}/{key}")
 }
 
 /// The sentence S3 refuses a call with, written out here rather than built from the service's
 /// own helper so the wording has something to be wrong about: who was refused, which IAM
 /// action on which resource, and the clause naming the document that decided it.
-fn denial_message(principal: &str, action: &str, resource: &str, reason: &str) -> String {
+pub(crate) fn denial_message(principal: &str, action: &str, resource: &str, reason: &str) -> String {
     format!("User: {principal} is not authorized to perform: {action} on resource: \"{resource}\" {reason}")
 }
 
