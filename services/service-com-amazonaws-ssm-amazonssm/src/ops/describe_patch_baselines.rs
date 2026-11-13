@@ -1,15 +1,18 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op DescribePatchBaselines
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `DescribePatchBaselines`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
+//! List the patch baselines reachable through this endpoint — the read of this service's
+//! patch baseline slice. This is the ONLY file to touch for this operation.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`DescribePatchBaselines::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! "Lists the patch baselines in your Amazon Web Services account": every baseline the
+//! account created at the endpoint's Region ([`crate::state::patch_baselines`]) and every
+//! baseline Systems Manager predefines, which exists without anybody creating it. Each one
+//! is reported as its basic information — the id or ARN a read names it by, its name, the
+//! operating system it applies to, its description, and whether it is currently the
+//! default baseline of that operating system — narrowed to the baselines meeting EVERY
+//! filter the request carries and served a page at a time, where the token is the baseline
+//! the next page starts at. Nothing is written: what a create or a register of a default
+//! persisted is what this projects.
 //!
 //! ## Shape of an operation
 //!
@@ -144,18 +147,101 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `DescribePatchBaselines` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(DescribePatchBaselinesErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("DescribePatchBaselines"))
+        use crate::state::patch_baselines::{
+            is_patch_baseline_filter_key, patch_baseline_filter_value_missing,
+            patch_baseline_page_size, PatchBaselineIdentityRecord, PATCH_BASELINE_FILTER_KEYS,
+            PATCH_BASELINE_FILTER_KEY_MISSING,
+        };
+        use crate::state::{invalid_filter_key_message, request_region, INVALID_NEXT_TOKEN};
+
+        // The `Filters` list's length, each filter value's length and the `MaxResults`
+        // range are MODELLED constraints the centralized walk has already refused anything
+        // outside of. What is read here is which of this Region's baselines the request's
+        // criteria select.
+        let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
+            DescribePatchBaselinesErrorModeled::InternalServerError(InternalServerError {
+                message: Some("the patch baseline store is unavailable".to_string()),
+            })
+        })?;
+
+        // A filter narrows the listing by a property of a baseline, so it has to name the
+        // key it filters on and a value to search for. BOTH members of a
+        // `PatchOrchestratorFilter` are optional in the model, so an entry carrying neither
+        // reaches here and names nothing the listing could be narrowed by. The key
+        // vocabulary is this operation's own — the filter shape is shared by several patch
+        // reads, each accepting its own keys — so a key outside it is refused rather than
+        // silently matching nothing.
+        let mut filters: Vec<(&str, &[String])> = Vec::new();
+        for filter in input.filters.as_deref().unwrap_or_default() {
+            let key = filter.key.as_deref().unwrap_or_default();
+            if key.is_empty() {
+                return Err(crate::scaffolded::Scaffolded::validation(
+                    PATCH_BASELINE_FILTER_KEY_MISSING,
+                ));
+            }
+            if !is_patch_baseline_filter_key(key) {
+                return Err(crate::scaffolded::Scaffolded::validation(
+                    invalid_filter_key_message(key, PATCH_BASELINE_FILTER_KEYS),
+                ));
+            }
+            let values = filter.values.as_deref().unwrap_or_default();
+            if values.is_empty() {
+                return Err(crate::scaffolded::Scaffolded::validation(
+                    patch_baseline_filter_value_missing(key),
+                ));
+            }
+            filters.push((key, values));
+        }
+
+        let page_size = patch_baseline_page_size(input.max_results)
+            .map_err(crate::scaffolded::Scaffolded::validation)?;
+
+        // "The patch baselines in your Amazon Web Services account": the ones reachable
+        // through the endpoint this request was signed for, narrowed to those meeting EVERY
+        // filter it carries. A read — the store is only read, so a later caller sees the
+        // same baselines.
+        let region = request_region(ctx.parts());
+        let matching: Vec<PatchBaselineIdentityRecord> = state
+            .lock()
+            .patch_baseline_identities(&region)
+            .into_iter()
+            .filter(|identity| {
+                filters
+                    .iter()
+                    .all(|(key, values)| identity.matches_filter(key, values))
+            })
+            .collect();
+
+        // "The token for the next set of items to return. (You received this token from a
+        // previous call.)": a page hands out the id of the baseline the next page starts
+        // at, so a token naming no baseline of this result is not a page of it to resume.
+        // This operation models no `InvalidNextToken`, so such a token is refused as the
+        // invalid request it is rather than answered with an arbitrary page.
+        let start = match input.next_token.as_deref() {
+            None | Some("") => 0,
+            Some(token) => matching
+                .iter()
+                .position(|identity| identity.baseline_id == token)
+                .ok_or_else(|| crate::scaffolded::Scaffolded::validation(INVALID_NEXT_TOKEN))?,
+        };
+        // `start` is a position in `matching`, so the page is a suffix of it; `get` keeps
+        // that in-bounds without indexing on a value the request steers.
+        let page: &[PatchBaselineIdentityRecord] = matching.get(start..).unwrap_or_default();
+        let baseline_identities = page
+            .iter()
+            .take(page_size)
+            .map(PatchBaselineIdentityRecord::to_identity)
+            .collect();
+        // A baseline is still waiting past this page: hand the caller the id it resumes at.
+        // "If there are no additional items to return, the string is empty" — reported as
+        // no token at all, which is how this protocol spells an absent member.
+        let next_token = page
+            .get(page_size)
+            .map(|identity| identity.baseline_id.clone());
+
+        Ok(DescribePatchBaselinesOutput {
+            baseline_identities: Some(baseline_identities),
+            next_token,
+        })
     }
 }

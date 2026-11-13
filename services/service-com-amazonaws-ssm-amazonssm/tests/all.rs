@@ -95,6 +95,8 @@ mod parameters_by_path;
 mod patch_baseline_approval_coverage;
 #[path = "all/patch_baseline_details.rs"]
 mod patch_baseline_details;
+#[path = "all/patch_baseline_listing.rs"]
+mod patch_baseline_listing;
 #[path = "all/patch_properties_catalog.rs"]
 mod patch_properties_catalog;
 #[path = "all/public_amazon_linux_alias_namespace.rs"]

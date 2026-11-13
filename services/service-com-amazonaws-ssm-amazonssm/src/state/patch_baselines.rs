@@ -36,7 +36,7 @@ use std::time::SystemTime;
 use sha2::{Digest, Sha256};
 
 use super::{parse_resource_query, ComAmazonawsSsmAmazonssmState, ARN_SERVICE};
-use crate::ops::types::{PatchFilterGroup, PatchRuleGroup, PatchSource};
+use crate::ops::types::{PatchBaselineIdentity, PatchFilterGroup, PatchRuleGroup, PatchSource};
 
 /// The resource portion a patch baseline's ARN carries before the baseline's id, from the
 /// ARN `RegisterDefaultPatchBaseline` documents
@@ -164,6 +164,139 @@ pub fn approval_coverage_rejection(
     let approves_by_name = approved_patches.is_some_and(|patches| !patches.is_empty());
     let approves_by_rule = approval_rules.is_some_and(|rules| !rules.patch_rules.is_empty());
     (!approves_by_name && !approves_by_rule).then_some(APPROVAL_COVERAGE_REQUIRED)
+}
+
+// ---------------------------------------------------------------------------
+// Listing the baselines an endpoint holds
+// ---------------------------------------------------------------------------
+
+/// The filter key a baseline listing narrows by name with: "NAME_PREFIX Sample values:
+/// AWS- | My-" (`smithy_query(query="doc", shape="DescribePatchBaselinesRequest",
+/// member="Filters")`).
+pub const FILTER_KEY_NAME_PREFIX: &str = "NAME_PREFIX";
+
+/// The filter key a baseline listing narrows by owner with: "OWNER Sample values: AWS |
+/// Self" (same doc).
+pub const FILTER_KEY_OWNER: &str = "OWNER";
+
+/// The filter key a baseline listing narrows by operating system with: "OPERATING_SYSTEM
+/// Sample values: AMAZON_LINUX | SUSE | WINDOWS" (same doc).
+pub const FILTER_KEY_OPERATING_SYSTEM: &str = "OPERATING_SYSTEM";
+
+/// Every key a baseline listing filters on, in the order that doc lists them. The
+/// `PatchOrchestratorFilter$Key` member is a plain string in the model, so the vocabulary
+/// is enforced here, and this is also what a refusal names back to the caller.
+pub const PATCH_BASELINE_FILTER_KEYS: &[&str] = &[
+    FILTER_KEY_NAME_PREFIX,
+    FILTER_KEY_OWNER,
+    FILTER_KEY_OPERATING_SYSTEM,
+];
+
+/// The `OWNER` of a baseline Systems Manager predefines ([`PREDEFINED_BASELINES`]), from
+/// the sample values of that filter key.
+pub const OWNER_AWS: &str = "AWS";
+
+/// The `OWNER` of a baseline the account created itself, from the same sample values.
+pub const OWNER_SELF: &str = "Self";
+
+/// What a `Filters` entry naming no filter key at all is refused with. Both members of a
+/// `PatchOrchestratorFilter` are optional in the model, so such an entry reaches the
+/// handler, and it names no property of a baseline for the listing to be narrowed by.
+pub const PATCH_BASELINE_FILTER_KEY_MISSING: &str =
+    "A Filters entry carries no filter key to search on";
+
+/// What a `Filters` entry naming a key but no value is refused with, worded as the sibling
+/// listings of this service word it ([`crate::ops::list_cloud_connectors`]).
+pub fn patch_baseline_filter_value_missing(key: &str) -> String {
+    format!("Filter key '{key}' carries no value to search for")
+}
+
+/// Whether `key` is a key a baseline listing filters on
+/// ([`PATCH_BASELINE_FILTER_KEYS`]).
+pub fn is_patch_baseline_filter_key(key: &str) -> bool {
+    PATCH_BASELINE_FILTER_KEYS.contains(&key)
+}
+
+/// The lower bound the modelled page size of a baseline listing carries
+/// (`DescribePatchBaselinesRequest$MaxResults`, range 1..100).
+pub const MIN_PATCH_BASELINE_PAGE_SIZE: i32 = 1;
+
+/// The upper bound of the same member, and the page a request naming no `MaxResults` is
+/// served up to: "the maximum number of patch baselines to return (per page)" bounds a
+/// page the caller asked to be bounded, so a caller asking for no bound is served the
+/// whole page the operation allows.
+pub const MAX_PATCH_BASELINE_PAGE_SIZE: i32 = 100;
+
+/// The page size a baseline listing serves, or the refusal message for a `MaxResults`
+/// outside the modelled range — which the boundary walk already refuses, so this is a
+/// backstop rather than the first line of defence (see [`super::page_size`]).
+pub fn patch_baseline_page_size(max_results: Option<i32>) -> Result<usize, String> {
+    super::page_size(
+        max_results,
+        MIN_PATCH_BASELINE_PAGE_SIZE,
+        MAX_PATCH_BASELINE_PAGE_SIZE,
+    )
+}
+
+/// The basic information one baseline reachable through an endpoint carries — "defines the
+/// basic information about a patch baseline" (`PatchBaselineIdentity`) — projected from
+/// whatever holds that baseline: the created-baseline map, or the definition of a baseline
+/// Systems Manager predefines.
+///
+/// Both kinds of baseline are reachable through one endpoint, so a listing reports them
+/// through one record: the `reference` is how a read NAMES the baseline (its own id for
+/// one the account created, its full ARN for one Systems Manager predefined, the same
+/// spelling [`ResolvedBaseline::reference`] carries), while `baseline_id` is the bare id
+/// the baseline is held or derived under, which is what a filter and a page token work on.
+#[derive(Debug, Clone)]
+pub struct PatchBaselineIdentityRecord {
+    /// The bare id the baseline is held (or derived) under.
+    pub baseline_id: String,
+    /// How a read names this baseline ([`ResolvedBaseline::reference`]).
+    pub reference: String,
+    /// "The name of the patch baseline."
+    pub name: String,
+    /// "Defines the operating system the patch baseline applies to."
+    pub operating_system: String,
+    /// "The description of the patch baseline", or `None` for a baseline whose write
+    /// carried none — and for one Systems Manager predefines, whose contents are Patch
+    /// Manager's own and are held nowhere here.
+    pub description: Option<String>,
+    /// Who owns the baseline: [`OWNER_AWS`] for one Systems Manager predefines and
+    /// [`OWNER_SELF`] for one the account created.
+    pub owner: &'static str,
+    /// "Indicates whether this is the default baseline" for the operating system it
+    /// applies to, which is what a register of a default moves.
+    pub default_baseline: bool,
+}
+
+impl PatchBaselineIdentityRecord {
+    /// Whether this baseline meets the filter `key` searching for any of `values`.
+    ///
+    /// A filter entry carries a list of values, so a baseline meets the entry when ANY of
+    /// them selects it, and a value naming nothing a baseline carries selects none.
+    pub fn matches_filter(&self, key: &str, values: &[String]) -> bool {
+        values.iter().any(|value| match key {
+            // "NAME_PREFIX": the start of the baseline's name rather than the whole of it.
+            FILTER_KEY_NAME_PREFIX => self.name.starts_with(value.as_str()),
+            FILTER_KEY_OWNER => self.owner == value.as_str(),
+            FILTER_KEY_OPERATING_SYSTEM => self.operating_system == value.as_str(),
+            // A key outside the vocabulary is refused before anything is matched, so this
+            // is unreachable through the wire.
+            _ => false,
+        })
+    }
+
+    /// This baseline as the identity a listing reports.
+    pub fn to_identity(&self) -> PatchBaselineIdentity {
+        PatchBaselineIdentity {
+            baseline_id: Some(self.reference.clone()),
+            baseline_name: Some(self.name.clone()),
+            operating_system: Some(self.operating_system.clone()),
+            baseline_description: self.description.clone(),
+            default_baseline: self.default_baseline,
+        }
+    }
 }
 
 /// One patch baseline Systems Manager predefines: it exists in every account and Region
@@ -623,6 +756,64 @@ impl ComAmazonawsSsmAmazonssmState {
         self.default_patch_baselines
             .insert(key, resolved.reference.clone());
         Ok(())
+    }
+
+    /// Every patch baseline reachable through `region`'s endpoint, as the basic information
+    /// a listing reports about it: the ones the account created there, and the ones Systems
+    /// Manager predefines ([`PREDEFINED_BASELINES`]), which exist without anybody creating
+    /// them.
+    ///
+    /// A READ: whatever a create, an update or a register of a default persisted is what
+    /// this projects, and nothing is written. The order is total and taken from the
+    /// baselines themselves — by name, with the bare id breaking a tie — so it is
+    /// independent of the request, two reads report the same sequence, and a page resumes
+    /// at the baseline the last one stopped at.
+    pub fn patch_baseline_identities(&self, region: &str) -> Vec<PatchBaselineIdentityRecord> {
+        let predefined = PREDEFINED_BASELINES.iter().map(|baseline| {
+            let resolved = predefined_resolved(region, baseline);
+            PatchBaselineIdentityRecord {
+                baseline_id: resolved.baseline_id,
+                reference: resolved.reference,
+                name: baseline.name.to_string(),
+                operating_system: baseline.operating_system.to_string(),
+                // What Patch Manager approves in its own baseline, its description
+                // included, is held nowhere here, so a read of one reports no description
+                // rather than inventing a sentence for it — the way `GetPatchBaseline`
+                // leaves those members unreported.
+                description: None,
+                owner: OWNER_AWS,
+                default_baseline: false,
+            }
+        });
+        let created = self
+            .patch_baselines
+            .iter()
+            .filter(|((held, _), _)| held == region)
+            .map(|(_, record)| PatchBaselineIdentityRecord {
+                baseline_id: record.baseline_id.clone(),
+                reference: record.baseline_id.clone(),
+                name: record.name.clone(),
+                operating_system: record.operating_system.clone(),
+                description: record.description.clone(),
+                owner: OWNER_SELF,
+                default_baseline: false,
+            });
+        let mut identities: Vec<PatchBaselineIdentityRecord> = predefined.chain(created).collect();
+
+        // Which baseline is the default is held once per operating system, so the flag each
+        // identity carries is read from that one record rather than stored beside the
+        // baseline: the baseline a register recorded for an operating system carries it, and
+        // the one Systems Manager predefines for that operating system carries it while
+        // nothing has registered one.
+        for identity in &mut identities {
+            identity.default_baseline = self
+                .default_patch_baseline(region, &identity.operating_system)
+                .is_some_and(|default| default.baseline_id == identity.baseline_id);
+        }
+        identities.sort_by(|left, right| {
+            (&left.name, &left.baseline_id).cmp(&(&right.name, &right.baseline_id))
+        });
+        identities
     }
 }
 
