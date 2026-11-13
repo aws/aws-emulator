@@ -19,7 +19,8 @@
 //!   `ObjectNotFoundException` template naming the triple for an identity nothing registered,
 //!   and the one naming the TARGET's own identifier for a scheduled action a registered target
 //!   does not hold; and, for an ARN, the `ResourceNotFoundException` body at the client-error
-//!   status for every ARN that resolves to no registered target.
+//!   status on the tag READ, where each tag MUTATION refuses the write it was asked to make
+//!   with the recorded `ValidationException`.
 
 use serde_json::{json, Value};
 
@@ -378,10 +379,12 @@ async fn an_identity_nothing_registered_is_reported_as_not_registered() {
 }
 
 #[tokio::test]
-async fn a_tag_operation_on_an_arn_naming_no_target_reports_the_resource_as_absent() {
-    /// The sentence every tag operation carries for an ARN that resolves to no registered
-    /// scalable target.
+async fn a_tag_operation_on_an_arn_naming_no_target_answers_the_recorded_refusal() {
+    /// The sentence the tag READ carries for an ARN that resolves to no registered scalable
+    /// target.
     const TARGET_NOT_FOUND: &str = "Scalable Target not found";
+    /// The sentence each tag MUTATION carries for the same ARN.
+    const TAGGING_DENIED: &str = "Access Denied";
 
     let emulator = Emulator::empty();
     let target = emulator
@@ -411,9 +414,10 @@ async fn a_tag_operation_on_an_arn_naming_no_target_reports_the_resource_as_abse
         );
     }
 
-    // Once it is deregistered that ARN resolves to no registered scalable target, so every
-    // one of the three reports the RESOURCE as absent: `ResourceNotFoundException` at the
-    // client-error status, with the ARN asked about in `ResourceName`.
+    // Once it is deregistered that ARN resolves to no registered scalable target, so each of
+    // the three answers in its own terms, at the client-error status: the read reports the
+    // RESOURCE as absent with the ARN asked about in `ResourceName`, and each write is refused
+    // as a request that carries nothing back.
     let (status, body) = emulator
         .call("DeregisterScalableTarget", target.clone())
         .await;
@@ -428,27 +432,39 @@ async fn a_tag_operation_on_an_arn_naming_no_target_reports_the_resource_as_abse
             status, 400,
             "case {case:?} on {operation}: expected HTTP 400, got {status} {body:?}"
         );
+        let message = error_message(&body);
+        if operation == "ListTagsForResource" {
+            assert_eq!(
+                error_code(&body),
+                "ResourceNotFoundException",
+                "case {case:?} on {operation}: expected a ResourceNotFoundException, got {body:?}"
+            );
+            assert_eq!(
+                message, TARGET_NOT_FOUND,
+                "case {case:?} on {operation}: expected {TARGET_NOT_FOUND:?}, got {message:?}"
+            );
+            assert_eq!(
+                body["ResourceName"],
+                json!(registered),
+                "case {case:?} on {operation}: expected the ARN asked about in ResourceName, got \
+                 {body:?}"
+            );
+            continue;
+        }
         assert_eq!(
             error_code(&body),
-            "ResourceNotFoundException",
-            "case {case:?} on {operation}: expected a ResourceNotFoundException, got {body:?}"
-        );
-        let message = error_message(&body);
-        assert_eq!(
-            message, TARGET_NOT_FOUND,
-            "case {case:?} on {operation}: expected {TARGET_NOT_FOUND:?}, got {message:?}"
+            "ValidationException",
+            "case {case:?} on {operation}: expected a ValidationException, got {body:?}"
         );
         assert_eq!(
-            body["ResourceName"],
-            json!(registered),
-            "case {case:?} on {operation}: expected the ARN asked about in ResourceName, got \
-             {body:?}"
+            message, TAGGING_DENIED,
+            "case {case:?} on {operation}: expected {TAGGING_DENIED:?}, got {message:?}"
         );
     }
 
     // An ARN this service never minted resolves to no registered scalable target either, so
-    // it is the SAME answer: neither names a target to report tags of or write tags to. Over
-    // several ways an ARN can be one it never minted.
+    // each operation gives the SAME answer it gives for the deregistered one. Over several
+    // ways an ARN can be one it never minted.
     let never_minted: &[(&str, String)] = &[
         (
             "an id this service never minted",
@@ -483,15 +499,25 @@ async fn a_tag_operation_on_an_arn_naming_no_target_reports_the_resource_as_abse
                 status, 400,
                 "case {case:?} on {operation}: expected HTTP 400, got {status} {body:?}"
             );
+            let expected_code = if operation == "ListTagsForResource" {
+                "ResourceNotFoundException"
+            } else {
+                "ValidationException"
+            };
             assert_eq!(
                 error_code(&body),
-                "ResourceNotFoundException",
-                "case {case:?} on {operation}: expected a ResourceNotFoundException, got {body:?}"
+                expected_code,
+                "case {case:?} on {operation}: expected a {expected_code}, got {body:?}"
             );
+            let expected_message = if operation == "ListTagsForResource" {
+                TARGET_NOT_FOUND
+            } else {
+                TAGGING_DENIED
+            };
             let message = error_message(&body);
             assert_eq!(
-                message, TARGET_NOT_FOUND,
-                "case {case:?} on {operation}: expected {TARGET_NOT_FOUND:?}, got {message:?}"
+                message, expected_message,
+                "case {case:?} on {operation}: expected {expected_message:?}, got {message:?}"
             );
         }
     }

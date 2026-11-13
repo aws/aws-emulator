@@ -37,8 +37,11 @@ const DIMENSION_WITHOUT_RESOURCE_ID: &str =
     "Scalable dimension cannot be provided without a resource ID.";
 /// A `NextToken` this service did not issue.
 const INVALID_NEXT_TOKEN: &str = "The NextToken value is not valid";
-/// A request addressed to an ARN that resolves to no registered scalable target.
+/// A tag READ addressed to an ARN that resolves to no registered scalable target.
 const TARGET_NOT_FOUND: &str = "Scalable Target not found";
+/// A tag MUTATION addressed to the same ARN: the write is refused, carrying nothing of the
+/// request.
+const TAGGING_DENIED: &str = "Access Denied";
 /// A write to the reserved tag namespace.
 const SYSTEM_TAG_KEY_REFUSED: &str = "Caller is an end user and not allowed to mutate system tags";
 /// A tag set over the per-resource maximum.
@@ -820,16 +823,16 @@ fn generated_tags(count: usize) -> Value {
     Value::Object(tags)
 }
 
-/// RULE: the three tagging refusals each carry their own sentence — an ARN that resolves to
-/// no registered scalable target reports the resource as absent, a tag set over the
-/// per-resource maximum states that maximum, and a key in the reserved namespace is refused
-/// as a system tag — so a client can tell the three apart by text as well as by code.
+/// RULE: the tagging refusals each carry their own sentence — an ARN that resolves to no
+/// registered scalable target is reported absent by the READ and refuses the WRITE, a tag set
+/// over the per-resource maximum states that maximum, and a key in the reserved namespace is
+/// refused as a system tag — so a client can tell them apart by text as well as by code.
 ///
 /// Rows differ along the operation (all three tag operations), along how the ARN fails
 /// to resolve, along the batch size either side of the maximum, and along how the reserved
 /// prefix appears.
 #[tokio::test]
-async fn the_tagging_refusals_are_three_distinct_sentences() {
+async fn the_tagging_refusals_are_distinct_sentences() {
     let emulator = Emulator::empty();
     let target = emulator
         .given_target("dynamodb:table:ReadCapacityUnits", 1, 10)
@@ -864,8 +867,8 @@ async fn the_tagging_refusals_are_three_distinct_sentences() {
         ),
     ];
     for (case, unknown) in unresolvable {
-        // All three operations report the resource as absent for an ARN that resolves to
-        // none, at the client-error status rather than at the modelled 404.
+        // The read reports the resource as absent for an ARN that resolves to none; each
+        // write is refused instead, at the same client-error status.
         for (operation, request) in [
             (
                 "TagResource",
@@ -877,14 +880,19 @@ async fn the_tagging_refusals_are_three_distinct_sentences() {
             ),
             ("ListTagsForResource", json!({"ResourceARN": unknown})),
         ] {
+            let (code, message) = if operation == "ListTagsForResource" {
+                ("ResourceNotFoundException", TARGET_NOT_FOUND)
+            } else {
+                ("ValidationException", TAGGING_DENIED)
+            };
             refused_with_status(
                 &emulator,
                 &format!("{operation} on {case}"),
                 operation,
                 request,
                 400,
-                "ResourceNotFoundException",
-                TARGET_NOT_FOUND,
+                code,
+                message,
             )
             .await;
         }

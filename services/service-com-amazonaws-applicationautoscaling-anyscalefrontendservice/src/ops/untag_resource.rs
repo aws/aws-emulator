@@ -85,9 +85,7 @@ pub enum UntagResourceErrorModeled {
 
 /// This operation's error channel, as the generated `impl Operation` names it
 /// (`crate::ops::untag_resource::UntagResourceError`): the operation's own channel widened by
-/// the refusals this service words itself, which is how an ARN resolving to no registered
-/// scalable target is answered at the client-error status rather than at the 404 the modelled
-/// shape declares (`crate::state::wire_refusals`).
+/// the refusals this service words itself (`crate::state::wire_refusals`).
 pub type UntagResourceError = crate::state::wire_refusals::Refusable<UntagResourceErrorModeled>;
 
 /// Lets `?` and `.into()` lift a modeled failure into the error channel, so an
@@ -155,7 +153,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // addressed to it resolves to nothing: the same refusal as any other ARN that
         // resolves to no registered target (see `tag_resource`).
         let Some(state) = crate::state::service_state(&*self.engine) else {
-            return Err(target_not_found(&input.resource_arn));
+            return Err(tagging_denied());
         };
         let mut state = state.lock();
 
@@ -163,7 +161,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // another Region's ARN names none this endpoint holds (see `tag_resource`). An ARN
         // that resolves to no registered target identifies no scalable target to untag,
         // whether this service never minted it or minted it for a target that has since
-        // been deregistered, so both are the one refusal the three tag operations share.
+        // been deregistered, so both are the one refusal the two tag MUTATIONS share.
         let region = crate::state::request_region(ctx.parts());
         let resolved = state
             .arn_index
@@ -171,7 +169,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .filter(|key| key.region == region)
             .cloned();
         let Some(record) = resolved.and_then(|key| state.targets.get_mut(&key)) else {
-            return Err(target_not_found(&input.resource_arn));
+            return Err(tagging_denied());
         };
 
         // "To delete a tag, specify the tag key and the Application Auto Scaling
@@ -193,8 +191,11 @@ fn validation(message: impl Into<String>) -> UntagResourceError {
     .into()
 }
 
-/// The refusal of an ARN that resolves to no registered scalable target, reporting that ARN
-/// in `ResourceName` (see `tag_resource`).
-fn target_not_found(resource_arn: &str) -> UntagResourceError {
-    crate::state::wire_refusals::WireRefusal::scalable_target_not_found(resource_arn).into()
+/// The refusal of a `ResourceARN` that resolves to no registered scalable target: the
+/// mutation is decided on whether the caller may write the tags of THAT resource rather than
+/// on whether it is there, so it is refused as an invalid request carrying nothing of the
+/// request — the same sentence `TagResource` answers the same condition with
+/// (`crate::state::TAG_MUTATION_DENIED_MESSAGE`, and see `tag_resource`).
+fn tagging_denied() -> UntagResourceError {
+    validation(crate::state::TAG_MUTATION_DENIED_MESSAGE)
 }

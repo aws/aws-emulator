@@ -22,10 +22,9 @@
 //!   is pinned by the `recorded_refusal_wording` suite);
 //! * a policy configuration that cannot be evaluated is refused with the model's own
 //!   sentence for the rule;
-//! * a tag operation addressed to an ARN that names no registered scalable target says so:
-//!   the READ reports that the resource is not there, while the two WRITES report it for an
-//!   ARN this service MINTED and answer the recorded permission failure for one it never
-//!   minted (`refusal_texts` pins that sentence).
+//! * a tag operation addressed to an ARN that names no registered scalable target answers in
+//!   its own terms: the READ reports that the resource is not there, while the two WRITES
+//!   refuse the write they were asked to make (`refusal_texts` pins that sentence).
 
 use serde_json::{json, Value};
 
@@ -730,12 +729,15 @@ async fn a_policy_configuration_that_cannot_be_evaluated_states_the_documented_r
     }
 }
 
-/// The sentence a tag operation addressed to an ARN that resolves to no registered scalable
-/// target carries.
+/// The sentence the tag READ carries for an ARN that resolves to no registered scalable
+/// target.
 const TARGET_NOT_FOUND: &str = "Scalable Target not found";
 
+/// The sentence a tag MUTATION carries for the same ARN.
+const TAGGING_DENIED: &str = "Access Denied";
+
 #[tokio::test]
-async fn a_tag_operation_on_an_unregistered_target_says_the_target_is_not_found() {
+async fn a_tag_operation_on_an_unregistered_target_answers_in_its_own_terms() {
     let emulator = Emulator::empty();
     let target = emulator.given_target("ecs:service:DesiredCount", 1, 5).await;
     let mut tagged = target.clone();
@@ -776,7 +778,7 @@ async fn a_tag_operation_on_an_unregistered_target_says_the_target_is_not_found(
     );
 
     // Every ARN that names no registered target now, whether it was minted and retired or
-    // never minted at all, is reported absent by all three operations alike.
+    // never minted at all, is answered alike by each operation.
     let never_minted =
         format!("arn:aws:application-autoscaling:{REGION}:000000000000:scalable-target/0123456789abcdef");
     for (case, resource_arn) in [
@@ -814,10 +816,11 @@ async fn a_tag_operation_on_an_unregistered_target_says_the_target_is_not_found(
         );
         assert_service_text(case, &message);
 
-        // The two writes answer the same condition the same way: an ARN that resolves to no
-        // registered target identifies no scalable target to write tags to, whether this
-        // service minted it for a target that has since been deregistered or never minted it
-        // at all. Neither is the boundary validator's template.
+        // The two writes answer the same condition the same way as each other: an ARN that
+        // resolves to no registered target identifies no scalable target whose tags the
+        // caller may write, whether this service minted it for a target that has since been
+        // deregistered or never minted it at all — so the write is refused rather than the
+        // resource reported absent. Neither is the boundary validator's template.
         for (operation, request) in [
             (
                 "TagResource",
@@ -835,13 +838,13 @@ async fn a_tag_operation_on_an_unregistered_target_says_the_target_is_not_found(
             );
             assert_eq!(
                 error_code(&body),
-                "ResourceNotFoundException",
-                "case {case:?} on {operation}: expected a ResourceNotFoundException, got {body:?}"
+                "ValidationException",
+                "case {case:?} on {operation}: expected a ValidationException, got {body:?}"
             );
             let message = error_message(&body);
             assert_eq!(
-                message, TARGET_NOT_FOUND,
-                "case {case:?} on {operation}: expected {TARGET_NOT_FOUND:?}, got {message:?}"
+                message, TAGGING_DENIED,
+                "case {case:?} on {operation}: expected {TAGGING_DENIED:?}, got {message:?}"
             );
             assert_service_text(case, &message);
         }

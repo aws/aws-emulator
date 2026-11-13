@@ -171,8 +171,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // "Returns all the tags on the specified Application Auto Scaling scalable
         // target" — so an ARN no registered target carries is refused rather than answered
         // with an empty tag set: the two are different answers and a client tells them
-        // apart. The refusal is the one all three tag operations answer an unresolvable ARN
-        // with, so this read and the two writes cannot word the condition differently.
+        // apart. This read reports the RESOURCE as absent — `ResourceNotFoundException`
+        // ("the specified resource doesn't exist") is the only error its model declares —
+        // where the two tag MUTATIONS refuse the write they were asked to make
+        // (`crate::state::TAG_MUTATION_DENIED_MESSAGE`).
         let Some(record) = record else {
             return Err(crate::state::wire_refusals::WireRefusal::scalable_target_not_found(
                 &input.resource_arn,

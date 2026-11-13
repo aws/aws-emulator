@@ -93,6 +93,8 @@ mod step_scaling_execution;
 mod step_scaling_window_reread;
 #[path = "all/superseded_scaling_activities.rs"]
 mod superseded_scaling_activities;
+#[path = "all/tag_mutation_refusal.rs"]
+mod tag_mutation_refusal;
 #[path = "all/tags.rs"]
 mod tags;
 #[path = "all/target_tracking_alarms.rs"]

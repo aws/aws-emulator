@@ -651,8 +651,8 @@ async fn a_resource_arn_naming_no_registered_target_is_refused() {
     );
 
     // The ARN of the target that WAS registered now resolves to no registered scalable
-    // target, so every one of the three reports the resource as absent:
-    // `ResourceNotFoundException` at the client-error status.
+    // target, so each operation answers in its own terms at the client-error status: the read
+    // reports the resource as absent, each write is refused.
     for (operation, request) in [
         (
             "TagResource",
@@ -669,10 +669,11 @@ async fn a_resource_arn_naming_no_registered_target_is_refused() {
             status, 400,
             "case {case:?}: expected {operation} to refuse with HTTP 400, got {status} {body:?}"
         );
+        let expected = expected_code(operation);
         assert_eq!(
             error_code(&body),
-            "ResourceNotFoundException",
-            "case {case:?}: expected {operation} to answer ResourceNotFoundException, got {body:?}"
+            expected,
+            "case {case:?}: expected {operation} to answer {expected}, got {body:?}"
         );
     }
 
@@ -711,9 +712,9 @@ async fn a_resource_arn_naming_no_registered_target_is_refused() {
     ];
 
     for (case, arn) in unresolvable {
-        // None of these ARNs resolves to a registered scalable target, so all three answer
-        // the same way the ARN of a deregistered target is answered: there is no scalable
-        // target to report tags of or to write tags to.
+        // None of these ARNs resolves to a registered scalable target, so each operation
+        // answers the same way it answers the ARN of a deregistered target: there is no
+        // scalable target to report tags of, and none whose tags may be written.
         for (operation, request) in [
             ("TagResource", json!({"ResourceARN": arn, "Tags": {"a": "1"}})),
             (
@@ -727,13 +728,24 @@ async fn a_resource_arn_naming_no_registered_target_is_refused() {
                 status, 400,
                 "case {case:?}: expected {operation} to refuse with HTTP 400, got {status} {body:?}"
             );
+            let expected = expected_code(operation);
             assert_eq!(
                 error_code(&body),
-                "ResourceNotFoundException",
-                "case {case:?}: expected {operation} to answer ResourceNotFoundException, got \
-                 {body:?}"
+                expected,
+                "case {case:?}: expected {operation} to answer {expected}, got {body:?}"
             );
         }
+    }
+}
+
+/// The error code `operation` answers an ARN that resolves to no registered scalable target
+/// with: the READ reports the resource as absent, while a MUTATION refuses the write it was
+/// asked to make without disclosing whether the target is there.
+fn expected_code(operation: &str) -> &'static str {
+    if operation == "ListTagsForResource" {
+        "ResourceNotFoundException"
+    } else {
+        "ValidationException"
     }
 }
 

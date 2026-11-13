@@ -8,7 +8,7 @@
 //! below the service answers something else, so they cannot be constructed as a plain
 //! variant of an operation's `#[operation_error]` enum:
 //!
-//! * the three ARN-addressed tag operations answer an unresolvable `ResourceARN` with
+//! * the ARN-addressed tag READ answers an unresolvable `ResourceARN` with
 //!   `ResourceNotFoundException`'s own body at the 400 of a client error, not at the 404 its
 //!   `@httpError` declares ([`WireRefusal::ScalableTargetNotFound`]);
 //! * an operation this service does not offer for the namespace addressed is refused
@@ -27,11 +27,11 @@ use ::smithy_server_runtime::OperationError;
 
 use crate::ops::types::ResourceNotFoundException;
 
-/// The status the tag frontend answers an unresolvable `ResourceARN` with: the 4xx of a
-/// client error rather than the 404 the modelled shape's `@httpError` declares. Clients and
-/// the proxies in front of them branch on the status CLASS before they parse a body, and the
-/// two are classified differently — a 404 as "no such endpoint or route", retried and
-/// surfaced unlike a client error — so the status is part of the answer, not a detail of it.
+/// The status the tag read answers an unresolvable `ResourceARN` with: the 4xx of a client
+/// error rather than the 404 the modelled shape's `@httpError` declares. Clients and the
+/// proxies in front of them branch on the status CLASS before they parse a body, and the two
+/// are classified differently — a 404 as "no such endpoint or route", retried and surfaced
+/// unlike a client error — so the status is part of the answer, not a detail of it.
 const TARGET_NOT_FOUND_STATUS: u16 = 400;
 
 /// The `__type` a resource that does not exist is named by, which is the modelled shape's own
@@ -110,9 +110,10 @@ impl SerializableStruct for NotSupported {
 /// the wire code, the HTTP status and the body it answers with.
 #[derive(Debug)]
 pub enum WireRefusal {
-    /// A `ResourceARN` that resolves to no registered scalable target, whichever of the three
-    /// tag operations was called and whether or not this service ever minted that ARN: either
-    /// the target is registered or it is not, and the refusal says so.
+    /// A `ResourceARN` the tag READ cannot resolve to a registered scalable target, whether or
+    /// not this service ever minted that ARN: either the target is registered or it is not,
+    /// and the refusal says so. The two tag MUTATIONS answer that condition as a refusal of
+    /// the write instead (`crate::state::TAG_MUTATION_DENIED_MESSAGE`).
     ScalableTargetNotFound(ResourceNotFoundException),
     /// An operation this service does not offer for the resource addressed.
     NotSupported(NotSupported),
