@@ -22,12 +22,13 @@
 //! registered through Amazon Keyspaces or through Application Auto Scaling's own API, the
 //! unit bounds and target values, and the keyspace and table names.
 
+use std::time::{Duration, Instant};
+
 use serde_json::{json, Value};
 use service_com_amazonaws_keyspaces_keyspacesservice::state as keyspaces;
 
 use crate::auto_scaling_propagation::{enabled, resource_id, Emulator};
 use crate::column_types_and_auto_scaling::assert_member;
-use crate::keyspace_table_lifecycle::settle_wait;
 
 /// The capacity specification of a table in `mode`, as a request carries it:
 /// `PROVISIONED` "requires readCapacityUnits and writeCapacityUnits as input" and
@@ -189,9 +190,59 @@ async fn given_scaled_table(emulator: &Emulator, row: &Row) {
     // The table is updatable once the owning service reports it ACTIVE again — after its
     // own creation transition and after the capacity Application Auto Scaling moves it to
     // when a registered floor is above the capacity the table was created with.
-    emulator
-        .given_table_active(row.case, row.keyspace, row.table)
-        .await;
+    given_settled_scaled_table(emulator, row).await;
+}
+
+/// Wait until the row's table is `ACTIVE` and its provisioned capacity sits inside every
+/// window the row registered — the state in which Application Auto Scaling owes the table
+/// no capacity movement at all, so an update of the table races none.
+///
+/// A registered window is enforced on the resource: a floor above the table's provisioned
+/// capacity is delivered to the table as an `UpdateTable` of Application Auto Scaling's
+/// own, on that service's clock, and that update leaves the table `UPDATING` for a span.
+/// So this waits for the CONDITION that movement produces — the capacity inside the window
+/// and the status settled — rather than for a span of wall clock, which is what makes the
+/// suite's own update of the table the only one in flight.
+async fn given_settled_scaled_table(emulator: &Emulator, row: &Row) {
+    /// How long the wait may take at most: far past every transition and delivery this
+    /// emulator owes the table, so a loaded machine still reaches it.
+    const WITHIN: Duration = Duration::from_secs(30);
+    /// How long one look waits before the next.
+    const EVERY: Duration = Duration::from_millis(100);
+
+    let deadline = Instant::now() + WITHIN;
+    loop {
+        let (status, table) = emulator
+            .keyspaces(
+                "GetTable",
+                json!({"keyspaceName": row.keyspace, "tableName": row.table}),
+            )
+            .await;
+        let inside_every_window = row.windows.iter().all(|(capacity, minimum, maximum, _)| {
+            // The provisioned units of the capacity a window scales, as `GetTable` reports
+            // them (`CapacitySpecificationSummary$readCapacityUnits` and its write
+            // sibling, `smithy_query(query="shape", shape="CapacitySpecificationSummary")`).
+            let member = match capacity {
+                keyspaces::TableCapacity::Read => "readCapacityUnits",
+                keyspaces::TableCapacity::Write => "writeCapacityUnits",
+            };
+            table
+                .pointer(&format!("/capacitySpecification/{member}"))
+                .and_then(Value::as_i64)
+                .is_some_and(|units| units >= *minimum && units <= *maximum)
+        });
+        if status == 200 && table["status"] == json!("ACTIVE") && inside_every_window {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "case {:?}: expected the table to be ACTIVE with its capacity inside every \
+             registered window {:?}, last saw {status} {table}",
+            row.case,
+            row.windows
+        );
+        tokio::time::sleep(EVERY).await;
+    }
 }
 
 /// The auto scaling settings Amazon Keyspaces reports for a table, and the table's own
@@ -345,9 +396,13 @@ async fn update_table_retires_auto_scaling_only_on_a_move_out_of_provisioned_mod
             row.starts_in_pay_per_request()
         );
 
-        let (status, body) = emulator
-            .keyspaces(
-                "UpdateTable",
+        // The update the row asks for, once the table takes it: a scaled table is updated
+        // by Application Auto Scaling too — it delivers a queued capacity movement by
+        // calling this service — so the call waits for the CONDITION it needs, a table
+        // that is updatable, rather than for a span of wall clock.
+        let body = emulator
+            .update_table_when_updatable(
+                case,
                 json!({
                     "keyspaceName": row.keyspace,
                     "tableName": row.table,
@@ -355,11 +410,18 @@ async fn update_table_retires_auto_scaling_only_on_a_move_out_of_provisioned_mod
                 }),
             )
             .await;
-        assert_eq!(
-            status, 200,
-            "case {case:?}: expected UpdateTable to answer 200, got {status} {body}"
+        assert!(
+            body.get("resourceArn").and_then(Value::as_str).is_some(),
+            "case {case:?}: expected the accepted UpdateTable to answer the table's ARN, \
+             got {body}"
         );
-        tokio::time::sleep(settle_wait()).await;
+        // Everything asserted below was written by the update itself, and the table is
+        // `UPDATING` until the clock owes it `ACTIVE` one span later; this waits for that
+        // status to settle — the condition, polled — so the reads below see the table as
+        // the update left it rather than mid-transition.
+        emulator
+            .given_table_active(case, row.keyspace, row.table)
+            .await;
 
         let targets_after = emulator.cassandra_targets().await;
         let policies_after = emulator.cassandra_policies().await;

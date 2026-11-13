@@ -293,6 +293,41 @@ impl Emulator {
             tokio::time::sleep(EVERY).await;
         }
     }
+
+    /// Call `UpdateTable` with `request` once the table takes the update, and answer the
+    /// body of the accepted call.
+    ///
+    /// A table is updatable only from `ACTIVE`, and its status is moved by more than the
+    /// caller: Application Auto Scaling delivers a queued capacity movement to the table
+    /// by CALLING this service on its own clock, and the update that movement is leaves
+    /// the table `UPDATING` for a span of its own. So a suite that updates a SCALED table
+    /// waits for the condition the update needs — a table that is updatable — instead of
+    /// for a span of wall clock: it looks again while the answer is the modelled
+    /// `ConflictException` the service declares for a table whose status is not `ACTIVE`,
+    /// and what it returns is the 200 of an accepted update.
+    pub(crate) async fn update_table_when_updatable(&self, case: &str, request: Value) -> Value {
+        /// How long the wait may take at most: far past every transition this emulator
+        /// gives a table, so a loaded machine still reaches it.
+        const WITHIN: std::time::Duration = std::time::Duration::from_secs(30);
+        /// How long one look waits before the next.
+        const EVERY: std::time::Duration = std::time::Duration::from_millis(100);
+
+        let deadline = std::time::Instant::now() + WITHIN;
+        loop {
+            let (status, body) = self.keyspaces("UpdateTable", request.clone()).await;
+            if status == 200 {
+                return body;
+            }
+            let settling = body["__type"]
+                .as_str()
+                .is_some_and(|wire_type| wire_type.ends_with("ConflictException"));
+            assert!(
+                settling && std::time::Instant::now() < deadline,
+                "case {case:?}: expected UpdateTable to answer 200, got {status} {body}"
+            );
+            tokio::time::sleep(EVERY).await;
+        }
+    }
 }
 
 /// The settings that turn a capacity's auto scaling ON, as a request carries them.
@@ -832,7 +867,11 @@ async fn deleting_the_table_or_its_keyspace_deregisters_its_scalable_targets() {
             2,
             "case {case:?}: both capacities should be scaled before the delete"
         );
-        tokio::time::sleep(keyspaces::TRANSIENT_STATUS_SPAN + std::time::Duration::from_millis(250))
+        // The table takes a delete only once its own creation transition — and the capacity
+        // Application Auto Scaling moves it to when a registered floor is above it — has
+        // settled, so this waits for that CONDITION rather than for a span of wall clock.
+        emulator
+            .given_table_active(case, "deletion_ks", "scaled_tbl")
             .await;
 
         let (status, body) = emulator.keyspaces(operation, request).await;
