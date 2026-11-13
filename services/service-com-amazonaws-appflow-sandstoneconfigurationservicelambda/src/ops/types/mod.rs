@@ -25,6 +25,10 @@ pub mod describe_connector_types;
 pub mod describe_connectors_types;
 pub mod describe_flow_execution_records_types;
 pub mod describe_flow_types;
+// The run record AppFlow reports, whose wire form carries members the on-disk model does
+// not declare — so its schema and codec are written out rather than derived. See that
+// module's own note.
+pub mod execution_record_wire;
 pub mod list_connector_entities_types;
 pub mod list_connectors_types;
 pub mod list_flows_types;
@@ -63,6 +67,8 @@ pub use describe_connectors_types::*;
 pub use describe_flow_execution_records_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use describe_flow_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use execution_record_wire::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use list_connector_entities_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]

@@ -288,7 +288,14 @@ pub struct FlowExecution {
 
 impl FlowExecution {
     /// The wire `ExecutionRecord` for this run.
+    ///
+    /// Every member is read off the stored run: the status it reached, the counters the
+    /// transfer it performed came to, and the two instants it carries — reported both
+    /// under the names the model declares (`startedAt`, `lastUpdatedAt`) and under the
+    /// names AppFlow reports beside them (`executionStartTime`, `lastUpdatedTime`), so
+    /// the two spellings of one instant can never disagree.
     pub fn to_execution_record(&self) -> crate::ops::types::ExecutionRecord {
+        let execution_message = self.execution_message();
         crate::ops::types::ExecutionRecord {
             execution_id: Some(self.execution_id.clone()),
             execution_status: Some(self.execution_status.as_str().to_string()),
@@ -299,7 +306,41 @@ impl FlowExecution {
             data_pull_end_time: self.data_pull_end_time.map(to_date_time),
             // No catalog registration happens: nothing was transferred to catalog.
             metadata_catalog_details: None,
+            execution_message,
+            // A run that has not finished has no accounting yet; one that has reports it.
+            execution_metadata: self.execution_result.as_ref().map(execution_metadata),
+            execution_start_time: Some(to_date_time(self.started_at)),
+            last_updated_time: Some(to_date_time(self.last_updated_at)),
         }
+    }
+
+    /// What this run has to say for itself in one sentence, as `executionMessage`.
+    ///
+    /// A run that SUCCEEDED is reported with AppFlow's own fixed text for that outcome
+    /// ([`RUN_SUCCEEDED_MESSAGE`]) — it has no variable part. A run that FAILED is
+    /// reported with the reason its `errorInfo` already carries, so the sentence and the
+    /// error information can never disagree. A run that has not reached a terminal status,
+    /// and one that was cancelled rather than run, has nothing to report: the member is
+    /// then absent rather than filled with a sentence nothing backs.
+    fn execution_message(&self) -> Option<String> {
+        match self.execution_status {
+            ExecutionStatus::Successful => Some(RUN_SUCCEEDED_MESSAGE.to_string()),
+            ExecutionStatus::Error => self.failure_reason(),
+            ExecutionStatus::Canceled
+            | ExecutionStatus::CancelStarted
+            | ExecutionStatus::InProgress => None,
+        }
+    }
+
+    /// Why this run did not do what it was asked to, as its own result states it, or
+    /// `None` for a run that has nothing to report.
+    fn failure_reason(&self) -> Option<String> {
+        self.execution_result
+            .as_ref()?
+            .error_info
+            .as_ref()?
+            .execution_message
+            .clone()
     }
 
     /// `true` while this run has not reached a terminal status: it is still in
@@ -343,20 +384,59 @@ impl FlowExecution {
     }
 }
 
+/// AppFlow's `executionMessage` for a run that succeeded: fixed text, with no variable
+/// part — the run's own volumes are reported by `executionResult` and
+/// `executionMetadata`, not by this sentence.
+pub const RUN_SUCCEEDED_MESSAGE: &str = "Successfully ran the flow";
+
+/// The `executionMetadata` of a run that has finished: that run's own accounting, taken
+/// from the result the transfer it performed reached.
+///
+/// Nothing here is counted a second time: the volumes are the ones `executionResult`
+/// reports, so the two blocks of one record cannot disagree. The failure counts are the
+/// run's own put failures — a run of this emulator transfers every record it read or none
+/// at all, so the records that failed are exactly the ones the destination did not take —
+/// `numFilteredRecords` is zero because a flow's `tasks` project the FIELDS a record is
+/// written with and drop no record, and `terminateFlow` is false because no run here asks
+/// for its flow to be stopped.
+fn execution_metadata(result: &ExecutionResult) -> crate::ops::types::ExecutionMetadata {
+    let put_failures = result
+        .error_info
+        .as_ref()
+        .and_then(|error_info| error_info.put_failures_count)
+        .unwrap_or(0);
+    crate::ops::types::ExecutionMetadata {
+        bytes_processed: result.bytes_processed,
+        bytes_written: result.bytes_written,
+        max_page_size: result.max_page_size,
+        num_failures: Some(put_failures),
+        num_filtered_records: Some(0),
+        num_parallel_processes: result.num_parallel_processes,
+        num_put_failures: Some(put_failures),
+        reason: result
+            .error_info
+            .as_ref()
+            .and_then(|error_info| error_info.execution_message.clone()),
+        records_processed: result.records_processed,
+        terminate_flow: Some(false),
+    }
+}
+
 /// The `executionResult` of a run that transferred nothing: every counter a true zero
 /// rather than an invented volume, plus whatever that run has to say for itself.
 ///
-/// No transfer ever happens in this emulator (see [`EXECUTION_NOT_PERFORMED_MESSAGE`]),
-/// so every run that reaches a terminal status reports its outcome through this one
-/// shape and no two of them can describe the same non-transfer differently.
+/// Every counter the shape declares is REPORTED, zero included: a run that has finished
+/// accounts for each dimension of what it did, so a client reading one of them can tell
+/// "none" from "not reported". `numParallelProcesses` is zero because no process ran the
+/// transfer, and `maxPageSize` because no page size bounded one.
 fn nothing_transferred(error_info: Option<ErrorInfo>) -> ExecutionResult {
     ExecutionResult {
         error_info,
         bytes_processed: Some(0),
         bytes_written: Some(0),
         records_processed: Some(0),
-        num_parallel_processes: None,
-        max_page_size: None,
+        num_parallel_processes: Some(0),
+        max_page_size: Some(0),
     }
 }
 
@@ -631,14 +711,15 @@ impl Flow {
 
     /// `lastRunExecutionDetails`, derived from the most recent run so the detail and
     /// the run it summarises cannot disagree.
+    ///
+    /// `mostRecentExecutionMessage` is that run's own `executionMessage` — the one
+    /// sentence the run is reported with wherever it is read, so a successful run says so
+    /// here too rather than reading as empty
+    /// ([`FlowExecution::execution_message`]).
     pub fn last_run_execution_details(&self) -> Option<ExecutionDetails> {
         let last = self.last_run()?;
         Some(ExecutionDetails {
-            most_recent_execution_message: last
-                .execution_result
-                .as_ref()
-                .and_then(|result| result.error_info.as_ref())
-                .and_then(|info| info.execution_message.clone()),
+            most_recent_execution_message: last.execution_message(),
             most_recent_execution_time: Some(to_date_time(last.last_updated_at)),
             most_recent_execution_status: Some(last.execution_status.as_str().to_string()),
         })

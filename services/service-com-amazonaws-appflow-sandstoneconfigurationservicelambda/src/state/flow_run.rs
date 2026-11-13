@@ -278,7 +278,14 @@ pub struct RunPlan {
     source: S3SourceProperties,
     destinations: Vec<S3DestinationProperties>,
     tasks: Vec<Task>,
+    /// Whether a run of this flow PULLS a window of new or updated records from its
+    /// source — see [`Flow::pulls_incrementally`].
+    incremental_pull: bool,
 }
+
+/// The `dataPullMode` of a scheduled flow whose every run transfers only what changed
+/// since the last one (`smithy_query(query="shape", shape="DataPullMode")`).
+pub const DATA_PULL_MODE_INCREMENTAL: &str = "Incremental";
 
 impl Flow {
     /// What a run of this flow would move, or `None` when an endpoint of it is NOT an
@@ -309,7 +316,42 @@ impl Flow {
             source,
             destinations,
             tasks: self.tasks.clone(),
+            incremental_pull: self.pulls_incrementally(),
         })
+    }
+
+    /// `true` when a run of this flow QUERIES its source for the records that are new or
+    /// updated, rather than transferring everything the source location holds.
+    ///
+    /// It is what decides whether a run has a data-pull window to report at all:
+    /// `dataPullStartTime` and `dataPullEndTime` are "[t]he timestamp that determines the
+    /// first new or updated record to be transferred in the flow run" and the one "that
+    /// indicates the last" (`smithy_query(query="shape", shape="ExecutionRecord")`) — the
+    /// bounds of that query — so a run that made no such query has neither.
+    ///
+    /// A flow declares the query in its definition, in either of the two places the model
+    /// puts it: `incrementalPullConfig` "[d]efines the configuration for a scheduled
+    /// incremental data pull" and names the datetime field it is made over
+    /// (`smithy_query(query="doc", shape="SourceFlowConfig",
+    /// member="incrementalPullConfig")`), and a scheduled trigger's `dataPullMode`
+    /// "[s]pecifies whether a scheduled flow has an incremental data transfer or a
+    /// complete data transfer for each flow run" (`smithy_query(query="doc",
+    /// shape="ScheduledTriggerProperties", member="dataPullMode")`).
+    pub fn pulls_incrementally(&self) -> bool {
+        let names_datetime_field = self
+            .source_flow_config
+            .incremental_pull_config
+            .as_ref()
+            .and_then(|config| config.datetime_type_field_name.as_deref())
+            .is_some_and(|field| !field.is_empty());
+        let incremental_schedule = self
+            .trigger_config
+            .trigger_properties
+            .as_ref()
+            .and_then(|properties| properties.scheduled.as_ref())
+            .and_then(|scheduled| scheduled.data_pull_mode.as_deref())
+            == Some(DATA_PULL_MODE_INCREMENTAL);
+        names_datetime_field || incremental_schedule
     }
 }
 
@@ -399,12 +441,18 @@ pub async fn perform_run<Eng: ::std::marker::Send + ::std::marker::Sync + 'stati
                 // bounded it: `maxPageSize` is "the maximum number of records that Amazon
                 // AppFlow receives in each page of the response from your SAP application"
                 // (`smithy_query(query="shape", shape="ExecutionResult")`), which an
-                // Amazon S3 source has none of.
+                // Amazon S3 source has none of — reported as the zero it is, so a client
+                // reading the counter can tell "none" from "not reported".
                 num_parallel_processes: Some(1),
-                max_page_size: None,
+                max_page_size: Some(0),
             },
-            data_pull_start_time: Some(started_at),
-            data_pull_end_time: Some(data_pull_end_time),
+            // The window of new or updated records this run pulled, for a run that
+            // queried its source for one at all (see [`Flow::pulls_incrementally`]): from
+            // when it began reading the source to when it had finished. A run that
+            // transfers everything the source location holds made no such query, so it
+            // reports neither bound rather than describing a data pull as having happened.
+            data_pull_start_time: plan.incremental_pull.then_some(started_at),
+            data_pull_end_time: plan.incremental_pull.then_some(data_pull_end_time),
         },
         Err(reason) => failed(reason),
     }

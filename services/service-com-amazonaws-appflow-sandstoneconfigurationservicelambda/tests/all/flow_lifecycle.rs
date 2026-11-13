@@ -15,7 +15,7 @@ use serde_json::{json, Value};
 use service_com_amazonaws_appflow_sandstoneconfigurationservicelambda::ops::types::ConnectorProfile;
 use service_com_amazonaws_appflow_sandstoneconfigurationservicelambda::state::{
     service_state, ExecutionStatus, Flow, FlowExecution, FlowStatus, MAX_EXECUTIONS_PER_FLOW,
-    MAX_FLOWS_PER_ACCOUNT,
+    MAX_FLOWS_PER_ACCOUNT, RUN_SUCCEEDED_MESSAGE,
 };
 use service_com_amazonaws_s3_amazons3::state as object_store;
 use service_com_amazonaws_appflow_sandstoneconfigurationservicelambda::EmulatedService;
@@ -41,6 +41,59 @@ pub(crate) const REGION: &str = "us-east-1";
 /// Waited with `std::thread::sleep`, not `tokio::time::sleep`: this workspace enables
 /// tokio's `macros`/`rt` features only, so the timer driver is not compiled in.
 pub(crate) const AFTER_RUN_SETTLES: Duration = Duration::from_millis(900);
+
+/// How long [`settled_runs`] keeps asking before it gives up: generous, because it is a
+/// deadline on a host being slow rather than a measurement of anything.
+pub(crate) const SETTLING_DEADLINE: Duration = Duration::from_secs(60);
+
+/// How long [`settled_runs`] waits between two reads: short enough that the poll costs
+/// nothing, long enough not to spin.
+pub(crate) const BETWEEN_READS: Duration = Duration::from_millis(20);
+
+/// The runs of `flow_name`, newest first, read again until the newest one has reached a
+/// terminal status.
+///
+/// A run's terminal status is owed by the CLOCK and materialised by whichever call reads
+/// it next (`EXECUTION_SETTLES_AFTER`), so the condition is POLLED for rather than waited
+/// out: nothing here depends on how fast the host runs, and the deadline
+/// ([`SETTLING_DEADLINE`]) is only what turns a run that never settles into a failure
+/// instead of a hang.
+pub(crate) async fn settled_runs(router: &MultiServiceRouter, flow_name: &str) -> Vec<Value> {
+    let deadline = std::time::Instant::now() + SETTLING_DEADLINE;
+    loop {
+        let answer = call(
+            router,
+            "/describe-flow-execution-records",
+            &json!({ "flowName": flow_name }),
+        )
+        .await;
+        assert!(
+            answer.is_ok(),
+            "expected DescribeFlowExecutionRecords for {flow_name:?} to succeed, got {} {:?}",
+            answer.status,
+            answer.body
+        );
+        let runs = answer
+            .get("flowExecutions")
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        let still_running = runs.first().is_some_and(|run| {
+            matches!(
+                run.get("executionStatus").and_then(Value::as_str),
+                Some("InProgress") | Some("CancelStarted")
+            )
+        });
+        if !still_running {
+            return runs;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "expected the newest run of {flow_name:?} to reach a terminal status, got {runs:?}"
+        );
+        std::thread::sleep(BETWEEN_READS);
+    }
+}
 
 /// The connector profiles the fixture account holds, as (name, connectorType).
 ///
@@ -805,15 +858,9 @@ async fn start_flow_records_a_run_that_describe_flow_execution_records_returns()
         conflicting.body
     );
 
-    // The clock owed this run a terminal status; the next read materialises it.
-    std::thread::sleep(AFTER_RUN_SETTLES);
-    let settled = call(
-        &router,
-        "/describe-flow-execution-records",
-        &json!({ "flowName": flow_name }),
-    )
-    .await;
-    let runs = settled.get("flowExecutions").as_array().cloned().unwrap_or_default();
+    // The clock owed this run a terminal status, which whichever call reads it next
+    // materialises; the read is repeated until it reports one.
+    let runs = settled_runs(&router, flow_name).await;
     assert_eq!(runs.len(), 1, "expected still one run, got {runs:?}");
     assert_eq!(
         runs[0].get("executionStatus").and_then(Value::as_str),
@@ -836,14 +883,24 @@ async fn start_flow_records_a_run_that_describe_flow_execution_records_returns()
             result.get(counter)
         );
     }
-    // The run read the source, so it reports the window in which it did.
+    // This flow transfers everything at the source location — it declares no incremental
+    // pull — so the run queried for no window of new or updated records and reports
+    // neither bound of one.
     for instant in ["dataPullStartTime", "dataPullEndTime"] {
         assert!(
-            runs[0].get(instant).is_some_and(|at| !at.is_null()),
-            "expected {instant} to be reported for a run that read the source, got {:?}",
+            runs[0].get(instant).is_none_or(Value::is_null),
+            "expected {instant} to be unreported for a run that pulled no window of new or \
+             updated records, got {:?}",
             runs[0].get(instant)
         );
     }
+    // The run says how it went, in AppFlow's own sentence for that outcome.
+    assert_eq!(
+        runs[0].get("executionMessage").and_then(Value::as_str),
+        Some(RUN_SUCCEEDED_MESSAGE),
+        "expected the run to report how it went, got {:?}",
+        runs[0].get("executionMessage")
+    );
 
     // The flow's own record summarises the same run.
     let described = call(&router, "/describe-flow", &json!({ "flowName": flow_name })).await;
@@ -855,11 +912,12 @@ async fn start_flow_records_a_run_that_describe_flow_execution_records_returns()
         Some(ExecutionStatus::Successful.as_str()),
         "expected the flow to summarise its most recent run, got {details:?}"
     );
-    assert!(
+    assert_eq!(
         details
             .get("mostRecentExecutionMessage")
-            .is_none_or(Value::is_null),
-        "expected no message for a run that went fine, got {details:?}"
+            .and_then(Value::as_str),
+        Some(RUN_SUCCEEDED_MESSAGE),
+        "expected the flow to carry the message its most recent run reports, got {details:?}"
     );
     assert_eq!(
         described.string("flowStatus"),

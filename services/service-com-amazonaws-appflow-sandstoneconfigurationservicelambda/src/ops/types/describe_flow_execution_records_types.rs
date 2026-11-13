@@ -26,18 +26,10 @@ pub struct DescribeFlowExecutionRecordsOutput {
     pub next_token: Option<String>,
 }
 
-#[smithy_macros::smithy(shape = "com.amazonaws.appflow#ExecutionRecord")]
-#[derive(Debug, Clone, Default)]
-pub struct ExecutionRecord {
-    pub execution_id: Option<String>,
-    pub execution_status: Option<String>,
-    pub execution_result: Option<ExecutionResult>,
-    pub started_at: Option<::aws_smithy_types::DateTime>,
-    pub last_updated_at: Option<::aws_smithy_types::DateTime>,
-    pub data_pull_start_time: Option<::aws_smithy_types::DateTime>,
-    pub data_pull_end_time: Option<::aws_smithy_types::DateTime>,
-    pub metadata_catalog_details: Option<Vec<MetadataCatalogDetail>>,
-}
+// `ExecutionRecord` is declared in `types/execution_record_wire.rs`, not here: AppFlow
+// reports members on a run record that the on-disk model does not declare, which the
+// derive above cannot express, so that module writes out the schema and the codec the
+// derive would have emitted. It is re-exported by `types/mod.rs` like every other shape.
 
 #[smithy_macros::smithy(shape = "com.amazonaws.appflow#ExecutionResult")]
 #[derive(Debug, Clone, Default)]
