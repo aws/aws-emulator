@@ -375,8 +375,8 @@ async fn the_usage_switch_refuses_a_key_that_is_not_active() {
         );
         assert_eq!(
             error_code(&parsed),
-            "ConflictException",
-            "case {case}: expected ConflictException, got {parsed}"
+            "ValidationException",
+            "case {case}: expected ValidationException, got {parsed}"
         );
         // The refused call stored nothing: the key is still the enabled key waiting to
         // be deleted.
@@ -742,8 +742,8 @@ async fn a_replication_change_is_refused_outside_its_constraints() {
         );
         assert_eq!(
             error_code(&parsed),
-            "ConflictException",
-            "case {case}: expected ConflictException, got {parsed}"
+            "ValidationException",
+            "case {case}: expected ValidationException, got {parsed}"
         );
     }
 

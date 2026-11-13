@@ -157,6 +157,23 @@ pub const KEY_STATE_DELETE_PENDING: &str = "DELETE_PENDING";
 /// See [`KEY_STATE_CREATE_COMPLETE`].
 pub const KEY_STATE_DELETE_COMPLETE: &str = "DELETE_COMPLETE";
 
+/// The sentence this service refuses a call on a key that is not in the `KeyState`
+/// the call requires with.
+///
+/// The fixed text `Key `, the key's own `KeyArn`, the fixed text ` not in `, the
+/// `KeyState` the operation requires, and the fixed text ` state.`. The ARN and the
+/// required state are the only variable parts: an operation that can only act on a
+/// key in one state names the resource and the state it had to be in, and nothing
+/// about the state it is actually in or about the rest of the request — these
+/// operations gate on the key's state alone, so a request's other members never
+/// change the refusal.
+///
+/// Shared by every operation in this service with such a gate, so one state refusal
+/// cannot be worded differently from the next.
+pub fn key_not_in_state(key_arn: &str, required_state: &str) -> String {
+    format!("Key {key_arn} not in {required_state} state.")
+}
+
 /// The `KeyOrigin` of a key this service generated, from that member's own
 /// documentation: "For keys created within Amazon Web Services Payment
 /// Cryptography, the value is `AWS_PAYMENT_CRYPTOGRAPHY`."
@@ -417,17 +434,6 @@ pub struct StoredKey {
     pub usage_start_timestamp: Option<SystemTime>,
     pub usage_stop_timestamp: Option<SystemTime>,
     pub delete_pending_timestamp: Option<SystemTime>,
-    /// The waiting period, in days, that the call which scheduled this key's
-    /// deletion asked for.
-    ///
-    /// Not reported on the wire — `Key` models no such member — but stored because
-    /// it is what tells an idempotent `DeleteKey` RETRY (the same waiting period, so
-    /// the same intent) from a second request asking for a DIFFERENT period, which
-    /// would move a deletion date the caller was already promised and is refused
-    /// with the modelled `ConflictException`. The instant itself cannot answer that
-    /// question: it is computed from the clock, so an identical retry a second later
-    /// would not match it.
-    pub delete_key_in_days: Option<i32>,
     pub derive_key_usage: Option<String>,
     /// The regions this key is replicated to, each with the instants the clock owes
     /// its replication state from.
@@ -1014,7 +1020,6 @@ impl ComAmazonawsPaymentcryptographyPaymentcryptographycontrolplaneState {
             // Written by `StopKeyUsage`, the call that stops this key's use.
             usage_stop_timestamp: None,
             delete_pending_timestamp: None,
-            delete_key_in_days: None,
             derive_key_usage: request.derive_key_usage,
             replication_regions,
             uses_default_replication_regions,

@@ -196,14 +196,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         // Only a key still inside its deletion window can be taken back: one that
         // was never scheduled, and one whose window has already elapsed, both have
-        // nothing to restore.
-        let current = key.effective_state(now).to_string();
-        if current != crate::state::KEY_STATE_DELETE_PENDING {
-            return Err(RestoreKeyErrorModeled::ConflictException(ConflictException {
-                message: Some(format!(
-                    "the key {} is {current}, not {}, so it is not pending deletion",
-                    input.key_identifier,
-                    crate::state::KEY_STATE_DELETE_PENDING
+        // nothing to restore. The gate is the key's state alone, so the refusal names
+        // the key and the state it had to be in.
+        if key.effective_state(now) != crate::state::KEY_STATE_DELETE_PENDING {
+            return Err(RestoreKeyErrorModeled::ValidationException(ValidationException {
+                message: Some(crate::state::key_not_in_state(
+                    &key.key_arn,
+                    crate::state::KEY_STATE_DELETE_PENDING,
                 )),
             })
             .into());
@@ -211,10 +210,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         key.key_state = crate::state::KEY_STATE_CREATE_COMPLETE.to_string();
         key.delete_pending_timestamp = None;
-        // The restored key carries no scheduled waiting period either, so a later
-        // `DeleteKey` schedules freshly instead of being judged against the period
-        // this restore cancelled.
-        key.delete_key_in_days = None;
 
         // Answered from the record as it now stands, so the next reader sees the
         // restored key.

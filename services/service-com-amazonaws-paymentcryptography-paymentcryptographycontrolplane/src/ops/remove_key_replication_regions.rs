@@ -219,14 +219,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // can change: the replicas of one scheduled for deletion are already being
         // torn down with it.
         if !key.is_active(now) {
-            let current = key.effective_state(now).to_string();
-            return Err(RemoveKeyReplicationRegionsErrorModeled::ConflictException(
-                ConflictException {
-                    message: Some(format!(
-                        "the key {} is {current}, not {}, so replication regions cannot be \
-                         removed from it",
-                        input.key_identifier,
-                        crate::state::KEY_STATE_CREATE_COMPLETE
+            return Err(RemoveKeyReplicationRegionsErrorModeled::ValidationException(
+                ValidationException {
+                    message: Some(crate::state::key_not_in_state(
+                        &key.key_arn,
+                        crate::state::KEY_STATE_CREATE_COMPLETE,
                     )),
                 },
             )

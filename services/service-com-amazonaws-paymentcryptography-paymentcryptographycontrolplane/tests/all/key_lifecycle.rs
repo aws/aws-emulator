@@ -129,6 +129,14 @@ pub(crate) fn error_code(body: &Value) -> String {
         .to_string()
 }
 
+/// The `Message` a failed call carries, as a caller reads it.
+pub(crate) fn error_message(body: &Value) -> String {
+    body.get("Message")
+        .and_then(Value::as_str)
+        .unwrap_or("<no Message>")
+        .to_string()
+}
+
 /// A string member that must be present.
 pub(crate) fn string<'a>(value: &'a Value, member: &str) -> &'a str {
     value
@@ -1178,41 +1186,40 @@ async fn delete_key_schedules_the_deletion_and_restore_key_cancels_it() {
             "case {case}: GetKey must report the key as DeleteKey left it"
         );
 
-        // `DeleteKey` is `@idempotent`: a retry neither fails nor moves the date.
-        let retried = ok_call(&router, "DeleteKey", &body).await;
-        assert_eq!(
-            retried.get("Key"),
-            Some(key),
-            "case {case}: a repeated DeleteKey must not change the scheduled deletion"
-        );
-
-        // A second request naming a DIFFERENT waiting period is not that retry: it
-        // would move a deletion date the caller was already promised, so it is
-        // refused and the stored schedule is left alone.
-        let other_days = if *expected_days == 7 { 30 } else { 7 };
-        let (status, parsed) = call(
-            &router,
-            "DeleteKey",
-            &json!({"KeyIdentifier": arn, "DeleteKeyInDays": other_days}),
-        )
-        .await;
-        assert_eq!(
-            status, 400,
-            "case {case}: re-scheduling the deletion for {other_days} days must \
-             conflict, got {status} {parsed}"
-        );
-        assert_eq!(
-            error_code(&parsed),
-            "ConflictException",
-            "case {case}: expected ConflictException, got {parsed}"
-        );
-        let after = ok_call(&router, "GetKey", &json!({"KeyIdentifier": arn})).await;
-        assert_eq!(
-            after.get("Key"),
-            Some(key),
-            "case {case}: a refused re-schedule must leave the stored deletion date \
-             alone"
-        );
+        // The key is now DELETE_PENDING, and this call gates on that state alone: a
+        // repeat is refused whatever waiting period it names, and the stored schedule
+        // is left alone.
+        for repeat_days in [*expected_days, if *expected_days == 7 { 30 } else { 7 }] {
+            let (status, parsed) = call(
+                &router,
+                "DeleteKey",
+                &json!({"KeyIdentifier": arn, "DeleteKeyInDays": repeat_days}),
+            )
+            .await;
+            assert_eq!(
+                status, 400,
+                "case {case}: a second DeleteKey for {repeat_days} days must be refused, \
+                 got {status} {parsed}"
+            );
+            assert_eq!(
+                error_code(&parsed),
+                "ValidationException",
+                "case {case} ({repeat_days} days): expected ValidationException, got \
+                 {parsed}"
+            );
+            assert_eq!(
+                error_message(&parsed),
+                format!("Key {arn} not in CREATE_COMPLETE state."),
+                "case {case} ({repeat_days} days): expected the state sentence, got {parsed}"
+            );
+            let after = ok_call(&router, "GetKey", &json!({"KeyIdentifier": arn})).await;
+            assert_eq!(
+                after.get("Key"),
+                Some(key),
+                "case {case} ({repeat_days} days): a refused re-schedule must leave the \
+                 stored deletion date alone"
+            );
+        }
 
         // Restoring takes it back, and the restored key reports no pending deletion.
         let restored = ok_call(&router, "RestoreKey", &json!({"KeyIdentifier": arn})).await;
@@ -1245,13 +1252,18 @@ async fn delete_key_schedules_the_deletion_and_restore_key_cancels_it() {
         let (status, parsed) = call(&router, "RestoreKey", &json!({"KeyIdentifier": arn})).await;
         assert_eq!(
             status, 400,
-            "case {case}: restoring a key that is not pending deletion must conflict, \
+            "case {case}: restoring a key that is not pending deletion must be refused, \
              got {status} {parsed}"
         );
         assert_eq!(
             error_code(&parsed),
-            "ConflictException",
-            "case {case}: expected ConflictException, got {parsed}"
+            "ValidationException",
+            "case {case}: expected ValidationException, got {parsed}"
+        );
+        assert_eq!(
+            error_message(&parsed),
+            format!("Key {arn} not in DELETE_PENDING state."),
+            "case {case}: expected the state sentence naming DELETE_PENDING, got {parsed}"
         );
     }
 
@@ -1340,7 +1352,7 @@ async fn delete_key_schedules_the_deletion_and_restore_key_cancels_it() {
 }
 
 /// Once a key's deletion window has ELAPSED the key reports `DELETE_COMPLETE`, and
-/// both `DeleteKey` and `RestoreKey` refuse it with `ConflictException`: there is
+/// both `DeleteKey` and `RestoreKey` refuse it with `ValidationException`: there is
 /// nothing left to schedule and nothing left to take back.
 ///
 /// The shortest window the model admits is three days (`DeleteKeyInDays` range
@@ -1389,17 +1401,26 @@ async fn an_elapsed_deletion_window_refuses_delete_and_restore() {
              timestamp: {key}"
         );
 
-        for operation in ["DeleteKey", "RestoreKey"] {
+        for (operation, required) in [
+            ("DeleteKey", "CREATE_COMPLETE"),
+            ("RestoreKey", "DELETE_PENDING"),
+        ] {
             let (status, parsed) = call(&router, operation, &json!({"KeyIdentifier": arn})).await;
             assert_eq!(
                 status, 400,
-                "case {case}: {operation} on a deleted key must conflict, got {status} \
+                "case {case}: {operation} on a deleted key must be refused, got {status} \
                  {parsed}"
             );
             assert_eq!(
                 error_code(&parsed),
-                "ConflictException",
-                "case {case}: {operation} expected ConflictException, got {parsed}"
+                "ValidationException",
+                "case {case}: {operation} expected ValidationException, got {parsed}"
+            );
+            assert_eq!(
+                error_message(&parsed),
+                format!("Key {arn} not in {required} state."),
+                "case {case}: {operation} expected the state sentence naming {required}, \
+                 got {parsed}"
             );
         }
 

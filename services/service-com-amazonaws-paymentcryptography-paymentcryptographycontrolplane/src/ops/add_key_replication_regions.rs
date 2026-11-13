@@ -221,14 +221,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // "The key must be in an active state to add Replication Regions" (this
         // operation's own documentation).
         if !key.is_active(now) {
-            let current = key.effective_state(now).to_string();
-            return Err(AddKeyReplicationRegionsErrorModeled::ConflictException(
-                ConflictException {
-                    message: Some(format!(
-                        "the key {} is {current}, not {}, so replication regions cannot be \
-                         added to it",
-                        input.key_identifier,
-                        crate::state::KEY_STATE_CREATE_COMPLETE
+            return Err(AddKeyReplicationRegionsErrorModeled::ValidationException(
+                ValidationException {
+                    message: Some(crate::state::key_not_in_state(
+                        &key.key_arn,
+                        crate::state::KEY_STATE_CREATE_COMPLETE,
                     )),
                 },
             )

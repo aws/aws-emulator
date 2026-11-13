@@ -228,8 +228,10 @@ async fn every_reachable_client_error_class_answers_the_one_client_error_status(
         "ConflictException",
     );
 
-    // ConflictException again, reached by a second operation: a key already scheduled
-    // for deletion cannot be scheduled for a different waiting period.
+    // ValidationException again, reached by a second operation and by a STATE gate
+    // rather than by a member's value: a key already scheduled for deletion is not in
+    // the `KeyState` `DeleteKey` requires, so the call is refused whatever waiting
+    // period it names.
     ok_call(
         &router,
         "DeleteKey",
@@ -243,10 +245,10 @@ async fn every_reachable_client_error_class_answers_the_one_client_error_status(
     )
     .await;
     assert_client_refusal(
-        "DeleteKey re-scheduling a pending deletion",
+        "DeleteKey on a key already scheduled for deletion",
         status,
         &parsed,
-        "ConflictException",
+        "ValidationException",
     );
 
     // ServiceQuotaExceededException (@httpError 402): one past the set this emulator

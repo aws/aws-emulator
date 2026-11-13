@@ -190,12 +190,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // cannot be moved by this call, and reporting it as stopped would claim a
         // state change nothing made.
         if !key.is_active(now) {
-            let current = key.effective_state(now).to_string();
-            return Err(StopKeyUsageErrorModeled::ConflictException(ConflictException {
-                message: Some(format!(
-                    "the key {} is {current}, not {}, so its usage cannot be stopped",
-                    input.key_identifier,
-                    crate::state::KEY_STATE_CREATE_COMPLETE
+            return Err(StopKeyUsageErrorModeled::ValidationException(ValidationException {
+                message: Some(crate::state::key_not_in_state(
+                    &key.key_arn,
+                    crate::state::KEY_STATE_CREATE_COMPLETE,
                 )),
             })
             .into());

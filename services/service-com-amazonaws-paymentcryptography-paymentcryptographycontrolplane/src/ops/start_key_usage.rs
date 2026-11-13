@@ -190,12 +190,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // operations: one waiting to be deleted has to be restored first, and one the
         // clock has deleted is gone.
         if !key.is_active(now) {
-            let current = key.effective_state(now).to_string();
-            return Err(StartKeyUsageErrorModeled::ConflictException(ConflictException {
-                message: Some(format!(
-                    "the key {} is {current}, not {}, so its usage cannot be started",
-                    input.key_identifier,
-                    crate::state::KEY_STATE_CREATE_COMPLETE
+            return Err(StartKeyUsageErrorModeled::ValidationException(ValidationException {
+                message: Some(crate::state::key_not_in_state(
+                    &key.key_arn,
+                    crate::state::KEY_STATE_CREATE_COMPLETE,
                 )),
             })
             .into());

@@ -4,7 +4,9 @@
 //! Schedules a key for deletion: moves the stored key to `DELETE_PENDING` with a
 //! `DeletePendingTimestamp` the requested number of days out. The record stays in
 //! [`crate::state`], so a later `GetKey` reports the pending state and `RestoreKey`
-//! can still take it back.
+//! can still take it back. Only a key in `CREATE_COMPLETE` has a deletion to
+//! schedule, so one already waiting to be deleted — or one the clock has finished
+//! deleting — is refused with `ValidationException` and nothing is written.
 //!
 //! ## Shape of an operation
 //!
@@ -217,6 +219,27 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let key_arn = store
             .resolve_key_arn(&input.key_identifier)
             .ok_or_else(not_found)?;
+        let key = store.keys.get_mut(&key_arn).ok_or_else(not_found)?;
+
+        // Only a key that has been created and that nothing has scheduled yet has a
+        // deletion to schedule: the service gates this call on the key's `KeyState`
+        // ALONE. So a key already waiting to be deleted, and one whose waiting period
+        // the clock has run out, are refused whatever `DeleteKeyInDays` the request
+        // names — and the deletion date the first call promised is left exactly where
+        // it is, because this refusal happens before anything is written. The
+        // `@idempotent` trait does not make the repeat succeed: it marks the call safe
+        // to retry, and the retry of a schedule whose first attempt landed meets the
+        // same state gate as any other second schedule.
+        if !key.is_active(now) {
+            return Err(DeleteKeyErrorModeled::ValidationException(ValidationException {
+                message: Some(crate::state::key_not_in_state(
+                    &key.key_arn,
+                    crate::state::KEY_STATE_CREATE_COMPLETE,
+                )),
+            })
+            .into());
+        }
+
         let deletable_at =
             crate::state::delete_pending_instant(now, waiting_period).ok_or_else(|| {
                 DeleteKeyErrorModeled::ValidationException(ValidationException {
@@ -228,67 +251,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 })
             })?;
 
-        let key = store.keys.get_mut(&key_arn).ok_or_else(not_found)?;
-
-        // `effective_state` borrows the record, so the state it reports now is read
-        // into plain flags before the record below is mutated.
-        let (pending, deleted) = {
-            let state_now = key.effective_state(now);
-            (
-                state_now == crate::state::KEY_STATE_DELETE_PENDING,
-                state_now == crate::state::KEY_STATE_DELETE_COMPLETE,
-            )
-        };
-        // A key whose waiting period has already elapsed is gone; there is nothing
-        // left to schedule.
-        if deleted {
-            return Err(DeleteKeyErrorModeled::ConflictException(ConflictException {
-                message: Some(format!("the key {} is already deleted", input.key_identifier)),
-            })
-            .into());
-        }
-        // This operation is `@idempotent`, so the RETRY an SDK performs after a lost
-        // response must succeed: a key already waiting to be deleted under the SAME
-        // waiting period is answered as it stands, moving neither its state nor its
-        // deletion date. A second request naming a DIFFERENT waiting period is not
-        // that retry — it would move a deletion date the caller was already promised,
-        // the inconsistent state `ConflictException` documents — so it is refused,
-        // the same rule `CreateAlias` applies to rebinding an existing name.
-        if pending && key.delete_key_in_days != Some(waiting_period) {
-            let scheduled_for = key.delete_key_in_days;
-            return Err(DeleteKeyErrorModeled::ConflictException(ConflictException {
-                message: Some(match scheduled_for {
-                    Some(days) => format!(
-                        "the key {} is already scheduled for deletion in {days} days; \
-                         restore it before scheduling a different waiting period",
-                        input.key_identifier
-                    ),
-                    None => format!(
-                        "the key {} is already scheduled for deletion; restore it \
-                         before scheduling a different waiting period",
-                        input.key_identifier
-                    ),
-                }),
-            })
-            .into());
-        }
-        let scheduled = !pending;
-        if scheduled {
-            key.key_state = crate::state::KEY_STATE_DELETE_PENDING.to_string();
-            key.delete_pending_timestamp = Some(deletable_at);
-            // The period this call promised, so a later retry can be told from a
-            // request asking for a different one.
-            key.delete_key_in_days = Some(waiting_period);
-        }
+        key.key_state = crate::state::KEY_STATE_DELETE_PENDING.to_string();
+        key.delete_pending_timestamp = Some(deletable_at);
 
         // Answered from the record as it now stands, so the next reader sees the
         // same state and timestamp.
         let key = key.to_key(now);
-        // Audited only when this call actually wrote: the idempotent retry above
-        // stores nothing, so it must not leave a trace claiming a state change.
-        if scheduled {
-            crate::state::record_mutation(ctx.parts(), Self::NAME, &key.key_arn);
-        }
+        crate::state::record_mutation(ctx.parts(), Self::NAME, &key.key_arn);
         Ok(DeleteKeyOutput { key })
     }
 }
