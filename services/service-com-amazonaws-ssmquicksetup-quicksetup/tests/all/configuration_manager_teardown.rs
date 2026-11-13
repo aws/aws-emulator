@@ -552,38 +552,40 @@ async fn a_delete_winds_the_manager_and_its_configurations_down_before_removing_
             "case {name:?}: a repeated delete must not disturb the teardown, got {actual:?}"
         );
 
-        // Once the teardown comes due, the manager and its configurations are gone.
-        tokio::time::sleep(past_transition()).await;
+        // Once the teardown comes due, the manager and its configurations are gone: wait
+        // for that condition, not for a duration (`tests/all/target_authorization.rs`
+        // owns the one wait).
+        super::target_authorization::poll_until_absent(&router, name, &doomed).await;
 
         let (status, answer) = get_manager(&router, &doomed).await;
         assert_eq!(
-            status, 401,
-            "case {name:?}: a torn-down manager is no target this endpoint serves, got \
+            status, 404,
+            "case {name:?}: a torn-down manager names no resource this endpoint serves, got \
              {status} / {answer:?}"
         );
         assert_eq!(
             error_code(&answer),
-            "UnauthorizedException",
+            "ResourceNotFoundException",
             "case {name:?}: got {answer:?}"
         );
 
         // The manager's own route and the tag plane's both carry an ARN as a path label,
-        // so both are authorized against it ahead of the handler
+        // and each handler resolves the ARN it was given
         // (`tests/all/target_authorization.rs`).
         let (status, answer) = list_tags(&router, &doomed).await;
         assert_eq!(
-            status, 401,
+            status, 404,
             "case {name:?}: a torn-down manager is no resource to read tags of, got {status} / {answer:?}"
         );
 
         let (status, answer) = delete_manager(&router, &doomed).await;
         assert_eq!(
-            status, 401,
+            status, 404,
             "case {name:?}: deleting a torn-down manager names nothing, got {status} / {answer:?}"
         );
         assert_eq!(
             error_code(&answer),
-            "UnauthorizedException",
+            "ResourceNotFoundException",
             "case {name:?}: got {answer:?}"
         );
 
@@ -770,10 +772,10 @@ async fn a_manager_being_torn_down_takes_no_further_mutation() {
         );
 
         // And once the teardown has completed there is no resource to mutate: every one
-        // of these routes carries an ARN as a path label, so each is authorized against
-        // it ahead of the handler (`tests/all/target_authorization.rs`).
-        tokio::time::sleep(past_transition()).await;
-        let (expected_status, expected_code) = (401, "UnauthorizedException");
+        // of these routes carries an ARN as a path label, and each handler resolves the
+        // ARN it was given (`tests/all/target_authorization.rs`).
+        super::target_authorization::poll_until_absent(&router, name, &manager_arn).await;
+        let (expected_status, expected_code) = (404, "ResourceNotFoundException");
         let (status, answer) =
             call(&router, mutation.method, &uri, mutation.body.as_ref()).await;
         assert_eq!(

@@ -11,18 +11,15 @@
 //! key's stored value — and nothing else: no entry for a key the resource does not
 //! carry, and no entry belonging to another resource. Being `@readonly` it changes
 //! nothing, so repeating it answers identically and every other reported value stays
-//! where the last mutating call left it; a request whose ARN names no stored resource is
-//! refused ahead of the read by the stage that authorizes the resource a route targets
+//! where the last mutating call left it; a request whose ARN names no stored resource
+//! earns this operation's own modelled `ResourceNotFoundException`
 //! (`tests/all/target_authorization.rs`).
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use std::time::Duration;
 
 use serde_json::{json, Map, Value};
-use service_com_amazonaws_ssmquicksetup_quicksetup::state::{
-    QUICK_SETUP_TYPE_CATALOG, TRANSITION_SPAN,
-};
+use service_com_amazonaws_ssmquicksetup_quicksetup::state::QUICK_SETUP_TYPE_CATALOG;
 use smithy_server_runtime::MultiServiceRouter;
 
 /// The region every request below signs for.
@@ -493,9 +490,9 @@ async fn list_tags_for_resource_reports_only_the_named_resource() {
     );
 }
 
-/// An ARN naming no stored resource is refused ahead of the read, by the stage that
-/// authorizes the resource a route targets: HTTP 401 `UnauthorizedException`, whatever
-/// form the ARN takes.
+/// An ARN naming no stored resource earns this operation's own modelled refusal: HTTP 404
+/// `ResourceNotFoundException`, with the fixed sentence this operation states for an
+/// absent resource, whatever form that ARN takes.
 #[tokio::test]
 async fn list_tags_for_resource_rejects_an_arn_naming_no_resource() {
     let router = emulator();
@@ -515,8 +512,9 @@ async fn list_tags_for_resource_rejects_an_arn_naming_no_resource() {
         "DeleteConfigurationManager must succeed, got {status} / {answer:?}"
     );
     // A delete starts an asynchronous teardown, so the manager it named is gone from
-    // the store once that teardown comes due.
-    tokio::time::sleep(TRANSITION_SPAN + Duration::from_millis(400)).await;
+    // the store once that teardown comes due: wait for that condition, not for a
+    // duration (`tests/all/target_authorization.rs` owns the one wait).
+    super::target_authorization::poll_until_absent(&router, "a deleted manager", &deleted).await;
 
     for (case, arn) in [
         (
@@ -536,13 +534,19 @@ async fn list_tags_for_resource_rejects_an_arn_naming_no_resource() {
     ] {
         let (status, answer) = list_tags(&router, &arn).await;
         assert_eq!(
-            status, 401,
-            "case {case:?}: expected 401, got {status} / {answer:?}"
+            status, 404,
+            "case {case:?}: expected 404, got {status} / {answer:?}"
         );
         assert_eq!(
             error_code(&answer),
-            "UnauthorizedException",
-            "case {case:?}: expected UnauthorizedException, got {answer:?}"
+            "ResourceNotFoundException",
+            "case {case:?}: expected ResourceNotFoundException, got {answer:?}"
+        );
+        let expected = "Configuration with requested id does not exist.";
+        assert_eq!(
+            answer.get("Message").and_then(Value::as_str),
+            Some(expected),
+            "case {case:?}: expected {expected:?}, got {answer:?}"
         );
     }
 

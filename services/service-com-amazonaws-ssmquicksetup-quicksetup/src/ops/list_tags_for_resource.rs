@@ -7,10 +7,11 @@
 //! left stored and writes nothing, so two reads of one resource answer the same way.
 //!
 //! This route's label is any taggable resource's ARN rather than the ARN of a resource
-//! kind this operation addresses, so `crate::service`'s request-authorization stage
-//! authorizes that ARN before this handler is reached: a request whose ARN names no
-//! resource this endpoint serves is refused there. The modelled 404 below is what remains
-//! for a caller that reaches the handler with no such resource.
+//! kind this operation addresses, and the configuration manager is this service's only
+//! ARN-addressable resource, so the label is resolved HERE: an ARN naming no manager this
+//! endpoint serves names no taggable resource at all, which is the modelled 404 below,
+//! stated in this operation's own not-found sentence
+//! ([`crate::state::LIST_TAGS_NOT_FOUND_MESSAGE`]).
 //!
 //! ## Shape of an operation
 //!
@@ -186,9 +187,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let Some(manager) = store.manager_in(&region, &input.resource_arn) else {
             return Err(ListTagsForResourceErrorModeled::ResourceNotFoundException(
                 ResourceNotFoundException {
-                    message: Some(crate::state::manager_not_found_message(
-                        &input.resource_arn,
-                    )),
+                    message: Some(crate::state::LIST_TAGS_NOT_FOUND_MESSAGE.to_string()),
                 },
             )
             .into());

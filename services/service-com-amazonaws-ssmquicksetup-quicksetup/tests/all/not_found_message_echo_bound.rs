@@ -22,12 +22,11 @@
 //! far past it — and the encoding of the text that makes it long, since an elision must
 //! cut on a character boundary rather than inside a multi-byte character. Each row is
 //! driven through every operation that reaches the sentence: `ListConfigurations`, which
-//! takes the ARN as a body member, is this service's only one. The routes that carry an
-//! ARN as a path LABEL reach no ARN of their own here — they are refused ahead of the
-//! handler by the request-authorization stage, with one fixed sentence that renders
-//! nothing of the request (`tests/all/target_authorization.rs`) — so the row class below
-//! also checks that an oversized label, on the manager's own route and on the tag plane,
-//! earns that fixed refusal and no echo.
+//! takes the ARN as a body member, and the manager's own route, which carries one as a
+//! path LABEL and resolves it in its handler (`tests/all/target_authorization.rs`), so the
+//! bound applies to a label exactly as it does to a body member. The tag plane resolves
+//! the same resource but states a wholly fixed sentence for an absent one, which the rows
+//! below also require: that is the bound at its limit, nothing echoed at all.
 
 use serde_json::{json, Value};
 use smithy_server_runtime::MultiServiceRouter;
@@ -113,7 +112,8 @@ fn expected_message(arn: &str) -> String {
 }
 
 /// Every operation that reaches this service's own configuration-manager lookup with an
-/// ARN its request supplied in the BODY.
+/// ARN its request supplied in the BODY; the six routes that carry one as a path LABEL
+/// are driven by the test below, each on the route the model binds for it.
 const MANAGER_ARN_OPERATIONS: &[&str] = &["ListConfigurations"];
 
 /// Drive one of [`MANAGER_ARN_OPERATIONS`] against `arn`, on the route and with the
@@ -222,29 +222,21 @@ async fn an_oversized_arn_is_echoed_only_as_far_as_the_echo_bound() {
     }
 }
 
-/// The tag plane takes the ARN on a member with no modelled constraint at all, so its
-/// value is the most unbounded one this service receives — and the manager's own route
-/// takes it on a member whose pattern leaves the Region segment unbounded. Both carry the
-/// ARN as a path LABEL, so both are refused ahead of the handler with the one fixed
-/// sentence that renders nothing of the request: an oversized value earns no echo
-/// whatever its length.
+/// The manager's own route takes the ARN on a member whose pattern leaves the Region
+/// segment unbounded and resolves it in its handler, so an oversized label earns the same
+/// bounded not-found sentence a body member does: never the whole value, and never more
+/// than the bound plus the elision. The tag plane takes the ARN on a member with no
+/// modelled constraint at all — the most unbounded value this service receives — and
+/// states a wholly fixed sentence for an absent resource, so an oversized label there is
+/// echoed not at all, which is the same rule at its limit.
 #[tokio::test]
-async fn an_oversized_label_earns_no_echo_from_the_arn_labelled_routes() {
+async fn an_oversized_label_is_echoed_only_as_far_as_the_echo_bound() {
     let router = emulator();
 
     for (arn_case, arn) in oversized_and_bounded_arns() {
         let path = format!("/tags/{}", label(&arn));
         let manager = format!("/configurationManager/{}", label(&arn));
-        let calls: Vec<(&str, (u16, Value))> = vec![
-            ("ListTagsForResource", call(&router, "GET", &path, None).await),
-            (
-                "TagResource",
-                call(&router, "PUT", &path, Some(&json!({ "Tags": { "Tier": "gold" } }))).await,
-            ),
-            (
-                "UntagResource",
-                call(&router, "DELETE", &format!("{path}?tagKeys=Tier"), None).await,
-            ),
+        let labelled: Vec<(&str, (u16, Value))> = vec![
             (
                 "GetConfigurationManager",
                 call(&router, "GET", &manager, None).await,
@@ -258,25 +250,61 @@ async fn an_oversized_label_earns_no_echo_from_the_arn_labelled_routes() {
                 call(&router, "DELETE", &manager, None).await,
             ),
         ];
-        for (operation, (status, answer)) in calls {
+        for (operation, (status, answer)) in labelled {
+            let case = format!("{operation} on {arn_case}");
+            assert_not_found(&case, &arn, status, &answer);
+            if arn.len() > MAX_ECHOED {
+                let message = error_message(&answer);
+                assert!(
+                    !message.contains(&arn),
+                    "case {case:?}: an oversized label must not come back whole, got \
+                     {} bytes: {message:?}",
+                    message.len()
+                );
+            }
+        }
+
+        // The tag plane's own fixed sentences (`tests/all/target_authorization.rs` holds
+        // the rule): the text is written out here so the test pins it.
+        let fixed: Vec<(&str, &str, (u16, Value))> = vec![
+            (
+                "ListTagsForResource",
+                "Configuration with requested id does not exist.",
+                call(&router, "GET", &path, None).await,
+            ),
+            (
+                "TagResource",
+                "Resource arn not found.",
+                call(&router, "PUT", &path, Some(&json!({ "Tags": { "Tier": "gold" } }))).await,
+            ),
+            (
+                "UntagResource",
+                "Resource arn not found.",
+                call(&router, "DELETE", &format!("{path}?tagKeys=Tier"), None).await,
+            ),
+        ];
+        for (operation, expected, (status, answer)) in fixed {
             let case = format!("{operation} on {arn_case}");
             assert_eq!(
-                status, 401,
-                "case {case:?}: expected the authorization refusal, got {status} / \
-                 {answer:?}"
+                status, 404,
+                "case {case:?}: expected the modelled 404, got {status} / {answer:?}"
+            );
+            assert_eq!(
+                error_code(&answer),
+                "ResourceNotFoundException",
+                "case {case:?}: expected ResourceNotFoundException, got {answer:?}"
             );
             let message = error_message(&answer);
+            assert_eq!(
+                message, expected,
+                "case {case:?}: expected {expected:?}, got {message:?}"
+            );
             // A prefix of whole characters, so a multi-byte row slices nothing in half.
             let prefix: String = arn.chars().take(32).collect();
             assert!(
                 !message.contains(&prefix),
-                "case {case:?}: the refusal must render nothing of the ARN, got \
+                "case {case:?}: a wholly fixed sentence renders nothing of the ARN, got \
                  {message:?}"
-            );
-            assert!(
-                message.len() <= MAX_ECHOED,
-                "case {case:?}: the refusal must stay bounded, got {} bytes: {message:?}",
-                message.len()
             );
         }
     }

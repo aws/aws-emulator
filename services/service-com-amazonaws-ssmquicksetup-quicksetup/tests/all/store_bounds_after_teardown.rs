@@ -33,6 +33,12 @@ const REGION: &str = "us-west-2";
 const TYPE: &str = "AWSQuickSetupType-SSMHostMgmt";
 
 /// Long enough that a teardown the clock has made due has come due.
+///
+/// The rows below are about what the store owes when NOTHING has run since that instant,
+/// so this suite may not reach the store to learn that the teardown came due: a read would
+/// be the very intervening call the `read_in_between == false` rows exist to exclude.
+/// Waiting out the span is therefore what the rule under test allows here, and the span is
+/// given generous slack rather than being timed tightly.
 fn past_transition() -> Duration {
     TRANSITION_SPAN + Duration::from_millis(400)
 }
@@ -314,6 +320,9 @@ async fn a_create_is_measured_against_the_store_the_clock_owes() {
             );
         }
         if teardown == Teardown::Due {
+            // No read here: the rows with `read_in_between == false` are about what the
+            // store owes when nothing has run since the teardown came due, so this wait
+            // may not drive a request against the store under test.
             tokio::time::sleep(past_transition()).await;
         }
         if read_in_between {
@@ -381,8 +390,8 @@ async fn a_create_is_measured_against_the_store_the_clock_owes() {
         )
         .await;
         assert_eq!(
-            status, 401,
-            "case {case}: the torn-down manager is no target this endpoint serves, got \
+            status, 404,
+            "case {case}: the torn-down manager names no resource this endpoint serves, got \
              {status} / {gone:?}"
         );
     }

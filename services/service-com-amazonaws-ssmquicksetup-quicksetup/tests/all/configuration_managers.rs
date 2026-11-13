@@ -9,9 +9,9 @@
 //! The rule under test: each of these operations answers from the persisted
 //! configuration-manager and configuration records, so whatever a create or an update
 //! stored is what a later Get or List reports — including the ids the service assigned
-//! — and anything never stored (or since deleted) is refused: an ARN a request carries in
-//! its body is the modelled 404, and one it carries as a route's path label is the
-//! authorization stage's 401 (`tests/all/target_authorization.rs`).
+//! — and anything never stored (or since deleted) is refused with the modelled 404,
+//! whether the ARN naming it came in the request body or as a route's path label
+//! (`tests/all/target_authorization.rs`).
 //!
 //! This file no longer carries a stub census: every operation it used to assert a 501
 //! for is implemented and covered by its own suite — `ListTagsForResource` in
@@ -1364,16 +1364,18 @@ async fn a_delete_removes_the_manager_and_the_configurations_it_owned() {
         "DeleteConfigurationManager must succeed, got {status} / {answer:?}"
     );
 
-    // Removing the deployed resources is work the service does after it has answered,
-    // so the records wind down first and are removed when that teardown comes due.
-    tokio::time::sleep(past_transition()).await;
+    // Removing the deployed resources is work the service does after it has answered, so
+    // the records wind down first and are removed when that teardown comes due: wait for
+    // that condition, not for a duration (`tests/all/target_authorization.rs` owns the one
+    // wait).
+    super::target_authorization::poll_until_absent(&router, "a deleted manager", &doomed).await;
 
     let (status, answer) = get(&router, &doomed).await;
     assert_eq!(
-        status, 401,
-        "a deleted manager is no target this endpoint serves, got {status} / {answer:?}"
+        status, 404,
+        "a deleted manager names no resource this endpoint serves, got {status} / {answer:?}"
     );
-    assert_eq!(error_code(&answer), "UnauthorizedException", "{answer:?}");
+    assert_eq!(error_code(&answer), "ResourceNotFoundException", "{answer:?}");
 
     let (status, answer) = list_managers(&router, &json!({})).await;
     assert_eq!(status, 200, "got {answer:?}");
@@ -1404,13 +1406,13 @@ async fn a_delete_removes_the_manager_and_the_configurations_it_owned() {
     );
 
     // Deleting it again names a manager the store no longer holds, so the route's own
-    // label is no longer a target this endpoint serves.
+    // label names no resource at all: the modelled not-found.
     let (status, answer) = delete(&router, &doomed).await;
     assert_eq!(
-        status, 401,
-        "a repeated delete must answer 401, got {status} / {answer:?}"
+        status, 404,
+        "a repeated delete must answer 404, got {status} / {answer:?}"
     );
-    assert_eq!(error_code(&answer), "UnauthorizedException", "{answer:?}");
+    assert_eq!(error_code(&answer), "ResourceNotFoundException", "{answer:?}");
 
     // And the survivor is still readable, unchanged.
     let survivor_record = get_ok(&router, "delete", &survivor).await;
@@ -1421,11 +1423,11 @@ async fn a_delete_removes_the_manager_and_the_configurations_it_owned() {
     );
 }
 
-/// An ARN no create ever minted is the authorization stage's 401 on every operation whose
-/// route carries it as a path label: those three routes are authorized against the ARN
-/// ahead of the handler (`tests/all/target_authorization.rs`).
+/// An ARN no create ever minted is the modelled 404 on every operation whose route
+/// carries it as a path label: each handler resolves the ARN it was given
+/// (`tests/all/target_authorization.rs`).
 #[tokio::test]
-async fn an_unknown_manager_arn_is_a_401_on_every_labelled_operation() {
+async fn an_unknown_manager_arn_is_a_404_on_every_labelled_operation() {
     let router = emulator();
     let uri = format!("/configurationManager/{}", label(UNKNOWN_MANAGER_ARN));
     let cases: [(&str, &str, Option<Value>); 3] = [
@@ -1433,16 +1435,23 @@ async fn an_unknown_manager_arn_is_a_401_on_every_labelled_operation() {
         ("PUT", uri.as_str(), Some(json!({ "Name": "renamed" }))),
         ("DELETE", uri.as_str(), None),
     ];
+    let expected =
+        format!("Quick setup manager with arn: {UNKNOWN_MANAGER_ARN} could not be found.");
     for (method, uri, body) in cases {
         let (status, answer) = call(&router, method, uri, body.as_ref()).await;
         assert_eq!(
-            status, 401,
-            "case {method}: expected 401, got {status} / {answer:?}"
+            status, 404,
+            "case {method}: expected 404, got {status} / {answer:?}"
         );
         assert_eq!(
             error_code(&answer),
-            "UnauthorizedException",
-            "case {method}: expected UnauthorizedException, got {answer:?}"
+            "ResourceNotFoundException",
+            "case {method}: expected ResourceNotFoundException, got {answer:?}"
+        );
+        assert_eq!(
+            answer.get("Message").and_then(Value::as_str),
+            Some(expected.as_str()),
+            "case {method}: expected {expected:?}, got {answer:?}"
         );
     }
 }

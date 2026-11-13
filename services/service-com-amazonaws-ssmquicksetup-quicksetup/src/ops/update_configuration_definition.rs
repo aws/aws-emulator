@@ -15,10 +15,9 @@
 //! names holds no definition with that id; an empty body on success.
 //!
 //! This route addresses one configuration definition and labels it with the ARN of the
-//! configuration manager that OWNS it, so `crate::service`'s request-authorization stage
-//! authorizes that ARN before this handler is reached — and before the modelled
-//! `@pattern` of either label is checked: a request whose ARN names no manager this
-//! endpoint serves is refused there, whatever its definition id says.
+//! configuration manager that OWNS it, and nothing stands between the request and this
+//! handler, so that ARN is resolved HERE: a request whose ARN names no manager this
+//! endpoint serves earns the modelled 404, whatever its definition id says.
 //!
 //! ## Shape of an operation
 //!

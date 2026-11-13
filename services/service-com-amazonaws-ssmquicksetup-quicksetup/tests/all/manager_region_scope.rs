@@ -415,31 +415,33 @@ async fn a_managers_region_scopes_its_endpoint_and_never_its_deployments() {
         );
 
         for foreign in foreign_regions(&row) {
-            // The manager's own route carries its ARN as a path label, so another
-            // Region's endpoint — which serves no resource under that ARN — refuses the
-            // request ahead of the handler (`tests/all/target_authorization.rs`).
+            // The manager's own route carries its ARN as a path label, and the handler
+            // resolves it against the Region the request was signed for, so another
+            // Region's endpoint — which serves no resource under that ARN — answers the
+            // modelled not-found (`tests/all/target_authorization.rs`).
             let (status, answer) = get_manager(&router, foreign, &manager_arn).await;
             assert_eq!(
-                status, 401,
+                status, 404,
                 "case {case:?}: GetConfigurationManager through {foreign} serves no \
                  manager of {:?}, got {status} / {answer:?}",
                 row.home
             );
             assert_eq!(
                 error_code(&answer),
-                "UnauthorizedException",
-                "case {case:?}: expected UnauthorizedException through {foreign}, \
+                "ResourceNotFoundException",
+                "case {case:?}: expected ResourceNotFoundException through {foreign}, \
                  got {answer:?}"
             );
-            assert!(
-                !error_message(&answer).contains(&manager_arn),
-                "case {case:?}: the refusal through {foreign} renders nothing of the \
-                 request, got {answer:?}"
+            assert_eq!(
+                error_message(&answer),
+                format!("Quick setup manager with arn: {manager_arn} could not be found."),
+                "case {case:?}: expected the refusal through {foreign} to name the ARN the \
+                 request carried, got {answer:?}"
             );
 
-            // The same ARN carried in the BODY is no route label, so the handler
-            // resolves it and answers this service's own not-found sentence, naming the
-            // ARN the request carried.
+            // The same ARN carried in the BODY is no route label, and it is resolved the
+            // same way: this service's own not-found sentence, naming the ARN the request
+            // carried.
             let (status, answer) = list_configurations(&router, foreign, &manager_arn).await;
             assert_eq!(
                 status, 404,
@@ -457,7 +459,7 @@ async fn a_managers_region_scopes_its_endpoint_and_never_its_deployments() {
             let (status, answer) =
                 update_manager(&router, foreign, &manager_arn, REFUSED_DESCRIPTION).await;
             assert_eq!(
-                status, 401,
+                status, 404,
                 "case {case:?}: UpdateConfigurationManager through {foreign} serves no \
                  manager of {:?}, got {status} / {answer:?}",
                 row.home

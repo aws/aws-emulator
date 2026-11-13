@@ -11,31 +11,27 @@
 //! value whether or not the resource already carried it, and every key the request does
 //! not name is left as it was — so a later `GetConfigurationManager` reports the merged
 //! set and repeating the same request answers the same way (the operation is
-//! `@idempotent`). An ARN naming no stored resource is refused ahead of the handler by
-//! the stage that authorizes the resource a route targets
-//! (`tests/all/target_authorization.rs`), and a request
-//! that would leave the resource carrying more tags than the service accepts is the
-//! modelled 400 with nothing stored.
+//! `@idempotent`). An ARN naming no stored resource earns the modelled 404 with the fixed
+//! sentence the tag plane's mutations state (`tests/all/target_authorization.rs`), and a
+//! request that would leave the resource carrying more tags than the service accepts is
+//! the modelled 400 with nothing stored.
 //!
 //! The second: `UntagResource` removes from the ONE resource `ResourceArn`
 //! names exactly the tag keys the request lists, matched whole and case-sensitively,
 //! leaves every other stored tag and every other resource as they were, and treats a
 //! key the resource does not carry as nothing to do — so a later
 //! `GetConfigurationManager` reports what is left and repeating the same request answers
-//! the same way (the operation is `@idempotent`). An ARN naming no stored resource is
-//! refused by that same stage, and a request naming no key at all names no route of this
+//! the same way (the operation is `@idempotent`). An ARN naming no stored resource earns
+//! that same modelled 404, and a request naming no key at all names no route of this
 //! endpoint — `TagKeys` is `@required` and bound to the `tagKeys` query parameter — so it
 //! is refused by the front door ahead of the handler, with nothing removed
 //! (`tests/all/unroutable_requests.rs` owns that rule).
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use std::time::Duration;
 
 use serde_json::{json, Map, Value};
-use service_com_amazonaws_ssmquicksetup_quicksetup::state::{
-    MAX_TAGS, QUICK_SETUP_TYPE_CATALOG, TRANSITION_SPAN,
-};
+use service_com_amazonaws_ssmquicksetup_quicksetup::state::{MAX_TAGS, QUICK_SETUP_TYPE_CATALOG};
 use smithy_server_runtime::MultiServiceRouter;
 
 /// The region every request below signs for.
@@ -485,9 +481,10 @@ async fn tag_resource_is_idempotent() {
     );
 }
 
-/// An ARN naming no stored resource is refused ahead of the assignment, by the stage
-/// that authorizes the resource a route targets — HTTP 401 `UnauthorizedException`,
-/// whatever form the ARN takes — and an assignment against one stores nothing.
+/// An ARN naming no stored resource earns this operation's own modelled refusal — HTTP
+/// 404 `ResourceNotFoundException`, with the fixed sentence the tag plane's mutations
+/// state for an absent resource, whatever form that ARN takes — and an assignment against
+/// one stores nothing.
 #[tokio::test]
 async fn tag_resource_rejects_an_arn_naming_no_resource() {
     let router = emulator();
@@ -507,8 +504,9 @@ async fn tag_resource_rejects_an_arn_naming_no_resource() {
         "DeleteConfigurationManager must succeed, got {status} / {answer:?}"
     );
     // A delete starts an asynchronous teardown, so the manager it named is gone from
-    // the store once that teardown comes due.
-    tokio::time::sleep(TRANSITION_SPAN + Duration::from_millis(400)).await;
+    // the store once that teardown comes due: wait for that condition, not for a
+    // duration (`tests/all/target_authorization.rs` owns the one wait).
+    super::target_authorization::poll_until_absent(&router, "a deleted manager", &deleted).await;
 
     for (case, arn) in [
         (
@@ -524,13 +522,19 @@ async fn tag_resource_rejects_an_arn_naming_no_resource() {
     ] {
         let (status, answer) = tag(&router, &arn, &tags(&[("Team", "platform")])).await;
         assert_eq!(
-            status, 401,
-            "case {case:?}: expected 401, got {status} / {answer:?}"
+            status, 404,
+            "case {case:?}: expected 404, got {status} / {answer:?}"
         );
         assert_eq!(
             error_code(&answer),
-            "UnauthorizedException",
-            "case {case:?}: expected UnauthorizedException, got {answer:?}"
+            "ResourceNotFoundException",
+            "case {case:?}: expected ResourceNotFoundException, got {answer:?}"
+        );
+        let expected = "Resource arn not found.";
+        assert_eq!(
+            answer.get("Message").and_then(Value::as_str),
+            Some(expected),
+            "case {case:?}: expected {expected:?}, got {answer:?}"
         );
     }
 
@@ -844,9 +848,10 @@ async fn untag_resource_is_idempotent() {
     );
 }
 
-/// An ARN naming no stored resource is refused ahead of the removal, by the stage that
-/// authorizes the resource a route targets — HTTP 401 `UnauthorizedException`, whatever
-/// form the ARN takes — and a removal against one stores nothing.
+/// An ARN naming no stored resource earns this operation's own modelled refusal — HTTP
+/// 404 `ResourceNotFoundException`, with the fixed sentence the tag plane's mutations
+/// state for an absent resource, whatever form that ARN takes — and a removal against one
+/// stores nothing.
 #[tokio::test]
 async fn untag_resource_rejects_an_arn_naming_no_resource() {
     let router = emulator();
@@ -866,8 +871,9 @@ async fn untag_resource_rejects_an_arn_naming_no_resource() {
         "DeleteConfigurationManager must succeed, got {status} / {answer:?}"
     );
     // A delete starts an asynchronous teardown, so the manager it named is gone from
-    // the store once that teardown comes due.
-    tokio::time::sleep(TRANSITION_SPAN + Duration::from_millis(400)).await;
+    // the store once that teardown comes due: wait for that condition, not for a
+    // duration (`tests/all/target_authorization.rs` owns the one wait).
+    super::target_authorization::poll_until_absent(&router, "a deleted manager", &deleted).await;
 
     for (case, arn) in [
         ("a well-formed ARN no create minted", UNKNOWN_MANAGER_ARN.to_string()),
@@ -880,13 +886,19 @@ async fn untag_resource_rejects_an_arn_naming_no_resource() {
     ] {
         let (status, answer) = untag(&router, &arn, &["Env"]).await;
         assert_eq!(
-            status, 401,
-            "case {case:?}: expected 401, got {status} / {answer:?}"
+            status, 404,
+            "case {case:?}: expected 404, got {status} / {answer:?}"
         );
         assert_eq!(
             error_code(&answer),
-            "UnauthorizedException",
-            "case {case:?}: expected UnauthorizedException, got {answer:?}"
+            "ResourceNotFoundException",
+            "case {case:?}: expected ResourceNotFoundException, got {answer:?}"
+        );
+        let expected = "Resource arn not found.";
+        assert_eq!(
+            answer.get("Message").and_then(Value::as_str),
+            Some(expected),
+            "case {case:?}: expected {expected:?}, got {answer:?}"
         );
     }
 

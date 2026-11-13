@@ -14,12 +14,10 @@
 //! that says there is no next page) and finds none of its
 //! identifiers, which `ListConfigurations` states for itself: it "returns configurations
 //! deployed by Quick Setup in the requesting Amazon Web Services account and Amazon Web
-//! Services Region" (`smithy_query(query="doc",shape="ListConfigurations")`). WHICH
-//! refusal such a request earns follows where the resource was named: a route that labels
-//! a resource the operation does not itself address is refused by the stage in front of
-//! the service (`tests/all/target_authorization.rs`), while every other — the manager's
-//! own route, a `ManagerArn` in the body, a configuration id — is refused by the handler,
-//! in this service's own modelled shapes ([`cross_region_refusal`]).
+//! Services Region" (`smithy_query(query="doc",shape="ListConfigurations")`). Every
+//! such request is refused by the handler, in this service's own modelled shapes, however
+//! it named the resource — as a route's path label, as a `ManagerArn` in the body, or as a
+//! configuration id ([`cross_region_refusal`]).
 //!
 //! The Region a configuration REPORTS is a different thing: `ConfigurationSummary$Region`
 //! is "The Amazon Web Services Region where the configuration was deployed"
@@ -490,7 +488,7 @@ async fn a_configuration_is_served_by_the_region_that_created_its_manager() {
 
             let (status, got) = get_manager(&router, other, &manager_arn).await;
             assert_eq!(
-                status, 401,
+                status, 404,
                 "case {case}: {other} must not serve a manager of {home}, got {status} / {got:?}"
             );
         }
@@ -569,18 +567,12 @@ const PER_RESOURCE_OPERATIONS: &[&str] = &[
 ];
 
 /// Which refusal one of [`PER_RESOURCE_OPERATIONS`] earns for a resource of another
-/// Region: the 401 of the stage that fronts every route carrying a resource ARN as a path
-/// label (the manager's own route, the tag plane's `ResourceArn`, the
-/// configuration-definition route's parent `ManagerArn`), and the handler's own modelled
-/// 404 where the request names the resource somewhere else — a `ManagerArn` in the body,
-/// a configuration id in the path.
-fn cross_region_refusal(operation: &str) -> (u16, &'static str) {
-    match operation {
-        "GetConfigurationManager" | "UpdateConfigurationManager" | "DeleteConfigurationManager"
-        | "ListTagsForResource" | "TagResource" | "UntagResource"
-        | "UpdateConfigurationDefinition" => (401, "UnauthorizedException"),
-        _ => (404, "ResourceNotFoundException"),
-    }
+/// Region: the handler's own modelled 404, however the request named the resource — as a
+/// route's path label (the manager's own route, the tag plane's `ResourceArn`, the
+/// configuration-definition route's parent `ManagerArn`), as a `ManagerArn` in the body,
+/// or as a configuration id in the path. No operation of this service models a 401.
+fn cross_region_refusal(_operation: &str) -> (u16, &'static str) {
+    (404, "ResourceNotFoundException")
 }
 
 /// One of [`PER_RESOURCE_OPERATIONS`], addressing `fixture`'s identifiers but signed for

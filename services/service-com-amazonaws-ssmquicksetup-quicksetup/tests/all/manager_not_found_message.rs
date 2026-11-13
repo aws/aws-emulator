@@ -15,22 +15,20 @@
 //! varies: no account id, Region or uuid of any one run is part of it, so each row below
 //! supplies a different ARN and expects that same ARN back inside the same fixed text.
 //!
-//! The operations here are the ones that reach that lookup with an ARN the REQUEST
-//! carried in its body: `ListConfigurations` is this service's only one. Every route that
-//! carries an ARN as a path LABEL — the manager's own `/configurationManager/{ManagerArn}`,
-//! the tag plane, and the configuration-definition route labelled with its parent's ARN —
-//! is authorized against that ARN ahead of the handler by the stage in
-//! `tests/all/target_authorization.rs`, so an ARN naming no manager never reaches this
-//! sentence there; the rows below drive those routes too, and require the stage's one
-//! fixed refusal rather than this sentence.
+//! The operations here are every one that resolves such an ARN and states that sentence,
+//! however the request carried it: `ListConfigurations` takes it as a body member, and the
+//! manager's own `/configurationManager/{ManagerArn}` and
+//! `/configurationDefinition/{ManagerArn}/{Id}` carry one as a path LABEL. Where the ARN
+//! sat is no part of the answer: each operation resolves the ARN it was given in its own
+//! handler, so every row below earns the same modelled shape, status and sentence. The tag
+//! plane's three operations resolve the same resource but state fixed sentences of their
+//! own, which is what the rows at the end require of them
+//! (`tests/all/target_authorization.rs` holds that rule over every route).
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use serde_json::{json, Value};
-use service_com_amazonaws_ssmquicksetup_quicksetup::state::{
-    QUICK_SETUP_TYPE_CATALOG, TRANSITION_SPAN,
-};
+use service_com_amazonaws_ssmquicksetup_quicksetup::state::QUICK_SETUP_TYPE_CATALOG;
 use smithy_server_runtime::MultiServiceRouter;
 
 /// The region every request below signs for.
@@ -147,13 +145,29 @@ fn expected_message(arn: &str) -> String {
 /// ARN the REQUEST carried in its BODY, by the name used in each assertion below.
 const MANAGER_ARN_OPERATIONS: &[&str] = &["ListConfigurations"];
 
-/// Every operation whose route carries the manager's ARN as a path LABEL: authorized
-/// ahead of the handler, so an ARN naming no manager earns the stage's one fixed refusal
-/// there rather than this sentence.
+/// Every operation whose route carries the manager's ARN as a path LABEL and states the
+/// manager not-found sentence: the manager's own three, and the configuration-definition
+/// route labelled with its parent manager's ARN (`smithy_query(query="digest")`). Each
+/// resolves that label in its own handler, so an ARN naming no manager earns this same
+/// sentence there.
 const MANAGER_LABEL_OPERATIONS: &[&str] = &[
     "GetConfigurationManager",
     "DeleteConfigurationManager",
     "UpdateConfigurationManager",
+    "UpdateConfigurationDefinition",
+];
+
+/// The tag plane's three operations, which resolve the same manager by ARN but state a
+/// fixed sentence of their own for an absent one: one for the read, one shared by the two
+/// mutations. Nothing of the request is rendered in either, which is what the rows below
+/// require.
+const TAG_PLANE_OPERATIONS: &[(&str, &str)] = &[
+    (
+        "ListTagsForResource",
+        "Configuration with requested id does not exist.",
+    ),
+    ("TagResource", "Resource arn not found."),
+    ("UntagResource", "Resource arn not found."),
 ];
 
 /// Drive one of [`MANAGER_ARN_OPERATIONS`] against `arn`, on the route and with the
@@ -162,8 +176,9 @@ async fn call_naming(
     router: &MultiServiceRouter,
     operation: &str,
     arn: &str,
-    _definition_id: &str,
+    definition_id: &str,
 ) -> (u16, Value) {
+    let tags = format!("/tags/{}", label(arn));
     match operation {
         "GetConfigurationManager" => {
             call(
@@ -189,6 +204,30 @@ async fn call_naming(
                 "PUT",
                 &format!("/configurationManager/{}", label(arn)),
                 Some(&json!({ "Name": "renamed" })),
+            )
+            .await
+        }
+        "ListTagsForResource" => call(router, "GET", &tags, None).await,
+        "TagResource" => {
+            call(
+                router,
+                "PUT",
+                &tags,
+                Some(&json!({ "Tags": { "Env": "prod" } })),
+            )
+            .await
+        }
+        "UntagResource" => call(router, "DELETE", &format!("{tags}?tagKeys=Env"), None).await,
+        "UpdateConfigurationDefinition" => {
+            call(
+                router,
+                "PUT",
+                &format!(
+                    "/configurationDefinition/{}/{}",
+                    label(arn),
+                    label(definition_id)
+                ),
+                Some(&json!({ "TypeVersion": "LATEST" })),
             )
             .await
         }
@@ -226,26 +265,27 @@ fn assert_not_found(case: &str, arn: &str, status: u16, answer: &Value) {
     );
 }
 
-/// Assert one authorization refusal: the stage's status, its wire error code and its one
-/// fixed sentence, which renders nothing of the ARN the request carried.
-fn assert_unauthorized(case: &str, arn: &str, status: u16, answer: &Value) {
+/// Assert one tag-plane refusal: the modelled 404 and shape, the fixed sentence that
+/// operation states, and nothing of the ARN the request carried.
+fn assert_fixed_not_found(case: &str, arn: &str, expected: &str, status: u16, answer: &Value) {
     assert_eq!(
-        status, 401,
-        "case {case:?}: expected the authorization refusal, got {status} / {answer:?}"
+        status, 404,
+        "case {case:?}: expected the modelled 404, got {status} / {answer:?}"
     );
     assert_eq!(
         error_code(answer),
-        "UnauthorizedException",
-        "case {case:?}: expected UnauthorizedException, got {answer:?}"
+        "ResourceNotFoundException",
+        "case {case:?}: expected ResourceNotFoundException, got {answer:?}"
     );
     let actual = error_message(answer);
     assert_eq!(
-        actual, "Unauthorized",
-        "case {case:?}: expected the fixed sentence, got {actual:?}"
+        actual, expected,
+        "case {case:?}: expected {expected:?}, got {actual:?}"
     );
     assert!(
         !actual.contains(arn),
-        "case {case:?}: the fixed sentence renders nothing of the request, got {actual:?}"
+        "case {case:?}: a wholly fixed sentence renders nothing of the request, got \
+         {actual:?}"
     );
 }
 
@@ -311,10 +351,10 @@ const UNKNOWN_MANAGER_ARNS: &[(&str, &str)] = &[
 /// only has to satisfy the modelled `^[a-z0-9-]{1,20}$`.
 const SOME_DEFINITION_ID: &str = "cfg-1";
 
-/// Every operation that resolves a manager ARN its request carried in the BODY refuses an
-/// ARN naming no stored manager with the one not-found sentence, carrying the ARN the
-/// request supplied — while the same ARNs on the routes that carry one as a path label
-/// earn the authorization stage's fixed refusal instead.
+/// Every operation that resolves a manager ARN its request carried refuses an ARN naming
+/// no stored manager with the one not-found sentence, carrying the ARN the request
+/// supplied — whether that ARN arrived in the body or as a route's path label — while the
+/// tag plane states its own fixed sentence for the same resource.
 #[tokio::test]
 async fn an_arn_naming_no_manager_is_refused_with_the_not_found_sentence() {
     let router = emulator();
@@ -323,15 +363,15 @@ async fn an_arn_naming_no_manager_is_refused_with_the_not_found_sentence() {
     let live = create_manager(&router, "a live manager").await;
 
     for (arn_case, arn) in UNKNOWN_MANAGER_ARNS {
-        for operation in MANAGER_ARN_OPERATIONS {
+        for operation in MANAGER_ARN_OPERATIONS.iter().chain(MANAGER_LABEL_OPERATIONS) {
             let case = format!("{operation} on {arn_case}");
             let (status, answer) = call_naming(&router, operation, arn, SOME_DEFINITION_ID).await;
             assert_not_found(&case, arn, status, &answer);
         }
-        for operation in MANAGER_LABEL_OPERATIONS {
+        for (operation, expected) in TAG_PLANE_OPERATIONS {
             let case = format!("{operation} on {arn_case}");
             let (status, answer) = call_naming(&router, operation, arn, SOME_DEFINITION_ID).await;
-            assert_unauthorized(&case, arn, status, &answer);
+            assert_fixed_not_found(&case, arn, expected, status, &answer);
         }
     }
 
@@ -397,17 +437,23 @@ async fn a_deleted_manager_s_own_arn_is_refused_with_the_not_found_sentence() {
         "DeleteConfigurationManager must be accepted, got {status} / {answer:?}"
     );
     // The delete starts an asynchronous teardown, so the manager is gone from the store
-    // only once that teardown comes due.
-    tokio::time::sleep(TRANSITION_SPAN + Duration::from_millis(400)).await;
+    // only once that teardown comes due: wait for that condition, not for a duration
+    // (`tests/all/target_authorization.rs` owns the one wait).
+    super::target_authorization::poll_until_absent(
+        &router,
+        "a manager about to be deleted",
+        &doomed,
+    )
+    .await;
 
-    for operation in MANAGER_ARN_OPERATIONS {
+    for operation in MANAGER_ARN_OPERATIONS.iter().chain(MANAGER_LABEL_OPERATIONS) {
         let case = format!("{operation} on the ARN of a deleted manager");
         let (status, answer) = call_naming(&router, operation, &doomed, &definition_id).await;
         assert_not_found(&case, &doomed, status, &answer);
     }
-    for operation in MANAGER_LABEL_OPERATIONS {
+    for (operation, expected) in TAG_PLANE_OPERATIONS {
         let case = format!("{operation} on the ARN of a deleted manager");
         let (status, answer) = call_naming(&router, operation, &doomed, &definition_id).await;
-        assert_unauthorized(&case, &doomed, status, &answer);
+        assert_fixed_not_found(&case, &doomed, expected, status, &answer);
     }
 }

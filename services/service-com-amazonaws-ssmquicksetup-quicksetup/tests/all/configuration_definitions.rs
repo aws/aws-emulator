@@ -777,9 +777,9 @@ async fn a_pair_that_names_no_stored_definition_is_a_404() {
         "a refused update must write nothing, got {after:?}"
     );
 
-    // A pair whose MANAGER ARN names no stored manager is refused in front of the
-    // handler, by the stage that authorizes the route's target, so the definition id it
-    // carries is never looked at.
+    // A pair whose MANAGER ARN names no stored manager is the handler's own modelled
+    // not-found: the manager is resolved first, so the definition id it carries is never
+    // looked at.
     let (status, answer) = update_definition(
         &router,
         UNKNOWN_MANAGER_ARN,
@@ -788,13 +788,20 @@ async fn a_pair_that_names_no_stored_definition_is_a_404() {
     )
     .await;
     assert_eq!(
-        status, 401,
-        "case \"a manager ARN no create minted\": expected 401, got {status} / {answer:?}"
+        status, 404,
+        "case \"a manager ARN no create minted\": expected 404, got {status} / {answer:?}"
     );
     assert_eq!(
         error_code(&answer),
-        "UnauthorizedException",
-        "case \"a manager ARN no create minted\": expected UnauthorizedException, got {answer:?}"
+        "ResourceNotFoundException",
+        "case \"a manager ARN no create minted\": expected ResourceNotFoundException, got \
+         {answer:?}"
+    );
+    let expected = format!("Quick setup manager with arn: {UNKNOWN_MANAGER_ARN} could not be found.");
+    assert_eq!(
+        answer.get("Message").and_then(Value::as_str),
+        Some(expected.as_str()),
+        "case \"a manager ARN no create minted\": expected {expected:?}, got {answer:?}"
     );
 }
 

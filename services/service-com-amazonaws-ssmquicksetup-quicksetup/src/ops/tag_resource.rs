@@ -10,11 +10,12 @@
 //! stamp moves only when the stored record actually changed.
 //!
 //! This route's label is any taggable resource's ARN rather than the ARN of a resource
-//! kind this operation addresses, so `crate::service`'s request-authorization stage
-//! authorizes that ARN before this handler is reached — and so before the `Tags` map is
-//! judged: a request whose ARN names no resource this endpoint serves is refused there.
-//! The modelled 404 below is what remains for a caller that reaches the handler with no
-//! such resource.
+//! kind this operation addresses, and the configuration manager is this service's only
+//! ARN-addressable resource, so the label is resolved HERE — after the `Tags` map is
+//! judged, that being the request's own input: an ARN naming no manager this endpoint
+//! serves names no taggable resource at all, which is the modelled 404 below, stated in
+//! the tag plane's own mutation sentence
+//! ([`crate::state::TAG_MUTATION_NOT_FOUND_MESSAGE`]).
 //!
 //! ## Shape of an operation
 //!
@@ -246,9 +247,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let Some(manager) = store.manager_in_mut(&region, &input.resource_arn) else {
             return Err(TagResourceErrorModeled::ResourceNotFoundException(
                 ResourceNotFoundException {
-                    message: Some(crate::state::manager_not_found_message(
-                        &input.resource_arn,
-                    )),
+                    message: Some(crate::state::TAG_MUTATION_NOT_FOUND_MESSAGE.to_string()),
                 },
             )
             .into());

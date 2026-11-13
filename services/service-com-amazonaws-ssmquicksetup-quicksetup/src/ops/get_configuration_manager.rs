@@ -6,10 +6,10 @@
 //! with the ids `CreateConfigurationManager` assigned them — or the modelled 404 when
 //! no manager has that ARN.
 //!
-//! This route's label IS the resource it addresses, so the ARN is resolved HERE rather
-//! than by the stage in `crate::service` that fronts the routes labelled with an ARN they
-//! do not address: a caller polling a manager by its own ARN is answered the modelled
-//! `ResourceNotFoundException` once that manager is gone.
+//! This route's label IS the resource it addresses, and nothing stands between the
+//! request and this handler, so the ARN is resolved HERE: a caller polling a manager by
+//! its own ARN is answered the modelled `ResourceNotFoundException` once that manager is
+//! gone.
 //!
 //! Reporting, not mutating: the only write it makes is materialising the status
 //! change the clock already owes (see [`crate::state::ComAmazonawsSsmquicksetupQuicksetupState::settle`]),

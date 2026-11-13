@@ -128,6 +128,26 @@ pub fn manager_not_found_message(manager_arn: &str) -> String {
     )
 }
 
+/// The sentence `ListTagsForResource` refuses with when the ARN it was given names no
+/// resource this endpoint serves.
+///
+/// Wholly fixed text, and NOT the manager-route sentence
+/// [`manager_not_found_message`] states: AWS words its not-found refusal per operation,
+/// and the one the tag plane's read states names no id, ARN, member or value, so there is
+/// nothing in it taken from the request or from stored state — and nothing
+/// caller-supplied to bound.
+pub const LIST_TAGS_NOT_FOUND_MESSAGE: &str = "Configuration with requested id does not exist.";
+
+/// The sentence a tag MUTATION — `TagResource` and `UntagResource`, the two operations
+/// bound to `PUT`/`DELETE /tags/{ResourceArn}` — refuses with when the ARN it was given
+/// names no resource this endpoint serves.
+///
+/// Wholly fixed text, for the same reason as [`LIST_TAGS_NOT_FOUND_MESSAGE`] and
+/// different from it: the sentence belongs to the error class of the operation stating it,
+/// and assigning or removing tags is one class where reading them is another. The one
+/// place it lives, so both mutations of the tag plane refuse an absent resource alike.
+pub const TAG_MUTATION_NOT_FOUND_MESSAGE: &str = "Resource arn not found.";
+
 /// The sentence this service refuses with when a configuration-definition id a request
 /// supplied names no stored definition in the scope that request addressed it in.
 ///
