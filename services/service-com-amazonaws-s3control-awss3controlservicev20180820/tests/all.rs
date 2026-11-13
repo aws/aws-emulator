@@ -55,6 +55,8 @@ mod batch_job_execution;
 mod batch_job_lifecycle;
 #[path = "all/batch_job_list.rs"]
 mod batch_job_list;
+#[path = "all/batch_job_manifest_addressing.rs"]
+mod batch_job_manifest_addressing;
 #[path = "all/batch_job_priority.rs"]
 mod batch_job_priority;
 #[path = "all/batch_job_refusal_words.rs"]
