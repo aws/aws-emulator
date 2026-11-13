@@ -7,8 +7,10 @@
 //! handlers build is read back from a record stored here, and the ids they hand out are
 //! minted here and kept.
 //!
-//! The locale slice (`CreateBotLocale`, `DescribeBotLocale`) is served the same way out
-//! of `bot_locales`, keyed by the bot, bot version and locale the request names.
+//! The locale slice (`CreateBotLocale`, `DescribeBotLocale`, `DeleteBotLocale`) is served
+//! the same way out of `bot_locales`, keyed by the bot, bot version and locale the request
+//! names. A locale is the container every intent, slot type and slot of it is defined in,
+//! so deleting one takes those records with it ([`ComAmazonawsLexmodelsv2Lexmodelbuildingservicev2State::remove_bot_locale`]).
 //!
 //! The slot type slice (`CreateSlotType`, `DescribeSlotType`, `ListSlotTypes`) is served
 //! out of `slot_types`: a custom slot type is defined inside one locale of one bot
@@ -103,6 +105,10 @@ pub const BOT_LOCALE_STATUS_BUILT: &str = "Built";
 /// failure are listed in the failureReasons field", which is where a build the locale's
 /// own content cannot satisfy settles.
 pub const BOT_LOCALE_STATUS_FAILED: &str = "Failed";
+/// See [`BOT_LOCALE_STATUS_CREATING`]. `DeleteBotLocale` documents this as the status it
+/// reports: "The locale first enters the Deleting status. Once the locale is deleted it no
+/// longer appears in the list of locales for the bot."
+pub const BOT_LOCALE_STATUS_DELETING: &str = "Deleting";
 
 /// Every language and locale Amazon Lex V2 accepts, each with the locale name the API
 /// reports for it.
@@ -1012,6 +1018,13 @@ impl Slot {
             && self.intent_id == intent_id
     }
 
+    /// Is this slot one of that locale's, whichever intent of it holds the slot? A slot
+    /// is defined inside one intent of one locale, so every slot of an intent of the
+    /// locale is one of the locale's.
+    pub fn is_in_locale(&self, bot_id: &str, bot_version: &str, locale_id: &str) -> bool {
+        self.bot_id == bot_id && self.bot_version == bot_version && self.locale_id == locale_id
+    }
+
     /// This slot as a `ListSlots` summary entry.
     pub fn summary(&self) -> SlotSummary {
         SlotSummary {
@@ -1475,6 +1488,33 @@ impl ComAmazonawsLexmodelsv2Lexmodelbuildingservicev2State {
         let before = self.intents.len();
         self.intents.retain(|_, intent| intent.bot_id != bot_id);
         before - self.intents.len()
+    }
+
+    /// Drop the one locale the triple names together with everything defined inside it —
+    /// its intents, the slots of those intents and its slot types — and answer the record
+    /// that went: a resource of a locale cannot outlive the locale any more than a
+    /// resource of a bot outlives the bot. `None` when the store holds no such locale,
+    /// which is what a delete reports as a resource that does not exist.
+    ///
+    /// Only the named version of the named bot is touched: the same locale id of another
+    /// bot, or of another version of this one, is a different locale and keeps everything
+    /// defined in it.
+    pub fn remove_bot_locale(
+        &mut self,
+        bot_id: &str,
+        bot_version: &str,
+        locale_id: &str,
+    ) -> Option<BotLocale> {
+        let removed = self
+            .bot_locales
+            .remove(&bot_locale_key(bot_id, bot_version, locale_id))?;
+        self.intents
+            .retain(|_, intent| !intent.is_in_locale(bot_id, bot_version, locale_id));
+        self.slot_types
+            .retain(|_, slot_type| !slot_type.is_in_locale(bot_id, bot_version, locale_id));
+        self.slots
+            .retain(|_, slot| !slot.is_in_locale(bot_id, bot_version, locale_id));
+        Some(removed)
     }
 
     /// Drop every locale of `bot_id`, whatever version holds it, and answer how many

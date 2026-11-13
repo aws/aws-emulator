@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op DeleteBotLocale
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `DeleteBotLocale`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`DeleteBotLocale::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! Removes one locale of one bot version from the store and reports the `Deleting` status
+//! for the triple it removed. A locale is the container every intent, slot type and slot
+//! of it is defined in, so the delete takes those records with it: nothing of the locale
+//! is readable afterwards. A triple no stored locale carries is a modelled
+//! `PreconditionFailedException` (HTTP 412) — this operation declares no
+//! `ResourceNotFoundException`
+//! (`smithy_query(query="operation",operation="DeleteBotLocale")`) — and the identifiers
+//! are resolved outside in, so the message names the first one that failed to resolve.
 //!
 //! ## Shape of an operation
 //!
@@ -165,18 +165,59 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `DeleteBotLocale` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(DeleteBotLocaleErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("DeleteBotLocale"))
+        let _ = ctx;
+
+        let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
+            DeleteBotLocaleErrorModeled::InternalServerException(InternalServerException {
+                message: Some("the Lex Models V2 store is unavailable".to_string()),
+            })
+        })?;
+
+        let mut store = state.lock();
+
+        // The identifiers are resolved OUTSIDE IN, the way every operation of this
+        // service naming a resource inside another resolves them: the bot and the version
+        // of it first, then the locale inside that version, so the message names the
+        // first identifier that failed to resolve rather than the innermost one the
+        // request happened to carry.
+        if !store.bot_version_exists(&input.bot_id, &input.bot_version) {
+            return Err(missing(crate::state::request_path_resource_missing(
+                crate::state::EXPORTED_BOT_LABEL,
+                &[("id", &input.bot_id), ("version", &input.bot_version)],
+            )));
+        }
+
+        // "When you delete a locale, all intents, slots, and slot types defined for the
+        // locale are also deleted": the locale is the container those resources are
+        // defined in, so they go with the record rather than outliving it.
+        let Some(removed) =
+            store.remove_bot_locale(&input.bot_id, &input.bot_version, &input.locale_id)
+        else {
+            return Err(missing(crate::state::request_path_resource_missing(
+                crate::state::EXPORTED_BOT_LOCALE_LABEL,
+                &[("id", &input.locale_id)],
+            )));
+        };
+
+        // The record is gone, so a later `DescribeBotLocale` cannot find it and nothing
+        // defined in it resolves either; the status reported is the one the delete call
+        // itself puts the locale into — "the locale first enters the Deleting status" —
+        // and the triple reported is the one the removed record carried.
+        Ok(DeleteBotLocaleOutput {
+            bot_id: Some(removed.bot_id),
+            bot_version: Some(removed.bot_version),
+            locale_id: Some(removed.locale_id),
+            bot_locale_status: Some(crate::state::BOT_LOCALE_STATUS_DELETING.to_string()),
+        })
     }
+}
+
+/// Refuse the request with the modelled `PreconditionFailedException` (HTTP 412): the
+/// resource the request path names is not one this control plane holds, and this
+/// operation models no `ResourceNotFoundException` to report it with.
+fn missing(message: String) -> DeleteBotLocaleError {
+    DeleteBotLocaleErrorModeled::PreconditionFailedException(PreconditionFailedException {
+        message: Some(message),
+    })
+    .into()
 }

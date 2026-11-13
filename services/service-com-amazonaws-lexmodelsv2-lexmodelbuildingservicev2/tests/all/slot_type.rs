@@ -53,7 +53,12 @@ pub(crate) fn slot_types_uri(bot_id: &str, bot_version: &str, locale_id: &str) -
 }
 
 /// `DescribeSlotType`'s URI, which adds the `slotTypeId` to [`slot_types_uri`].
-fn slot_type_uri(bot_id: &str, bot_version: &str, locale_id: &str, slot_type_id: &str) -> String {
+pub(crate) fn slot_type_uri(
+    bot_id: &str,
+    bot_version: &str,
+    locale_id: &str,
+    slot_type_id: &str,
+) -> String {
     format!("{}/{slot_type_id}", slot_types_uri(bot_id, bot_version, locale_id))
 }
 

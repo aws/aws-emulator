@@ -27,6 +27,8 @@ mod intents_and_builds;
 mod locale_build_outcome;
 #[path = "all/locale_build_slot_priorities.rs"]
 mod locale_build_slot_priorities;
+#[path = "all/locale_deletion.rs"]
+mod locale_deletion;
 #[path = "all/name_already_exists.rs"]
 mod name_already_exists;
 #[path = "all/refusal_wording.rs"]
