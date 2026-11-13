@@ -62,7 +62,10 @@
 //! stored node. A node enters the store only by registering — nothing here invents one —
 //! so an account that has registered none is reported as holding none. The filter keys a
 //! describe accepts are [`is_node_filter_key`] (the property describe) and
-//! [`is_instance_information_filter_key`] (the string-filter describe).
+//! [`is_instance_information_filter_key`] (the string-filter describe). The same record is
+//! also the INVENTORY of that node ([`inventory`]): `GetInventory` projects it as the
+//! node's `AWS:InstanceInformation` item, so an inventory query reports what registering
+//! persisted rather than a second copy of it.
 //!
 //! The fifth is the **hybrid activations** ([`ActivationRecord`]), keyed by
 //! `(region, activation id)`: `CreateActivation` mints one, `DescribeActivations`
@@ -227,6 +230,11 @@ pub mod patch_baselines;
 /// product families, classifications and severities its available patches carry — which
 /// `DescribePatchProperties` reports.
 pub mod patch_properties;
+
+/// The inventory this service holds about the managed nodes of a Region — the
+/// `AWS:InstanceInformation` item every registered node has — and how a query filters and
+/// aggregates it.
+pub mod inventory;
 
 /// The resource data sync configurations this service holds: the record a create
 /// persists, the configuration rules it is held to, and how a listing, an update and a
