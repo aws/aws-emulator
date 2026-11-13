@@ -34,7 +34,8 @@ aws-sdk-s3 = { version = "1", default-features = false, features = ["rt-tokio", 
 # library computing over data in this process, with no native or build-time code.
 csv = "1.3"
 # `iam_role`: the shared reading of a caller-supplied role ARN against the account's IAM
-# records and the trust policy the stored role carries.
+# records and the trust policy the stored role carries. `s3_client`: the one construction
+# of the in-process Amazon S3 client a job run reads and writes objects through.
 service-common = { path = "../common" }
 
 [build-dependencies]

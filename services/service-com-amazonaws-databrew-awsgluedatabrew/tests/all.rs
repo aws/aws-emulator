@@ -31,6 +31,8 @@ mod project_not_found_wording;
 mod recipe_already_attached_refusal;
 #[path = "all/recipe_job_execution.rs"]
 mod recipe_job_execution;
+#[path = "all/recipe_job_output_object_headers.rs"]
+mod recipe_job_output_object_headers;
 #[path = "all/recipe_job_schema_evaluation.rs"]
 mod recipe_job_schema_evaluation;
 #[path = "all/recipe_lifecycle.rs"]

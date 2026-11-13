@@ -21,7 +21,9 @@
 //!   holds describes those bytes;
 //! * a `HeadObject` of the same span advertises exactly what the `GetObject` does — "a HEAD
 //!   request has the same options as a GET operation on an object" — and an object written
-//!   under no checksum algorithm advertises none however it is read.
+//!   under no checksum algorithm of its own advertises the default S3 added to it ("if it was
+//!   uploaded without a checksum (and Amazon S3 added the default checksum, `CRC64NVME`, to
+//!   the uploaded object)", `PutObjectOutput$ChecksumCRC64NVME`) under exactly the same rule.
 //!
 //! The rows differ along what the rule generalises over: how the span is NAMED (a part
 //! number, a closed byte range, an open-ended one, a suffix one, none at all), whether that
@@ -30,7 +32,8 @@
 //! checksum algorithm at all.
 //!
 //! The expected digests are computed here, from the bytes each row expects in the body,
-//! rather than read back from the crate under test: `sha2` for the digest, the Base64 of the
+//! rather than read back from the crate under test: `sha2` for the digest, the AWS SDK's own
+//! checksum crate for the default algorithm, the Base64 of the
 //! AWS types crate for the encoding, and the composition the Amazon S3 User Guide publishes
 //! for a multipart object's COMPOSITE value ("concatenates the … checksums … and then
 //! calculates the checksum of these concatenated values", reported "with the total number of
@@ -48,6 +51,13 @@ use super::object_partial_reads::{completed_multipart_object, seeded_payload};
 const ALGORITHM: &str = "SHA256";
 /// See [`ALGORITHM`].
 const ALGORITHM_HEADER: &str = "x-amz-checksum-sha256";
+
+/// The algorithm an object written under none of its own carries — "Amazon S3 added the
+/// default checksum, `CRC64NVME`, to the uploaded object"
+/// (`PutObjectOutput$ChecksumCRC64NVME`) — and the header its value travels on.
+const DEFAULT_ALGORITHM: &str = "CRC64NVME";
+/// See [`DEFAULT_ALGORITHM`].
+const DEFAULT_ALGORITHM_HEADER: &str = "x-amz-checksum-crc64nvme";
 
 /// Every `x-amz-checksum-*` response header the model binds, so a row that expects NO
 /// checksum can assert that none of them is there rather than only the one it wrote under.
@@ -75,6 +85,18 @@ fn digest_of(data: &[u8]) -> String {
     base64::encode(Sha256::digest(data))
 }
 
+/// The Base64 digest of `data` under [`DEFAULT_ALGORITHM`], computed by the AWS SDK's own
+/// implementation of that checksum rather than by the crate under test.
+fn default_digest_of(data: &[u8]) -> String {
+    let parsed: aws_smithy_checksums::ChecksumAlgorithm = DEFAULT_ALGORITHM
+        .to_ascii_lowercase()
+        .parse()
+        .expect("the default algorithm is one this crate computes");
+    let mut checksum = parsed.into_impl();
+    checksum.update(data);
+    base64::encode(checksum.finalize())
+}
+
 /// The COMPOSITE value a multipart object assembled from `parts` carries: the digest of the
 /// parts' RAW digests, Base64 encoded, with the part count after a dash.
 fn composite_of(parts: &[Vec<u8>]) -> String {
@@ -92,6 +114,9 @@ enum Advertised {
     WholeObject,
     /// The digest of exactly the bytes the response carries.
     OfTheBody,
+    /// The DEFAULT algorithm's digest of the whole object — what a read of all of an object
+    /// written under no algorithm of its own answers.
+    DefaultWholeObject,
     /// No `x-amz-checksum-*` header at all.
     Nothing,
 }
@@ -265,14 +290,14 @@ async fn a_response_advertises_the_checksum_of_the_bytes_it_carries() {
             advertised: Advertised::Nothing,
         },
         Row {
-            case: "the whole of an object written under no checksum algorithm",
+            case: "the whole of an object written under no checksum algorithm of its own",
             key: "unchecksummed.bin",
             part_number: None,
             range: None,
-            advertised: Advertised::Nothing,
+            advertised: Advertised::DefaultWholeObject,
         },
         Row {
-            case: "a range of an object written under no checksum algorithm",
+            case: "a range of an object written under no checksum algorithm of its own",
             key: "unchecksummed.bin",
             part_number: None,
             range: Some("bytes=10-"),
@@ -304,57 +329,74 @@ async fn a_response_advertises_the_checksum_of_the_bytes_it_carries() {
             "written.bin" => Some(one_shot.clone()),
             _ => None,
         };
-        let expected: Option<String> = match row.advertised {
-            Advertised::WholeObject => stored,
-            Advertised::OfTheBody => Some(digest_of(&answer.body)),
+        // The header the value travels on, and the value itself.
+        let expected: Option<(&str, String)> = match row.advertised {
+            Advertised::WholeObject => stored.map(|value| (ALGORITHM_HEADER, value)),
+            Advertised::OfTheBody => Some((ALGORITHM_HEADER, digest_of(&answer.body))),
+            Advertised::DefaultWholeObject => {
+                Some((DEFAULT_ALGORITHM_HEADER, default_digest_of(&whole)))
+            }
             Advertised::Nothing => None,
         };
 
-        match expected {
-            Some(value) => {
+        let carries = match &expected {
+            Some((header, value)) => {
                 assert_eq!(
-                    answer.header(ALGORITHM_HEADER),
+                    answer.header(header),
                     Some(value.clone()),
-                    "case {case:?}: expected the checksum {value:?}, got {:?}",
-                    answer.header(ALGORITHM_HEADER)
+                    "case {case:?}: expected the checksum {value:?} on {header}, got {:?}",
+                    answer.header(header)
                 );
                 // A value that describes the body it arrived with: every row but the
                 // whole-object COMPOSITE one (whose value is a composition over the parts
                 // rather than a digest of the bytes, which is what its `-<parts>` suffix
                 // says) must equal the digest of the body.
                 if !value.contains('-') {
+                    let of_the_body = match *header {
+                        DEFAULT_ALGORITHM_HEADER => default_digest_of(&answer.body),
+                        _ => digest_of(&answer.body),
+                    };
                     assert_eq!(
-                        value,
-                        digest_of(&answer.body),
+                        *value,
+                        of_the_body,
                         "case {case:?}: the advertised checksum must be the digest of the \
                          {} bytes in the body, got {value:?}",
                         answer.body.len()
                     );
                 }
+                Some(*header)
             }
-            None => {
-                for header in EVERY_CHECKSUM_HEADER {
-                    assert_eq!(
-                        answer.header(header),
-                        None,
-                        "case {case:?}: a response carrying bytes no stored checksum \
-                         describes must advertise none, got {header} = {:?}",
-                        answer.header(header)
-                    );
-                }
+            None => None,
+        };
+        // Whatever one algorithm a response advertises, it advertises no other: a body
+        // carries the digest of ONE algorithm, and a span no stored checksum describes
+        // carries none at all.
+        for header in EVERY_CHECKSUM_HEADER {
+            if carries == Some(header) || (carries.is_some() && header == "x-amz-checksum-type")
+            {
+                continue;
             }
+            assert_eq!(
+                answer.header(header),
+                None,
+                "case {case:?}: a response carrying bytes no stored checksum describes must \
+                 advertise none, got {header} = {:?}",
+                answer.header(header)
+            );
         }
 
         // A HEAD of the same span advertises exactly what the GET did.
         let headed = head_of(&router, name, row.key, &query, &headers).await;
-        assert_eq!(
-            headed.header(ALGORITHM_HEADER),
-            answer.header(ALGORITHM_HEADER),
-            "case {case:?}: a HEAD of the same span must advertise what the GET did \
-             ({:?}), got {:?}",
-            answer.header(ALGORITHM_HEADER),
-            headed.header(ALGORITHM_HEADER)
-        );
+        for header in EVERY_CHECKSUM_HEADER {
+            assert_eq!(
+                headed.header(header),
+                answer.header(header),
+                "case {case:?}: a HEAD of the same span must advertise what the GET did on \
+                 {header} ({:?}), got {:?}",
+                answer.header(header),
+                headed.header(header)
+            );
+        }
     }
 
     // And the span itself is unaffected by any of this: the open-ended range the rule is

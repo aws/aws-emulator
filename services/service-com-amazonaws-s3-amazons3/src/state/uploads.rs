@@ -917,6 +917,32 @@ pub fn full_object_checksum(algorithm: &str, data: &[u8]) -> Option<String> {
     )?))
 }
 
+/// The checksum ONE whole-object write records with the object it stores: the digest of the
+/// bytes it stored under the algorithm the request named, or under
+/// [`DEFAULT_CHECKSUM_ALGORITHM`] when it named none.
+///
+/// The rule is the model's own: a `Checksum*` member of a write's answer "is present if the
+/// object was uploaded with the `CRC64NVME` checksum algorithm, or if it was uploaded without
+/// a checksum (and Amazon S3 added the default checksum, `CRC64NVME`, to the uploaded object)"
+/// (`PutObjectOutput$ChecksumCRC64NVME`) — so EVERY stored object carries a checksum, and the
+/// one an unchecksummed write gets is the default algorithm's. The type is
+/// [`CHECKSUM_TYPE_FULL_OBJECT`]: a single write stores the whole object, so there are no
+/// parts for a composition to be over ("for `PutObject` uploads, the checksum type is always
+/// `FULL_OBJECT`", `PutObjectRequest$ChecksumType`).
+///
+/// ONE place for it, so every whole-object write of this service records the same checksum
+/// over the same bytes, and the value a later read reports describes those bytes. `None` only
+/// for an algorithm [`checksum_digest`] has no implementation of, in which case the object
+/// carries no checksum rather than one computed under another algorithm.
+pub fn stored_object_checksum(algorithm: Option<&str>, body: &[u8]) -> Option<ObjectChecksum> {
+    let algorithm = algorithm.unwrap_or(DEFAULT_CHECKSUM_ALGORITHM);
+    Some(ObjectChecksum {
+        algorithm: algorithm.to_string(),
+        value: full_object_checksum(algorithm, body)?,
+        checksum_type: CHECKSUM_TYPE_FULL_OBJECT.to_string(),
+    })
+}
+
 /// The COMPOSITE checksum of an object assembled from `parts`, under `algorithm`.
 ///
 /// The rule is the one the Amazon S3 User Guide states for a multipart object's

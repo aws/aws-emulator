@@ -70,6 +70,16 @@ fn client_signing_with(
         .region(::aws_sdk_s3::config::Region::new(region.to_string()))
         .endpoint_url(format!("https://s3.{region}.amazonaws.com"))
         .force_path_style(true)
+        // The object this hop writes carries the properties the SERVICE sets and no others.
+        // Left at its default, the SDK computes a checksum of its own choosing for every
+        // upload and declares it, and the object store records THAT algorithm as the one the
+        // object was stored under — so a later read of the object reports a transport
+        // decision rather than what the service asked for. Asking for a checksum only where
+        // an operation requires one leaves the store to apply its own default to a write
+        // that named none.
+        .request_checksum_calculation(
+            ::aws_sdk_s3::config::RequestChecksumCalculation::WhenRequired,
+        )
         .retry_config(::aws_sdk_s3::config::retry::RetryConfig::disabled())
         .timeout_config(::aws_sdk_s3::config::timeout::TimeoutConfig::disabled())
         .identity_cache(::aws_sdk_s3::config::IdentityCache::no_cache())

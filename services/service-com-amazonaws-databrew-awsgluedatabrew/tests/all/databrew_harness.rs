@@ -77,6 +77,28 @@ impl Reply {
     }
 }
 
+/// One raw Amazon S3 answer: the status, the response headers and the body.
+pub struct ObjectAnswer {
+    pub status: u16,
+    pub headers: ::http::HeaderMap,
+    pub body: Vec<u8>,
+}
+
+impl ObjectAnswer {
+    /// One response header's value, or `None` when the answer carries no such header.
+    pub fn header(&self, name: &str) -> Option<String> {
+        self.headers
+            .get(name)
+            .and_then(|value| value.to_str().ok())
+            .map(ToString::to_string)
+    }
+
+    /// The body as text, for a document a case reports in an assertion message.
+    pub fn text(&self) -> String {
+        String::from_utf8_lossy(&self.body).to_string()
+    }
+}
+
 /// The emulator under test: this one service mounted on one shared engine.
 pub struct Emulator {
     router: MultiServiceRouter,
@@ -177,7 +199,21 @@ impl Emulator {
     /// request rather than a modelled call. The credential scope names `s3`, which is
     /// what claims it.
     pub async fn s3(&self, method: &str, path: &str, body: &[u8]) -> (u16, Vec<u8>) {
-        let request = ::http::Request::builder()
+        let answer = self.s3_with(method, path, &[], body).await;
+        (answer.status, answer.body)
+    }
+
+    /// The same request with the headers a case names, answering the full response: an
+    /// object's own headers — its media type, its user metadata, its checksum — are what
+    /// several of these cases are about.
+    pub async fn s3_with(
+        &self,
+        method: &str,
+        path: &str,
+        headers: &[(&str, &str)],
+        body: &[u8],
+    ) -> ObjectAnswer {
+        let mut request = ::http::Request::builder()
             .method(method)
             .uri(format!("https://s3.us-east-1.amazonaws.com{path}"))
             .header("host", "s3.us-east-1.amazonaws.com")
@@ -186,14 +222,19 @@ impl Emulator {
                 "AWS4-HMAC-SHA256 \
                  Credential=AKIDEXAMPLE/20260101/us-east-1/s3/aws4_request, \
                  SignedHeaders=host, Signature=0000",
-            )
+            );
+        for (name, value) in headers {
+            request = request.header(*name, *value);
+        }
+        let request = request
             .body(::bytes::Bytes::copy_from_slice(body))
             .expect("a well-formed request");
         let response = self.router.dispatch(request).await;
-        (
-            response.status().as_u16(),
-            response.body().as_ref().to_vec(),
-        )
+        ObjectAnswer {
+            status: response.status().as_u16(),
+            headers: response.headers().clone(),
+            body: response.body().as_ref().to_vec(),
+        }
     }
 
     /// `PUT /<bucket>` — `CreateBucket` — so the objects a case stages have a bucket to

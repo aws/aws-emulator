@@ -65,6 +65,22 @@ const MAX_OUTPUT_FILES: i32 = 999;
 /// so the number of them is capped here. CHOSEN for this emulator.
 const MAX_OUTPUTS: usize = 16;
 
+/// The user-metadata keys every output object a run writes carries: the JOB that produced
+/// it and the RUN that produced it.
+///
+/// A run's purpose is the objects it writes, so each one records which work wrote it — the
+/// job's `Name` and the `RunId` `StartJobRun` answered — as the object's own user metadata,
+/// which Amazon S3 serves back on every read of it as `x-amz-meta-<key>`. The suffixes are
+/// the keys DataBrew stores its provenance under.
+const OUTPUT_PROVENANCE_JOB_NAME: &str = "job_name";
+/// See [`OUTPUT_PROVENANCE_JOB_NAME`].
+const OUTPUT_PROVENANCE_RUN_ID: &str = "job_run_id";
+
+/// The header a write names the media type of the object it stores on, which an output
+/// write carries NONE of: the object store applies its own default to an upload that names
+/// no type, and that is the type DataBrew's output objects carry.
+const CONTENT_TYPE_HEADER: &str = "content-type";
+
 /// What a run needs in order to be performed, copied out of the store under its lock so
 /// nothing is read from the store while Amazon S3 is being called.
 #[derive(Debug, Clone)]
@@ -219,8 +235,8 @@ fn input_format_of(format: Option<&str>, key: Option<&str>) -> String {
         })
 }
 
-/// Perform `plan`: read the input, apply the steps, write every output — and answer the
-/// terminal state that reached.
+/// Perform `plan` as the run `run_id`: read the input, apply the steps, write every output
+/// — and answer the terminal state that reached.
 ///
 /// Awaited with NO store guard held: the reads and writes go through the in-process
 /// callback, and the outcome is recorded against the run afterwards.
@@ -228,6 +244,7 @@ pub async fn perform(
     ctx: &smithy_server_runtime::OperationContext<'_>,
     region: &str,
     plan: &RunPlan,
+    run_id: &str,
 ) -> RunOutcome {
     let run = match plan {
         RunPlan::Ready(run) => run,
@@ -252,7 +269,7 @@ pub async fn perform(
     // neither the part count nor the part size caps on its own.
     let mut written = 0usize;
     for output in &run.outputs {
-        match write_output(&client, run, &table, output, &mut written).await {
+        match write_output(&client, run, run_id, &table, output, &mut written).await {
             Ok(()) => {}
             Err(reason) => return RunOutcome::failed(reason),
         }
@@ -328,9 +345,14 @@ fn read_table(bytes: &[u8], run: &ReadyRun) -> Result<Table, String> {
 /// Write `table` to `output`: one part file per group of rows, named the way DataBrew
 /// names a job's output parts. `written` carries how many bytes this RUN has written so
 /// far, across every output, and is held to [`tabular_data::MAX_RUN_OUTPUT_BYTES`].
+///
+/// Every object written carries the PROVENANCE of the work that produced it as user
+/// metadata ([`OUTPUT_PROVENANCE_JOB_NAME`] and [`OUTPUT_PROVENANCE_RUN_ID`]), so a client
+/// reading an output file back learns which job and which run wrote it.
 async fn write_output(
     client: &::aws_sdk_s3::Client,
     run: &ReadyRun,
+    run_id: &str,
     table: &Table,
     output: &Output,
     written: &mut usize,
@@ -403,7 +425,18 @@ async fn write_output(
             .put_object()
             .bucket(&output.location.bucket)
             .key(&key)
+            .metadata(OUTPUT_PROVENANCE_JOB_NAME, &run.job_name)
+            .metadata(OUTPUT_PROVENANCE_RUN_ID, run_id)
             .body(::aws_sdk_s3::primitives::ByteStream::from(body))
+            .customize()
+            // The job sets no media type on its output, so the object carries the object
+            // store's own default for an upload that names none. The header this drops is
+            // the SDK's blob-payload default rather than anything the job chose, and an
+            // object store that recorded it would report a transport decision as the media
+            // type the job wrote its output under.
+            .mutate_request(|request| {
+                request.headers_mut().remove(CONTENT_TYPE_HEADER);
+            })
             .send()
             .await
             .map_err(|error| {
@@ -472,33 +505,14 @@ fn input_too_large(declared: usize) -> String {
 /// The Amazon S3 client a run reads its dataset and writes its output with, addressed to
 /// `region`.
 ///
-/// The transport is the emulator's own in-process callback, so the `endpoint_url` below is
-/// an ADDRESS the in-process router reads rather than a host any resolver looks up: this
-/// client reaches the emulator's own Amazon S3 and nothing else, whatever bucket or key a
-/// caller names. The Region is narrowed to a Region label before it reaches the authority.
-///
-/// There is nothing to retry, time out or watch for a stalled stream, each of which would
-/// need a sleep implementation this client is not given. The same goes for caching the
-/// identity: the credentials the callback hands over are used directly, and they only sign
-/// this operation's in-process calls.
+/// Built by the ONE shared construction every emulated service reaches the account's object
+/// store through ([`::service_common::s3_client`]): the AWS SDK over the emulator's own
+/// in-process callback, so nothing here opens a socket or resolves a host, and the Region is
+/// narrowed to a Region label before it reaches the authority.
 fn s3_client(
     ctx: &smithy_server_runtime::OperationContext<'_>,
     region: &str,
 ) -> ::aws_sdk_s3::Client {
     let region = ::service_common::arn::region_label(region).unwrap_or(super::DEFAULT_REGION);
-    let config = ::aws_sdk_s3::Config::builder()
-        .behavior_version(::aws_sdk_s3::config::BehaviorVersion::latest())
-        .region(::aws_sdk_s3::config::Region::new(region.to_string()))
-        .endpoint_url(format!("https://s3.{region}.amazonaws.com"))
-        // The emulator serves one endpoint for every service, so the bucket travels in
-        // the path rather than in a per-bucket host the router could not resolve.
-        .force_path_style(true)
-        .credentials_provider(ctx.callback().aws_credentials_provider())
-        .http_client(ctx.callback().http_client())
-        .retry_config(::aws_sdk_s3::config::retry::RetryConfig::disabled())
-        .timeout_config(::aws_sdk_s3::config::timeout::TimeoutConfig::disabled())
-        .identity_cache(::aws_sdk_s3::config::IdentityCache::no_cache())
-        .stalled_stream_protection(::aws_sdk_s3::config::StalledStreamProtectionConfig::disabled())
-        .build();
-    ::aws_sdk_s3::Client::from_conf(config)
+    ::service_common::s3_client::s3_client(ctx.callback(), region)
 }

@@ -416,8 +416,10 @@ async fn a_copy_reports_the_checksum_and_type_the_destination_object_carries() {
         inherited.element("ChecksumType")
     );
 
-    // And a copy of a source that carries NO checksum reports neither member rather than
-    // inventing one.
+    // And a copy of a source whose write named no algorithm carries the DEFAULT one S3
+    // added to that source ("Amazon S3 added the default checksum, CRC64NVME, to the
+    // uploaded object", `PutObjectOutput$ChecksumCRC64NVME`), over the destination's bytes —
+    // never a second algorithm's value beside it.
     let bare = copy_object(
         &router,
         name,
@@ -427,9 +429,16 @@ async fn a_copy_reports_the_checksum_and_type_the_destination_object_carries() {
     )
     .await;
     assert_eq!(
+        bare.element("ChecksumCRC64NVME"),
+        service_com_amazonaws_s3_amazons3::state::full_object_checksum("CRC64NVME", payload),
+        "a copy of an object carrying the default checksum carries it too, got body {:?}",
+        text(&bare)
+    );
+    assert_eq!(
         (bare.element("ChecksumCRC32"), bare.element("ChecksumType")),
-        (None, None),
-        "a copy of an object carrying no checksum reports none, got body {:?}",
+        (None, Some(FULL_OBJECT.to_string())),
+        "the inherited default checksum is over the whole object, and no other algorithm's \
+         value is reported, got body {:?}",
         text(&bare)
     );
 }

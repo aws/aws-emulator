@@ -18,7 +18,7 @@
 //! 2. A member whose answer this operation cannot render — a partial read (HTTP 206 and a
 //!    `Content-Range`), a conditional read (304 or 412), a version this emulator does not
 //!    keep, customer-key encryption nothing performed, a Requester Pays charge nothing
-//!    meters, a checksum no stored object carries — is refused with the scaffold's 501
+//!    meters — is refused with the scaffold's 501
 //!    rather than answered as a plain full-metadata 200.
 //! 3. Naming another account as the bucket owner is `AccessDenied` (403), exactly as it is
 //!    on a write.
@@ -276,10 +276,10 @@ async fn a_read_asking_for_a_member_this_operation_cannot_answer_is_refused() {
 
     // `x-amz-checksum-mode` IS served: "to retrieve the checksum, this parameter must be
     // enabled" (`HeadObjectRequest$ChecksumMode`) asks for the checksum the object was
-    // STORED with, and this object was written under no checksum algorithm — so the read is
-    // answered with the 200 S3 answers it with, reporting no checksum rather than being
-    // refused. A read of an object that WAS stored with one reports its value and type (see
-    // `multipart_upload_completion`).
+    // STORED with. This object was written under no checksum algorithm of its own, so what
+    // it carries is the default S3 adds to such an upload — "if it was uploaded without a
+    // checksum (and Amazon S3 added the default checksum, CRC64NVME, to the uploaded
+    // object)" (`PutObjectOutput$ChecksumCRC64NVME`) — over the whole object.
     let enabled = head_object(
         &router,
         bucket,
@@ -294,19 +294,30 @@ async fn a_read_asking_for_a_member_this_operation_cannot_answer_is_refused() {
         enabled.status,
         String::from_utf8_lossy(&enabled.body)
     );
+    assert_eq!(
+        enabled.header("x-amz-checksum-crc64nvme"),
+        service_com_amazonaws_s3_amazons3::state::full_object_checksum("CRC64NVME", b"abc"),
+        "case \"a checksum read of an object stored without one\": the default checksum of \
+         the stored bytes must be reported, got {:?}",
+        enabled.header("x-amz-checksum-crc64nvme")
+    );
+    assert_eq!(
+        enabled.header("x-amz-checksum-type").as_deref(),
+        Some("FULL_OBJECT"),
+        "case \"a checksum read of an object stored without one\": a one-shot write's \
+         checksum is over the whole object, got {:?}",
+        enabled.header("x-amz-checksum-type")
+    );
     for member in [
         "x-amz-checksum-crc32",
         "x-amz-checksum-crc32c",
-        "x-amz-checksum-crc64nvme",
         "x-amz-checksum-sha1",
         "x-amz-checksum-sha256",
-        "x-amz-checksum-type",
     ] {
         assert_eq!(
             enabled.header(member),
             None,
-            "case {member:?}: an object stored under no checksum algorithm reports no \
-             checksum, got {:?}",
+            "case {member:?}: an object carries the checksum of ONE algorithm, got {:?}",
             enabled.header(member)
         );
     }

@@ -1015,22 +1015,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> PutObject<Eng> {
         // checksum-based data integrity check, Amazon S3 … calculates the checksum"
         // (`PutObjectRequest$ChecksumAlgorithm`), and a single write's checksum is over the
         // whole object, so its type is `FULL_OBJECT`: there are no parts to compose one
-        // from. A request that names no algorithm stores no checksum, which is what makes
-        // every later read of such an object report none.
+        // from. A request that names NO algorithm still stores one — "if it was uploaded
+        // without a checksum … Amazon S3 added the default checksum, CRC64NVME, to the
+        // uploaded object" (`PutObjectOutput$ChecksumCRC64NVME`) — so every later read of
+        // such an object reports that default rather than nothing
+        // ([`crate::state::stored_object_checksum`] holds the rule for every whole-object
+        // write of this service).
         //
         // The VALUE is always the one computed here over the stored bytes, never the one the
         // request carried: the two are equal by the time this runs (the verification above
         // refused the write otherwise), so the reported checksum describes the bytes rather
         // than echoing a header.
-        let checksum = algorithm.as_deref().and_then(|algorithm| {
-            crate::state::full_object_checksum(algorithm, &body).map(|value| {
-                crate::state::ObjectChecksum {
-                    algorithm: algorithm.to_string(),
-                    value,
-                    checksum_type: crate::state::CHECKSUM_TYPE_FULL_OBJECT.to_string(),
-                }
-            })
-        });
+        let checksum = crate::state::stored_object_checksum(algorithm.as_deref(), &body);
         let reported = crate::state::reported_checksums(checksum.as_ref());
         // What the key holds after this write, for the one member that reports it: "the size
         // of the object in bytes. This will only be present if you append to an object"

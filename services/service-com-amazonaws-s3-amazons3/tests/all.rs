@@ -147,6 +147,8 @@ mod copy_source_header_envelopes;
 mod copy_source_url_encoding;
 #[path = "all/credential_scoped_authorization.rs"]
 mod credential_scoped_authorization;
+#[path = "all/default_object_checksum.rs"]
+mod default_object_checksum;
 #[path = "all/directory_bucket_conditional_deletes.rs"]
 mod directory_bucket_conditional_deletes;
 #[path = "all/directory_bucket_listings.rs"]

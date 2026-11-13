@@ -1099,30 +1099,27 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> CopyObject<Eng> {
             // owner's `FULL_CONTROL`, which a reader derives — until a `PutObjectAcl` sets
             // one on it.
             acl: None,
-            // The checksum the destination object carries: the algorithm the copy request
-            // names, computed over the bytes being stored, so it describes THIS object.
-            // "Indicates the algorithm that you want Amazon S3 to use to create the
-            // checksum for the object" (`CopyObjectRequest$ChecksumAlgorithm`); a copy that
-            // names none carries the source's checksum when that was over the whole object,
-            // because the bytes are the same bytes, and none at all when the source's was
-            // composed of the checksums of parts this copy is not assembled from.
-            checksum: input
-                .checksum_algorithm
-                .as_deref()
-                .and_then(|algorithm| {
-                    crate::state::full_object_checksum(algorithm, &source_object.body).map(
-                        |value| crate::state::ObjectChecksum {
-                            algorithm: algorithm.to_string(),
-                            value,
-                            checksum_type: crate::state::CHECKSUM_TYPE_FULL_OBJECT.to_string(),
-                        },
-                    )
-                })
-                .or_else(|| {
-                    source_object.checksum.clone().filter(|checksum| {
-                        checksum.checksum_type == crate::state::CHECKSUM_TYPE_FULL_OBJECT
-                    })
-                }),
+            // The checksum the destination object carries: computed over the bytes being
+            // stored, so it describes THIS object. "Indicates the algorithm that you want
+            // Amazon S3 to use to create the checksum for the object"
+            // (`CopyObjectRequest$ChecksumAlgorithm`); a copy that names none takes the
+            // SOURCE's algorithm — "if the CopyObject request does not include this
+            // x-amz-checksum-algorithm header, the checksum algorithm will be copied from the
+            // source object to the destination object" (the same member) — and a source
+            // carrying none leaves the default every whole-object write records
+            // ([`crate::state::stored_object_checksum`]). The destination is one object, so
+            // the value is over its whole bytes even where the source's was composed of its
+            // parts' checksums.
+            checksum: crate::state::stored_object_checksum(
+                input
+                    .checksum_algorithm
+                    .as_deref()
+                    .or(source_object
+                        .checksum
+                        .as_ref()
+                        .map(|checksum| checksum.algorithm.as_str())),
+                &source_object.body,
+            ),
             // A copy is one write of the whole object, so the destination is not assembled
             // from parts even when the SOURCE was: its bytes arrive as one object.
             parts: Vec::new(),

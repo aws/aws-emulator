@@ -173,8 +173,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // What the run needs is copied out of the store under its lock, and the lock is
         // released before Amazon S3 is called: nothing is awaited while the store is
         // held, and the run reads the job as it stood when the run started.
-        let (job, plan) = {
-            let store = state.lock();
+        //
+        // The run's ID is minted here too, before the work is done: it IDENTIFIES this run
+        // to everything the run touches — the objects it writes record it — so it cannot be
+        // settled after the writes that carry it. It is minted from the stored counter, so
+        // the id handed back is the one a later describe resolves.
+        let (job, plan, run_id) = {
+            let mut store = state.lock();
             let Some(job) = store.jobs.get(&input.name).cloned() else {
                 return Err(StartJobRunErrorModeled::ResourceNotFoundException(
                     ResourceNotFoundException {
@@ -184,14 +189,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 .into());
             };
             let plan = crate::state::job_execution::plan(&store, &job);
-            (job, plan)
+            let run_id = store.mint_run_id();
+            (job, plan, run_id)
         };
 
         // The run is PERFORMED here, before the record exists: the outcome is what the
         // reading, the recipe and the writing answered, so the state the clock later
         // reveals is backed by the objects this wrote. The store holds no lock across
         // these calls.
-        let outcome = crate::state::job_execution::perform(ctx, &region, &plan).await;
+        let outcome = crate::state::job_execution::perform(ctx, &region, &plan, &run_id).await;
 
         let mut store = state.lock();
         // The job is re-read under the lock the run is recorded under: a delete that
@@ -204,9 +210,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             )
             .into());
         }
-        // The id is minted from the stored counter and the run is stored under it, so
-        // the id handed back is the one a later describe resolves.
-        let run_id = store.mint_run_id();
+        // The run is stored under the id minted above, so the id handed back is the one a
+        // later describe resolves.
         let record = crate::state::JobRunRecord {
             run_id: run_id.clone(),
             job_name: job.name.clone(),

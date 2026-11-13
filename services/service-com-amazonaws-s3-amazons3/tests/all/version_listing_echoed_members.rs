@@ -66,6 +66,11 @@ const ALGORITHM_HEADER: &str = "x-amz-sdk-checksum-algorithm";
 const ALGORITHM: &str = "CRC32";
 const CHECKSUM_TYPE: &str = "FULL_OBJECT";
 
+/// The algorithm every OTHER version here carries: its write named none, and "Amazon S3
+/// added the default checksum, `CRC64NVME`, to the uploaded object"
+/// (`PutObjectOutput$ChecksumCRC64NVME`).
+const DEFAULT_ALGORITHM: &str = "CRC64NVME";
+
 /// One row: what the request selects, and what the result document must then carry.
 struct Case {
     /// What this row varies, named in every assertion it makes.
@@ -362,14 +367,16 @@ async fn a_version_listing_echoes_its_selection_and_owns_every_entry() {
             );
 
             // The checksum members report what the write that stored THIS version recorded:
-            // the algorithm it named under the type a single write settles, and neither
-            // member for a version stored under no algorithm. A delete marker holds no
+            // the algorithm it named under the type a single write settles, and the default
+            // S3 adds to a write that named none
+            // (`PutObjectOutput$ChecksumCRC64NVME`). A delete marker holds no
             // bytes, so it carries neither — nor an entity tag or a size.
             let (algorithm, checksum_type) = match (
                 container.as_str(),
                 key == as_reported(PREFIXED_FIRST, case.encoded),
             ) {
                 ("Version", true) => (ALGORITHM, CHECKSUM_TYPE),
+                ("Version", false) => (DEFAULT_ALGORITHM, CHECKSUM_TYPE),
                 _ => ("", ""),
             };
             for (element, wanted) in [

@@ -1246,8 +1246,8 @@ async fn a_read_of_the_object_s_attributes_reports_the_parts_it_was_assembled_fr
     );
 
     // An object one write stored whole was assembled from no parts, so there is no
-    // collection to report for it — and no checksum either, since that write named no
-    // algorithm.
+    // collection to report for it. Its CHECKSUM is the default S3 adds to an upload that
+    // names no algorithm (`PutObjectOutput$ChecksumCRC64NVME`), over the whole object.
     let whole = "attributes/written-whole.bin";
     let put = put_object(&router, name, whole, b"stored by one write", &[]).await;
     assert_eq!(
@@ -1263,7 +1263,7 @@ async fn a_read_of_the_object_s_attributes_reports_the_parts_it_was_assembled_fr
         "case \"an object stored by one write\": expected HTTP 200, got {}",
         plain.status
     );
-    for absent in ["PartsCount", "ChecksumSHA256", "ChecksumType"] {
+    for absent in ["PartsCount", "ChecksumSHA256"] {
         assert_eq!(
             plain.element(absent),
             None,
@@ -1271,6 +1271,23 @@ async fn a_read_of_the_object_s_attributes_reports_the_parts_it_was_assembled_fr
             plain.element(absent)
         );
     }
+    assert_eq!(
+        plain.element("ChecksumType").as_deref(),
+        Some("FULL_OBJECT"),
+        "case \"an object stored by one write\": its checksum is over the whole object, got \
+         {:?}",
+        plain.element("ChecksumType")
+    );
+    assert_eq!(
+        plain.element("ChecksumCRC64NVME"),
+        service_com_amazonaws_s3_amazons3::state::full_object_checksum(
+            "CRC64NVME",
+            b"stored by one write"
+        ),
+        "case \"an object stored by one write\": the default checksum of the stored bytes \
+         must be reported, got {:?}",
+        plain.element("ChecksumCRC64NVME")
+    );
     assert!(
         plain.element("ObjectSize").is_some(),
         "case \"an object stored by one write\": the fields it does have are still \

@@ -14,10 +14,11 @@
 //!   bytes, lowercase hex — and not the quoted-string rendering of the `ETag` response
 //!   header, whose double quotes are that header's syntax ("An entity-tag consists of an
 //!   opaque quoted string", RFC 9110 §8.8.3) rather than part of the tag.
-//! * The two CONTAINERS are not reported at all: this emulator computes and stores no
-//!   checksum for an object's bytes, and no object it holds is assembled from parts
-//!   (`CompleteMultipartUpload` is scaffolded), which is also what S3 reports for an object
-//!   a single `PutObject` wrote.
+//! * The `Checksum` container carries the checksum every stored object has — the algorithm
+//!   the write named, or the default S3 adds to a write that names none
+//!   (`PutObjectOutput$ChecksumCRC64NVME`) — reported exactly when it was asked for, while
+//!   `ObjectParts` is not reported at all for an object a single `PutObject` wrote: it was
+//!   assembled from no parts, which is also what S3 reports for such an object.
 //! * `LastModified` and `VersionId` are bound HEADERS of the output, so they are reported
 //!   for every answer rather than being asked for.
 //! * The read is a reporting operation: a second read answers exactly what the first did,
@@ -160,14 +161,39 @@ async fn an_answer_carries_exactly_the_fields_the_request_asked_for() {
                  for, got {class:?} in body {:?}",
                 text(&answer)
             );
-            // The two containers carry nothing this emulator holds, so neither is reported
-            // whether or not it was asked for.
-            for container in ["Checksum", "ObjectParts"] {
+            // `ObjectParts` carries nothing for an object one write stored whole: it was
+            // assembled from no parts. `Checksum` carries the one every stored object has —
+            // the algorithm the write named, or the default S3 adds to a write that names
+            // none (`PutObjectOutput$ChecksumCRC64NVME`) — reported exactly when it was
+            // asked for.
+            assert_eq!(
+                answer.element("ObjectParts"),
+                None,
+                "case {label:?}: ObjectParts is not reported for an object stored by one \
+                 write, got body {:?}",
+                text(&answer)
+            );
+            let checksum = answer.element("Checksum");
+            assert_eq!(
+                checksum.is_some(),
+                attributes.contains(&"Checksum"),
+                "case {label:?}: the checksum is reported exactly when it was asked for, \
+                 got {checksum:?} in body {:?}",
+                text(&answer)
+            );
+            if let Some(checksum) = checksum {
+                let expected = service_com_amazonaws_s3_amazons3::state::full_object_checksum(
+                    "CRC64NVME", body,
+                )
+                .unwrap_or_default();
                 assert_eq!(
-                    answer.element(container),
-                    None,
-                    "case {label:?}: {container} is not reported, got body {:?}",
-                    text(&answer)
+                    checksum,
+                    format!(
+                        "<ChecksumCRC64NVME>{expected}</ChecksumCRC64NVME>\
+                         <ChecksumType>FULL_OBJECT</ChecksumType>"
+                    ),
+                    "case {label:?}: the default checksum of the stored bytes must be \
+                     reported, got {checksum:?}"
                 );
             }
             // Bound headers, reported for every answer.
