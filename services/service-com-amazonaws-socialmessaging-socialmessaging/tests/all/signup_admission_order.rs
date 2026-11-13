@@ -23,6 +23,7 @@ use service_com_amazonaws_socialmessaging_socialmessaging::state::ComAmazonawsSo
 
 use crate::harness::{
     call, console_call, emulator_with_engine, setup_body, Answer, CONSOLE_CSRF_TOKEN,
+    INVALID_PARAMETERS_ERROR_TYPE,
 };
 
 /// The error code the console door's refusal carries
@@ -163,8 +164,8 @@ async fn the_modelled_length_is_checked_before_the_console_door_and_the_door_bef
         .await;
         assert_eq!(
             (answer.status, answer.error_type.as_str()),
-            (400, "InvalidParametersException"),
-            "case {case:?}: expected 400 InvalidParametersException, got {} {:?} {:?}",
+            (400, INVALID_PARAMETERS_ERROR_TYPE),
+            "case {case:?}: expected 400 {INVALID_PARAMETERS_ERROR_TYPE:?}, got {} {:?} {:?}",
             answer.status,
             answer.error_type,
             answer.body

@@ -19307,10 +19307,13 @@ dependencies = [
  "bytes",
  "hex",
  "http",
+ "pem",
  "percent-encoding",
+ "pkcs1",
  "serde_json",
  "service-common",
  "sha2 0.10.9",
+ "spki 0.7.3",
  "tokio",
  "tracing",
 ]

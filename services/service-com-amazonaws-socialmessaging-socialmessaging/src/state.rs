@@ -14,10 +14,12 @@ use std::time::{Duration, SystemTime};
 use sha2::{Digest, Sha256};
 
 use crate::ops::types::{
-    AccessDeniedException, LinkedWhatsAppBusinessAccount, LinkedWhatsAppBusinessAccountIdMetaData,
-    LinkedWhatsAppBusinessAccountSummary, Tag, WhatsAppBusinessAccountEventDestination,
-    WhatsAppCallSettings, WhatsAppPhoneNumberDetail, WhatsAppPhoneNumberSummary,
+    AccessDeniedException, InvalidParametersException, LinkedWhatsAppBusinessAccount,
+    LinkedWhatsAppBusinessAccountIdMetaData, LinkedWhatsAppBusinessAccountSummary, Tag,
+    WhatsAppBusinessAccountEventDestination, WhatsAppCallSettings, WhatsAppPhoneNumberDetail,
+    WhatsAppPhoneNumberSummary,
 };
+use spki::der::Decode;
 
 /// This service's ARN namespace and SigV4 signing name (`OPERATIONS.md`: "sigv4
 /// signing name: social-messaging", "ARN namespace: social-messaging").
@@ -146,6 +148,75 @@ pub const BUSINESS_PUBLIC_KEY_SIGNATURE_VALID: &str = "VALID";
 /// other error text this service states, so nothing of the request reaches it.
 pub const INVALID_PARAMETERS_MESSAGE: &str =
     "One or more parameters provided to the action are not valid.";
+
+/// The member a request submits business public key material in, spelled as the wire
+/// spells it (`smithy_query(query="operation", operation="PutWhatsAppBusinessPublicKey")`:
+/// `businessPublicKey` -> `BusinessPublicKeyPem`). It is the only input member of this
+/// service that carries key material.
+pub const BUSINESS_PUBLIC_KEY_MEMBER: &str = "businessPublicKey";
+
+/// The sentence a request whose key material is not a public key is refused with: the
+/// offending input MEMBER NAME, as the wire spells it, then fixed text. The member name is
+/// the only variable part — nothing of the key itself, of the number it was submitted for,
+/// or of the account reaches it.
+pub fn invalid_public_key_message(member: &str) -> String {
+    format!("{member} is not a valid X.509 RSA public key.")
+}
+
+/// Refuse key material that is not a PEM-encoded X.509 RSA public key.
+///
+/// The member is documented as "the PEM-encoded 2048-bit RSA public key to set", and the
+/// model constrains it only by length, so the shape of the material is judged here: the
+/// value has to carry a PEM envelope labelled as a public key ([`PUBLIC_KEY_PEM_LABEL`]),
+/// that envelope has to hold an X.509 `SubjectPublicKeyInfo`, and that structure has to
+/// name the RSA algorithm and hold an RSA public key. Anything else — text that is not PEM
+/// at all, an envelope holding something that is not a public key structure, or a public key
+/// of another algorithm — names no RSA key to set.
+///
+/// The decision is made from the REQUEST alone, so an operation asks here BEFORE it
+/// resolves the resource the request names: a caller whose key material cannot be accepted
+/// learns nothing from the answer about what the account holds, and the store is left
+/// exactly as it was found.
+///
+/// The envelope and the structures inside it are read by the crates that implement those
+/// formats ([`pem`], [`spki`], [`pkcs1`]), not by anything hand-rolled here: the value is
+/// caller-controlled input.
+pub fn require_x509_rsa_public_key(
+    member: &str,
+    value: &str,
+) -> Result<(), InvalidParametersException> {
+    if is_x509_rsa_public_key(value) {
+        return Ok(());
+    }
+    Err(InvalidParametersException {
+        message: Some(invalid_public_key_message(member)),
+    })
+}
+
+/// The PEM label an X.509 `SubjectPublicKeyInfo` is enveloped under: RFC 7468 section 13
+/// gives "PUBLIC KEY" for that structure, and it is the label [`spki`] declares for it.
+const PUBLIC_KEY_PEM_LABEL: &str = "PUBLIC KEY";
+
+/// Whether `value` is a PEM-encoded X.509 RSA public key: the envelope, the
+/// `SubjectPublicKeyInfo` it holds, its algorithm, and the RSA key inside it.
+fn is_x509_rsa_public_key(value: &str) -> bool {
+    let Ok(envelope) = ::pem::parse(value) else {
+        return false;
+    };
+    if envelope.tag() != PUBLIC_KEY_PEM_LABEL {
+        return false;
+    }
+    let Ok(public_key) = ::spki::SubjectPublicKeyInfoRef::from_der(envelope.contents()) else {
+        return false;
+    };
+    if public_key.algorithm.oid != ::pkcs1::ALGORITHM_OID {
+        return false;
+    }
+    let Some(rsa_key) = public_key.subject_public_key.as_bytes() else {
+        return false;
+    };
+    ::pkcs1::RsaPublicKey::from_der(rsa_key).is_ok()
+}
 
 /// The message this service's `ThrottledRequestException` carries: the model documents the
 /// error as "the request was denied due to request throttling", and that is what a create

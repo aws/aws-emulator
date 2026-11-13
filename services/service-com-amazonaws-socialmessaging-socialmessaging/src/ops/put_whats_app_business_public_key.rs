@@ -2,8 +2,10 @@
 
 //! @op PutWhatsAppBusinessPublicKey
 //! Sets the business public key of a registered origination phone number — the PEM itself,
-//! or the KMS key that holds it — and refuses with the modelled not-found when the number
-//! is not one this account registered.
+//! or the KMS key that holds it. The request's own members are judged first (exactly one of
+//! the two names a key, and submitted key material has to BE a PEM-encoded X.509 RSA public
+//! key), and only then is the number resolved, which is what the modelled not-found refuses
+//! when it is not one this account registered.
 //!
 //! ## Shape of an operation
 //!
@@ -152,23 +154,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
         let _ = ctx;
-        let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
-            PutWhatsAppBusinessPublicKeyErrorModeled::InternalServiceException(
-                InternalServiceException {
-                    message: Some("the social-messaging store is unavailable".to_string()),
-                },
-            )
-        })?;
-        let mut store = state.lock();
-
+        // Everything the REQUEST alone decides is decided first, so a request that cannot
+        // be accepted is answered before any resource is resolved and leaves the store as
+        // it found it — and a caller whose request cannot hold learns nothing from it about
+        // what the account holds.
+        //
         // The key arrives EITHER as the PEM or as the ARN of a KMS key holding it: the
         // model documents the two members as mutually exclusive, so a request carrying
-        // both, or neither, names no key to set. That is decided from the REQUEST alone, so
-        // it is answered before any resource is resolved and leaves the store as it found
-        // it — and a caller whose request cannot hold learns nothing from it about what the
-        // account holds.
-        let names_one_key =
-            input.business_public_key.is_some() != input.kms_key_arn.is_some();
+        // both, or neither, names no key to set.
+        let names_one_key = input.business_public_key.is_some() != input.kms_key_arn.is_some();
         if !names_one_key {
             return Err(
                 PutWhatsAppBusinessPublicKeyErrorModeled::InvalidParametersException(
@@ -180,9 +174,28 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             );
         }
 
+        // And the key material itself: the member is documented as a PEM-encoded RSA
+        // public key, so a value that is not one names no key to set either.
+        if let Some(business_public_key) = input.business_public_key.as_deref() {
+            crate::state::require_x509_rsa_public_key(
+                crate::state::BUSINESS_PUBLIC_KEY_MEMBER,
+                business_public_key,
+            )
+            .map_err(PutWhatsAppBusinessPublicKeyErrorModeled::InvalidParametersException)?;
+        }
+
+        let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
+            PutWhatsAppBusinessPublicKeyErrorModeled::InternalServiceException(
+                InternalServiceException {
+                    message: Some("the social-messaging store is unavailable".to_string()),
+                },
+            )
+        })?;
+        let mut store = state.lock();
+
         // Then the resource: the number must be one this account registered, and that
-        // lookup is what fails for an unknown number — before anything is done with the
-        // key the request carries.
+        // lookup is what fails for an unknown number — after everything the request itself
+        // decides has been judged.
         let Some(phone_number_id) = store.phone_number_id(&input.origination_phone_number_id)
         else {
             return Err(

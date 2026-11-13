@@ -15,6 +15,7 @@ use smithy_server_runtime::MultiServiceRouter;
 // The request path, the emulator and the signup moves every suite in this crate shares.
 use crate::harness::{
     call, console_call, emulator, link, query_escape, setup_body, start_signup, Answer, ACCOUNT_ID,
+    INVALID_PARAMETERS_ERROR_TYPE,
 };
 
 // Every sign-up call goes through the console flow this operation is served through; the
@@ -697,8 +698,8 @@ async fn an_id_that_names_no_resource_is_the_modelled_not_found() {
         let answer = put_event_destinations(&router, id, json!([])).await;
         assert_eq!(
             (answer.status, answer.error_type.as_str()),
-            (400, "InvalidParametersException"),
-            "case put event destinations {id:?}: expected 400 InvalidParametersException, got {} {:?} {:?}",
+            (400, INVALID_PARAMETERS_ERROR_TYPE),
+            "case put event destinations {id:?}: expected 400 {INVALID_PARAMETERS_ERROR_TYPE:?}, got {} {:?} {:?}",
             answer.status,
             answer.error_type,
             answer.body
@@ -802,8 +803,8 @@ async fn a_setup_finalization_refuses_waba_together_with_phone_number_parent() {
     .await;
     assert_eq!(
         (both.status, both.error_type.as_str()),
-        (400, "InvalidParametersException"),
-        "case waba + phoneNumberParent: expected 400 InvalidParametersException, got {} {:?} {:?}",
+        (400, INVALID_PARAMETERS_ERROR_TYPE),
+        "case waba + phoneNumberParent: expected 400 {INVALID_PARAMETERS_ERROR_TYPE:?}, got {} {:?} {:?}",
         both.status,
         both.error_type,
         both.body
@@ -863,8 +864,8 @@ async fn a_setup_finalization_refuses_waba_together_with_phone_number_parent() {
     .await;
     assert_eq!(
         (orphan.status, orphan.error_type.as_str()),
-        (400, "InvalidParametersException"),
-        "case unknown phoneNumberParent: expected 400 InvalidParametersException, got {} {:?} {:?}",
+        (400, INVALID_PARAMETERS_ERROR_TYPE),
+        "case unknown phoneNumberParent: expected 400 {INVALID_PARAMETERS_ERROR_TYPE:?}, got {} {:?} {:?}",
         orphan.status,
         orphan.error_type,
         orphan.body
@@ -910,8 +911,8 @@ async fn a_finalization_only_finalizes_a_signup_this_service_issued() {
         let answer = associate(&router, json!({ "setupFinalization": setup })).await;
         assert_eq!(
             (answer.status, answer.error_type.as_str()),
-            (400, "InvalidParametersException"),
-            "case {case:?}: expected 400 InvalidParametersException, got {} {:?} {:?}",
+            (400, INVALID_PARAMETERS_ERROR_TYPE),
+            "case {case:?}: expected 400 {INVALID_PARAMETERS_ERROR_TYPE:?}, got {} {:?} {:?}",
             answer.status,
             answer.error_type,
             answer.body
@@ -950,8 +951,8 @@ async fn a_finalization_only_finalizes_a_signup_this_service_issued() {
     let again = associate(&router, finalization).await;
     assert_eq!(
         (again.status, again.error_type.as_str()),
-        (400, "InvalidParametersException"),
-        "case a token already finalized: expected 400 InvalidParametersException, got {} {:?} {:?}",
+        (400, INVALID_PARAMETERS_ERROR_TYPE),
+        "case a token already finalized: expected 400 {INVALID_PARAMETERS_ERROR_TYPE:?}, got {} {:?} {:?}",
         again.status,
         again.error_type,
         again.body
@@ -999,8 +1000,8 @@ async fn a_refused_combined_request_records_no_signup() {
     .await;
     assert_eq!(
         (combined.status, combined.error_type.as_str()),
-        (400, "InvalidParametersException"),
-        "case callback + unissued token: expected 400 InvalidParametersException, got {} {:?} {:?}",
+        (400, INVALID_PARAMETERS_ERROR_TYPE),
+        "case callback + unissued token: expected 400 {INVALID_PARAMETERS_ERROR_TYPE:?}, got {} {:?} {:?}",
         combined.status,
         combined.error_type,
         combined.body

@@ -22,7 +22,8 @@
 //!   services, or routing that keys on the access-key id.
 //! - `override_operation` — EDITED HERE: the key and the handler stay the generated
 //!   table's, but each operation is served through [`WordedRefusals`], which is where a
-//!   constraint refusal is worded — see [`clause`].
+//!   constraint refusal is worded — see [`clause`] — and where the shape a refused
+//!   PARAMETER is named with is completed — see [`error_type_locator`].
 //! - `override_refusal` — how this service words a request the framework refused
 //!   before any handler ran. EDITED HERE as the fallback for a refusal that does not
 //!   reach [`WordedRefusals`]; see the inline note on that method.
@@ -69,6 +70,7 @@ use smithy_server_runtime::{
 use std::sync::Arc;
 
 mod echo;
+mod error_type_locator;
 
 use echo::envelope;
 
@@ -233,7 +235,12 @@ where
                     req,
                 );
             }
-            self.operation.run(svc, req, ctx).await
+            let answered = self.operation.run(svc, req, ctx).await;
+            // Every response of a modelled operation passes through here, which is where
+            // the one thing this service completes about a response is completed: how it
+            // NAMES the shape of a refused parameter ([`error_type_locator`]). The
+            // definition is read AFTER the await, so nothing non-`Sync` is held across it.
+            error_type_locator::answered(answered, svc.definition().identity().shape_id())
         })
     }
 

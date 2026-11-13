@@ -25,7 +25,10 @@ use service_com_amazonaws_socialmessaging_socialmessaging::state::{
 use smithy_server_runtime::MultiServiceRouter;
 use std::time::SystemTime;
 
-use crate::harness::{call, emulator, emulator_with_engine, link, query_escape, Answer, ACCOUNT_ID};
+use crate::harness::{
+    call, emulator, emulator_with_engine, link, query_escape, rsa_public_key_pem, Answer,
+    ACCOUNT_ID, INVALID_PARAMETERS_ERROR_TYPE,
+};
 
 /// The message the `id`-scoped lookups answer a miss with
 /// (`ID_NOT_FOUND_FOR_ACCOUNT_MESSAGE` in `src/state.rs`).
@@ -49,15 +52,6 @@ fn kms_key_arn() -> String {
     format!("arn:aws:kms:us-east-1:{ACCOUNT_ID}:key/1234abcd-12ab-34cd-56ef-1234567890ab")
 }
 
-/// A PEM-shaped `BusinessPublicKeyPem` value of `lines` body lines, so the rows can differ
-/// in the SIZE of the key they set.
-fn pem(lines: usize) -> String {
-    let body = (0..lines)
-        .map(|line| format!("AAAA{line:060}"))
-        .collect::<Vec<_>>()
-        .join("\n");
-    format!("-----BEGIN PUBLIC KEY-----\n{body}\n-----END PUBLIC KEY-----")
-}
 
 async fn get_flow(router: &MultiServiceRouter, id: &str, flow_id: &str) -> Answer {
     let uri = format!(
@@ -276,7 +270,7 @@ async fn every_resource_lookup_refuses_a_miss_with_its_lookups_constant() {
                     &router,
                     json!({
                         "originationPhoneNumberId": phone,
-                        "businessPublicKey": pem(1),
+                        "businessPublicKey": rsa_public_key_pem(2048),
                     }),
                 )
                 .await,
@@ -538,9 +532,9 @@ async fn a_created_flow_is_read_back_as_it_was_created() {
     .await;
     assert_eq!(
         (duplicate.status, duplicate.error_type.as_str()),
-        (400, "InvalidParametersException"),
+        (400, INVALID_PARAMETERS_ERROR_TYPE),
         "case a name the account already holds a Flow under: expected 400 \
-         InvalidParametersException, got {} {:?} {:?}",
+         {INVALID_PARAMETERS_ERROR_TYPE:?}, got {} {:?} {:?}",
         duplicate.status,
         duplicate.error_type,
         duplicate.body
@@ -689,9 +683,9 @@ async fn a_submitted_template_is_read_back_by_id_and_by_name() {
     let unnamed = get_template(&router, &format!("?id={}", query_escape(&linked))).await;
     assert_eq!(
         (unnamed.status, unnamed.error_type.as_str()),
-        (400, "InvalidParametersException"),
+        (400, INVALID_PARAMETERS_ERROR_TYPE),
         "case a read naming neither an id nor a name: expected 400 \
-         InvalidParametersException, got {} {:?} {:?}",
+         {INVALID_PARAMETERS_ERROR_TYPE:?}, got {} {:?} {:?}",
         unnamed.status,
         unnamed.error_type,
         unnamed.body
@@ -707,8 +701,8 @@ async fn a_submitted_template_is_read_back_by_id_and_by_name() {
         let refused = create_template(&router, &linked, definition).await;
         assert_eq!(
             (refused.status, refused.error_type.as_str()),
-            (400, "InvalidParametersException"),
-            "case {case}: expected 400 InvalidParametersException, got {} {:?} {:?}",
+            (400, INVALID_PARAMETERS_ERROR_TYPE),
+            "case {case}: expected 400 {INVALID_PARAMETERS_ERROR_TYPE:?}, got {} {:?} {:?}",
             refused.status,
             refused.error_type,
             refused.body
@@ -749,9 +743,9 @@ async fn a_submitted_template_is_read_back_by_id_and_by_name() {
 /// read reports, a registered number nobody set a key for reports none, and the write is
 /// `@idempotent` — the second write of a key leaves the same state.
 ///
-/// The rows differ along how the key arrives (the PEM itself, at two sizes, and the ARN of
-/// a KMS key holding it) and along which number holds it, since the key belongs to one
-/// number.
+/// The rows differ along how the key arrives (an X.509 RSA public key PEM, at two key
+/// sizes, and the ARN of a KMS key holding the key instead) and along which number holds
+/// it, since the key belongs to one number.
 #[tokio::test]
 async fn the_business_public_key_a_write_sets_is_the_key_the_read_reports() {
     let router = emulator();
@@ -796,14 +790,20 @@ async fn the_business_public_key_a_write_sets_is_the_key_the_read_reports() {
     // (case, body for the first number, expected PEM reported back)
     let rows = vec![
         (
-            "a one-line PEM",
-            json!({ "originationPhoneNumberId": numbers[0], "businessPublicKey": pem(1) }),
-            json!(pem(1)),
+            "a 2048-bit key",
+            json!({
+                "originationPhoneNumberId": numbers[0],
+                "businessPublicKey": rsa_public_key_pem(2048),
+            }),
+            json!(rsa_public_key_pem(2048)),
         ),
         (
-            "a longer PEM replacing it",
-            json!({ "originationPhoneNumberId": numbers[0], "businessPublicKey": pem(24) }),
-            json!(pem(24)),
+            "a 3072-bit key replacing it",
+            json!({
+                "originationPhoneNumberId": numbers[0],
+                "businessPublicKey": rsa_public_key_pem(3072),
+            }),
+            json!(rsa_public_key_pem(3072)),
         ),
         (
             "a key held in KMS",
@@ -858,7 +858,7 @@ async fn the_business_public_key_a_write_sets_is_the_key_the_read_reports() {
             "both a PEM and a KMS key",
             json!({
                 "originationPhoneNumberId": numbers[0],
-                "businessPublicKey": pem(1),
+                "businessPublicKey": rsa_public_key_pem(2048),
                 "kmsKeyArn": kms_key_arn(),
             }),
         ),
@@ -870,8 +870,8 @@ async fn the_business_public_key_a_write_sets_is_the_key_the_read_reports() {
         let refused = put_public_key(&router, body).await;
         assert_eq!(
             (refused.status, refused.error_type.as_str()),
-            (400, "InvalidParametersException"),
-            "case {case}: expected 400 InvalidParametersException, got {} {:?} {:?}",
+            (400, INVALID_PARAMETERS_ERROR_TYPE),
+            "case {case}: expected 400 {INVALID_PARAMETERS_ERROR_TYPE:?}, got {} {:?} {:?}",
             refused.status,
             refused.error_type,
             refused.body

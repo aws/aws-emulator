@@ -29,6 +29,15 @@ tracing = { workspace = true }
 sha2 = { workspace = true }
 # Renders that digest as the lowercase hex the model's id patterns expect.
 hex = { workspace = true }
+# Reads the PEM envelope a caller submits key material in, rather than hand-rolling a
+# parser for a format an untrusted caller controls.
+pem = "3.0"
+# Parses the X.509 SubjectPublicKeyInfo inside that envelope and names its algorithm.
+spki = { version = "0.7", features = ["alloc"] }
+# Parses the RSA public key inside that SubjectPublicKeyInfo. Its `pkcs8` feature is what
+# exposes the rsaEncryption algorithm OID an RSA key is identified by, so the OID is not
+# written out here.
+pkcs1 = { version = "0.7", features = ["alloc", "pkcs8"] }
 
 [build-dependencies]
 emulator-core-build-support = { workspace = true }

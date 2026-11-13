@@ -7,12 +7,19 @@
 //! (`validation_message_rendering`, `not_found_message`) and the one that drives the
 //! Conversions API (`conversion_events`) share one request path: a divergence between two
 //! copies of the harness would read as a divergence in the service.
+//!
+//! It also builds the KEY MATERIAL the business-public-key suites submit
+//! ([`rsa_public_key_pem`] and the structures beside it), so one builder serves every suite
+//! that needs a real X.509 RSA public key rather than each inventing a PEM-shaped value.
 
 use bytes::Bytes;
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use serde_json::{json, Value};
 use service_com_amazonaws_socialmessaging_socialmessaging::EmulatedService;
 use smithy_server_runtime::MultiServiceRouter;
+use spki::der::asn1::{AnyRef, BitStringRef, UintRef};
+use spki::der::Encode;
+use spki::{AlgorithmIdentifier, ObjectIdentifier, SubjectPublicKeyInfo};
 use std::sync::Arc;
 
 /// A SigV4 `Authorization` header scoped to this service, which is what the router
@@ -157,6 +164,84 @@ pub async fn call_with_headers(
 /// `services/service-com-amazonaws-accessanalyzer-accessanalyzer/tests/all/harness.rs`).
 pub fn query_escape(value: &str) -> String {
     utf8_percent_encode(value, NON_ALPHANUMERIC).to_string()
+}
+
+/// The wire name this service's `InvalidParametersException` carries — the shape followed by
+/// the locator of the namespace that declares it, which is the form this service's
+/// parameter refusal was recorded naming (`src/service/error_type_locator.rs`).
+pub const INVALID_PARAMETERS_ERROR_TYPE: &str =
+    "InvalidParametersException:http://internal.amazon.com/coral/com.amazonaws.socialmessaging/";
+
+/// The PEM label RFC 7468 section 13 gives an X.509 `SubjectPublicKeyInfo`, which is the
+/// envelope the `businessPublicKey` member is documented to arrive in.
+pub const PUBLIC_KEY_PEM_LABEL: &str = "PUBLIC KEY";
+
+/// A deterministic RSA modulus of `bits` bits: the leading bit is set, so the integer
+/// really is that wide and carries no leading zero byte.
+///
+/// The bytes are arbitrary — nothing here signs or encrypts with the key, and the service
+/// judges the STRUCTURE of the key material, which is what these builders produce.
+fn modulus(bits: usize) -> Vec<u8> {
+    let mut bytes: Vec<u8> = (0..bits / 8)
+        .map(|index| u8::try_from(index % 251).expect("a byte") | 1)
+        .collect();
+    bytes[0] |= 0x80;
+    bytes
+}
+
+/// The DER of a PKCS#1 `RSAPublicKey` with a `bits`-bit modulus and the usual 65537
+/// exponent — the structure that lives inside an X.509 RSA `SubjectPublicKeyInfo`, and on
+/// its own the PKCS#1 form rather than the X.509 one.
+pub fn pkcs1_rsa_public_key_der(bits: usize) -> Vec<u8> {
+    let modulus = modulus(bits);
+    let key = pkcs1::RsaPublicKey {
+        modulus: UintRef::new(&modulus).expect("a positive modulus"),
+        public_exponent: UintRef::new(&[0x01, 0x00, 0x01]).expect("a positive exponent"),
+    };
+    key.to_der().expect("the RSA public key encodes")
+}
+
+/// `contents` enveloped as a PEM block under `label`.
+pub fn pem_block(label: &str, contents: &[u8]) -> String {
+    pem::encode(&pem::Pem::new(label.to_string(), contents.to_vec()))
+}
+
+/// The DER of an X.509 `SubjectPublicKeyInfo` naming `algorithm` and carrying `key`.
+fn subject_public_key_info(
+    algorithm: ObjectIdentifier,
+    parameters: Option<AnyRef<'_>>,
+    key: &[u8],
+) -> Vec<u8> {
+    let info = SubjectPublicKeyInfo {
+        algorithm: AlgorithmIdentifier {
+            oid: algorithm,
+            parameters,
+        },
+        subject_public_key: BitStringRef::new(0, key).expect("a whole number of bytes"),
+    };
+    info.to_der().expect("the public key info encodes")
+}
+
+/// A PEM-encoded X.509 RSA public key with a `bits`-bit modulus: what the
+/// `businessPublicKey` member is documented to carry ("The PEM-encoded 2048-bit RSA public
+/// key to set").
+pub fn rsa_public_key_pem(bits: usize) -> String {
+    let key = pkcs1_rsa_public_key_der(bits);
+    // `rsaEncryption` takes NULL parameters (RFC 4055); the OID itself comes from `pkcs1`.
+    let info = subject_public_key_info(pkcs1::ALGORITHM_OID, Some(AnyRef::NULL), &key);
+    pem_block(PUBLIC_KEY_PEM_LABEL, &info)
+}
+
+/// A PEM-encoded X.509 public key of ANOTHER algorithm: Ed25519, whose
+/// `id-Ed25519` OID is `1.3.101.112` and whose key is 32 bytes with absent parameters
+/// (RFC 8410) — a well-formed public key that is not an RSA one.
+pub fn ed25519_public_key_pem() -> String {
+    let info = subject_public_key_info(
+        ObjectIdentifier::new_unwrap("1.3.101.112"),
+        None,
+        &[0x2a; 32],
+    );
+    pem_block(PUBLIC_KEY_PEM_LABEL, &info)
 }
 
 /// Start a signup and return the `associateInProgressToken` the callback issued — the
