@@ -2107,6 +2107,11 @@ mod associated_address_reads_and_return_flag;
 // The published per-type rows of the instance-type catalog the previous generation compute
 // optimized, the inference accelerated and the memory optimized with local NVMe families
 // carry, and the member set every reported instance type carries. Declared at the tail of
-// this file, which is where every new ec2 suite lands.
 #[path = "all/published_catalog_rows.rs"]
 mod published_catalog_rows;
+// The state word pair a Capacity Reservation Fleet's cancellation reports: the Fleet's OWN
+// previous state — the word it had moved out of before the state the cancel interrupts —
+// beside the `cancelling` the call moves it to, over the histories a cancellable Fleet can
+// have. Declared at the tail of this file, which is where every new ec2 suite lands.
+#[path = "all/capacity_reservation_fleet_previous_state.rs"]
+mod capacity_reservation_fleet_previous_state;

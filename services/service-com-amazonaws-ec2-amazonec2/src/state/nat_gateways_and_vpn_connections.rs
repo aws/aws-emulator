@@ -1347,7 +1347,8 @@ pub type CapacityReservationFleetTransition = ClockTransition<&'static str>;
 pub const CAPACITY_RESERVATION_FLEET_ACTIVATION_DELAY: Duration = Duration::from_secs(2);
 
 /// One Capacity Reservation Fleet: the modelled [`CapacityReservationFleet`] every operation
-/// that reports one answers with, plus the two facts that shape carries no member for.
+/// that reports one answers with, plus the facts that shape carries no member for — the
+/// state word the Fleet moved out of, and the move the clock owes it.
 ///
 /// `CreateCapacityReservationFleet`, `DescribeCapacityReservationFleets` and
 /// `CancelCapacityReservationFleets` all report the same Fleet, so the one stored view is
@@ -1360,6 +1361,15 @@ pub struct CapacityReservationFleetRecord {
     /// The Fleet as the model shapes it, carrying the state reached so far and the Capacity
     /// Reservations it reserves its capacity through.
     pub view: CapacityReservationFleet,
+    /// The `CapacityReservationFleetState` the Fleet held BEFORE the one
+    /// [`Self::view`] carries: the state word it last moved out of, which is what EC2
+    /// reports as a Fleet's previous state. A Fleet that has not left the state it was
+    /// created in carries that state here, there being no earlier one.
+    ///
+    /// A fact of the Fleet the modelled [`CapacityReservationFleet`] shape carries no member
+    /// for, which is why it sits beside the view rather than in it: only the cancellation
+    /// result reports it ([`CapacityReservationFleetCancellationState`]).
+    pub previous_state: String,
     /// The move the clock owes this Fleet, while one is owed.
     pub pending: Option<CapacityReservationFleetTransition>,
 }
@@ -1370,6 +1380,22 @@ impl CapacityReservationFleetRecord {
         self.view.state.as_deref().unwrap_or_default()
     }
 
+    /// Move the Fleet's state word to `to`, remembering the word it leaves as the Fleet's
+    /// previous state.
+    ///
+    /// The ONE place a stored Fleet's state word changes, so the state it reports and the
+    /// state it reports as its previous one cannot drift apart: every move — the activation
+    /// the clock owes, a modification, a cancellation and the cancellation's own end — goes
+    /// through here.
+    fn move_state_to(&mut self, to: &str) {
+        let left = self.state().to_string();
+        if left == to {
+            return;
+        }
+        self.previous_state = left;
+        self.view.state = Some(to.to_string());
+    }
+
     /// The Fleet's own id.
     pub fn capacity_reservation_fleet_id(&self) -> &str {
         self.view
@@ -1378,8 +1404,9 @@ impl CapacityReservationFleetRecord {
             .unwrap_or_default()
     }
 
-    /// Start cancelling this Fleet, answering the state it was in, or `None` when its
-    /// current state is not one a cancellation runs from
+    /// Start cancelling this Fleet, answering the Fleet's PREVIOUS state as it stood when
+    /// the cancellation arrived ([`Self::previous_state`]) — or `None` when the state the
+    /// Fleet is in is not one a cancellation runs from
     /// ([`CAPACITY_RESERVATION_FLEET_CANCELLABLE_STATES`]).
     ///
     /// "The Capacity Reservation Fleet's status changes to `cancelled`"
@@ -1387,16 +1414,24 @@ impl CapacityReservationFleetRecord {
     /// cancelled" the state catalog names — so the caller is answered the transient state
     /// and the clock owes the terminal one. Any move that was owed before (a `submitted`
     /// Fleet's `active`) is REPLACED: the Fleet is being cancelled, not activated.
+    ///
+    /// What comes back is the state word the cancellation result reports as the Fleet's
+    /// `previousFleetState` — "The previous state of the Capacity Reservation Fleet"
+    /// (`CapacityReservationFleetCancellationState$PreviousFleetState`), the word the Fleet
+    /// had moved out of by the time the call arrived — READ BEFORE this cancellation records
+    /// its own move, so the pair the result carries is the Fleet's previous state and the
+    /// state the cancellation puts it in rather than two words from the same move.
     pub fn begin_cancellation(&mut self) -> Option<String> {
-        let previous = self.state().to_string();
-        if !CAPACITY_RESERVATION_FLEET_CANCELLABLE_STATES.contains(&previous.as_str()) {
+        let interrupted = self.state().to_string();
+        if !CAPACITY_RESERVATION_FLEET_CANCELLABLE_STATES.contains(&interrupted.as_str()) {
             return None;
         }
-        self.view.state = Some(CAPACITY_RESERVATION_FLEET_STATE_CANCELLING.to_string());
+        let reported_previous = self.previous_state.clone();
+        self.move_state_to(CAPACITY_RESERVATION_FLEET_STATE_CANCELLING);
         self.pending = Some(CapacityReservationFleetTransition::starting_now(
             CAPACITY_RESERVATION_FLEET_STATE_CANCELLED,
         ));
-        Some(previous)
+        Some(reported_previous)
     }
 
     /// Whether this Fleet's current state is one a modification runs from
@@ -1417,7 +1452,7 @@ impl CapacityReservationFleetRecord {
     ///
     /// Callers ask [`Self::is_modifiable`] first: this is the move itself, not the check.
     pub(super) fn begin_modification(&mut self) {
-        self.view.state = Some(CAPACITY_RESERVATION_FLEET_STATE_MODIFYING.to_string());
+        self.move_state_to(CAPACITY_RESERVATION_FLEET_STATE_MODIFYING);
         self.pending = Some(CapacityReservationFleetTransition::starting_now(
             CAPACITY_RESERVATION_FLEET_STATE_ACTIVE,
         ));
@@ -1496,7 +1531,7 @@ impl CapacityReservationFleetRecord {
     /// fulfilled — is what EC2 keeps reporting for a cancelled Fleet, so an audit or
     /// teardown flow can still read what was reserved.
     pub(super) fn apply_due_move(&mut self, to: &'static str) {
-        self.view.state = Some(to.to_string());
+        self.move_state_to(to);
         self.pending = None;
     }
 }
@@ -1756,6 +1791,7 @@ impl ComAmazonawsEc2Amazonec2State {
             fleet_id,
             CapacityReservationFleetRecord {
                 view,
+                previous_state: CAPACITY_RESERVATION_FLEET_STATE_SUBMITTED.to_string(),
                 pending: Some(CapacityReservationFleetTransition::due_in(
                     CAPACITY_RESERVATION_FLEET_STATE_ACTIVE,
                     CAPACITY_RESERVATION_FLEET_ACTIVATION_DELAY,

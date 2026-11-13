@@ -16,9 +16,9 @@
 //!    holds no Capacity Reservation yet and fulfils none of its target capacity;
 //! 2. the CLOCK, not a caller, moves a Fleet `submitted` -> `active`: the capacity is
 //!    reserved by the create, so activation moves the Fleet's state word and nothing else;
-//! 3. `CancelCapacityReservationFleets` moves a Fleet into `cancelling`, reporting the state
-//!    it came from, and the clock moves it on to `cancelled`, where it still reports the
-//!    composition it reserved;
+//! 3. `CancelCapacityReservationFleets` moves a Fleet into `cancelling`, reporting the
+//!    Fleet's own previous state beside it, and the clock moves it on to `cancelled`, where
+//!    it still reports the composition it reserved;
 //! 4. an id that is not a Capacity Reservation Fleet id at all is refused for the WHOLE
 //!    request with `InvalidCapacityReservationFleetId.Malformed`, before any Fleet is looked
 //!    up or moved, while a well-formed id that names no Fleet is reported PER FLEET by the
@@ -270,6 +270,32 @@ async fn described_fleet(case: &str, router: &MultiServiceRouter, fleet_id: &str
         "case {case:?}: a describe narrowed to one id reports one Fleet, got {fleets:?}"
     );
     fleets.remove(0)
+}
+
+/// Look again until the Fleet `fleet_id` reports `wanted`, exactly as a client's readiness
+/// waiter does, and answer the Fleet it then reports.
+///
+/// A wait on the CONDITION rather than on a span: a loaded machine polls more often instead
+/// of reading the state before the move the clock owes is applied. The deadline is generous,
+/// because all it bounds is a hang.
+async fn polled_fleet(
+    case: &str,
+    router: &MultiServiceRouter,
+    fleet_id: &str,
+    wanted: &str,
+) -> Fleet {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    let mut fleet = described_fleet(case, router, fleet_id).await;
+    while fleet.state != wanted && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(25)).await;
+        fleet = described_fleet(case, router, fleet_id).await;
+    }
+    assert_eq!(
+        fleet.state, wanted,
+        "case {case:?}: waited for the Fleet to report {wanted:?}, it reports {:?}",
+        fleet.state
+    );
+    fleet
 }
 
 /// One `instanceTypeSpecification` of a create request, at `index` (counting from 1).
@@ -728,11 +754,16 @@ async fn create_round_trips_and_the_clock_activates_the_fleet() {
 // Rule 3: cancelling moves the Fleet through `cancelling` to `cancelled`
 // ---------------------------------------------------------------------------
 
-/// RULE 3: a cancel reports the state the Fleet came from and leaves it `cancelling`, and
-/// the CLOCK moves it on to `cancelled`, where it still reports the composition it reserved.
+/// RULE 3: a cancel reports the Fleet's OWN previous state — the word it had moved out of
+/// before the state the cancel interrupts — and leaves it `cancelling`, and the CLOCK moves
+/// it on to `cancelled`, where it still reports the composition it reserved.
 ///
 /// The rows are the two states a Fleet of this emulator can be cancelled from: the
-/// `submitted` it is created in, and the `active` the clock moves it to.
+/// `submitted` it is created in, and the `active` the clock moves it to. Both report
+/// `submitted` as the previous state — a Fleet that has not left the state it was created in
+/// has no earlier word, and one the clock activated moved out of exactly that word. The
+/// histories that leave a DIFFERENT word behind are tabled in
+/// `super::capacity_reservation_fleet_previous_state`.
 #[tokio::test]
 async fn cancelling_a_fleet_moves_it_through_cancelling_to_cancelled() {
     let (router, _engine) = super::ec2_query::emulator();
@@ -750,12 +781,18 @@ async fn cancelling_a_fleet_moves_it_through_cancelling_to_cancelled() {
         )
         .await;
         let fleet_id = created_fleet(case, &body).id;
-        let expected_previous = if wait_for_active {
-            past_the_transition().await;
-            CAPACITY_RESERVATION_FLEET_STATE_ACTIVE
-        } else {
-            CAPACITY_RESERVATION_FLEET_STATE_SUBMITTED
-        };
+        if wait_for_active {
+            polled_fleet(
+                case,
+                &router,
+                &fleet_id,
+                CAPACITY_RESERVATION_FLEET_STATE_ACTIVE,
+            )
+            .await;
+        }
+        // Either way the word the Fleet had moved out of by the time the cancel arrives is
+        // the one it was created in.
+        let expected_previous = CAPACITY_RESERVATION_FLEET_STATE_SUBMITTED;
 
         let (status, body) = cancel(&router, &[&fleet_id]).await;
         assert_eq!(
@@ -780,8 +817,9 @@ async fn cancelling_a_fleet_moves_it_through_cancelling_to_cancelled() {
                 Some(expected_previous.to_string()),
                 Some(CAPACITY_RESERVATION_FLEET_STATE_CANCELLING.to_string()),
             ),
-            "case {case:?}: expected the Fleet to leave {expected_previous:?} for \
-             {CAPACITY_RESERVATION_FLEET_STATE_CANCELLING:?}, got body {body}"
+            "case {case:?}: expected the Fleet's previous state {expected_previous:?} beside \
+             the {CAPACITY_RESERVATION_FLEET_STATE_CANCELLING:?} the cancel moves it to, got \
+             body {body}"
         );
         assert!(
             set_items(doc.root_element(), "failedFleetCancellationSet").is_empty(),
@@ -797,13 +835,13 @@ async fn cancelling_a_fleet_moves_it_through_cancelling_to_cancelled() {
             cancelling.state
         );
 
-        past_the_transition().await;
-        let cancelled = described_fleet(case, &router, &fleet_id).await;
-        assert_eq!(
-            cancelled.state, CAPACITY_RESERVATION_FLEET_STATE_CANCELLED,
-            "case {case:?}: the clock owes a cancelling Fleet cancelled, got {:?}",
-            cancelled.state
-        );
+        let cancelled = polled_fleet(
+            case,
+            &router,
+            &fleet_id,
+            CAPACITY_RESERVATION_FLEET_STATE_CANCELLED,
+        )
+        .await;
         // Cancelling is a state WORD: the Fleet's composition — the specifications it
         // reserved on, the Capacity Reservations they held and the capacity they fulfilled —
         // is still reported, so a teardown flow can read what was reserved.

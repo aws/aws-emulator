@@ -216,7 +216,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // cancel, so it is reported as a Fleet that could not be cancelled rather than
             // moved again.
             let current_state = record.state().to_string();
-            let Some(previous_state) = record.begin_cancellation() else {
+            let Some(previous_fleet_state) = record.begin_cancellation() else {
                 failed.push(cancellation_failure(
                     &fleet_id,
                     INCORRECT_STATE,
@@ -229,11 +229,16 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 ));
                 continue;
             };
-            // Read the state back OUT of the stored record, so the caller is told the state a
-            // later describe will report rather than the word this handler meant to write.
+            // The pair EC2 reports for a cancelled Fleet: "The previous state of the Capacity
+            // Reservation Fleet" (`$PreviousFleetState`) is the word the Fleet had already
+            // moved out of when this call arrived — the Fleet's own previous state, which the
+            // store remembers for it — while "The current state of the Capacity Reservation
+            // Fleet" (`$CurrentFleetState`) is read back OUT of the stored record, so the
+            // caller is told the state a later describe will report rather than the word this
+            // handler meant to write.
             successful.push(CapacityReservationFleetCancellationState {
                 capacity_reservation_fleet_id: Some(fleet_id.clone()),
-                previous_fleet_state: Some(previous_state),
+                previous_fleet_state: Some(previous_fleet_state),
                 current_fleet_state: Some(record.state().to_string()),
             });
             debug_assert_eq!(

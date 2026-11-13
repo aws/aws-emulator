@@ -25,10 +25,7 @@ use std::time::Duration;
 use service_com_amazonaws_ec2_amazonec2 as ec2;
 use smithy_server_runtime::MultiServiceRouter;
 
-use ec2::state::{
-    CAPACITY_RESERVATION_FLEET_ACTIVATION_DELAY, DEFAULT_FLEET_INSTANCE_PRIORITY,
-    TRANSITION_DELAY,
-};
+use ec2::state::{DEFAULT_FLEET_INSTANCE_PRIORITY, TRANSITION_DELAY};
 
 use super::ec2_query::{call, element, elements, indexed};
 use super::wire::{child, child_text, document, param, Param};
@@ -491,6 +488,29 @@ async fn a_defaulted_priority_is_ordered_behind_an_assigned_one() {
     );
 }
 
+/// Look again at the Fleet `narrowed` names until it reports `wanted`, as a client's
+/// readiness waiter does. The deadline is generous: all it bounds is a hang.
+async fn poll_until_state(
+    case: &str,
+    router: &MultiServiceRouter,
+    narrowed: &[Param],
+    wanted: &str,
+) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    loop {
+        let body = ok(case, router, "DescribeCapacityReservationFleets", narrowed).await;
+        let state = element(&body, "state").unwrap_or_default();
+        if state == wanted {
+            return;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "case {case:?}: waited for the Fleet to report {wanted:?}, it reports {state:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
 /// RULE 3 past the Fleet's own lifecycle: the clock's activation does not change what a
 /// reservation reports, and neither does a cancellation — the Fleet keeps reporting the
 /// composition it reserved.
@@ -522,9 +542,9 @@ async fn what_a_fleet_reserved_is_still_reported_once_it_is_cancelled() {
         panic!("case {case:?}: the Fleet must hold a Capacity Reservation: {reserved}")
     });
 
-    // Past the Fleet's activation, and past the cancellation's own span.
-    tokio::time::sleep(CAPACITY_RESERVATION_FLEET_ACTIVATION_DELAY + Duration::from_millis(400))
-        .await;
+    // Wait for the state word the clock owes the Fleet, by looking again rather than by
+    // sleeping a span: a loaded machine polls more often instead of reading too early.
+    poll_until_state(case, &router, &narrowed, "active").await;
     let cancelled = ok(
         case,
         &router,
@@ -534,10 +554,11 @@ async fn what_a_fleet_reserved_is_still_reported_once_it_is_cancelled() {
     .await;
     assert_eq!(
         element(&cancelled, "previousFleetState").as_deref(),
-        Some("active"),
-        "case {case:?}: the cancel reports the state the Fleet held, got {cancelled}"
+        Some("submitted"),
+        "case {case:?}: the cancel reports the state the Fleet had moved out of, \
+         got {cancelled}"
     );
-    tokio::time::sleep(TRANSITION_DELAY + Duration::from_millis(400)).await;
+    poll_until_state(case, &router, &narrowed, "cancelled").await;
 
     let after = ok(
         case,
