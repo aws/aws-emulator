@@ -89,6 +89,8 @@ mod cluster_admission_rules;
 mod cluster_config_update;
 #[path = "all/cluster_creator_access_entry.rs"]
 mod cluster_creator_access_entry;
+#[path = "all/cluster_endpoint_publication.rs"]
+mod cluster_endpoint_publication;
 #[path = "all/cluster_lifecycle.rs"]
 mod cluster_lifecycle;
 #[path = "all/cluster_payload_members.rs"]

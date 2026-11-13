@@ -54,9 +54,9 @@ const PODS_AUDIENCE: &str = "pods.eks.amazonaws.com";
 
 /// One answer from a cluster's Kubernetes API address.
 #[derive(Debug)]
-struct ApiAnswer {
-    status: u16,
-    body: serde_json::Value,
+pub(crate) struct ApiAnswer {
+    pub(crate) status: u16,
+    pub(crate) body: serde_json::Value,
 }
 
 /// The emulator under test: the EKS control plane and the EKS Auth plane over ONE
@@ -76,9 +76,9 @@ fn emulator_with_pod_identity() -> (MultiServiceRouter, Arc<engine::InMemoryEngi
 /// the cluster publishes for its API server, and the certificate authority it
 /// publishes beside it.
 #[derive(Debug, Clone)]
-struct Kubeconfig {
-    endpoint: String,
-    certificate_authority_pem: String,
+pub(crate) struct Kubeconfig {
+    pub(crate) endpoint: String,
+    pub(crate) certificate_authority_pem: String,
 }
 
 /// Create the cluster `name` in `region`, wait for the clock-owed provisioning to be
@@ -98,6 +98,18 @@ async fn provisioned_cluster(
         "cluster {name:?}: expected 200 from CreateCluster, got {created:?}"
     );
     let described = poll_until_active(router, region, name).await;
+    kubeconfig_of(name, &described)
+}
+
+/// The kubeconfig members of the cluster `name`, read out of one `DescribeCluster`
+/// answer the way a client does: the address it published for its API server, and
+/// the certificate authority published beside it, decoded as the member documents
+/// ("the Base64-encoded certificate data required to communicate with your
+/// cluster").
+///
+/// Separate from [`provisioned_cluster`] so a suite that creates several clusters
+/// before waiting for any of them reads the pair the same way.
+pub(crate) fn kubeconfig_of(name: &str, described: &crate::wire::Answer) -> Kubeconfig {
     let endpoint = str_member(name, "cluster.endpoint", &described.cluster()["endpoint"]);
     let data = str_member(
         name,
@@ -124,7 +136,7 @@ const POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 /// `DescribeCluster` until the cluster reports `ACTIVE` with its API server address
 /// published, or the deadline passes.
-async fn poll_until_active(
+pub(crate) async fn poll_until_active(
     router: &MultiServiceRouter,
     region: &str,
     name: &str,
@@ -154,7 +166,7 @@ async fn poll_until_active(
 /// kubeconfig-built client makes it: TLS over the endpoint's own host and port,
 /// verified against the published certificate authority and NOTHING else, then one
 /// HTTP/1.1 exchange on it.
-async fn dial(
+pub(crate) async fn dial(
     config: &Kubeconfig,
     case: &str,
     method: &str,
