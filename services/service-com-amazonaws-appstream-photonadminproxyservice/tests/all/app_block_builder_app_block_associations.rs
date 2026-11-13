@@ -20,7 +20,12 @@
 //! * `MaxResults` sizes a page of the read so that following `NextToken` reports every
 //!   association exactly once;
 //! * an association holds the app block, so the app block cannot be deleted while a
-//!   builder is attached to it.
+//!   builder is attached to it;
+//! * the packaging gate turns on the app block's STORED packaging and on nothing else —
+//!   not on the shape of either name, not on the app block's optional metadata — and the
+//!   sentence it refuses with is fixed text that echoes no name and no ARN;
+//! * a refusal is repeatable and leaves the associations the builder already holds
+//!   exactly as they were.
 
 use std::collections::BTreeSet;
 
@@ -588,5 +593,209 @@ async fn an_association_holds_the_app_block() {
             "case {case:?}: the refusal must state that the app block is in use, got \
              {message:?}"
         );
+    }
+}
+
+/// Name shapes spanning `Name`'s pattern `^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,100}$`
+/// (`smithy_query(query="operation", operation="AssociateAppBlockBuilderAppBlock")`): the
+/// rows differ along length, character classes and case, the last being the longest name
+/// the pattern admits (101 characters). None of them occurs in the refusal sentence, so a
+/// row can also assert that the sentence echoes nothing of the request.
+fn name_shapes() -> Vec<String> {
+    vec![
+        "block1".to_string(),
+        "Mixed.Case_name-9".to_string(),
+        "0123456789".to_string(),
+        format!("z{}", "9".repeat(100)),
+    ]
+}
+
+/// Create an app block of `name` with `packaging_type`, carrying the optional members a
+/// create admits (`Description`, `DisplayName`, `Tags` —
+/// `smithy_query(query="operation", operation="CreateAppBlock")`) when `described`, and
+/// answer its ARN. Those members are what the association rule must NOT turn on.
+async fn create_described_app_block(
+    emulator: &Emulator,
+    case: &str,
+    name: &str,
+    packaging_type: &str,
+    described: bool,
+) -> String {
+    let mut request = json!({
+        "Name": name,
+        "PackagingType": packaging_type,
+        "SourceS3Location": { "S3Bucket": "app-packages", "S3Key": "disks/app.vhd" },
+    });
+    // `SetupScriptDetails` "must be provided for the CUSTOM PackagingType".
+    if packaging_type != BUILDER_PACKAGED {
+        request["SetupScriptDetails"] = json!({
+            "ScriptS3Location": { "S3Bucket": "app-packages", "S3Key": "scripts/setup.ps1" },
+            "ExecutablePath": "setup.ps1",
+            "TimeoutInSeconds": 60,
+        });
+    }
+    if described {
+        request["Description"] = json!("an app block with every optional member set");
+        request["DisplayName"] = json!("Described block");
+        request["Tags"] = json!({ "owner": "platform" });
+    }
+    let created = emulator.ok(case, "CreateAppBlock", request).await;
+    created
+        .get("AppBlock")
+        .and_then(|block| block.get("Arn"))
+        .and_then(Value::as_str)
+        .unwrap_or_else(|| panic!("case {case:?}: expected the app block's ARN, got {created}"))
+        .to_string()
+}
+
+#[tokio::test]
+async fn the_gate_turns_on_the_stored_packaging_and_on_nothing_else() {
+    // Rows: the whole `PackagingType` catalog crossed with name shapes and with the
+    // optional metadata of the app block — so the verdict is varied only by the packaging,
+    // never by how the resources are named or described.
+    for (index, shape) in name_shapes().into_iter().enumerate() {
+        for packaging_type in PACKAGING_TYPES {
+            let described = index % 2 == 0;
+            let case =
+                format!("{packaging_type} app block named {shape:?} (described: {described})");
+            let emulator = Emulator::in_region(REGION);
+            create_builder(&emulator, &case, &shape).await;
+            let arn =
+                create_described_app_block(&emulator, &case, &shape, packaging_type, described)
+                    .await;
+
+            let request = json!({ "AppBlockBuilderName": shape, "AppBlockArn": arn });
+            let selector = json!({ "AppBlockBuilderName": shape });
+            if *packaging_type == BUILDER_PACKAGED {
+                let answer = emulator
+                    .ok(&case, "AssociateAppBlockBuilderAppBlock", request)
+                    .await;
+                assert_eq!(
+                    answer,
+                    json!({
+                        "AppBlockBuilderAppBlockAssociation": {
+                            "AppBlockBuilderName": shape,
+                            "AppBlockArn": arn,
+                        }
+                    }),
+                    "case {case:?}: the result must carry the association that was \
+                     recorded, got {answer}"
+                );
+                let reported = associated(&emulator, &case, selector).await;
+                assert_eq!(
+                    reported,
+                    vec![json!({ "AppBlockBuilderName": shape, "AppBlockArn": arn })],
+                    "case {case:?}: the read must report the recorded association, got \
+                     {reported:?}"
+                );
+            } else {
+                let message = refusal(
+                    &emulator,
+                    &case,
+                    "AssociateAppBlockBuilderAppBlock",
+                    request,
+                    400,
+                    "InvalidParameterValueException",
+                )
+                .await;
+                assert_eq!(
+                    message,
+                    not_supported_sentence(),
+                    "case {case:?}: the refusal must state that the app block supports no \
+                     association, got {message:?}"
+                );
+                // The sentence states the rule about the app block that was selected, so
+                // it takes no part from the request or from state.
+                assert!(
+                    !message.contains(shape.as_str()) && !message.contains(arn.as_str()),
+                    "case {case:?}: the refusal must echo neither the names nor the ARN, \
+                     got {message:?}"
+                );
+                let reported = associated(&emulator, &case, selector).await;
+                assert!(
+                    reported.is_empty(),
+                    "case {case:?}: a refused association records nothing, got {reported:?}"
+                );
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_refused_association_leaves_the_admitted_edges_untouched() {
+    // Rows: how many associations the builder already holds when the refused request
+    // arrives, from none to several — the refusal is a no-op whatever the store holds, and
+    // repeating it is answered the same way every time.
+    for admitted in 0..=3_usize {
+        let case = format!("a refusal against {admitted} admitted association(s)");
+        let emulator = Emulator::in_region(REGION);
+        create_builder(&emulator, &case, "untouched-builder").await;
+
+        let mut expected: Vec<Value> = Vec::new();
+        for index in 0..admitted {
+            let arn = create_app_block(
+                &emulator,
+                &case,
+                &format!("admitted-block-{index}"),
+                Some(BUILDER_PACKAGED),
+                Some("disks/app.vhd"),
+            )
+            .await;
+            emulator
+                .ok(
+                    &case,
+                    "AssociateAppBlockBuilderAppBlock",
+                    json!({ "AppBlockBuilderName": "untouched-builder", "AppBlockArn": arn }),
+                )
+                .await;
+            expected.push(json!({
+                "AppBlockBuilderName": "untouched-builder",
+                "AppBlockArn": arn,
+            }));
+        }
+
+        let refused = create_app_block(
+            &emulator,
+            &case,
+            "refused-block",
+            Some("CUSTOM"),
+            Some("disks/custom.vhd"),
+        )
+        .await;
+        for attempt in 1..=3_usize {
+            let message = refusal(
+                &emulator,
+                &case,
+                "AssociateAppBlockBuilderAppBlock",
+                json!({ "AppBlockBuilderName": "untouched-builder", "AppBlockArn": refused }),
+                400,
+                "InvalidParameterValueException",
+            )
+            .await;
+            assert_eq!(
+                message,
+                not_supported_sentence(),
+                "case {case:?} (attempt {attempt}): unexpected sentence {message:?}"
+            );
+
+            let reported = associated(
+                &emulator,
+                &case,
+                json!({ "AppBlockBuilderName": "untouched-builder" }),
+            )
+            .await;
+            assert_eq!(
+                reported, expected,
+                "case {case:?} (attempt {attempt}): the refusal must leave the admitted \
+                 associations as they were, got {reported:?}"
+            );
+            let from_the_app_block =
+                associated(&emulator, &case, json!({ "AppBlockArn": refused })).await;
+            assert!(
+                from_the_app_block.is_empty(),
+                "case {case:?} (attempt {attempt}): the refused app block must be \
+                 associated with nothing, got {from_the_app_block:?}"
+            );
+        }
     }
 }
