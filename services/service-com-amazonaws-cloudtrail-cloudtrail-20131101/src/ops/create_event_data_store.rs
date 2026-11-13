@@ -388,10 +388,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 .into(),
             );
         }
-        // The per-selector rules themselves live with `PutEventSelectors`, this crate's
-        // one reading of an advanced event selector, so both callers refuse alike.
-        if let Err(reason) = crate::ops::put_event_selectors::validate_advanced_event_selectors(
+        // The per-selector rules themselves live in `crate::state`, this crate's one
+        // reading of an advanced event selector, so every operation that stores a set
+        // refuses alike — on the fields an EVENT DATA STORE admits, which are the
+        // trail's plus the ones the API Reference calls "additional fields … available
+        // for event data stores".
+        if let Err(reason) = crate::state::advanced_event_selectors::validate(
             &advanced_event_selectors,
+            crate::state::advanced_event_selectors::SelectorTarget::EventDataStore,
         ) {
             return Err(
                 CreateEventDataStoreErrorModeled::InvalidEventSelectorsException(

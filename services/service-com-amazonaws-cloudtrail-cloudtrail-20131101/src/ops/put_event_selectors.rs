@@ -520,95 +520,18 @@ fn selector_logs_nothing(selector: &EventSelector) -> bool {
     !includes_management && data_resources == 0
 }
 
-/// Check an advanced selector set against the documented rules.
+/// Check an advanced selector set a request asks to apply to a TRAIL.
 ///
-/// `pub(crate)` because `CreateEventDataStore` and `UpdateEventDataStore` hold the
-/// selector list they store on an event data store to the very same rules: the selector
-/// structure is one shape, so it is read in ONE place rather than once per operation.
-///
-/// Four rules hold over the set. Each field selector states a field and at least one
-/// condition on it. A field the model admits only one operator for states only that one
-/// ([`crate::state::EQUALS_ONLY_SELECTOR_FIELDS`]). Every selector states the category
-/// of events it selects ([`crate::state::EVENT_CATEGORY_SELECTOR_FIELD`]), without which
-/// it selects no category at all. And a trail carries "up to a maximum of 500 values for
-/// all conditions and selectors".
-///
-/// The field NAME itself is not checked against a catalog, unlike the basic selectors'
-/// `DataResource$Type` and `ExcludeManagementEventSources`: the model constrains
-/// `SelectorField` only by length and the pattern `^[\w|\d|\.|_]+$` and declares no
-/// enum, and which fields are legal depends on the selector's `eventCategory` and on
-/// prose in the user guide the model does not carry. Refusing against a catalog this
-/// emulator invented would reject requests the service accepts, so a well-formed field
-/// is stored as given.
-pub(crate) fn validate_advanced_event_selectors(
-    selectors: &[AdvancedEventSelector],
-) -> Result<(), String> {
-    let mut values = 0usize;
-    for selector in selectors {
-        for field_selector in &selector.field_selectors {
-            let conditions = [
-                &field_selector.equals,
-                &field_selector.starts_with,
-                &field_selector.ends_with,
-                &field_selector.not_equals,
-                &field_selector.not_starts_with,
-                &field_selector.not_ends_with,
-            ];
-            let field_values: usize = conditions
-                .iter()
-                .map(|condition| condition.as_ref().map_or(0, Vec::len))
-                .sum();
-            if field_values == 0 {
-                return Err(format!(
-                    "The advanced field selector for {:?} states no condition; each field \
-                     selector needs one of Equals, StartsWith, EndsWith, NotEquals, \
-                     NotStartsWith or NotEndsWith",
-                    field_selector.field
-                ));
-            }
-            // The model names the fields `Equals` is "the only valid operator" for, so a
-            // condition stated under any other operator on one of them is a condition
-            // the service cannot evaluate.
-            if crate::state::EQUALS_ONLY_SELECTOR_FIELDS.contains(&field_selector.field.as_str())
-                && field_values != field_selector.equals.as_ref().map_or(0, Vec::len)
-            {
-                return Err(format!(
-                    "The only valid operator for the {} field is Equals",
-                    field_selector.field
-                ));
-            }
-            values += field_values;
-        }
-        // A selector that never states which category of events it selects selects no
-        // event at all, whatever else its field selectors say.
-        if !selector
-            .field_selectors
-            .iter()
-            .any(|field_selector| {
-                field_selector.field == crate::state::EVENT_CATEGORY_SELECTOR_FIELD
-            })
-        {
-            return Err(MISSING_EVENT_CATEGORY_MESSAGE.to_string());
-        }
-    }
-    if values > crate::state::ADVANCED_SELECTOR_VALUES_PER_TRAIL_LIMIT {
-        // The remedy the model's `InvalidEventSelectorsException` doc states for
-        // this bound: "Specify up to 500 values for all conditions in all advanced
-        // event selectors for a trail."
-        return Err(format!(
-            "Specify up to {} values for all conditions in all advanced event selectors \
-             for a trail",
-            crate::state::ADVANCED_SELECTOR_VALUES_PER_TRAIL_LIMIT
-        ));
-    }
-    Ok(())
+/// The rules themselves — which fields each event category admits, how many values
+/// `eventCategory` carries, which resource types a `resources.type` condition may name,
+/// and the sentence each refusal carries — live in
+/// [`crate::state::advanced_event_selectors`], because the event data store operations
+/// hold the selector list they store to the very same reading; what this operation adds
+/// is WHICH resource the set is being stored on, since a trail and an event data store
+/// admit different fields for the same category.
+fn validate_advanced_event_selectors(selectors: &[AdvancedEventSelector]) -> Result<(), String> {
+    crate::state::advanced_event_selectors::validate(
+        selectors,
+        crate::state::advanced_event_selectors::SelectorTarget::Trail,
+    )
 }
-
-/// How CloudTrail words an advanced event selector that states no `eventCategory`: the
-/// remedy for the rule it broke, in the "Specify …" form the model's own
-/// `InvalidEventSelectorsException` doc states its other remedies in.
-///
-/// Entirely fixed text for this error class — it states the rule and names neither the
-/// trail, the event data store nor any value the request carried.
-const MISSING_EVENT_CATEGORY_MESSAGE: &str = "Specify an eventCategory field selector in \
-     every advanced event selector";

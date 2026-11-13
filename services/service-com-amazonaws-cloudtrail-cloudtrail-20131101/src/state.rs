@@ -2079,6 +2079,13 @@ pub const MISSING_TRAIL_CONFIGURATION_MESSAGE: &str =
 /// target reading `src/service.rs` applies.
 pub mod channels;
 
+/// The rules an ADVANCED event selector set is held to — which fields each event
+/// category admits, how many values `eventCategory` carries, the resource types a
+/// `resources.type` condition may name — and the sentence each refusal carries. In its
+/// own module for the same reason [`channels`] is: all three operations that store such
+/// a set (`PutEventSelectors`, `CreateEventDataStore`, `UpdateEventDataStore`) apply it.
+pub mod advanced_event_selectors;
+
 /// The resources a trail REFERENCES — its destination bucket, its notification topic,
 /// its encryption key and its CloudWatch Logs destination — resolved in the services
 /// that own them, with the refusal text each resolution feeds. In its own module for the

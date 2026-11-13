@@ -340,8 +340,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // The selectors a store may carry: "You can configure up to five advanced
         // event selectors for each event data store", the same bound
         // `CreateEventDataStore` holds a new store to, and the per-selector rules are
-        // `PutEventSelectors`', this crate's one reading of an advanced event
-        // selector, so every writer of a selector list refuses alike.
+        // `crate::state::advanced_event_selectors`', this crate's one reading of an
+        // advanced event selector, so every writer of a selector list refuses alike —
+        // here against the field catalogue an event data store admits.
         if let Some(selectors) = input
             .advanced_event_selectors
             .as_ref()
@@ -365,7 +366,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .advanced_event_selectors
             .as_deref()
             .and_then(|selectors| {
-                crate::ops::put_event_selectors::validate_advanced_event_selectors(selectors).err()
+                crate::state::advanced_event_selectors::validate(
+                    selectors,
+                    crate::state::advanced_event_selectors::SelectorTarget::EventDataStore,
+                )
+                .err()
             })
         {
             return Err(

@@ -229,3 +229,9 @@ mod trail_not_found_identifier_echo;
 // that call's instant, and before anything is persisted.
 #[path = "all/trail_destination_revalidation.rs"]
 mod trail_destination_revalidation;
+// `advanced_event_selector_rules` pins the rules an ADVANCED event selector set is held
+// to — the category it has to state, the fields that category admits, the condition every
+// field selector carries and the resource types a data-event selector names — and the
+// fixed sentence each refusal carries, over every operation that stores such a set.
+#[path = "all/advanced_event_selector_rules.rs"]
+mod advanced_event_selector_rules;
