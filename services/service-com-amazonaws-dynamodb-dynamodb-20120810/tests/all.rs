@@ -269,6 +269,8 @@ mod table_throughput_mode_and_warm_capacity;
 mod tag_read_propagation;
 #[path = "all/time_to_live.rs"]
 mod time_to_live;
+#[path = "all/transactional_consumed_capacity_metrics.rs"]
+mod transactional_consumed_capacity_metrics;
 #[path = "all/transactional_undefined_expression_tokens.rs"]
 mod transactional_undefined_expression_tokens;
 #[path = "all/transitional_status_span.rs"]

@@ -121,11 +121,12 @@ pub struct Observation {
 
 /// What a table has been charged and this service has not published yet.
 ///
-/// The charge happens where the capacity is taken — under this store's lock, inside the
-/// admission every read and every write of a table goes through — and the publish happens
-/// with that lock released, in the CloudWatch store. So the observations wait here in
-/// between, exactly as a capacity movement waits to be delivered to the service that owns the
-/// scaled resource.
+/// The charge happens under this store's lock, where the request's figure is settled — inside
+/// the admission every read and every item write of a table goes through, or against the
+/// ledger a transactional or statement write reports
+/// ([`charge_reported_capacity`]) — and the publish happens with that lock released, in the
+/// CloudWatch store. So the observations wait here in between, exactly as a capacity movement
+/// waits to be delivered to the service that owns the scaled resource.
 #[derive(Debug, Default)]
 pub struct Pending(Vec<Observation>);
 
@@ -166,13 +167,28 @@ impl Pending {
         capacity: &crate::state::WriteCapacity,
         at: ::std::time::SystemTime,
     ) {
+        self.charge_itemised(Consumed::Write, capacity, at);
+    }
+
+    /// [`Self::charge_write`] for either half of the throughput: `consumed` is the half the
+    /// request spent, which is the half it reports its figures in.
+    ///
+    /// The two halves split the same itemisation, because `ConsumedCapacity` itemises a read
+    /// and a write the same way — a figure for the table and one per index — so a request
+    /// billed as a read counts its figures into the read series of exactly those resources.
+    pub fn charge_itemised(
+        &mut self,
+        consumed: Consumed,
+        capacity: &crate::state::WriteCapacity,
+        at: ::std::time::SystemTime,
+    ) {
         let table_units = capacity
             .local_secondary_indexes
             .values()
             .fold(capacity.table, |units, local| units + local);
-        self.charge(Consumed::Write, table_units, at);
+        self.charge(consumed, table_units, at);
         for (index, units) in &capacity.global_secondary_indexes {
-            self.charge_global_index(Consumed::Write, index, *units, at);
+            self.charge_global_index(consumed, index, *units, at);
         }
     }
 
@@ -205,6 +221,60 @@ impl Pending {
     /// Take everything recorded so far, leaving nothing behind: publishing is at-most-once.
     fn take(&mut self) -> Vec<Observation> {
         ::std::mem::take(&mut self.0)
+    }
+}
+
+/// Count what ONE request reported consuming on ONE table into that table's series.
+///
+/// The surfaces that take their capacity from the table's budgets count where the capacity is
+/// TAKEN ([`crate::state::Table::admit_item_write`]), because one write's figure is settled
+/// right there. The surfaces whose figure is read back OUT of the stored table after the write
+/// has landed — the statement surface's three write verbs, and the transactional ledgers
+/// below — count it here instead, so the series carries exactly the units the response named
+/// whichever surface the request came in through.
+///
+/// `consumed` is the half of the throughput the request is BILLED as: the kind its own
+/// `ConsumedCapacity` reports the figure in.
+pub fn charge_reported_capacity(
+    store: &mut crate::state::ComAmazonawsDynamodbDynamodb20120810State,
+    region: &str,
+    name: &str,
+    capacity: &crate::state::WriteCapacity,
+    consumed: Consumed,
+    at: ::std::time::SystemTime,
+) {
+    // The request has already reached this table, so the name is one this region resolves; a
+    // table that is no longer there has no series to count into and is passed over rather
+    // than guessed at.
+    if let Ok(table) = store.table_mut(region, name) {
+        table
+            .pending_consumed
+            .charge_itemised(consumed, capacity, at);
+    }
+}
+
+/// Count what one MULTI-ITEM request reported consuming into the series of each table it
+/// addressed, as the ledger it answers with itemises it.
+///
+/// [`charge_reported_capacity`] per table of the ledger. A TRANSACTIONAL request's figure is
+/// settled only once every element has landed and the transactional factor has been applied to
+/// the whole ledger ([`crate::state::TRANSACTIONAL_CAPACITY_FACTOR`]) — "transactional write
+/// requests require two write capacity units" — so the ledger the response reports is what is
+/// counted.
+///
+/// `consumed` is the half of the throughput the surface bills the request as: a transaction
+/// that applies its elements spends write capacity, while a repeat under a client request token
+/// applies nothing and "returns the number of read capacity units consumed in reading the
+/// item", so it spends read capacity.
+pub fn charge_reported_ledger(
+    store: &mut crate::state::ComAmazonawsDynamodbDynamodb20120810State,
+    region: &str,
+    ledger: &crate::state::WriteLedger,
+    consumed: Consumed,
+    at: ::std::time::SystemTime,
+) {
+    for (name, capacity) in ledger.itemised() {
+        charge_reported_capacity(store, region, name, capacity, consumed, at);
     }
 }
 

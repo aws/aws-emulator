@@ -4658,7 +4658,9 @@ pub use multi_item::*;
 /// store itself. Re-exported below, so every caller still names them `crate::state::…`.
 pub mod consumed_capacity_metrics;
 
-pub use consumed_capacity_metrics::{publish_pending_consumed, Consumed};
+pub use consumed_capacity_metrics::{
+    charge_reported_capacity, charge_reported_ledger, publish_pending_consumed, Consumed,
+};
 
 // ===========================================================================
 // The PartiQL dialect `ExecuteStatement` runs

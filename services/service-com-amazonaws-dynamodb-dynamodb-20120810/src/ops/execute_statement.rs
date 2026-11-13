@@ -672,6 +672,17 @@ fn insert_item(
         .active_table(region, name, now)
         .map_err(lift)?
         .write_capacity(None, Some(&item));
+    // What the statement consumed is also what this service publishes as the table's
+    // throughput metric ([`crate::state::charge_reported_capacity`]): the figure reported
+    // below is the figure counted, so the series cannot drift from the response.
+    crate::state::charge_reported_capacity(
+        store,
+        region,
+        name,
+        &capacity,
+        crate::state::Consumed::Write,
+        now,
+    );
     Ok(ExecuteStatementOutput {
         // "If a read operation was used, this property will contain the result of the
         // read operation … For the write operations this value will be empty"
@@ -771,6 +782,16 @@ fn update_item(
         .active_table(region, name, now)
         .map_err(lift)?
         .write_capacity(before.as_ref(), Some(&item));
+    // See [`insert_item`]: the units the response reports are the units the table's series
+    // carries ([`crate::state::charge_reported_capacity`]).
+    crate::state::charge_reported_capacity(
+        store,
+        region,
+        name,
+        &capacity,
+        crate::state::Consumed::Write,
+        now,
+    );
     let reported = crate::state::projected_return_values(
         update
             .returning
@@ -834,6 +855,16 @@ fn delete_item(
         .active_table(region, name, now)
         .map_err(lift)?
         .write_capacity(removed.as_ref(), None);
+    // See [`insert_item`]: the units the response reports are the units the table's series
+    // carries ([`crate::state::charge_reported_capacity`]).
+    crate::state::charge_reported_capacity(
+        store,
+        region,
+        name,
+        &capacity,
+        crate::state::Consumed::Write,
+        now,
+    );
     // A delete removes every attribute of the item, so the `MODIFIED OLD` projection
     // of what it changed IS the item as it stood — both OLD forms report that item.
     let reported = delete

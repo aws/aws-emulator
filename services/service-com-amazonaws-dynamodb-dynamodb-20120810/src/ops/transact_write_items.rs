@@ -344,6 +344,16 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                         .into(),
                     );
                 }
+                // The repeat applied nothing and is billed as the read it was, so the read
+                // half of the tables' throughput is what it counts
+                // ([`crate::state::charge_reported_ledger`]).
+                crate::state::charge_reported_ledger(
+                    &mut store,
+                    &region,
+                    &completed.ledger,
+                    crate::state::Consumed::Read,
+                    now,
+                );
                 return Ok(TransactWriteItemsOutput {
                     // A repeat under the token APPLIES NOTHING, so it is billed as the
                     // read it was: "subsequent TransactWriteItems calls with the same
@@ -687,6 +697,17 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // "Transactional write requests require two write capacity units": the whole
         // transaction is billed at twice what the same single-item writes would cost.
         ledger.scale(crate::state::TRANSACTIONAL_CAPACITY_FACTOR);
+        // What the transaction consumed is also what this service publishes as those tables'
+        // throughput: the scaled ledger is the figure the response reports, so counting it
+        // here is what puts the transactional cost — twice the single-item one — in the
+        // series a client graphs and alarms on ([`crate::state::charge_reported_ledger`]).
+        crate::state::charge_reported_ledger(
+            &mut store,
+            &region,
+            &ledger,
+            crate::state::Consumed::Write,
+            now,
+        );
         if let Some(token) = token {
             store.record_transaction(
                 &region,

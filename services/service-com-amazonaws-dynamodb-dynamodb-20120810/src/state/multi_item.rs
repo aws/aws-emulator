@@ -968,6 +968,18 @@ impl WriteLedger {
         }
     }
 
+    /// What this ledger holds, table by table: the figures the operation reports as its
+    /// `ConsumedCapacity`, itemised the way that member itemises them.
+    ///
+    /// They are also the figures the operation COUNTS into the table's consumption series
+    /// ([`crate::state::charge_reported_ledger`]), so what a client reads out of CloudWatch
+    /// and what the response named cannot differ.
+    pub fn itemised(&self) -> impl Iterator<Item = (&str, &WriteCapacity)> {
+        self.capacity
+            .iter()
+            .map(|(table, capacity)| (table.as_str(), capacity))
+    }
+
     /// The `ConsumedCapacity` list the operation reports, one entry per table it wrote
     /// to, or `None` when the request asked for no capacity detail.
     ///

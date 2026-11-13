@@ -343,6 +343,16 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 // might not be the same" even though the effect on the server is. The
                 // figure is the one the transaction's own items weigh, reported as the
                 // read it was.
+                // The repeat applied nothing and is billed as the read it was, so the read
+                // half of the tables' throughput is what it counts
+                // ([`crate::state::charge_reported_ledger`]).
+                crate::state::charge_reported_ledger(
+                    &mut store,
+                    &region,
+                    &completed.ledger,
+                    crate::state::Consumed::Read,
+                    now,
+                );
                 return Ok(ExecuteTransactionOutput {
                     // The repeat re-applies nothing, so no statement of it produced an
                     // item to report ([`reported_responses`]).
@@ -956,6 +966,16 @@ fn write_transaction<Eng: ::std::marker::Send + ::std::marker::Sync + 'static>(
     }
 
     recorded.scale(crate::state::TRANSACTIONAL_CAPACITY_FACTOR);
+    // The transactional cost this statement set consumed is what the tables' throughput
+    // series carry for it, the same figures the entries above report
+    // ([`crate::state::charge_reported_ledger`]).
+    crate::state::charge_reported_ledger(
+        store,
+        region,
+        &recorded,
+        crate::state::Consumed::Write,
+        now,
+    );
     if let Some(token) = token {
         store.record_transaction(
             region,
