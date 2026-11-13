@@ -19,6 +19,8 @@ mod component_build_version_listing;
 mod component_document_sources;
 #[path = "all/component_image_recipe.rs"]
 mod component_image_recipe;
+#[path = "all/component_import.rs"]
+mod component_import;
 #[path = "all/component_listing.rs"]
 mod component_listing;
 #[path = "all/component_listing_wire_members.rs"]

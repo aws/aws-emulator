@@ -101,6 +101,11 @@ use std::time::{Duration, SystemTime};
 mod component_document_object;
 pub use component_document_object::*;
 
+/// The component document an IMPORTED script is wrapped in, and how an import's own
+/// receipt is filed.
+mod imported_component;
+pub use imported_component::*;
+
 /// Whether the instance profile a configuration names is one this account's IAM holds.
 mod instance_profile;
 pub use instance_profile::*;

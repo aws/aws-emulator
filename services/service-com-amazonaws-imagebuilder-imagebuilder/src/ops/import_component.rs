@@ -1,15 +1,40 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op ImportComponent
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `ImportComponent`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`ImportComponent::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! Imports a script as a component build version this service's state then holds, so a later
+//! `GetComponent` reports the component this request stored.
+//!
+//! The rules it follows, each from the modelled documentation quoted beside it:
+//!
+//! * the operation "imports a component and transforms its data into a component document.
+//!   For the SHELL format, Image Builder wraps your script in a component document with a
+//!   single step that runs the script" — so what the request carries is a SCRIPT and what the
+//!   component holds is the document that script is wrapped in
+//!   ([`crate::state::shell_component_document`]), whose one phase is the one the requested
+//!   `type` names and whose one step runs the script through the action that `platform` runs a
+//!   shell script with;
+//! * the script is named by exactly one of `data` ("the plain script content") and `uri` ("for
+//!   scripts that exceed the inline length constraint"), so naming both or neither is the
+//!   parameter-value refusal this service states for a request it cannot accept a parameter
+//!   of, naming both members. A `uri` names an object in Amazon S3, which this operation
+//!   FETCHES at import time ([`crate::state::document_at`]): an address the object store
+//!   serves nothing at is refused and nothing is minted, and the bytes it was served are the
+//!   script, read exactly like an inline one;
+//! * `semanticVersion`'s three assignable nodes each take an integer up to 2^30-1 — a bound
+//!   the modelled pattern cannot state — so a version past it is a value of THAT parameter
+//!   this service cannot accept, refused the way it refuses every such value;
+//! * the component TYPE is the one the request submitted, which the wrapping document then
+//!   declares, so the document a read reports and the type it reports agree;
+//! * the ARN is derived from a NORMALIZED form of the name plus the version and the build
+//!   number, and a repeat of one name+version pair "creates a new build version for it. If
+//!   the content is also identical to the latest build version, the request fails because the
+//!   component already exists" — reported as `ResourceAlreadyExistsException`, the
+//!   create-collision error, naming the build version that already holds this content;
+//! * `clientToken` is an idempotency token: a retry carrying it answers with the ORIGINAL
+//!   response, and the same token carrying different import parameters is
+//!   `IdempotentParameterMismatchException`. The token is spent on THIS operation, so one
+//!   token carried by an import and by a create names two requests.
 //!
 //! ## Shape of an operation
 //!
@@ -153,7 +178,25 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-imagebuilder-imagebuild
 // here — hence the `ImportComponentError` alias below. An operation that models no errors
 // generates an UNINHABITED enum here, which is correct and expected: there is nothing
 // to construct until the model says otherwise.
-#[smithy_macros::operation_error("com.amazonaws.imagebuilder#ImportComponent")]
+//
+// `InvalidParameterValueException`, `ResourceAlreadyExistsException` and
+// `ServiceQuotaExceededException` are widened in through `extra_errors`: the SERVICE models
+// all three shapes and `CreateComponent` declares them, while this operation's own error list
+// does not — and an import mints the very same resource a create does, so the three classes a
+// create of a component answers with are the three this import answers with. The first is the
+// class Image Builder refuses a parameter of this request with, including the one requirement
+// that holds over `data` and `uri` TOGETHER; the second is the class a create whose resource
+// already exists is refused with, which is a different claim from the resource-state error
+// `ResourceInUseException` names; the third is the class a resource this account may hold no
+// more of is refused with.
+#[smithy_macros::operation_error(
+    "com.amazonaws.imagebuilder#ImportComponent",
+    extra_errors = [
+        "InvalidParameterValueException",
+        "ResourceAlreadyExistsException",
+        "ServiceQuotaExceededException"
+    ]
+)]
 #[derive(Debug)]
 pub enum ImportComponentErrorModeled {
     CallRateLimitExceededException(CallRateLimitExceededException),
@@ -161,10 +204,13 @@ pub enum ImportComponentErrorModeled {
     ForbiddenException(ForbiddenException),
     IdempotentParameterMismatchException(IdempotentParameterMismatchException),
     InvalidParameterCombinationException(InvalidParameterCombinationException),
+    InvalidParameterValueException(InvalidParameterValueException),
     InvalidRequestException(InvalidRequestException),
     InvalidVersionNumberException(InvalidVersionNumberException),
+    ResourceAlreadyExistsException(ResourceAlreadyExistsException),
     ResourceInUseException(ResourceInUseException),
     ServiceException(ServiceException),
+    ServiceQuotaExceededException(ServiceQuotaExceededException),
     ServiceUnavailableException(ServiceUnavailableException),
 }
 
@@ -219,18 +265,274 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `ImportComponent` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(ImportComponentErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("ImportComponent"))
+        // Every modelled constraint on this input — `name`'s pattern, the version pattern,
+        // the string lengths, the `ComponentFormat`, `ComponentType` and `Platform` enums,
+        // the 1..50 tag bound — has been refused by the centralized walk before this body
+        // runs, so what is checked here is only what the model cannot say. `format` is one of
+        // those: the enum admits `SHELL` alone, so the script is read as the one format this
+        // operation documents.
+        let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
+            ImportComponentErrorModeled::ServiceException(ServiceException {
+                message: Some(crate::state::store_unavailable_message()),
+            })
+        })?;
+
+        let region = crate::state::request_region(ctx.parts());
+
+        // "You must specify exactly one of the data or uri properties" — a requirement over
+        // the two members together, so it is refused as this service refuses every parameter
+        // whose value it cannot accept: the parameter-value class, naming both members
+        // ([`crate::state::component_data_or_uri_message`]).
+        let script_source = match (input.data.as_deref(), input.uri.as_deref()) {
+            (Some(data), None) => ScriptSource::Inline(data),
+            (None, Some(uri)) => ScriptSource::Uri(uri),
+            _ => {
+                return Err(
+                    ImportComponentErrorModeled::InvalidParameterValueException(
+                        InvalidParameterValueException {
+                            message: Some(crate::state::component_data_or_uri_message()),
+                        },
+                    )
+                    .into(),
+                )
+            }
+        };
+
+        // The modelled version pattern admits any digits at all; the documented bound on each
+        // assigned node is read here.
+        if crate::state::parse_semantic_version(&input.semantic_version).is_none() {
+            return Err(
+                ImportComponentErrorModeled::InvalidParameterValueException(
+                    InvalidParameterValueException {
+                        message: Some(crate::state::invalid_semantic_version_message(
+                            crate::state::SEMANTIC_VERSION_MEMBER,
+                        )),
+                    },
+                )
+                .into(),
+            );
+        }
+
+        let fingerprint = crate::state::imported_component_request_fingerprint(&input);
+
+        // "If you retry a request with the same client token, Image Builder returns the
+        // original response without running the operation again" — down to its `requestId`.
+        // Answered BEFORE the script is read, so a retry carrying a token that already
+        // succeeded runs nothing and cannot be refused for an object that has since been
+        // removed. The check is repeated under the lock that writes, which is what settles a
+        // token two requests carry at once.
+        if let Some(answered) =
+            answered_before(&state.lock(), &region, &input.client_token, &fingerprint)
+        {
+            return answered;
+        }
+
+        // The script this import wraps: the inline content, or the object the `uri` names,
+        // which is fetched here — the bytes it was served are this component's script from
+        // then on.
+        let script = match script_source {
+            ScriptSource::Inline(data) => data.to_string(),
+            ScriptSource::Uri(uri) => match crate::state::document_at(ctx, uri).await {
+                crate::state::DocumentObject::Read(script) => script,
+                // "This must be an S3 URL (s3://bucket/key)": a value that is not one
+                // addresses no object, so it is refused for the form the member requires.
+                crate::state::DocumentObject::NotAnS3Url => {
+                    return Err(
+                        ImportComponentErrorModeled::InvalidParameterValueException(
+                            InvalidParameterValueException {
+                                message: Some(crate::state::component_uri_message()),
+                            },
+                        )
+                        .into(),
+                    )
+                }
+                // The object store answered that it serves nothing at that address: a fact
+                // about the value `uri` carried, so the import is refused as that parameter's
+                // value and nothing is minted.
+                crate::state::DocumentObject::NotServed => {
+                    return Err(
+                        ImportComponentErrorModeled::InvalidParameterValueException(
+                            InvalidParameterValueException {
+                                message: Some(crate::state::component_uri_not_found_message()),
+                            },
+                        )
+                        .into(),
+                    )
+                }
+                crate::state::DocumentObject::Rejected(why) => {
+                    return Err(
+                        ImportComponentErrorModeled::InvalidParameterValueException(
+                            InvalidParameterValueException {
+                                message: Some(crate::state::component_document_message(
+                                    crate::state::COMPONENT_URI_MEMBER,
+                                    &why,
+                                )),
+                            },
+                        )
+                        .into(),
+                    )
+                }
+                // Nothing answered the read, so nothing about the object is established: this
+                // is this emulator failing to reach its own object store, not a claim about
+                // the caller's `uri`.
+                crate::state::DocumentObject::Unestablished => {
+                    return Err(ImportComponentErrorModeled::ServiceException(
+                        ServiceException {
+                            message: Some(crate::state::component_document_unreadable_message()),
+                        },
+                    )
+                    .into())
+                }
+            },
+        };
+
+        // The document the script is wrapped in, which is what the component HOLDS: the one
+        // this operation transforms the imported data into.
+        let document = crate::state::shell_component_document(
+            &input.name,
+            input.description.as_deref(),
+            &input.platform,
+            &input.r#type,
+            &script,
+        )
+        .ok_or_else(|| {
+            // Nothing is established about the component: the document it would hold could
+            // not be rendered at all, which is a server-side failure rather than a claim
+            // about a value the request carried.
+            ImportComponentErrorModeled::ServiceException(ServiceException {
+                message: Some(crate::state::component_document_unreadable_message()),
+            })
+        })?;
+
+        let normalized = crate::state::normalized_name(&input.name);
+
+        // The idempotency check, the content check, the build numbering and the insert happen
+        // under ONE lock, so two imports of the same name+version are serialized and each
+        // gets its own build number.
+        let mut store = state.lock();
+
+        // The token again, now under the lock that writes: a token this request did not see
+        // above because another request was carrying it at the same time is settled here.
+        if let Some(answered) = answered_before(&store, &region, &input.client_token, &fingerprint)
+        {
+            return answered;
+        }
+
+        let build_version =
+            store.next_component_build_version(&region, &normalized, &input.semantic_version);
+        let request_id = crate::state::new_request_id();
+        let record = crate::state::ComponentRecord {
+            arn: crate::state::component_build_version_arn(
+                &region,
+                &input.name,
+                &input.semantic_version,
+                build_version,
+            ),
+            region: region.clone(),
+            name: input.name.clone(),
+            version: input.semantic_version.clone(),
+            build_version,
+            description: input.description.clone(),
+            change_description: input.change_description.clone(),
+            // The type this import submitted, which the wrapping document declares.
+            component_type: input.r#type.clone(),
+            platform: input.platform.clone(),
+            // No member of this request carries the OS versions a component supports, so the
+            // imported component names none.
+            supported_os_versions: None,
+            owner: ::engine::EMULATOR_ACCOUNT_ID.to_string(),
+            data: Some(document),
+            // What the request named instead of inline content, when it named one. The script
+            // itself was fetched from it at import time and lives in the document above.
+            uri: input.uri.clone(),
+            kms_key_id: input.kms_key_id.clone(),
+            // "Contains parameter details for each of the parameters that the component
+            // document defined": the wrapping document defines none.
+            parameters: None,
+            date_created: crate::state::iso8601(::std::time::SystemTime::now()),
+            tags: input.tags.clone().map(crate::state::into_ordered_tags),
+        };
+
+        // A repeat of one name+version pair creates the NEXT build version — unless its
+        // content is identical to the latest build version, in which case "the request fails
+        // because the component already exists", naming the build version that holds that
+        // content.
+        if let Some(latest) =
+            store.latest_component_build(&region, &normalized, &input.semantic_version)
+        {
+            if crate::state::same_component_content(&record, latest) {
+                return Err(
+                    ImportComponentErrorModeled::ResourceAlreadyExistsException(
+                        ResourceAlreadyExistsException {
+                            message: Some(crate::state::resource_already_exists_message(
+                                &latest.arn,
+                            )),
+                        },
+                    )
+                    .into(),
+                );
+            }
+        }
+
+        // The store is finite: an import that would take it past this emulator's own cap is
+        // refused rather than growing it.
+        if store.component_store_is_full() {
+            return Err(
+                ImportComponentErrorModeled::ServiceQuotaExceededException(
+                    ServiceQuotaExceededException {
+                        message: Some(crate::state::component_store_full_message()),
+                    },
+                )
+                .into(),
+            );
+        }
+
+        let arn = record.arn.clone();
+        store.insert_imported_component(record, &input.client_token, fingerprint, request_id.clone());
+
+        Ok(ImportComponentOutput {
+            request_id: Some(request_id),
+            client_token: Some(input.client_token),
+            component_build_version_arn: Some(arn),
+        })
     }
+}
+
+/// Which of the two documented methods named the script this import wraps.
+enum ScriptSource<'request> {
+    /// `data`: "For the SHELL format, this is the plain script content."
+    Inline(&'request str),
+    /// `uri`: "For scripts that exceed the inline length constraint, use the uri property."
+    Uri(&'request str),
+}
+
+/// What this request has ALREADY been answered, when its `clientToken` names an import that
+/// succeeded: the original response, or the mismatch a token carrying different import
+/// parameters earns. `None` when the token names nothing yet, which is the request's to run.
+///
+/// "If you retry a request with the same client token, Image Builder returns the original
+/// response without running the operation again" — so this is answered before anything is
+/// read or written, and again under the lock that writes.
+fn answered_before(
+    store: &crate::state::ComAmazonawsImagebuilderImagebuilderState,
+    region: &str,
+    client_token: &str,
+    fingerprint: &str,
+) -> Option<Result<ImportComponentOutput, ImportComponentError>> {
+    let receipt = store.imported_component_receipt(region, client_token)?;
+    if receipt.fingerprint != fingerprint {
+        return Some(Err(
+            ImportComponentErrorModeled::IdempotentParameterMismatchException(
+                IdempotentParameterMismatchException {
+                    message: Some(crate::state::idempotent_parameter_mismatch_message()),
+                },
+            )
+            .into(),
+        ));
+    }
+    Some(Ok(ImportComponentOutput {
+        request_id: Some(receipt.request_id.clone()),
+        client_token: Some(receipt.client_token.clone()),
+        component_build_version_arn: Some(receipt.arn.clone()),
+    }))
 }
