@@ -32,27 +32,38 @@
 //! `EnableDictionaryCompression`), so what lands in the bucket is a Parquet file any
 //! Parquet reader reads — not bytes assembled here to look like one.
 //!
+//! WHAT A COLUMN MAY BE. A Glue column's `Type` is a Hive data type, which nests: the tree an
+//! `array<…>`, a `struct<…>` or a `map<…,…>` declares is written as the groups the Parquet
+//! format's own LIST and MAP annotations describe, with the definition and repetition level of
+//! every value — [`nested`].
+//!
+//! WHY A RECORD FAILS. Each record is read against those columns and either converts or does
+//! not, and the two ways it can fail are not the same failure: bytes that are not one JSON
+//! object cannot be READ at all ([`Rejection::Unparseable`]), while a record that was read but
+//! carries a value the column at that point of the tree does not hold is MALFORMED against the
+//! schema ([`Rejection::Malformed`]). The conversion reports which, so the error output names a
+//! conversion error code per record and a consumer of the destination's `ErrorOutputPrefix`
+//! can tell a schema mismatch from a JSON parse failure.
+//!
 //! WHAT IS NOT. A serializer or a column type this module cannot write — `OrcSerDe`, for
 //! which no maintained Rust writer is available here, and the Hive types outside
-//! [`ColumnType::of_declared`] — leaves the buffer UNDELIVERED and owed again rather than
+//! [`HiveType::of_declared`] — leaves the buffer UNDELIVERED and owed again rather than
 //! written in a format the destination did not ask for or reported as a record failure that
 //! the real service would have converted: a record this emulator cannot place is never
 //! dropped and never mislabelled ([`Converted::Unwritable`]).
 
+mod nested;
+
 use std::collections::BTreeMap;
 
-use ::parquet::basic::{
-    Compression, ConvertedType, GzipLevel, Repetition, Type as PhysicalType,
-};
-use ::parquet::data_type::{
-    BoolType, ByteArray, ByteArrayType, DoubleType, FloatType, Int32Type, Int64Type,
-};
+use ::parquet::basic::{Compression, ConvertedType, GzipLevel, Type as PhysicalType};
 use ::parquet::file::properties::{WriterProperties, WriterVersion};
 use ::parquet::file::writer::SerializedFileWriter;
-use ::parquet::schema::types::Type as SchemaType;
 
 use crate::ops::types::{DataFormatConversionConfiguration, Deserializer, ParquetSerDe};
 use crate::state::StoredRecord;
+
+use self::nested::{HiveType, Value};
 
 /// `ParquetSerDe$Compression` when the serializer names none: "The possible values are
 /// `UNCOMPRESSED`, `SNAPPY`, and `GZIP`, with the default being `SNAPPY`."
@@ -91,18 +102,18 @@ const SECONDS_PER_DAY: i64 = 24 * 60 * 60;
 ///
 /// A CHOSEN bound, and the one thing about this work a producer does not decide: the records
 /// of a flush are bounded by the stream's own buffer budget, but the COLUMNS come from the
-/// Data Catalog, so this is what keeps the cells one conversion holds (records x columns)
-/// bounded whatever a table declares. Far above the columns a Firehose stream's records
-/// carry, so a schema a client would really bind is never refused by it.
+/// Data Catalog, so this is what keeps the leaves one conversion writes bounded whatever a
+/// table declares. Far above the columns a Firehose stream's records carry, so a schema a
+/// client would really bind is never refused by it.
 const MAX_CONVERTED_COLUMNS: usize = 1_000;
 
 /// How many rows one row group of a converted object holds.
 ///
-/// A CHOSEN bound, and the one that caps what a conversion HOLDS: the rows of a chunk are
+/// A CHOSEN bound, beside [`nested::MAX_CELLS_PER_ROW_GROUP`]: the rows of a chunk are
 /// deserialized, written as one row group and dropped before the next chunk is read, so the
-/// cells in memory at once are this many times [`MAX_CONVERTED_COLUMNS`] and not the whole
-/// flush's records times the table's columns. A Parquet file is a sequence of row groups, so
-/// writing a long buffer as several of them is what the format is for.
+/// values in memory at once are one chunk's and not the whole flush's. A Parquet file is a
+/// sequence of row groups, so writing a long buffer as several of them is what the format is
+/// for.
 const MAX_ROWS_PER_ROW_GROUP: usize = 500;
 
 /// The largest `ParquetSerDe$PageSizeBytes` this writer is given.
@@ -189,16 +200,40 @@ enum OutputFormat {
     Orc,
 }
 
+/// Why one record of a buffer did not convert: the CLASS of the failure, which is the
+/// conversion error code its error-output document names, and what failed within that class.
+///
+/// The two classes are what makes a record the conversion could not read at all distinguishable
+/// from one whose values the bound columns do not hold.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Rejection {
+    /// The record's bytes are not one JSON object, so there was nothing to read into the
+    /// columns.
+    Unparseable(String),
+    /// The record was read, but a value it carries is not one the column it stands in holds.
+    Malformed(String),
+}
+
+impl Rejection {
+    /// What failed, as the record's own error-output document states it.
+    #[must_use]
+    pub fn fault(&self) -> &str {
+        match self {
+            Self::Unparseable(fault) | Self::Malformed(fault) => fault,
+        }
+    }
+}
+
 /// What one group's records converted to.
 pub enum Converted<'r> {
     /// The columnar file holding every record that converted — EMPTY when none did, which
     /// is an object the delivery does not write — beside the records that did not, each with
-    /// WHY it did not: the column and the value that could not be deserialized, which is
-    /// what the error output reports for that record rather than one wording for every
-    /// failure.
+    /// WHY it did not: the class of the failure and the column and value that could not be
+    /// deserialized, which is what the error output reports for that record rather than one
+    /// wording for every failure.
     Rows {
         body: Vec<u8>,
-        failed: Vec<(&'r StoredRecord, String)>,
+        failed: Vec<(&'r StoredRecord, Rejection)>,
     },
     /// The bound schema could not be read at all: the catalog holds no such table, or the
     /// table carries no column information. Every record of the group is then a failed
@@ -337,15 +372,17 @@ impl JsonDeserializer {
 /// cloned out of it before any conversion runs, so that store is not held while this works.
 ///
 /// ASYNC because deserializing and serializing a buffer's records is CPU-bound: the loop
-/// hands the runtime back between records and between row groups, so a timeout or a
-/// cancellation can land while a long buffer is being converted instead of the whole run
-/// holding the worker.
+/// hands the runtime back between records, between the leaves of a row group and between row
+/// groups, so a timeout or a cancellation can land while a long buffer is being converted
+/// instead of the whole run holding the worker.
 ///
-/// WHAT THIS HOLDS is bounded by [`MAX_ROWS_PER_ROW_GROUP`] rows times
-/// [`MAX_CONVERTED_COLUMNS`] columns, whatever a producer puts and whatever the bound table
-/// declares: the rows of one chunk are deserialized, written as one row group and dropped
-/// before the next chunk is read, so neither the records of the flush nor the columns of
-/// the table decide how many cells are in memory at once.
+/// WHAT THIS HOLDS is bounded by [`nested::MAX_CELLS_PER_ROW_GROUP`] values, whatever a
+/// producer puts and whatever the bound table declares: the rows of one chunk are
+/// deserialized, written as one row group and dropped before the next chunk is read, and what
+/// that chunk may read those rows into is charged down as the records are read — so neither
+/// the records of the flush, nor the columns of the table, nor the entries a record carries in
+/// a list or a map times the fields a struct declares, decide how many values are in memory at
+/// once.
 pub async fn convert<'r, Eng: Send + Sync + 'static>(
     engine: &Eng,
     conversion: &FormatConversion,
@@ -371,7 +408,7 @@ pub async fn convert<'r, Eng: Send + Sync + 'static>(
     }
     let mut typed = Vec::with_capacity(columns.len());
     for (name, declared) in &columns {
-        match ColumnType::of_declared(declared) {
+        match HiveType::of_declared(declared) {
             Some(column_type) => typed.push((name.clone(), column_type)),
             // A Hive type this module has no leaf for is not a record failure: the real
             // service converts such a column, so reporting one here would mislabel every
@@ -386,6 +423,17 @@ pub async fn convert<'r, Eng: Send + Sync + 'static>(
             }
         }
     }
+    // A column that nests holds more than one leaf, so what the columns are WRITTEN as is what
+    // the conversion is bounded by beside the columns themselves.
+    let leaves = nested::leaf_count(&typed);
+    if leaves > nested::MAX_CONVERTED_LEAVES {
+        ::tracing::warn!(
+            leaves,
+            "the bound Glue table's columns hold more Parquet leaves than one conversion writes \
+             here, so this delivery was left for a later one"
+        );
+        return Converted::Unwritable;
+    }
     let mut writer = match parquet_writer(&conversion.schema.table_name, &typed, parquet) {
         Ok(writer) => writer,
         // The writer refused the file: nothing of this buffer is written and the whole of
@@ -398,16 +446,20 @@ pub async fn convert<'r, Eng: Send + Sync + 'static>(
     let mut failed = Vec::new();
     let mut written = 0usize;
     for chunk in records.chunks(MAX_ROWS_PER_ROW_GROUP) {
-        // One cell per column per record of THIS chunk, so a column is written as one batch
-        // of values with the definition level of each row — which is how an OPTIONAL Parquet
-        // leaf carries a null, and a Glue column holds one wherever the record named no
-        // value.
-        let mut rows: Vec<Vec<Cell>> = Vec::with_capacity(chunk.len());
+        // One value per leaf per record of THIS chunk, so a leaf is written as one batch of
+        // values with the definition and repetition level of each row — which is how an
+        // OPTIONAL Parquet leaf carries a null, a Glue column holds one wherever the record
+        // named no value, and a repeated group carries several entries. What the chunk may
+        // read those values into is charged down as the records are read, so neither the
+        // entries a record carries nor the fields the table declares decide how much this
+        // holds.
+        let mut budget = nested::CellBudget::of_row_group();
+        let mut rows: Vec<Vec<Value>> = Vec::with_capacity(chunk.len());
         for (record, data) in chunk {
             ::tokio::task::yield_now().await;
-            match row_of(data, &typed, &conversion.deserializer) {
+            match nested::row_of(data, &typed, &conversion.deserializer, &mut budget) {
                 Ok(row) => rows.push(row),
-                Err(fault) => {
+                Err(nested::RowFault::Rejected(rejection)) => {
                     // The record id and nothing of the record's own data: WHAT failed,
                     // which names the column and the value, is carried to the error output
                     // where the producer already holds its own bytes, not to this process's
@@ -416,7 +468,19 @@ pub async fn convert<'r, Eng: Send + Sync + 'static>(
                         record_id = %record.record_id,
                         "a record could not be converted to the destination's data format"
                     );
-                    failed.push((*record, fault));
+                    failed.push((*record, rejection));
+                }
+                // The records of this chunk hold more values than one row group reads here:
+                // this emulator's bound and not a verdict on the record, so nothing is
+                // written and the whole delivery is owed again rather than a record failure
+                // the real service would have converted being reported.
+                Err(nested::RowFault::TooManyCells) => {
+                    ::tracing::warn!(
+                        cells = nested::MAX_CELLS_PER_ROW_GROUP,
+                        "this buffer's records hold more values than one row group reads \
+                         here, so this delivery was left for a later one"
+                    );
+                    return Converted::Unwritable;
                 }
             }
         }
@@ -424,7 +488,7 @@ pub async fn convert<'r, Eng: Send + Sync + 'static>(
             continue;
         }
         written += rows.len();
-        if let Err(error) = write_row_group(&mut writer, &typed, &rows) {
+        if let Err(error) = nested::write_row_group(&mut writer, &typed, &rows).await {
             ::tracing::warn!(%error, "the Parquet writer refused this delivery's row group");
             return Converted::Unwritable;
         }
@@ -600,13 +664,13 @@ impl ColumnType {
     }
 }
 
-/// One record's value for one column, read as that column's own type.
+/// One value a record carries for one SCALAR of a column, read as that scalar's own type.
+///
+/// A record that named no value where a scalar stands carries none at all ([`Value::Null`]),
+/// which is what an OPTIONAL Parquet leaf records as a null rather than a cell of its own: "a
+/// key that is missing from the record" simply has no value in the converted row.
 #[derive(Debug, Clone, PartialEq)]
 enum Cell {
-    /// The record named no value for this column, or named a JSON null. A Glue column is
-    /// nullable, so this is not a failure: "a key that is missing from the record" simply
-    /// has no value in the converted row.
-    Null,
     Boolean(bool),
     Int32(i32),
     Int64(i64),
@@ -614,44 +678,6 @@ enum Cell {
     Double(f64),
     Text(String),
     Bytes(Vec<u8>),
-}
-
-/// One record's row: the cell of every column, in the table's column order.
-///
-/// `Err` carries why the record could not be deserialized into those columns, which makes
-/// it a failed record bound for the destination's error output.
-fn row_of(
-    data: &[u8],
-    columns: &[(String, ColumnType)],
-    deserializer: &JsonDeserializer,
-) -> Result<Vec<Cell>, String> {
-    let document: ::serde_json::Value = ::serde_json::from_slice(data)
-        .map_err(|error| format!("the record is not one JSON document: {error}"))?;
-    let object = document
-        .as_object()
-        .ok_or_else(|| "the record is not a JSON object".to_string())?;
-    // The keys as the deserializer matches them: folded and rewritten once per record
-    // rather than once per column, so a wide table costs one pass over the record.
-    let mut keys: BTreeMap<String, &::serde_json::Value> = BTreeMap::new();
-    for (key, value) in object {
-        keys.insert(matched_key(key, deserializer), value);
-    }
-    let mut row = Vec::with_capacity(columns.len());
-    for (name, column_type) in columns {
-        let json_key = deserializer
-            .column_to_json_key
-            .get(name)
-            .unwrap_or(name)
-            .clone();
-        let value = keys.get(&matched_key(&json_key, deserializer));
-        let cell = match value {
-            None | Some(::serde_json::Value::Null) => Cell::Null,
-            Some(value) => cell_of(value, *column_type, deserializer)
-                .map_err(|fault| format!("column {name}: {fault}"))?,
-        };
-        row.push(cell);
-    }
-    Ok(row)
 }
 
 /// A JSON key or a column name as the deserializer matches it: case-folded where
@@ -845,77 +871,21 @@ fn kind_of(value: &::serde_json::Value) -> &'static str {
     }
 }
 
-/// The writer of the Parquet file the conversion fills: one OPTIONAL leaf per Glue column,
-/// with the parameters `ParquetSerDe` carries, writing into a buffer in memory.
+/// The writer of the Parquet file the conversion fills: the message type the bound table's
+/// columns are written as ([`nested::message_type`]), with the parameters `ParquetSerDe`
+/// carries, writing into a buffer in memory.
 fn parquet_writer(
     table: &str,
-    columns: &[(String, ColumnType)],
+    columns: &[(String, HiveType)],
     serializer: &ParquetSerDe,
 ) -> Result<SerializedFileWriter<Vec<u8>>, String> {
-    let schema = message_type(table, columns)?;
+    let schema = nested::message_type(table, columns)?;
     SerializedFileWriter::new(
         Vec::new(),
         ::std::sync::Arc::new(schema),
         ::std::sync::Arc::new(writer_properties(serializer)?),
     )
     .map_err(|error| error.to_string())
-}
-
-/// Write `rows` as ONE row group of the file: each column's cells as one batch of values,
-/// in the table's column order.
-///
-/// A Parquet file is a sequence of row groups, so a buffer longer than
-/// [`MAX_ROWS_PER_ROW_GROUP`] is written as several of them and the cells held at once are
-/// one chunk's rather than the whole flush's.
-fn write_row_group(
-    writer: &mut SerializedFileWriter<Vec<u8>>,
-    columns: &[(String, ColumnType)],
-    rows: &[Vec<Cell>],
-) -> Result<(), String> {
-    let mut row_group = writer.next_row_group().map_err(|error| error.to_string())?;
-    for (index, (name, column_type)) in columns.iter().enumerate() {
-        let mut column = row_group
-            .next_column()
-            .map_err(|error| error.to_string())?
-            .ok_or_else(|| format!("the Parquet schema lost the column {name}"))?;
-        let values: Vec<Cell> = rows
-            .iter()
-            .map(|row| row.get(index).cloned().unwrap_or(Cell::Null))
-            .collect();
-        write_column(&mut column, *column_type, &values).map_err(|error| error.to_string())?;
-        column.close().map_err(|error| error.to_string())?;
-    }
-    row_group.close().map_err(|error| error.to_string())?;
-    Ok(())
-}
-
-/// The Parquet message type of the bound table: one OPTIONAL leaf per Glue column, because
-/// a column of a Glue table holds no value wherever a record named none.
-fn message_type(table: &str, columns: &[(String, ColumnType)]) -> Result<SchemaType, String> {
-    /// The name of the message type of a conversion whose binding names no table — a
-    /// configuration the create refuses, so this only keeps the writer from being handed an
-    /// empty name.
-    const UNNAMED_TABLE: &str = "record";
-
-    let mut fields = Vec::with_capacity(columns.len());
-    for (name, column_type) in columns {
-        let (physical, converted) = column_type.physical();
-        let field = SchemaType::primitive_type_builder(name, physical)
-            .with_repetition(Repetition::OPTIONAL)
-            .with_converted_type(converted)
-            .build()
-            .map_err(|error| error.to_string())?;
-        fields.push(::std::sync::Arc::new(field));
-    }
-    let name = if table.is_empty() {
-        UNNAMED_TABLE
-    } else {
-        table
-    };
-    SchemaType::group_type_builder(name)
-        .with_fields(fields)
-        .build()
-        .map_err(|error| error.to_string())
 }
 
 /// The writer parameters `ParquetSerDe` asks for: the compression over the data blocks, the
@@ -962,95 +932,6 @@ fn writer_properties(serializer: &ParquetSerDe) -> Result<WriterProperties, Stri
     Ok(properties.build())
 }
 
-/// Write one column's cells, with the definition level of each row: 1 for a value that is
-/// present and 0 for a null, which is how an OPTIONAL Parquet leaf carries one.
-fn write_column(
-    column: &mut ::parquet::file::writer::SerializedColumnWriter<'_>,
-    column_type: ColumnType,
-    values: &[Cell],
-) -> Result<(), ::parquet::errors::ParquetError> {
-    let definitions: Vec<i16> = values
-        .iter()
-        .map(|cell| i16::from(*cell != Cell::Null))
-        .collect();
-    match column_type {
-        ColumnType::Boolean => {
-            let present: Vec<bool> = values
-                .iter()
-                .filter_map(|cell| match cell {
-                    Cell::Boolean(flag) => Some(*flag),
-                    _ => None,
-                })
-                .collect();
-            column
-                .typed::<BoolType>()
-                .write_batch(&present, Some(&definitions), None)?;
-        }
-        ColumnType::Integer(_) | ColumnType::Date => {
-            let present: Vec<i32> = values
-                .iter()
-                .filter_map(|cell| match cell {
-                    Cell::Int32(value) => Some(*value),
-                    _ => None,
-                })
-                .collect();
-            column
-                .typed::<Int32Type>()
-                .write_batch(&present, Some(&definitions), None)?;
-        }
-        ColumnType::BigInt | ColumnType::Timestamp => {
-            let present: Vec<i64> = values
-                .iter()
-                .filter_map(|cell| match cell {
-                    Cell::Int64(value) => Some(*value),
-                    _ => None,
-                })
-                .collect();
-            column
-                .typed::<Int64Type>()
-                .write_batch(&present, Some(&definitions), None)?;
-        }
-        ColumnType::Float => {
-            let present: Vec<f32> = values
-                .iter()
-                .filter_map(|cell| match cell {
-                    Cell::Float(value) => Some(*value),
-                    _ => None,
-                })
-                .collect();
-            column
-                .typed::<FloatType>()
-                .write_batch(&present, Some(&definitions), None)?;
-        }
-        ColumnType::Double => {
-            let present: Vec<f64> = values
-                .iter()
-                .filter_map(|cell| match cell {
-                    Cell::Double(value) => Some(*value),
-                    _ => None,
-                })
-                .collect();
-            column
-                .typed::<DoubleType>()
-                .write_batch(&present, Some(&definitions), None)?;
-        }
-        ColumnType::Text | ColumnType::Binary => {
-            let present: Vec<ByteArray> = values
-                .iter()
-                .filter_map(|cell| match cell {
-                    Cell::Text(text) => Some(ByteArray::from(text.clone().into_bytes())),
-                    Cell::Bytes(bytes) => Some(ByteArray::from(bytes.clone())),
-                    _ => None,
-                })
-                .collect();
-            column
-                .typed::<ByteArrayType>()
-                .write_batch(&present, Some(&definitions), None)?;
-        }
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1090,48 +971,67 @@ mod tests {
     }
 
     /// A record converts into the row its columns' types admit, and one carrying a value a
-    /// column does not hold does not convert at all.
+    /// column does not hold does not convert at all — in the failure class its own conversion
+    /// error code comes from.
     #[test]
     fn a_row_holds_only_values_its_columns_admit() {
         let columns = vec![
-            ("flag".to_string(), ColumnType::Boolean),
-            ("count".to_string(), ColumnType::BigInt),
-            ("name".to_string(), ColumnType::Text),
+            ("flag".to_string(), HiveType::Primitive(ColumnType::Boolean)),
+            ("count".to_string(), HiveType::Primitive(ColumnType::BigInt)),
+            ("name".to_string(), HiveType::Primitive(ColumnType::Text)),
         ];
         let deserializer = JsonDeserializer::default();
-        let row = row_of(
+        let budget = nested::CellBudget::of_row_group;
+        let row = nested::row_of(
             br#"{"flag": true, "count": 7, "name": "a"}"#,
             &columns,
             &deserializer,
+            &mut budget(),
         );
-        assert_eq!(
-            row,
-            Ok(vec![
-                Cell::Boolean(true),
-                Cell::Int64(7),
-                Cell::Text("a".to_string())
-            ]),
+        assert!(
+            row.as_ref().is_ok_and(|row| row
+                == &[
+                    Value::Cell(Cell::Boolean(true)),
+                    Value::Cell(Cell::Int64(7)),
+                    Value::Cell(Cell::Text("a".to_string()))
+                ]),
             "case conforming: expected the three cells, got {row:?}"
         );
-        let missing = row_of(br#"{"flag": true}"#, &columns, &deserializer);
-        assert_eq!(
-            missing,
-            Ok(vec![Cell::Boolean(true), Cell::Null, Cell::Null]),
+        let missing = nested::row_of(
+            br#"{"flag": true}"#,
+            &columns,
+            &deserializer,
+            &mut budget(),
+        );
+        assert!(
+            missing.as_ref().is_ok_and(|row| row
+                == &[Value::Cell(Cell::Boolean(true)), Value::Null, Value::Null]),
             "case omitted columns: expected nulls, got {missing:?}"
         );
-        for mismatched in [
-            &br#"{"count": "seven"}"#[..],
-            &br#"{"count": 1.5}"#[..],
-            &br#"{"name": {"a": 1}}"#[..],
-            &br#"{"flag": "maybe"}"#[..],
-            &b"not json at all"[..],
-            &br#"[1, 2]"#[..],
-        ] {
-            let read = row_of(mismatched, &columns, &deserializer);
-            assert!(
-                read.is_err(),
-                "case {:?}: expected no row, got {read:?}",
-                String::from_utf8_lossy(mismatched)
+        // Each record that does not convert, with the class its failure belongs to: a record
+        // whose bytes could not be READ is not the same failure as one that was read and
+        // carries a value the column does not hold.
+        let rejected: &[(&[u8], &str)] = &[
+            (br#"{"count": "seven"}"#, "malformed"),
+            (br#"{"count": 1.5}"#, "malformed"),
+            (br#"{"name": {"a": 1}}"#, "malformed"),
+            (br#"{"flag": "maybe"}"#, "malformed"),
+            (b"not json at all", "unparseable"),
+            (br#"[1, 2]"#, "unparseable"),
+        ];
+        for (record, expected) in rejected {
+            let read = nested::row_of(record, &columns, &deserializer, &mut budget());
+            let class = match &read {
+                Err(nested::RowFault::Rejected(Rejection::Unparseable(_))) => "unparseable",
+                Err(nested::RowFault::Rejected(Rejection::Malformed(_))) => "malformed",
+                Err(nested::RowFault::TooManyCells) => "too many cells",
+                Ok(_) => "converted",
+            };
+            assert_eq!(
+                class,
+                *expected,
+                "case {:?}: expected {expected}, got {read:?}",
+                String::from_utf8_lossy(record)
             );
         }
     }

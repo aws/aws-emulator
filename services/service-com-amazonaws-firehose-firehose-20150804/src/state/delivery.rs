@@ -519,7 +519,7 @@ const PROCESSING_FAILED: DeliveryFailure = DeliveryFailure {
     error_message: "this record is not what the destination's data processing reads",
 };
 
-/// The failure of a record the destination's own DATA FORMAT CONVERSION could not read:
+/// The failure of a record the destination's own DATA FORMAT CONVERSION could not place:
 /// with a `DataFormatConversionConfiguration` in force the records are deserialized from
 /// JSON into the columns of the Glue table the configuration binds, and a record that is
 /// not one JSON object of values those columns hold is not a row that conversion can write
@@ -529,12 +529,55 @@ const PROCESSING_FAILED: DeliveryFailure = DeliveryFailure {
 /// delivered: it is written under the destination's `ErrorOutputPrefix` with the record's
 /// own bytes, which is what makes a schema mismatch something a consumer of that prefix can
 /// both see and re-drive.
+///
+/// Every record of this class carries a code of its OWN — [`CONVERSION_PARSE_ERROR`] or
+/// [`CONVERSION_MALFORMED_DATA`], as [`conversion_fault`] reads it off the conversion's own
+/// verdict for that record — so the code here is the class's, which stands only for a record
+/// the conversion reported no verdict of its own for.
 const FORMAT_CONVERSION_FAILED: DeliveryFailure = DeliveryFailure {
     output_type: FORMAT_CONVERSION_FAILED_OUTPUT_TYPE,
-    error_code: "DataFormatConversion.ParseError",
+    error_code: CONVERSION_PARSE_ERROR,
     error_message: "this record could not be deserialized into the columns of the destination's \
                     schema",
 };
+
+/// The conversion error code of a record whose bytes the conversion could not READ as the
+/// JSON its deserializer deserializes.
+const CONVERSION_PARSE_ERROR: &str = "DataFormatConversion.ParseError";
+
+/// The conversion error code of a record the conversion READ but whose values the bound Glue
+/// columns do not hold.
+///
+/// The class a consumer of the error output tells a record that does not MATCH the declared
+/// schema from one that is not parseable JSON at all by: the two are different faults in the
+/// producer, so the error output names them apart.
+const CONVERSION_MALFORMED_DATA: &str = "DataFormatConversion.MalformedData";
+
+/// What failed for ONE record, where the failure is about that record's own data: the code
+/// its error-output document names and what that document says.
+///
+/// A failure class states one code for every record of a group ([`DeliveryFailure`]); a
+/// conversion, which reads each record against the bound columns on its own, states this per
+/// record — so one error-output object carries a record the conversion could not read beside
+/// one whose values the columns do not hold, each under its own code.
+#[derive(Debug, Clone)]
+struct RecordFault {
+    error_code: &'static str,
+    message: String,
+}
+
+/// The fault one record's conversion verdict states: the code of its class and what failed
+/// within it.
+fn conversion_fault(rejection: &format_conversion::Rejection) -> RecordFault {
+    let error_code = match rejection {
+        format_conversion::Rejection::Unparseable(_) => CONVERSION_PARSE_ERROR,
+        format_conversion::Rejection::Malformed(_) => CONVERSION_MALFORMED_DATA,
+    };
+    RecordFault {
+        error_code,
+        message: rejection.fault().to_string(),
+    }
+}
 
 /// The failure of a record whose destination converts its data format but whose bound
 /// SCHEMA could not be read at all: the Data Catalog holds no such table, or the table
@@ -2462,9 +2505,9 @@ async fn objects_of<Eng: Send + Sync + 'static>(
         let mut bodies: Vec<(String, ObjectBody)> = Vec::with_capacity(writing.len());
         // Why one particular record failed, by its record id: the data format conversion
         // reads each record against the bound columns, so what failed is a statement about
-        // THAT record (the column and the value it carried there) rather than one wording
-        // for every record of the group.
-        let mut faults: BTreeMap<String, String> = BTreeMap::new();
+        // THAT record (its own failure class, and the column and the value it carried there)
+        // rather than one wording for every record of the group.
+        let mut faults: BTreeMap<String, RecordFault> = BTreeMap::new();
         for (prefix, records) in writing {
             let (processed, unprocessable) =
                 processed_records(&records, target, &mut inflation_budget).await;
@@ -2490,8 +2533,9 @@ async fn objects_of<Eng: Send + Sync + 'static>(
                 } => {
                     if !unconvertible.is_empty() {
                         let records = failed.entry(FORMAT_CONVERSION_FAILED).or_default();
-                        for (record, fault) in unconvertible {
-                            faults.insert(record.record_id.clone(), fault);
+                        for (record, rejection) in unconvertible {
+                            faults
+                                .insert(record.record_id.clone(), conversion_fault(&rejection));
                             records.push(record);
                         }
                     }
@@ -3317,14 +3361,14 @@ fn concatenated(processed: &[(&StoredRecord, Vec<u8>)], append_delimiter: bool) 
 /// document of a record the destination's data format conversion failed on names beside the
 /// failure itself ([`format_conversion::FormatConversion::data_catalog_table`]); a failure
 /// of any other kind was not measured against a table and names none. `faults` carries, by
-/// record id, what failed for ONE record where that is known, which is the message its own
-/// document states instead of the failure class's general one.
+/// record id, the code and the message of ONE record where the failure is a statement about
+/// that record, which is what its own document names instead of the failure class's.
 fn error_payload(
     records: &[&StoredRecord],
     failure: DeliveryFailure,
     now: SystemTime,
     catalog_table: Option<&::serde_json::Value>,
-    faults: &BTreeMap<String, String>,
+    faults: &BTreeMap<String, RecordFault>,
 ) -> Vec<u8> {
     let documents: Vec<String> = records
         .iter()
@@ -3334,9 +3378,7 @@ fn error_payload(
                 failure,
                 now,
                 catalog_table,
-                faults
-                    .get(&record.record_id)
-                    .map_or(failure.error_message, String::as_str),
+                faults.get(&record.record_id),
             )
             .to_string()
         })
@@ -3355,15 +3397,15 @@ fn error_payload(
 /// `attemptEndingTimestamp` when this delivery attempt ended. A record the destination's
 /// data format conversion failed on also names the Data Catalog table that conversion reads
 /// its columns from (`dataCatalogTable`), because WHICH schema the record did not match is
-/// what a consumer of that failure diagnoses it by. `message` is what failed: the failure
-/// class's own wording, or what failed for THIS record where the failure is about the
-/// record's own data.
+/// what a consumer of that failure diagnoses it by. The code and the message are `fault`'s
+/// where the failure is a statement about THIS record's own data, and the failure class's
+/// where it is about the whole group.
 fn error_envelope(
     record: &StoredRecord,
     failure: DeliveryFailure,
     now: SystemTime,
     catalog_table: Option<&::serde_json::Value>,
-    message: &str,
+    fault: Option<&RecordFault>,
 ) -> ::serde_json::Value {
     let mut envelope = ::serde_json::json!({
         "attemptsMade": 1,
@@ -3373,7 +3415,9 @@ fn error_envelope(
     });
     if let Some(members) = envelope.as_object_mut() {
         let (code, reported_message) = failure.reported_member_names();
-        members.insert(code.to_string(), failure.error_code.into());
+        let error_code = fault.map_or(failure.error_code, |fault| fault.error_code);
+        let message = fault.map_or(failure.error_message, |fault| fault.message.as_str());
+        members.insert(code.to_string(), error_code.into());
         members.insert(reported_message.to_string(), message.into());
         if let Some(table) = catalog_table {
             members.insert("dataCatalogTable".to_string(), table.clone());

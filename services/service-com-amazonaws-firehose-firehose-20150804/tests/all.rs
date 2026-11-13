@@ -83,6 +83,8 @@ mod kinesis_source_ingestion;
 mod kms_key_resolution;
 #[path = "all/legacy_s3_destination_mirror.rs"]
 mod legacy_s3_destination_mirror;
+#[path = "all/nested_schema_conversion.rs"]
+mod nested_schema_conversion;
 #[path = "all/not_found_message_name_space.rs"]
 mod not_found_message_name_space;
 #[path = "all/opensearch_destination_delivery.rs"]

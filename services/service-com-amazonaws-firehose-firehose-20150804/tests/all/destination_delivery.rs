@@ -405,6 +405,14 @@ pub(crate) fn base64(data: &[u8]) -> String {
     aws_smithy_types::base64::encode(data)
 }
 
+/// Whether `haystack` holds `needle` anywhere in it — what a suite asks to see whether a
+/// record's own bytes reached an object.
+pub(crate) fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+    haystack
+        .windows(needle.len())
+        .any(|window| window == needle)
+}
+
 /// Every element of an XML document as `(element name, text)` in document order, read with
 /// an XML reader rather than by slicing the body.
 fn elements(body: &[u8]) -> Vec<(String, String)> {

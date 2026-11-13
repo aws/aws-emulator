@@ -30,7 +30,7 @@ use std::time::{Duration, Instant};
 use serde_json::{json, Value};
 
 use crate::delivery_stream_lifecycle::{at, error_code, error_message, REGION, ROLE_ARN};
-use crate::destination_delivery::Emulator;
+use crate::destination_delivery::{contains, Emulator};
 
 /// The bucket every stream here delivers into. One bucket, one prefix per stream, so one
 /// listing says which stream a delivered object came from.
@@ -360,9 +360,3 @@ async fn assert_only_direct_put_delivered(emulator: &Emulator, rows: &[Row], sta
     }
 }
 
-/// Whether `haystack` holds `needle` anywhere in it.
-fn contains(haystack: &[u8], needle: &[u8]) -> bool {
-    haystack
-        .windows(needle.len())
-        .any(|window| window == needle)
-}

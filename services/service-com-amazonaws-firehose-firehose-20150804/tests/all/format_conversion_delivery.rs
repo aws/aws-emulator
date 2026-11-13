@@ -35,11 +35,17 @@ const DELIVERY_DEADLINE: Duration = Duration::from_secs(10);
 /// How often the destination is polled while waiting for a delivery.
 const POLL_INTERVAL: Duration = Duration::from_millis(25);
 
-/// The `lastErrorCode` the error output names for a record the conversion could not read.
+/// The `lastErrorCode` the error output names for a record whose bytes the conversion could
+/// not read as JSON at all.
 ///
-/// `pub(crate)`, like the Glue helpers below, so the sibling suite over the serializer's own
-/// parameters reads the error output by the same name rather than re-spelling it.
+/// `pub(crate)`, like the Glue helpers below, so the sibling suites read the error output by
+/// the same name rather than re-spelling it.
 pub(crate) const PARSE_ERROR: &str = "DataFormatConversion.ParseError";
+
+/// The `lastErrorCode` the error output names for a record the conversion READ but whose
+/// values the bound columns do not hold — the class that tells data not matching the schema
+/// from unparseable JSON.
+pub(crate) const MALFORMED_DATA: &str = "DataFormatConversion.MalformedData";
 
 /// The `lastErrorCode` the error output names when the bound schema could not be read.
 const INVALID_SCHEMA: &str = "DataFormatConversion.InvalidSchema";
@@ -54,12 +60,14 @@ struct ConvertedRecord {
     row: &'static [&'static str],
 }
 
-/// One record that must NOT convert: the JSON a producer puts, and what the error output's
-/// message about it must name — the column and the value that could not be deserialized,
-/// which is what a consumer of the error prefix diagnoses the record by. An empty list is a
-/// failure that is not about one value of the record, so the class's own wording stands.
+/// One record that must NOT convert: the JSON a producer puts, the `lastErrorCode` its own
+/// error-output document must name, and what that document's message must name — the column
+/// and the value that could not be deserialized, which is what a consumer of the error prefix
+/// diagnoses the record by. An empty list is a failure that is not about one value of the
+/// record, so the class's own wording stands.
 struct FailedRecord {
     put: &'static str,
+    error_code: &'static str,
     fault_mentions: &'static [&'static str],
 }
 
@@ -79,8 +87,6 @@ struct ConversionRow {
     converted: &'static [ConvertedRecord],
     /// The records that must land under the error output prefix instead.
     failed: &'static [FailedRecord],
-    /// The `lastErrorCode` the error output must name for those records.
-    error_code: &'static str,
 }
 
 /// The conversion cases.
@@ -111,9 +117,9 @@ fn conversion_rows() -> Vec<ConversionRow> {
             ],
             failed: &[FailedRecord {
                 put: r#"{"id": "c", "count": "many"}"#,
+                error_code: MALFORMED_DATA,
                 fault_mentions: &["count", "many"],
             }],
-            error_code: PARSE_ERROR,
         },
         ConversionRow {
             case: "records that are not one JSON object",
@@ -127,14 +133,15 @@ fn conversion_rows() -> Vec<ConversionRow> {
             failed: &[
                 FailedRecord {
                     put: "not json at all",
+                    error_code: PARSE_ERROR,
                     fault_mentions: &["JSON"],
                 },
                 FailedRecord {
                     put: "[1, 2]",
+                    error_code: PARSE_ERROR,
                     fault_mentions: &["object"],
                 },
             ],
-            error_code: PARSE_ERROR,
         },
         ConversionRow {
             case: "every column type the schema declares",
@@ -186,16 +193,17 @@ fn conversion_rows() -> Vec<ConversionRow> {
             failed: &[
                 FailedRecord {
                     put: r#"{"precise": true}"#,
+                    error_code: MALFORMED_DATA,
                     fault_mentions: &["precise", "number"],
                 },
                 // A magnitude a 32-bit `float` leaf cannot carry is not a value that column
                 // holds, exactly as a value outside an integer width's range is not.
                 FailedRecord {
                     put: r#"{"ratio": 1e39}"#,
+                    error_code: MALFORMED_DATA,
                     fault_mentions: &["ratio", "range"],
                 },
             ],
-            error_code: PARSE_ERROR,
         },
         ConversionRow {
             case: "the OpenX deserializer folds the case and maps a column to its JSON key",
@@ -209,7 +217,6 @@ fn conversion_rows() -> Vec<ConversionRow> {
                 row: &["now", "e"],
             }],
             failed: &[],
-            error_code: PARSE_ERROR,
         },
         ConversionRow {
             case: "the native Hive deserializer matches its keys as written",
@@ -229,7 +236,6 @@ fn conversion_rows() -> Vec<ConversionRow> {
                 },
             ],
             failed: &[],
-            error_code: PARSE_ERROR,
         },
         ConversionRow {
             case: "a binding the Data Catalog holds no table for",
@@ -241,9 +247,9 @@ fn conversion_rows() -> Vec<ConversionRow> {
                 put: r#"{"id": "h"}"#,
                 // The schema itself could not be read, so nothing about this record's own
                 // values is what failed.
+                error_code: INVALID_SCHEMA,
                 fault_mentions: &[],
             }],
-            error_code: INVALID_SCHEMA,
         },
     ]
 }
@@ -447,9 +453,9 @@ fn assert_error_output(
         // Data Catalog table the record was measured against.
         assert_eq!(
             document["lastErrorCode"].as_str(),
-            Some(row.error_code),
+            Some(failed.error_code),
             "case {case:?}: expected the error code {:?}, got {document:?}",
-            row.error_code
+            failed.error_code
         );
         let message = document["lastErrorMessage"].as_str().unwrap_or_default();
         assert!(

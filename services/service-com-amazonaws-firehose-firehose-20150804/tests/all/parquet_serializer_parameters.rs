@@ -39,7 +39,7 @@ use serde_json::{json, Value};
 use crate::delivery_stream_lifecycle::{at, error_code, error_message, REGION, ROLE_ARN};
 use crate::destination_delivery::{base64, Emulator};
 use crate::format_conversion_delivery::{
-    create_database, create_table, delivered, FAILED_OUTPUT_TYPE, PARSE_ERROR,
+    create_database, create_table, delivered, FAILED_OUTPUT_TYPE, MALFORMED_DATA,
 };
 use crate::refusal_messages::value_at;
 
@@ -425,8 +425,8 @@ fn assert_quarantined(case: &str, body: &[u8], database: &str, table: &str) {
     let document = &documents[0];
     assert_eq!(
         document["lastErrorCode"].as_str(),
-        Some(PARSE_ERROR),
-        "case {case:?}: expected the parse-error code, got {document:?}"
+        Some(MALFORMED_DATA),
+        "case {case:?}: expected the malformed-data code, got {document:?}"
     );
     assert_eq!(
         document["rawData"].as_str(),
@@ -447,7 +447,10 @@ fn assert_quarantined(case: &str, body: &[u8], database: &str, table: &str) {
 
 /// Wait for `stream` to be `ACTIVE`, which is when a put is accepted, or fail naming `case`
 /// once [`ACTIVE_DEADLINE`] has passed.
-async fn await_active(emulator: &Emulator, case: &str, stream: &str) {
+///
+/// `pub(crate)` so the sibling suite over a nesting schema waits for its streams the same way
+/// rather than re-spelling the poll.
+pub(crate) async fn await_active(emulator: &Emulator, case: &str, stream: &str) {
     let deadline = Instant::now() + ACTIVE_DEADLINE;
     loop {
         let described = emulator
