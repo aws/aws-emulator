@@ -249,6 +249,8 @@ mod scheduled_queries;
 mod scheduled_query_configuration_rules;
 #[path = "all/scheduled_query_enumeration.rs"]
 mod scheduled_query_enumeration;
+#[path = "all/scheduled_query_identifier_resolution.rs"]
+mod scheduled_query_identifier_resolution;
 #[path = "all/scheduled_query_insights_start.rs"]
 mod scheduled_query_insights_start;
 #[path = "all/scheduled_query_name_conflict.rs"]
