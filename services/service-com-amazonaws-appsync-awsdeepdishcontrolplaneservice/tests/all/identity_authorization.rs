@@ -231,7 +231,7 @@ impl Emulator {
 
     /// Create an IAM role carrying `policy` as its inline policy (when one is given),
     /// assume it through STS, and answer the session's access key id with the session ARN.
-    async fn assumed_role(&self, role_name: &str, policy: Option<&str>) -> Principal {
+    pub async fn assumed_role(&self, role_name: &str, policy: Option<&str>) -> Principal {
         let trust = format!(
             "{{\"Version\":\"2012-10-17\",\"Statement\":[{{\"Effect\":\"Allow\",\
              \"Principal\":{{\"AWS\":\"arn:aws:iam::{}:root\"}},\
@@ -321,7 +321,7 @@ pub fn allow(action: &str, resource: &str) -> String {
 
 /// A policy document allowing every action of this service on everything, and explicitly
 /// denying `denied`.
-fn allow_all_but(denied: &str) -> String {
+pub fn allow_all_but(denied: &str) -> String {
     format!(
         "{{\"Version\":\"2012-10-17\",\"Statement\":[\
          {{\"Effect\":\"Allow\",\"Action\":\"{ACTION_PREFIX}:*\",\"Resource\":\"*\"}},\

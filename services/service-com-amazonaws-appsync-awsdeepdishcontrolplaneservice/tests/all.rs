@@ -13,6 +13,8 @@
 // points it into `tests/all/`.
 #[path = "all/api_cache.rs"]
 mod api_cache;
+#[path = "all/api_inventory_listing_authorization.rs"]
+mod api_inventory_listing_authorization;
 #[path = "all/api_cache_create_rules.rs"]
 mod api_cache_create_rules;
 #[path = "all/api_cache_refusal_messages.rs"]
