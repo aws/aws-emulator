@@ -19,6 +19,8 @@ mod alb_drop_invalid_header_fields;
 mod alb_https_listener_tls;
 #[path = "all/alb_lambda_target.rs"]
 mod alb_lambda_target;
+#[path = "all/alb_lambda_target_access_log.rs"]
+mod alb_lambda_target_access_log;
 #[path = "all/alb_lambda_target_published_address.rs"]
 mod alb_lambda_target_published_address;
 #[path = "all/attribute_collections.rs"]

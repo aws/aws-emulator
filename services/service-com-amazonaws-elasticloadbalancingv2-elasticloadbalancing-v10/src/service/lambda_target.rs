@@ -176,7 +176,38 @@ pub(super) fn multi_value_headers(group: &TargetGroupRecord) -> bool {
 /// Serve one request by invoking the function `forwarded` names, and answer what the run
 /// produced — or the load balancer's own [`BAD_GATEWAY_STATUS`] when it produced nothing the
 /// contract admits.
+///
+/// Every answer records what the load balancer OBSERVED while producing it, which is what
+/// its own access log carries for the request ([`super::access_logs`]): the `forward` it
+/// performed, the target group it went to, the status the FUNCTION answered where it answered
+/// one, how long the invocation took, and — for an answer the load balancer generated itself
+/// — the class of the failure it generated it for.
 pub(super) async fn served(
+    ctx: &OperationContext<'_>,
+    forwarded: &Forwarded,
+    request: &DataPlaneRequest,
+    body: &[u8],
+) -> Served {
+    let mut served = invoked(ctx, forwarded, request, body).await;
+    served
+        .observed
+        .actions
+        .push(crate::state::FORWARD_ACTION_TYPE.to_string());
+    served.observed.target_group_arn = Some(forwarded.target_group_arn.clone());
+    served
+}
+
+/// The load balancer's OWN answer for one class of Lambda-target failure: the status it
+/// generates, and the reason its access log records beside it
+/// ([`super::access_logs::reason`]). No payload of the function's is passed on with it.
+fn generated(status: u16, reason: &str) -> Served {
+    let mut served = Served::status(status);
+    served.observed.error_reason = Some(reason.to_string());
+    served
+}
+
+/// The invocation itself, and what the run produced.
+async fn invoked(
     ctx: &OperationContext<'_>,
     forwarded: &Forwarded,
     request: &DataPlaneRequest,
@@ -192,7 +223,10 @@ pub(super) async fn served(
             "the request's body is larger than one invocation of a Lambda target carries, so \
              the function is not invoked"
         );
-        return Served::status(PAYLOAD_TOO_LARGE_STATUS);
+        return generated(
+            PAYLOAD_TOO_LARGE_STATUS,
+            super::access_logs::reason::LAMBDA_REQUEST_TOO_LARGE,
+        );
     }
     // The Region the invocation is made in is the function's own, which its ARN names — the
     // ARN a registration of a `lambda` target group is written as.
@@ -227,8 +261,14 @@ pub(super) async fn served(
             "the registered function allows {SERVICE_PRINCIPAL} no {INVOKE_FUNCTION_ACTION} \
              for this target group, so no invocation was made"
         );
-        return Served::status(BAD_GATEWAY_STATUS);
+        return generated(
+            BAD_GATEWAY_STATUS,
+            super::access_logs::reason::LAMBDA_ACCESS_DENIED,
+        );
     }
+    // How long the TARGET took, which the access-log record reports for an invocation that
+    // was made at all.
+    let started = ::std::time::Instant::now();
     let answered = client
         .invoke()
         .function_name(&forwarded.function_arn)
@@ -253,6 +293,13 @@ pub(super) async fn served(
             return Served::status(BAD_GATEWAY_STATUS);
         }
     };
+    // The function RAN, however its run ended, so every answer below carries the time it
+    // took.
+    let elapsed = started.elapsed();
+    let with_elapsed = |mut served: Served| {
+        served.observed.target_elapsed = Some(elapsed);
+        served
+    };
     // "FunctionError: if present, indicates that an error occurred during function
     // execution" — a run that errored returned no response object, and the load balancer
     // answers the client itself rather than passing the error document on.
@@ -263,7 +310,10 @@ pub(super) async fn served(
             "the Lambda target's run ended in a function error, so the load balancer answers \
              the request itself"
         );
-        return Served::status(BAD_GATEWAY_STATUS);
+        return with_elapsed(generated(
+            BAD_GATEWAY_STATUS,
+            super::access_logs::reason::LAMBDA_UNHANDLED,
+        ));
     }
     let returned = answered
         .payload()
@@ -276,7 +326,10 @@ pub(super) async fn served(
             "the Lambda target's response is larger than a Lambda target may answer with, so \
              the load balancer answers the request itself"
         );
-        return Served::status(BAD_GATEWAY_STATUS);
+        return with_elapsed(generated(
+            BAD_GATEWAY_STATUS,
+            super::access_logs::reason::LAMBDA_RESPONSE_TOO_LARGE,
+        ));
     }
     match mapped_response(&returned, forwarded.multi_value_headers) {
         Ok(mut served) => {
@@ -286,7 +339,10 @@ pub(super) async fn served(
             if let Some(field) = forwarded.set_cookie.clone() {
                 served.headers.push((SET_COOKIE_HEADER.to_string(), field));
             }
-            served
+            // The status the client is answered with is the FUNCTION's own, which is what the
+            // record reports as the target's.
+            served.observed.target_status = Some(served.status);
+            with_elapsed(served)
         }
         Err(reason) => {
             ::tracing::info!(
@@ -295,7 +351,10 @@ pub(super) async fn served(
                 "the Lambda target returned no response the load balancer's contract admits, \
                  so the load balancer answers the request itself"
             );
-            Served::status(BAD_GATEWAY_STATUS)
+            with_elapsed(generated(
+                BAD_GATEWAY_STATUS,
+                super::access_logs::reason::LAMBDA_INVALID_RESPONSE,
+            ))
         }
     }
 }
@@ -437,6 +496,7 @@ fn mapped_response(payload: &[u8], multi_value_headers: bool) -> Result<Served, 
         location: None,
         headers,
         body: body_of(&returned)?,
+        ..Served::default()
     })
 }
 

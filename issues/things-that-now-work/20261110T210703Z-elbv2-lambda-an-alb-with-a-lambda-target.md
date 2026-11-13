@@ -41,3 +41,45 @@ Cause 2 — Expected (AWS): with lambda:InvokeFunction removed, every request is
 2. Send an HTTP request through the load balancer's published endpoint for each handler mode: well-formed, missing statusCode, >1 MB body, raising.
 3. RemovePermission for the ALB's lambda:InvokeFunction and request again; then AddPermission and request once more.
 4. Observe that no request through the load balancer is ever answered and both checks are killed at 60 s.
+
+## Resolution
+
+The data-path half of both causes — *a request a client sends to the address a load balancer
+publishes is served by its listener; a `forward` to a `lambda` target group INVOKES the
+registered function; the client is answered from the object that function returned only while
+it satisfies the Lambda-target response contract; every other outcome is the load balancer's
+OWN 502 with the payload never passed on; and the grant that admits the invocation is the
+function's own resource policy, read on EVERY request* — holds on this code base and is now
+pinned over a real connection to the published address, including the withdraw/restore
+sequence this issue's second cause is about (`tests/all/alb_lambda_target_access_log.rs`,
+beside the suites `src/service/listener_socket.rs` and `src/service/lambda_target.rs` were
+landed with).
+
+What this change ADDS is the third observation that cause 2 names and that nothing produced:
+the load balancer's own ACCESS LOG. A load balancer whose `access_logs.s3.*` attributes name
+a bucket now delivers, for every request it answered, the documented record into that bucket
+(`src/service/access_logs.rs`) — gzipped, under
+`<prefix>/AWSLogs/<account>/elasticloadbalancing/<region>/<yyyy>/<mm>/<dd>/`, with the 30
+documented fields in their documented order — and the `error_reason` field (field 25) names
+the class of a failure the load balancer generated the answer for: `LambdaAccessDenied` for an
+invocation the function's policy admits no load balancer to make, `LambdaUnhandled` for a run
+that raised, `LambdaInvalidResponse` for a returned object the contract refuses,
+`LambdaResponseTooLarge` for a response past the size such a target may answer with, and
+`LambdaRequestTooLarge` for a request body past the size one invocation carries. The
+attribute's documented default is off, so a load balancer nobody configured delivers nothing.
+
+What the two RECORDED checks still cannot get past is outside this service, and each is owned
+elsewhere:
+
+* the malformed-response check dies in its PRE-ALB control step — a direct `lambda:Invoke`
+  whose handler reports the invocation to a queue through its own SDK, drained before any load
+  balancer exists. That in-handler `sqs:SendMessage` producing no message is the cause of open
+  issue `20261107T183213Z-elbv2-a-lambda-target-s-in-handler-sqs.md`, filed against the Lambda
+  invocation path; it holds in this process (the suites above assert it), so nothing here can
+  close it.
+* the invoke-permission check composes `http://<DNSName>:<listener port>/…` from the published
+  address. `DNSName` carries a port, so that URL is unusable — the cause closed as a
+  core-listener blocker by `20261110T220525Z-elbv2-5-net-new-data-plane-causes-dnsname.md`:
+  `vendor/server/src/listeners.rs`'s `tcp_plaintext` takes no requested port and `vendor/`
+  cannot be changed from a service crate, so a load balancer cannot answer on the ports its
+  listeners declare and a bare host cannot be published.

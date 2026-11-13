@@ -29,8 +29,11 @@
 //! answered at all).
 //!
 //! Every status, header and byte it answers is computed from what a create or a modify
-//! persisted, and it writes NOTHING: serving traffic moves no status, consumes no quota
-//! and bumps no counter.
+//! persisted, and serving traffic moves no status, consumes no quota and bumps no counter.
+//! The ONE thing it writes is the RECORD of the request it has just answered, where the load
+//! balancer's own attributes have it deliver one: its access log ([`super::access_logs`]),
+//! which is the load balancer's own account of what it did with a request and is delivered
+//! for the same reason the web ACL's log beside it is.
 //!
 //! # What a request addresses, and how it is resolved
 //!
@@ -172,6 +175,17 @@ const SOURCE_IP_FIELD: &str = "source-ip";
 const FIXED_RESPONSE_ACTION: &str = "fixed-response";
 const REDIRECT_ACTION: &str = "redirect";
 const FORWARD_ACTION: &str = crate::state::FORWARD_ACTION_TYPE;
+
+/// What a load balancer's own access log records as the action performed for a request its
+/// web ACL answered at the edge: the inspection itself, rather than any action of the
+/// listener — none of which ran ([`super::access_logs`]).
+const WAF_ACTION_RECORD: &str = "waf";
+
+/// The two request headers a load balancer's own access-log record reports: the client's
+/// `User-Agent`, and the `X-Amzn-Trace-Id` the request carried — both as the client sent
+/// them, and absent from the record where the request carried neither.
+const USER_AGENT_HEADER: &str = "user-agent";
+const TRACE_ID_HEADER: &str = "x-amzn-trace-id";
 
 /// The status a load balancer answers while it is still coming up: it is publishing a
 /// name, and its listeners are not yet serving traffic on it.
@@ -701,6 +715,32 @@ pub(super) struct Served {
     /// configure none.
     pub(super) headers: Vec<(String, String)>,
     pub(super) body: Vec<u8>,
+    /// What the load balancer OBSERVED while producing this answer, which is what its own
+    /// access log records about the request ([`super::access_logs`]).
+    pub(super) observed: Observed,
+}
+
+/// What answering one request told the load balancer about it: the facts its own access-log
+/// record carries that the response itself does not ([`super::access_logs`]).
+///
+/// Every field is left at its absent value for an answer that has nothing to say about it —
+/// a request no target was chosen for has no target group, no target status and no target
+/// timing — so nothing is recorded that was not observed.
+#[derive(Debug, Default)]
+pub(super) struct Observed {
+    /// The actions the listener performed, in the order they ran: the record's
+    /// `actions_executed`.
+    pub(super) actions: Vec<String>,
+    /// The target group the request was forwarded to, where it was forwarded at all.
+    pub(super) target_group_arn: Option<String>,
+    /// The status the TARGET answered, where a target answered one — which a
+    /// load-balancer-generated answer never has.
+    pub(super) target_status: Option<u16>,
+    /// The failure class of an answer the LOAD BALANCER generated itself
+    /// ([`super::access_logs::reason`]).
+    pub(super) error_reason: Option<String>,
+    /// How long the target took, where one was called.
+    pub(super) target_elapsed: Option<std::time::Duration>,
 }
 
 impl Served {
@@ -722,6 +762,12 @@ impl Served {
             location: None,
             headers: answer.headers,
             body: answer.body,
+            // The web ACL answered, so no action of the listener ran: that is what Elastic
+            // Load Balancing records as the action performed for such a request.
+            observed: Observed {
+                actions: vec![WAF_ACTION_RECORD.to_string()],
+                ..Observed::default()
+            },
         }
     }
 }
@@ -776,6 +822,10 @@ pub async fn serve<Eng: Send + Sync + 'static>(
     // The listener that took the request, for the record this plane leaves of what answered:
     // set by every iteration before anything reads it.
     let mut listener_arn;
+    // The priority of the rule that answered, which the load balancer's own access-log record
+    // carries: the last load balancer in the chain is the one that answered, so the last
+    // iteration's is the one recorded.
+    let mut matched_rule_priority = 0;
     // Every load balancer this request has already been served against, so a chain that
     // leads back to one of them is answered rather than walked again.
     let mut walked: Vec<String> = Vec::new();
@@ -834,7 +884,7 @@ pub async fn serve<Eng: Send + Sync + 'static>(
             ::service_com_amazonaws_wafv2_awswaf_20190729::service::logs::deliver(ctx, logged)
                 .await;
         }
-        let performed = match decided {
+        let (performed, matched_priority) = match decided {
             super::web_acl::Decision::Refused(answer) => break Served::at_the_edge(answer),
             decided => {
                 if let super::web_acl::Decision::Allowed(inserted) = decided {
@@ -847,6 +897,7 @@ pub async fn serve<Eng: Send + Sync + 'static>(
                 answered(&store, listener, &request, now)
             }
         };
+        matched_rule_priority = matched_priority;
         match performed {
             Performed::Answered(served) => break served,
             // The store's guard is released above, so the function RUNS with no lock of
@@ -892,10 +943,10 @@ pub async fn serve<Eng: Send + Sync + 'static>(
             }
         }
     };
-    // The record of one request this endpoint answered, as a load balancer's own access
-    // log carries it: which load balancer and listener took it, what was asked, and what
-    // was answered. Reported through the emulator's own logging facility, so a client can
-    // see which plane claimed a request it believed went elsewhere.
+    // The record of one request this endpoint answered: which load balancer and listener
+    // took it, what was asked, and what was answered. Reported through the emulator's own
+    // logging facility, so a client can see which plane claimed a request it believed went
+    // elsewhere.
     tracing::info!(
         load_balancer = %load_balancer_arn,
         listener = %listener_arn,
@@ -905,7 +956,88 @@ pub async fn serve<Eng: Send + Sync + 'static>(
         status = served.status,
         "the load balancer answered a request on the name it published"
     );
+    // ... and the record the load balancer's OWN access log carries for it, delivered into
+    // the bucket its attributes name ([`super::access_logs`]). A load balancer whose
+    // attributes switch logging off delivers nothing, which is their documented default.
+    deliver_access_log(
+        ctx,
+        &state,
+        &load_balancer_arn,
+        &listener_arn,
+        &request,
+        req.body().bytes().map_or(0, <[u8]>::len),
+        &served,
+        matched_rule_priority,
+        now,
+    )
+    .await;
     rendered(&served)
+}
+
+/// Deliver the access-log record of one answered request, where the load balancer that
+/// answered it has access logging on ([`super::access_logs`]).
+///
+/// Everything the record carries is read here, under one lock of the store that is released
+/// before the delivery is made: the load balancer's own resource id and the address it
+/// answers on, the protocol and port of the listener that took the request, and the
+/// destination its attributes name. The delivery itself is best effort and changes nothing
+/// about the answer the client has already been computed.
+#[allow(clippy::too_many_arguments)]
+async fn deliver_access_log(
+    ctx: &OperationContext<'_>,
+    state: &::engine::ServiceState<ElbState>,
+    load_balancer_arn: &str,
+    listener_arn: &str,
+    request: &DataPlaneRequest,
+    received_bytes: usize,
+    served: &Served,
+    matched_rule_priority: i32,
+    received_at: SystemTime,
+) {
+    let Some((destination, load_balancer_id, node_address, protocol, port)) = ({
+        let store = state.lock();
+        store
+            .load_balancers
+            .get(load_balancer_arn)
+            .and_then(|record| {
+                let destination = super::access_logs::destination(record)?;
+                let listener = store.listeners.get(listener_arn);
+                Some((
+                    destination,
+                    super::access_logs::load_balancer_id(&record.arn),
+                    host_only(&record.dns_name).to_string(),
+                    listener.and_then(|listener| listener.protocol.clone()),
+                    listener.and_then(|listener| listener.port),
+                ))
+            })
+    }) else {
+        return;
+    };
+    let answered = super::access_logs::AnsweredRequest {
+        load_balancer_id,
+        node_address,
+        listener_protocol: protocol,
+        listener_port: port,
+        received_at,
+        answered_at: SystemTime::now(),
+        target_elapsed: served.observed.target_elapsed,
+        method: request.method.clone(),
+        host: request.host.clone(),
+        path: request.path.clone(),
+        query: request.query.clone(),
+        user_agent: request.header(USER_AGENT_HEADER).map(str::to_string),
+        trace_id: request.header(TRACE_ID_HEADER).map(str::to_string),
+        received_bytes,
+        sent_bytes: served.body.len(),
+        elb_status: served.status,
+        target_status: served.observed.target_status,
+        target_group_arn: served.observed.target_group_arn.clone(),
+        actions: served.observed.actions.clone(),
+        redirect_url: served.location.clone(),
+        error_reason: served.observed.error_reason.clone(),
+        matched_rule_priority,
+    };
+    super::access_logs::deliver(ctx, &destination, &answered).await;
 }
 
 /// The data plane as the ROUTER serves it: the operation `Service::override_operation` hands
@@ -994,13 +1126,29 @@ fn listener_addressed<'s>(
 /// What `listener` answers `request` with: the actions of the first rule whose conditions
 /// are all met, in ascending priority order, and otherwise the listener's own default
 /// actions — which are its default rule's.
+///
+/// The PRIORITY of the rule that matched travels beside the answer, because the load
+/// balancer's own access log records it ([`super::access_logs`]) and this is where it is
+/// known: 0 for a request no rule matched, which its listener's default actions answered.
 fn answered(
     store: &ElbState,
     listener: &ListenerRecord,
     request: &DataPlaneRequest,
     now: SystemTime,
-) -> Performed {
-    performed(store, listener, matched_actions(listener, request), request, now)
+) -> (Performed, i32) {
+    let matched = matched_actions(listener, request);
+    (
+        performed(store, listener, matched.actions, request, now),
+        matched.priority,
+    )
+}
+
+/// The actions one request matched, and the priority of the rule they belong to.
+struct Matched<'l> {
+    actions: &'l [Action],
+    /// The matched rule's own priority, and 0 for the listener's default actions — the value
+    /// Elastic Load Balancing records for a request no rule of the listener matched.
+    priority: i32,
 }
 
 /// The actions the request matched: "rules are evaluated in priority order, from the
@@ -1012,7 +1160,7 @@ fn answered(
 /// costs is bounded however many rules the listener carries and however long their
 /// condition values are. A walk that spends it stops where it is, and the default actions
 /// answer.
-fn matched_actions<'l>(listener: &'l ListenerRecord, request: &DataPlaneRequest) -> &'l [Action] {
+fn matched_actions<'l>(listener: &'l ListenerRecord, request: &DataPlaneRequest) -> Matched<'l> {
     let mut budget = MAX_MATCH_STEPS;
     for rule in crate::state::rules_in_evaluation_order(listener) {
         if budget == 0 {
@@ -1024,10 +1172,16 @@ fn matched_actions<'l>(listener: &'l ListenerRecord, request: &DataPlaneRequest)
             break;
         }
         if !rule.conditions.is_empty() && conditions_met(&rule.conditions, request, &mut budget) {
-            return &rule.actions;
+            return Matched {
+                actions: &rule.actions,
+                priority: rule.priority,
+            };
         }
     }
-    &listener.default_actions
+    Matched {
+        actions: &listener.default_actions,
+        priority: 0,
+    }
 }
 
 /// Whether EVERY condition of a rule is met — "each rule ... include[s] up to one of each
@@ -1288,13 +1442,26 @@ fn performed(
         return Performed::Answered(Served::status(NO_HEALTHY_TARGET_STATUS));
     };
     match action.r#type.as_str() {
-        FIXED_RESPONSE_ACTION => Performed::Answered(fixed_response(action)),
-        REDIRECT_ACTION => Performed::Answered(redirect(action, listener, request)),
+        FIXED_RESPONSE_ACTION => Performed::Answered(acted(
+            fixed_response(action),
+            FIXED_RESPONSE_ACTION,
+        )),
+        REDIRECT_ACTION => Performed::Answered(acted(
+            redirect(action, listener, request),
+            REDIRECT_ACTION,
+        )),
         FORWARD_ACTION => forward(store, listener, action, request, now),
         // Unreachable: every type that is not terminating was answered above, and
         // `Action$Type` carries no other terminating one.
         _ => Performed::Answered(Served::status(ACTION_NOT_PERFORMED_STATUS)),
     }
+}
+
+/// The same answer, recording the action that produced it — what the load balancer's own
+/// access log carries as `actions_executed` ([`super::access_logs`]).
+fn acted(mut served: Served, action_type: &str) -> Served {
+    served.observed.actions.push(action_type.to_string());
+    served
 }
 
 /// Whether this action type ANSWERS the client, as opposed to guarding what follows it.
@@ -1328,6 +1495,7 @@ fn fixed_response(action: &Action) -> Served {
         location: None,
         headers: Vec::new(),
         body,
+        observed: Observed::default(),
     }
 }
 
@@ -1401,6 +1569,7 @@ fn redirect(action: &Action, listener: &ListenerRecord, request: &DataPlaneReque
         location: Some(location),
         headers: Vec::new(),
         body: Vec::new(),
+        observed: Observed::default(),
     }
 }
 

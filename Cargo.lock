@@ -13179,6 +13179,8 @@ dependencies = [
  "aws-smithy-types",
  "base64 0.22.1",
  "bytes",
+ "chrono",
+ "flate2",
  "hex",
  "http",
  "http-body-util",

@@ -99,6 +99,16 @@ service-com-amazonaws-cloudwatch-graniteserviceversion20100801 = { workspace = t
 # (`src/state/host_counts.rs`). Both run off a clock with no request to carry a callback, so
 # they reach that service's own store on the shared engine.
 service-com-amazonaws-ec2-amazonec2 = { workspace = true }
+# A load balancer whose `access_logs.s3.*` attributes name a bucket DELIVERS the record of
+# every request it answered into it, and such a record is a gzipped log file keyed by the
+# UTC calendar (`src/service/access_logs.rs`): the object is written through the one shared
+# construction of the in-process Amazon S3 client (`service_common::s3_client`), the gzip
+# stream with the maintained DEFLATE implementation this workspace already compresses with,
+# and the key's calendar fields come from the maintained calendar crate rather than from
+# slicing a rendered timestamp.
+aws-sdk-s3 = { version = "1", default-features = false }
+flate2 = "1"
+chrono = { version = "0.4", default-features = false, features = ["std"] }
 
 [build-dependencies]
 emulator-core-build-support = { workspace = true }

@@ -91,6 +91,8 @@ pub mod shared_endpoint;
 
 pub mod data_plane;
 
+pub mod access_logs;
+
 pub mod lambda_target;
 
 pub mod invalid_header_fields;

@@ -50,10 +50,10 @@ use crate::provisioning_loop::{action, call, p, REGION};
 /// The function every row runs, and the module and attribute its package carries the handler
 /// as.
 const FUNCTION: &str = "alb-lambda-published";
-const HANDLER: &str = "lambda_function.lambda_handler";
+pub(crate) const HANDLER: &str = "lambda_function.lambda_handler";
 
 /// The runtime the package is created for.
-const RUNTIME: &str = "python3.12";
+pub(crate) const RUNTIME: &str = "python3.12";
 
 /// The execution role the function runs as, and the queue the handler reports to.
 const ROLE_NAME: &str = "alb-lambda-published-exec";
@@ -61,7 +61,7 @@ const SIDE_CHANNEL: &str = "alb-lambda-published-side-channel";
 
 /// The body a well-formed answer carries, which is the function's OWN and must never be what
 /// a refused response is answered with.
-const TARGET_BODY: &str = "TARGET-OK";
+pub(crate) const TARGET_BODY: &str = "TARGET-OK";
 
 /// The status a load balancer answers for a Lambda-target response its contract refuses.
 const BAD_GATEWAY: u16 = 502;
@@ -81,7 +81,7 @@ const EXCHANGE_TIMEOUT: Duration = Duration::from_secs(60);
 /// answered without the handler having run leaves the queue empty — and then decides what to
 /// return from the LAST SEGMENT of the path the event carries, so one package serves every
 /// row.
-const HANDLER_SOURCE: &str = r#"
+pub(crate) const HANDLER_SOURCE: &str = r#"
 import os
 
 import boto3
@@ -115,7 +115,7 @@ def lambda_handler(event, context):
 
 /// A .zip deployment package holding [`HANDLER_SOURCE`] as `lambda_function.py`, written in
 /// memory the way a caller uploads one.
-fn package() -> Vec<u8> {
+pub(crate) fn package() -> Vec<u8> {
     let mut buffer = std::io::Cursor::new(Vec::new());
     {
         let mut writer = zip::ZipWriter::new(&mut buffer);
@@ -165,7 +165,11 @@ fn emulator() -> (MultiServiceRouter, Arc<engine::InMemoryEngine>) {
 }
 
 /// One IAM call (`awsQuery`: a form body, an XML answer).
-async fn iam(router: &MultiServiceRouter, action: &str, params: &[(&str, &str)]) -> (u16, String) {
+pub(crate) async fn iam(
+    router: &MultiServiceRouter,
+    action: &str,
+    params: &[(&str, &str)],
+) -> (u16, String) {
     let mut body = format!("Action={action}&Version=2010-05-08");
     for (name, value) in params {
         body.push('&');
@@ -186,7 +190,7 @@ async fn iam(router: &MultiServiceRouter, action: &str, params: &[(&str, &str)])
 }
 
 /// The text of the first `<tag>` element of an XML body.
-fn element(body: &str, tag: &str) -> String {
+pub(crate) fn element(body: &str, tag: &str) -> String {
     let open = format!("<{tag}>");
     let start = body
         .find(&open)
@@ -201,7 +205,11 @@ fn element(body: &str, tag: &str) -> String {
 
 /// The execution role the function runs as: a role Lambda may assume, carrying the one grant
 /// the handler's own call needs. Answers the ARN IAM persisted.
-async fn execution_role(router: &MultiServiceRouter, queue_arn: &str) -> String {
+pub(crate) async fn execution_role(
+    router: &MultiServiceRouter,
+    role_name: &str,
+    queue_arn: &str,
+) -> String {
     let trust = json!({
         "Version": "2012-10-17",
         "Statement": [{
@@ -215,7 +223,7 @@ async fn execution_role(router: &MultiServiceRouter, queue_arn: &str) -> String 
         router,
         "CreateRole",
         &[
-            ("RoleName", ROLE_NAME),
+            ("RoleName", role_name),
             ("AssumeRolePolicyDocument", &trust),
         ],
     )
@@ -237,7 +245,7 @@ async fn execution_role(router: &MultiServiceRouter, queue_arn: &str) -> String 
         router,
         "PutRolePolicy",
         &[
-            ("RoleName", ROLE_NAME),
+            ("RoleName", role_name),
             ("PolicyName", "report-invocations"),
             ("PolicyDocument", &document),
         ],
@@ -251,7 +259,7 @@ async fn execution_role(router: &MultiServiceRouter, queue_arn: &str) -> String 
 }
 
 /// One Lambda `restJson1` call, as its status and its parsed body.
-async fn lambda(
+pub(crate) async fn lambda(
     router: &MultiServiceRouter,
     method: &str,
     path: &str,
@@ -284,7 +292,11 @@ async fn lambda(
 
 /// One Amazon SQS call (`POST /` with `X-Amz-Target: AmazonSQS.<Operation>`), the way a client
 /// makes it.
-async fn sqs(router: &MultiServiceRouter, operation: &str, body: &Value) -> (u16, Value) {
+pub(crate) async fn sqs(
+    router: &MultiServiceRouter,
+    operation: &str,
+    body: &Value,
+) -> (u16, Value) {
     let request = http::Request::builder()
         .method("POST")
         .uri("/")
@@ -311,7 +323,7 @@ async fn sqs(router: &MultiServiceRouter, operation: &str, body: &Value) -> (u16
 /// Every message the side channel holds, deleted as it is read, so the next row starts from
 /// an empty queue. One wait for the FIRST message, then one more look, so a row that reported
 /// two invocations is seen to have reported two.
-async fn reported(
+pub(crate) async fn reported(
     router: &MultiServiceRouter,
     case: &str,
     url: &str,
@@ -356,10 +368,10 @@ async fn reported(
 }
 
 /// What one exchange on the published address observed.
-struct Answered {
-    status: u16,
+pub(crate) struct Answered {
+    pub(crate) status: u16,
     /// The whole answer as it came off the connection, status line and headers included.
-    raw: String,
+    pub(crate) raw: String,
 }
 
 /// Dial the published address and exchange one request on it, as a client of that address
@@ -367,7 +379,7 @@ struct Answered {
 ///
 /// Only the PORT is taken from the published authority: the core binds its listeners on
 /// loopback (`EMULATOR_BIND_ADDRESS`, `127.0.0.1` by default), so the dial is to this machine.
-async fn exchange(case: &str, published: &str, target: &str) -> Answered {
+pub(crate) async fn exchange(case: &str, published: &str, target: &str) -> Answered {
     let port = published
         .rsplit(':')
         .next()
@@ -494,7 +506,7 @@ async fn the_published_address_answers_a_lambda_target_and_generates_its_own_502
         .as_str()
         .unwrap_or_else(|| panic!("setup GetQueueAttributes: no QueueArn in {attributes}"))
         .to_string();
-    let role = execution_role(&router, &queue_arn).await;
+    let role = execution_role(&router, ROLE_NAME, &queue_arn).await;
 
     // The function the load balancer will forward to, created through Lambda's own API.
     let (status, created) = lambda(
