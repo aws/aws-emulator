@@ -298,7 +298,11 @@ impl KeyStore {
 
     /// The key `identifier` names, when this store still holds it at `now`: a key the
     /// clock has finished deleting is gone, so it resolves to nothing.
-    fn live_key(&self, identifier: &str, now: SystemTime) -> Option<&StoredKey> {
+    ///
+    /// The lookup every operation that USES a key goes through, rather than only the
+    /// export this module serves: a key past its deletion window answers the modelled
+    /// `ResourceNotFoundException` wherever it is named.
+    pub fn live_key(&self, identifier: &str, now: SystemTime) -> Option<&StoredKey> {
         self.key(identifier)
             .filter(|key| key.effective_state(now) != KEY_STATE_DELETE_COMPLETE)
     }

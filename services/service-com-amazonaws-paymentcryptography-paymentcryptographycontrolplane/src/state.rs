@@ -13,11 +13,15 @@
 //! for is drawn when the key is minted, kept here, never returned, and is what the
 //! key check value is computed from — so the KCV a caller reads back is derived from
 //! stored material by the named KCV algorithm rather than being a fabricated string.
+//! A key of an asymmetric algorithm is a whole key pair ([`key_pair`]), generated the
+//! same way at the same moment, and it is that pair's public half a certificate
+//! signing request carries and its private half that signs one.
 //!
-//! The material is read in this module and in its children alone, and only by the two
-//! computations that are defined in terms of it: the key check value here, and the
-//! wrapped key an export answers with ([`key_export`]), which leaves the service
-//! encrypted under another stored key rather than in the clear.
+//! The material is read in this module and in its children alone, and only by the
+//! computations that are defined in terms of it: the key check value here, the wrapped
+//! key an export answers with ([`key_export`]), which leaves the service encrypted
+//! under another stored key rather than in the clear, and the signature over a
+//! certificate signing request ([`key_pair`]), which leaves only as a signature.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -52,9 +56,13 @@ mod dukpt;
 mod key_export;
 /// The ASC X9.143 (TR-31) key block an exported key is wrapped in.
 mod key_block;
+/// The asymmetric key pair an asymmetric key is, and the certificate signing request
+/// made from it.
+mod key_pair;
 /// One protected operation's Multi-Party Approval team association.
 mod mpa_association;
 
+pub use key_pair::{AsymmetricKeyPair, CertificateRequestRejection};
 pub use mpa_association::{
     approval_team_exists, StoredMpaAssociation, ASSOCIATION_STATE_ACTIVE,
     ASSOCIATION_STATE_DELETE_PENDING, ASSOCIATION_STATE_UPDATE_PENDING, MPA_ASSOCIATION_SPAN,
@@ -456,6 +464,14 @@ pub struct StoredKey {
     /// redacted, so no formatter — a `tracing` field, a test assertion message, a
     /// derived `Debug` on the store — can put key material anywhere.
     material: KeyMaterial,
+    /// The key pair this key IS when its algorithm is an asymmetric one, generated
+    /// when the key was minted and `None` for a symmetric key.
+    ///
+    /// Read only by the computations defined in terms of one half or the other: the
+    /// certificate signing request a caller asks for carries the public half and is
+    /// signed by the private half, which — like the symmetric material above — never
+    /// leaves the service and is redacted in every formatter.
+    key_pair: Option<AsymmetricKeyPair>,
 }
 
 /// A key's generated secret, whose `Debug` reports its length and never its bytes.
@@ -467,7 +483,9 @@ pub struct StoredKey {
 pub struct KeyMaterial(Vec<u8>);
 
 impl KeyMaterial {
-    /// The bytes, for the one computation allowed to see them: the key check value.
+    /// The bytes, for the computations allowed to see them: the key check value, the
+    /// wrapped key an export answers with, and the signature over a certificate
+    /// signing request.
     fn bytes(&self) -> &[u8] {
         &self.0
     }
@@ -816,6 +834,10 @@ pub enum MintRejection {
     Invalid(String),
     /// The store is full; the message says so.
     QuotaExceeded(String),
+    /// The request is admissible and this service could not produce the key: nothing
+    /// the caller named is wrong, so the answer is a server error rather than a
+    /// refusal. The message says which step failed.
+    Internal(String),
 }
 
 /// Why a tag list could not be stored on a key.
@@ -921,8 +943,11 @@ impl ComAmazonawsPaymentcryptographyPaymentcryptographycontrolplaneState {
     /// Mint a key in `region` from `request`, store it, and answer the stored
     /// record.
     ///
-    /// This is where a key's material is drawn and its check value computed, so no
-    /// caller can store a key whose KCV was not derived from its own material.
+    /// This is where a key's material is drawn, its check value computed and — for an
+    /// asymmetric algorithm — its key pair generated, so no caller can store a key
+    /// whose KCV was not derived from its own material or whose public half belongs to
+    /// some other pair. Generating an RSA key pair is hundreds of milliseconds of CPU,
+    /// so a caller runs this off the async runtime.
     pub fn mint_key(
         &mut self,
         region: &str,
@@ -993,6 +1018,30 @@ impl ComAmazonawsPaymentcryptographyPaymentcryptographycontrolplaneState {
         }
 
         let material = self.fresh_material(material_len);
+        // A key of an asymmetric algorithm is a whole key pair, so the pair is
+        // generated here, with the key, from the same library the key check value's
+        // primitives come from: every later answer about this key's public half, and
+        // every signature made with its private half, is computed from these bytes
+        // rather than minted on demand, so each one reports the same key pair.
+        let key_pair = if is_symmetric_algorithm(&key_algorithm) {
+            None
+        } else {
+            // Which algorithms name a key pair is judged BEFORE one is generated, so an
+            // algorithm this service generates no pair for is the caller's refusal,
+            // while a library that could not produce the pair it was asked for is this
+            // service's own failure.
+            let pair_algorithm = key_pair::key_pair_algorithm(&key_algorithm).ok_or_else(|| {
+                MintRejection::Invalid(format!(
+                    "KeyAttributes.KeyAlgorithm {key_algorithm} is not an algorithm this \
+                     service generates a key pair for"
+                ))
+            })?;
+            Some(key_pair::generate_key_pair(pair_algorithm).ok_or_else(|| {
+                MintRejection::Internal(format!(
+                    "the {key_algorithm} key pair could not be generated"
+                ))
+            })?)
+        };
         // An id no stored key is using, so the insert below can only add a record.
         let key_id = self.fresh_key_id(region).ok_or_else(|| {
             MintRejection::QuotaExceeded(
@@ -1025,6 +1074,7 @@ impl ComAmazonawsPaymentcryptographyPaymentcryptographycontrolplaneState {
             uses_default_replication_regions,
             tags,
             material,
+            key_pair,
         };
         stored.key_check_value = stored.check_value_under(&kcv_algorithm).ok_or_else(|| {
             MintRejection::Invalid(format!(
@@ -1740,11 +1790,10 @@ pub fn default_kcv_algorithm(key_algorithm: &str) -> Option<&'static str> {
 /// value derived from the wrong number of bytes, so an unknown algorithm answers
 /// `None` and the caller refuses the request instead.
 ///
-/// An asymmetric key's material is an opaque secret of that size rather than a
-/// structured key pair: nothing in this slice exposes a public key or a certificate
-/// — `GetPublicKeyCertificate`, `GetCertificateSigningRequest`, `ImportKey` and
-/// `ExportKey` all still answer 501 — so the material's only job here is to be the
-/// source of the key's check value.
+/// An asymmetric key's material is an opaque secret of that size, and its only job is
+/// to be the source of that key's check value. The key PAIR such a key is, the thing a
+/// public key and a certificate signing request are computed from, is generated beside
+/// it when the key is minted ([`key_pair`]).
 fn material_len(key_algorithm: &str) -> Option<usize> {
     let len = match key_algorithm {
         "TDES_2KEY" => 16,
@@ -1901,17 +1950,44 @@ pub struct MintedSigningKey {
     private_key_pkcs8: KeyMaterial,
 }
 
-/// The object identifiers the minted certificates name.
+/// The object identifiers the minted certificates and the certificate signing requests
+/// name.
 mod oid {
     use x509_cert::spki::ObjectIdentifier;
 
     /// `id-at-commonName` (RFC 5280 appendix A).
     pub const COMMON_NAME: ObjectIdentifier = ObjectIdentifier::new_unwrap("2.5.4.3");
+    /// `id-at-countryName` (RFC 5280 appendix A).
+    pub const COUNTRY: ObjectIdentifier = ObjectIdentifier::new_unwrap("2.5.4.6");
+    /// `id-at-localityName` (RFC 5280 appendix A).
+    pub const LOCALITY: ObjectIdentifier = ObjectIdentifier::new_unwrap("2.5.4.7");
+    /// `id-at-stateOrProvinceName` (RFC 5280 appendix A).
+    pub const STATE_OR_PROVINCE: ObjectIdentifier = ObjectIdentifier::new_unwrap("2.5.4.8");
     /// `id-at-organizationName` (RFC 5280 appendix A).
     pub const ORGANIZATION: ObjectIdentifier = ObjectIdentifier::new_unwrap("2.5.4.10");
+    /// `id-at-organizationalUnitName` (RFC 5280 appendix A).
+    pub const ORGANIZATIONAL_UNIT: ObjectIdentifier = ObjectIdentifier::new_unwrap("2.5.4.11");
+    /// `pkcs-9-at-emailAddress` (RFC 5280 appendix A).
+    pub const EMAIL_ADDRESS: ObjectIdentifier =
+        ObjectIdentifier::new_unwrap("1.2.840.113549.1.9.1");
     /// `sha256WithRSAEncryption` (RFC 8017 appendix C).
     pub const SHA256_WITH_RSA: ObjectIdentifier =
         ObjectIdentifier::new_unwrap("1.2.840.113549.1.1.11");
+    /// `sha384WithRSAEncryption` (RFC 8017 appendix C).
+    pub const SHA384_WITH_RSA: ObjectIdentifier =
+        ObjectIdentifier::new_unwrap("1.2.840.113549.1.1.12");
+    /// `sha512WithRSAEncryption` (RFC 8017 appendix C).
+    pub const SHA512_WITH_RSA: ObjectIdentifier =
+        ObjectIdentifier::new_unwrap("1.2.840.113549.1.1.13");
+    /// `ecdsa-with-SHA256` (RFC 5758 section 3.2).
+    pub const ECDSA_WITH_SHA256: ObjectIdentifier =
+        ObjectIdentifier::new_unwrap("1.2.840.10045.4.3.2");
+    /// `ecdsa-with-SHA384` (RFC 5758 section 3.2).
+    pub const ECDSA_WITH_SHA384: ObjectIdentifier =
+        ObjectIdentifier::new_unwrap("1.2.840.10045.4.3.3");
+    /// `ecdsa-with-SHA512` (RFC 5758 section 3.2).
+    pub const ECDSA_WITH_SHA512: ObjectIdentifier =
+        ObjectIdentifier::new_unwrap("1.2.840.10045.4.3.4");
 }
 
 /// Mint the TR-34 signing key an export token hands out: an RSA-2048 key pair whose
@@ -1937,8 +2013,8 @@ pub fn mint_tr34_signing_key(
     not_before: SystemTime,
     not_after: SystemTime,
 ) -> Option<MintedSigningKey> {
-    let root = RsaKeyPairDer::generate()?;
-    let signing = RsaKeyPairDer::generate()?;
+    let root = RsaKeyPairDer::generate(::aws_lc_rs::rsa::KeySize::Rsa2048)?;
+    let signing = RsaKeyPairDer::generate(::aws_lc_rs::rsa::KeySize::Rsa2048)?;
 
     let root_name = distinguished_name(TR34_ROOT_COMMON_NAME)?;
     let signing_name = distinguished_name(subject_common_name)?;
@@ -1987,14 +2063,13 @@ struct RsaKeyPairDer {
 }
 
 impl RsaKeyPairDer {
-    /// A fresh RSA-2048 key pair from `aws-lc-rs` — the modulus size
-    /// [`TR34_SIGNING_KEY_ALGORITHM`] names.
-    fn generate() -> Option<Self> {
+    /// A fresh RSA key pair of `key_size` from `aws-lc-rs`: the modulus size
+    /// [`TR34_SIGNING_KEY_ALGORITHM`] names for a TR-34 signing key, and the one the
+    /// key's own `KeyAlgorithm` names for a key of this store.
+    fn generate(key_size: ::aws_lc_rs::rsa::KeySize) -> Option<Self> {
         use ::aws_lc_rs::encoding::AsDer;
 
-        let private_key =
-            ::aws_lc_rs::rsa::PrivateDecryptingKey::generate(::aws_lc_rs::rsa::KeySize::Rsa2048)
-                .ok()?;
+        let private_key = ::aws_lc_rs::rsa::PrivateDecryptingKey::generate(key_size).ok()?;
         Some(Self {
             public_key_spki: private_key.public_key().as_der().ok()?.as_ref().to_vec(),
             private_key_pkcs8: private_key.as_der().ok()?.as_ref().to_vec(),
@@ -2098,20 +2173,25 @@ fn certificate_serial() -> Option<SerialNumber> {
 /// given, under this service's organization name (RFC 5280 section 4.1.2.4).
 fn distinguished_name(common_name: &str) -> Option<Name> {
     Some(Name::from(RdnSequence(vec![
-        relative_distinguished_name(oid::ORGANIZATION, TR34_ORGANIZATION_NAME)?,
-        relative_distinguished_name(oid::COMMON_NAME, common_name)?,
+        relative_distinguished_name(
+            oid::ORGANIZATION,
+            DerTag::Utf8String,
+            TR34_ORGANIZATION_NAME,
+        )?,
+        relative_distinguished_name(oid::COMMON_NAME, DerTag::Utf8String, common_name)?,
     ])))
 }
 
 /// One relative distinguished name: the `SET OF` holding the single attribute type and
-/// its UTF8String value.
+/// its value, encoded as the DER string type `tag` names.
 fn relative_distinguished_name(
     attribute: ObjectIdentifier,
+    tag: DerTag,
     value: &str,
 ) -> Option<RelativeDistinguishedName> {
     let pair = AttributeTypeAndValue {
         oid: attribute,
-        value: Any::new(DerTag::Utf8String, value.as_bytes()).ok()?,
+        value: Any::new(tag, value.as_bytes()).ok()?,
     };
     Some(RelativeDistinguishedName::from(
         SetOfVec::try_from(vec![pair]).ok()?,

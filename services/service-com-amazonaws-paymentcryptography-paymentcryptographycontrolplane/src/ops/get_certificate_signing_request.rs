@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op GetCertificateSigningRequest
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `GetCertificateSigningRequest`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
+//! Makes the PKCS#10 certificate signing request a caller takes to a certificate
+//! authority for one of this service's asymmetric keys: it reads the key pair the key
+//! has held in [`crate::state`] since it was minted, puts that pair's public half and
+//! the subject metadata the call names into a `CertificationRequestInfo`, and signs
+//! that structure with the pair's private half under the signing algorithm the call
+//! asks for.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`GetCertificateSigningRequest::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! Nothing is stored: the request is a function of the stored key pair and the
+//! caller's own subject, so two calls naming the same key carry the same public key.
 //!
 //! ## Shape of an operation
 //!
@@ -169,18 +169,69 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `GetCertificateSigningRequest` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(GetCertificateSigningRequestErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("GetCertificateSigningRequest"))
+        // Every modelled constraint on this input is refused by the centralized walk
+        // before this body runs: `KeyIdentifier`, `SigningAlgorithm` and
+        // `CertificateSubject` being present, the `KeyArnOrKeyAliasType` pattern and
+        // 7..322 length, the `SigningAlgorithmType` value list, and each subject
+        // member's own length and pattern. What is left for this body is what the
+        // model cannot say: that the identifier names a key this store holds, that the
+        // key is a key pair, and that this service signs with the algorithm named for a
+        // key of that algorithm.
+        let _ = ctx;
+        let state = crate::state::service_state(&*self.engine).ok_or_else(internal)?;
+
+        let now = crate::state::now();
+        // The record is taken out from under the lock and the signature is made
+        // outside it, so no other request to this service's state waits on a signing
+        // operation. Reporting only: this call reads the key pair the key has held
+        // since it was minted and writes nothing, so what every later caller sees is
+        // unchanged — and the request it answers with carries that same public key.
+        let key = {
+            let store = state.lock();
+            store
+                .live_key(&input.key_identifier, now)
+                .cloned()
+                .ok_or_else(|| not_found(&input.key_identifier))?
+        };
+
+        let certificate_signing_request = key
+            .certificate_signing_request(&input.certificate_subject, &input.signing_algorithm)
+            .map_err(|rejection| match rejection {
+                crate::state::CertificateRequestRejection::Invalid(why) => {
+                    GetCertificateSigningRequestError::from(
+                        GetCertificateSigningRequestErrorModeled::ValidationException(
+                            ValidationException { message: Some(why) },
+                        ),
+                    )
+                }
+                crate::state::CertificateRequestRejection::Internal => internal(),
+            })?;
+
+        Ok(GetCertificateSigningRequestOutput {
+            certificate_signing_request,
+        })
     }
+}
+
+/// Refuse an identifier this store holds no key for: the modelled
+/// `ResourceNotFoundException`, carrying the identifier AS THE REQUEST GAVE IT, which
+/// is what that shape's `ResourceId` reports.
+fn not_found(identifier: &str) -> GetCertificateSigningRequestError {
+    GetCertificateSigningRequestErrorModeled::ResourceNotFoundException(
+        ResourceNotFoundException {
+            resource_id: Some(identifier.to_string()),
+        },
+    )
+    .into()
+}
+
+/// This service's own failure, which is the modelled `InternalServerException`.
+fn internal() -> GetCertificateSigningRequestError {
+    GetCertificateSigningRequestErrorModeled::InternalServerException(InternalServerException {
+        message: Some(
+            "the payment cryptography certificate signing request could not be prepared"
+                .to_string(),
+        ),
+    })
+    .into()
 }

@@ -259,21 +259,33 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             replication_regions: input.replication_regions.unwrap_or_default(),
         };
 
-        let stored = state
-            .lock()
-            .mint_key(&region, request, now)
-            .map_err(|rejection| match rejection {
-                crate::state::MintRejection::Invalid(why) => CreateKeyError::from(
-                    CreateKeyErrorModeled::ValidationException(ValidationException {
-                        message: Some(why),
-                    }),
+        let stored = {
+            // A key of an asymmetric algorithm is minted with its key pair, which is
+            // hundreds of milliseconds of RSA key generation for the larger modulus
+            // sizes — so the whole mint runs on tokio's BOUNDED blocking pool rather
+            // than on an async worker, where it would starve the runtime and with it
+            // every timeout, health check and shutdown this process owes.
+            let state = state.clone();
+            let region = region.clone();
+            ::tokio::task::spawn_blocking(move || state.lock().mint_key(&region, request, now))
+                .await
+                .map_err(|_| internal("the payment cryptography key could not be generated"))?
+        }
+        .map_err(|rejection| match rejection {
+            crate::state::MintRejection::Invalid(why) => CreateKeyError::from(
+                CreateKeyErrorModeled::ValidationException(ValidationException {
+                    message: Some(why),
+                }),
+            ),
+            crate::state::MintRejection::QuotaExceeded(why) => CreateKeyError::from(
+                CreateKeyErrorModeled::ServiceQuotaExceededException(
+                    ServiceQuotaExceededException { message: Some(why) },
                 ),
-                crate::state::MintRejection::QuotaExceeded(why) => CreateKeyError::from(
-                    CreateKeyErrorModeled::ServiceQuotaExceededException(
-                        ServiceQuotaExceededException { message: Some(why) },
-                    ),
-                ),
-            })?;
+            ),
+            // Nothing the request named is wrong, so this is this service's own
+            // failure rather than a refusal the caller can act on.
+            crate::state::MintRejection::Internal(why) => internal(&why),
+        })?;
 
         // Answered from the record that was just stored, so a later `GetKey` reports
         // the same ARN, check value, attributes, state and timestamps.
@@ -282,4 +294,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             key: stored.to_key(now),
         })
     }
+}
+
+/// This service's own failure, which is the modelled `InternalServerException`: the
+/// request is admissible and the service could not serve it.
+fn internal(why: &str) -> CreateKeyError {
+    CreateKeyErrorModeled::InternalServerException(InternalServerException {
+        message: Some(why.to_string()),
+    })
+    .into()
 }

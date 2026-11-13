@@ -21,6 +21,8 @@ mod client_fault_envelope;
 mod client_error_status;
 #[path = "all/alias_registry_existence.rs"]
 mod alias_registry_existence;
+#[path = "all/certificate_signing_request.rs"]
+mod certificate_signing_request;
 #[path = "all/export_and_replication_parameters.rs"]
 mod export_and_replication_parameters;
 #[path = "all/export_key.rs"]
