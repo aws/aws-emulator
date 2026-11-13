@@ -26,6 +26,7 @@ use crate::delivery_stream_lifecycle::{
     error_code, error_message, s3_configuration, Emulator, BUCKET_ARN, PAST_THE_TRANSITION,
     ROLE_ARN,
 };
+use crate::stream_not_found_message::NotFoundWording;
 
 /// A Redshift destination with every parameter its type requires, for a switch that leaves
 /// nothing out.
@@ -291,7 +292,10 @@ struct RefusalCase {
 async fn a_control_plane_refusal_renders_one_template_from_the_request_and_the_state() {
     let emulator = Emulator::new();
     let account = engine::emulator_account_id();
-    let not_found = format!("Firehose under account {account} not found.");
+    // The sentences each path words a lookup that resolved nothing in, from the one
+    // test-side source the sibling suites assert them from.
+    let not_found = NotFoundWording::ControlPlaneRead.sentence(account);
+    let encryption_not_found = NotFoundWording::EncryptionChange.sentence(account);
 
     // A stream the refusals below are asserted against in each state: one that stays
     // `ACTIVE`, one still being created, and one already being deleted. The two transient
@@ -299,7 +303,8 @@ async fn a_control_plane_refusal_renders_one_template_from_the_request_and_the_s
     // owes each of them a transition out of it.
     emulator.create_stream("refusal-active", None).await;
     emulator.create_stream("refusal-deleting", None).await;
-    tokio::time::sleep(PAST_THE_TRANSITION).await;
+    emulator.await_active("refusal-active").await;
+    emulator.await_active("refusal-deleting").await;
 
     let (version, destination_id) = version_and_destination(&emulator, "refusal-active").await;
     let mut cases = vec![
@@ -310,14 +315,14 @@ async fn a_control_plane_refusal_renders_one_template_from_the_request_and_the_s
             operation: "StartDeliveryStreamEncryption",
             request: json!({ "DeliveryStreamName": "ghost" }),
             code: "ResourceNotFoundException",
-            message: not_found.clone(),
+            message: encryption_not_found.clone(),
         },
         RefusalCase {
             case: "stop encryption on a name no stream has".to_string(),
             operation: "StopDeliveryStreamEncryption",
             request: json!({ "DeliveryStreamName": "z".repeat(64) }),
             code: "ResourceNotFoundException",
-            message: not_found.clone(),
+            message: encryption_not_found.clone(),
         },
         RefusalCase {
             case: "update a destination of a name no stream has".to_string(),

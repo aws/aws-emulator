@@ -12,7 +12,7 @@
 //! sibling suite in this test target reuses it instead of standing up a second one.
 
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use serde_json::{json, Value};
@@ -30,6 +30,11 @@ pub(crate) const REGION: &str = "us-west-2";
 /// `DELETING` -> removed / `ENABLING` -> `ENABLED` span (`crate::state::TRANSITION_DELAY`),
 /// with margin for a loaded machine.
 pub(crate) const PAST_THE_TRANSITION: Duration = Duration::from_millis(3_400);
+
+/// How long [`Emulator::await_reported`] keeps looking for the status it waits on before
+/// it gives up. Generous on purpose: it bounds nothing the tests measure, it only stops a
+/// wait that will never end, so a loaded or slow machine stays inside it.
+pub(crate) const SETTLE_DEADLINE: Duration = Duration::from_secs(60);
 
 /// One emulator: the firehose service mounted on a single shared engine, plus the engine
 /// itself so a test can read the record buffer no operation exposes yet.
@@ -104,7 +109,7 @@ impl Emulator {
     }
 
     /// Create a stream with the smallest valid S3 destination. It is `CREATING` on
-    /// return; sleep [`PAST_THE_TRANSITION`] once when a test needs it `ACTIVE`.
+    /// return; a test that needs it `ACTIVE` waits for that with [`Emulator::await_active`].
     pub(crate) async fn create_stream(&self, name: &str, stream_type: Option<&str>) {
         let mut body = json!({
             "DeliveryStreamName": name,
@@ -134,6 +139,45 @@ impl Emulator {
         }
         let (status, response) = self.call("CreateDeliveryStream", body).await;
         assert_eq!(status, 200, "create {name}: got {response:?}");
+    }
+
+    /// Wait for `name` to report the `ACTIVE` status the clock owes a freshly created
+    /// stream, which is when an operation that needs a settled stream is served.
+    pub(crate) async fn await_active(&self, name: &str) {
+        self.await_reported(name, "DeliveryStreamDescription/DeliveryStreamStatus", "ACTIVE")
+            .await;
+    }
+
+    /// Wait for what `DescribeDeliveryStream` reports for `name` at `path` to BE
+    /// `expected`, by looking again until it is.
+    ///
+    /// The wait is on the condition and not on a duration: nothing here depends on how
+    /// fast the host runs, and [`SETTLE_DEADLINE`] only stops a wait that would never
+    /// end.
+    pub(crate) async fn await_reported(&self, name: &str, path: &str, expected: &str) {
+        let deadline = Instant::now() + SETTLE_DEADLINE;
+        loop {
+            let (status, described) = self
+                .call(
+                    "DescribeDeliveryStream",
+                    json!({ "DeliveryStreamName": name }),
+                )
+                .await;
+            let reported = if status == 200 {
+                at(&described, path).as_str().unwrap_or_default().to_string()
+            } else {
+                format!("HTTP {status} {described:?}")
+            };
+            if reported == expected {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "{name}: expected {path} to reach {expected:?}, it is {reported:?}"
+            );
+            // Look again rather than wait out a span: the next read is what settles it.
+            tokio::task::yield_now().await;
+        }
     }
 }
 

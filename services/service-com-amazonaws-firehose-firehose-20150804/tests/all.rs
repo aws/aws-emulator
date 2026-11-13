@@ -65,6 +65,8 @@ mod destination_delivery_errors;
 mod destination_update;
 #[path = "all/direct_put_source_gate.rs"]
 mod direct_put_source_gate;
+#[path = "all/encryption_change_not_found_message.rs"]
+mod encryption_change_not_found_message;
 #[path = "all/encryption_conflict_messages.rs"]
 mod encryption_conflict_messages;
 #[path = "all/enum_value_set_order.rs"]

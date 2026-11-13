@@ -1,23 +1,47 @@
 // SPDX-License-Identifier: CC0-1.0
 
-//! The sentence a control-plane lookup that resolved no stream answers with.
+//! The sentence a lookup that resolved no stream answers with.
 //!
-//! One rule, asserted over a SET of inputs: every control-plane operation that resolves a
-//! stream by name refuses a name no stream has with `ResourceNotFoundException` and one
-//! sentence naming the account the lookup was scoped to — "Firehose under account
-//! `<account>` not found." — whichever operation did the resolving and whatever name it
-//! was given. The recorded case (a describe of one absent name) is one row of the table
-//! below.
-//!
-//! The data plane states the same fact in its own wording, which is asserted here too so
-//! the two sentences cannot drift into each other.
+//! One rule, asserted over a SET of inputs: every operation that resolves a stream by
+//! name refuses a name no stream has with `ResourceNotFoundException` and one sentence
+//! naming the account the lookup was scoped to and nothing of the name it was given —
+//! the same sentence for every name, whichever operation did the resolving. Which
+//! sentence is a property of the PATH the lookup is on, and the three paths word that
+//! one fact differently ([`NotFoundWording`]), so no path's sentence stands in for
+//! another's. The recorded cases (a describe, and a stop-encryption, of one absent name)
+//! are two rows of the tables below.
 //!
 //! Every request goes through the real router, so what is asserted is the body a client
 //! reads. The harness is the lifecycle suite's.
 
 use serde_json::{json, Value};
 
-use super::delivery_stream_lifecycle::{error_code, error_message, Emulator, PAST_THE_TRANSITION};
+use super::delivery_stream_lifecycle::{error_code, error_message, Emulator};
+
+/// Which of this service's not-found sentences a path answers with. One fact, three
+/// wordings: the sentence belongs to the path, not to the name that was probed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NotFoundWording {
+    /// The control-plane reads, the delete, the tag changes and the destination update.
+    ControlPlaneRead,
+    /// The two encryption changes: the noun is `accountId`, and there is no terminal
+    /// period.
+    EncryptionChange,
+    /// The data plane's puts.
+    DataPlane,
+}
+
+impl NotFoundWording {
+    /// The sentence this path states, with the account the lookup was scoped to in its
+    /// one variable slot.
+    pub(crate) fn sentence(self, account: &str) -> String {
+        match self {
+            Self::ControlPlaneRead => format!("Firehose under account {account} not found."),
+            Self::EncryptionChange => format!("Firehose under accountId {account} not found"),
+            Self::DataPlane => format!("Firehose not found under account {account}."),
+        }
+    }
+}
 
 /// One operation that resolves a stream by name, and the request that probes `name` with
 /// every OTHER member of that request valid, so the lookup is what refuses it.
@@ -28,6 +52,8 @@ pub(crate) struct Probe {
     pub(crate) case: &'static str,
     pub(crate) operation: &'static str,
     pub(crate) request: fn(&str) -> Value,
+    /// The sentence this operation's path words the miss in.
+    pub(crate) wording: NotFoundWording,
 }
 
 /// Every control-plane operation that takes a `DeliveryStreamName` and resolves it
@@ -39,6 +65,7 @@ pub(crate) fn control_plane_probes() -> Vec<Probe> {
             case: "describe",
             operation: "DescribeDeliveryStream",
             request: |name| json!({ "DeliveryStreamName": name }),
+            wording: NotFoundWording::ControlPlaneRead,
         },
         Probe {
             case: "describe from a start id",
@@ -48,21 +75,25 @@ pub(crate) fn control_plane_probes() -> Vec<Probe> {
                 "Limit": 1,
                 "ExclusiveStartDestinationId": "destinationId-000000000001",
             }),
+            wording: NotFoundWording::ControlPlaneRead,
         },
         Probe {
             case: "delete",
             operation: "DeleteDeliveryStream",
             request: |name| json!({ "DeliveryStreamName": name }),
+            wording: NotFoundWording::ControlPlaneRead,
         },
         Probe {
             case: "delete without allowing a force",
             operation: "DeleteDeliveryStream",
             request: |name| json!({ "DeliveryStreamName": name, "AllowForceDelete": false }),
+            wording: NotFoundWording::ControlPlaneRead,
         },
         Probe {
             case: "list tags",
             operation: "ListTagsForDeliveryStream",
             request: |name| json!({ "DeliveryStreamName": name }),
+            wording: NotFoundWording::ControlPlaneRead,
         },
         Probe {
             case: "add a tag",
@@ -71,21 +102,36 @@ pub(crate) fn control_plane_probes() -> Vec<Probe> {
                 "DeliveryStreamName": name,
                 "Tags": [{ "Key": "owner", "Value": "team" }],
             }),
+            wording: NotFoundWording::ControlPlaneRead,
         },
         Probe {
             case: "remove a tag",
             operation: "UntagDeliveryStream",
             request: |name| json!({ "DeliveryStreamName": name, "TagKeys": ["owner"] }),
+            wording: NotFoundWording::ControlPlaneRead,
         },
         Probe {
             case: "start encryption",
             operation: "StartDeliveryStreamEncryption",
             request: |name| json!({ "DeliveryStreamName": name }),
+            wording: NotFoundWording::EncryptionChange,
+        },
+        Probe {
+            case: "start encryption naming the AWS-owned CMK explicitly",
+            operation: "StartDeliveryStreamEncryption",
+            request: |name| json!({
+                "DeliveryStreamName": name,
+                "DeliveryStreamEncryptionConfigurationInput": {
+                    "KeyType": "AWS_OWNED_CMK",
+                },
+            }),
+            wording: NotFoundWording::EncryptionChange,
         },
         Probe {
             case: "stop encryption",
             operation: "StopDeliveryStreamEncryption",
             request: |name| json!({ "DeliveryStreamName": name }),
+            wording: NotFoundWording::EncryptionChange,
         },
         Probe {
             case: "update a destination",
@@ -96,6 +142,7 @@ pub(crate) fn control_plane_probes() -> Vec<Probe> {
                 "DestinationId": "destinationId-000000000001",
                 "S3DestinationUpdate": { "Prefix": "x/" },
             }),
+            wording: NotFoundWording::ControlPlaneRead,
         },
     ]
 }
@@ -108,6 +155,7 @@ pub(crate) fn data_plane_probes() -> Vec<Probe> {
             case: "put a record",
             operation: "PutRecord",
             request: |name| json!({ "DeliveryStreamName": name, "Record": { "Data": "eA==" } }),
+            wording: NotFoundWording::DataPlane,
         },
         Probe {
             case: "put a batch",
@@ -116,6 +164,7 @@ pub(crate) fn data_plane_probes() -> Vec<Probe> {
                 "DeliveryStreamName": name,
                 "Records": [{ "Data": "eA==" }, { "Data": "eQ==" }],
             }),
+            wording: NotFoundWording::DataPlane,
         },
     ]
 }
@@ -139,15 +188,15 @@ fn probed_names() -> Vec<String> {
 async fn every_control_plane_lookup_of_an_absent_stream_states_the_account_and_not_the_name() {
     let emulator = Emulator::new();
     let account = engine::emulator_account_id();
-    let expected = format!("Firehose under account {account} not found.");
 
-    // One stream exists and is past its `CREATING` span, so each refusal below is a
-    // lookup that resolved nothing rather than an empty register, and a probe that
-    // resembles that stream's name still resolves nothing.
+    // One stream exists and has settled, so each refusal below is a lookup that resolved
+    // nothing rather than an empty register, and a probe that resembles that stream's
+    // name still resolves nothing.
     emulator.create_stream("present-stream", None).await;
-    tokio::time::sleep(PAST_THE_TRANSITION).await;
+    emulator.await_active("present-stream").await;
 
     for probe in control_plane_probes() {
+        let expected = probe.wording.sentence(account);
         for name in probed_names() {
             let case = format!("{} of {name:?}", probe.case);
             let (status, refused) = emulator.call(probe.operation, (probe.request)(&name)).await;
@@ -189,12 +238,12 @@ async fn every_control_plane_lookup_of_an_absent_stream_states_the_account_and_n
 async fn a_put_to_an_absent_stream_states_the_account_in_the_data_plane_wording() {
     let emulator = Emulator::new();
     let account = engine::emulator_account_id();
-    let expected = format!("Firehose not found under account {account}.");
+    let expected = NotFoundWording::DataPlane.sentence(account);
 
     let puts: Vec<Probe> = data_plane_probes();
 
     emulator.create_stream("present-stream", None).await;
-    tokio::time::sleep(PAST_THE_TRANSITION).await;
+    emulator.await_active("present-stream").await;
 
     for put in puts {
         for name in probed_names() {

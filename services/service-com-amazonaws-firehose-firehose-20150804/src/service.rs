@@ -642,11 +642,27 @@ pub fn already_exists_message(name: &str) -> String {
     )
 }
 
-/// A control-plane read, delete, update or encryption change that resolved no stream: the
-/// account the lookup was scoped to, and not the name it was given.
+/// A control-plane read, delete, tag change or destination update that resolved no
+/// stream: the account the lookup was scoped to, and not the name it was given.
 pub fn not_found_message() -> String {
     format!(
         "Firehose under account {} not found.",
+        ::engine::emulator_account_id()
+    )
+}
+
+/// An ENCRYPTION CHANGE that resolved no stream. The same fact as
+/// [`not_found_message`] and the same scoping rule — the account, never the probed name —
+/// in the wording the encryption path states it in: the noun is `accountId` and the
+/// sentence carries no terminal period.
+///
+/// Firehose does not word this fact identically across its surface, so each path keeps
+/// its own template ([`not_found_message`] for the control-plane reads, delete, tag
+/// changes and destination update, [`put_not_found_message`] for the data plane) and
+/// none of them stands in for another.
+pub fn encryption_not_found_message() -> String {
+    format!(
+        "Firehose under accountId {} not found",
         ::engine::emulator_account_id()
     )
 }

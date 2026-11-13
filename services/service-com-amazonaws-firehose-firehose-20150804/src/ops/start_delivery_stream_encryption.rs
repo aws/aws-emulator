@@ -217,9 +217,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             return Err(
                 StartDeliveryStreamEncryptionErrorModeled::ResourceNotFoundException(
                     ResourceNotFoundException {
-                        // Scoped to the account, and NOT to the name that was probed — see
-                        // `crate::service::not_found_message`.
-                        message: Some(crate::service::not_found_message()),
+                        // Scoped to the account, and NOT to the name that was probed,
+                        // in the wording the encryption path states that in — see
+                        // `crate::service::encryption_not_found_message`.
+                        message: Some(crate::service::encryption_not_found_message()),
                     },
                 )
                 .into(),

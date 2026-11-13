@@ -5,10 +5,10 @@
 //!
 //! The invariant: a lookup that resolves no stream states the account it was scoped to and
 //! nothing of the name it was given, so one sentence answers every name in the modelled
-//! class — the control plane's "Firehose under account `<account>` not found." and, in its
-//! own wording, the data plane's "Firehose not found under account `<account>`.".
-//! A sentence that varied with the name, or that carried the other plane's wording, would
-//! break it.
+//! class — the control-plane reads' "Firehose under account `<account>` not found.", the
+//! encryption changes' "Firehose under accountId `<account>` not found" and the data
+//! plane's "Firehose not found under account `<account>`.". A sentence that varied with
+//! the name, or that carried another path's wording, would break it.
 //!
 //! The generator draws names from `DeliveryStreamName`'s own class — its `@pattern`
 //! alphabet, between its two `@length` bounds (`smithy_query(query="shape",
@@ -25,8 +25,10 @@ use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use serde_json::json;
 
-use super::delivery_stream_lifecycle::{error_code, error_message, Emulator, PAST_THE_TRANSITION};
-use super::stream_not_found_message::{control_plane_probes, data_plane_probes, Probe};
+use super::delivery_stream_lifecycle::{error_code, error_message, Emulator};
+use super::stream_not_found_message::{
+    control_plane_probes, data_plane_probes, NotFoundWording, Probe,
+};
 
 /// The characters `DeliveryStreamName`'s modelled `@pattern` `^[a-zA-Z0-9_.-]+$` admits,
 /// and no others.
@@ -65,15 +67,17 @@ fn drawn_names(rng: &mut StdRng) -> Vec<String> {
     names
 }
 
-/// Probes `names` through `probes` and asserts every refusal is `expected`, verbatim.
+/// Probes `names` through `probes` and asserts every refusal is the sentence that probe's
+/// own path words the miss in, verbatim.
 async fn each_probe_states(
     emulator: &Emulator,
     probes: &[Probe],
     names: &[String],
-    expected: &str,
+    account: &str,
     seed: u64,
 ) {
     for probe in probes {
+        let expected = probe.wording.sentence(account);
         for name in names {
             let case = format!("seed {seed}: {} of {name:?}", probe.case);
             let (status, refused) = emulator.call(probe.operation, (probe.request)(name)).await;
@@ -103,16 +107,23 @@ async fn one_sentence_answers_every_name_in_the_modelled_class() {
 
     let emulator = Emulator::new();
     let account = engine::emulator_account_id();
-    let control_plane = format!("Firehose under account {account} not found.");
-    let data_plane = format!("Firehose not found under account {account}.");
-    assert_ne!(
-        control_plane, data_plane,
-        "seed {seed}: the two planes word the same fact differently, so neither sentence \
-         may stand in for the other"
-    );
+    let control_plane = NotFoundWording::ControlPlaneRead.sentence(account);
+    let encryption = NotFoundWording::EncryptionChange.sentence(account);
+    let data_plane = NotFoundWording::DataPlane.sentence(account);
+    for (left, right) in [
+        (&control_plane, &encryption),
+        (&control_plane, &data_plane),
+        (&encryption, &data_plane),
+    ] {
+        assert_ne!(
+            left, right,
+            "seed {seed}: the paths word the same fact differently, so neither sentence \
+             may stand in for the other"
+        );
+    }
 
     emulator.create_stream(PRESENT_STREAM, None).await;
-    tokio::time::sleep(PAST_THE_TRANSITION).await;
+    emulator.await_active(PRESENT_STREAM).await;
 
     // Every drawn name is a name no stream has: the generator never draws the one that
     // exists, and a draw that happened to is dropped rather than asserted on.
@@ -125,15 +136,8 @@ async fn one_sentence_answers_every_name_in_the_modelled_class() {
         "seed {seed}: the suite needs at least {DRAWN_NAMES} absent names, got {absent:?}"
     );
 
-    each_probe_states(
-        &emulator,
-        &control_plane_probes(),
-        &absent,
-        &control_plane,
-        seed,
-    )
-    .await;
-    each_probe_states(&emulator, &data_plane_probes(), &absent, &data_plane, seed).await;
+    each_probe_states(&emulator, &control_plane_probes(), &absent, account, seed).await;
+    each_probe_states(&emulator, &data_plane_probes(), &absent, account, seed).await;
 
     // The stream that does exist is untouched by all of those refusals: it still resolves,
     // which is what says the sentence above came from a lookup and not from a register
@@ -166,9 +170,9 @@ async fn a_name_past_the_modelled_bound_is_refused_by_the_boundary_and_not_by_th
 
     let emulator = Emulator::new();
     let account = engine::emulator_account_id();
-    let not_found = format!("Firehose under account {account} not found.");
 
     for probe in control_plane_probes() {
+        let not_found = probe.wording.sentence(account);
         let case = format!(
             "seed {seed}: {} of a {}-character name",
             probe.case,
