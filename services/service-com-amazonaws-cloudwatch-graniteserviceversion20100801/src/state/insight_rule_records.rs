@@ -289,6 +289,80 @@ pub fn invalid_insight_rule_name(rule_name: &str) -> String {
     format!("{INSIGHT_RULE_NAME_FAILURE_CODE}: {rule_name}")
 }
 
+/// The `ExceptionType` such an operation reports a `RuleNames` member that is not a rule NAME
+/// at all under: "The type of error." (`PartialFailure$ExceptionType`) — the value itself is
+/// the fault, which is the invalid-parameter class, and the two classes are what a batch caller
+/// branches on: a name that is legal but addresses nothing says "create the rule", a value this
+/// member may not carry says "repair the request".
+const INVALID_INSIGHT_RULE_NAME_EXCEPTION: &str = "InvalidParameterException";
+
+/// The `FailureCode` beside it: "The code of the error." (`PartialFailure$FailureCode`) — the
+/// rule name the request carried, reported as the INVALID value it is rather than as the member
+/// alone ([`INSIGHT_RULE_NAME_FAILURE_CODE`], which codes a name that is merely unknown).
+const INVALID_INSIGHT_RULE_NAME_FAILURE_CODE: &str = "INVALID_RULE_NAME";
+
+/// The characters a Contributor Insights rule name may be built from, as the expression a
+/// client re-validates a name against: `InsightRuleName`'s modelled `@pattern`
+/// (`smithy_query(query="shape",shape="InsightRuleName")`) without the anchors Smithy wraps a
+/// whole-value match in — the rendering this service publishes an expression in
+/// (`service_common::validation::unanchored`).
+const INSIGHT_RULE_NAME_PATTERN: &str = r"^[\x20-\x7E]+$";
+
+/// How CloudWatch states a rule name carrying no characters at all: wholly fixed text, nothing
+/// of the member interpolated — there is no value to echo.
+pub const EMPTY_INSIGHT_RULE_NAME: &str = "RuleName cannot be an empty string.";
+
+/// Why `rule_name` is not a Contributor Insights rule NAME, or `None` when it is one.
+///
+/// The legality of a rule name is the one grammar `InsightRuleName` declares — 1..128
+/// characters, each of them printable ASCII — so a value outside it is not a name this service
+/// could hold a rule under, whichever member carried it and whichever batch operation was
+/// called. Each of the three ways a value misses that grammar is stated as the class it is: no
+/// characters at all ([`EMPTY_INSIGHT_RULE_NAME`]), more characters than a name may carry, and
+/// characters the grammar does not admit — the last quoting the expression a client
+/// re-validates against, which is what locates the repair.
+#[must_use]
+pub fn insight_rule_name_fault(rule_name: &str) -> Option<String> {
+    if rule_name.is_empty() {
+        return Some(EMPTY_INSIGHT_RULE_NAME.to_string());
+    }
+    if rule_name.chars().count() > MAX_INSIGHT_RULE_NAME_LEN {
+        return Some(format!(
+            "RuleName cannot be longer than {MAX_INSIGHT_RULE_NAME_LEN} characters."
+        ));
+    }
+    if !rule_name.chars().all(is_insight_rule_name_character) {
+        return Some(format!(
+            "RuleName \"{rule_name}\" does not match the pattern: {}",
+            ::service_common::validation::unanchored(INSIGHT_RULE_NAME_PATTERN)
+        ));
+    }
+    None
+}
+
+/// Whether `character` is one the rule-name grammar admits: printable ASCII, which is the span
+/// `^[\x20-\x7E]+$` names — the space through the tilde, and nothing else (no control byte, no
+/// character outside ASCII).
+fn is_insight_rule_name_character(character: char) -> bool {
+    matches!(character, '\x20'..='\x7E')
+}
+
+/// The one `Failures` entry a batch Contributor Insights rule operation reports for a member
+/// that is not a rule name at all, described by the fault the value has
+/// ([`insight_rule_name_fault`]).
+///
+/// "If the operation could not process one of the rules, the following data is returned for
+/// each of those rules." (`PartialFailure`) — the entry carries the member VERBATIM, whatever
+/// bytes it was sent with, so a client can match the entry to the element it submitted.
+fn illegal_insight_rule_name_failure(rule_name: &str, fault: String) -> PartialFailure {
+    PartialFailure {
+        failure_resource: Some(rule_name.to_string()),
+        exception_type: Some(INVALID_INSIGHT_RULE_NAME_EXCEPTION.to_string()),
+        failure_code: Some(INVALID_INSIGHT_RULE_NAME_FAILURE_CODE.to_string()),
+        failure_description: Some(fault),
+    }
+}
+
 /// The one `Failures` entry a batch Contributor Insights rule operation reports for a name
 /// this store holds no rule for: "An array listing the rules that could not be deleted."
 /// (`DeleteInsightRulesOutput$Failures`), worded and coded identically whichever of those
@@ -865,13 +939,20 @@ impl State {
     }
 
     /// Move every Contributor Insights rule `rule_names` names to `rule_state`, reporting back
-    /// one entry per name this store holds no rule for.
+    /// one entry per name this store could not write that state on.
     ///
     /// "An array listing the rules that could not be disabled."
     /// (`DisableInsightRulesOutput$Failures`) — a name no rule answers to is reported as an
     /// entry of that array and the rest of the request still takes effect, rather than the
     /// whole call failing. "This array is empty if the API operation was successful for all
     /// the rules specified in the request." (`PartialFailure`)
+    ///
+    /// Each name is judged ON ITS OWN, in two steps, so one unusable entry costs the batch
+    /// nothing else: a value that is not a rule NAME at all is reported as the invalid value it
+    /// is ([`insight_rule_name_fault`]), and a name that is legal but addresses no rule of this
+    /// store is reported as the resource that is not there
+    /// ([`unknown_insight_rule_failure`]) — which is what lets a client tell "repair this
+    /// value" from "create this rule" and keeps every other name in the request applied.
     ///
     /// The state a rule moves to is the only thing that differs between the operations that
     /// enable and disable rules, so the walk lives here and neither can drift from the other.
@@ -884,6 +965,10 @@ impl State {
     ) -> Vec<PartialFailure> {
         let mut failures: Vec<PartialFailure> = Vec::new();
         for rule_name in rule_names {
+            if let Some(fault) = insight_rule_name_fault(rule_name) {
+                failures.push(illegal_insight_rule_name_failure(rule_name, fault));
+                continue;
+            }
             match self.insight_rules.get_mut(rule_name) {
                 Some(stored) => stored.rule.state = rule_state.to_string(),
                 None => failures.push(unknown_insight_rule_failure(rule_name)),

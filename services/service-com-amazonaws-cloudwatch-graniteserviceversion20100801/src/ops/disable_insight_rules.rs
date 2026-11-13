@@ -152,10 +152,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         })?;
 
         // "An array of the rule names to disable." (`DisableInsightRulesInput$RuleNames`,
-        // required) — an array carrying no entry asks for no rule state to be written, which
-        // this service refuses as a bad parameter value. Each entry's modelled 1..128 length
-        // and `^[\x20-\x7E]+$` pattern were enforced before this handler ran and are not
-        // re-checked here.
+        // required) — the required-ness is on the LIST, so an array carrying no entry asks for
+        // no rule state to be written, which this service refuses as a bad parameter value. A
+        // list that DOES carry entries satisfies it however those entries read: each entry's
+        // modelled 1..128 length and `^[\x20-\x7E]+$` pattern are judged per entry by the walk
+        // below, which reports the offending entry in `Failures` rather than refusing the
+        // request ([`crate::service`] serves this operation past those constraints).
         if input.rule_names.is_empty() {
             return Err(
                 DisableInsightRulesErrorModeled::InvalidParameterValueException(
@@ -169,9 +171,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         // "When rules are disabled, they do not analyze log groups and do not incur costs."
         // (`DisableInsightRules`) — a rule keeps everything else it was created with, so only
-        // its state moves, and a name this service holds no rule for is reported back as one
-        // entry of `Failures` rather than failing the whole request. The walk is
-        // `crate::state`'s, shared with the operation that enables rules.
+        // its state moves, and a name this service could not write the state on — one no rule
+        // answers to, or a value that is no rule name at all — is reported back as one entry
+        // of `Failures` rather than failing the whole request. The walk is `crate::state`'s,
+        // shared with the operation that enables rules.
         let mut store = state.lock();
         let failures =
             store.set_insight_rule_state(&input.rule_names, crate::state::INSIGHT_RULE_DISABLED);

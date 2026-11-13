@@ -248,6 +248,36 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
                 ),
             ),
         );
+        // The two operations that MOVE a rule's state report one entry of `Failures` per rule
+        // name they could not write the state on, so they are served through the same wrapper
+        // for its OTHER decision: a `RuleNames` entry whose characters or length the member's
+        // own constraints do not admit is a per-entry outcome of the batch
+        // ([`is_unenforced_constraint`]), judged inside the handler's walk, so the request is
+        // SERVED — the rest of the batch takes effect and the offending entry comes back
+        // classified. Every refusal they do make keeps the service-wide wording
+        // ([`the_service_wide_refusal`]), so an absent `RuleNames` reads exactly as before.
+        overridden.add_operation(
+            "EnableInsightRules",
+            served(
+                &engine,
+                JudgingTheValuesThisServiceEnforces::new(
+                    crate::ops::enable_insight_rules::EnableInsightRules::new(Arc::clone(&engine)),
+                    the_service_wide_refusal,
+                ),
+            ),
+        );
+        overridden.add_operation(
+            "DisableInsightRules",
+            served(
+                &engine,
+                JudgingTheValuesThisServiceEnforces::new(
+                    crate::ops::disable_insight_rules::DisableInsightRules::new(Arc::clone(
+                        &engine,
+                    )),
+                    the_service_wide_refusal,
+                ),
+            ),
+        );
         Self {
             metered: the_way_every_operation_is_served(Arc::clone(&engine), TheModelledOperation),
             entry: service_common::query_error_envelope::RequestIdEnvelopeDefinition::new(
@@ -742,13 +772,22 @@ fn parameter_fault_for(violations: &[aws_smithy_schema_server::Violation]) -> Op
 ///   the per-metric dimension maximum, so a filter list inside it names dimensions a metric can
 ///   actually carry and is APPLIED — a listing filtered by more of them simply matches fewer
 ///   metrics, and the recorded answer to one is an empty listing rather than a refusal.
+/// * a `RuleNames` ENTRY of a batch Contributor Insights rule operation
+///   ([`is_batch_rule_name_entry`]): such an operation reports per-ENTRY outcomes
+///   ("If the operation could not process one of the rules, the following data is returned for
+///   each of those rules.", `PartialFailure`), so the length and the pattern the entry's member
+///   declares are judged inside the handler's per-entry walk — the entry at fault comes back as
+///   one `Failures` entry on the HTTP 200 and every other name in the batch is still applied,
+///   which refusing the request for its shape would make unreachable.
 ///
 /// Each is keyed on the member and the CLASS of violation alone — a pattern broken by the
 /// namespace of a METRIC ([`is_metric_namespace`]) or by the template name of a MANAGED RULE
 /// ([`is_managed_rule_template_name`]), a maximum broken by a dimension COLLECTION
-/// ([`is_dimension_collection`]) — so each holds wherever that member is submitted: for
+/// ([`is_dimension_collection`]), a length or pattern broken by one ENTRY of a batch's rule-name
+/// list — so each holds wherever that member is submitted: for
 /// the namespace, inside a `MetricDataQuery` as well as at the top of a publish; for the
-/// template name, at any position of the `ManagedRules` array.
+/// template name, at any position of the `ManagedRules` array; for the rule name, at any
+/// position of the `RuleNames` array of either operation that moves a rule's state.
 fn is_unenforced_constraint(violation: &aws_smithy_schema_server::Violation) -> bool {
     (matches!(
         violation.kind,
@@ -756,6 +795,28 @@ fn is_unenforced_constraint(violation: &aws_smithy_schema_server::Violation) -> 
     ) && (is_metric_namespace(&violation.path)
         || is_managed_rule_template_name(&violation.path)))
         || is_applicable_dimension_filter(violation)
+        || is_per_entry_rule_name_constraint(violation)
+}
+
+/// Whether `violation` is a constraint of the rule NAME one entry of a batch rule operation
+/// carries — the classes that member declares, which that operation reports per entry rather
+/// than refusing the request for: the characters a name is built from and the number of them.
+fn is_per_entry_rule_name_constraint(violation: &aws_smithy_schema_server::Violation) -> bool {
+    matches!(
+        violation.kind,
+        aws_smithy_schema_server::ViolationKind::Pattern(_)
+            | aws_smithy_schema_server::ViolationKind::MinLength(_)
+            | aws_smithy_schema_server::ViolationKind::MaxLength(_)
+    ) && is_batch_rule_name_entry(&violation.path)
+}
+
+/// Whether `path` points at one ENTRY of a batch rule operation's `RuleNames` array — at any
+/// position of it, which is where the validating walk puts the element's index, and nowhere
+/// else: the member that carries ONE rule name (`GetInsightRuleReportInput$RuleName`,
+/// `PutInsightRuleInput$RuleName`) is not an entry of a batch and keeps its constraints.
+fn is_batch_rule_name_entry(path: &str) -> bool {
+    let mut segments = path.split('.');
+    segments.next() == Some("ruleNames") && is_list_element(path)
 }
 
 /// Whether `violation` is a dimension collection longer than the maximum its own member
