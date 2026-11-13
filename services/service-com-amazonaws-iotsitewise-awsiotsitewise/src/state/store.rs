@@ -1992,8 +1992,6 @@ impl ComAmazonawsIotsitewiseAwsiotsitewiseState {
         }
         self.asset_hierarchy_children
             .retain(|_, children| !children.is_empty());
-        self.asset_hierarchy_settles_at
-            .retain(|(asset, _, child), _| asset != asset_id && child != asset_id);
         // A project's membership names assets, so an asset this service no longer
         // holds is in no project: dropping the entry here is what keeps
         // `ListProjectAssets` from reporting an asset nothing can address.
@@ -2600,12 +2598,6 @@ impl ComAmazonawsIotsitewiseAwsiotsitewiseState {
             for hierarchy_id in dropped_hierarchies {
                 self.asset_hierarchy_children
                     .remove(&(asset_id.clone(), hierarchy_id.clone()));
-                // The settle clock of an association is keyed by the same triple,
-                // so it goes with the association it belongs to.
-                self.asset_hierarchy_settles_at
-                    .retain(|(asset, hierarchy, _), _| {
-                        asset != &asset_id || hierarchy != &hierarchy_id
-                    });
             }
             for (property_id, value) in seeded {
                 self.record_property_value(&asset_id, &property_id, value);
@@ -2650,66 +2642,18 @@ impl ComAmazonawsIotsitewiseAwsiotsitewiseState {
     }
 
     /// Record `child_id` as a child of `asset_id` under `hierarchy_id`, after the
-    /// children already associated there, and start the transition that call owes:
-    /// the association reports [`AssociationState::InProgress`] until
-    /// [`ACTIVATION_DELAY`] after `now` and [`AssociationState::Established`] from
-    /// then on. The due instant is STORED, never slept on.
+    /// children already associated there.
     ///
     /// The list stays a set: a child already associated under that hierarchy is not
     /// added twice. `AssociateAssets` refuses such a request before reaching here,
     /// so this keeps the stored invariant for any caller whose own rule allows it.
-    pub fn associate_child(
-        &mut self,
-        asset_id: &str,
-        hierarchy_id: &str,
-        child_id: &str,
-        now: SystemTime,
-    ) {
+    pub fn associate_child(&mut self, asset_id: &str, hierarchy_id: &str, child_id: &str) {
         let children = self
             .asset_hierarchy_children
             .entry((asset_id.to_string(), hierarchy_id.to_string()))
             .or_default();
         if !children.iter().any(|child| child == child_id) {
             children.push(child_id.to_string());
-        }
-        self.asset_hierarchy_settles_at.insert(
-            (
-                asset_id.to_string(),
-                hierarchy_id.to_string(),
-                child_id.to_string(),
-            ),
-            now + ACTIVATION_DELAY,
-        );
-    }
-
-    /// How far the association of `(asset_id, hierarchy_id, child_id)` has got as
-    /// of `now`, or `None` when that triple is not associated.
-    ///
-    /// Derived from the stored due instant, so a read never has to write: an
-    /// association whose due instant has passed is `Established`, and one recorded
-    /// by a call that has not settled yet is `InProgress`.
-    pub fn association_state(
-        &self,
-        asset_id: &str,
-        hierarchy_id: &str,
-        child_id: &str,
-        now: SystemTime,
-    ) -> Option<AssociationState> {
-        let associated = self
-            .hierarchy_children(asset_id, hierarchy_id)
-            .iter()
-            .any(|child| child == child_id);
-        if !associated {
-            return None;
-        }
-        let settles_at = self.asset_hierarchy_settles_at.get(&(
-            asset_id.to_string(),
-            hierarchy_id.to_string(),
-            child_id.to_string(),
-        ));
-        match settles_at {
-            Some(due) if now < *due => Some(AssociationState::InProgress),
-            _ => Some(AssociationState::Established),
         }
     }
 
@@ -2793,11 +2737,6 @@ impl ComAmazonawsIotsitewiseAwsiotsitewiseState {
         if children.is_empty() {
             self.asset_hierarchy_children.remove(&key);
         }
-        self.asset_hierarchy_settles_at.remove(&(
-            asset_id.to_string(),
-            hierarchy_id.to_string(),
-            child_id.to_string(),
-        ));
         true
     }
 }

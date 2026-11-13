@@ -430,6 +430,27 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         }
 
         let mut hierarchies = Vec::with_capacity(requested_hierarchies.len());
+        // The SYNTAX of every `childAssetModelId` the request carries is decided
+        // before any of them is resolved against state — the same order, through
+        // the same shared report ([`crate::state::custom_id_report`]), as the
+        // create applies.
+        if let Some(message) = crate::state::custom_id_report(
+            requested_hierarchies
+                .iter()
+                .enumerate()
+                .map(|(at, requested)| {
+                    (
+                        ::service_common::validation::element_member_path(
+                            MEMBER_ASSET_MODEL_HIERARCHIES,
+                            at,
+                            MEMBER_CHILD_ASSET_MODEL_ID,
+                        ),
+                        requested.child_asset_model_id.as_str(),
+                    )
+                }),
+        ) {
+            return Err(invalid_request(message));
+        }
         for requested in requested_hierarchies {
             // Each hierarchy names the asset model whose assets may be children of
             // this one's; that model has to exist, as it does on the create.
@@ -675,6 +696,15 @@ fn model_not_found(label: &str) -> UpdateAssetModelError {
         },
     ))
 }
+
+/// The members a request-validation clause about a hierarchy definition's child
+/// model names, each as the model names it: the list member, and the member of
+/// its element. The same pair `CreateAssetModel` reports, because it is the same
+/// member of the same shape.
+const MEMBER_ASSET_MODEL_HIERARCHIES: &str = "assetModelHierarchies";
+
+/// See [`MEMBER_ASSET_MODEL_HIERARCHIES`].
+const MEMBER_CHILD_ASSET_MODEL_ID: &str = "childAssetModelId";
 
 /// HTTP 400 `InvalidRequestException` carrying `message`.
 fn invalid_request(message: String) -> UpdateAssetModelError {

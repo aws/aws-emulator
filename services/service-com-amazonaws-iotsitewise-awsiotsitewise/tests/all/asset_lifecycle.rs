@@ -1401,17 +1401,18 @@ async fn a_hierarchy_definition_must_name_a_stored_child_model() {
         }
     }
 
-    // And the child model cannot be deleted while a hierarchy still names it —
-    // a dependant the caller must remove first, so a terminal request error.
+    // And the child model CAN be deleted while a hierarchy still merely names it:
+    // what holds a delete back is the ASSETS created from the model, and a
+    // reference another model's definition makes to it is not that.
     let (status, body) = call(&router, "DELETE", &format!("/asset-models/{child_id}"), None).await;
     assert_eq!(
-        status, 400,
-        "deleting a referenced child model: expected 400, got {status} {body}"
+        status, 202,
+        "deleting a model a hierarchy merely names: expected 202, got {status} {body}"
     );
     assert_eq!(
-        error_code(&body),
-        "InvalidRequestException",
-        "deleting a referenced child model: unexpected error code in {body}"
+        body["assetModelStatus"]["state"].as_str(),
+        Some("DELETING"),
+        "deleting a model a hierarchy merely names: expected DELETING, got {body}"
     );
 }
 

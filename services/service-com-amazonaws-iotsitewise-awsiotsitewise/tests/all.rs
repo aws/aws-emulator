@@ -590,6 +590,8 @@ mod associate_assets_duplicate_sentence;
 
 #[path = "all/asset_hierarchies.rs"]
 mod asset_hierarchies;
+#[path = "all/asset_hierarchy_refusal_classes.rs"]
+mod asset_hierarchy_refusal_classes;
 #[path = "all/asset_lifecycle.rs"]
 mod asset_lifecycle;
 #[path = "all/asset_composite_model_instances.rs"]

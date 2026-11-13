@@ -10,8 +10,11 @@
 //!    resources share one form, the kind followed by the identifier; the
 //!    families with their own sentence are a resource addressed by ARN (where
 //!    the ARN is the dimension the request named), a HIERARCHY (worded as a
-//!    hierarchy that "doesn't exist", so the two association operations, which
-//!    look up the same grouping, must word that absence identically), an ASSET
+//!    hierarchy that "doesn't exist" by the operations that look one up to act on
+//!    the association it holds — the removal and the listing; the forward
+//!    association states instead that the hierarchy the request names is not one
+//!    the asset has, which is a statement about the request rather than an absent
+//!    resource), an ASSET
 //!    addressed by the `externalId:` selector (reported as an external id that
 //!    does not exist, by the bare external id), a COMPOSITE MODEL of an asset
 //!    model (which names the asset model it was looked for in), a time series
@@ -516,7 +519,7 @@ async fn the_alias_addressed_write_path_words_an_absent_stream_the_same_way() {
 }
 
 #[tokio::test]
-async fn the_two_association_operations_word_an_absent_hierarchy_identically() {
+async fn each_association_operation_words_an_absent_hierarchy_as_the_fact_it_reports() {
     let router = router();
     let model_id = create_model(
         &router,
@@ -534,34 +537,55 @@ async fn the_two_association_operations_word_an_absent_hierarchy_identically() {
     )
     .await;
 
-    // Both label forms a `hierarchyId` may take, on both operations: the same
-    // absence, so the same wording.
+    // Both label forms a `hierarchyId` may take, on both operations. The two
+    // operations report DIFFERENT facts about the same request, so they word it
+    // differently: the forward operation says the hierarchy the request names is
+    // not one the asset has (a statement about the request, 400), while the
+    // removal says there is no such hierarchy to remove a child from (404).
     let labels = [
         ("a raw id", UNKNOWN_ID.to_string()),
         ("an externalId label", "externalId:no_such_hierarchy".to_string()),
     ];
     for (case, hierarchy) in &labels {
+        let (status, answered) = call(
+            &router,
+            "POST",
+            &format!("/assets/{parent}/associate"),
+            Some(json!({ "hierarchyId": hierarchy, "childAssetId": child })),
+        )
+        .await;
+        let expected = format!("Given HierarchyId {hierarchy} not present in the Asset {parent}");
+        assert_eq!(
+            status, 400,
+            "case {case:?} on associate: a hierarchy the asset has not got is a 400, \
+             got {status} {answered}"
+        );
+        assert_eq!(
+            error_message(&answered),
+            expected,
+            "case {case:?} on associate: expected {expected:?}, got {:?}",
+            error_message(&answered)
+        );
+
+        let (status, answered) = call(
+            &router,
+            "POST",
+            &format!("/assets/{parent}/disassociate"),
+            Some(json!({ "hierarchyId": hierarchy, "childAssetId": child })),
+        )
+        .await;
         let expected = format!("A hierarchy with ID {hierarchy} doesn't exist");
-        for operation in ["associate", "disassociate"] {
-            let (status, answered) = call(
-                &router,
-                "POST",
-                &format!("/assets/{parent}/{operation}"),
-                Some(json!({ "hierarchyId": hierarchy, "childAssetId": child })),
-            )
-            .await;
-            assert_eq!(
-                status, 404,
-                "case {case:?} on {operation}: an absent hierarchy is a 404, \
-                 got {status} {answered}"
-            );
-            assert_eq!(
-                error_message(&answered),
-                expected,
-                "case {case:?} on {operation}: expected {expected:?}, got {:?}",
-                error_message(&answered)
-            );
-        }
+        assert_eq!(
+            status, 404,
+            "case {case:?} on disassociate: an absent hierarchy is a 404, \
+             got {status} {answered}"
+        );
+        assert_eq!(
+            error_message(&answered),
+            expected,
+            "case {case:?} on disassociate: expected {expected:?}, got {:?}",
+            error_message(&answered)
+        );
     }
 }
 

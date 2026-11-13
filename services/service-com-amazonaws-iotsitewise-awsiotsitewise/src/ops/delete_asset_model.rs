@@ -309,44 +309,31 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             ));
         }
 
-        // A model still in use cannot go away: neither while assets instantiate it,
-        // nor while another model's hierarchy names it as the child model, nor
-        // while another model's composite model reuses it as its component model.
-        // Every such reference is a dependency this store RECORDS, and each is a
-        // TERMINAL request error — the caller has to delete the dependent resource
-        // first, and no retry of this call can succeed — so it is
-        // `InvalidRequestException` (400) and not the retryable
-        // `ConflictingOperationException` (409), which states a transient
-        // conflict between two operations on one resource.
+        // A model still in use cannot go away, and WHAT counts as still in use is
+        // what the service checks when the delete is CALLED: the assets created
+        // from the model, which the operation documents first ("You must delete
+        // all assets created from an asset model before you can delete the
+        // model"). A reference from another model's DEFINITION is not that: a
+        // hierarchy naming this model as its `childAssetModelId`, and a metric or
+        // transform of that model reading a property of this one through such a
+        // hierarchy, both leave the delete accepted — the model goes, and the
+        // definition that named it keeps naming an id this store no longer holds.
+        // (The operation's documentation also states a formula dependency as a
+        // reason a delete cannot go through; the recorded service accepts such a
+        // delete when it is called, so that is not a refusal this handler makes.)
+        // The dependency that does block is a TERMINAL request error — the caller
+        // has to delete the dependent resource first, and no retry of this call
+        // can succeed — so it is `InvalidRequestException` (400) and not the
+        // retryable `ConflictingOperationException` (409), which states a
+        // transient conflict between two operations on one resource.
         let referencing_asset = store
             .assets
             .values()
             .any(|asset| asset.asset_model_id == id);
-        let referencing_model = store
-            .asset_models
-            .values()
-            .find(|model| {
-                model.id != id
-                    && model
-                        .hierarchies
-                        .iter()
-                        .any(|hierarchy| hierarchy.child_asset_model_id == id)
-            })
-            .map(|model| model.id.clone());
         if referencing_asset {
             return Err(DeleteAssetModelError::Modeled(
                 DeleteAssetModelErrorModeled::InvalidRequestException(InvalidRequestException {
                     message: "Asset model had assets when delete was called".to_string(),
-                }),
-            ));
-        }
-        if let Some(referrer) = referencing_model {
-            return Err(DeleteAssetModelError::Modeled(
-                DeleteAssetModelErrorModeled::InvalidRequestException(InvalidRequestException {
-                    message: format!(
-                        "Asset model {id} is referenced by a hierarchy of asset model \
-                         {referrer} when delete was called"
-                    ),
                 }),
             ));
         }
@@ -394,6 +381,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .map(|relationship| relationship.asset_model_id.clone())
             .collect();
 
+        // The model leaves the live store: the removal the accepted delete owes is
+        // applied as the call is served, so no later read reports a model this
+        // service no longer holds.
         store.forget_asset_model(&id);
 
         for applied_to_id in &applied_to {

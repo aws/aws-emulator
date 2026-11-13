@@ -131,22 +131,6 @@ pub const MAX_FORMULA_IDENTIFIERS: usize = MAX_EXPRESSION_CHARACTERS;
 /// this many variables are ever resolved.
 pub const MAX_VARIABLES_PER_EXPRESSION: usize = 10;
 
-/// The group lengths of the `ID` form, as the model fixes it: `@length 36..36`
-/// and pattern
-/// `^(?!0{8}-0{4}-0{4}-0{4}-0{12})[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`
-/// (`smithy_query(query="shape", shape="ID")`) — five groups of lowercase
-/// hexadecimal digits, separated by hyphens.
-///
-/// `VariableValue.propertyId` targets `Macro` rather than `ID`, so a reference's
-/// spelling is not constrained on the wire and the write is what reads it: this
-/// is what tells an IDENTIFIER spelling from a property NAME (see
-/// [`spelled_as_property_id`]).
-const ID_GROUP_LENGTHS: [usize; 5] = [8, 4, 4, 4, 12];
-
-/// The one value the modelled `ID` pattern's negative lookahead refuses, so it is
-/// no property's id and not an id spelling either.
-const NIL_ID: &str = "00000000-0000-0000-0000-000000000000";
-
 /// The name of the formula member a refusal reports a bad variable of: the two
 /// shapes that declare `variables`, named as the model names them.
 const METRIC_FORMULA: &str = "Metric";
@@ -155,30 +139,26 @@ const METRIC_FORMULA: &str = "Metric";
 const TRANSFORM_FORMULA: &str = "Transform";
 
 /// Whether `label` is spelled as an IDENTIFIER of a property rather than as its
-/// name: the modelled `ID` form ([`ID_GROUP_LENGTHS`], and not the [`NIL_ID`] its
-/// pattern refuses), or `externalId:` followed by a non-empty external id.
+/// name: the modelled `ID` form ([`super::names_modelled_id`]), or
+/// `externalId:` followed by a non-empty external id.
 ///
 /// Those are the two spellings every resolution scope accepts. The NAME spelling
 /// is documented for one scope only — a property "from the same asset model" —
 /// so this is what a scope that is not the model being written holds a reference
 /// to (see [`Spellings`]).
+///
+/// `VariableValue.propertyId` targets `Macro` rather than `ID`, so a reference's
+/// spelling is not constrained on the wire and the write is what reads it. The
+/// `ID` form itself is read by the one function that states it
+/// ([`super::names_modelled_id`]); the external-id half is LOOSER here on
+/// purpose — this asks which SPELLING a reference used, not whether the value
+/// satisfies a member's `@pattern`, and an external id that does not is refused
+/// where that pattern is enforced.
 fn spelled_as_property_id(label: &str) -> bool {
-    if let Some(external_id) = label.strip_prefix(EXTERNAL_ID_PREFIX) {
-        return !external_id.is_empty();
+    match label.strip_prefix(EXTERNAL_ID_PREFIX) {
+        Some(external_id) => !external_id.is_empty(),
+        None => super::names_modelled_id(label),
     }
-    if label == NIL_ID {
-        return false;
-    }
-    let mut groups = label.split('-');
-    let shaped = ID_GROUP_LENGTHS.iter().all(|length| {
-        groups.next().is_some_and(|group| {
-            group.len() == *length
-                && group
-                    .bytes()
-                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-        })
-    });
-    shaped && groups.next().is_none()
 }
 
 /// One identifier of a formula expression: its text, where it starts, and whether
@@ -301,6 +281,19 @@ pub fn duplicate_property_name_message(name: &str) -> String {
     format!("Property {name} name is not unique in the Asset Model.")
 }
 
+/// The message a HIERARCHY name a model already carries is refused with: the
+/// duplicated name, as the request spelled it.
+///
+/// A hierarchy's name is a handle of the model just as a property's is — a
+/// formula variable may name the hierarchy it reads through by name ("You can use
+/// the hierarchy's name instead of the hierarchy's ID") — so two hierarchies of
+/// one model may not share one, and the refusal names the hierarchy rather than
+/// the property.
+#[must_use]
+pub fn duplicate_hierarchy_name_message(name: &str) -> String {
+    format!("Hierarchy {name} name is not unique.")
+}
+
 /// The message a `propertyId` that names nothing in its resolution scope is
 /// refused with: the id exactly as the request sent it — AWS names the id the
 /// request supplied, because it is that id which the scope does not hold.
@@ -406,6 +399,24 @@ pub fn check_property_names_unique(properties: &[AssetModelProperty]) -> Result<
     for property in properties {
         if !seen.insert(property.name.as_str()) {
             return Err(duplicate_property_name_message(&property.name));
+        }
+    }
+    Ok(())
+}
+
+/// Refuse a hierarchy list two of whose entries carry one name.
+///
+/// Asked of the hierarchies one model holds, for the reason
+/// [`check_property_names_unique`] is asked of its properties: a name is a
+/// handle a variable may resolve a hierarchy by, so two hierarchies sharing one
+/// would make every reference through it ambiguous.
+///
+/// LINEAR in the length of the list, like its sibling above.
+pub fn check_hierarchy_names_unique(hierarchies: &[AssetModelHierarchy]) -> Result<(), String> {
+    let mut seen: HashSet<&str> = HashSet::with_capacity(hierarchies.len());
+    for hierarchy in hierarchies {
+        if !seen.insert(hierarchy.name.as_str()) {
+            return Err(duplicate_hierarchy_name_message(&hierarchy.name));
         }
     }
     Ok(())
@@ -787,6 +798,7 @@ impl ComAmazonawsIotsitewiseAwsiotsitewiseState {
         definition: &DefinitionUnderWrite,
     ) -> Result<(), String> {
         check_property_names_unique(&definition.properties)?;
+        check_hierarchy_names_unique(&definition.hierarchies)?;
         for list in &definition.composite_property_lists {
             check_property_names_unique(list)?;
         }

@@ -158,6 +158,7 @@ use crate::ops::types::{
 mod asset_records;
 mod capture_ingest;
 mod computation_models;
+mod id_references;
 mod jobs;
 mod paths;
 mod pipeline_task_records;
@@ -170,6 +171,7 @@ mod workspace_records;
 pub use asset_records::*;
 pub use capture_ingest::*;
 pub use computation_models::*;
+pub use id_references::*;
 pub use jobs::*;
 pub use paths::*;
 pub use pipeline_task_records::*;
@@ -760,23 +762,6 @@ pub struct HierarchyTriple {
     pub hierarchy_id: String,
     /// The child asset's stored `assetId`.
     pub child_asset_id: String,
-}
-
-/// How far a hierarchy association recorded by `AssociateAssets` has got: the
-/// state a SECOND call naming the same triple is judged against.
-///
-/// The two are different answers to the caller, so they are different values here:
-/// a still-settling association is a transient conflict between two operations on
-/// one resource (the modelled `ConflictingOperationException`, HTTP 409, "retry"),
-/// while a settled one is a terminal statement about the request (the modelled
-/// `InvalidRequestException`, HTTP 400, "stop").
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AssociationState {
-    /// The association was recorded and the transition that call owes has not
-    /// fallen due yet.
-    InProgress,
-    /// The association is recorded and settled.
-    Established,
 }
 
 /// Why an association triple does not name anything the store can act on.
@@ -2047,16 +2032,6 @@ pub struct ComAmazonawsIotsitewiseAwsiotsitewiseState {
     /// hierarchy. `ListAssets`'s `TOP_LEVEL` filter reads it to tell a root asset
     /// from one that is some other asset's child.
     pub asset_hierarchy_children: HashMap<(String, String), Vec<String>>,
-    /// `(assetId, hierarchyId, childAssetId)` -> the instant the association
-    /// recorded for that triple finishes settling.
-    ///
-    /// The association set above says WHICH associations exist; this says how far
-    /// the one that created an entry has got, which is what tells a second call on
-    /// the same triple whether it collides with an operation still in flight or
-    /// with an association already established (see [`AssociationState`]). Written
-    /// and pruned beside the set itself by [`Self::associate_child`] and
-    /// [`Self::disassociate_child`], so the two cannot drift.
-    pub asset_hierarchy_settles_at: HashMap<(String, String, String), SystemTime>,
     /// `assetId` -> `propertyId` -> the property's time series, kept sorted
     /// ascending by timestamp so the latest value is the last element.
     ///

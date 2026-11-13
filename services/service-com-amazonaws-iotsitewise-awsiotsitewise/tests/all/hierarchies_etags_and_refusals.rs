@@ -384,9 +384,29 @@ async fn an_association_triple_that_names_nothing_stored_is_refused_and_changes_
         );
     }
 
-    // The same triples are refused the same way by the forward operation, since
-    // they name the same absent resources.
-    for (case, body) in cases.iter().take(3) {
+    // The forward operation refuses the same triples, and which refusal it is
+    // follows what the triple failed to name: an ASSET the store does not hold is
+    // the absent resource (404), while a hierarchy the parent's model does not
+    // declare is a statement about the request (400) — a hierarchy is a grouping
+    // of that model, not a resource of its own, so the forward operation tells the
+    // caller its request names a grouping this asset has not got.
+    let forward: [(&str, u16, &str); 3] = [
+        ("unknown parent asset", 404, "ResourceNotFoundException"),
+        (
+            "unknown hierarchy on a stored parent",
+            400,
+            "InvalidRequestException",
+        ),
+        ("unknown child asset", 404, "ResourceNotFoundException"),
+    ];
+    for ((case, body), (expected_case, expected_status, expected_code)) in
+        cases.iter().take(3).zip(forward)
+    {
+        assert_eq!(
+            *case, expected_case,
+            "the forward rows must line up with the rows above, got {case:?} against \
+             {expected_case:?}"
+        );
         let asset_id = body["assetId"].as_str().expect("a label");
         let (status, answered) = call(
             &router,
@@ -396,12 +416,13 @@ async fn an_association_triple_that_names_nothing_stored_is_refused_and_changes_
         )
         .await;
         assert_eq!(
-            status, 404,
-            "case {case:?}: AssociateAssets must be refused 404, got {status} {answered}"
+            status, expected_status,
+            "case {case:?}: AssociateAssets must be refused {expected_status}, got \
+             {status} {answered}"
         );
         assert_eq!(
             error_code(&answered),
-            "ResourceNotFoundException",
+            expected_code,
             "case {case:?}: AssociateAssets refusal code, got {answered}"
         );
     }
@@ -442,13 +463,11 @@ async fn associating_then_disassociating_a_triple_round_trips_through_stored_sta
         "before associating, the child asset is top level"
     );
 
-    // Associate by raw id. A repeat of the SAME triple is refused, and WHICH refusal
-    // depends on how far the first association has got: this one lands while it is
-    // still settling, so it is the transient 409 `ConflictingOperationException`
-    // ("another operation on this resource is in flight") rather than the terminal
-    // 400 an established association answers. Either way the stored association set
-    // stays single-valued — which is what `DisassociateAssets` below has to remove
-    // exactly once.
+    // Associate by raw id. A repeat of the SAME triple is refused as the terminal
+    // request error it is — the child already has a parent, whether the first
+    // association was recorded an instant or an hour ago — and the stored
+    // association set stays single-valued, which is what `DisassociateAssets`
+    // below has to remove exactly once.
     let associate = json!({
         "assetId": fixture.parent_asset,
         "hierarchyId": fixture.hierarchy_id,
@@ -473,12 +492,12 @@ async fn associating_then_disassociating_a_triple_round_trips_through_stored_sta
     )
     .await;
     assert_eq!(
-        status, 409,
-        "a repeat while the association is still settling collides with it, got {status} {answered}"
+        status, 400,
+        "a repeat of the association is a terminal request error, got {status} {answered}"
     );
     assert_eq!(
         error_code(&answered),
-        "ConflictingOperationException",
+        "InvalidRequestException",
         "repeat-association refusal code, got {answered}"
     );
     let children = {
@@ -803,10 +822,13 @@ async fn if_none_match_deletes_a_model_whose_targeted_version_does_not_exist_yet
 async fn a_delete_blocked_by_a_dependent_resource_is_a_terminal_request_error() {
     let router = router();
 
-    // Two ways a model is still in use, and the one way it is not: a live asset
-    // instantiated from it, and another model's hierarchy naming it as the child
-    // model. Both are terminal — the caller must remove the dependant first — so
-    // both are 400 InvalidRequestException and never the retryable 409.
+    // The one way a model is still in use when the delete is called, and the two
+    // ways it is not. The rule: a model is held back by the assets created from it
+    // ("You must delete all assets created from an asset model before you can
+    // delete the model"), and NOT by a reference another model's definition makes
+    // to it — a hierarchy naming it as its child model is a grouping, not a
+    // dependant. The refusal is terminal — the caller must delete the assets first
+    // — so it is 400 InvalidRequestException and never the retryable 409.
     let with_asset = create_model(
         &router,
         json!({
@@ -851,9 +873,9 @@ async fn a_delete_blocked_by_a_dependent_resource_is_a_terminal_request_error() 
     let cases: Vec<(&str, &str, u16)> = vec![
         ("a live asset instantiates it", with_asset.as_str(), 400),
         (
-            "another model's hierarchy names it",
+            "another model's hierarchy merely names it",
             referenced.as_str(),
-            400,
+            202,
         ),
         ("nothing depends on it", unused.as_str(), 202),
     ];

@@ -225,24 +225,22 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // `ConflictingOperationException` (409); the same rule, and the same mapping,
         // as `DeleteAssetModel`'s refusal for a model that still has assets. The
         // precondition is evaluated BEFORE anything is removed, so a refused delete
-        // leaves the asset exactly as it was.
+        // leaves the asset exactly as it was. Each direction has AWS's own fixed
+        // sentence, naming neither the asset, nor the asset at the other end of
+        // the association, nor the hierarchy holding it
+        // ([`DISASSOCIATE_THE_CHILDREN_FIRST`],
+        // [`DISASSOCIATE_FROM_THE_PARENT_FIRST`]).
         if store.has_hierarchy_children(&id) {
             return Err(DeleteAssetError::Modeled(
                 DeleteAssetErrorModeled::InvalidRequestException(InvalidRequestException {
-                    message: format!(
-                        "The asset {id} has child assets associated with its hierarchies. \
-                         Disassociate them before deleting it."
-                    ),
+                    message: DISASSOCIATE_THE_CHILDREN_FIRST.to_string(),
                 }),
             ));
         }
-        if let Some((parent, hierarchy)) = store.hierarchy_parent(&id) {
+        if store.hierarchy_parent(&id).is_some() {
             return Err(DeleteAssetError::Modeled(
                 DeleteAssetErrorModeled::InvalidRequestException(InvalidRequestException {
-                    message: format!(
-                        "The asset {id} is associated with the asset {parent} through the \
-                         hierarchy {hierarchy}. Disassociate it before deleting it."
-                    ),
+                    message: DISASSOCIATE_FROM_THE_PARENT_FIRST.to_string(),
                 }),
             ));
         }
@@ -292,6 +290,25 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         })
     }
 }
+
+/// The `InvalidRequestException` message a delete of an asset that is still a
+/// CHILD in some hierarchy is refused with, as the service words the rule its
+/// own documentation states ("You can't delete an asset that's associated to
+/// another asset. For more information, see DisassociateAssets").
+///
+/// Entirely FIXED text: it names neither the asset, nor its parent, nor the
+/// hierarchy, so no id of the request or of the store fills it.
+const DISASSOCIATE_FROM_THE_PARENT_FIRST: &str =
+    "You must disassociate the asset from its parent asset before you can delete it.";
+
+/// The `InvalidRequestException` message a delete of an asset that is still a
+/// PARENT — one whose hierarchies hold children — is refused with: the same rule
+/// seen from the other end, which the service words as its own fixed sentence.
+///
+/// Entirely FIXED text, like its sibling above: it names neither the asset nor
+/// any of the children holding it back.
+const DISASSOCIATE_THE_CHILDREN_FIRST: &str =
+    "You must disassociate the asset from all of its children assets before you can delete it.";
 
 /// HTTP 409 `ConflictingOperationException` for a `clientToken` a DIFFERENT
 /// request already spent: the conflict is with the asset that request removed, so

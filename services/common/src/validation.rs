@@ -137,7 +137,9 @@
 //!   dropped from a top-level alternation, where the alternation is kept grouped so the
 //!   expression still matches what it matched anchored, and
 //!   [`unanchored_keeping_inner_anchors`] for the services whose refusals quote an
-//!   expression that anchors its own BRANCHES as the model declares it, and
+//!   expression that anchors its own BRANCHES as the model declares it,
+//!   [`unanchored_at_the_close`] for the services whose refusals drop only the anchor that
+//!   CLOSES the expression, and
 //!   [`whole_value_expression`] for the services whose refusals quote the expression the
 //!   WHOLE value must match, deciding the two ends independently) — LANDED here,
 //!   while ~26 service crates still carry their own inlined copy
@@ -1581,11 +1583,53 @@ pub fn unanchored_keeping_inner_anchors(regex: &str) -> String {
     regex.to_string()
 }
 
+/// The path of `element_member` on element `position` (0-BASED) of the list member
+/// `list_member`, as the framework's own constraint walk spells one: the list member, the
+/// element's 1-based position and the collection step, then the element's member —
+/// `assetModelHierarchies.2.member.childAssetModelId`.
+///
+/// Pure [`path`] plumbing, and the shared home for it: a service that words its own clause
+/// about a member of a list element has to name that member exactly as the walk names it,
+/// and each crate restating the 1-based rule is how two of them come to spell one position
+/// differently. Several service crates still carry their own copy
+/// (`grep -rn 'fn element_member_path' services/*/src`); they are to be migrated onto this
+/// one rather than copied again.
+#[must_use]
+pub fn element_member_path(list_member: &str, position: usize, element_member: &str) -> String {
+    path::join(&[
+        path::member(list_member),
+        path::element(position + 1),
+        path::member(element_member),
+    ])
+}
+
 /// The unconstrained run an expression spells for an end a `@pattern` leaves OPEN.
 const ANY_RUN: &str = ".*";
 
+/// [`unanchored`] at ONE end: the expression as the model declares it, less the `$` that
+/// CLOSES it — a further dialect beside the three above, for the services whose refusals
+/// quote an expression that keeps its opening `^`.
+///
+/// Same reading of an anchor as its siblings, and the same single purpose: a Smithy
+/// `@pattern` is a FIND, so the `$` a model writes at the very end of the expression is how
+/// it makes the match total THERE rather than part of the grammar a caller has to satisfy,
+/// while everything else the model wrote — its leading `^`, and every anchor it writes
+/// around its own branches — is quoted as declared. An expression that closes with no
+/// anchor is quoted verbatim, and an escaped `\$` is a literal dollar rather than an
+/// anchor, the same reading `unanchored` applies to the pair.
+///
+/// Which of the renderings a service states is part of its validation-message dialect (the
+/// module docs above), so this is one more dialect rather than a change to any of them.
+#[must_use]
+pub fn unanchored_at_the_close(regex: &str) -> String {
+    match regex.strip_suffix('$') {
+        Some(inner) if !ends_with_escape(inner) => inner.to_string(),
+        _ => regex.to_string(),
+    }
+}
+
 /// The expression the WHOLE value must match, for the services whose refusals quote a
-/// `@pattern` that way — a FOURTH dialect beside the three renderings above, sharing their
+/// `@pattern` that way — one more dialect beside the renderings above, sharing their
 /// reading of an anchor and differing in what it does with an end the model leaves open.
 ///
 /// A Smithy `@pattern` is a FIND rather than a total match, so the expression a member
@@ -4298,6 +4342,52 @@ mod tests {
                 actual, stated,
                 "case {case:?}: expected unanchored_keeping_inner_anchors {stated:?}, got \
                  {actual:?}"
+            );
+        }
+    }
+
+    /// RULE: [`super::unanchored_at_the_close`] states the expression as the model declares
+    /// it, less the `$` that closes it — so the opening `^` and every anchor the expression
+    /// writes around its own branches stay, an expression that closes with no anchor is
+    /// quoted verbatim, and a trailing escaped dollar is a literal rather than an anchor.
+    ///
+    /// The rows span the forms the two ends take (both anchored, start only, end only,
+    /// neither), the alternations whose branches carry anchors of their own, the lookahead
+    /// form the `CustomID` family of `iotsitewise` publishes, and the escape that hides an
+    /// anchor.
+    #[test]
+    fn the_closing_anchor_rendering_drops_only_the_expressions_last_anchor() {
+        // (case, the model's pattern, what `unanchored_at_the_close` states)
+        let rows: [(&str, &str, &str); 8] = [
+            ("a plain whole-value pattern", "^[0-9]{12}$", "^[0-9]{12}"),
+            ("anchored at the start only", "^abc", "^abc"),
+            ("anchored at the end only", "abc$", "abc"),
+            ("no anchors at all", "[0-9]+", "[0-9]+"),
+            ("branches anchored individually", "^a$|^b$", "^a$|^b"),
+            (
+                "branches anchored inside their own groups",
+                "(^a$)|(^b$)",
+                "(^a$)|(^b$)",
+            ),
+            // The published form of a reference that is a UUID or an `externalId:` alias:
+            // a lookahead, two anchored branches, and the closing anchor this drops.
+            (
+                "a two-branch reference pattern opening with a negative lookahead",
+                "^(?!0{4})[0-9a-f]{4}$|^externalId:[a-zA-Z0-9_]+$",
+                "^(?!0{4})[0-9a-f]{4}$|^externalId:[a-zA-Z0-9_]+",
+            ),
+            (
+                "a trailing escaped dollar, which is a literal and no anchor",
+                r"^cost\$",
+                r"^cost\$",
+            ),
+        ];
+
+        for (case, pattern, stated) in rows {
+            let actual = super::unanchored_at_the_close(pattern);
+            assert_eq!(
+                actual, stated,
+                "case {case:?}: expected unanchored_at_the_close {stated:?}, got {actual:?}"
             );
         }
     }

@@ -398,9 +398,33 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             convert_property_definitions(input.asset_model_properties.as_deref().unwrap_or(&[]))?;
 
         // Each hierarchy names the asset model whose assets may be children of this
-        // one's; that model has to exist.
+        // one's. `childAssetModelId` is a `CustomID` REFERENCE — a raw UUID or an
+        // `externalId:` alias — so the SYNTAX of EVERY one of them is decided
+        // before any of them is resolved against state: a value that is not a
+        // reference at all (a model NAME, say) names no asset model in any
+        // account, so the answer is that the request is malformed and not that a
+        // resource is missing, and which element carries which fault cannot change
+        // it. The boundary walk cannot state this half of the member's constraints
+        // (see [`crate::state::custom_id_clause`]), so the write states it, over
+        // the members together and naming each exactly as the walk's own clauses
+        // name it. Then each referenced model has to exist.
+        let definitions = input.asset_model_hierarchies.as_deref().unwrap_or(&[]);
+        if let Some(message) = crate::state::custom_id_report(definitions.iter().enumerate().map(
+            |(at, definition)| {
+                (
+                    ::service_common::validation::element_member_path(
+                        MEMBER_ASSET_MODEL_HIERARCHIES,
+                        at,
+                        MEMBER_CHILD_ASSET_MODEL_ID,
+                    ),
+                    definition.child_asset_model_id.as_str(),
+                )
+            },
+        )) {
+            return Err(invalid_request(message));
+        }
         let mut hierarchies = Vec::new();
-        for definition in input.asset_model_hierarchies.as_deref().unwrap_or(&[]) {
+        for definition in definitions {
             let child = store
                 .resolve_asset_model_id(&definition.child_asset_model_id)
                 .ok_or_else(|| {
@@ -551,6 +575,14 @@ fn already_exists(
         },
     ))
 }
+
+/// The members a request-validation clause about a hierarchy definition's child
+/// model names, each as the model names it: the list member, and the member of
+/// its element.
+const MEMBER_ASSET_MODEL_HIERARCHIES: &str = "assetModelHierarchies";
+
+/// See [`MEMBER_ASSET_MODEL_HIERARCHIES`].
+const MEMBER_CHILD_ASSET_MODEL_ID: &str = "childAssetModelId";
 
 /// HTTP 400 `InvalidRequestException` carrying `message`.
 fn invalid_request(message: String) -> CreateAssetModelError {

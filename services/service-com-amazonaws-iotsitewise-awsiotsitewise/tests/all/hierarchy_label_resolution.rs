@@ -267,15 +267,19 @@ async fn a_label_naming_no_hierarchy_is_refused_by_every_operation() {
     ];
 
     for (case, label) in cases {
+        // `AssociateAssets` states a hierarchy the parent's model does not declare
+        // as a statement about the REQUEST: a hierarchy is a grouping of that
+        // model, so the caller is told its request names a grouping this asset has
+        // not got. The read and the removal state the hierarchy's absence.
         let (status, body) = associate(&fixture.router, &fixture.parent, &label, &child).await;
         assert_eq!(
-            status, 404,
-            "case {case:?}: associating under {label:?} expected 404, got {status} {body}"
+            status, 400,
+            "case {case:?}: associating under {label:?} expected 400, got {status} {body}"
         );
         assert_eq!(
             error_code(&body),
-            "ResourceNotFoundException",
-            "case {case:?}: associating under {label:?} expected ResourceNotFoundException, \
+            "InvalidRequestException",
+            "case {case:?}: associating under {label:?} expected InvalidRequestException, \
              got {body}"
         );
 

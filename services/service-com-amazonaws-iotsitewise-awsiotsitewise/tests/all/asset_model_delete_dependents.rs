@@ -4,13 +4,16 @@
 //! over HTTP through the same `MultiServiceRouter` the emulator boots with, so
 //! every assertion is about the wire behaviour a real client sees.
 //!
-//! The rule these suites pin: an asset model is refused while ANY resource this
-//! service still holds depends on it — an asset instantiating it, another asset
-//! model's hierarchy naming it as the child model, or another asset model's
-//! composite model reusing it as its component model — the refusal being a
-//! terminal `InvalidRequestException` (400) that names the dependent, with the
-//! model and that dependent left exactly as they were; once the last dependent is
-//! gone the same delete is accepted and the model reads back as absent.
+//! The rule these suites pin: an asset model is refused while a resource this
+//! service still holds DEPENDS on it — an asset instantiating it, or another
+//! asset model's composite model reusing it as its component model — the refusal
+//! being a terminal `InvalidRequestException` (400) that names the dependent,
+//! with the model and that dependent left exactly as they were; once the last
+//! dependent is gone the same delete is accepted and the model reads back as
+//! absent. A reference another model's DEFINITION makes to it — a hierarchy
+//! naming it as its child model, a property formula reading through such a
+//! hierarchy — is not such a dependency: the delete is accepted while one
+//! stands, which the sibling `asset_hierarchy_refusal_classes` suite pins.
 
 use serde_json::{json, Value};
 use smithy_server_runtime::MultiServiceRouter;
@@ -404,11 +407,10 @@ async fn a_component_model_a_composite_model_still_reuses_cannot_be_deleted() {
 
 #[tokio::test]
 async fn an_asset_model_is_refused_while_any_dependent_the_store_holds_names_it() {
-    // Rows: the three dependency directions this store records on an asset model,
+    // Rows: the two dependency directions this store holds a delete back for,
     // each built on its own router so only that dependent stands.
     let kinds = [
         "an asset instantiating it",
-        "another model's hierarchy naming it as the child model",
         "another model's composite model reusing it as its component model",
     ];
     for kind in kinds {
@@ -441,20 +443,6 @@ async fn an_asset_model_is_refused_while_any_dependent_the_store_holds_names_it(
             "an asset instantiating it" => {
                 let asset = create_asset(&router, "Instance", &doomed).await;
                 format!("/assets/{asset}")
-            }
-            "another model's hierarchy naming it as the child model" => {
-                let parent = create_model(
-                    &router,
-                    kind,
-                    json!({
-                        "assetModelName": "Parent",
-                        "assetModelHierarchies": [
-                            {"name": "children", "childAssetModelId": doomed},
-                        ],
-                    }),
-                )
-                .await;
-                format!("/asset-models/{parent}")
             }
             _ => {
                 let holder =

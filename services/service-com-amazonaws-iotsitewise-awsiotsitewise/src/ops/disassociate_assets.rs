@@ -241,18 +241,22 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .resolve_hierarchy_triple(&input.asset_id, &input.hierarchy_id, &input.child_asset_id)
             .map_err(|refusal| not_found(refusal.message()))?;
 
-        // Removing an association that was never made removes nothing, so it is a
-        // refusal and not a success: there is no such child under that hierarchy of
-        // that parent for this call to remove.
+        // The hierarchy a disassociation names is the one HOLDING that child under
+        // that parent: an asset model may declare a grouping, but it is the recorded
+        // association that makes it a hierarchy of this asset holding this child. So
+        // a triple that resolves to no recorded association is answered the way an
+        // absent hierarchy is — the same sentence
+        // [`crate::state::hierarchy_not_found_message`] states for a `hierarchyId`
+        // the parent's model does not declare at all — rather than by asserting a
+        // hierarchy that merely lacks this child, which is a different fact from the
+        // one the service reports.
         if !store.disassociate_child(
             &triple.asset_id,
             &triple.hierarchy_id,
             &triple.child_asset_id,
         ) {
-            return Err(not_found(format!(
-                "Asset with ID {} is not associated with the hierarchy with ID {} of asset \
-                 with ID {}",
-                triple.child_asset_id, triple.hierarchy_id, triple.asset_id
+            return Err(not_found(crate::state::hierarchy_not_found_message(
+                &input.hierarchy_id,
             )));
         }
 

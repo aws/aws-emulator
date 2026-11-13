@@ -18,12 +18,7 @@ use service_com_amazonaws_iotsitewise_awsiotsitewise::state::service_state;
 
 // The crate's shared test harness lives in the `asset_lifecycle` suite; this file
 // reaches those helpers rather than growing a second copy of them.
-use crate::asset_lifecycle::{call, error_code, router_with_engine, REGION};
-// Comfortably past `state::ACTIVATION_DELAY`, so the transition an accepted
-// association owes has fallen due by the time the next call lands. The ONE copy of
-// that span lives in `hierarchies_etags_and_refusals`, so the two suites cannot
-// drift from each other or from `state::ACTIVATION_DELAY`.
-use crate::hierarchies_etags_and_refusals::PAST_ACTIVATION;
+use crate::asset_lifecycle::{call, error_code, router_with_engine};
 
 /// A UUID in the modelled `ID` form that names no stored resource.
 const ABSENT_ID: &str = "11111111-2222-3333-4444-555555555555";
@@ -265,6 +260,10 @@ async fn refuses_an_association_the_stored_definitions_do_not_allow() {
 
     // Rows: one per way a stored definition can refuse the edge, each at both the
     // raw-id and the `externalId:`-alias end of the label forms where it applies.
+    // An asset the request names but the store does not hold is the absent
+    // RESOURCE (404); a hierarchy the parent's model does not declare is a
+    // statement about the REQUEST (400), since a hierarchy is a grouping of that
+    // model rather than a resource of its own.
     let cases: Vec<(&str, String, String, String, u16, &str)> = vec![
         (
             "parent names no stored asset",
@@ -295,16 +294,16 @@ async fn refuses_an_association_the_stored_definitions_do_not_allow() {
             farm.clone(),
             ABSENT_ID.to_string(),
             turbine.clone(),
-            404,
-            "ResourceNotFoundException",
+            400,
+            "InvalidRequestException",
         ),
         (
             "hierarchy alias is not defined by the parent's model",
             farm.clone(),
             "externalId:no-such-hierarchy".to_string(),
             turbine.clone(),
-            404,
-            "ResourceNotFoundException",
+            400,
+            "InvalidRequestException",
         ),
         (
             "child is an instance of another asset model",
@@ -375,92 +374,48 @@ async fn a_child_is_associated_to_one_parent_hierarchy_at_a_time() {
     assert_eq!(status, 200, "first association: got {status} {body}");
 
     // Rows: the three ways a second association collides with the first — the same
-    // edge again, another hierarchy of the same parent, and another parent. The
-    // repeat of the SAME edge lands while the association the first call recorded is
-    // still settling, which is a transient collision between two operations on one
-    // resource (409 `ConflictingOperationException`); the other two are terminal
-    // statements about the request (400 `InvalidRequestException`).
-    let cases: Vec<(&str, String, String, u16, &str)> = vec![
+    // edge again, another hierarchy of the same parent, and another parent. Every
+    // one of them is the same fact about the child (it already has a parent) and so
+    // the same terminal statement about the request: 400 `InvalidRequestException`
+    // carrying the one fixed sentence. How recently the first association was
+    // recorded does not enter into it.
+    let cases: Vec<(&str, String, String)> = vec![
         (
-            "the same hierarchy again, while the association is still settling",
+            "the same hierarchy again",
             farm.clone(),
             turbines.clone(),
-            409,
-            "ConflictingOperationException",
         ),
         (
             "another hierarchy of the same parent",
             farm.clone(),
             spares.clone(),
-            400,
-            "InvalidRequestException",
         ),
         (
             "another parent's hierarchy",
             other_farm.clone(),
             turbines.clone(),
-            400,
-            "InvalidRequestException",
         ),
     ];
-    for (case, parent, hierarchy, expected_status, expected_code) in &cases {
+    for (case, parent, hierarchy) in &cases {
         let (status, body) = associate(&router, parent, hierarchy, &turbine).await;
         assert_eq!(
-            status, *expected_status,
-            "case {case:?}: expected {expected_status}, got {status} {body}"
+            status, 400,
+            "case {case:?}: expected 400, got {status} {body}"
         );
         assert_eq!(
             error_code(&body),
-            *expected_code,
+            "InvalidRequestException",
             "case {case:?}: unexpected error code in {body}"
         );
-        if *expected_status == 400 {
-            // The child already has a parent, whichever of the two ways this row
-            // collides with the first association, so both rows carry the one
-            // fixed sentence that states it.
-            assert_eq!(
-                body["message"].as_str(),
-                Some(CHILD_ALREADY_HAS_A_PARENT),
-                "case {case:?}: expected the message {CHILD_ALREADY_HAS_A_PARENT:?}, got {body}"
-            );
-        }
+        // The child already has a parent, whichever of the three ways this row
+        // collides with the first association, so every row carries the one
+        // fixed sentence that states it.
+        assert_eq!(
+            body["message"].as_str(),
+            Some(CHILD_ALREADY_HAS_A_PARENT),
+            "case {case:?}: expected the message {CHILD_ALREADY_HAS_A_PARENT:?}, got {body}"
+        );
     }
-
-    // The in-flight conflict names the resource the two operations collide on: the
-    // parent asset the association is being recorded under.
-    let (_, body) = associate(&router, &farm, &turbines, &turbine).await;
-    assert_eq!(
-        body["resourceId"], farm,
-        "the conflict must name the parent asset, got {body}"
-    );
-    assert_eq!(
-        body["resourceArn"],
-        format!(
-            "arn:aws:iotsitewise:{REGION}:{}:asset/{farm}",
-            engine::EMULATOR_ACCOUNT_ID
-        ),
-        "the conflict must carry the parent asset's ARN, got {body}"
-    );
-
-    // Once the association has settled the same repeat is a TERMINAL request error:
-    // the association is established, so no retry of the call can succeed.
-    tokio::time::sleep(PAST_ACTIVATION).await;
-    let (status, body) = associate(&router, &farm, &turbines, &turbine).await;
-    assert_eq!(
-        status, 400,
-        "a repeat of an established association: got {status} {body}"
-    );
-    assert_eq!(
-        error_code(&body),
-        "InvalidRequestException",
-        "a repeat of an established association: unexpected error code in {body}"
-    );
-    assert_eq!(
-        body["message"].as_str(),
-        Some(CHILD_ALREADY_HAS_A_PARENT),
-        "a repeat of an established association: expected the message \
-         {CHILD_ALREADY_HAS_A_PARENT:?}, got {body}"
-    );
 
     // The first association survives every refusal above.
     let top_level = list_asset_ids(&router, "filter=TOP_LEVEL").await;

@@ -207,6 +207,19 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let now = ::std::time::SystemTime::now();
 
         let store = state.lock();
+        // `assetModelId` is a `CustomID` REFERENCE: a raw UUID or an `externalId:`
+        // alias, and nothing else. Its syntax is decided before any lookup — a
+        // value that is not a reference at all names no asset model in any
+        // account, so the answer is that the request is malformed and not that a
+        // resource is missing. The boundary walk cannot state this half of the
+        // member's constraints (see [`crate::state::custom_id_clause`]), so the
+        // read states it.
+        if let Some(message) = crate::state::custom_id_report([(
+            MEMBER_ASSET_MODEL_ID.to_string(),
+            input.asset_model_id.as_str(),
+        )]) {
+            return Err(invalid_request(message));
+        }
         // The label is either the raw UUID or the `externalId:<externalId>` alias form.
         let id = store
             .resolve_asset_model_id(&input.asset_model_id)
@@ -324,6 +337,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             e_tag: Some(crate::state::asset_model_etag(record)),
         })
     }
+}
+
+/// The `assetModelId` member, named as the model names it: what a
+/// request-validation clause about it reports.
+const MEMBER_ASSET_MODEL_ID: &str = "assetModelId";
+
+/// HTTP 400 `InvalidRequestException` for a request that is malformed: a member
+/// outside the constraints the model declares for it.
+fn invalid_request(message: String) -> DescribeAssetModelError {
+    DescribeAssetModelError::Modeled(DescribeAssetModelErrorModeled::InvalidRequestException(
+        InvalidRequestException { message },
+    ))
 }
 
 /// HTTP 404 `ResourceNotFoundException` naming the label that resolved to nothing.

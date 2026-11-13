@@ -11,6 +11,10 @@
 //!   same-model variable resolves by
 //!   (`smithy_query(query="doc", shape="VariableValue", member="propertyId")`:
 //!   "You can use the property `name` if it's from the same asset model");
+//! * two of one model's HIERARCHIES carry one name — a name is a handle a
+//!   variable resolves a hierarchy by for the same reason
+//!   (`VariableValue.hierarchyId`: "You can use the hierarchy's name instead of
+//!   the hierarchy's ID");
 //! * a variable names a `hierarchyId` the definition declares no hierarchy for,
 //!   or a `propertyId` its resolution scope does not hold — the scope being the
 //!   model being written, or the CHILD model of the hierarchy the variable names
@@ -218,6 +222,151 @@ async fn a_repeated_property_name_is_refused_and_creates_nothing() {
             None => assert_eq!(
                 status, 202,
                 "case {case:?}: distinct names must be accepted, got {status} {body}"
+            ),
+        }
+    }
+}
+
+/// RULE: two HIERARCHIES of one asset model may not carry one name either —
+/// a hierarchy's name is a handle a variable may resolve it by, exactly as a
+/// property's name is — and the refusal names the repeated hierarchy, on the
+/// create and on the update alike, storing nothing.
+#[tokio::test]
+async fn a_repeated_hierarchy_name_is_refused_and_creates_nothing() {
+    let router = router();
+    // The child model every hierarchy below names. Its own name is distinct, so
+    // only the hierarchy names are under test.
+    let (status, created) = create(
+        &router,
+        json!({"assetModelName": "HierarchyChild", "assetModelProperties": []}),
+    )
+    .await;
+    assert_eq!(status, 202, "the child model: got {status} {created}");
+    let child = created["assetModelId"]
+        .as_str()
+        .expect("the child model's id")
+        .to_string();
+
+    let hierarchy = |name: &str| json!({"name": name, "childAssetModelId": child.clone()});
+
+    // Rows differ along WHERE the repeat sits (adjacent, two later) and the
+    // name's own value; the last two are the accepted controls — names that
+    // differ only in case or by one character are different names.
+    let rows: Vec<(&str, Value, Option<&str>)> = vec![
+        (
+            "two adjacent hierarchies sharing a name",
+            json!([hierarchy("Turbines"), hierarchy("Turbines")]),
+            Some("Turbines"),
+        ),
+        (
+            "a repeat two hierarchies later",
+            json!([
+                hierarchy("Turbines"),
+                hierarchy("Spares"),
+                hierarchy("Turbines"),
+            ]),
+            Some("Turbines"),
+        ),
+        (
+            "a repeated name carrying punctuation and a space",
+            json!([
+                hierarchy("Spare Turbines (cold)"),
+                hierarchy("Spare Turbines (cold)"),
+            ]),
+            Some("Spare Turbines (cold)"),
+        ),
+        (
+            "names differing in case only",
+            json!([hierarchy("Turbines"), hierarchy("turbines")]),
+            None,
+        ),
+        (
+            "every name distinct",
+            json!([hierarchy("Turbines"), hierarchy("Spares")]),
+            None,
+        ),
+    ];
+
+    for (at, (case, hierarchies, duplicate)) in rows.into_iter().enumerate() {
+        // A name of its own per row: `assetModelName` is unique per account.
+        let name = format!("Farm-{at}");
+        let (status, body) = create(
+            &router,
+            json!({"assetModelName": &name, "assetModelHierarchies": hierarchies.clone()}),
+        )
+        .await;
+        match duplicate {
+            Some(duplicate) => {
+                assert_refused(
+                    case,
+                    status,
+                    &body,
+                    &format!("Hierarchy {duplicate} name is not unique."),
+                );
+                assert!(
+                    !holds_name(&router, &name).await,
+                    "case {case:?}: a refused create must leave no asset model behind"
+                );
+            }
+            None => assert_eq!(
+                status, 202,
+                "case {case:?}: distinct hierarchy names must be accepted, got {status} {body}"
+            ),
+        }
+
+        // The UPDATE is held to the same rule, against a model that already
+        // stores one hierarchy: the definition a write is handed is checked by
+        // the one shared rule, whichever write hands it over.
+        let updated = format!("Farm-updated-{at}");
+        let (status, created) = create(
+            &router,
+            json!({
+                "assetModelName": &updated,
+                "assetModelHierarchies": [hierarchy("Held")],
+            }),
+        )
+        .await;
+        assert_eq!(
+            status, 202,
+            "case {case:?}: the model to update: got {status} {created}"
+        );
+        let model_id = created["assetModelId"]
+            .as_str()
+            .expect("the model's id")
+            .to_string();
+        let (status, body) = update(
+            &router,
+            &model_id,
+            json!({"assetModelName": &updated, "assetModelHierarchies": hierarchies}),
+        )
+        .await;
+        match duplicate {
+            Some(duplicate) => {
+                assert_refused(
+                    case,
+                    status,
+                    &body,
+                    &format!("Hierarchy {duplicate} name is not unique."),
+                );
+                // The refused update stored nothing: the model still carries the
+                // hierarchy it was created with.
+                let described = describe(&router, &model_id).await;
+                let held: Vec<String> = described["assetModelHierarchies"]
+                    .as_array()
+                    .unwrap_or_else(|| panic!("case {case:?}: no hierarchies in {described}"))
+                    .iter()
+                    .map(|hierarchy| hierarchy["name"].as_str().unwrap_or_default().to_string())
+                    .collect();
+                assert_eq!(
+                    held,
+                    vec!["Held".to_string()],
+                    "case {case:?}: a refused update must change nothing, got {held:?}"
+                );
+            }
+            None => assert_eq!(
+                status, 202,
+                "case {case:?}: distinct hierarchy names must be accepted by the update, got \
+                 {status} {body}"
             ),
         }
     }

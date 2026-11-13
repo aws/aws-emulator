@@ -7,14 +7,15 @@
 //! fixed sentence "Child asset already has a parent", with no variable parts, so
 //! no asset, hierarchy or model identifier of the request or of the store appears
 //! in it — and it is the answer whichever way the child already has a parent (the
-//! settled repeat of the very same edge, another hierarchy of the same parent, or
-//! another parent entirely), whichever `CustomID` label form each member of the
-//! triple was written with, and however many callers asked at once.
+//! repeat of the very same edge, another hierarchy of the same parent, or another
+//! parent entirely), whichever `CustomID` label form each member of the triple was
+//! written with, however recently that parent was recorded, and however many
+//! callers asked at once.
 //!
-//! The sibling `asset_hierarchies` suite covers the single-caller settled repeat;
-//! this one spans the label forms, the collision kinds and the CONCURRENT case,
-//! where a losing racer first sees the retryable 409 and must end on this 400
-//! rather than on a retry that never clears.
+//! The sibling `asset_hierarchies` suite covers the single-caller repeat; this one
+//! spans the label forms, the collision kinds and the CONCURRENT case, where every
+//! loser of the race must end on this 400 rather than on a retry that never
+//! clears.
 //!
 //! Everything is driven over HTTP through the same `MultiServiceRouter` the
 //! emulator boots with, so every assertion is about the wire behaviour a real
@@ -35,15 +36,10 @@ use crate::asset_lifecycle::error_code;
 // The ONE copy of the fixed sentence a test may compare against lives in the
 // sibling suite, so the two cannot drift from each other.
 use crate::asset_hierarchies::CHILD_ALREADY_HAS_A_PARENT;
-// Comfortably past `state::ACTIVATION_DELAY`, so the transition an accepted
-// association owes has fallen due by the time the next call lands. The ONE copy of
-// that span lives in `hierarchies_etags_and_refusals`.
-use crate::hierarchies_etags_and_refusals::PAST_ACTIVATION;
 
-/// How long a racer waits before repeating a call the emulator refused with the
-/// retryable 409, and how many times it may repeat it. The product is comfortably
-/// longer than `state::ACTIVATION_DELAY`, so a racer that keeps retrying reaches
-/// the settled state rather than giving up inside the transient one.
+/// How long a racer waits before repeating a call the emulator refused with a
+/// retryable status, and how many times it may repeat it — so a racer that keeps
+/// retrying reaches a terminal answer rather than giving up on a transient one.
 const RETRY_BACKOFF: Duration = Duration::from_millis(50);
 const MAX_RETRIES: usize = 40;
 
@@ -203,42 +199,41 @@ async fn every_already_parented_refusal_carries_the_one_fixed_sentence() {
 
     let (status, body) = associate(&router, &farm.farm, &farm.turbines, &farm.turbine).await;
     assert_eq!(status, 200, "the first association: got {status} {body}");
-    // Past the span the accepted association owes, so every row below is judged
-    // against a SETTLED association rather than an in-flight one.
-    tokio::time::sleep(PAST_ACTIVATION).await;
 
     // Rows: the ways the child already has a parent (the same edge again, another
     // hierarchy of the same parent, another parent of the same model), crossed with
     // the `CustomID` label forms the modelled members accept — a raw UUID or an
     // `externalId:` alias — varied independently across the parent, the hierarchy
-    // and the child.
+    // and the child. Every row is asked straight after the association that made
+    // the child somebody's child, because that fact does not depend on how long
+    // ago it was recorded.
     let cases: Vec<(&str, String, String, String)> = vec![
         (
-            "the settled edge again, all raw ids",
+            "the edge again, all raw ids",
             farm.farm.clone(),
             farm.turbines.clone(),
             farm.turbine.clone(),
         ),
         (
-            "the settled edge again, parent by externalId",
+            "the edge again, parent by externalId",
             "externalId:farm-1".to_string(),
             farm.turbines.clone(),
             farm.turbine.clone(),
         ),
         (
-            "the settled edge again, hierarchy by externalId",
+            "the edge again, hierarchy by externalId",
             farm.farm.clone(),
             "externalId:farm-turbines".to_string(),
             farm.turbine.clone(),
         ),
         (
-            "the settled edge again, child by externalId",
+            "the edge again, child by externalId",
             farm.farm.clone(),
             farm.turbines.clone(),
             "externalId:turbine-1".to_string(),
         ),
         (
-            "the settled edge again, every label by externalId",
+            "the edge again, every label by externalId",
             "externalId:farm-1".to_string(),
             "externalId:farm-turbines".to_string(),
             "externalId:turbine-1".to_string(),
@@ -299,9 +294,12 @@ async fn concurrent_identical_associations_leave_one_winner_and_fixed_sentence_l
             let hierarchy = farm.turbines.clone();
             let child = farm.turbine.clone();
             running.push(tokio::spawn(async move {
-                // A client retries the modelled 409: it says another operation on
-                // the same resource is still in flight, so a repeat can succeed.
-                // The terminal answer is whatever the call settles on.
+                // A client retries a 409: it would say another operation on the
+                // same resource is still in flight, so a repeat could succeed.
+                // This operation no longer answers one for a repeated
+                // association, so the loop is what proves it: whatever the call
+                // settles on is the terminal answer, reached without a retry
+                // that never clears.
                 for _ in 0..MAX_RETRIES {
                     let (status, body) = associate(&router, &parent, &hierarchy, &child).await;
                     if status != 409 {

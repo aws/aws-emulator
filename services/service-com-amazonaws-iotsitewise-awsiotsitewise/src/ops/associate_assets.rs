@@ -281,8 +281,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 )
             })
             .ok_or_else(|| {
-                not_found(crate::state::hierarchy_not_found_message(
+                invalid_request(hierarchy_not_on_the_asset(
                     &input.hierarchy_id,
+                    &input.asset_id,
                 ))
             })?;
         // `childAssetModelId` is stored resolved to the actual asset model id, so the
@@ -290,8 +291,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // hierarchy with no id is not addressable, so it is no hierarchy this call can
         // associate under.
         let hierarchy_id = hierarchy.id.clone().ok_or_else(|| {
-            not_found(crate::state::hierarchy_not_found_message(
+            invalid_request(hierarchy_not_on_the_asset(
                 &input.hierarchy_id,
+                &input.asset_id,
             ))
         })?;
         let child_asset_model_id = hierarchy.child_asset_model_id.clone();
@@ -315,42 +317,16 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             )));
         }
 
-        // The association already recorded under this exact hierarchy is the one this
-        // call would record, so a repeat of it is refused — and WHICH refusal depends
-        // on how far that association has got, because the two say different things to
-        // the caller. An association whose own transition is still settling is a
-        // transient collision between two operations on one resource, which is what
-        // `ConflictingOperationException` (409) states ("you're trying to perform more
-        // than one operation on the same resource at the same time") and what a client's
-        // retry handler reacts to. An association already established is a terminal
-        // statement about the request — no retry of it can succeed — so it is
-        // `InvalidRequestException` (400), carrying [`CHILD_ALREADY_HAS_A_PARENT`].
-        // Neither is `ResourceAlreadyExistsException`, which this service uses for a
-        // resource-IDENTITY collision (two resources claiming one id or one external
-        // id), not for an association that is already in place.
-        match store.association_state(&parent_id, &hierarchy_id, &child_id, now) {
-            Some(crate::state::AssociationState::InProgress) => {
-                let parent_arn = store.stored_asset_arn(&region, &parent_id);
-                return Err(conflicting_operation(
-                    format!(
-                        "An operation associating the asset {child_id} with the asset \
-                         {parent_id} through the hierarchy {hierarchy_id} is already in \
-                         progress."
-                    ),
-                    &parent_id,
-                    &parent_arn,
-                ));
-            }
-            Some(crate::state::AssociationState::Established) => {
-                return Err(invalid_request(CHILD_ALREADY_HAS_A_PARENT.to_string()))
-            }
-            None => {}
-        }
-
-        // Asset hierarchies form a tree: an asset has at most one parent, so a child
-        // that is already associated somewhere has to be disassociated before it can
-        // be associated again — the same refusal as the settled repeat above, because
-        // it is the same fact about the child.
+        // Asset hierarchies form a TREE: an asset has at most one parent, so a child
+        // that is already associated somewhere — under this very hierarchy, under
+        // another hierarchy of the same parent, or under another parent entirely — has
+        // to be disassociated before it can be associated again. That is ONE fact
+        // about the child and one terminal refusal, [`CHILD_ALREADY_HAS_A_PARENT`]:
+        // no retry of the request can succeed, so it is `InvalidRequestException`
+        // (400) and never the retryable `ConflictingOperationException` (409), which
+        // this operation answers for a `clientToken` another request already spent.
+        // How recently the association was recorded does not enter into it: the child
+        // has a parent from the call that recorded it, not from some later instant.
         if store.hierarchy_parent(&child_id).is_some() {
             return Err(invalid_request(CHILD_ALREADY_HAS_A_PARENT.to_string()));
         }
@@ -393,7 +369,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .into());
         }
 
-        store.associate_child(&parent_id, &hierarchy_id, &child_id, now);
+        store.associate_child(&parent_id, &hierarchy_id, &child_id);
 
         // The token is spent only now that the association has been recorded: a
         // refused request recorded nothing, so the caller may send its token again.
@@ -413,12 +389,25 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
 /// The `InvalidRequestException` message for a child asset that already has a
 /// parent — a hierarchy holds each asset once and an asset sits under at most
-/// one parent, so the settled repeat of an association and an association of a
-/// child that hangs under some other parent are one refusal.
+/// one parent, so the repeat of an association and an association of a child
+/// that hangs under some other parent are one refusal.
 ///
 /// Entirely fixed text: it names no asset, hierarchy or model, so no id of the
 /// request or of the store fills it.
 const CHILD_ALREADY_HAS_A_PARENT: &str = "Child asset already has a parent";
+
+/// The `InvalidRequestException` message for a `hierarchyId` the PARENT asset's
+/// model does not declare.
+///
+/// A hierarchy is not a resource of its own: it is a grouping the parent's model
+/// declares, so a well-formed id that names none of them is a statement about
+/// THIS request — the request asks for a grouping this asset does not have — and
+/// not a resource that has gone missing. The two variable parts are the
+/// `hierarchyId` the body carried and the `assetId` the URI labelled, each
+/// echoed as the request wrote it.
+fn hierarchy_not_on_the_asset(hierarchy_id: &str, asset_id: &str) -> String {
+    format!("Given HierarchyId {hierarchy_id} not present in the Asset {asset_id}")
+}
 
 /// HTTP 500 `InternalFailureException`: the store this operation needs is not there.
 fn internal_failure(message: &str) -> AssociateAssetsError {
