@@ -616,7 +616,7 @@ async fn deleting_a_provider_leaves_a_role_that_trusts_it_alone() {
             "case {role_name:?}: the role must still read back, got {status}: {role}"
         );
         assert_eq!(
-            element(&role, "AssumeRolePolicyDocument"),
+            crate::user_lifecycle::document_element(&role, "AssumeRolePolicyDocument"),
             trust_policy,
             "case {role_name:?}: the role must keep the trust policy naming the deleted \
              provider, got {role}"

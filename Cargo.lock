@@ -13977,6 +13977,7 @@ dependencies = [
  "hmac 0.12.1",
  "http",
  "md-5 0.10.6",
+ "percent-encoding",
  "pkcs1",
  "pkcs8 0.10.2",
  "png 0.18.1",

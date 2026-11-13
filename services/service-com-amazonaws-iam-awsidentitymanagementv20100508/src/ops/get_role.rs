@@ -153,9 +153,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // the role under the case-folded name whatever case it spelled it in, and
         // the response reports the role as the account holds it.
         //
-        // The stored `AssumeRolePolicyDocument` is reported verbatim, as this
-        // crate's `GetUserPolicy` reports a stored inline policy: a document is
-        // handed back exactly as it was persisted.
+        // The stored `AssumeRolePolicyDocument` is reported in the form every IAM
+        // response carries a policy document in — percent-encoded, as this
+        // operation's own documentation states ("policies returned by this operation
+        // are URL-encoded compliant with RFC 3986") and as
+        // `crate::state::reported_role` writes one.
         //
         // The guard is scoped to the state access alone: what follows reads no
         // state.
@@ -193,7 +195,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 .or_else(|| store.provisioned_role(&input.role_name))
         };
         if let Some(role) = stored {
-            return Ok(GetRoleOutput { role });
+            return Ok(GetRoleOutput {
+                role: crate::state::reported_role(role),
+            });
         }
 
         // Neither the account nor any service holds a role under that name, so it

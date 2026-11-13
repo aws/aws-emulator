@@ -219,7 +219,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // happened to spell them.
             group_name: group.group_name.clone(),
             policy_name: policy.policy_name.clone(),
-            policy_document: policy.policy_document.clone(),
+            // The stored document, in the form every IAM response carries a policy
+            // document in: "policies returned by this operation are URL-encoded compliant
+            // with RFC 3986" (`crate::state::reported_policy_document`).
+            policy_document: crate::state::reported_policy_document(&policy.policy_document),
         })
     }
 }

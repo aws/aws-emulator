@@ -247,6 +247,28 @@ pub(crate) fn element(body: &str, tag: &str) -> String {
     found.into_iter().next().expect("one element")
 }
 
+/// The policy document the single `<tag>` element carries, as a client that follows IAM's
+/// contract reads one: percent-decoded back to plain JSON text.
+///
+/// IAM reports a policy document URL-encoded compliant with RFC 3986 and the caller
+/// "can use a URL decoding method to convert the policy back to plain JSON text"
+/// (`GetRole`, `GetRolePolicy`, `GetPolicyVersion`, …), so every suite that compares a
+/// reported document with the text that was submitted reads it through this one decode.
+/// The decoder is the RUNTIME's URI decoder, not this crate's encoder, so a document the
+/// service encoded wrongly cannot still match.
+pub(crate) fn document_element(body: &str, tag: &str) -> String {
+    ::smithy_server_runtime::percent_decode(&element(body, tag))
+}
+
+/// [`document_element`] over every `<tag>` element in the body, for a listing that
+/// reports one document per entity.
+pub(crate) fn document_elements(body: &str, tag: &str) -> Vec<String> {
+    elements(body, tag)
+        .iter()
+        .map(|encoded| ::smithy_server_runtime::percent_decode(encoded))
+        .collect()
+}
+
 /// The Region every request this harness sends addresses unless a suite names another
 /// ([`call_signed_in_region`]).
 ///
@@ -764,10 +786,10 @@ async fn an_inline_policy_document_round_trips_byte_identically() {
         .await;
         assert_eq!(status, 200, "case {case:?}: expected GetUserPolicy 200, got {status}: {body}");
         assert_eq!(
-            element(&body, "PolicyDocument"),
+            document_element(&body, "PolicyDocument"),
             *document,
             "case {case:?}: expected the stored document verbatim, got {:?}",
-            element(&body, "PolicyDocument")
+            document_element(&body, "PolicyDocument")
         );
         assert_eq!(
             element(&body, "UserName"),
@@ -805,7 +827,7 @@ async fn an_inline_policy_document_round_trips_byte_identically() {
         )
         .await;
         assert_eq!(
-            element(&body, "PolicyDocument"),
+            document_element(&body, "PolicyDocument"),
             *document,
             "case {case:?}: a later put of another name overwrote this document"
         );
@@ -1410,7 +1432,7 @@ async fn an_inline_policy_set_cannot_exceed_its_aggregate_size_quota() {
     )
     .await;
     assert_eq!(
-        element(&body, "PolicyDocument"),
+        document_element(&body, "PolicyDocument"),
         replacement,
         "case replace-at-the-bound: expected the replacement to be stored"
     );
@@ -1489,10 +1511,10 @@ async fn an_inline_policy_name_is_not_distinguished_by_case() {
             element(&body, "PolicyName")
         );
         assert_eq!(
-            element(&body, "PolicyDocument"),
+            document_element(&body, "PolicyDocument"),
             document,
             "case ({user:?}, {policy:?}): expected the stored document, got {:?}",
-            element(&body, "PolicyDocument")
+            document_element(&body, "PolicyDocument")
         );
     }
 
@@ -1517,10 +1539,10 @@ async fn an_inline_policy_name_is_not_distinguished_by_case() {
     )
     .await;
     assert_eq!(
-        element(&body, "PolicyDocument"),
+        document_element(&body, "PolicyDocument"),
         replaced,
         "expected the replacing document, got {:?}",
-        element(&body, "PolicyDocument")
+        document_element(&body, "PolicyDocument")
     );
     assert_eq!(
         element(&body, "PolicyName"),

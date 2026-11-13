@@ -1195,6 +1195,10 @@ fn grant_template(row: &GrantRow, source: &str) -> String {
 /// The document IAM holds for one inline policy of one role, read through `GetRolePolicy` —
 /// the call a client reads an embedded policy back with. The STATUS comes back with it, so a
 /// caller asserts what its own case expects of a policy IAM does or does not hold.
+///
+/// IAM reports a policy document URL-encoded compliant with RFC 3986, so the member is
+/// percent-decoded back to plain JSON text here — what the documented contract tells a
+/// caller to do before it reads the document.
 async fn embedded_policy(
     router: &MultiServiceRouter,
     role: &str,
@@ -1210,7 +1214,7 @@ async fn embedded_policy(
         .into_iter()
         .next()
         .unwrap_or_default();
-    (status, document)
+    (status, ::smithy_server_runtime::percent_decode(&document))
 }
 
 #[tokio::test]

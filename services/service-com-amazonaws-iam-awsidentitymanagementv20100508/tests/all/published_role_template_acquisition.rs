@@ -204,11 +204,11 @@ async fn a_published_role_template_creates_the_role_it_describes() {
             element(&read, "MaxSessionDuration")
         );
         assert_eq!(
-            element(&read, "AssumeRolePolicyDocument"),
+            crate::user_lifecycle::document_element(&read, "AssumeRolePolicyDocument"),
             row.trust_policy,
             "case {case:?}: expected the template's trust policy rendered with the supplied \
              values, got {:?}",
-            element(&read, "AssumeRolePolicyDocument")
+            crate::user_lifecycle::document_element(&read, "AssumeRolePolicyDocument")
         );
         // "Contains information about the role template that this role was created from.
         // This member is present only for roles created with AcquireRole"

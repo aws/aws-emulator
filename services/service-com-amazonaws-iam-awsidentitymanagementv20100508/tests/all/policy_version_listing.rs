@@ -251,7 +251,9 @@ async fn the_listing_reports_every_version_in_order_and_withholds_the_document()
                  {status}: {read}"
             );
             assert!(
-                state::is_policy_document(&element(&read, "Document")),
+                state::is_policy_document(&crate::user_lifecycle::document_element(
+                    &read, "Document"
+                )),
                 "case {name:?} {version_id:?}: the reader must serve the version's document, \
                  got {read}"
             );

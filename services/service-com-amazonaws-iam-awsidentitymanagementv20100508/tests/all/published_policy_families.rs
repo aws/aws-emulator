@@ -189,7 +189,9 @@ async fn the_catalog_enumerates_every_published_policy_family() {
              {version}"
         );
         assert!(
-            state::is_policy_document(&element(&version, "Document")),
+            state::is_policy_document(&crate::user_lifecycle::document_element(
+                &version, "Document"
+            )),
             "case {case:?}: expected an IAM policy document, got {version}"
         );
     }

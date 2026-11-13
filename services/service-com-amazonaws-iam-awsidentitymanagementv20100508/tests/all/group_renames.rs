@@ -439,7 +439,7 @@ async fn a_renamed_group_keeps_its_members_policies_and_attachments() {
                  {got}"
             );
             assert_eq!(
-                element(&got, "PolicyDocument"),
+                crate::user_lifecycle::document_element(&got, "PolicyDocument"),
                 EMBEDDED_DOCUMENT,
                 "case {case:?}: expected {policy_name:?} to keep its document, got {got}"
             );

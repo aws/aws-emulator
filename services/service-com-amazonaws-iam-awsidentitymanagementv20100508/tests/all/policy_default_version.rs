@@ -164,7 +164,10 @@ async fn read_version(
         status, 200,
         "case {case:?}: GetPolicyVersion({version_id}) must succeed, got {status}: {body}"
     );
-    (element(&body, "Document"), element(&body, "IsDefaultVersion"))
+    (
+        crate::user_lifecycle::document_element(&body, "Document"),
+        element(&body, "IsDefaultVersion"),
+    )
 }
 
 /// One policy a case drives: how many versions beside its `v1` it carries, whether those

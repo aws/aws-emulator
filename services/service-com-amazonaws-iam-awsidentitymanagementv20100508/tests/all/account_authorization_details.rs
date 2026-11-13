@@ -428,6 +428,13 @@ fn first(body: &str, tag: &str) -> Option<String> {
     elements(body, tag).into_iter().next()
 }
 
+/// [`first`] for a member that carries a POLICY DOCUMENT, percent-decoded back to plain JSON
+/// text: "policies returned by this operation are URL-encoded compliant with RFC 3986"
+/// (`GetAccountAuthorizationDetails`), so a caller reads one through a URL decode.
+fn first_document(body: &str, tag: &str) -> Option<String> {
+    first(body, tag).map(|encoded| ::smithy_server_runtime::percent_decode(&encoded))
+}
+
 /// The `name_tag` of each detail in the `list_tag` of `body`, in document order.
 fn detail_names(body: &str, list_tag: &str, name_tag: &str) -> Vec<String> {
     members(body, list_tag)
@@ -771,7 +778,7 @@ async fn a_user_is_reported_with_the_policies_attached_to_it() {
         .map(|policy| {
             (
                 first(policy, "PolicyName").expect("an inline policy name"),
-                first(policy, "PolicyDocument").expect("an inline policy document"),
+                first_document(policy, "PolicyDocument").expect("an inline policy document"),
             )
         })
         .collect();
@@ -835,7 +842,7 @@ async fn a_role_is_reported_with_its_trust_policy_and_instance_profiles() {
 
     let block = detail_block(&body, "RoleDetailList", "RoleName", ROLES[0].0);
     assert_eq!(
-        first(&block, "AssumeRolePolicyDocument").as_deref(),
+        first_document(&block, "AssumeRolePolicyDocument").as_deref(),
         Some(TRUST_POLICY),
         "case {:?}: expected the stored trust policy, got {block}",
         ROLES[0].0
@@ -852,7 +859,7 @@ async fn a_role_is_reported_with_its_trust_policy_and_instance_profiles() {
     );
     let inline: Vec<String> = members(&block, "RolePolicyList")
         .iter()
-        .map(|policy| first(policy, "PolicyDocument").expect("an inline document"))
+        .map(|policy| first_document(policy, "PolicyDocument").expect("an inline document"))
         .collect();
     assert_eq!(
         inline,
@@ -895,7 +902,7 @@ async fn a_role_is_reported_with_its_trust_policy_and_instance_profiles() {
         );
     }
     assert_eq!(
-        first(&bare, "AssumeRolePolicyDocument").as_deref(),
+        first_document(&bare, "AssumeRolePolicyDocument").as_deref(),
         Some(TRUST_POLICY),
         "case {:?}: expected the stored trust policy, got {bare}",
         ROLES[1].0
@@ -982,7 +989,7 @@ async fn a_group_is_reported_with_its_inline_policies() {
         .map(|policy| {
             (
                 first(policy, "PolicyName").expect("an inline policy name"),
-                first(policy, "PolicyDocument").expect("an inline policy document"),
+                first_document(policy, "PolicyDocument").expect("an inline policy document"),
             )
         })
         .collect();

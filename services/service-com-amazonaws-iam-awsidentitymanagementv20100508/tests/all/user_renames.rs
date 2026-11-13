@@ -523,7 +523,7 @@ async fn a_renamed_user_keeps_the_records_the_account_holds_about_it() {
                  {got}"
             );
             assert_eq!(
-                element(&got, "PolicyDocument"),
+                crate::user_lifecycle::document_element(&got, "PolicyDocument"),
                 EMBEDDED_DOCUMENT,
                 "case {case:?}: expected {policy_name:?} to keep its document, got {got}"
             );

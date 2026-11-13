@@ -364,7 +364,7 @@ async fn a_role_created_from_a_template_is_what_the_reads_report() {
 
         // The trust policy is the template's, rendered: it parses as the JSON policy it is
         // and carries the value the parameter was rendered with.
-        let trust = element(&read, "AssumeRolePolicyDocument");
+        let trust = crate::user_lifecycle::document_element(&read, "AssumeRolePolicyDocument");
         let parsed: serde_json::Value = serde_json::from_str(&trust).unwrap_or_else(|error| {
             panic!(
                 "case {:?}: the rendered trust policy must be JSON ({error}): {trust:?}",
@@ -412,7 +412,7 @@ async fn a_role_created_from_a_template_is_what_the_reads_report() {
             "case {:?}: the embedded policy must be readable, got {status}: {embedded}",
             row.case
         );
-        let document = element(&embedded, "PolicyDocument");
+        let document = crate::user_lifecycle::document_element(&embedded, "PolicyDocument");
         assert!(
             document.contains(&format!("arn:aws:s3:::drop-{}/*", row.external_id))
                 && !document.contains("@{"),

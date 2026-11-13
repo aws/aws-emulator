@@ -299,7 +299,7 @@ async fn the_text_one_entity_retains_is_bounded() {
             kind.kind
         );
         assert_eq!(
-            element(&read_body, "PolicyDocument"),
+            crate::user_lifecycle::document_element(&read_body, "PolicyDocument"),
             at_ceiling,
             "case {:?}: the document must read back verbatim, whitespace and all",
             kind.kind
@@ -348,7 +348,7 @@ async fn the_text_one_entity_retains_is_bounded() {
             kind.kind
         );
         assert_eq!(
-            element(&read_body, "PolicyDocument"),
+            crate::user_lifecycle::document_element(&read_body, "PolicyDocument"),
             at_ceiling,
             "case {:?}: a refused put must not have touched it",
             kind.kind
@@ -412,7 +412,7 @@ async fn the_quota_is_measured_without_whitespace() {
                          {read_body}"
                     );
                     assert_eq!(
-                        element(&read_body, "PolicyDocument"),
+                        crate::user_lifecycle::document_element(&read_body, "PolicyDocument"),
                         document,
                         "case {case:?}: the document must read back exactly as it was \
                          embedded, got {read_body}"
@@ -483,7 +483,7 @@ async fn a_refused_replacement_leaves_the_stored_policy_alone() {
                 "case {case:?}: the stored policy must survive, got {status}: {read_body}"
             );
             assert_eq!(
-                element(&read_body, "PolicyDocument"),
+                crate::user_lifecycle::document_element(&read_body, "PolicyDocument"),
                 stored,
                 "case {case:?}: the refused replacement must not have been applied, got \
                  {read_body}"
@@ -569,7 +569,7 @@ async fn the_aggregate_is_measured_without_whitespace() {
             kind.kind
         );
         assert_eq!(
-            element(&read_body, "PolicyDocument"),
+            crate::user_lifecycle::document_element(&read_body, "PolicyDocument"),
             replacement,
             "case {:?}: the latest document must be the stored one, got {read_body}",
             kind.kind

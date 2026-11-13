@@ -270,7 +270,7 @@ async fn deleting_an_embedded_policy_removes_only_that_policy() {
                      {status}: {body}"
                 );
                 assert_eq!(
-                    element(&body, "PolicyDocument"),
+                    crate::user_lifecycle::document_element(&body, "PolicyDocument"),
                     *document,
                     "case {case:?}: {held:?} must still report its own document, got {body}"
                 );
@@ -430,7 +430,7 @@ async fn deleting_a_policy_the_group_does_not_embed_is_not_found() {
              {status}: {body}"
         );
         assert_eq!(
-            element(&body, "PolicyDocument"),
+            crate::user_lifecycle::document_element(&body, "PolicyDocument"),
             document,
             "case {policy_name:?}: a refused delete changed the stored document, got {body}"
         );
@@ -575,7 +575,7 @@ async fn a_delete_frees_the_groups_policy_size_and_name() {
             "case {case:?}: the re-embedded policy must read back, got {status}: {body}"
         );
         assert_eq!(
-            element(&body, "PolicyDocument"),
+            crate::user_lifecycle::document_element(&body, "PolicyDocument"),
             document,
             "case {case:?}: the re-embedded document must be the stored one, got {body}"
         );

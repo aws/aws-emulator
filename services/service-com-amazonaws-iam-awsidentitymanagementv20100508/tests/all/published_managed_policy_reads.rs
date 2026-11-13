@@ -189,7 +189,7 @@ async fn every_policy_arn_this_emulator_publishes_is_readable() {
             "case {case:?}: GetPolicyVersion must serve the default version \
              {default_version:?}, got {status}: {version}"
         );
-        let document = element(&version, "Document");
+        let document = crate::user_lifecycle::document_element(&version, "Document");
         let parsed: serde_json::Value = serde_json::from_str(&document)
             .unwrap_or_else(|error| panic!("case {case:?}: the served document must be JSON, got {error}: {document}"));
         let statements = parsed

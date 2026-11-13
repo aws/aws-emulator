@@ -61,6 +61,9 @@ totp-lite = "2.0"
 # Hashes a console password into the salted verifier the account holds in place of it, so
 # `ChangePassword` can check the caller's current password without the password being kept.
 sha2 = { workspace = true }
+# RFC 3986 percent-encoding, which is the form every response member targeting
+# `policyDocumentType` carries its document in (`src/state/policy_document_reports.rs`).
+percent-encoding = "2"
 # Writes the account's credential report as the `text/csv` artifact `GetCredentialReport`
 # serves, so the quoting of a cell is RFC 4180's and not hand-rolled.
 csv = "1"

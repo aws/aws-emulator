@@ -2,24 +2,32 @@
 
 //! What IAM STORES for a role's trust policy, and so what every read of that role reports.
 //!
-//! A trust policy — the `AssumeRolePolicyDocument` a role carries — is the one policy document
-//! IAM holds that names PRINCIPALS, and the policy language writes an AWS ACCOUNT principal two
-//! ways: by the account's id alone, or by the ARN of that account's root user. IAM saves the
-//! second, so a principal submitted as the bare id is stored and reported as
-//! `arn:<partition>:iam::<account-id>:root` — which is why a client that compares a role's trust
-//! principal with the account root (a `PassRole` gate, a policy diff) sees the root ARN whichever
-//! of the two spellings the document was written in.
+//! A trust policy — the `AssumeRolePolicyDocument` a role carries — is a policy document a caller
+//! hands over as a string, and IAM does not keep the caller's bytes: it RENDERS the policy and
+//! holds that rendering, which is the one rendering every service with a policy store in this
+//! emulator reports ([`::service_common::iam_policy_rendering::rendered_rewriting`]) —
 //!
-//! Nothing else about the document moves. `policyDocumentType` admits the tab, line feed and
-//! carriage return a caller indents a document with, so the text a role reports is the text that
-//! was submitted apart from that one spelling: the document is walked once and only an account
-//! principal's value is rewritten
-//! ([`::service_common::iam_policy_rendering::rewritten_values`]).
+//! * the whitespace BETWEEN the document's JSON tokens is gone, so a document written with a
+//!   space after each `:` and `,` is reported without them;
+//! * an element the policy language types as "String or Array of strings" (a statement's
+//!   `Action`/`Resource` and the principal lists) that arrived as a one-element array of one
+//!   string is reported as that string; and
+//! * an AWS ACCOUNT principal named by the account's id alone is reported as the ARN of that
+//!   account's root user, `arn:<partition>:iam::<account-id>:root` — which is why a client that
+//!   compares a role's trust principal with the account root (a `PassRole` gate, a policy diff)
+//!   sees the root ARN whichever of the two spellings the document was written in.
+//!
+//! Everything else is the caller's own data and survives: the member order, the statement count,
+//! the one-element `Statement` array, the type and spelling of every other value, and every byte
+//! inside a string literal. Applying the rendering to what it produced returns it unchanged, so a
+//! client that puts back the document it read stores the same text again.
 //!
 //! The rule is about SAVING a policy, so it belongs to the writers of the member — `CreateRole`,
 //! `UpdateAssumeRolePolicy` and `AcquireRole`, which renders one from a role template — and the
-//! readers (`GetRole`, `ListRoles`, `GetAccountAuthorizationDetails`) go on reporting the stored
-//! text verbatim.
+//! readers (`GetRole`, `ListRoles`, `GetAccountAuthorizationDetails`) report the stored text,
+//! percent-encoded as every response carries a policy document
+//! ([`super::policy_document_reports`]). A trust document IAM itself writes for a
+//! service-linked role is not a caller's document and is held as the service writes it.
 
 /// The key a policy's `Principal`/`NotPrincipal` element names an AWS ACCOUNT principal under
 /// (`::service_common::iam_policy_rendering::PRINCIPAL_ELEMENTS` lists the four keys such an
@@ -30,15 +38,15 @@ const ACCOUNT_PRINCIPAL: &str = "AWS";
 /// the one form the account's own identifier takes.
 const ACCOUNT_ID_DIGITS: usize = 12;
 
-/// The trust policy IAM stores for `document`: every ACCOUNT principal named by the account's id
-/// alone written as that account's root-user ARN, and every other byte of the submitted text
-/// kept — the whitespace between its tokens, its member order and its list forms included.
+/// The trust policy IAM stores for `document`: the policy RENDERED — the whitespace between its
+/// JSON tokens dropped, a one-element string-or-array element written as its string, and every
+/// ACCOUNT principal named by an account's id alone written as that account's root-user ARN.
 ///
 /// Applying this to what it produced returns it unchanged, so a client that puts back the
 /// document it read stores the same text again.
 #[must_use]
 pub fn stored_trust_policy(document: &str) -> String {
-    ::service_common::iam_policy_rendering::rewritten_values(
+    ::service_common::iam_policy_rendering::rendered_rewriting(
         document,
         &::service_common::iam_policy_rendering::ElementValues {
             element: ACCOUNT_PRINCIPAL,
@@ -67,15 +75,17 @@ fn account_root_arn_of(value: &str) -> Option<String> {
 mod tests {
     use super::*;
 
-    /// RULE: an account principal named by the account's id alone is stored as that account's
-    /// root-user ARN, wherever the document names one, and nothing else about the text moves.
+    /// RULE: the stored trust policy is the policy RENDERED — the whitespace between its JSON
+    /// tokens gone, a one-element string-or-array element written as its string, and an account
+    /// principal named by the account's id alone written as that account's root-user ARN.
     #[test]
-    fn an_account_id_principal_is_stored_as_the_account_root_arn() {
+    fn a_submitted_trust_policy_is_stored_rendered() {
         // The rows differ along what the rule generalises over: which account is named (this
         // emulator's own and another), where the principal sits (alone, in a list, under the
-        // complement element), the spacing of the submitted text, and the values the rule does
-        // not touch (an ARN, a wildcard, a service principal, an id under another element).
-        let rows: [(&str, &str, &str); 9] = [
+        // complement element), the whitespace of the submitted text, the list form of a
+        // one-element value, and the values the rule does not touch (an ARN, a wildcard, a
+        // service principal, an id under another element).
+        let rows: [(&str, &str, &str); 10] = [
             (
                 "this emulator's own account, named by its id",
                 r#"{"Statement":[{"Effect":"Allow","Principal":{"AWS":"000000000000"},"Action":"sts:AssumeRole"}]}"#,
@@ -97,9 +107,14 @@ mod tests {
                 r#"{"Statement":[{"Principal":{"AWS":["arn:aws:iam::210987654321:root","arn:aws:iam::123456789012:root"]}}]}"#,
             ),
             (
-                "a one-element list keeps its list form",
+                "a one-element list is written as the string it holds",
                 r#"{"Statement":[{"Principal":{"AWS":["210987654321"]}}]}"#,
-                r#"{"Statement":[{"Principal":{"AWS":["arn:aws:iam::210987654321:root"]}}]}"#,
+                r#"{"Statement":[{"Principal":{"AWS":"arn:aws:iam::210987654321:root"}}]}"#,
+            ),
+            (
+                "a one-element action list likewise",
+                r#"{"Statement":[{"Action":["sts:AssumeRole"],"Principal":{"Service":"ec2.amazonaws.com"}}]}"#,
+                r#"{"Statement":[{"Action":"sts:AssumeRole","Principal":{"Service":"ec2.amazonaws.com"}}]}"#,
             ),
             (
                 "the complement element names one too",
@@ -107,9 +122,9 @@ mod tests {
                 r#"{"Statement":[{"NotPrincipal":{"AWS":"arn:aws:iam::210987654321:root"}}]}"#,
             ),
             (
-                "an indented document keeps its indentation",
+                "an indented document is stored without the whitespace between its tokens",
                 "{\r\n\t\"Statement\": [\n\t\t{\n\t\t\t\"Principal\": {\"AWS\": \"210987654321\"}\n\t\t}\n\t]\n}",
-                "{\r\n\t\"Statement\": [\n\t\t{\n\t\t\t\"Principal\": {\"AWS\": \"arn:aws:iam::210987654321:root\"}\n\t\t}\n\t]\n}",
+                r#"{"Statement":[{"Principal":{"AWS":"arn:aws:iam::210987654321:root"}}]}"#,
             ),
             (
                 "a role ARN, a wildcard and a service principal are stored as written",

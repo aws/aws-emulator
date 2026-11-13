@@ -341,9 +341,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             role_name: input.role_name,
         };
 
-        // The response is the record that was stored, so a caller sees exactly what a
-        // later `GetRole` reports.
+        // The response is the record that was stored, with its trust policy written out in
+        // the form every IAM response carries a policy document in
+        // (`crate::state::reported_role`), so a caller sees exactly what a later `GetRole`
+        // reports.
         store.roles.insert(key, role.clone());
-        Ok(CreateRoleOutput { role })
+        Ok(CreateRoleOutput {
+            role: crate::state::reported_role(role),
+        })
     }
 }

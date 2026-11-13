@@ -224,7 +224,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         role.description = Some(input.description);
 
         Ok(UpdateRoleDescriptionOutput {
-            role: Some(role.clone()),
+            // The updated record, with its trust policy in the form every IAM response
+            // carries a policy document in (`crate::state::reported_role`).
+            role: Some(crate::state::reported_role(role.clone())),
         })
     }
 }

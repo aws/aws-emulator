@@ -329,7 +329,7 @@ async fn a_delete_removes_exactly_the_version_it_names() {
                  got {status}: {body}"
             );
             assert_eq!(
-                element(&body, "Document"),
+                crate::user_lifecycle::document_element(&body, "Document"),
                 *document,
                 "case {name:?} {version_id:?}: a surviving version keeps the document it was \
                  created with: {body}"

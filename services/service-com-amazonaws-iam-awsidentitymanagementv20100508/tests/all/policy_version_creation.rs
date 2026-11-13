@@ -135,7 +135,7 @@ async fn read_document(router: &MultiServiceRouter, policy_arn: &str, version_id
         "case {policy_arn:?} {version_id:?}: the created version must be readable, got \
          {status}: {body}"
     );
-    element(&body, "Document")
+    crate::user_lifecycle::document_element(&body, "Document")
 }
 
 /// A one-statement policy document whose `Resource` carries `filler`, so a document of

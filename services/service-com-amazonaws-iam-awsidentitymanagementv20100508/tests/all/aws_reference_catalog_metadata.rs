@@ -432,7 +432,9 @@ async fn the_default_version_a_policy_reports_is_the_version_served() {
             "case {case:?}: the version GetPolicy named is the default one, got {body}"
         );
         assert!(
-            state::is_policy_document(&element(&body, "Document")),
+            state::is_policy_document(&crate::user_lifecycle::document_element(
+                &body, "Document"
+            )),
             "case {case:?}: expected an IAM policy document, got {body}"
         );
 
@@ -614,7 +616,9 @@ async fn the_root_task_family_is_published_as_aws_publishes_it() {
              {body}"
         );
         assert!(
-            state::is_policy_document(&element(&body, "Document")),
+            state::is_policy_document(&crate::user_lifecycle::document_element(
+                &body, "Document"
+            )),
             "case {case:?}: expected an IAM policy document, got {body}"
         );
     }

@@ -6,13 +6,15 @@
 //! RULE: when IAM saves a policy document that names an AWS account as a principal by the
 //! account's twelve-digit id alone, it stores and reports that principal as the account's
 //! root-user ARN — "the ARN for an account uses the following syntax:
-//! `arn:aws:iam::AWS-account-ID:root`" — and changes nothing else about the submitted text: the
-//! whitespace between its tokens, its member order, its list forms and every other principal
-//! (a user or role ARN, the `*` wildcard, a service, federated or canonical-user principal) are
-//! stored as they were written. A role's `AssumeRolePolicyDocument` is the policy document this
-//! service saves principals in, so the rule holds for both of its writers — `CreateRole` and
-//! `UpdateAssumeRolePolicy` — and every read of the role (`GetRole`, `ListRoles`) reports the
-//! stored text.
+//! `arn:aws:iam::AWS-account-ID:root`". The document is saved RENDERED, as every policy store in
+//! this emulator renders one: the whitespace between its JSON tokens is gone and a one-element
+//! string-or-array element is written as the string it holds, while its member order, its
+//! statement count and every other principal (a user or role ARN, the `*` wildcard, a service,
+//! federated or canonical-user principal) are stored as they were written. A role's
+//! `AssumeRolePolicyDocument` is the policy document this service saves principals in, so the
+//! rule holds for both of its writers — `CreateRole` and `UpdateAssumeRolePolicy` — and every
+//! read of the role (`GetRole`, `ListRoles`) reports the stored text, percent-encoded as every
+//! response carries a policy document.
 //!
 //! No single recorded request is the specification, so the suite is a TABLE whose rows differ
 //! along what the rule generalises over: WHICH account is named (this emulator's own and
@@ -26,7 +28,7 @@
 
 use smithy_server_runtime::MultiServiceRouter;
 
-use crate::user_lifecycle::{account_id, call, element, elements, router};
+use crate::user_lifecycle::{account_id, call, router};
 
 /// An account other than this emulator's own, so a cross-account trust is one of the rows.
 const OTHER_ACCOUNT: &str = "210987654321";
@@ -83,9 +85,9 @@ fn rows() -> Vec<Row> {
             stored: trust(&format!(r#"{{"AWS":"{other_root}"}}"#)),
         },
         Row {
-            case: "a one-element list of an account id keeps its list form",
+            case: "a one-element list of an account id is written as that string",
             submitted: trust(&format!(r#"{{"AWS":["{OTHER_ACCOUNT}"]}}"#)),
-            stored: trust(&format!(r#"{{"AWS":["{other_root}"]}}"#)),
+            stored: trust(&format!(r#"{{"AWS":"{other_root}"}}"#)),
         },
         Row {
             case: "a list of two account ids, each written",
@@ -125,23 +127,21 @@ fn rows() -> Vec<Row> {
             ),
         },
         Row {
-            // `policyDocumentType` admits tab, line feed and carriage return, so an indented
-            // document keeps its indentation: only the principal's value moves.
-            case: "an indented document keeps its whitespace",
+            // A trust policy is STORED rendered, so the whitespace between an indented
+            // document's JSON tokens is gone from what every read reports.
+            case: "an indented document is stored without the whitespace between its tokens",
             submitted: format!(
                 "{{\r\n\t\"Version\": \"2012-10-17\",\n\t\"Statement\": [\n\t\t{{\n\t\t\t\"Effect\": \"Allow\",\n\t\t\t\"Principal\": {{\"AWS\": \"{OTHER_ACCOUNT}\"}},\n\t\t\t\"Action\": \"sts:AssumeRole\"\n\t\t}}\n\t]\n}}"
             ),
-            stored: format!(
-                "{{\r\n\t\"Version\": \"2012-10-17\",\n\t\"Statement\": [\n\t\t{{\n\t\t\t\"Effect\": \"Allow\",\n\t\t\t\"Principal\": {{\"AWS\": \"{other_root}\"}},\n\t\t\t\"Action\": \"sts:AssumeRole\"\n\t\t}}\n\t]\n}}"
-            ),
+            stored: trust(&format!(r#"{{"AWS":"{other_root}"}}"#)),
         },
         Row {
-            case: "an indented list of ids keeps its whitespace and its list form",
+            case: "an indented list of ids keeps its list form and loses its whitespace",
             submitted: format!(
                 "{{\n  \"Statement\" : [ {{\n    \"Effect\" : \"Allow\",\n    \"Principal\" : {{ \"AWS\" : [ \"{own}\", \"{OTHER_ACCOUNT}\" ] }},\n    \"Action\" : \"sts:AssumeRole\"\n  }} ]\n}}"
             ),
             stored: format!(
-                "{{\n  \"Statement\" : [ {{\n    \"Effect\" : \"Allow\",\n    \"Principal\" : {{ \"AWS\" : [ \"{own_root}\", \"{other_root}\" ] }},\n    \"Action\" : \"sts:AssumeRole\"\n  }} ]\n}}"
+                r#"{{"Statement":[{{"Effect":"Allow","Principal":{{"AWS":["{own_root}","{other_root}"]}},"Action":"sts:AssumeRole"}}]}}"#
             ),
         },
         Row {
@@ -163,14 +163,15 @@ fn rows() -> Vec<Row> {
     ]
 }
 
-/// The trust policy `GetRole` reports for a role the account holds.
+/// The trust policy `GetRole` reports for a role the account holds, percent-decoded back to
+/// plain JSON as IAM's contract tells a caller to read a policy document.
 async fn reported_trust_policy(router: &MultiServiceRouter, role_name: &str) -> String {
     let (status, body) = call(router, "GetRole", &[("RoleName", role_name)]).await;
     assert_eq!(
         status, 200,
         "case {role_name:?}: GetRole must succeed, got {status}: {body}"
     );
-    element(&body, "AssumeRolePolicyDocument")
+    crate::user_lifecycle::document_element(&body, "AssumeRolePolicyDocument")
 }
 
 /// Create one role carrying `document`.
@@ -190,8 +191,9 @@ async fn create_role(
     .await
 }
 
-/// RULE: `CreateRole` stores the account principals of the trust policy it was handed as those
-/// accounts' root-user ARNs, leaves every other byte of the document as it arrived, and every
+/// RULE: `CreateRole` stores the trust policy it was handed RENDERED — the whitespace between
+/// its JSON tokens gone, a one-element string-or-array element written as its string, and every
+/// account principal named by an id alone written as that account's root-user ARN — and every
 /// read of the role reports that one stored text.
 #[tokio::test]
 async fn create_role_stores_an_account_principal_as_the_account_root_arn() {
@@ -206,7 +208,7 @@ async fn create_role_stores_an_account_principal_as_the_account_root_arn() {
         );
 
         // The create's own answer and the later read report the ONE stored document.
-        let created = element(&body, "AssumeRolePolicyDocument");
+        let created = crate::user_lifecycle::document_element(&body, "AssumeRolePolicyDocument");
         assert_eq!(
             created, row.stored,
             "case {:?}: expected CreateRole to report {:?}, got {created:?}",
@@ -312,7 +314,7 @@ async fn every_read_of_a_role_reports_the_stored_trust_policy() {
 
     let (status, body) = call(&router, "ListRoles", &[]).await;
     assert_eq!(status, 200, "ListRoles must succeed, got {status}: {body}");
-    let listed = elements(&body, "AssumeRolePolicyDocument");
+    let listed = crate::user_lifecycle::document_elements(&body, "AssumeRolePolicyDocument");
     for document in &expected {
         assert!(
             listed.contains(document),

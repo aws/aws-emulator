@@ -485,15 +485,21 @@ fn role_detail(store: &IamStore, role_key: &str, role: &Role) -> RoleDetail {
         role_id: Some(role.role_id.clone()),
         arn: Some(role.arn.clone()),
         create_date: Some(role.create_date),
-        assume_role_policy_document: role.assume_role_policy_document.clone(),
+        assume_role_policy_document: role
+            .assume_role_policy_document
+            .as_deref()
+            .map(crate::state::reported_policy_document),
         // "A list of instance profiles that contain this role": the bindings
         // `AddRoleToInstanceProfile` wrote, each reported as the account holds the
-        // profile now (`crate::state::instance_profile_report`).
+        // profile now (`crate::state::instance_profile_report`), with the trust policy of
+        // every role they embed written out as every response carries a policy document
+        // (`crate::state::reported_instance_profile`).
         instance_profile_list: Some(
             store
                 .instance_profiles_holding_role(role_key)
                 .iter()
                 .filter_map(|name| store.instance_profile_report(&crate::state::name_key(name)))
+                .map(crate::state::reported_instance_profile)
                 .collect(),
         ),
         role_policy_list: Some(inline_policy_details(&store.role_inline_policies, role_key)),
@@ -530,7 +536,12 @@ fn managed_policy_detail(resolved: &crate::state::ManagedPolicy) -> ManagedPolic
         description: policy.description.clone(),
         create_date: policy.create_date,
         update_date: policy.update_date,
-        policy_version_list: Some(ordered.into_iter().map(|(_, version)| version).collect()),
+        policy_version_list: Some(
+            ordered
+                .into_iter()
+                .map(|(_, version)| crate::state::reported_policy_version(version))
+                .collect(),
+        ),
     }
 }
 
@@ -550,7 +561,12 @@ fn inline_policy_details(
         .flatten()
         .map(|(_, policy)| PolicyDetail {
             policy_name: Some(policy.policy_name.clone()),
-            policy_document: Some(policy.policy_document.clone()),
+            // The document in the form every IAM response carries one in: "policies
+            // returned by this operation are URL-encoded compliant with RFC 3986"
+            // (`crate::state::reported_policy_document`).
+            policy_document: Some(crate::state::reported_policy_document(
+                &policy.policy_document,
+            )),
         })
         .collect()
 }

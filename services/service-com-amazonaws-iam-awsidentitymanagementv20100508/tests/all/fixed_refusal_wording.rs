@@ -691,7 +691,7 @@ async fn a_document_that_is_no_policy_is_refused_with_one_sentence_per_defect() 
         let (status, body) = call(&router, "GetRole", &[("RoleName", "doc-role")]).await;
         assert_eq!(status, 200, "case {what:?}: the fixture role must survive");
         assert_eq!(
-            element(&body, "AssumeRolePolicyDocument"),
+            crate::user_lifecycle::document_element(&body, "AssumeRolePolicyDocument"),
             TRUST_POLICY,
             "case {what:?}: a refused update must leave the held document alone"
         );

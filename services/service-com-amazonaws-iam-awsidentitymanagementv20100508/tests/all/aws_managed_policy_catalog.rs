@@ -274,7 +274,7 @@ async fn every_catalog_policy_is_readable_and_serves_its_default_version() {
             "true",
             "case {case:?}: the version GetPolicy named is the default one: {body}"
         );
-        let document = element(&body, "Document");
+        let document = crate::user_lifecycle::document_element(&body, "Document");
         assert_eq!(
             document, entry.document,
             "case {case:?}: GetPolicyVersion must serve the catalog's document"
@@ -634,7 +634,7 @@ async fn get_policy_version_serves_only_the_versions_a_policy_carries() {
         "a created policy's first version must be readable, got {status}: {body}"
     );
     assert_eq!(
-        element(&body, "Document"),
+        crate::user_lifecycle::document_element(&body, "Document"),
         CUSTOMER_DOCUMENT,
         "the version must serve the document CreatePolicy stored"
     );

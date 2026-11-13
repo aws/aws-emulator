@@ -349,7 +349,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         let version = PolicyVersion {
             // Held as the plain JSON text the request carried, which is how this crate
-            // holds every policy document, and handed back verbatim by the readers.
+            // holds every policy document; the readers that serve a version's `Document`
+            // report it percent-encoded (`crate::state::reported_policy_version`).
             document: Some(input.policy_document),
             version_id: Some(version_id.clone()),
             is_default_version: input.set_as_default,

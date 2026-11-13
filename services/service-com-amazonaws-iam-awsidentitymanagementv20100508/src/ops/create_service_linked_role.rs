@@ -331,6 +331,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             input.description,
         );
 
-        Ok(CreateServiceLinkedRoleOutput { role: Some(role) })
+        Ok(CreateServiceLinkedRoleOutput {
+            // The record that was stored, with its trust policy in the form every IAM
+            // response carries a policy document in (`crate::state::reported_role`).
+            role: Some(crate::state::reported_role(role)),
+        })
     }
 }

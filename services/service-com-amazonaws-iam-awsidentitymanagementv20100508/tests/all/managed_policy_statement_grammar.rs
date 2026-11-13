@@ -91,7 +91,7 @@ async fn read_document(router: &MultiServiceRouter, arn: &str, version_id: &str)
         status, 200,
         "{arn} {version_id}: the stored version must be readable, got {status}: {body}"
     );
-    element(&body, "Document")
+    crate::user_lifecycle::document_element(&body, "Document")
 }
 
 /// One row of the refusal table: a document, and the sentence IAM words its defect with.

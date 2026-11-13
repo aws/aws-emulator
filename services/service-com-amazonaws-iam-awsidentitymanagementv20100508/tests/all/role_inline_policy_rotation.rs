@@ -24,7 +24,7 @@
 
 use smithy_server_runtime::MultiServiceRouter;
 
-use crate::user_lifecycle::{call, element, elements, error_code, router};
+use crate::user_lifecycle::{call, elements, error_code, router};
 
 /// A trust policy every role this suite creates carries: an IAM policy document, which
 /// is all `CreateRole` asks of one.
@@ -216,7 +216,7 @@ async fn an_embedded_inline_policy_is_removed_on_every_rotation() {
                  {status}: {body}"
             );
             assert_eq!(
-                element(&body, "PolicyDocument"),
+                crate::user_lifecycle::document_element(&body, "PolicyDocument"),
                 *embedded,
                 "case {case:?} rotation {rotation}: expected the document just embedded, got \
                  {body}"
@@ -375,7 +375,7 @@ async fn only_a_pair_the_account_does_not_hold_is_not_found() {
         "the refusals must leave the held policy in place, got {status}: {body}"
     );
     assert_eq!(
-        element(&body, "PolicyDocument"),
+        crate::user_lifecycle::document_element(&body, "PolicyDocument"),
         document,
         "the refusals must leave the held document unchanged, got {body}"
     );

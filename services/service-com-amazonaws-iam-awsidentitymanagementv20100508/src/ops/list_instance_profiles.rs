@@ -240,12 +240,16 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             }
             // The profile as every reader reports it — `Roles` resolved from the roles
             // the account holds now — minus the attributes a resource-listing operation
-            // withholds (`crate::state::listed_instance_profile`). The report is always
+            // withholds (`crate::state::listed_instance_profile`), with each embedded
+            // role's trust policy written out as every response carries a policy document
+            // (`crate::state::reported_instance_profile`). The report is always
             // present here: `key` comes from ranging that same map under the lock this
             // read still holds, and the builder answers `None` only for a key the map
             // does not carry.
             if let Some(report) = store.instance_profile_report(key) {
-                instance_profiles.push(crate::state::listed_instance_profile(report));
+                instance_profiles.push(crate::state::reported_instance_profile(
+                    crate::state::listed_instance_profile(report),
+                ));
                 last_key = Some(key.clone());
             }
         }

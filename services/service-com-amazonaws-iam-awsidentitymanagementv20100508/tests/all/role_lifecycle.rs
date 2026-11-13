@@ -71,11 +71,12 @@ pub(crate) fn reported_tags(body: &str) -> BTreeMap<String, String> {
 
 /// The trust policy a response reports, and the JSON value it parses to.
 ///
-/// A stored policy document is handed back verbatim by this crate (as
-/// `GetUserPolicy` and `CreateServiceLinkedRole` do), so a reader must be able to
-/// parse the reported text as the JSON policy that was sent.
+/// IAM reports a policy document URL-encoded compliant with RFC 3986, so the reported text
+/// is percent-decoded first (`crate::user_lifecycle::document_element`, the one decode every
+/// suite in this crate reads a document through) — which is what a client that follows the
+/// contract does before it parses the policy as JSON.
 fn reported_policy(body: &str) -> (String, serde_json::Value) {
-    let reported = element(body, "AssumeRolePolicyDocument");
+    let reported = crate::user_lifecycle::document_element(body, "AssumeRolePolicyDocument");
     let parsed = serde_json::from_str(&reported).unwrap_or_else(|error| {
         panic!("the reported trust policy must be JSON ({error}): {reported:?}")
     });

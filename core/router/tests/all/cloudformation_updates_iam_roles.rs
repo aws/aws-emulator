@@ -49,7 +49,13 @@ const ACCOUNT_ID: &str = "000000000000";
 /// Long enough for the stack's clock-owed transition (`STATUS_TRANSITION_DELAY`, 500 ms) to
 /// come due. A role has no transient status of its own: IAM answers `CreateRole` with a
 /// role that exists at once.
-const PAST_THE_STACK_SPAN: Duration = Duration::from_millis(1_000);
+/// How long a settled stack is waited for: a generous deadline the poll below gives up at,
+/// not a sleep. The stack's own transition span is the emulator's, so what a case waits for
+/// is the CONDITION — a status that is no longer in progress — rather than a fixed time.
+const SETTLED_DEADLINE: Duration = Duration::from_secs(60);
+
+/// How often that poll looks again.
+const SETTLED_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 /// IAM's own default maximum session length, which a role goes back to when a deployment
 /// stops declaring `MaxSessionDuration`: `UpdateRole` documents that member as "if you do
@@ -209,8 +215,22 @@ async fn deploy_and_settle(
         status, 200,
         "case {case:?}: expected HTTP 200 from {action}, got {status} with body {body}"
     );
-    tokio::time::sleep(PAST_THE_STACK_SPAN).await;
-    describe(router, case, stack_name).await
+    // Wait for the stack to SETTLE rather than for a span to pass: the describe is taken
+    // again until the stack reports a status that is not in progress, so a loaded host only
+    // makes the wait longer and never changes the answer.
+    let deadline = ::std::time::Instant::now() + SETTLED_DEADLINE;
+    loop {
+        let body = describe(router, case, stack_name).await;
+        let reported = xml_text(&body, "StackStatus").unwrap_or_default();
+        if !reported.ends_with("_IN_PROGRESS") {
+            return body;
+        }
+        assert!(
+            ::std::time::Instant::now() < deadline,
+            "case {case:?}: the stack never settled, last status {reported:?}"
+        );
+        tokio::time::sleep(SETTLED_POLL_INTERVAL).await;
+    }
 }
 
 /// The one stack `stack_name` names, as the response body.
@@ -245,6 +265,17 @@ struct RoleIdentity {
     create_date: String,
 }
 
+/// The policy document the `tag` member of an IAM answer carries, percent-decoded back to
+/// plain JSON text.
+///
+/// IAM reports a policy document "URL-encoded compliant with RFC 3986" and a caller "can use
+/// a URL decoding method to convert the policy back to plain JSON text" (`GetRole`,
+/// `GetRolePolicy`), so a comparison with the text a template declared reads it through this
+/// decode.
+fn policy_document(body: &str, tag: &str) -> String {
+    ::smithy_server_runtime::percent_decode(&xml_text(body, tag).unwrap_or_default())
+}
+
 /// Read the role `role_name` back out of IAM, through IAM's own readers.
 async fn reported_role(
     router: &MultiServiceRouter,
@@ -274,7 +305,10 @@ async fn reported_role(
             &[("RoleName", role_name), ("PolicyName", &policy_name)],
         )
         .await;
-        inline_policies.insert(policy_name, xml_text(&policy, "PolicyDocument").unwrap_or_default());
+        inline_policies.insert(
+            policy_name,
+            policy_document(&policy, "PolicyDocument"),
+        );
     }
 
     let attached_body = iam_ok(
@@ -289,7 +323,7 @@ async fn reported_role(
 
     (
         ReportedRole {
-            trust_policy: one("AssumeRolePolicyDocument"),
+            trust_policy: policy_document(&body, "AssumeRolePolicyDocument"),
             description: one("Description"),
             max_session_duration: one("MaxSessionDuration"),
             inline_policies,

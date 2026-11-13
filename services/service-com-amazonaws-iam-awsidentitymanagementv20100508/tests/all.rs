@@ -219,6 +219,8 @@ mod policy_arn_condition_context;
 mod policy_default_version;
 #[path = "all/policy_deletion.rs"]
 mod policy_deletion;
+#[path = "all/policy_document_encoding.rs"]
+mod policy_document_encoding;
 #[path = "all/policy_input_list_refusal_wording.rs"]
 mod policy_input_list_refusal_wording;
 #[path = "all/policy_language_values.rs"]

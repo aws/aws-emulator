@@ -78,7 +78,7 @@ fn read_role(body: &str) -> ReadRole {
         arn: element(body, "Arn"),
         create_date: element(body, "CreateDate"),
         max_session_duration: element(body, "MaxSessionDuration"),
-        trust_policy: element(body, "AssumeRolePolicyDocument"),
+        trust_policy: crate::user_lifecycle::document_element(body, "AssumeRolePolicyDocument"),
     }
 }
 

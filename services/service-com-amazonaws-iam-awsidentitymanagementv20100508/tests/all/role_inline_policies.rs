@@ -207,7 +207,7 @@ async fn an_embedded_role_policy_reads_back_verbatim() {
             "case {case:?}: expected the stored policy name, got {body}"
         );
         assert_eq!(
-            element(&body, "PolicyDocument"),
+            crate::user_lifecycle::document_element(&body, "PolicyDocument"),
             *document,
             "case {case:?}: the document must read back exactly as it was embedded, got {body}"
         );
@@ -266,7 +266,7 @@ async fn names_are_matched_without_regard_to_case() {
     let (status, body) = get_policy(&router, "caserole", "embedded").await;
     assert_eq!(status, 200, "the replaced policy must read back, got {status}: {body}");
     assert_eq!(
-        element(&body, "PolicyDocument"),
+        crate::user_lifecycle::document_element(&body, "PolicyDocument"),
         replacement,
         "a repeat put must replace the stored document, got {body}"
     );
@@ -315,7 +315,7 @@ async fn embedded_policies_are_per_role_and_per_name() {
                 "case {policy_name:?}: the role's own policy must read back, got {status}: {body}"
             );
             assert_eq!(
-                element(&body, "PolicyDocument"),
+                crate::user_lifecycle::document_element(&body, "PolicyDocument"),
                 expected,
                 "case {policy_name:?}: expected this policy's own document, got {body}"
             );
@@ -465,7 +465,7 @@ async fn the_aggregate_role_policy_size_is_bounded() {
         let (read_status, read_body) = get_policy(&router, &role_name, "Sized").await;
         if expected_status == 200 {
             assert_eq!(
-                element(&read_body, "PolicyDocument"),
+                crate::user_lifecycle::document_element(&read_body, "PolicyDocument"),
                 document,
                 "case {case:?}: the accepted document must read back, got {read_body}"
             );
@@ -548,7 +548,7 @@ async fn the_aggregate_role_policy_size_is_bounded() {
         let (status, body) = get_policy(&router, "Grow", "Only").await;
         assert_eq!(status, 200, "case {case:?}: the policy must read back, got {status}: {body}");
         assert_eq!(
-            element(&body, "PolicyDocument"),
+            crate::user_lifecycle::document_element(&body, "PolicyDocument"),
             document,
             "case {case:?}: the latest document must be the stored one, got {body}"
         );

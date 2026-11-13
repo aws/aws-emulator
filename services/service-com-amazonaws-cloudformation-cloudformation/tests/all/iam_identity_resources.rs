@@ -34,6 +34,18 @@ use crate::stack_lifecycle::{
     router, wait_for_the_transition, xml_text, xml_texts, ACCOUNT_ID,
 };
 
+/// The policy document the `tag` member of an IAM answer carries, percent-decoded back to
+/// plain JSON text.
+///
+/// IAM reports a policy document "URL-encoded compliant with RFC 3986" and the caller "can use
+/// a URL decoding method to convert the policy back to plain JSON text" (`GetRole`,
+/// `GetRolePolicy`, `GetPolicyVersion`, …), so a suite that compares a document IAM reports
+/// with the one a template declared reads it through this one decode — which is also what
+/// `tests/all/sam_policies_shorthand.rs` reads an embedded policy through.
+pub(crate) fn xml_policy_document(xml: &str, tag: &str) -> Option<String> {
+    xml_text(xml, tag).map(|encoded| ::smithy_server_runtime::percent_decode(&encoded))
+}
+
 /// Why the resource `logical_id` failed to create, as the stack's own event for it says —
 /// which is where the owning service's refusal is reported, the stack-level reason carrying
 /// only which resources failed.
@@ -297,7 +309,7 @@ async fn a_declared_managed_policy_is_reported_by_the_arn_iam_minted() {
             code, 200,
             "case {case:?}: expected GetPolicyVersion to answer, got {code}: {body}"
         );
-        let document = xml_text(&body, "Document").unwrap_or_default();
+        let document = xml_policy_document(&body, "Document").unwrap_or_default();
         assert!(
             document.contains(row.action),
             "case {case:?}: expected the declared document on the policy, got {document:?}"
@@ -406,7 +418,7 @@ async fn a_changed_managed_policy_document_becomes_the_policys_new_default_versi
         code, 200,
         "expected GetPolicyVersion to answer, got {code}: {body}"
     );
-    let document = xml_text(&body, "Document").unwrap_or_default();
+    let document = xml_policy_document(&body, "Document").unwrap_or_default();
     assert!(
         document.contains(changed.action) && !document.contains(row.action),
         "expected the default version to carry the document the update declared, got \
@@ -593,7 +605,7 @@ async fn a_declared_user_exists_in_iam_with_everything_its_declaration_carries()
                 code, 200,
                 "case {case:?}: expected GetUserPolicy to answer, got {code}: {body}"
             );
-            let document = xml_text(&body, "PolicyDocument").unwrap_or_default();
+            let document = xml_policy_document(&body, "PolicyDocument").unwrap_or_default();
             assert!(
                 document.contains(action),
                 "case {case:?}: expected the declared inline policy, got {document:?}"
@@ -761,7 +773,7 @@ async fn a_stack_update_replaces_the_users_inline_policy() {
         code, 200,
         "expected the policy the update declared, got {code}: {body}"
     );
-    let document = xml_text(&body, "PolicyDocument").unwrap_or_default();
+    let document = xml_policy_document(&body, "PolicyDocument").unwrap_or_default();
     assert!(
         document.contains("sqs:ReceiveMessage"),
         "expected the new document on the user, got {document:?}"
@@ -908,7 +920,7 @@ async fn a_roles_trust_policy_is_iams_verdict_on_create_and_on_update() {
     );
     let (code, body) = iam(&router, "GetRole", &[("RoleName", role_name)]).await;
     assert_eq!(code, 200, "expected GetRole to answer, got {code}: {body}");
-    let document = xml_text(&body, "AssumeRolePolicyDocument").unwrap_or_default();
+    let document = xml_policy_document(&body, "AssumeRolePolicyDocument").unwrap_or_default();
     assert!(
         document.contains("lambda.amazonaws.com") && !document.contains("ec2.amazonaws.com"),
         "expected the trust policy the update declared, got {document:?}"

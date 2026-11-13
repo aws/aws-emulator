@@ -33,40 +33,49 @@ use crate::user_lifecycle::{call, element, elements, error_code, router};
 /// document, which is all `CreateRole` asks of one.
 const INITIAL_TRUST_POLICY: &str = r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"dlm.amazonaws.com"},"Action":"sts:AssumeRole"}]}"#;
 
-/// Trust-policy documents spanning the forms the rule generalises over. Each is an IAM
-/// JSON policy document — a JSON object carrying a `Statement` element — and each is
-/// stored and reported as the exact text sent.
-const DOCUMENTS: &[(&str, &str)] = &[
+/// Trust-policy documents spanning the forms the rule generalises over, each with the text
+/// IAM stores for it. Each submitted document is an IAM JSON policy document — a JSON object
+/// carrying a `Statement` element — and each stored one is that document RENDERED (the
+/// whitespace between its JSON tokens gone, a one-element string-or-array element written as
+/// its string), which is what every read of the role reports.
+const DOCUMENTS: &[(&str, &str, &str)] = &[
     (
         "a statement list naming an account principal",
+        r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":"arn:aws:iam::123456789012:root"},"Action":"sts:AssumeRole"}]}"#,
         r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":"arn:aws:iam::123456789012:root"},"Action":"sts:AssumeRole"}]}"#,
     ),
     (
         "a bare statement object naming a service principal",
         r#"{"Version":"2012-10-17","Statement":{"Effect":"Allow","Principal":{"Service":"lambda.amazonaws.com"},"Action":"sts:AssumeRole"}}"#,
+        r#"{"Version":"2012-10-17","Statement":{"Effect":"Allow","Principal":{"Service":"lambda.amazonaws.com"},"Action":"sts:AssumeRole"}}"#,
     ),
     (
         "a statement carrying an MFA condition",
+        r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":"arn:aws:iam::123456789012:user/alice"},"Action":"sts:AssumeRole","Condition":{"Bool":{"aws:MultiFactorAuthPresent":"true"}}}]}"#,
         r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"AWS":"arn:aws:iam::123456789012:user/alice"},"Action":"sts:AssumeRole","Condition":{"Bool":{"aws:MultiFactorAuthPresent":"true"}}}]}"#,
     ),
     (
         "a statement carrying a principal-ARN condition",
         r#"{"Statement":[{"Effect":"Allow","Principal":{"AWS":"*"},"Action":"sts:AssumeRole","Condition":{"ArnEquals":{"aws:PrincipalArn":"arn:aws:iam::123456789012:user/bob"}}}]}"#,
+        r#"{"Statement":[{"Effect":"Allow","Principal":{"AWS":"*"},"Action":"sts:AssumeRole","Condition":{"ArnEquals":{"aws:PrincipalArn":"arn:aws:iam::123456789012:user/bob"}}}]}"#,
     ),
     (
         "a statement carrying a session-name condition",
+        r#"{"Statement":[{"Effect":"Allow","Principal":{"AWS":"arn:aws:iam::123456789012:root"},"Action":"sts:AssumeRole","Condition":{"StringLike":{"sts:RoleSessionName":"build-*"}}}]}"#,
         r#"{"Statement":[{"Effect":"Allow","Principal":{"AWS":"arn:aws:iam::123456789012:root"},"Action":"sts:AssumeRole","Condition":{"StringLike":{"sts:RoleSessionName":"build-*"}}}]}"#,
     ),
     (
         "two statements, one allowing and one denying",
         r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ec2.amazonaws.com"},"Action":"sts:AssumeRole"},{"Effect":"Deny","Principal":{"AWS":"*"},"Action":"sts:AssumeRole","Condition":{"BoolIfExists":{"aws:MultiFactorAuthPresent":"false"}}}]}"#,
+        r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ec2.amazonaws.com"},"Action":"sts:AssumeRole"},{"Effect":"Deny","Principal":{"AWS":"*"},"Action":"sts:AssumeRole","Condition":{"BoolIfExists":{"aws:MultiFactorAuthPresent":"false"}}}]}"#,
     ),
     (
         // `policyDocumentType`'s pattern admits tab (\u0009), line feed (\u000A) and
-        // carriage return (\u000D), so an indented document is a legal one and must
-        // read back byte for byte rather than reformatted.
+        // carriage return (\u000D), so an indented document is a legal one to SUBMIT; what
+        // IAM stores for it is the rendered document, without that whitespace.
         "an indented document carrying tabs, line feeds and a carriage return",
         "{\r\n\t\"Version\": \"2012-10-17\",\n\t\"Statement\": [\n\t\t{\n\t\t\t\"Effect\": \"Allow\",\n\t\t\t\"Principal\": {\"Service\": \"ecs.amazonaws.com\"},\n\t\t\t\"Action\": \"sts:AssumeRole\"\n\t\t}\n\t]\n}",
+        r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ecs.amazonaws.com"},"Action":"sts:AssumeRole"}]}"#,
     ),
     (
         // The pattern also admits "the printable characters in the Basic Latin and
@@ -74,12 +83,15 @@ const DOCUMENTS: &[(&str, &str)] = &[
         // (`UpdateAssumeRolePolicy$PolicyDocument`), so a Latin-1 `Sid` survives too.
         "a document whose Sid carries Latin-1 Supplement characters",
         r#"{"Version":"2012-10-17","Statement":[{"Sid":"café-münster","Effect":"Allow","Principal":{"Service":"glue.amazonaws.com"},"Action":"sts:AssumeRole"}]}"#,
+        r#"{"Version":"2012-10-17","Statement":[{"Sid":"café-münster","Effect":"Allow","Principal":{"Service":"glue.amazonaws.com"},"Action":"sts:AssumeRole"}]}"#,
     ),
     (
         // Validation stops at the top level of the IAM policy grammar
         // (`state::is_policy_document`), so the smallest document the grammar admits is
-        // stored rather than refused.
+        // stored rather than refused — and `Statement` is not an element the rendering
+        // collapses, so its one-element array stays an array.
         "the smallest document the IAM policy grammar admits",
+        r#"{"Statement":[]}"#,
         r#"{"Statement":[]}"#,
     ),
 ];
@@ -152,14 +164,15 @@ async fn update(
     .await
 }
 
-/// The trust policy `GetRole` reports for a role the account holds.
+/// The trust policy `GetRole` reports for a role the account holds, percent-decoded back to
+/// plain JSON as IAM's contract tells a caller to read a policy document.
 async fn reported_trust_policy(router: &MultiServiceRouter, role_name: &str) -> String {
     let (status, body) = call(router, "GetRole", &[("RoleName", role_name)]).await;
     assert!(
         status == 200,
         "case {role_name:?}: GetRole must succeed, got {status}: {body}"
     );
-    element(&body, "AssumeRolePolicyDocument")
+    crate::user_lifecycle::document_element(&body, "AssumeRolePolicyDocument")
 }
 
 /// Every member `GetRole` reports for a role, apart from its trust policy — the record
@@ -197,7 +210,7 @@ async fn an_update_replaces_the_trust_policy_and_get_role_reads_it_back() {
 
         // Each row of DOCUMENTS is a further replacement of the SAME role's policy, so
         // the rule is asserted over a sequence of updates rather than one.
-        for (document_case, document) in DOCUMENTS {
+        for (document_case, document, stored) in DOCUMENTS {
             let case = format!("{} / {document_case}", role.case);
             let (status, body) = update(&router, role.spelling, document).await;
             assert_eq!(
@@ -212,9 +225,8 @@ async fn an_update_replaces_the_trust_policy_and_get_role_reads_it_back() {
 
             let reported = reported_trust_policy(&router, role.spelling).await;
             assert_eq!(
-                reported, *document,
-                "case {case:?}: expected the stored document to read back verbatim, got \
-                 {reported:?}"
+                reported, *stored,
+                "case {case:?}: expected the stored document to read back, got {reported:?}"
             );
             // The reported text is still the JSON policy that was sent, not an escaped
             // or re-encoded form of it.
@@ -249,14 +261,14 @@ async fn an_update_changes_no_other_roles_trust_policy() {
     }
 
     for (index, role) in ROLES.iter().enumerate() {
-        let (document_case, document) = DOCUMENTS[index];
+        let (document_case, document, _) = DOCUMENTS[index];
         let case = format!("{} / {document_case}", role.case);
         let (status, body) = update(&router, role.spelling, document).await;
         assert_eq!(status, 200, "case {case:?}: update failed: {body}");
 
         for (other_index, other) in ROLES.iter().enumerate() {
             let expected = if other_index <= index {
-                DOCUMENTS[other_index].1
+                DOCUMENTS[other_index].2
             } else {
                 INITIAL_TRUST_POLICY
             };
@@ -414,7 +426,7 @@ async fn updating_a_service_linked_roles_trust_policy_is_refused() {
              got {held:?}"
         );
 
-        for (document_case, document) in DOCUMENTS.iter().take(3) {
+        for (document_case, document, _) in DOCUMENTS.iter().take(3) {
             let case = format!("{role_name} / {document_case}");
             let (status, body) = update(&router, &role_name, document).await;
             assert_eq!(

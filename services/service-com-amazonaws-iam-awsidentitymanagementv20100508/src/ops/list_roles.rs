@@ -234,8 +234,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             }
             // A resource-listing operation reports a SUBSET of a role's attributes:
             // `PermissionsBoundary`, `RoleLastUsed` and `Tags` are withheld here and
-            // reported by `GetRole` (`crate::state::listed_role`).
-            roles.push(crate::state::listed_role(role));
+            // reported by `GetRole` (`crate::state::listed_role`). The trust policy is
+            // written out in the form every IAM response carries a policy document in
+            // (`crate::state::reported_role`), so a page reports it exactly as `GetRole`
+            // does.
+            roles.push(crate::state::reported_role(crate::state::listed_role(role)));
             last_key = Some(key.clone());
         }
 

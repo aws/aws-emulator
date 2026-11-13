@@ -254,7 +254,7 @@ async fn still_in_force(
                 case.case
             );
             assert_eq!(
-                element(&body, "PolicyDocument"),
+                crate::user_lifecycle::document_element(&body, "PolicyDocument"),
                 document,
                 "case {:?}: a simulation must leave the embedded document as it was, got {body}",
                 case.case

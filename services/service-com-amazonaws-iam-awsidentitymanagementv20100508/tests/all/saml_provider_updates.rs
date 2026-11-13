@@ -853,7 +853,8 @@ async fn updating_a_deleted_provider_is_refused_as_absent() {
             status, 200,
             "case {what:?}: GetRole must report the role, got {status}: {role}"
         );
-        let reported_trust = element(&role, "AssumeRolePolicyDocument");
+        let reported_trust =
+            crate::user_lifecycle::document_element(&role, "AssumeRolePolicyDocument");
         assert_eq!(
             reported_trust, trust_policy,
             "case {what:?}: deleting the provider must not touch the trust policy, got \

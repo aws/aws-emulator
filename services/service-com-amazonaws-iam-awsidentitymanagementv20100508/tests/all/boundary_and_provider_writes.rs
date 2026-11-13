@@ -738,7 +738,7 @@ async fn moving_a_user_keeps_its_identifier_and_everything_it_holds() {
         )
         .await;
         assert_eq!(
-            element(&body, "PolicyDocument"),
+            crate::user_lifecycle::document_element(&body, "PolicyDocument"),
             POLICY_DOCUMENT,
             "case {what:?}: expected the inline policy to travel with the user"
         );

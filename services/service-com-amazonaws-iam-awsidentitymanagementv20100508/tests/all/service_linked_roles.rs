@@ -217,7 +217,7 @@ async fn create_service_linked_role_persists_the_role_and_get_role_returns_it() 
 
         // The trust policy is the role's link to its service: the one statement
         // that lets THAT principal assume it.
-        let policy = element(&created, "AssumeRolePolicyDocument");
+        let policy = crate::user_lifecycle::document_element(&created, "AssumeRolePolicyDocument");
         let document: serde_json::Value = serde_json::from_str(&policy)
             .unwrap_or_else(|error| panic!("case {label:?}: {error} in {policy:?}"));
         let statement = &document["Statement"][0];

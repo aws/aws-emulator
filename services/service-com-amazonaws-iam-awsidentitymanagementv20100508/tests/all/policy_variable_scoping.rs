@@ -122,7 +122,7 @@ async fn shared_policy(
     // Substitution happens at EVALUATION time: the write path stores the document as it
     // was supplied, so a reader sees the variable and never a caller's value.
     assert_eq!(
-        element(&version, "Document"),
+        crate::user_lifecycle::document_element(&version, "Document"),
         document,
         "case {case:?}: the stored document must be the one supplied, variables unexpanded"
     );

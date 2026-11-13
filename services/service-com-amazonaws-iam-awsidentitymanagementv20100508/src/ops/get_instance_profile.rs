@@ -194,6 +194,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             )
             .into());
         };
-        Ok(GetInstanceProfileOutput { instance_profile })
+        Ok(GetInstanceProfileOutput {
+            // Each role the profile contains carries its trust policy in the form every
+            // response carries a policy document (`crate::state::reported_instance_profile`).
+            instance_profile: crate::state::reported_instance_profile(instance_profile),
+        })
     }
 }

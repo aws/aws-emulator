@@ -601,7 +601,7 @@ async fn a_document_carrying_no_statement_is_a_syntax_error_for_an_identity_poli
         );
         let body = ok(&router, what, "GetRole", &[("RoleName", "DocRole")]).await;
         assert_eq!(
-            element(&body, "AssumeRolePolicyDocument"),
+            crate::user_lifecycle::document_element(&body, "AssumeRolePolicyDocument"),
             TRUST_POLICY,
             "case {what:?}: a refused update must leave the held document alone, got {body}"
         );

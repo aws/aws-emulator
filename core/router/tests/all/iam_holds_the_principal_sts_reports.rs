@@ -202,13 +202,15 @@ fn member(case: &str, body: &str, name: &str) -> String {
     opt_element(body, name).unwrap_or_else(|| panic!("case {case:?}: no <{name}> in {body}"))
 }
 
-/// The member with the XML escaping decoded back, for one that is itself a document — a
-/// policy, whose quotes the serializer escapes.
+/// The member with the XML escaping decoded back and the percent-encoding IAM reports a
+/// POLICY DOCUMENT in undone, for one that is itself a document — a policy, whose quotes the
+/// serializer escapes and which IAM returns "URL-encoded compliant with RFC 3986".
 fn decoded_member(case: &str, body: &str, name: &str) -> String {
-    elements(body, name)
+    let reported = elements(body, name)
         .into_iter()
         .next()
-        .unwrap_or_else(|| panic!("case {case:?}: no <{name}> in {body}"))
+        .unwrap_or_else(|| panic!("case {case:?}: no <{name}> in {body}"));
+    ::smithy_server_runtime::percent_decode(&reported)
 }
 
 /// The awsQuery error code an error response carries.

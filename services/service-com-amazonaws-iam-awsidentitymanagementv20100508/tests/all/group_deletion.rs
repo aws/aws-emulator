@@ -473,7 +473,7 @@ async fn a_group_that_still_embeds_a_policy_is_not_deleted() {
                  {status}: {got}"
             );
             assert_eq!(
-                element(&got, "PolicyDocument"),
+                crate::user_lifecycle::document_element(&got, "PolicyDocument"),
                 *document,
                 "case {embed} policies: the refused delete changed {policy_name:?}, got {got}"
             );
