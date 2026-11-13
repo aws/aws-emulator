@@ -534,11 +534,6 @@ mod chime_family_signing_name_routing;
 mod cloudformation_canceled_delete_keeps_exported_resources;
 #[path = "all/cloudformation_cdk_bucket_notifications_custom_resource.rs"]
 mod cloudformation_cdk_bucket_notifications_custom_resource;
-// Declared in this quiet span of the sorted list, beside the other custom-resource suite,
-// rather than appended at the end of this file: the tail is the contended region every
-// concurrently landing suite appends to.
-#[path = "all/cloudformation_sns_custom_resource_protocol.rs"]
-mod cloudformation_sns_custom_resource_protocol;
 // Declared in this span of the sorted list rather than appended at the end of this file,
 // for the reason the notes here give: the tail is the region every concurrently landing
 // suite appends to.
@@ -1263,11 +1258,6 @@ mod eks_control_plane_logs;
 // is observable only with EKS and CloudWatch Logs on one engine.
 #[path = "all/eks_control_plane_log_suppression.rs"]
 mod eks_control_plane_log_suppression;
-// Declared in this same head region, for the reason the note above records: the WORKFLOW half
-// of a cluster's control plane logging — the update reaching `Successful` before the logs are
-// read — is observable only with EKS and CloudWatch Logs on one engine.
-#[path = "all/eks_logging_update_reaches_cloudwatch_logs.rs"]
-mod eks_logging_update_reaches_cloudwatch_logs;
 // Declared in this same head region, for the reason the note above records.
 #[path = "all/bedrock_agentcore_data_plane_parent_resources.rs"]
 mod bedrock_agentcore_data_plane_parent_resources;
@@ -1642,6 +1632,25 @@ mod logs_subscription_filter_role_trust;
 // can see both ends of it.
 #[path = "all/logs_subscription_filter_to_lambda.rs"]
 mod logs_subscription_filter_to_lambda;
+// Declared in the appended tail, which is where every new suite inserts its lines: a CI
+// topology DEPLOYED BY TEMPLATE and then run — the pipeline, the build project and the two
+// service roles a stack provisions, driven to the terminal execution status the build decided
+// — spans CloudFormation, CodePipeline, CodeBuild, IAM and Amazon S3 at once, so no single
+// service crate's test target can see both ends of it.
+#[path = "all/cloudformation_ci_topology_runs_its_pipeline.rs"]
+mod cloudformation_ci_topology_runs_its_pipeline;
+// Declared in the appended tail, which is where every new suite inserts its lines: the
+// deploy -> read-back -> update -> delete round trip of the Amplify UI Builder entities a stack
+// declares, which spans CloudFormation (the template and the calls), AWS Amplify (the app they
+// belong to) and Amplify UI Builder (the component, the form and the theme) at once, so no
+// single service crate's test target can see it.
+#[path = "all/cloudformation_provisions_amplifyuibuilder_entities.rs"]
+mod cloudformation_provisions_amplifyuibuilder_entities;
+// Declared in this quiet span of the sorted list, beside the other custom-resource suite,
+// rather than appended at the end of this file: the tail is the contended region every
+// concurrently landing suite appends to.
+#[path = "all/cloudformation_sns_custom_resource_protocol.rs"]
+mod cloudformation_sns_custom_resource_protocol;
 // Declared in the appended tail, which is where every new suite inserts its lines: the role
 // an EKS Pod Identity association binds to a service account is resolved against IAM, so
 // EKS and IAM have to be on one engine for the rule to be observable at all.
@@ -1675,18 +1684,24 @@ mod cognito_vended_session_leading_keys_scoped_query;
 // vended spans Amazon Cognito Identity, IAM, STS and Amazon S3 at once.
 #[path = "all/cognito_vended_session_bucket_policy.rs"]
 mod cognito_vended_session_bucket_policy;
-// Declared in the appended tail, which is where every new suite inserts its lines: a CI
-// topology DEPLOYED BY TEMPLATE and then run — the pipeline, the build project and the two
-// service roles a stack provisions, driven to the terminal execution status the build decided
-// — spans CloudFormation, CodePipeline, CodeBuild, IAM and Amazon S3 at once, so no single
-// service crate's test target can see both ends of it.
-#[path = "all/cloudformation_ci_topology_runs_its_pipeline.rs"]
-mod cloudformation_ci_topology_runs_its_pipeline;
 // resource whose create was refused PART-WAY leaves behind spans CloudFormation (which
 // deploys and disposes), Amazon S3 (which refuses the follow-up call and then answers the
 // read) and the service owning the destination that decides the refusal, so no single
 #[path = "all/cloudformation_half_made_resource_is_not_left_behind.rs"]
 mod cloudformation_half_made_resource_is_not_left_behind;
+// Declared in the appended tail: the EVENT path of an Amazon EMR cluster's lifecycle spans
+// Amazon EMR (which announces each state its cluster enters), EventBridge (which routes the
+// envelope by its content) and Amazon SQS (which holds what a rule's target received), so no
+// single service crate's test target can see both ends of it.
+#[path = "all/emr_cluster_state_change_events.rs"]
+mod emr_cluster_state_change_events;
+// Declared beside the suite above: the other half of this fix's evidence — an S3 Batch
+// Operations job settling on the assembled router with request authentication ON, where the
+// job's own run reaches Amazon S3 and IAM over the emulator's in-process callback, so no
+// single service crate's test target can see it. Named like `zz_opensearch_fgac_probe.rs`,
+// the sibling suite that drives a whole-router probe the same way.
+#[path = "all/zz_batch_job_probe.rs"]
+mod zz_batch_job_probe;
 // partitions of a table a running function may address under a conditioned execution-role
 // grant spans IAM (the clause), STS (the session the function's call is signed with), Lambda
 // (the handler and the SDK it is given) and DynamoDB (the decision) at once, so no single
@@ -1699,6 +1714,11 @@ mod lambda_in_function_dynamodb_partition_conditions;
 // at once, so no single service crate's test target can ask it.
 #[path = "all/cloudformation_lambda_function_log_destination.rs"]
 mod cloudformation_lambda_function_log_destination;
+// Declared in this same head region, for the reason the note above records: the WORKFLOW half
+// of a cluster's control plane logging — the update reaching `Successful` before the logs are
+// read — is observable only with EKS and CloudWatch Logs on one engine.
+#[path = "all/eks_logging_update_reaches_cloudwatch_logs.rs"]
+mod eks_logging_update_reaches_cloudwatch_logs;
 // Declared in the appended tail, which is where every new suite inserts its lines: that ONE
 // set of the account's email templates stands behind both Amazon SES APIs, and that a
 // continuation token either API's template listing issued continues that one list on the
@@ -1719,19 +1739,6 @@ mod ebs_refused_block_write_then_ec2_snapshot_completion;
 // can ask it.
 #[path = "all/lambda_in_function_sqs_authorization.rs"]
 mod lambda_in_function_sqs_authorization;
-// Declared in the appended tail: the EVENT path of an Amazon EMR cluster's lifecycle spans
-// Amazon EMR (which announces each state its cluster enters), EventBridge (which routes the
-// envelope by its content) and Amazon SQS (which holds what a rule's target received), so no
-// single service crate's test target can see both ends of it.
-#[path = "all/emr_cluster_state_change_events.rs"]
-mod emr_cluster_state_change_events;
-// Declared beside the suite above: the other half of this fix's evidence — an S3 Batch
-// Operations job settling on the assembled router with request authentication ON, where the
-// job's own run reaches Amazon S3 and IAM over the emulator's in-process callback, so no
-// single service crate's test target can see it. Named like `zz_opensearch_fgac_probe.rs`,
-// the sibling suite that drives a whole-router probe the same way.
-#[path = "all/zz_batch_job_probe.rs"]
-mod zz_batch_job_probe;
 // Declared in the appended tail, which is where every new suite inserts its lines: that the
 // network an OpenSearch Serverless managed VPC endpoint is placed in is resolved against
 // Amazon EC2, which owns the VPC and the subnets, so no endpoint is stored in a network that

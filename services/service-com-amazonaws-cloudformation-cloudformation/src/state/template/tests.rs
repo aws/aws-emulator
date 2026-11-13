@@ -64,6 +64,10 @@ fn computed_attributes(resource_type: &str) -> BTreeMap<String, String> {
             // The document an `AWS::Route53::TrafficPolicy` declares, whose own `RecordType`
             // is the `Type` that type publishes.
             "Document": { "RecordType": "A" },
+            // The app environment an `AWS::AmplifyUIBuilder::{Component,Form,Theme}` declares
+            // its entity in, which are two of the three values each of those types publishes.
+            "AppId": "d1234abcdefghi",
+            "EnvironmentName": "staging",
         }),
         condition: None,
         declaration: Value::Null,

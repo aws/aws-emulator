@@ -73,6 +73,12 @@ fn identifying_return_value(resource_type: &str) -> Option<&'static str> {
         // ("Ref returns the spending limit ARN"), which is the handle every spending-limit
         // API takes — the type declares no name a client could name one by.
         BRAKET_SPENDING_LIMIT => "SpendingLimitArn",
+        // An AWS Amplify app, identified by the ARN that service built around the id it minted
+        // ("Ref returns the ARN of the app"), which is the type's primary identifier. (The
+        // three Amplify UI Builder entities need no row: each is identified by the app, the
+        // environment and the id its own resource shape names, which step 1 above answers from
+        // [`super::template::composite_identity_properties`].)
+        AMPLIFY_APP => "Arn",
         // The CloudFront types, each identified by the id that service assigns.
         CLOUDFRONT_DISTRIBUTION
         | CLOUDFRONT_ORIGIN_ACCESS_CONTROL

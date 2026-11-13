@@ -2,6 +2,12 @@
 
 use super::*;
 
+// What a template's outputs and its intrinsic functions are evaluated against, split out so
+// this file holds the per-type return values alone. Re-exported, so the one path every caller
+// of `Scope` and of an evaluation uses is unchanged.
+mod outputs;
+pub use outputs::*;
+
 /// What `Ref` returns for a resource of this type, and what `Fn::GetAtt` reads off it.
 ///
 /// Source: the "Return values" section the AWS CloudFormation resource and property type
@@ -1410,6 +1416,74 @@ pub(super) fn return_values(
             attributes.insert("SpendingLimitArn".to_string(), arn.clone());
             (arn, attributes)
         }
+        // AWS Amplify's own control plane: the app an `AWS::Amplify::App` declares. "Ref
+        // returns the ARN of the app"; `Fn::GetAtt` reads [`AMPLIFY_APP_ATTRIBUTES`]. Every
+        // one of those is a value only that service can produce — the `appId` it mints, the
+        // ARN built around it, the default domain it serves the app's branches under, and the
+        // name as it records it — so each is a STAND-IN here, which `super::provisioning`
+        // re-points at what the create really answered
+        // ([`super::provisioner::Provisioner::AmplifyApp`]).
+        AMPLIFY_APP => {
+            for attribute in AMPLIFY_APP_ATTRIBUTES {
+                attributes.insert(
+                    (*attribute).to_string(),
+                    service_assigned_document(name, attribute),
+                );
+            }
+            (
+                service_assigned_document(name, APP_ARN_STAND_IN_ATTRIBUTE),
+                attributes,
+            )
+        }
+        // Amplify UI Builder's own control plane: the component, the form or the theme an
+        // `AWS::AmplifyUIBuilder::{Component,Form,Theme}` declares. The type's primary
+        // identifier is the TRIPLE its own resource shape is identified by — the app, the
+        // environment and the id — so "Ref returns" that triple joined with
+        // [`COMPOSITE_IDENTITY_SEPARATOR`] ([`amplifyuibuilder_identity`]), which is also the
+        // resource's physical id; `Fn::GetAtt` reads the three parts
+        // ([`AMPLIFYUIBUILDER_ATTRIBUTES`]) and, for a component and a theme, the two instants
+        // their structures carry read-only.
+        //
+        // That service MINTS the id — each create takes the app and the environment as URI
+        // labels and the entity's name in its payload, takes no identifier, and answers the
+        // `Uuid` it assigned, which is what every call on the entity is addressed by — so the
+        // id here, and the identity built around it, are STAND-INS, which
+        // `super::provisioning` re-points at what the create really answered
+        // ([`super::provisioner::Provisioner::AmplifyUiBuilderComponent`] and its two
+        // siblings). The app and the environment are the declaration's own values, reported as
+        // the entity itself reports them.
+        AMPLIFYUIBUILDER_COMPONENT | AMPLIFYUIBUILDER_FORM | AMPLIFYUIBUILDER_THEME => {
+            let id = generated_uuid(resource_type, name);
+            for property in [AMPLIFYUIBUILDER_APP_ID, AMPLIFYUIBUILDER_ENVIRONMENT_NAME] {
+                if let Some(value) = properties
+                    .get(property)
+                    .and_then(|value| text(value, scope, 0, budget))
+                {
+                    attributes.insert(property.to_string(), value);
+                }
+            }
+            attributes.insert(AMPLIFYUIBUILDER_ID_ATTRIBUTE.to_string(), id.clone());
+            if resource_type != AMPLIFYUIBUILDER_FORM {
+                for attribute in AMPLIFYUIBUILDER_INSTANT_ATTRIBUTES {
+                    attributes.insert(
+                        (*attribute).to_string(),
+                        service_assigned_document(name, attribute),
+                    );
+                }
+            }
+            let identity = amplifyuibuilder_identity(
+                attributes
+                    .get(AMPLIFYUIBUILDER_APP_ID)
+                    .map(String::as_str)
+                    .unwrap_or_default(),
+                attributes
+                    .get(AMPLIFYUIBUILDER_ENVIRONMENT_NAME)
+                    .map(String::as_str)
+                    .unwrap_or_default(),
+                &id,
+            );
+            (identity, attributes)
+        }
         // Amazon Managed Workflows for Apache Airflow's own control plane: the environment an
         // `AWS::MWAA::Environment` declares. "Ref returns the name of the Amazon MWAA
         // environment", which is the handle every Amazon MWAA operation on one takes, so the
@@ -2052,6 +2126,9 @@ pub fn published_attribute_names(resource_type: &str) -> &'static [&'static str]
         // service's own report of the limit rather than from here, exactly as a knowledge
         // base's instants do.
         BRAKET_SPENDING_LIMIT => &["SpendingLimitArn"],
+        AMPLIFYUIBUILDER_COMPONENT | AMPLIFYUIBUILDER_THEME => AMPLIFYUIBUILDER_TIMED_ATTRIBUTES,
+        AMPLIFYUIBUILDER_FORM => AMPLIFYUIBUILDER_ATTRIBUTES,
+        AMPLIFY_APP => AMPLIFY_APP_ATTRIBUTES,
         MWAA_ENVIRONMENT => MWAA_ENVIRONMENT_ATTRIBUTES,
         "AWS::BedrockAgentCore::Memory" => &["MemoryArn", "MemoryId"],
         "AWS::BedrockAgentCore::Runtime" => {
@@ -2370,6 +2447,21 @@ pub fn identity_is_service_assigned(resource_type: &str) -> bool {
         // That ARN is also what every call on a limit takes (`UpdateSpendingLimit` and
         // `DeleteSpendingLimit` each address one by it).
         || resource_type == BRAKET_SPENDING_LIMIT
+        // The three Amplify UI Builder entities are three more: each create takes the app and
+        // the environment as its URI labels and the entity's NAME in its payload, takes no
+        // identifier at all, and answers the `Uuid` that service assigned — the `id` of the
+        // type's own resource shape, which `GetComponent`, `UpdateForm`, `DeleteTheme` and
+        // every other call on one is addressed by. A name no such call takes could not stand
+        // in for it, so the identifier in force is the one that service answered.
+        || resource_type == AMPLIFYUIBUILDER_COMPONENT
+        || resource_type == AMPLIFYUIBUILDER_FORM
+        || resource_type == AMPLIFYUIBUILDER_THEME
+        // An AWS Amplify APP is one more: `CreateApp` takes the app's NAME and no identifier,
+        // and answers the `appId` that service minted (`^d[a-z0-9]+$`) with the ARN built
+        // around it — which is what that type's `Ref` returns and what every Amplify call on
+        // an app, and on everything hanging off one, takes. A name CloudFormation decides
+        // satisfies neither, so the identity in force is the one that service answered.
+        || resource_type == AMPLIFY_APP
         // An Amazon EC2 VPC, a subnet of one and a security group of one are three more:
         // `CreateVpc`, `CreateSubnet` and `CreateSecurityGroup` take no identifier at all —
         // EC2 assigns each resource an id of its own published form — and "Ref returns the
@@ -2599,6 +2691,108 @@ pub const BRAKET_ARN_NAMESPACE: &str = "braket";
 /// The resource path a spending-limit ARN carries before the identifier Amazon Braket minted
 /// for it, from that same pattern.
 const BRAKET_SPENDING_LIMIT_PATH: &str = "spending-limit";
+
+/// The `AWS::<cloudFormationName>::<Resource>` type of an AWS Amplify APP: the hosting
+/// application that service's own `CreateApp` makes, and the parent every other Amplify
+/// resource hangs off. The middle segment is that model's own `awsService.cloudFormationName`
+/// (`Amplify`).
+///
+/// "Ref returns the ARN of the app" — the type's primary identifier — and `Fn::GetAtt` reads
+/// [`AMPLIFY_APP_ATTRIBUTES`]. AWS Amplify MINTS the `appId` (`^d[a-z0-9]+$`, which no name
+/// CloudFormation decides satisfies) and the ARN built around it, and serves the app's branches
+/// under a default domain of its own, so none of those values can be recomputed from the
+/// template: that is what [`identity_is_service_assigned`] names this type for.
+pub const AMPLIFY_APP: &str = "AWS::Amplify::App";
+
+/// Every `Fn::GetAtt` attribute an [`AMPLIFY_APP`] publishes, in the sorted order a resource's
+/// own attribute map holds them in: the id that service minted, the app's name, its ARN and the
+/// default domain it is served under — each of them a value only AWS Amplify can produce, so
+/// each stands in ([`service_assigned_document`]) until that service has reported what it
+/// really answered.
+pub(super) const AMPLIFY_APP_ATTRIBUTES: &[&str] =
+    &["AppId", "AppName", "Arn", "DefaultDomain"];
+
+/// The `AWS::<cloudFormationName>::<Resource>` types of the three user-interface entities of
+/// an Amplify app environment: the component, the form and the theme Amplify UI
+/// Builder's own `CreateComponent`, `CreateForm` and `CreateTheme` make. The middle segment is
+/// that model's own `awsService.cloudFormationName` (`AmplifyUIBuilder`) and the resource
+/// segment each entity's own `@cfnResource` name (`Component`, `Form`, `Theme`).
+///
+/// Each type's identity is that service's to mint: every one of those creates takes the app
+/// and the environment as its URI labels and the entity's NAME in its payload, takes no
+/// identifier at all, and answers the `id` Amplify UI Builder assigned — a `Uuid`, which is
+/// what `GetComponent`, `UpdateForm`, `DeleteTheme` and every other call on one is addressed
+/// by. That is what [`identity_is_service_assigned`] names all three for.
+///
+/// The values a resource of one of these types publishes are the three identifiers of its own
+/// resource shape (`smithy_query(query="shape", shape="ComponentResource")`:
+/// `identifiers: {id, appId, environmentName}`) — the app and the environment the declaration
+/// states, and the id that service minted — beside the members the entity itself carries as
+/// READ-ONLY (`cfnMutability: "read"`), which are the two instants a component and a theme are
+/// reported with ([`AMPLIFYUIBUILDER_INSTANT_ATTRIBUTES`]); a form's own structure carries
+/// neither.
+pub const AMPLIFYUIBUILDER_COMPONENT: &str = "AWS::AmplifyUIBuilder::Component";
+pub const AMPLIFYUIBUILDER_FORM: &str = "AWS::AmplifyUIBuilder::Form";
+pub const AMPLIFYUIBUILDER_THEME: &str = "AWS::AmplifyUIBuilder::Theme";
+
+/// Every `Fn::GetAtt` attribute an `AWS::AmplifyUIBuilder::Form` publishes, in the sorted order
+/// a resource's own attribute map holds them in: the identifiers of the type's resource shape
+/// ([`AMPLIFYUIBUILDER_COMPONENT`]).
+///
+/// Two of them are the declaration's own values, and the `Id` is the one value only Amplify UI
+/// Builder can produce, so it stands in as a uuid of that member's own form
+/// ([`generated_uuid`]) until `super::provisioning` has reported the id the create really
+/// answered.
+pub(super) const AMPLIFYUIBUILDER_ATTRIBUTES: &[&str] = &["AppId", "EnvironmentName", "Id"];
+
+/// The two further attributes a COMPONENT and a THEME publish: the instants their own
+/// structures carry `cfnMutability: "read"` on (`Component$createdAt`, `Component$modifiedAt`
+/// and the same pair on `Theme`), which is that model's own statement that they are read-only
+/// properties of the type. A `Form`'s structure carries neither member, so a form publishes
+/// only [`AMPLIFYUIBUILDER_ATTRIBUTES`].
+///
+/// Both are Amplify UI Builder's clock, so neither is computed here: each stands in
+/// ([`service_assigned_document`]) until that service has reported the entity it created.
+const AMPLIFYUIBUILDER_INSTANT_ATTRIBUTES: &[&str] = &["CreatedAt", "ModifiedAt"];
+
+/// [`AMPLIFYUIBUILDER_ATTRIBUTES`] and [`AMPLIFYUIBUILDER_INSTANT_ATTRIBUTES`] together, in
+/// that sorted order: what a component and a theme publish.
+const AMPLIFYUIBUILDER_TIMED_ATTRIBUTES: &[&str] =
+    &["AppId", "CreatedAt", "EnvironmentName", "Id", "ModifiedAt"];
+
+/// The properties a declaration of one of those types states the app environment the entity
+/// belongs to in, which are also two of the values it publishes
+/// ([`AMPLIFYUIBUILDER_ATTRIBUTES`]).
+const AMPLIFYUIBUILDER_APP_ID: &str = "AppId";
+const AMPLIFYUIBUILDER_ENVIRONMENT_NAME: &str = "EnvironmentName";
+
+/// The attribute carrying the identifier Amplify UI Builder mints for the entity.
+const AMPLIFYUIBUILDER_ID_ATTRIBUTE: &str = "Id";
+
+/// The physical resource id of one of those three entities: the TRIPLE its own resource shape
+/// is identified by — the app, the environment and the id that service minted — joined with
+/// [`COMPOSITE_IDENTITY_SEPARATOR`], which is what the type's `Ref` returns.
+///
+/// Not a row of [`composite_identity_properties`]: that one builds an identity out of the
+/// values a declaration STATES, and the last part of this one is the id Amplify UI Builder
+/// assigns, which no declaration carries. So the identity is built here as a stand-in and
+/// again by [`crate::state::provisioner`] from the entity that service answered — the one
+/// place each of the three parts is really known.
+pub(crate) fn amplifyuibuilder_identity(app_id: &str, environment_name: &str, id: &str) -> String {
+    [app_id, environment_name, id].join(COMPOSITE_IDENTITY_SEPARATOR)
+}
+
+/// The three parts of such an identity, where `identity` is one
+/// ([`amplifyuibuilder_identity`]); `None` for a value that is not.
+pub(crate) fn amplifyuibuilder_identity_parts(identity: &str) -> Option<(&str, &str, &str)> {
+    let mut parts = identity.split(COMPOSITE_IDENTITY_SEPARATOR);
+    let (app_id, environment_name, id) = (parts.next()?, parts.next()?, parts.next()?);
+    parts.next().is_none().then_some((app_id, environment_name, id))
+}
+
+/// The attribute of [`AMPLIFY_APP_ATTRIBUTES`] that carries the app's ARN, which is the
+/// identity a `Ref` to one resolves to.
+const APP_ARN_STAND_IN_ATTRIBUTE: &str = "Arn";
 
 /// The `AWS::<cloudFormationName>::<Resource>` type of an Amazon Managed Workflows for
 /// Apache Airflow ENVIRONMENT: the Apache Airflow deployment that service's own
@@ -3269,10 +3463,21 @@ pub(super) const COMPOSITE_IDENTITY_SEPARATOR: &str = "|";
 /// record the stack's own deletion acts on carries exactly the pair to unbind. Every part is
 /// a create-only property of its type for that same reason
 /// ([`replacement_properties`]).
+///
+/// A type whose primary identifier is composite for ANOTHER reason is here too: the three
+/// Amplify UI Builder entities are identified by the app, the environment and the id their own
+/// resource shape names ([`AMPLIFYUIBUILDER_COMPONENT`]), and the last of those is the one
+/// Amplify UI Builder MINTS. So the row says what a client names one of these resources by
+/// ([`crate::state::primary_identifier`]), while [`composite_identity`] answers `None` for one
+/// — the declaration carries no `Id` to join — and the identity is built from the entity that
+/// service answered instead ([`amplifyuibuilder_identity`]).
 pub fn composite_identity_properties(resource_type: &str) -> &'static [&'static str] {
     match resource_type {
         WAFV2_WEB_ACL_ASSOCIATION => &["ResourceArn", "WebACLArn"],
         EKS_ACCESS_ENTRY => &["ClusterName", "PrincipalArn"],
+        AMPLIFYUIBUILDER_COMPONENT | AMPLIFYUIBUILDER_FORM | AMPLIFYUIBUILDER_THEME => {
+            AMPLIFYUIBUILDER_ATTRIBUTES
+        }
         _ => &[],
     }
 }
@@ -4660,315 +4865,3 @@ pub(super) fn generated_uuid(domain: &str, name: &str) -> String {
     )
 }
 
-// ---------------------------------------------------------------------------
-// Outputs and intrinsic functions
-// ---------------------------------------------------------------------------
-
-/// Everything an intrinsic function resolves against.
-#[derive(Debug, Clone, Copy)]
-pub struct Scope<'a> {
-    pub stack: StackScope<'a>,
-    /// The parameter values in force on the stack, keyed by `ParameterKey`.
-    pub parameters: &'a BTreeMap<String, String>,
-    /// The TYPE each parameter was declared with, which decides whether a `Ref` to it
-    /// resolves to one value or to a list of them.
-    pub parameter_types: &'a BTreeMap<String, String>,
-    /// The stack's resources, keyed by logical id.
-    pub resources: &'a BTreeMap<String, StoredResource>,
-    /// The template's `Mappings` section.
-    pub mappings: &'a Value,
-    /// The template's `Conditions` section.
-    pub conditions: &'a Value,
-    /// The exported output values a `Fn::ImportValue` resolves against, keyed by export
-    /// name: "the value of an output exported by another stack". An export name this map
-    /// does not carry is not exported in the account and Region the deployment runs in, so
-    /// the import resolves to nothing.
-    pub imports: &'a BTreeMap<String, String>,
-    /// The other stacks' output values an `Fn::GetStackOutput` resolves against, keyed by
-    /// the reference that reads one: "the value of an output of another stack", read by the
-    /// stack and the output key rather than by an export name. A reference this map does not
-    /// carry reads an output no stack of the account and Region holds, so it resolves to
-    /// nothing — see [`crate::state::stack_outputs`].
-    pub stack_outputs: &'a crate::state::stack_outputs::Values,
-}
-
-/// Evaluate every output a template declares, in `OutputKey` order (the protocol fixes no
-/// order for `Stack$Outputs`).
-///
-/// One entry per output the stack HAS — an output the template declares under a
-/// `Condition` that evaluates false is not one of them ("output values that are
-/// conditionally created"), and a condition this module cannot evaluate leaves the output
-/// reported rather than dropping it. Whether or not its value could be evaluated does not
-/// change that: the output exists because the template declares it, and
-/// [`StoredOutput::value`] is `None` where this module cannot compute the value rather
-/// than carrying an invented one. The `budget` is the deployment's — shared with
-/// [`provision`] — so the work of a whole request is bounded, not just each output's.
-pub fn evaluate_outputs(
-    template: &Template,
-    scope: &Scope<'_>,
-    budget: &mut Budget,
-) -> Vec<StoredOutput> {
-    let mut outputs = Vec::with_capacity(template.outputs.len());
-    for declared in &template.outputs {
-        let reported = declared.condition.as_deref().is_none_or(|condition| {
-            condition_holds(condition, scope, 0, budget).unwrap_or(true)
-        });
-        if !reported {
-            continue;
-        }
-        outputs.push(StoredOutput {
-            key: declared.key.clone(),
-            value: text(&declared.value, scope, 0, budget),
-            description: declared.description.clone(),
-            export_name: declared
-                .export_name
-                .as_ref()
-                .and_then(|name| text(name, scope, 0, budget)),
-        });
-    }
-    outputs
-}
-
-/// Every export name a template IMPORTS: the resolved argument of each `Fn::ImportValue`
-/// its resources and its outputs name, in the order the template declares them and without
-/// repeats.
-///
-/// This is the stack's half of the cross-stack reference index `ListImports` reports —
-/// "the stacks that are importing an exported output value" — so it is computed where the
-/// template is deployed, from the document that really deploys, and charged to that
-/// deployment's own budget like every other pass over a caller-sized body. An argument
-/// that is itself an expression is evaluated, so an import whose name a `Fn::Sub` or a
-/// parameter decides is the export name it really resolved to.
-///
-/// DECLARATION ORDER, because a deployment that cannot resolve an import reports the FIRST
-/// one it could not ([`super::StoredStack::unresolved_cross_stack_failure`]), which is the one
-/// the template names first — the index the names also feed is keyed by name, so the order
-/// is nothing to it.
-pub fn imported_export_names(
-    template: &Template,
-    scope: &Scope<'_>,
-    budget: &mut Budget,
-) -> Vec<String> {
-    let mut found = Vec::new();
-    for resource in &template.resources {
-        collect_imports(&resource.declaration, scope, 0, budget, &mut found);
-    }
-    for output in &template.outputs {
-        collect_imports(&output.value, scope, 0, budget, &mut found);
-        if let Some(export_name) = &output.export_name {
-            collect_imports(export_name, scope, 0, budget, &mut found);
-        }
-    }
-    found
-}
-
-/// Collect every `Fn::ImportValue` argument inside one declaration, bounded by the
-/// deployment's depth limit and its shared budget: ONE pass over the node, whatever the
-/// document carries. A name already collected is not collected twice, so the walk answers
-/// each imported name once, at the position it was first named.
-pub(super) fn collect_imports(
-    value: &Value,
-    scope: &Scope<'_>,
-    depth: usize,
-    budget: &mut Budget,
-    found: &mut Vec<String>,
-) {
-    if depth > MAX_INTRINSIC_DEPTH || budget.spend(1).is_none() {
-        return;
-    }
-    match value {
-        Value::Array(items) => {
-            for item in items {
-                collect_imports(item, scope, depth + 1, budget, found);
-            }
-        }
-        Value::Object(members) => {
-            for (name, argument) in members {
-                if name == FN_IMPORT_VALUE {
-                    if let Some(export_name) = text(argument, scope, depth + 1, budget) {
-                        if !found.contains(&export_name) {
-                            found.push(export_name);
-                        }
-                    }
-                }
-                collect_imports(argument, scope, depth + 1, budget, found);
-            }
-        }
-        _ => {}
-    }
-}
-
-/// Every other stack's output a template READS with an `Fn::GetStackOutput`, as the pair
-/// (stack, output key) each reference resolves to, in the order the template declares them
-/// and without repeats.
-///
-/// The reading stack's half of that relation: it is what the deployment resolves against
-/// the Region's own table and then KEEPS ([`crate::state::stack_outputs`]), so it is
-/// computed where the template is deployed, from the document that really deploys, and
-/// charged to that deployment's own budget like every other pass over a caller-sized body.
-/// An argument that is itself an expression is evaluated, so a reference whose stack or
-/// output key a parameter decides is the pair it really names.
-///
-/// DECLARATION ORDER, for the reason [`imported_export_names`] is in it: a deployment that
-/// cannot resolve one reports the FIRST it could not.
-pub fn stack_output_reads(
-    template: &Template,
-    scope: &Scope<'_>,
-    budget: &mut Budget,
-) -> Vec<crate::state::stack_outputs::Reference> {
-    let mut found = Vec::new();
-    for resource in &template.resources {
-        collect_stack_output_reads(&resource.declaration, scope, 0, budget, &mut found);
-    }
-    for output in &template.outputs {
-        collect_stack_output_reads(&output.value, scope, 0, budget, &mut found);
-        if let Some(export_name) = &output.export_name {
-            collect_stack_output_reads(export_name, scope, 0, budget, &mut found);
-        }
-    }
-    found
-}
-
-/// Collect every `Fn::GetStackOutput` reference inside one declaration, bounded by the
-/// deployment's depth limit and its shared budget, exactly as [`collect_imports`] is: ONE
-/// pass over the node, each reference answered once, at the position it was first named.
-fn collect_stack_output_reads(
-    value: &Value,
-    scope: &Scope<'_>,
-    depth: usize,
-    budget: &mut Budget,
-    found: &mut Vec<crate::state::stack_outputs::Reference>,
-) {
-    if depth > MAX_INTRINSIC_DEPTH || budget.spend(1).is_none() {
-        return;
-    }
-    match value {
-        Value::Array(items) => {
-            for item in items {
-                collect_stack_output_reads(item, scope, depth + 1, budget, found);
-            }
-        }
-        Value::Object(members) => {
-            for (name, argument) in members {
-                if name == crate::state::stack_outputs::FN_GET_STACK_OUTPUT {
-                    if let Some(reference) =
-                        stack_output_reference(argument, scope, depth + 1, budget)
-                    {
-                        if !found.contains(&reference) {
-                            found.push(reference);
-                        }
-                    }
-                }
-                collect_stack_output_reads(argument, scope, depth + 1, budget, found);
-            }
-        }
-        _ => {}
-    }
-}
-
-/// The stack and the output one `Fn::GetStackOutput` argument names:
-/// `{"StackName": <stack>, "OutputName": <output>}`, the two members the function takes.
-/// Each is evaluated the way every other function's arguments are, so a member spelled by an
-/// expression names what it resolves to.
-///
-/// `None` for an argument that names neither member, which is no reference at all — the
-/// same answer every other expression this evaluator cannot read gives.
-pub(super) fn stack_output_reference(
-    argument: &Value,
-    scope: &Scope<'_>,
-    depth: usize,
-    budget: &mut Budget,
-) -> Option<crate::state::stack_outputs::Reference> {
-    let members = argument.as_object()?;
-    let stack = text(
-        members.get(crate::state::stack_outputs::STACK_NAME)?,
-        scope,
-        depth + 1,
-        budget,
-    )?;
-    let output = text(
-        members.get(crate::state::stack_outputs::OUTPUT_NAME)?,
-        scope,
-        depth + 1,
-        budget,
-    )?;
-    Some(crate::state::stack_outputs::Reference::new(stack, output))
-}
-
-/// An evaluated expression: CloudFormation's intrinsic functions produce either a string
-/// or a list of strings (`Fn::Split`, `Fn::GetAZs`), and the list form is only ever
-/// consumed by another function.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) enum Resolved {
-    Text(String),
-    List(Vec<String>),
-}
-
-/// Evaluate an expression to the text CloudFormation substitutes for it, or `None` when
-/// this module cannot evaluate it — or when the deployment's work budget is spent.
-pub(super) fn text(
-    value: &Value,
-    scope: &Scope<'_>,
-    depth: usize,
-    budget: &mut Budget,
-) -> Option<String> {
-    match evaluate(value, scope, depth, budget)? {
-        Resolved::Text(text) => Some(text),
-        // A list is not a value an output or a name can carry.
-        Resolved::List(_) => None,
-    }
-}
-
-/// Evaluate one expression.
-pub(super) fn evaluate(
-    value: &Value,
-    scope: &Scope<'_>,
-    depth: usize,
-    budget: &mut Budget,
-) -> Option<Resolved> {
-    if depth > MAX_INTRINSIC_DEPTH {
-        return None;
-    }
-    // One unit for visiting this node, before anything it might cost: this is what makes
-    // the TOTAL work of a deployment finite however the template composes its functions.
-    budget.spend(1)?;
-    match value {
-        Value::Null => None,
-        Value::String(_) | Value::Number(_) | Value::Bool(_) => scalar_text(value)
-            .map(Resolved::Text)
-            .and_then(|resolved| bounded(resolved, budget)),
-        Value::Array(items) => {
-            if items.len() > MAX_RESOLVED_LIST_LEN {
-                return None;
-            }
-            let mut resolved = Vec::with_capacity(items.len());
-            for item in items {
-                resolved.push(text(item, scope, depth + 1, budget)?);
-            }
-            bounded(Resolved::List(resolved), budget)
-        }
-        Value::Object(members) => {
-            // An intrinsic function is an object with exactly one member, whose name is
-            // the function's.
-            let mut entries = members.iter();
-            let (name, argument) = entries.next()?;
-            if entries.next().is_some() {
-                return None;
-            }
-            intrinsic(name, argument, scope, depth, budget)
-                .and_then(|resolved| bounded(resolved, budget))
-        }
-    }
-}
-
-/// Refuse an evaluated value past [`MAX_RESOLVED_TEXT_BYTES`], and charge the deployment's
-/// budget for the bytes it carries, so no composition of functions grows one — or copies
-/// one — without limit.
-pub(super) fn bounded(resolved: Resolved, budget: &mut Budget) -> Option<Resolved> {
-    let size = match &resolved {
-        Resolved::Text(text) => text.len(),
-        Resolved::List(items) => items.iter().map(String::len).sum(),
-    };
-    budget.spend_text(size)?;
-    (size <= MAX_RESOLVED_TEXT_BYTES).then_some(resolved)
-}

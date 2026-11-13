@@ -2677,6 +2677,13 @@ pub fn replacement_properties(resource_type: &str) -> &'static [&'static str] {
         // the limit's amount and its period and no device at all, so a declaration naming
         // another device asks for a different limit.
         BRAKET_SPENDING_LIMIT => &["DeviceArn"],
+        // An Amplify UI Builder component, form or theme belongs to the app environment its
+        // `AppId` and `EnvironmentName` name: both are URI labels of every call on one — the
+        // create included — and that service publishes no call that moves an entity to another
+        // app or environment, so a declaration restating either asks for a different entity.
+        AMPLIFYUIBUILDER_COMPONENT | AMPLIFYUIBUILDER_FORM | AMPLIFYUIBUILDER_THEME => {
+            &["AppId", "EnvironmentName"]
+        }
         // An environment's encryption key and who manages its VPC endpoints are fixed when
         // Amazon MWAA makes it: both are members of `CreateEnvironment` and of no member of
         // `UpdateEnvironment`, so a declaration restating either asks for a different
@@ -2823,7 +2830,13 @@ pub fn conditionally_replacing_paths(resource_type: &str) -> &'static [&'static 
 /// Bedrock GUARDRAIL is in that position too: `UpdateGuardrail` takes a
 /// `guardrailIdentifier` together with a new required `name`, the guardrail being identified
 /// by the id Amazon Bedrock minted for it.
-fn name_is_create_only(resource_type: &str) -> bool {
+///
+/// Read in the two places one rule governs: [`replacing_properties`], which is what a change
+/// set's preview and the deployment's own replacement decision share, and
+/// [`crate::state::stack`]'s reading of WHICH resource a re-deploy of a service-assigned
+/// identity means — so a preview cannot say a rename recreates a resource the deployment then
+/// renames in place.
+pub fn name_is_create_only(resource_type: &str) -> bool {
     !matches!(
         resource_type,
         BEDROCK_KNOWLEDGE_BASE
@@ -2831,6 +2844,15 @@ fn name_is_create_only(resource_type: &str) -> bool {
             | BEDROCK_AGENT_ALIAS
             | BEDROCK_DATA_SOURCE
             | BEDROCK_GUARDRAIL
+            // An AWS Amplify app and the three Amplify UI Builder entities of an app
+            // environment are in that same position: each is identified by the id that service
+            // minted for it, and `UpdateApp`, `UpdateComponent`, `UpdateForm` and `UpdateTheme`
+            // each take that id together with a new `name`. Renaming one is a modification of
+            // it, not a recreation.
+            | AMPLIFY_APP
+            | AMPLIFYUIBUILDER_COMPONENT
+            | AMPLIFYUIBUILDER_FORM
+            | AMPLIFYUIBUILDER_THEME
     )
 }
 
@@ -2929,6 +2951,10 @@ pub const IMPLEMENTED_RESOURCE_TYPES: &[&str] = &[
     APIGATEWAY_REST_API,
     APIGATEWAY_USAGE_PLAN,
     APIGATEWAY_USAGE_PLAN_KEY,
+    AMPLIFY_APP,
+    AMPLIFYUIBUILDER_COMPONENT,
+    AMPLIFYUIBUILDER_FORM,
+    AMPLIFYUIBUILDER_THEME,
     APIGATEWAYV2_API,
     APIGATEWAYV2_API_MAPPING,
     APIGATEWAYV2_DOMAIN_NAME,

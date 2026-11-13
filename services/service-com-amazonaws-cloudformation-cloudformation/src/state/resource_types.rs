@@ -80,7 +80,8 @@
 
 use super::template::{
     DeclaredResource, Template, ACMPCA_CERTIFICATE, ACMPCA_CERTIFICATE_AUTHORITY,
-    ACMPCA_CERTIFICATE_AUTHORITY_ACTIVATION, APIGATEWAY_ACCOUNT, APIGATEWAY_BASE_PATH_MAPPING,
+    ACMPCA_CERTIFICATE_AUTHORITY_ACTIVATION, AMPLIFYUIBUILDER_COMPONENT, AMPLIFYUIBUILDER_FORM,
+    AMPLIFYUIBUILDER_THEME, AMPLIFY_APP, APIGATEWAY_ACCOUNT, APIGATEWAY_BASE_PATH_MAPPING,
     APIGATEWAY_DOMAIN_NAME, BRAKET_SPENDING_LIMIT, MWAA_ENVIRONMENT,
 };
 
@@ -171,9 +172,16 @@ pub const AWS_RESOURCE_TYPES: &[&str] = &[
     "AWS::AmazonMQ::Configuration",
     "AWS::AmazonMQ::ConfigurationAssociation",
     // AWS Amplify
-    "AWS::Amplify::App",
+    AMPLIFY_APP,
     "AWS::Amplify::Branch",
     "AWS::Amplify::Domain",
+    // Amplify UI Builder. The three UI entities of an Amplify app environment are each
+    // created in that service (`super::provisioner`), which is also where the middle segment
+    // of the type name comes from: its model's own `awsService.cloudFormationName`
+    // (`AmplifyUIBuilder`), with the resource segment each entity's own `@cfnResource` name.
+    AMPLIFYUIBUILDER_COMPONENT,
+    AMPLIFYUIBUILDER_FORM,
+    AMPLIFYUIBUILDER_THEME,
     // Amazon API Gateway
     APIGATEWAY_ACCOUNT,
     "AWS::ApiGateway::ApiKey",

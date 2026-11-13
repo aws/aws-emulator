@@ -348,6 +348,18 @@ pub(super) fn naming_rules(resource_type: &str) -> Option<NameRules> {
         // the hyphen are all admitted, and it starts with a letter because a stack name does
         // — but may be longer than.
         MWAA_ENVIRONMENT => rules(80, Characters::AsGenerated),
+        // Amplify UI Builder `CreateComponent.componentToCreate.name` (`ComponentName`),
+        // `CreateForm.formToCreate.name` (`FormName`) and `CreateTheme.themeToCreate.name`
+        // (`ThemeName`): each `@length(min: 1, max: 255)` with no pattern (that service's own
+        // Smithy model), so a generated name is already inside the characters they admit but
+        // may be longer than the bound.
+        AMPLIFYUIBUILDER_COMPONENT | AMPLIFYUIBUILDER_FORM | AMPLIFYUIBUILDER_THEME => {
+            rules(255, Characters::AsGenerated)
+        }
+        // AWS Amplify `CreateApp.name`: `Name`, `@length(min: 1, max: 255)` with pattern
+        // `^(?s).+$` (that service's own Smithy model), which admits every character a
+        // generated name carries but is shorter than one may be.
+        AMPLIFY_APP => rules(255, Characters::AsGenerated),
         // AWS X-Ray `CreateSamplingRule.SamplingRule.RuleName`: `RuleName`,
         // `@length(min: 1, max: 32)` (X-Ray's own Smithy model), which a generated name is
         // already inside — letters, digits and the hyphen are all admitted — but is far

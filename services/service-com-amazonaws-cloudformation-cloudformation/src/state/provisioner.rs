@@ -472,7 +472,8 @@ use super::provisioning::{
 };
 use super::template::{
     ACMPCA_CERTIFICATE, ACMPCA_CERTIFICATE_AUTHORITY, ACMPCA_CERTIFICATE_AUTHORITY_ACTIVATION,
-    ACM_ACME_ENDPOINT, ACM_CERTIFICATE, AOSS_COLLECTION,
+    ACM_ACME_ENDPOINT, ACM_CERTIFICATE, AMPLIFYUIBUILDER_COMPONENT, AMPLIFYUIBUILDER_FORM,
+    AMPLIFYUIBUILDER_THEME, AMPLIFY_APP, AOSS_COLLECTION,
     AOSS_SECURITY_POLICY, APIGATEWAY_BASE_PATH_MAPPING, APIGATEWAY_DOMAIN_NAME, APIGATEWAYV2_API,
     APIGATEWAYV2_API_MAPPING, APIGATEWAYV2_AUTHORIZER, APIGATEWAYV2_DEPLOYMENT,
     APIGATEWAYV2_DOMAIN_NAME, APIGATEWAYV2_INTEGRATION, APIGATEWAYV2_ROUTE,
@@ -946,6 +947,23 @@ pub(super) enum Provisioner {
     /// the `spendingLimitArn` the type publishes — the handle every spending-limit API takes
     /// — so it is read off that create's own answer and is the identity a `Ref` resolves to.
     BraketSpendingLimit,
+    /// `AWS::AmplifyUIBuilder::Component`, `::Form` and `::Theme`: the three user-interface
+    /// entities of an Amplify app environment, which Amplify UI Builder's own
+    /// `CreateComponent`, `CreateForm` and `CreateTheme` make under the name the template
+    /// states, the matching `Update…` changes and the matching `Delete…` removes. That service
+    /// MINTS the `id` each type publishes — the `Uuid` every call on the entity is addressed by,
+    /// beside the app and the environment its URI carries — so it is read off that create's own
+    /// answer and is the identity a `Ref` resolves to. One variant per type, each dispatching to
+    /// the arms of [`amplify_ui_builder`] with the entity it names.
+    AmplifyUiBuilderComponent,
+    AmplifyUiBuilderForm,
+    AmplifyUiBuilderTheme,
+    /// `AWS::Amplify::App`: the hosting application AWS Amplify's own `CreateApp` makes under
+    /// the name the template states, `UpdateApp` changes and `DeleteApp` removes — the parent
+    /// every branch, domain and Amplify UI Builder entity of an app hangs off. That service
+    /// MINTS the `appId` and the `appArn` the type publishes, so both are read off that
+    /// create's own answer and the ARN is the identity a `Ref` resolves to.
+    AmplifyApp,
     /// `AWS::MWAA::Environment`: the Apache Airflow environment Amazon Managed Workflows for
     /// Apache Airflow's `CreateEnvironment` creates under the name the template states,
     /// `UpdateEnvironment` reconfigures and `DeleteEnvironment` removes. The name IS the
@@ -1121,6 +1139,10 @@ pub(super) fn provisioner_for(resource_type: &str) -> Option<Provisioner> {
             Some(Provisioner::BedrockAgentCoreWorkloadIdentity)
         }
         BRAKET_SPENDING_LIMIT => Some(Provisioner::BraketSpendingLimit),
+        AMPLIFYUIBUILDER_COMPONENT => Some(Provisioner::AmplifyUiBuilderComponent),
+        AMPLIFYUIBUILDER_FORM => Some(Provisioner::AmplifyUiBuilderForm),
+        AMPLIFYUIBUILDER_THEME => Some(Provisioner::AmplifyUiBuilderTheme),
+        AMPLIFY_APP => Some(Provisioner::AmplifyApp),
         MWAA_ENVIRONMENT => Some(Provisioner::MwaaEnvironment),
         XRAY_SAMPLING_RULE => Some(Provisioner::XraySamplingRule),
         CONFIG_CONFIGURATION_RECORDER => Some(Provisioner::ConfigConfigurationRecorder),
@@ -1655,6 +1677,23 @@ impl Provisioner {
             Self::BraketSpendingLimit => {
                 create_braket_spending_limit(ctx, region, resource, propagated).await
             }
+            // Each of the three `AWS::AmplifyUIBuilder::*` types publishes `Tags` as a MAP,
+            // which is the shape its create's own `tags` member takes, so an entity a stack
+            // creates carries the tags CloudFormation gives it beside the ones the declaration
+            // asks for.
+            Self::AmplifyUiBuilderComponent => {
+                create_ui_entity(ctx, region, UiEntity::Component, resource, propagated).await
+            }
+            Self::AmplifyUiBuilderForm => {
+                create_ui_entity(ctx, region, UiEntity::Form, resource, propagated).await
+            }
+            Self::AmplifyUiBuilderTheme => {
+                create_ui_entity(ctx, region, UiEntity::Theme, resource, propagated).await
+            }
+            // `AWS::Amplify::App` publishes `Tags` as a LIST of pairs, which `CreateApp` takes
+            // as the `TagMap` of its own `tags` member, so an app a stack creates carries the
+            // tags CloudFormation gives it beside the ones the declaration asks for.
+            Self::AmplifyApp => create_amplify_app(ctx, region, resource, propagated).await,
             Self::XraySamplingRule => {
                 create_sampling_rule(ctx, region, resource, propagated).await
             }
@@ -2423,6 +2462,23 @@ impl Provisioner {
             // when an environment is made — which replace the resource instead — so a changed
             // declaration is applied to that environment rather than replacing it.
             Self::MwaaEnvironment => update_mwaa_environment(ctx, region, resource, declared).await,
+            // Each `Update…` takes the entity's whole declared configuration by the id Amplify
+            // UI Builder minted for it, in the app environment that is fixed when the entity
+            // is made — a declaration restating either replaces the resource instead — so a
+            // changed declaration is applied to that entity rather than replacing it.
+            Self::AmplifyUiBuilderComponent => {
+                update_ui_entity(ctx, region, UiEntity::Component, resource, declared).await
+            }
+            Self::AmplifyUiBuilderForm => {
+                update_ui_entity(ctx, region, UiEntity::Form, resource, declared).await
+            }
+            Self::AmplifyUiBuilderTheme => {
+                update_ui_entity(ctx, region, UiEntity::Theme, resource, declared).await
+            }
+            // `UpdateApp` takes the app's whole declared configuration by the id AWS Amplify
+            // minted for it, the app's name included, so a changed declaration is applied to
+            // that app rather than replacing it.
+            Self::AmplifyApp => update_amplify_app(ctx, region, resource, declared).await,
             // Every other type's in-place update is its own entry here, exactly as its
             // create and delete are: until one is written, nothing is asked of the owning
             // service and the deployment says so.
@@ -2984,6 +3040,21 @@ impl Provisioner {
             Self::BraketSpendingLimit => {
                 delete_braket_spending_limit(ctx, region, physical_resource_id).await
             }
+            // The delete addresses the entity by the id Amplify UI Builder minted for it,
+            // which is this resource's physical id, inside the app environment its declaration
+            // names.
+            Self::AmplifyUiBuilderComponent => {
+                delete_ui_entity(ctx, region, UiEntity::Component, resource).await
+            }
+            Self::AmplifyUiBuilderForm => {
+                delete_ui_entity(ctx, region, UiEntity::Form, resource).await
+            }
+            Self::AmplifyUiBuilderTheme => {
+                delete_ui_entity(ctx, region, UiEntity::Theme, resource).await
+            }
+            // The delete addresses the app by the id AWS Amplify minted for it, which is the
+            // id inside the ARN that is this resource's physical id.
+            Self::AmplifyApp => delete_amplify_app(ctx, region, resource).await,
             // The delete addresses the environment by the name Amazon MWAA keyed it by,
             // which is this resource's physical id.
             Self::MwaaEnvironment => {
@@ -3449,6 +3520,19 @@ impl Provisioner {
             Self::BraketSpendingLimit => {
                 describe_braket_spending_limit(ctx, region, physical_resource_id).await
             }
+            // Amplify UI Builder's own read of the entity, by the id it minted, inside the app
+            // environment the declaration names.
+            Self::AmplifyUiBuilderComponent => {
+                describe_ui_entity(ctx, region, UiEntity::Component, resource).await
+            }
+            Self::AmplifyUiBuilderForm => {
+                describe_ui_entity(ctx, region, UiEntity::Form, resource).await
+            }
+            Self::AmplifyUiBuilderTheme => {
+                describe_ui_entity(ctx, region, UiEntity::Theme, resource).await
+            }
+            // AWS Amplify's own read of the app, by the id it minted for it.
+            Self::AmplifyApp => describe_amplify_app(ctx, region, resource).await,
             // Amazon MWAA's own read of the environment, by the name it was created under.
             Self::MwaaEnvironment => {
                 describe_mwaa_environment(ctx, region, physical_resource_id).await
@@ -3501,6 +3585,8 @@ mod bedrock_knowledge_bases;
 /// the return-value catalogue key their entries for those types by.
 pub(crate) mod sagemaker_resources;
 mod braket_spending_limits;
+mod amplify_ui_builder;
+mod amplify_apps;
 mod mwaa_environments;
 mod data_and_storage;
 mod iam_identities;
@@ -3536,6 +3622,8 @@ use bedrock_guardrails::*;
 use bedrock_knowledge_bases::*;
 use sagemaker_resources::*;
 use braket_spending_limits::*;
+use amplify_ui_builder::*;
+use amplify_apps::*;
 use mwaa_environments::*;
 use iam_identities::*;
 use data_and_storage::*;

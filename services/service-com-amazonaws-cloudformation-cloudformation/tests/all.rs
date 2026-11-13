@@ -47,8 +47,6 @@ mod bucket_metrics_and_lifecycle_configurations;
 mod bucket_notification_configuration;
 #[path = "all/bucket_property_updates.rs"]
 mod bucket_property_updates;
-#[path = "all/bucket_replacement_cleanup.rs"]
-mod bucket_replacement_cleanup;
 #[path = "all/bucket_replication_configuration.rs"]
 mod bucket_replication_configuration;
 #[path = "all/built_in_types_in_submitted_hierarchies.rs"]
@@ -129,8 +127,8 @@ mod duplicate_resource_identifiers;
 mod dynamic_reference_names;
 #[path = "all/dynamic_references.rs"]
 mod dynamic_references;
-#[path = "all/dynamodb_kinesis_streaming_estate.rs"]
-mod dynamodb_kinesis_streaming_estate;
+#[path = "all/dynamodb_table_creation_window.rs"]
+mod dynamodb_table_creation_window;
 #[path = "all/dynamodb_table_resources.rs"]
 mod dynamodb_table_resources;
 #[path = "all/dynamodb_table_settings.rs"]
@@ -471,8 +469,6 @@ mod stack_parameter_driven_updates;
 mod stack_policy_by_reference;
 #[path = "all/stack_policy_enforcement.rs"]
 mod stack_policy_enforcement;
-#[path = "all/stack_provenance_deployment_paths.rs"]
-mod stack_provenance_deployment_paths;
 #[path = "all/stack_refactors.rs"]
 mod stack_refactors;
 #[path = "all/stack_refusal_wording.rs"]
@@ -619,8 +615,14 @@ mod expired_wait_rollback;
 mod ssm_parameter_types;
 #[path = "all/mwaa_environment_resource_type.rs"]
 mod mwaa_environment_resource_type;
-#[path = "all/dynamodb_table_creation_window.rs"]
-mod dynamodb_table_creation_window;
+#[path = "all/amplifyuibuilder_resource_types.rs"]
+mod amplifyuibuilder_resource_types;
+#[path = "all/bucket_replacement_cleanup.rs"]
+mod bucket_replacement_cleanup;
+#[path = "all/dynamodb_kinesis_streaming_estate.rs"]
+mod dynamodb_kinesis_streaming_estate;
+#[path = "all/stack_provenance_deployment_paths.rs"]
+mod stack_provenance_deployment_paths;
 #[path = "all/elbv2_rule_priority_collision_update.rs"]
 mod elbv2_rule_priority_collision_update;
 #[path = "all/monitored_registrations.rs"]
