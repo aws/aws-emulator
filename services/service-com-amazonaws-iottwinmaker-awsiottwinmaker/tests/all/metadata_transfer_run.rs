@@ -829,6 +829,213 @@ async fn entries_the_destination_cannot_take_are_counted_and_an_unreadable_sourc
     );
 }
 
+/// RULE: a transferred schema is held to the SAME rules a caller's own request
+/// is — a `dataType.type` and a `groupType` the model's enumerations define,
+/// and a property group that names only properties the component has — so a
+/// document cannot put into a workspace what the control plane would have
+/// refused.
+///
+/// This writer is the one no boundary validator stands in front of: the values
+/// come out of a document the transfer read, not off the wire, so the rules are
+/// what decides them. A refused entry fails the ENTRY (`failedCount`) and
+/// writes nothing, which is how this writer refuses.
+///
+/// The rows differ along which member misses its value list and where it sits —
+/// a component type's definition, its groups, an entity component's definition,
+/// its groups, and a group's names — with a control row inside every list to
+/// show the rows are refused for the value and not for their shape. The value
+/// lists are the model's own (`ops::types::TYPE_VALUES`,
+/// `ops::types::GROUP_TYPE_VALUES`).
+#[tokio::test]
+async fn a_transferred_schema_is_held_to_the_modelled_value_lists() {
+    /// One row: what it is about, the document it stages, the counts the run
+    /// reports, and the ids the destination must or must not hold afterwards.
+    struct Row {
+        case: &'static str,
+        document: Value,
+        /// `(total, succeeded, skipped, failed)`.
+        counts: (i64, i64, i64, i64),
+        /// The component type id the destination must hold afterwards, if any.
+        component_type_id: Option<&'static str>,
+        /// The entity id the destination must hold afterwards, if any.
+        entity_id: Option<&'static str>,
+    }
+
+    let rows = vec![
+        Row {
+            case: "a component type definition inside every value list",
+            document: json!({
+                "componentTypes": [{
+                    "componentTypeId": "com.example.good",
+                    "propertyDefinitions": {"heat": {"dataType": {"type": "DOUBLE"}}},
+                    "propertyGroups": {"G": {"groupType": "TABULAR", "propertyNames": ["heat"]}},
+                }],
+            }),
+            counts: (1, 1, 0, 0),
+            component_type_id: Some("com.example.good"),
+            entity_id: None,
+        },
+        Row {
+            case: "a component type definition whose dataType.type is outside the list",
+            document: json!({
+                "componentTypes": [{
+                    "componentTypeId": "com.example.badType",
+                    "propertyDefinitions": {"heat": {"dataType": {"type": "FOO"}}},
+                }],
+            }),
+            counts: (1, 0, 0, 1),
+            component_type_id: None,
+            entity_id: None,
+        },
+        Row {
+            case: "a component type definition whose dataType names no type at all",
+            document: json!({
+                "componentTypes": [{
+                    "componentTypeId": "com.example.typeless",
+                    "propertyDefinitions": {"heat": {"dataType": {"unitOfMeasure": "bar"}}},
+                }],
+            }),
+            counts: (1, 0, 0, 1),
+            component_type_id: None,
+            entity_id: None,
+        },
+        Row {
+            case: "a component type group whose groupType is outside the list",
+            document: json!({
+                "componentTypes": [{
+                    "componentTypeId": "com.example.badGroup",
+                    "propertyDefinitions": {"heat": {"dataType": {"type": "DOUBLE"}}},
+                    "propertyGroups": {"G": {"groupType": "NOT_A_GROUP_TYPE", "propertyNames": ["heat"]}},
+                }],
+            }),
+            counts: (1, 0, 0, 1),
+            component_type_id: None,
+            entity_id: None,
+        },
+        Row {
+            case: "an entity component definition whose dataType.type is outside the list",
+            document: json!({
+                "entities": [{
+                    "entityId": "badTypeEntity",
+                    "entityName": "Bad type",
+                    "components": {"C": {
+                        "properties": {"p": {"definition": {"dataType": {"type": "FOO"}}}},
+                    }},
+                }],
+            }),
+            counts: (1, 0, 0, 1),
+            component_type_id: None,
+            entity_id: None,
+        },
+        Row {
+            case: "an entity component group whose groupType is outside the list",
+            document: json!({
+                "entities": [{
+                    "entityId": "badGroupEntity",
+                    "entityName": "Bad group",
+                    "components": {"C": {
+                        "properties": {"p": {"definition": {"dataType": {"type": "STRING"}}}},
+                        "propertyGroups": {"G": {"groupType": "tabular", "propertyNames": ["p"]}},
+                    }},
+                }],
+            }),
+            counts: (1, 0, 0, 1),
+            component_type_id: None,
+            entity_id: None,
+        },
+        Row {
+            case: "an entity component group naming a property the component does not have",
+            document: json!({
+                "entities": [{
+                    "entityId": "strandedGroupEntity",
+                    "entityName": "Stranded group",
+                    "components": {"C": {
+                        "properties": {"p": {"definition": {"dataType": {"type": "STRING"}}}},
+                        "propertyGroups": {"G": {"propertyNames": ["notAProperty"]}},
+                    }},
+                }],
+            }),
+            counts: (1, 0, 0, 1),
+            component_type_id: None,
+            entity_id: None,
+        },
+        Row {
+            case: "an entity component group naming the property the same entry declares",
+            document: json!({
+                "entities": [{
+                    "entityId": "goodGroupEntity",
+                    "entityName": "Good group",
+                    "components": {"C": {
+                        "properties": {"p": {"definition": {"dataType": {"type": "STRING"}}}},
+                        "propertyGroups": {"G": {"groupType": "TABULAR", "propertyNames": ["p"]}},
+                    }},
+                }],
+            }),
+            counts: (1, 1, 0, 0),
+            component_type_id: None,
+            entity_id: Some("goodGroupEntity"),
+        },
+    ];
+
+    for row in rows {
+        let Row {
+            case,
+            document,
+            counts,
+            component_type_id,
+            entity_id,
+        } = row;
+        // One emulator per row, so what the destination holds afterwards is
+        // what THIS document described.
+        let emulator = emulator_with(&[DESTINATION]).await;
+        let key = "documents/schema.json";
+        stage_object(
+            &emulator,
+            key,
+            serde_json::to_vec(&document).expect("the document serializes"),
+        )
+        .await;
+
+        let job_id = "schemaJob";
+        import_job(&emulator, job_id, key, DESTINATION).await;
+        let settled = settled_job(&emulator, job_id).await;
+        let actual = progress_of(&settled);
+        assert_eq!(
+            actual, counts,
+            "case {case:?}: expected the counts {counts:?}, got {actual:?} in {settled:?}"
+        );
+
+        // What the run reported is what the destination really holds: a refused
+        // entry wrote nothing, an accepted one is readable through this
+        // service's own operations.
+        for described in document["componentTypes"].as_array().into_iter().flatten() {
+            let described_id = described["componentTypeId"].as_str().unwrap_or_default();
+            let read = emulator.get_component_type(DESTINATION, described_id).await;
+            let expected = match component_type_id == Some(described_id) {
+                true => 200,
+                false => 404,
+            };
+            assert_eq!(
+                read.status, expected,
+                "case {case:?}: expected {expected} from GetComponentType {described_id:?}, got \
+                 {read:?}"
+            );
+        }
+        for described in document["entities"].as_array().into_iter().flatten() {
+            let described_id = described["entityId"].as_str().unwrap_or_default();
+            let read = emulator.get_entity(DESTINATION, described_id).await;
+            let expected = match entity_id == Some(described_id) {
+                true => 200,
+                false => 404,
+            };
+            assert_eq!(
+                read.status, expected,
+                "case {case:?}: expected {expected} from GetEntity {described_id:?}, got {read:?}"
+            );
+        }
+    }
+}
+
 /// An Amazon S3 source naming the object `key` of the suite's bucket.
 fn s3_source(key: &str) -> Value {
     json!({

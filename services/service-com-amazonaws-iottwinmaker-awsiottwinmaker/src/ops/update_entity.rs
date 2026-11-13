@@ -70,7 +70,14 @@
 //! nothing has been written to it, and asked of every definition the patched
 //! component would hold wherever the entry re-points the `componentTypeId`
 //! those definitions resolve through —
-//! [`crate::state::Workspace::component_property_defaults_violation`])
+//! [`crate::state::Workspace::component_property_defaults_violation`]), a
+//! property definition whose `dataType` carries a `type` outside the modelled
+//! `Type` value list, or a property group whose `groupType` is outside the
+//! modelled `GroupType` list or whose `propertyNames` names a property the
+//! component does not have ([`crate::state::property_definition_violation`],
+//! [`crate::state::component_property_group_violation`] — the rules
+//! `CreateEntity` applies to the definitions and groups it writes, asked of the
+//! record each entry would leave behind)
 //! — and a `parentEntityId` that names no
 //! entity of the workspace, names the entity being updated, or names an entity
 //! BELOW it (which would make the stored parent graph cyclic). The patch is
@@ -542,6 +549,9 @@ fn apply_component_update(
         }
     }
     apply_property_group_updates(
+        workspace,
+        component_type_id.as_deref(),
+        &component.properties,
         &mut component.property_groups,
         &member,
         update.property_group_updates,
@@ -662,6 +672,9 @@ fn apply_composite_component_update(
         update.property_updates,
     )?;
     apply_property_group_updates(
+        workspace,
+        Some(component_type_id.as_str()),
+        &composite.properties,
         &mut composite.property_groups,
         &member,
         update.property_group_updates,
@@ -728,6 +741,20 @@ fn apply_property_updates(
                 // `crate::state::Workspace::component_property_definition_needs_data_type`
                 // every writer of a component's definition shares with
                 // `CreateEntity`.
+                // A `dataType` whose `type` is outside the modelled `Type`
+                // value list is refused before anything else is asked of the
+                // definition: it is a type no read could report and no
+                // `DataValue` could ever satisfy — the rule
+                // `crate::state::property_definition_violation` every writer of
+                // a definition shares with `CreateEntity`.
+                if let Some(definition) = update.definition.as_ref() {
+                    if let Some(violation) = crate::state::property_definition_violation(
+                        &format!("{member}.definition"),
+                        definition,
+                    ) {
+                        return Err(validation(violation));
+                    }
+                }
                 if update.definition.as_ref().is_some_and(|definition| {
                     workspace.component_property_definition_needs_data_type(
                         component_type_id,
@@ -811,7 +838,17 @@ fn apply_property_updates(
 /// Apply a component's or a composite component's `propertyGroupUpdates` to the
 /// property groups it holds. Shared by both for the same reason
 /// [`apply_property_updates`] is.
+///
+/// `component_type_id` is the component type the holder instantiates and
+/// `properties` the properties it holds once this request's `propertyUpdates`
+/// have been applied: a group GROUPS properties of the component, so those are
+/// what the names an entry carries are resolved against
+/// (`crate::state::component_property_group_violation`, the rule every writer
+/// of a component's groups shares with `CreateEntity`).
 fn apply_property_group_updates(
+    workspace: &crate::state::Workspace,
+    component_type_id: Option<&str>,
+    properties: &::std::collections::BTreeMap<String, crate::state::PropertyRecord>,
     property_groups: &mut ::std::collections::BTreeMap<String, crate::state::PropertyGroupRecord>,
     member_path: &str,
     updates: Option<::std::collections::HashMap<String, ComponentPropertyGroupRequest>>,
@@ -835,7 +872,10 @@ fn apply_property_group_updates(
             property_groups.remove(&group_name);
             continue;
         }
-        let group = property_groups.entry(group_name).or_default();
+        // The record this entry LEAVES behind, built before it is stored: an
+        // entry may REFINE the stored group rather than replace it, so the
+        // group the rules below judge is the patched one.
+        let mut group = property_groups.get(&group_name).cloned().unwrap_or_default();
         if let Some(group_type) = update.group_type {
             group.group_type = Some(group_type);
         }
@@ -845,6 +885,21 @@ fn apply_property_group_updates(
         if let Some(property_names) = update.property_names {
             group.property_names = property_names;
         }
+        // `groupType` carries a value the model's `GroupType` enumeration
+        // admits, and every name the group carries is a property the component
+        // has — the rule `CreateEntity` applies to the groups it writes,
+        // decided BEFORE the patch is applied so a group a read could not
+        // report is refused rather than stored.
+        if let Some(message) = crate::state::component_property_group_violation(
+            workspace,
+            &member,
+            component_type_id,
+            properties,
+            &group,
+        ) {
+            return Err(validation(message));
+        }
+        property_groups.insert(group_name, group);
     }
     Ok(())
 }

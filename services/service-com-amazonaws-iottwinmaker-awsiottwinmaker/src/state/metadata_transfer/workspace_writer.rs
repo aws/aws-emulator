@@ -168,6 +168,15 @@ fn write_component_type(
             )
         })
         .or_else(|| {
+            property_definitions_violation(
+                "propertyDefinitions",
+                entry
+                    .property_definitions
+                    .iter()
+                    .map(|(property_name, definition)| (property_name.as_str(), definition)),
+            )
+        })
+        .or_else(|| {
             workspace
                 .stranded_property_definition(
                     &entry.extends_from,
@@ -301,22 +310,50 @@ fn write_entity(
     }
     // Every component the entry describes has to be one the workspace could
     // hold: it instantiates a component type that is not abstract, every
-    // definition it declares leaves the property with a `dataType`, and every
-    // value it carries is a value of that type. The rules are the crate's own,
-    // shared with `CreateEntity`.
-    for (component_name, component) in &entry.components {
+    // definition it declares leaves the property with a `dataType` the model
+    // defines, every value it carries is a value of that type, and every
+    // property group it declares carries a `groupType` the model admits and
+    // names properties the component has. The rules are the crate's own,
+    // shared with `CreateEntity`, and they are asked of the RECORDS this write
+    // would store, which is what the control plane asks them of.
+    let components: BTreeMap<String, ComponentRecord> = entry
+        .components
+        .iter()
+        .map(|(component_name, component)| {
+            (
+                component_name.clone(),
+                component_record_of(component_name, component),
+            )
+        })
+        .collect();
+    for (component_name, record) in &components {
+        // The entry this record was built from, under the same key: the
+        // property rule is asked of the REQUEST shapes the entry carries, the
+        // group rule of the records the write would store.
+        let requested = entry.components.get(component_name);
         let refusal = abstract_component_type_violation(
             workspace,
-            component.component_type_id.as_deref(),
+            record.component_type_id.as_deref(),
         )
         .or_else(|| {
             workspace.component_property_violation(
-                component.component_type_id.as_deref(),
+                record.component_type_id.as_deref(),
                 &format!("components.{component_name}"),
-                component
-                    .properties
-                    .iter()
-                    .map(|(property_name, property)| (property_name.as_str(), property)),
+                requested.into_iter().flat_map(|component| {
+                    component
+                        .properties
+                        .iter()
+                        .map(|(property_name, property)| (property_name.as_str(), property))
+                }),
+            )
+        })
+        .or_else(|| {
+            component_property_groups_violation(
+                workspace,
+                &format!("components.{component_name}"),
+                record.component_type_id.as_deref(),
+                &record.properties,
+                &record.property_groups,
             )
         });
         if let Some(message) = refusal {
@@ -336,16 +373,7 @@ fn write_entity(
         // when nothing named one.
         description: entry.description.clone().unwrap_or_default(),
         parent_entity_id,
-        components: entry
-            .components
-            .iter()
-            .map(|(component_name, component)| {
-                (
-                    component_name.clone(),
-                    component_record_of(component_name, component),
-                )
-            })
-            .collect(),
+        components,
         tags: entry.tags.clone(),
         creation_date_time: now,
         update_date_time: now,

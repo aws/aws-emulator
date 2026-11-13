@@ -901,10 +901,14 @@ impl Workspace {
     /// come to hold cannot be stored, as the message a `ValidationException`
     /// carries — `None` when every one of them can.
     ///
-    /// The three rules every writer of a component's properties meets, asked of
+    /// The four rules every writer of a component's properties meets, asked of
     /// each requested property in property-NAME order so a request carrying
     /// more than one refusable property is always refused for the first of them:
     ///
+    /// * a definition whose `dataType` carries a `type` outside the modelled
+    ///   `Type` value list ([`property_definition_violation`]), which a read
+    ///   would otherwise report verbatim on a required member the model does
+    ///   not admit it on;
     /// * a definition that would leave the property with no `dataType` at all
     ///   ([`component_property_definition_needs_data_type`](Self::component_property_definition_needs_data_type)),
     ///   which `PropertyDefinitionResponse` requires a read to report;
@@ -933,6 +937,18 @@ impl Workspace {
         >,
     ) -> Option<String> {
         for (property_name, property) in properties {
+            // Asked of the definition the request LITERALLY carries, before any
+            // resolution: a `dataType` outside the modelled value list is one
+            // no read could report and no `DataValue` could ever satisfy, so it
+            // is refused rather than stored.
+            if let Some(definition) = property.definition.as_ref() {
+                if let Some(violation) = property_definition_violation(
+                    &format!("{member_path}.properties.{property_name}.definition"),
+                    definition,
+                ) {
+                    return Some(violation);
+                }
+            }
             if property.definition.as_ref().is_some_and(|definition| {
                 self.component_property_definition_needs_data_type(
                     component_type_id,

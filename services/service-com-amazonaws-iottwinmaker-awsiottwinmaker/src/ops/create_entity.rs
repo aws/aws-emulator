@@ -7,7 +7,7 @@
 //! terminal `ACTIVE` state, which is the state recorded traffic reads a
 //! just-created entity back in.
 //!
-//! Seven refusals this handler owns, each a `ValidationException` (the model
+//! Ten refusals this handler owns, each a `ValidationException` (the model
 //! declares no `ResourceNotFoundException` for `CreateEntity`):
 //!
 //! * `tags` names a key in the reserved `aws:` namespace
@@ -16,6 +16,17 @@
 //!   refused and no entity is created;
 //! * the workspace does not exist;
 //! * `parentEntityId` names an entity that does not exist in the workspace;
+//! * a requested property's definition carries a `dataType` whose `type` is
+//!   outside the modelled `Type` value list
+//!   ([`crate::state::property_definition_violation`]): the member is
+//!   `@required` on the `DataType` a read reports, and a type the model does
+//!   not define is also one no `DataValue` could ever satisfy, so such a
+//!   definition would leave the property unwritable for good. The boundary's
+//!   own value-list check answers a request off the WIRE before this handler
+//!   sees it (the reason the sibling handlers of this service restate their
+//!   own enumerations' lists too); the rule is stated here because every
+//!   writer of a definition shares it, the one that lands a transferred
+//!   metadata document included;
 //! * a requested property's definition would leave the property with no
 //!   `dataType` at all — neither its own nor one inherited from the component
 //!   type its holder instantiates
@@ -41,6 +52,16 @@
 //!   has no way to serve the values of a property it declares, so it is
 //!   extended rather than instantiated, and a component of one is refused
 //!   BEFORE anything is stored;
+//! * a requested property GROUP of a component — top-level or composite —
+//!   carries a `groupType` outside the modelled `GroupType` value list (the
+//!   boundary answers that one on the wire too), or names in `propertyNames` a
+//!   property the component does not have
+//!   ([`crate::state::component_property_groups_violation`]): a group's
+//!   `groupType` is `@required` on the response a read reports, and a group
+//!   GROUPS properties of the component, so each name it carries is one of the
+//!   component's own properties or one the component type it instantiates
+//!   gives it — the rule every writer of a component TYPE's `propertyGroups`
+//!   already met ([`crate::state::property_groups_violation`]);
 //! * a `compositeComponents` key is not the path of a composite component this
 //!   entity has: the path's first segment must name one of the request's
 //!   `components`, and each further segment an entry in the
@@ -353,6 +374,27 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         let mut component_records = components_from_request(components);
 
+        // A property GROUP of a component carries a `groupType` the model's
+        // `GroupType` enumeration admits and GROUPS properties the component
+        // has — its own or the ones the component type it instantiates gives it
+        // (`crate::state::component_property_groups_violation`, the
+        // component-level counterpart of the rule every writer of a component
+        // TYPE's `propertyGroups` meets). Asked of the records as this create
+        // would store them, so a group may name a property the same request
+        // declares, and walked in component-name order so which component a
+        // refusal names does not depend on the request map's iteration order.
+        for (component_name, component) in &component_records {
+            if let Some(message) = crate::state::component_property_groups_violation(
+                workspace,
+                &format!("components.{component_name}"),
+                component.component_type_id.as_deref(),
+                &component.properties,
+                &component.property_groups,
+            ) {
+                return Err(validation(message).into());
+            }
+        }
+
         // A composite component inherits from the component type the
         // declaration its path resolves to names, so the rule above is applied
         // to the path's own component type. The resolution is the one the loop
@@ -427,6 +469,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     composite.property_groups.unwrap_or_default(),
                 ),
             };
+            // A composite component's groups are held to the same rule the
+            // top-level components' are, against the component type the
+            // declaration its path resolved to names.
+            if let Some(message) = crate::state::component_property_groups_violation(
+                workspace,
+                &format!("compositeComponents.{component_path}"),
+                Some(&record.component_type_id),
+                &record.properties,
+                &record.property_groups,
+            ) {
+                return Err(validation(message).into());
+            }
             // The holding component is the one the path's first segment was
             // resolved against, so it is present.
             if let Some(component) = component_records.get_mut(&resolved.component_name) {

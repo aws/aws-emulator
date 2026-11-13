@@ -28,6 +28,15 @@
 //!   modelled `ResourceNotFoundException` (HTTP 404), the same reading
 //!   `GetComponentType` gives the same two labels, since both address a
 //!   resource that must already exist;
+//! * the patched component type would hold a property definition whose
+//!   `dataType` carries a `type` outside the modelled `Type` value list, or a
+//!   property group whose `groupType` is outside the modelled `GroupType` list
+//!   — a `ValidationException`, the rules
+//!   [`crate::state::property_definitions_violation`] and
+//!   [`crate::state::property_groups_violation`] hold for every writer of those
+//!   members, because the model admits only the values its enumerations define
+//!   on members a read reports as required. Checked over the whole patched
+//!   record, as the two rules below are;
 //! * the patched component type would hold a property definition with no
 //!   `dataType` that inherits none — it extends nothing, or no component type
 //!   on its `extendsFrom` chain declares that property with a `dataType` — a
@@ -415,6 +424,21 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // the property-group rule above is, because a patch that leaves both
         // alone leaves the answer the stored record was already held to.
         if declares_property_definitions || declares_extends_from {
+            // A definition's `dataType` carries a `type` the model's `Type`
+            // enumeration admits — the rule
+            // `crate::state::property_definitions_violation` every writer of a
+            // definition meets. Asked over the WHOLE patched record, for the
+            // same reason the two rules below are, and before them: a type the
+            // model does not define has nothing to resolve or compare against.
+            if let Some(message) = crate::state::property_definitions_violation(
+                "propertyDefinitions",
+                updated
+                    .property_definitions
+                    .iter()
+                    .map(|(property_name, definition)| (property_name.as_str(), definition)),
+            ) {
+                return Err(validation_exception(message));
+            }
             if let Some(property_name) = workspace.stranded_property_definition(
                 &updated.extends_from,
                 updated

@@ -63,6 +63,10 @@ mod identity;
 mod page_tokens;
 /// The one projection of a stored property every reader of one reports through.
 mod property_projection;
+/// The rules every writer of a requested property definition or property group
+/// meets: the modelled value lists their enum-shaped members admit, and the
+/// properties a COMPONENT's group may name.
+mod requested_schema;
 mod workspace_rules;
 /// What a metadata transfer job READS, WRITES and REPORTS: the document its
 /// source describes and the run that lands it in its destination.
@@ -71,6 +75,7 @@ pub use identity::*;
 pub use metadata_transfer::*;
 pub use page_tokens::*;
 pub use property_projection::*;
+pub use requested_schema::*;
 
 /// The `ParentEntityId` sentinel the service uses for an entity with no parent.
 /// Taken from the `ParentEntityId` pattern, which admits the literal `$ROOT`
@@ -2618,23 +2623,43 @@ pub fn composite_component_types_violation(
 /// Why `record`'s `propertyGroups` cannot be stored, as the message a
 /// `ValidationException` carries — `None` when they can.
 ///
-/// A property group GROUPS properties of the component type, so each name it
-/// carries has to be one the component type defines: one of its own
-/// definitions, or one it inherits from the component types it extends. The
-/// groups and the names are both read off `record` as the write leaves it, so a
-/// group may name a property the same request defines and no caller can check
-/// one component type's groups against another's definitions. Where the chain
-/// reaches a built-in type this emulator does not model, it does not hold its
-/// definitions, so a
+/// Two questions, the ones every writer of a property group answers
+/// ([`component_property_groups_violation`] asks them of a COMPONENT's groups):
+///
+/// * `groupType` targets the modelled `GroupType` enumeration
+///   ([`crate::ops::types::GROUP_TYPE_VALUES`]), whose value list the boundary
+///   validator does not enforce, and it is `@required` on the
+///   `PropertyGroupResponse` a read reports, so a value outside that list is
+///   refused rather than stored and reported verbatim on that member;
+/// * a property group GROUPS properties of the component type, so each name it
+///   carries has to be one the component type defines: one of its own
+///   definitions, or one it inherits from the component types it extends.
+///
+/// The groups and the names are both read off `record` as the write leaves it,
+/// so a group may name a property the same request defines and no caller can
+/// check one component type's groups against another's definitions. Where the
+/// chain reaches a built-in type this emulator does not model, it does not hold
+/// its definitions, so a
 /// name it does not otherwise account for cannot be called undefined and the
-/// group stands. Shared by every writer of a component type's `propertyGroups`.
+/// group stands — the `groupType` rule above holds all the same, since the
+/// model's value list does not depend on what a chain declares. Shared by every
+/// writer of a component type's `propertyGroups`.
 pub fn property_groups_violation(workspace: &Workspace, record: &ComponentType) -> Option<String> {
     let (inherited, inherits_unknown_definitions) =
         workspace.inherited_property_names(&record.extends_from);
-    if inherits_unknown_definitions {
-        return None;
-    }
     for (group_name, group) in &record.property_groups {
+        if let Some(group_type) = group.group_type.as_deref() {
+            if let Some(violation) = enum_value_violation(
+                &format!("propertyGroups.{group_name}.groupType"),
+                group_type,
+                crate::ops::types::GROUP_TYPE_VALUES,
+            ) {
+                return Some(violation);
+            }
+        }
+        if inherits_unknown_definitions {
+            continue;
+        }
         for property_name in &group.property_names {
             if record.property_definitions.contains_key(property_name)
                 || inherited.contains(property_name)

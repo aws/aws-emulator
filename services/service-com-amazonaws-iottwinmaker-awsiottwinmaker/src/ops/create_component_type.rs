@@ -28,6 +28,14 @@
 //! * the workspace already holds
 //!   [`crate::state::MAX_COMPONENT_TYPES_PER_WORKSPACE`] component types the
 //!   caller created — the modelled `ServiceQuotaExceededException`;
+//! * a property definition carries a `dataType` whose `type` is outside the
+//!   modelled `Type` value list, or a property group carries a `groupType`
+//!   outside the modelled `GroupType` list — a `ValidationException`, because
+//!   both members are `@required` on the response a read reports and the model
+//!   admits only the values its enumeration defines (the rules
+//!   [`crate::state::property_definitions_violation`] and
+//!   [`crate::state::property_groups_violation`], which every writer of those
+//!   members meets);
 //! * a property definition carries no `dataType` and inherits none — the
 //!   component type extends nothing, or no component type on its `extendsFrom`
 //!   chain declares that property with a `dataType` — a `ValidationException`,
@@ -364,6 +372,23 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             workspace,
             &input.component_type_id,
             &composite_component_types,
+        ) {
+            return Err(validation_exception(message));
+        }
+        // A definition's `dataType` carries a `type` the model's `Type`
+        // enumeration admits: the member is `@required` on the `DataType` a
+        // read reports, and a value outside the list would leave the property
+        // unwritable for good, since no `DataValue` can carry a type the model
+        // does not define. The rule
+        // `crate::state::property_definitions_violation` every writer of a
+        // definition shares, asked of the whole requested map in property-NAME
+        // order and BEFORE the resolution below, which has nothing to resolve
+        // for a type the model does not define.
+        if let Some(message) = crate::state::property_definitions_violation(
+            "propertyDefinitions",
+            property_definitions
+                .iter()
+                .map(|(property_name, definition)| (property_name.as_str(), definition)),
         ) {
             return Err(validation_exception(message));
         }

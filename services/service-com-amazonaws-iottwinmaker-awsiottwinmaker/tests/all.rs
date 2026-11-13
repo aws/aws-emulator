@@ -218,6 +218,9 @@ mod reserved_tag_keys;
 #[path = "all/resource_tags.rs"]
 mod resource_tags;
 
+#[path = "all/schema_value_lists.rs"]
+mod schema_value_lists;
+
 #[path = "all/scene_delete.rs"]
 mod scene_delete;
 
