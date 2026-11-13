@@ -31,6 +31,8 @@ mod bedrock_runtime_request_claim;
 mod bedrock_runtime_streaming;
 #[path = "all/catalogued_model_inference.rs"]
 mod catalogued_model_inference;
+#[path = "all/converse_guardrail_trace.rs"]
+mod converse_guardrail_trace;
 #[path = "all/converse_prompt_cache.rs"]
 mod converse_prompt_cache;
 #[path = "all/converse_role_sequence_and_stream_increments.rs"]
