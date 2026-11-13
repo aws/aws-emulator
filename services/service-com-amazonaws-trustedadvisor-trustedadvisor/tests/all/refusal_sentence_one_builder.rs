@@ -22,6 +22,11 @@
 //! skeleton. A path that worded either half itself would have to agree byte for byte to
 //! pass, so this suite is what pins that the two share one builder.
 //!
+//! The handler-raised refusal of a `nextToken` that is not a cursor the read it was sent
+//! to issued goes through the SAME two readers below, from
+//! `tests/all/page_token_refusal_sentence.rs`, which is where its rows live because they
+//! span every paginated operation rather than one.
+//!
 //! The rows differ along the path that words them, the operation, the number of clauses
 //! (one, two and three on each path), the subject form (a value echoed, and the null an
 //! absent member was) and the requirement class (an enum value set, a range bound, a
@@ -74,7 +79,7 @@ enum Path {
 }
 
 /// One clause, taken apart into the three things the skeleton states.
-type Clause = (String, String, String);
+pub(crate) type Clause = (String, String, String);
 
 /// One row: what it is about, which path words it, the request to make, and the clauses
 /// the refusal must carry — compared as a SET, because the clause ORDER of a
@@ -118,7 +123,7 @@ fn batch_body(entries: &[(String, bool)]) -> Value {
 ///
 /// Every row goes through this one reader, so a path wording its own envelope would have
 /// to word it identically to get here at all.
-fn clauses_of(case: &str, message: &str) -> Vec<String> {
+pub(crate) fn clauses_of(case: &str, message: &str) -> Vec<String> {
     if let Some(only) = message.strip_prefix("1 validation error detected: ") {
         assert!(
             !only.contains("; "),
@@ -153,7 +158,7 @@ fn clauses_of(case: &str, message: &str) -> Vec<String> {
 /// One clause taken apart into its subject, the member path it names and the requirement
 /// it states. Parsing is the skeleton assertion: a clause spelled any other way has no
 /// three parts to read.
-fn clause_parts(case: &str, clause: &str) -> Clause {
+pub(crate) fn clause_parts(case: &str, clause: &str) -> Clause {
     let (subject, rest) = clause.split_once(" at '").unwrap_or_else(|| {
         panic!("case {case}: expected a clause naming the member it is about, got {clause:?}")
     });

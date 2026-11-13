@@ -1433,8 +1433,30 @@ pub struct Page<T> {
 }
 
 /// A `nextToken` this service did not issue, or issued for a different list.
+///
+/// Carries the value the request held so the handler that refuses it never has
+/// to go back to the request for it: the clause the refusal states echoes the
+/// member's value ([`crate::service::validation::page_token_refusal`]), and
+/// taking it from the rejection is what keeps the echoed value and the rejected
+/// one the same string.
 #[derive(Debug)]
-pub struct MalformedToken;
+pub struct MalformedToken {
+    token: String,
+}
+
+impl MalformedToken {
+    /// The rejected token.
+    fn new(token: &str) -> Self {
+        Self {
+            token: token.to_string(),
+        }
+    }
+
+    /// The value the request's `nextToken` held, for the refusal to echo.
+    pub fn token(&self) -> &str {
+        &self.token
+    }
+}
 
 /// The separator between a cursor's scope and its key. ASCII unit separator: a
 /// key this service pages on is a stored id or ARN, which cannot contain it, and
@@ -1497,11 +1519,14 @@ pub fn encode_token(scope: &str, last_key: &str) -> String {
 /// The key a cursor points at, or [`MalformedToken`] when the token is not one
 /// this service issued for `scope`.
 pub fn decode_token(scope: &str, token: &str) -> Result<String, MalformedToken> {
-    let bytes = ::aws_smithy_types::base64::decode(token).map_err(|_| MalformedToken)?;
-    let decoded = String::from_utf8(bytes).map_err(|_| MalformedToken)?;
-    let (token_scope, key) = decoded.split_once(TOKEN_SEPARATOR).ok_or(MalformedToken)?;
+    let bytes =
+        ::aws_smithy_types::base64::decode(token).map_err(|_| MalformedToken::new(token))?;
+    let decoded = String::from_utf8(bytes).map_err(|_| MalformedToken::new(token))?;
+    let (token_scope, key) = decoded
+        .split_once(TOKEN_SEPARATOR)
+        .ok_or_else(|| MalformedToken::new(token))?;
     if token_scope != scope {
-        return Err(MalformedToken);
+        return Err(MalformedToken::new(token));
     }
     Ok(key.to_string())
 }

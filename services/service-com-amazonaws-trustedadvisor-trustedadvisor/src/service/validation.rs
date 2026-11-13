@@ -54,6 +54,13 @@
 //! are: ahead of the support-level gate, so a malformed request is this 400 whether the
 //! calling account's support plan includes the API or not.
 //!
+//! A condition SEVERAL handlers raise off ONE shared mechanism states its subject, member
+//! path and requirement here as well, in one function those handlers call: a `nextToken`
+//! that is not a cursor the read it was sent to issued is refused by every paginated
+//! operation of this service off the single cursor encoding in [`crate::state`], so the
+//! sentence for it is [`page_token_refusal`] rather than one copy per handler, which is
+//! what keeps those copies from drifting from each other as well as from this module.
+//!
 //! A `@sensitive` member reached INSIDE a collection declines the same way, so rule 3
 //! holds wherever a value is stated and not only where the violation was raised. Declining
 //! is ALL OR NOTHING per request ([`rendered_collections`]): otherwise the sentence for one
@@ -252,6 +259,54 @@ pub(crate) fn refusal_sentence(clauses: &[String]) -> Option<String> {
             many.join("; ")
         )),
     }
+}
+
+/// The member path a page-token clause names: the paginated member every
+/// `@paginated(inputToken: nextToken)` operation of this service carries the cursor on,
+/// which is the member a caller has to change.
+const PAGE_TOKEN_MEMBER_PATH: &str = "nextToken";
+
+/// What that member had to satisfy: a cursor is only meaningful to the read that issued
+/// it (`crate::state::list_scope`), so what is required of the value is that it be one of
+/// those.
+///
+/// Stated in the `Member must …` form every other requirement of this service's clauses
+/// is in ([`requirement_of`]), which is where the wording comes from: unlike those, this
+/// condition is in no recorded answer of this service, so there is no recorded sentence to
+/// state and nothing here claims one. What IS recorded about this service's refusals — the
+/// envelope and the clause skeleton, pinned against recorded answers by
+/// `tests/all/validation_message_rendering.rs` — is reused rather than re-worded, so the
+/// half that is a choice is the requirement half alone, and it is the same choice for all
+/// seven paginated reads.
+const PAGE_TOKEN_REQUIREMENT: &str =
+    "Member must be a pagination token this service issued for this list";
+
+/// The `message` of the refusal a `nextToken` this service did not issue for THIS read
+/// earns, for every paginated operation of this service.
+///
+/// Only the CONDITION is the handler's — the modelled constraint traits say how long a
+/// `nextToken` may be, not which values are cursors, so the framework's walk never
+/// collects it. The SENTENCE is the service's and is built here, through the same
+/// [`clause`], [`echoed_value`] and [`refusal_sentence`] every other refusal of this
+/// service goes through, and in ONE place for all of them: the paginated operations share
+/// one cursor encoding, so they state one sentence about a token that is not one of its
+/// cursors rather than each wording its own.
+///
+/// The clause echoes the value the member held, as rule 2 states, and nothing more: the
+/// echo is the request's own `nextToken`, whose size the model's `@length(4, 10000)`
+/// bounds before any handler runs, so the sentence is bounded whatever the request holds.
+pub(crate) fn page_token_refusal(token: &str) -> String {
+    let clauses = [clause(
+        &echoed_value(token),
+        PAGE_TOKEN_MEMBER_PATH,
+        PAGE_TOKEN_REQUIREMENT,
+    )];
+    // [`refusal_sentence`] declines an EMPTY clause list only, and this array always holds
+    // the one clause above. The fallback is that clause itself rather than a panic or an
+    // empty `message`: this runs on a request path, where a panic would poison the store
+    // every other caller shares, and a caller handed the clause alone is still told what
+    // to change.
+    refusal_sentence(&clauses).unwrap_or_else(|| clauses.join("; "))
 }
 
 /// The rule half of a clause: what the member had to satisfy.

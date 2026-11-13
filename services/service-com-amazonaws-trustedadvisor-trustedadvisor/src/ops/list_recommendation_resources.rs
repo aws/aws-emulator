@@ -109,6 +109,12 @@
 #[allow(unused_imports)]
 use super::types::*;
 
+// The module that owns the WORDS of this service's input-validation refusals. The
+// malformed-`nextToken` condition this handler raises is one the model's constraint
+// traits cannot express, and its sentence is built there — once for every paginated
+// operation — rather than spelled out again here.
+use crate::service::validation;
+
 // `#[operation_error]` below expands to an invocation of the LOCAL declarative
 // `smithy!` macro, which this line is what emits into the module. Without it the
 // expansion fails with `cannot find macro 'smithy' in this scope` and the
@@ -261,10 +267,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             input.next_token.as_deref(),
             input.max_results,
         )
-        .map_err(|_| {
+        .map_err(|malformed| {
             ListRecommendationResourcesErrorModeled::ValidationException(ValidationException {
-                message: "nextToken is not a pagination token this service issued for this list"
-                    .to_string(),
+                message: validation::page_token_refusal(malformed.token()),
             })
         })?;
 
