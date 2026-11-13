@@ -3509,6 +3509,37 @@ fn arn_in_accounts(arn: &ParsedArn<'_>, accounts: &BTreeSet<String>) -> bool {
     arn.account.is_empty() || accounts.contains(arn.account)
 }
 
+/// The account a resource described by nothing but its ARN BELONGS TO: the
+/// account field of that ARN where the owning service writes one, and the
+/// account this emulator holds the resource in ([`emulator_owner`]) where that
+/// service leaves the field empty — a global service's ARN (CloudFront's, S3's)
+/// and an account-less service's (API Gateway's) carry no account, and a
+/// resource whose URI names none still belongs to the account of the
+/// organisation that holds it, which is the one this emulator presents.
+///
+/// The ONE owner reading this service makes of an ARN, shared by every surface
+/// that reports an owner for a resource it knows only by URI — the membership
+/// reader's `Resource$AccountId` — so it cannot disagree with the owner the
+/// discoverable inventory reports for the same resource as
+/// `DiscoveredResource$AccountId` ([`discovered_resources`], which reports this
+/// emulator's account for exactly those account-less and global URIs). It is
+/// the owner half of the same empty-field reading the item classifier makes
+/// ([`arn_in_accounts`]): an empty account field weighs against nothing, which
+/// is what makes such a resource associable in the first place.
+///
+/// `None` only where no `AWSAccountId` can be reported at all: a value that is
+/// no ARN, and an ARN whose account field carries something that is not an
+/// account id ([`is_account_id`] — `arn:aws:iam::aws:policy/...` names the
+/// service itself there), because the modelled member's pattern (`^[0-9]+$`)
+/// admits nothing else and the member is optional.
+pub fn arn_owner_account(uri: &str) -> Option<String> {
+    let arn = parse_arn(uri)?;
+    if arn.account.is_empty() {
+        return Some(emulator_owner());
+    }
+    is_account_id(arn.account).then(|| arn.account.to_string())
+}
+
 /// The accounts of this organization a resource may belong to: the ones
 /// [`ComAmazonawsFmsAwsfms20180101State::member_accounts`] reports — the SAME
 /// definition `ListMemberAccounts` answers with, so two operations cannot
@@ -4201,9 +4232,15 @@ struct HeldResource {
     account: String,
 }
 
-/// The account a resource belongs to when its own store records no owner: the
-/// ONE account this emulator presents ([`::engine::emulator_account_id`]), which
-/// is also the account segment of every ARN [`::engine::emulator_arn`] builds.
+/// The account a resource belongs to when neither its own store nor its ARN
+/// records an owner: the ONE account this emulator presents
+/// ([`::engine::emulator_account_id`]), which is also the account segment of
+/// every ARN [`::engine::emulator_arn`] builds.
+///
+/// Read both by the inventory, for a record whose owning service keeps no
+/// `OwnerId`, and by [`arn_owner_account`], for an ARN whose owning service
+/// leaves the account field empty — so the two report one owner for one
+/// resource.
 fn emulator_owner() -> String {
     ::engine::emulator_account_id().to_string()
 }

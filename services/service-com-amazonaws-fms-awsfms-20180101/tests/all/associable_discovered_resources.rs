@@ -57,7 +57,13 @@ const CLOUDFRONT_API_VERSION: &str = "2020-05-31";
 /// CloudFront is global, so that ARN carries NO Region; the point of creating the
 /// distribution through CloudFront's own API is that the URI under test is the
 /// one the owning service really mints rather than one spelled out here.
-async fn create_distribution(router: &MultiServiceRouter, caller_reference: &str) -> String {
+///
+/// `pub(crate)` so a sibling suite in this test target stands a global resource
+/// up through this one writer rather than a second copy of it.
+pub(crate) async fn create_distribution(
+    router: &MultiServiceRouter,
+    caller_reference: &str,
+) -> String {
     let body = format!(
         "<DistributionConfig \
           xmlns=\"http://cloudfront.amazonaws.com/doc/{CLOUDFRONT_API_VERSION}/\">\

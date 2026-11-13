@@ -9,8 +9,9 @@
 //!
 //! The rule under test is one sentence: the operation REPORTS, in a stable total
 //! order and without changing anything, exactly the resources currently
-//! associated with the resource set the request names — each with the account its
-//! own ARN names — bounded by the page-size rule every paginated operation of
+//! associated with the resource set the request names — each with the account it
+//! belongs to, derived from its own URI — bounded by the page-size rule every
+//! paginated operation of
 //! this service shares, carrying a `NextToken` only while members remain after
 //! the page, and refusing an identifier that names no stored set
 //! (`ResourceNotFoundException`) or a token it did not mint
@@ -21,7 +22,10 @@
 //! page), in how many resource types it declares, in the ARN forms of its
 //! members (an id-only resource field, a `type/name` one, and one whose resource
 //! field carries slashes), in which accounts of the organization those resources
-//! belong to, and in whether the members are associated in or out of URI order.
+//! belong to, and in whether the members are associated in or out of URI order —
+//! including ARN forms whose owning service leaves the ACCOUNT field empty (an
+//! API Gateway stage's, a global service's), whose resource belongs to the
+//! account this emulator holds it in rather than to no account at all.
 //!
 //! Two rules this suite does not restate, because a shared suite already asserts
 //! them over EVERY operation they hold for: the administrator gate
@@ -71,6 +75,20 @@ fn load_balancer(account: &str, name: &str) -> String {
     format!("arn:aws:elasticloadbalancing:{REGION}:{account}:loadbalancer/app/{name}/50dc6c495c0c9188")
 }
 
+/// An API Gateway stage ARN, whose ACCOUNT field that service leaves EMPTY
+/// (`arn:aws:apigateway:<region>::/restapis/<id>/stages/<name>`) and whose
+/// resource field is a path naming the type in the plural.
+fn api_gateway_stage(api: &str, stage: &str) -> String {
+    format!("arn:aws:apigateway:{REGION}::/restapis/{api}/stages/{stage}")
+}
+
+/// A CloudFront distribution ARN: CloudFront is global, so its Region field is
+/// empty; `account` is written as given, so one row can carry both the form that
+/// names an account and the form that leaves that field empty too.
+fn distribution(account: &str, id: &str) -> String {
+    format!("arn:aws:cloudfront::{account}:distribution/{id}")
+}
+
 /// One row of the membership table: a name for the assertion messages, the set's
 /// `ResourceTypeList`, and the resources associated with it, in the order the
 /// request associates them.
@@ -82,19 +100,23 @@ struct Case {
 
 impl Case {
     /// The `(URI, AccountId)` pairs the rule says the operation reports: every
-    /// member, in ascending URI order, each carrying the account field of its own
-    /// ARN.
+    /// member, in ascending URI order, each carrying the account it BELONGS TO —
+    /// the account field of its own ARN where the owning service writes one, and
+    /// the account this emulator holds the resource in where that service leaves
+    /// the field empty, which is the owner `ListDiscoveredResources` reports for
+    /// the same resource.
     fn expected(&self) -> Vec<(String, Option<String>)> {
         let mut expected: Vec<(String, Option<String>)> = self
             .members
             .iter()
             .map(|uri| {
-                let account = uri
-                    .split(':')
-                    .nth(4)
-                    .map(str::to_string)
-                    .filter(|account| !account.is_empty());
-                (uri.clone(), account)
+                let account = uri.split(':').nth(4).unwrap_or_default();
+                let owner = if account.is_empty() {
+                    ACCOUNT.to_string()
+                } else {
+                    account.to_string()
+                };
+                (uri.clone(), Some(owner))
             })
             .collect();
         expected.sort();
@@ -157,6 +179,32 @@ fn cases() -> Vec<Case> {
                 .rev()
                 .map(|index| instance(MEMBER_ACCOUNTS[index % MEMBER_ACCOUNTS.len()], index))
                 .collect(),
+        },
+        Case {
+            // An ARN whose owning service leaves the ACCOUNT field empty: the
+            // resource belongs to the account this emulator holds it in, which
+            // is the owner the inventory reports for the same resource.
+            name: "holds-an-account-less-resource",
+            resource_types: vec![state::RESOURCE_TYPE_APIGATEWAY_STAGE],
+            members: vec![api_gateway_stage("a1b2c3d4e5", "prod")],
+        },
+        Case {
+            // The account-carrying and the account-less ARN forms side by side,
+            // across three owning services: an ARN naming every field, a global
+            // ARN naming an account, a global ARN naming none, and an
+            // account-less ARN.
+            name: "holds-account-less-and-account-carrying-resources",
+            resource_types: vec![
+                state::RESOURCE_TYPE_APIGATEWAY_STAGE,
+                state::RESOURCE_TYPE_CLOUDFRONT_DISTRIBUTION,
+                state::RESOURCE_TYPE_EC2_INSTANCE,
+            ],
+            members: vec![
+                api_gateway_stage("zz9pza", "pre-release"),
+                distribution(ACCOUNT, "E1EXAMPLE1EXAM"),
+                distribution("", "E2EXAMPLE2EXAM"),
+                instance(MEMBER_ACCOUNTS[1], 8),
+            ],
         },
         Case {
             // Associating a URI twice is associating it once: the membership is a

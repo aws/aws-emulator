@@ -31,7 +31,12 @@
 //!
 //! Each reported resource carries the account it belongs to, read off the
 //! account field of its own ARN rather than stored beside it: the URI is the
-//! membership, and a second copy of the account could disagree with it.
+//! membership, and a second copy of the account could disagree with it. The
+//! derivation is the one owner reading of an ARN this service makes
+//! ([`crate::state::arn_owner_account`]) — the ARN's account field where the
+//! owning service writes one, and the account this emulator holds the resource
+//! in where that service leaves the field empty — so this surface and the
+//! discoverable inventory report the same owner for one resource.
 //!
 //! ## Shape of an operation
 //!
@@ -257,7 +262,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .take(page_size)
             .map(|uri| Resource {
                 uri: uri.clone(),
-                account_id: resource_account_id(uri),
+                account_id: crate::state::arn_owner_account(uri),
             })
             .collect();
         // A token only when a resource is left AFTER this page, so the last page
@@ -269,19 +274,4 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         Ok(ListResourceSetResourcesOutput { items, next_token })
     }
-}
-
-/// The account a member resource belongs to (`Resource$AccountId`: "the Amazon
-/// Web Services account ID that the associated resource belongs to"), read off
-/// the account field of the resource's own ARN.
-///
-/// Derived rather than stored, so it cannot disagree with the URI it describes.
-/// `None` when that field carries no `AWSAccountId` — a global service's ARN
-/// leaves it empty — because the modelled member is optional and its pattern
-/// (`^[0-9]+$`) admits nothing else.
-fn resource_account_id(uri: &str) -> Option<String> {
-    crate::state::parse_arn(uri)
-        .map(|arn| arn.account)
-        .filter(|account| crate::state::is_account_id(account))
-        .map(str::to_string)
 }

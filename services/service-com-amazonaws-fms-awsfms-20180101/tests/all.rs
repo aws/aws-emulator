@@ -228,6 +228,12 @@ mod admin_slot_write_clock_reading;
 #[path = "all/page_token_canonical_spelling.rs"]
 mod page_token_canonical_spelling;
 
+// Declared beside them, for the same reason: this suite's name sorts right into
+// the contended region of the list below. The suite itself is an ordinary
+// `tests/all/<name>.rs` file.
+#[path = "all/member_resource_owner_account.rs"]
+mod member_resource_owner_account;
+
 #[path = "all/admin_account_disassociation.rs"]
 mod admin_account_disassociation;
 #[path = "all/admin_account_scopes.rs"]
