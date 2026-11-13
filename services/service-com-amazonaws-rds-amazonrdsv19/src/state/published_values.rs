@@ -142,6 +142,43 @@ pub fn stop_db_instance_state_message(identifier: &str) -> String {
     format!("Instance {identifier} is not in available state.")
 }
 
+/// The message `PromoteReadReplica` answers an `InvalidDBInstanceStateFault` with for a DB
+/// instance that is no read replica at all: one that was never created as one, or one an
+/// earlier promotion already made standalone.
+///
+/// Like the cluster-level promotion's sentence for the same precondition
+/// ([`crate::state::PROMOTE_NOT_A_READ_REPLICA_MESSAGE`]) it has NO variable part — Amazon
+/// RDS states only the precondition the call has, interpolating neither the identifier the
+/// request carried nor the instance's status — so it is a constant rather than a `format!`
+/// over the request, and a caller matching on the text to tell this refusal from the status
+/// refusal of the same fault sees exactly what the real service sends.
+pub const PROMOTE_INSTANCE_NOT_A_READ_REPLICA_MESSAGE: &str =
+    "DB Instance is not a read replica.";
+
+/// The message `PromoteReadReplica` answers an `InvalidDBInstanceStateFault` with when the
+/// read replica is not in the one state a promotion is accepted from
+/// ([`DB_INSTANCE_STATUS_AVAILABLE`]) — "a read replica cannot be promoted to a standalone
+/// instance when it is in the backing-up status", and no more so while it is still coming
+/// up, going down or stopped.
+///
+/// It is the sentence Amazon RDS words for an instance-level call that needs the running
+/// instance, so it delegates to [`stop_db_instance_state_message`] rather than restating
+/// it: the two front doors cannot then drift apart.
+pub fn promote_read_replica_state_message(identifier: &str) -> String {
+    stop_db_instance_state_message(identifier)
+}
+
+/// How a request that would turn a DB instance's automated backups off while another
+/// instance is built from them is refused: `BackupRetentionPeriod` "can't be set to 0 if the
+/// DB instance is a source to read replicas", so the member and that constraint are the
+/// whole sentence.
+///
+/// It has NO variable part — the published constraint names neither the instance nor the
+/// replicas built from it — so it is a constant rather than a `format!` over the request and
+/// the store, and a caller matching the sentence reads the constraint it has to satisfy.
+pub const BACKUP_RETENTION_ZERO_WITH_READ_REPLICAS_MESSAGE: &str =
+    "BackupRetentionPeriod can't be set to 0 if the DB instance is a source to read replicas.";
+
 /// The DB instance statuses a start is accepted from, as Amazon RDS lists them INSIDE the
 /// quotes of [`start_db_instance_state_message`] — the stopped instance a start brings back
 /// up, plus the two states a start is how a caller recovers from, the second with the

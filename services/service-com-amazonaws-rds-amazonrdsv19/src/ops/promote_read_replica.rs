@@ -1,15 +1,21 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op PromoteReadReplica
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `PromoteReadReplica`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`PromoteReadReplica::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! Promoting a read replica ENDS its replication: a DB instance is a read replica exactly
+//! while it carries the source `CreateDBInstanceReadReplica` gave it
+//! (`ReadReplicaSourceDBInstanceIdentifier`), so the promotion clears that source and the
+//! instance is standalone from then on — which is also what makes the source stop reporting
+//! it in `ReadReplicaDBInstanceIdentifiers`, and what makes the promoted instance's engine
+//! endpoint serve writes. A standalone instance — one never created as a replica, or one an
+//! earlier promotion already promoted — is in no state this call can be performed in, and
+//! neither is a replica whose database engine is not running, so both are the modelled
+//! `InvalidDBInstanceStateFault`.
+//!
+//! The promoted instance keeps automated backups of its OWN: a replica keeps none until one
+//! is turned on for it, so `BackupRetentionPeriod` and `PreferredBackupWindow` configure
+//! them here, with the member's documented default where the request names no period and
+//! the instance keeps none.
 //!
 //! ## Shape of an operation
 //!
@@ -95,6 +101,24 @@
 #[allow(unused_imports)]
 use super::types::*;
 
+/// The status a DB instance reports while this service is applying a change to it, and the
+/// one the clock settles it back on.
+///
+/// Promoting a read replica is a change APPLIED to the instance — RDS reports `modifying`
+/// while it runs and the instance returns to `available` on its own — so it reports the same
+/// pair the modification path reports, [`crate::state::STATUS_TRANSITION_DELAY`] apart. A
+/// caller that reads straight after this call therefore still sees the promotion in
+/// progress, exactly as it would against RDS; nothing sleeps for it.
+const PROMOTING_STATUS: &str = "modifying";
+
+/// `BackupRetentionPeriod`'s documented default for this operation: "Default: 1".
+///
+/// Applied where the request names no period and the replica keeps no automated backups of
+/// its own, which is what a replica is created with: the promoted standalone instance keeps
+/// its own backups from then on. A period the instance already keeps is NOT overwritten by
+/// it — the request did not ask to change it.
+const DEFAULT_PROMOTED_BACKUP_RETENTION_PERIOD: i32 = 1;
+
 // `#[operation_error]` below expands to an invocation of the LOCAL declarative
 // `smithy!` macro, which this line is what emits into the module. Without it the
 // expansion fails with `cannot find macro 'smithy' in this scope` and the
@@ -164,18 +188,182 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `PromoteReadReplica` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(PromoteReadReplicaErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
+        let region =
+            crate::state::request_region(ctx).map_err(PromoteReadReplicaError::validation)?;
+        // `DBInstanceIdentifier` is "the DB instance identifier. This value is stored as a
+        // lowercase string", so the lookup folds the way the stored key does — the same
+        // fold every instance-level front door of this service applies.
+        let identifier = input.db_instance_identifier.to_ascii_lowercase();
+
+        // The documented constraints of the values the REQUEST carries, decided before any
+        // lookup: each is refused with the Query API error code the real service answers it
+        // with, never with a 501.
         //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("PromoteReadReplica"))
+        // `BackupRetentionPeriod`: "Must be a value from 0 to 35", the one range every DB
+        // instance front door of this service holds the member to.
+        if let Some(period) = input.backup_retention_period {
+            if !crate::state::BACKUP_RETENTION_RANGE.contains(&period) {
+                return Err(PromoteReadReplicaError::invalid_parameter_value(format!(
+                    "invalid value {period} for BackupRetentionPeriod: must be a value from {} \
+                     to {}",
+                    crate::state::BACKUP_RETENTION_RANGE.start(),
+                    crate::state::BACKUP_RETENTION_RANGE.end()
+                )));
+            }
+        }
+        // `PreferredBackupWindow` is free-form text this call STORES on the instance, so it
+        // is bounded here exactly as every other stored free-form member of this service is.
+        if let Some(window) = &input.preferred_backup_window {
+            crate::state::check_free_form("PreferredBackupWindow", window)
+                .map_err(PromoteReadReplicaError::invalid_parameter_value)?;
+        }
+
+        // No store means this service was mounted on an engine it has no state in, so it
+        // cannot serve the operation at all. Unreachable with the engine the router builds;
+        // 501 is the honest answer, never a promotion nothing performed.
+        let Some(state) = crate::state::service_state(&*self.engine) else {
+            return Err(crate::scaffolded::Scaffolded::not_implemented(Self::NAME));
+        };
+        let mut store = state.lock();
+        // The transitions the clock already made due — owed at this instant whether or not
+        // anybody called — so the promotion is judged against the state the instance is
+        // really in.
+        store.settle_due_transitions(&region);
+
+        // The instance this call ACTS ON is resolved FIRST: the operation models
+        // `DBInstanceNotFoundFault` for exactly this, and an instance that does not exist
+        // has no replication to end. RDS is regional, so only the region the request was
+        // signed for is in scope.
+        let key = (region.clone(), identifier.clone());
+        let Some(instance) = store.db_instances.get(&key) else {
+            return Err(not_found(&identifier));
+        };
+        // Only a READ REPLICA can be promoted: `DBInstanceIdentifier` "must match the
+        // identifier of an existing read replica DB instance", and an instance is one
+        // exactly while it carries the source `CreateDBInstanceReadReplica` resolved for it.
+        // A standalone instance — one created without a source, or one an earlier promotion
+        // already made standalone — is in no state this call can be performed in, which is
+        // the modelled instance state fault rather than a promotion that changed nothing. It
+        // is decided BEFORE the instance's lifecycle status: this is a precondition on what
+        // the identifier names, which no waiting changes, so the caller is told that rather
+        // than to poll.
+        let Some(source_identifier) = instance
+            .read_replica_source_db_instance_identifier
+            .clone()
+        else {
+            return Err(invalid_state(
+                crate::state::PROMOTE_INSTANCE_NOT_A_READ_REPLICA_MESSAGE.to_string(),
+            ));
+        };
+        // A promotion is work done ON a running instance — "a read replica cannot be
+        // promoted to a standalone instance when it is in the backing-up status", and no
+        // more so while it is still coming up, going down or stopped — so every status but
+        // the running one is the same modelled fault. The status the clock has yet to settle
+        // is real, so a promotion issued immediately after the replica's create sees
+        // `creating` and is refused.
+        if instance.status != crate::state::DB_INSTANCE_STATUS_AVAILABLE {
+            return Err(invalid_state(
+                crate::state::promote_read_replica_state_message(&identifier),
+            ));
+        }
+        // `BackupRetentionPeriod` "can't be set to 0 if the DB instance is a source to read
+        // replicas": a cascading replica's own replicas are built from its automated
+        // backups, so turning them off while it has any is a combination this service cannot
+        // serve. Each value is acceptable on its own, which is what makes this the
+        // combination refusal rather than a value one.
+        if input.backup_retention_period == Some(0)
+            && !instance.read_replica_db_instance_identifiers.is_empty()
+        {
+            return Err(PromoteReadReplicaError::invalid_parameter_combination(
+                crate::state::BACKUP_RETENTION_ZERO_WITH_READ_REPLICAS_MESSAGE,
+            ));
+        }
+        // `TagSpecifications` assigns tags to "resources associated with the DB instance",
+        // and the one resource type this operation publishes for it is `auto-backup`, "the
+        // DB instance's automated backup". This service holds no DB instance automated
+        // backup as a resource of its own — `DescribeDBInstanceAutomatedBackups` is still a
+        // scaffold — so there is nothing here for those tags to be assigned TO, and claiming
+        // otherwise would report tags on a resource no read of this service answers for.
+        // The instance's own tags are `AddTagsToResource`'s, which this member is not.
+        let _ = &input.tag_specifications;
+
+        // The promotion is accepted. The SOURCE stops reporting the promoted instance among
+        // its replicas — "the identifiers of the read replicas associated with this DB
+        // instance", and this one is associated with it no longer. The source may itself be
+        // gone by now (a delete promotes the replicas of the instance it removes), in which
+        // case there is no list to drop it from.
+        let source_key = (region.clone(), source_identifier);
+        if let Some(source) = store.db_instances.get_mut(&source_key) {
+            source.detach_read_replica(&identifier);
+        }
+
+        // A key this handler resolved and a lookup under it can only disagree if the record
+        // is not where the resolve said it was, which answers the same modelled 404 as an
+        // instance that was never there: a disagreement is a "not found", never a panic that
+        // would take the whole emulator down with it.
+        let promoted = {
+            let Some(record) = store.db_instances.get_mut(&key) else {
+                return Err(not_found(&identifier));
+            };
+            // The replica replicates from nothing from now on, which is what makes it a
+            // standalone DB instance — and what makes its engine endpoint serve writes, as
+            // the data plane reads that one relationship for the write role.
+            record.promote_from_read_replica();
+            // The automated backups the standalone instance keeps of its own: the period the
+            // request named, else the one it already keeps, and where it keeps none the
+            // member's documented default.
+            match input.backup_retention_period {
+                Some(period) => record.backup_retention_period = period,
+                None if record.backup_retention_period < 1 => {
+                    record.backup_retention_period = DEFAULT_PROMOTED_BACKUP_RETENTION_PERIOD;
+                }
+                None => {}
+            }
+            if let Some(window) = input.preferred_backup_window {
+                record.preferred_backup_window = Some(window);
+            }
+            // The instance reports the transient status now and the clock owes it the
+            // settled one, so a caller that polls straight after the call sees the promotion
+            // in progress, as it would against the real service.
+            record.status = PROMOTING_STATUS.to_string();
+            record.pending_status = Some(crate::state::PendingStatus::in_a_moment(
+                crate::state::DB_INSTANCE_STATUS_AVAILABLE,
+            ));
+            // The instance's own log records the lifecycle changes this service performs on
+            // it, and the end of its replication is one of them.
+            record.engine_log.record(format!(
+                "DB instance {identifier} promoted to a standalone DB instance"
+            ));
+            record.clone()
+        };
+
+        // The answer is the instance this call changed, projected the one way every
+        // operation of this service projects one, so the promotion a caller is told about is
+        // the promotion a following describe reports.
+        Ok(PromoteReadReplicaOutput {
+            db_instance: Some(store.instance_to_wire(&promoted)),
+        })
     }
+}
+
+/// The modelled 404 for a `DBInstanceIdentifier` naming no DB instance of this region.
+///
+/// The wording is the one this service's instance-lifecycle front doors answer — the stop
+/// and the start of a DB instance — since a promotion is the same kind of call on the same
+/// resource: it acts on the instance itself. RDS words this fault differently in other
+/// operations, which is why each handler keeps the wording its own API uses.
+fn not_found(identifier: &str) -> PromoteReadReplicaError {
+    PromoteReadReplicaErrorModeled::DBInstanceNotFoundFault(DBInstanceNotFoundFault {
+        message: Some(format!("DBInstance {identifier} not found.")),
+    })
+    .into()
+}
+
+/// The modelled 400 for an instance this promotion cannot be performed on: either it is no
+/// read replica at all, or its database engine is not running.
+fn invalid_state(message: String) -> PromoteReadReplicaError {
+    PromoteReadReplicaErrorModeled::InvalidDBInstanceStateFault(InvalidDBInstanceStateFault {
+        message: Some(message),
+    })
+    .into()
 }
