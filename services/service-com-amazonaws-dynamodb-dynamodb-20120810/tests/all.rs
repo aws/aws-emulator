@@ -195,6 +195,8 @@ mod resource_policy_default_version;
 mod resource_policy_not_found_messages;
 #[path = "all/resource_policy_revision_tokens.rs"]
 mod resource_policy_revision_tokens;
+#[path = "all/resource_policy_stored_version_round_trip.rs"]
+mod resource_policy_stored_version_round_trip;
 #[path = "all/response_request_id.rs"]
 mod response_request_id;
 #[path = "all/resource_tags.rs"]
