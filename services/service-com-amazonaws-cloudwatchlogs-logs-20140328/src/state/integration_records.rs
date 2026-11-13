@@ -169,11 +169,16 @@ pub struct ScheduledQueryRecord {
     /// `lastTriggeredTime` — "The timestamp when the scheduled query was last executed", in
     /// epoch milliseconds, and `lastExecutionStatus` — "The status of the most recent execution
     /// of the scheduled query". `None` on a query no execution has been recorded for, which is
-    /// every query this store holds until the execution history is implemented: both members
-    /// report an execution that happened, so neither is reported for one that has not.
+    /// every query until its own schedule makes its first run due
+    /// ([`super::scheduled_query_executions`]): both members report an execution that happened,
+    /// so neither is reported for one that has not.
     pub last_triggered_time_ms: Option<i64>,
     /// See [`Self::last_triggered_time_ms`].
     pub last_execution_status: Option<String>,
+    /// Every execution recorded for this query — the runs its own schedule has made due, which
+    /// `GetScheduledQueryHistory` reports — oldest first, bounded by
+    /// [`super::MAX_TRIGGER_HISTORY_RECORDS`]. Empty until the first run falls due.
+    pub trigger_history: Vec<super::ScheduledQueryExecution>,
     /// The tags `CreateScheduledQuery$tags` assigned to this query. A `BTreeMap` so the stored
     /// order is stable; no response member of a scheduled query reports them, so they are read
     /// back through the tagging operations once those reach this resource.
@@ -217,6 +222,8 @@ impl ScheduledQueryRecord {
             last_updated_time_ms: None,
             last_triggered_time_ms: None,
             last_execution_status: None,
+            // No run has been recorded for a query that was just written.
+            trigger_history: Vec::new(),
             tags: BTreeMap::new(),
         }
     }

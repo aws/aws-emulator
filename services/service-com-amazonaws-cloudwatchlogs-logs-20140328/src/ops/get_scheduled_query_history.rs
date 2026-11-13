@@ -1,15 +1,17 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op GetScheduledQueryHistory
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `GetScheduledQueryHistory`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`GetScheduledQueryHistory::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! Reports the executions of one scheduled query — the runs its own `scheduleExpression` has
+//! made due since it became eligible to run — over the window the request asks for, newest
+//! run first, filtered to the statuses it names and paginated by `maxResults`/`nextToken`.
+//!
+//! The runs themselves are owed by the CLOCK rather than by this call
+//! ([`crate::state::scheduled_query_executions`]): reading the history MATERIALISES the runs
+//! that were already due — each one minting the query it ran, running it over the events of
+//! its own lookback window and delivering the results to the destinations the query is
+//! configured with — so what is reported is what happened whether or not anyone looked, and a
+//! second read reports the same runs rather than new ones.
 //!
 //! ## Shape of an operation
 //!
@@ -126,6 +128,65 @@ impl From<GetScheduledQueryHistoryErrorModeled> for GetScheduledQueryHistoryErro
     }
 }
 
+/// The kind tag this operation's pagination cursor carries, so a token minted by another
+/// paginated operation is refused rather than misread.
+const CURSOR_KIND: &str = "GetScheduledQueryHistory";
+
+/// Where the next page resumes: the execution last returned, plus the filters of the
+/// enumeration it belongs to. A continuation that changes a filter is refused, because the
+/// token is only a position within one filtered enumeration.
+#[derive(Debug, Clone)]
+struct Cursor {
+    filters: ::serde_json::Value,
+    after_triggered_ms: i64,
+    after_query_id: String,
+}
+
+impl Cursor {
+    fn encode(&self) -> String {
+        crate::state::encode_token(&::serde_json::json!({
+            "kind": CURSOR_KIND,
+            "filters": self.filters,
+            "afterTriggeredTimestamp": self.after_triggered_ms,
+            "afterQueryId": self.after_query_id,
+        }))
+    }
+
+    fn decode(token: &str) -> Option<Self> {
+        let value = crate::state::decode_token(token)?;
+        if value.get("kind")?.as_str()? != CURSOR_KIND {
+            return None;
+        }
+        Some(Self {
+            filters: value.get("filters")?.clone(),
+            after_triggered_ms: value.get("afterTriggeredTimestamp")?.as_i64()?,
+            after_query_id: value.get("afterQueryId")?.as_str()?.to_string(),
+        })
+    }
+}
+
+/// Every member of the request that narrows the enumeration, as one comparable value: the page
+/// token is a position within THIS filtered enumeration, so a continuation that changes any of
+/// them is a different enumeration.
+fn filters_of(input: &GetScheduledQueryHistoryInput) -> ::serde_json::Value {
+    ::serde_json::json!({
+        "identifier": input.identifier,
+        "startTime": input.start_time,
+        "endTime": input.end_time,
+        "executionStatuses": input.execution_statuses,
+    })
+}
+
+/// The order the history is reported in: newest run first, and — for two runs triggered at the
+/// same instant — by the id of the query each produced, so the order is TOTAL and a page a
+/// client resumes names the same position on every call.
+fn order_key(execution: &crate::state::ScheduledQueryExecution) -> (::std::cmp::Reverse<i64>, &str) {
+    (
+        ::std::cmp::Reverse(execution.triggered_ms),
+        execution.query_id.as_str(),
+    )
+}
+
 /// The `GetScheduledQueryHistory` operation.
 ///
 /// Owns the shared engine (the constructor seam) and implements
@@ -162,18 +223,169 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `GetScheduledQueryHistory` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(GetScheduledQueryHistoryErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("GetScheduledQueryHistory"))
+        // The Region the request was signed for: it names the ARN of a managed query whose
+        // alarm states none, exactly as `GetScheduledQuery` uses it, and it is the Region the
+        // resources a run DELIVERS to are addressed in.
+        let region = crate::state::request_region(ctx.parts());
+
+        let invalid = |message: String| {
+            GetScheduledQueryHistoryError::from(
+                GetScheduledQueryHistoryErrorModeled::ValidationException(ValidationException {
+                    message: Some(message),
+                }),
+            )
+        };
+
+        // "The start time for the history query" and "The end time for the history query": a
+        // window whose end precedes its start includes no instant at all, so it is not a time
+        // range and the request is refused in the sentence CloudWatch Logs states for a
+        // reversed window — fixed text about the two ends, interpolating neither of their
+        // values.
+        if input.end_time < input.start_time {
+            return Err(invalid(
+                crate::state::REVERSED_TIME_RANGE_MESSAGE.to_string(),
+            ));
+        }
+
+        // "The token for the next set of items to return": a position inside THIS filtered
+        // enumeration, so a token of another one — or of another operation — is refused rather
+        // than misread.
+        let cursor = match input.next_token.as_deref() {
+            Some(token) => {
+                let cursor = Cursor::decode(token)
+                    .filter(|cursor| cursor.filters == filters_of(&input));
+                let Some(cursor) = cursor else {
+                    return Err(invalid(
+                        crate::state::INVALID_NEXT_TOKEN_MESSAGE.to_string(),
+                    ));
+                };
+                Some(cursor)
+            }
+            None => None,
+        };
+
+        let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
+            GetScheduledQueryHistoryError::from(
+                GetScheduledQueryHistoryErrorModeled::InternalServerException(
+                    InternalServerException {
+                        message: Some("the log store is unavailable".to_string()),
+                    },
+                ),
+            )
+        })?;
+
+        // "The ARN or name of the scheduled query to retrieve history for": both forms
+        // identify one query this account holds. A query a caller created is in this service's
+        // own store; one CloudWatch manages for a log alarm belongs to that alarm, so it is
+        // derived from it — and the alarm store is read only once the log store's guard is
+        // gone, so the two services' stores are never locked at once.
+        let stored = state
+            .lock()
+            .scheduled_query(&input.identifier)
+            .map(|query| (query.name.clone(), query.arn.clone()));
+        let (name, arn) = match stored {
+            Some(identity) => {
+                // The runs the clock already owed this query are materialised, run and
+                // delivered before the history is read, so what is reported is what happened
+                // rather than what a read decided to make happen.
+                crate::state::scheduled_query_executions::settle(
+                    &self.engine,
+                    ctx.callback(),
+                    &region,
+                    &input.identifier,
+                )
+                .await;
+                identity
+            }
+            None => crate::state::log_alarm_queries::service_managed_scheduled_query(
+                &*self.engine,
+                &input.identifier,
+                &region,
+            )
+            .map(|query| (query.name.clone(), query.arn.clone()))
+            // An identifier this account holds no query under at all is refused as a scheduled
+            // query that is not there, naming the identifier the request asked for.
+            .ok_or_else(|| {
+                GetScheduledQueryHistoryError::from(
+                    GetScheduledQueryHistoryErrorModeled::ResourceNotFoundException(
+                        ResourceNotFoundException {
+                            message: Some(crate::state::scheduled_query_not_found_message(
+                                &input.identifier,
+                            )),
+                        },
+                    ),
+                )
+            })?,
+        };
+
+        let store = state.lock();
+        // A query CloudWatch manages for a log alarm is derived from that alarm rather than
+        // run here, so this store has recorded no execution of one: its history is empty.
+        let recorded: Vec<crate::state::ScheduledQueryExecution> = store
+            .scheduled_query(&input.identifier)
+            .map(|query| query.trigger_history.clone())
+            .unwrap_or_default();
+        drop(store);
+
+        // The window SELECTS which executions are reported — both of its ends included, the
+        // way every window of this service is read, and in the epoch SECONDS this operation
+        // states its instants in (`startTime`, `endTime` and `triggeredTimestamp` are all "in
+        // Unix epoch format", the unit this surface states its offsets and query windows in) —
+        // and "only executions with the specified statuses are returned", so a request naming
+        // none is not narrowed by status at all.
+        let statuses = input.execution_statuses.clone().unwrap_or_default();
+        let mut matching: Vec<&crate::state::ScheduledQueryExecution> = recorded
+            .iter()
+            .filter(|execution| {
+                execution.triggered_secs() >= input.start_time
+                    && execution.triggered_secs() <= input.end_time
+            })
+            .filter(|execution| statuses.is_empty() || statuses.contains(&execution.status))
+            .collect();
+        matching.sort_by(|left, right| order_key(left).cmp(&order_key(right)));
+
+        let first = match &cursor {
+            Some(cursor) => matching.partition_point(|execution| {
+                order_key(execution)
+                    <= (
+                        ::std::cmp::Reverse(cursor.after_triggered_ms),
+                        cursor.after_query_id.as_str(),
+                    )
+            }),
+            None => 0,
+        };
+        // `maxResults` is modelled `range 1..1000`, so the boundary validator has already
+        // refused a value outside it; a request that names none gets this service's own list
+        // page size, and `max(1)` only keeps the page bounds sane.
+        let limit = usize::try_from(input.max_results.unwrap_or(crate::state::DEFAULT_LIST_LIMIT))
+            .unwrap_or(0)
+            .max(1);
+        let last = first.saturating_add(limit).min(matching.len());
+        let page = &matching[first..last];
+
+        // A token only where a page follows this one: "The token for the next set of items to
+        // return."
+        let next_token = page.last().filter(|_| last < matching.len()).map(|execution| {
+            Cursor {
+                filters: filters_of(&input),
+                after_triggered_ms: execution.triggered_ms,
+                after_query_id: execution.query_id.clone(),
+            }
+            .encode()
+        });
+
+        Ok(GetScheduledQueryHistoryOutput {
+            // "The name of the scheduled query" and "The ARN of the scheduled query", as the
+            // query this history belongs to is stored — so either form of identifier answers
+            // both.
+            name: Some(name),
+            scheduled_query_arn: Some(arn),
+            trigger_history: Some(
+                page.iter()
+                    .map(|execution| execution.reported())
+                    .collect(),
+            ),
+            next_token,
+        })
     }
 }

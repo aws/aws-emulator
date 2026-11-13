@@ -37,6 +37,9 @@ regex = "1.12"
 # each stands for, so the epoch milliseconds a stored event keeps are rendered (and read
 # back for ordering) with it.
 chrono = { version = "0.4", default-features = false, features = ["std"] }
+# `chrono-tz`: a scheduled query states the timezone its schedule expression is evaluated in
+# (`ScheduleTimezone`), so the instants a `cron(...)` schedule names are read in that zone.
+chrono-tz = { version = "0.10", default-features = false }
 # `sqlparser`: the `SELECT` `StartQuery` accepts for the SQL query language is PARSED with
 # it, so what `GetQueryResults` runs is the structure of the caller's own statement.
 sqlparser = "0.59"

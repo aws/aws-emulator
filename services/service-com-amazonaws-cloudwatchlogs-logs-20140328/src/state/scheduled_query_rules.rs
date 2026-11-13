@@ -22,6 +22,11 @@
 //!   about that log group rather than about the scheduled query;
 //! * `endTimeOffset` has an effective value a reader reports whether or not the write stated
 //!   one ([`DEFAULT_END_TIME_OFFSET_SECONDS`]).
+//!
+//! The same parse also answers which INSTANTS a stored schedule names ([`schedule_of`]), which
+//! is what decides when a scheduled query's runs fall due
+//! ([`super::scheduled_query_executions`]): an expression a write accepted is one whose
+//! instants can be walked, and one it refused names none.
 
 use super::ComAmazonawsCloudwatchlogsLogs20140328State as State;
 
@@ -67,9 +72,16 @@ pub fn execution_role_arn_refusal(role_arn: &str) -> Option<String> {
 /// one definition the check itself reads, so the two cannot drift apart.
 const CRON_FIELD_COUNT: usize = 6;
 
-/// The units a `rate(...)` schedule states its value in, in the singular and plural forms AWS
-/// publishes for a schedule expression: minutes, hours and days.
-const RATE_UNITS: [&str; 6] = ["minute", "minutes", "hour", "hours", "day", "days"];
+/// The units a `rate(...)` schedule states its value in — minutes, hours and days, the units
+/// AWS publishes for a schedule expression — each with the milliseconds one of it holds, which
+/// is what makes a rate a period between instants ([`Schedule::next_after`]). Named in the
+/// SINGULAR: a value of one takes the singular unit and every larger one the plural, so the
+/// plural form is the same name with its `s`.
+const RATE_UNITS: [(&str, i64); 3] = [
+    ("minute", 60_000),
+    ("hour", 3_600_000),
+    ("day", 86_400_000),
+];
 
 /// The clause a schedule expression that is neither form is refused with, naming the format
 /// expected of it and NOTHING of the value submitted or of the resource being written.
@@ -225,16 +237,98 @@ fn is_weekday(day: &str) -> bool {
 
 /// Whether a `rate(...)` body states a positive value and a unit that agrees with it in number.
 fn is_rate_body(body: &str) -> bool {
+    rate_interval_ms(body).is_some()
+}
+
+/// The milliseconds between two instants a `rate(...)` body names, or `None` for a body that
+/// names no period: the value and the unit are the ONE reading both the parse above and the
+/// schedule's own instants are taken from, so a rate a write accepts is one the clock can run.
+///
+/// A rate runs the query every `value` units, so a value of none is no schedule; and a value of
+/// one takes the singular unit, every larger one the plural, as AWS publishes the rate form.
+fn rate_interval_ms(body: &str) -> Option<i64> {
     let fields: Vec<&str> = body.split_whitespace().collect();
     let [value, unit] = fields[..] else {
-        return false;
+        return None;
     };
-    let Ok(value) = value.parse::<u64>() else {
-        return false;
-    };
-    // A rate runs the query every `value` units, so a value of none is no schedule; and a value
-    // of one takes the singular unit, every larger one the plural.
-    value > 0 && RATE_UNITS.contains(&unit) && unit.ends_with('s') == (value > 1)
+    let value = value.parse::<i64>().ok().filter(|value| *value > 0)?;
+    if unit.ends_with('s') != (value > 1) {
+        return None;
+    }
+    let singular = unit.strip_suffix('s').unwrap_or(unit);
+    RATE_UNITS
+        .iter()
+        .find(|(name, _)| *name == singular)
+        .map(|(_, millis)| value.saturating_mul(*millis))
+}
+
+/// The INSTANTS a schedule expression names — what turns a stored `scheduleExpression` into
+/// the runs a scheduled query owes ([`super::scheduled_query_executions`]).
+///
+/// One value per form the expression takes, each read by the SAME parse the writes of a
+/// scheduled query are held to ([`schedule_expression_refusal`]), so an expression a write
+/// accepted is one whose instants can be walked and one it refused names none.
+#[derive(Debug, Clone)]
+pub enum Schedule {
+    /// A `cron(...)` expression, as the `cron` crate reads it: the instants it names are its
+    /// own, field by field. Boxed, because a parsed cron schedule is far larger than the
+    /// period beside it.
+    Cron(Box<::cron::Schedule>),
+    /// A `rate(<value> <unit>)` expression: one instant every so many milliseconds.
+    Every(i64),
+}
+
+/// The schedule `expression` names, or `None` for a value that is no schedule at all.
+pub fn schedule_of(expression: &str) -> Option<Schedule> {
+    if let Some(body) = schedule_body(expression, "cron") {
+        let fields: Vec<&str> = body.split_whitespace().collect();
+        if fields.len() != CRON_FIELD_COUNT {
+            return None;
+        }
+        return parsed_cron(&fields).map(|schedule| Schedule::Cron(Box::new(schedule)));
+    }
+    schedule_body(expression, "rate")
+        .and_then(rate_interval_ms)
+        .map(Schedule::Every)
+}
+
+impl Schedule {
+    /// The first instant this schedule names strictly AFTER `instant_ms`, in the epoch
+    /// milliseconds a scheduled query keeps its instants in, or `None` when it names no
+    /// further instant.
+    ///
+    /// `timezone` is the query's own `ScheduleTimezone` — "The timezone for evaluating the
+    /// schedule expression. This determines when the scheduled query executes relative to the
+    /// specified timezone" — so a cron expression naming a time of day names it THERE; a query
+    /// that states no timezone, or one no zone database knows, is evaluated in UTC.
+    pub fn next_after(&self, instant_ms: i64, timezone: Option<&str>) -> Option<i64> {
+        match self {
+            Self::Cron(schedule) => {
+                let after = ::chrono::DateTime::<::chrono::Utc>::from_timestamp_millis(instant_ms)?;
+                schedule
+                    .after(&after.with_timezone(&schedule_timezone(timezone)))
+                    .next()
+                    .map(|instant| instant.timestamp_millis())
+            }
+            Self::Every(interval_ms) => Some(instant_ms.saturating_add(*interval_ms)),
+        }
+    }
+
+    /// How long after `instant_ms` the next instant this schedule names falls — the PERIOD of
+    /// a schedule that names instants at regular intervals, which is what a query stating no
+    /// lookback of its own reads back over.
+    pub fn interval_after(&self, instant_ms: i64, timezone: Option<&str>) -> Option<i64> {
+        self.next_after(instant_ms, timezone)
+            .map(|next| next.saturating_sub(instant_ms))
+    }
+}
+
+/// The timezone a cron expression is evaluated in: the zone the query names, or UTC for a
+/// query that names none and for a name no zone database knows.
+fn schedule_timezone(timezone: Option<&str>) -> ::chrono_tz::Tz {
+    timezone
+        .and_then(|zone| zone.parse::<::chrono_tz::Tz>().ok())
+        .unwrap_or(::chrono_tz::UTC)
 }
 
 /// The refusal message for the FIRST of `identifiers` naming a log group this account does not

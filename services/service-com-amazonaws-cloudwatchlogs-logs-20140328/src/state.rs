@@ -134,7 +134,11 @@
 //! or the ARN identifies one to a reader
 //! ([`ComAmazonawsCloudwatchlogsLogs20140328State::scheduled_query`]). The scheduled query
 //! CloudWatch MANAGES for a log alarm is not here: it belongs to that alarm, so it is derived
-//! from it ([`log_alarm_queries`]) rather than copied into this store.
+//! from it ([`log_alarm_queries`]) rather than copied into this store. The EXECUTIONS of a
+//! scheduled query — the runs its own schedule makes due, which `GetScheduledQueryHistory`
+//! reports — are recorded on the query that produced them
+//! ([`ScheduledQueryRecord::trigger_history`]) and fall due on the CLOCK
+//! ([`scheduled_query_executions`]).
 //!
 //! The vended-log delivery CONFIGURATION TEMPLATES — "the valid and default values that are
 //! used when creating delivery sources, delivery destinations, and deliveries", which
@@ -233,6 +237,11 @@ pub mod log_alarm_queries;
 /// that state one.
 mod scheduled_query_rules;
 pub use scheduled_query_rules::*;
+
+/// The EXECUTIONS of a scheduled query — the runs its own schedule makes due — as they are
+/// recorded, run and reported.
+pub mod scheduled_query_executions;
+pub use scheduled_query_executions::*;
 
 /// The log anomaly detectors this account holds, as they are stored.
 mod anomaly_detectors;
