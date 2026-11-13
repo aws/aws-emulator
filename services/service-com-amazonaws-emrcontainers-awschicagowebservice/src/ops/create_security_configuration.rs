@@ -171,20 +171,20 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let mut state = store.lock();
         state.settle();
 
-        // `clientToken` is `@idempotencyToken`: the same token replayed names the
-        // configuration the first call minted, so a retried create never doubles the
-        // resource. The same token carrying a DIFFERENT request is not a replay —
-        // answering it with the first configuration would silently drop the parameters
-        // this call asked for — so it is refused.
-        let replayed = state
-            .replayed_idempotency(
-                &region,
-                crate::state::CREATE_SECURITY_CONFIGURATION_SCOPE,
-                &input.client_token,
-            )
-            .cloned();
-        if let Some(existing) = replayed.and_then(|id| state.security_configuration(&region, &id)) {
-            if existing.request_fingerprint != fingerprint {
+        // `clientToken` is `@idempotencyToken`, decided by the one rule this crate writes
+        // for every operation that takes one
+        // ([`crate::state::ComAmazonawsEmrcontainersAwschicagowebserviceState::spent_client_token`]):
+        // the same token replayed names the configuration the first call minted, so a
+        // retried create never doubles the resource, and the same token carrying a
+        // DIFFERENT request is refused rather than answered with that configuration.
+        match state.spent_client_token(
+            &region,
+            crate::state::CREATE_SECURITY_CONFIGURATION_SCOPE,
+            &input.client_token,
+            &fingerprint,
+            |state, id| state.security_configuration(&region, id),
+        ) {
+            crate::state::SpentClientToken::Conflict => {
                 return Err(CreateSecurityConfigurationErrorModeled::ValidationException(
                     ValidationException {
                         // The one wording an idempotency conflict carries in this service
@@ -197,11 +197,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 )
                 .into());
             }
-            return Ok(CreateSecurityConfigurationOutput {
-                id: Some(existing.id.clone()),
-                name: Some(existing.name.clone()),
-                arn: Some(existing.arn.clone()),
-            });
+            crate::state::SpentClientToken::Replay(existing) => {
+                return Ok(CreateSecurityConfigurationOutput {
+                    id: Some(existing.id.clone()),
+                    name: Some(existing.name.clone()),
+                    arn: Some(existing.arn.clone()),
+                });
+            }
+            crate::state::SpentClientToken::Fresh => {}
         }
 
         // The store is capped, and a security configuration has no retired form to

@@ -196,20 +196,21 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let mut state = store.lock();
         state.settle();
 
-        // `clientToken` is `@idempotencyToken`: a token already spent on this operation
-        // names the template the first call minted, so N racing identical creates all
-        // report ONE id and the store holds ONE template. The same token carrying a
-        // DIFFERENT request is not a replay — answering it with the first template would
-        // silently drop the parameters this call asked for — so it is refused.
-        let replayed = state
-            .replayed_idempotency(
-                &region,
-                crate::state::CREATE_JOB_TEMPLATE_SCOPE,
-                &input.client_token,
-            )
-            .cloned();
-        if let Some(existing) = replayed.and_then(|id| state.job_template(&region, &id)) {
-            if existing.request_fingerprint != fingerprint {
+        // `clientToken` is `@idempotencyToken`, decided by the one rule this crate writes
+        // for every operation that takes one
+        // ([`crate::state::ComAmazonawsEmrcontainersAwschicagowebserviceState::spent_client_token`]):
+        // a token already spent on this operation names the template the first call
+        // minted, so N racing identical creates all report ONE id and the store holds ONE
+        // template, while the same token carrying a DIFFERENT request is refused rather
+        // than answered with that template.
+        match state.spent_client_token(
+            &region,
+            crate::state::CREATE_JOB_TEMPLATE_SCOPE,
+            &input.client_token,
+            &fingerprint,
+            |state, id| state.job_template(&region, id),
+        ) {
+            crate::state::SpentClientToken::Conflict => {
                 return Err(CreateJobTemplateErrorModeled::ValidationException(
                     ValidationException {
                         // The one wording an idempotency conflict carries in this service
@@ -222,12 +223,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 )
                 .into());
             }
-            return Ok(CreateJobTemplateOutput {
-                id: Some(existing.id.clone()),
-                name: Some(existing.name.clone()),
-                arn: Some(existing.arn.clone()),
-                created_at: Some(crate::state::date_time(existing.created_at_millis)),
-            });
+            crate::state::SpentClientToken::Replay(existing) => {
+                return Ok(CreateJobTemplateOutput {
+                    id: Some(existing.id.clone()),
+                    name: Some(existing.name.clone()),
+                    arn: Some(existing.arn.clone()),
+                    created_at: Some(crate::state::date_time(existing.created_at_millis)),
+                });
+            }
+            crate::state::SpentClientToken::Fresh => {}
         }
 
         // The store is capped. A job template has no lifecycle state, so none of them is

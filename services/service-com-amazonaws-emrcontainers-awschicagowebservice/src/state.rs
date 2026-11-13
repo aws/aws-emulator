@@ -8,7 +8,7 @@
 //! describe or a list answers with is read back out of one of these records: nothing is
 //! echoed from the request that asked for it, and nothing is canned.
 //!
-//! Two things live here beside the records because several operations need them and a
+//! Three things live here beside the records because several operations need them and a
 //! second copy would let two operations disagree:
 //!
 //! * [`ComAmazonawsEmrcontainersAwschicagowebserviceState::mint_id`] — the one place a
@@ -24,6 +24,10 @@
 //!   not stop at that start: the admission owes the run its OUTCOME in turn, so a client
 //!   that polls a run reaches a terminal state with a `finishedAt` without anybody
 //!   cancelling it ([`JobRunRecord`]).
+//! * [`ComAmazonawsEmrcontainersAwschicagowebserviceState::spent_client_token`] — the one
+//!   place a `clientToken` already spent in its scope is judged (replay, conflict or
+//!   fresh), so the six operations that take an `@idempotencyToken` cannot drift into six
+//!   readings of one rule.
 //!
 //! Every record carries the region it was created in, and every lookup here takes that
 //! region: EMR on EKS is a regional service, so a resource exists only at the endpoint
@@ -55,6 +59,11 @@ pub use managed_endpoint_connection::*;
 /// cluster reports it: resolved, never derived here.
 mod container_cluster_network;
 pub use container_cluster_network::*;
+
+/// The one decision a `clientToken` already spent in its scope is judged by — replay,
+/// conflict or fresh — for every `@idempotencyToken` operation of this service.
+mod spent_client_token;
+pub use spent_client_token::*;
 
 /// The ARN namespace this service's ARNs carry (`OPERATIONS.md`: ARN namespace
 /// `emr-containers`), e.g.

@@ -161,10 +161,13 @@ fn hosting_container_cluster(
 
 /// The endpoint a replayed `clientToken` already minted, when this request is that replay.
 ///
-/// `clientToken` is `@idempotencyToken`: the same token replayed names the endpoint the
-/// first call minted rather than provisioning a second gateway. The same token carrying a
-/// DIFFERENT request is not a replay — answering it with the first endpoint would silently
-/// drop the parameters this call asked for — so it is refused.
+/// `clientToken` is `@idempotencyToken`, decided by the one rule this crate writes for
+/// every operation that takes one
+/// ([`crate::state::ComAmazonawsEmrcontainersAwschicagowebserviceState::spent_client_token`]):
+/// the same token replayed names the endpoint the first call minted rather than
+/// provisioning a second gateway, and the same token carrying a DIFFERENT request is
+/// refused rather than answered with that endpoint. What is this operation's own is the
+/// store the id is resolved in — this cluster's endpoints — and the output it answers with.
 ///
 /// Called on every lock this operation holds, for the same reason as
 /// [`hosting_container_cluster`]: a racing create may have spent the token while nothing
@@ -177,29 +180,28 @@ fn replayed_endpoint(
     client_token: &str,
     fingerprint: &str,
 ) -> Result<Option<CreateManagedEndpointOutput>, CreateManagedEndpointError> {
-    let minted = state.replayed_idempotency(region, scope, client_token).cloned();
-    let Some(existing) =
-        minted.and_then(|id| state.managed_endpoint(region, virtual_cluster_id, &id))
-    else {
-        return Ok(None);
-    };
-    if existing.request_fingerprint != fingerprint {
-        return Err(CreateManagedEndpointErrorModeled::ValidationException(
-            ValidationException {
-                // The one wording an idempotency conflict carries in this service
-                // ([`crate::state::IDEMPOTENCY_CONFLICT_MESSAGE`]): fixed text, naming
-                // neither the token nor the endpoint it already minted.
-                message: Some(crate::state::IDEMPOTENCY_CONFLICT_MESSAGE.to_string()),
-            },
-        )
-        .into());
+    match state.spent_client_token(region, scope, client_token, fingerprint, |state, id| {
+        state.managed_endpoint(region, virtual_cluster_id, id)
+    }) {
+        crate::state::SpentClientToken::Fresh => Ok(None),
+        crate::state::SpentClientToken::Conflict => {
+            Err(CreateManagedEndpointErrorModeled::ValidationException(
+                ValidationException {
+                    // The one wording an idempotency conflict carries in this service
+                    // ([`crate::state::IDEMPOTENCY_CONFLICT_MESSAGE`]): fixed text, naming
+                    // neither the token nor the endpoint it already minted.
+                    message: Some(crate::state::IDEMPOTENCY_CONFLICT_MESSAGE.to_string()),
+                },
+            )
+            .into())
+        }
+        crate::state::SpentClientToken::Replay(existing) => Ok(Some(CreateManagedEndpointOutput {
+            id: Some(existing.id.clone()),
+            name: Some(existing.name.clone()),
+            arn: Some(existing.arn.clone()),
+            virtual_cluster_id: Some(existing.virtual_cluster_id.clone()),
+        })),
     }
-    Ok(Some(CreateManagedEndpointOutput {
-        id: Some(existing.id.clone()),
-        name: Some(existing.name.clone()),
-        arn: Some(existing.arn.clone()),
-        virtual_cluster_id: Some(existing.virtual_cluster_id.clone()),
-    }))
 }
 
 // `#[operation_error]` below expands to an invocation of the LOCAL declarative

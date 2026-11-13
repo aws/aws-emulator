@@ -420,18 +420,21 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .into());
         }
 
-        // `clientToken` is `@idempotencyToken`: the same token replayed names the job
-        // run the first call minted rather than submitting the work twice. The same token
-        // carrying a DIFFERENT submission is not a replay — answering it with the earlier
-        // run would silently drop the work this call asked for, and nothing would ever
-        // run it — so it is refused.
-        let replayed = state
-            .replayed_idempotency(&region, &scope, &input.client_token)
-            .cloned();
-        if let Some(existing) =
-            replayed.and_then(|id| state.job_run(&region, &input.virtual_cluster_id, &id))
-        {
-            if existing.request_fingerprint != fingerprint {
+        // `clientToken` is `@idempotencyToken`, decided by the one rule this crate writes
+        // for every operation that takes one
+        // ([`crate::state::ComAmazonawsEmrcontainersAwschicagowebserviceState::spent_client_token`]):
+        // the same token replayed names the job run the first call minted rather than
+        // submitting the work twice, and the same token carrying a DIFFERENT submission is
+        // refused rather than answered with that run — which would drop the work this call
+        // asked for, and nothing would ever run it.
+        match state.spent_client_token(
+            &region,
+            &scope,
+            &input.client_token,
+            &fingerprint,
+            |state, id| state.job_run(&region, &input.virtual_cluster_id, id),
+        ) {
+            crate::state::SpentClientToken::Conflict => {
                 return Err(StartJobRunErrorModeled::ValidationException(ValidationException {
                     // The one wording an idempotency conflict carries in this service
                     // ([`crate::state::IDEMPOTENCY_CONFLICT_MESSAGE`]): fixed text, naming
@@ -440,12 +443,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 })
                 .into());
             }
-            return Ok(StartJobRunOutput {
-                id: Some(existing.id.clone()),
-                name: existing.name.clone(),
-                arn: Some(existing.arn.clone()),
-                virtual_cluster_id: Some(existing.virtual_cluster_id.clone()),
-            });
+            crate::state::SpentClientToken::Replay(existing) => {
+                return Ok(StartJobRunOutput {
+                    id: Some(existing.id.clone()),
+                    name: existing.name.clone(),
+                    arn: Some(existing.arn.clone()),
+                    virtual_cluster_id: Some(existing.virtual_cluster_id.clone()),
+                });
+            }
+            crate::state::SpentClientToken::Fresh => {}
         }
 
         // The queue is a bounded resource when the cluster configures one:

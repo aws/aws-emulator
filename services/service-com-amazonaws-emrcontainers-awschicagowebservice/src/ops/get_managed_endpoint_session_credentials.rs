@@ -231,23 +231,26 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             )));
         }
 
-        // `clientToken` is `@idempotencyToken`: the same token replayed names the session
-        // the first call issued rather than minting a second credential. The same token
-        // carrying a DIFFERENT request is not a replay — answering it with the first
-        // session would silently drop the duration or the role this call asked for — so it
-        // is refused. The scope and the digest of the request it is compared against are
-        // both taken from the ids resolved above, so the two halves of this rule decide a
-        // replay on one and the same request identity.
+        // `clientToken` is `@idempotencyToken`, decided by the one rule this crate writes
+        // for every operation that takes one
+        // ([`crate::state::ComAmazonawsEmrcontainersAwschicagowebserviceState::spent_client_token`]):
+        // the same token replayed names the session the first call issued rather than
+        // minting a second credential, and the same token carrying a DIFFERENT request is
+        // refused rather than answered with that session — which would drop the duration
+        // or the role this call asked for. The scope and the digest of the request it is
+        // compared against are both taken from the ids resolved above, so the two halves
+        // of this rule decide a replay on one and the same request identity.
         let scope = crate::state::endpoint_session_scope(&virtual_cluster_id, &endpoint_id);
         let fingerprint = resolved_fingerprint(&input, &virtual_cluster_id, &endpoint_id);
         if let Some(client_token) = input.client_token.as_deref() {
-            let replayed = state
-                .replayed_idempotency(&region, &scope, client_token)
-                .cloned();
-            if let Some(existing) = replayed.and_then(|id| {
-                state.endpoint_session(&region, &virtual_cluster_id, &endpoint_id, &id)
-            }) {
-                if existing.request_fingerprint != fingerprint {
+            match state.spent_client_token(
+                &region,
+                &scope,
+                client_token,
+                &fingerprint,
+                |state, id| state.endpoint_session(&region, &virtual_cluster_id, &endpoint_id, id),
+            ) {
+                crate::state::SpentClientToken::Conflict => {
                     // The one wording an idempotency conflict carries in this service
                     // ([`crate::state::IDEMPOTENCY_CONFLICT_MESSAGE`]): fixed text, naming
                     // neither the token nor the session it already issued.
@@ -255,7 +258,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                         crate::state::IDEMPOTENCY_CONFLICT_MESSAGE.to_string(),
                     ));
                 }
-                return Ok(existing.to_session_credentials());
+                crate::state::SpentClientToken::Replay(existing) => {
+                    return Ok(existing.to_session_credentials());
+                }
+                crate::state::SpentClientToken::Fresh => {}
             }
         }
 

@@ -212,21 +212,22 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             }
         }
 
-        // `clientToken` is `@idempotencyToken`: the same token replayed names the
-        // cluster the first call minted, so a retried create never doubles the resource.
-        // The token is remembered per region, because the cluster it names exists in one.
-        // The same token carrying a DIFFERENT request is not a replay — answering it with
-        // the first cluster would silently drop the parameters this call asked for — so it
-        // is refused.
-        let replayed = state
-            .replayed_idempotency(
-                &region,
-                crate::state::CREATE_VIRTUAL_CLUSTER_SCOPE,
-                &input.client_token,
-            )
-            .cloned();
-        if let Some(existing) = replayed.and_then(|id| state.virtual_cluster(&region, &id)) {
-            if existing.request_fingerprint != fingerprint {
+        // `clientToken` is `@idempotencyToken`, decided by the one rule this crate writes
+        // for every operation that takes one
+        // ([`crate::state::ComAmazonawsEmrcontainersAwschicagowebserviceState::spent_client_token`]):
+        // the same token replayed names the cluster the first call minted, so a retried
+        // create never doubles the resource, and the same token carrying a DIFFERENT
+        // request is refused rather than answered with that cluster. The token is
+        // remembered per region, because the cluster it names exists in one, so the lookup
+        // this hands the rule is this region's.
+        match state.spent_client_token(
+            &region,
+            crate::state::CREATE_VIRTUAL_CLUSTER_SCOPE,
+            &input.client_token,
+            &fingerprint,
+            |state, id| state.virtual_cluster(&region, id),
+        ) {
+            crate::state::SpentClientToken::Conflict => {
                 return Err(CreateVirtualClusterErrorModeled::ValidationException(
                     ValidationException {
                         // The one wording an idempotency conflict carries in this service
@@ -239,11 +240,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 )
                 .into());
             }
-            return Ok(CreateVirtualClusterOutput {
-                id: Some(existing.id.clone()),
-                name: Some(existing.name.clone()),
-                arn: Some(existing.arn.clone()),
-            });
+            crate::state::SpentClientToken::Replay(existing) => {
+                return Ok(CreateVirtualClusterOutput {
+                    id: Some(existing.id.clone()),
+                    name: Some(existing.name.clone()),
+                    arn: Some(existing.arn.clone()),
+                });
+            }
+            crate::state::SpentClientToken::Fresh => {}
         }
 
         // A virtual cluster IS the registration of one Kubernetes namespace, and "a single

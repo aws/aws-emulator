@@ -71,6 +71,8 @@ mod security_configuration_in_use;
 mod security_configuration_list;
 #[path = "all/shared_listing_filters.rs"]
 mod shared_listing_filters;
+#[path = "all/spent_client_token_rule.rs"]
+mod spent_client_token_rule;
 #[path = "all/spent_token_with_a_different_request.rs"]
 mod spent_token_with_a_different_request;
 #[path = "all/start_job_run_job_template.rs"]
