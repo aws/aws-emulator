@@ -9,8 +9,10 @@
 //! threat of harm, abuse directed at the recipient, a gruesome depiction — so every
 //! modelled `ToxicContentType` has a detector and every score is computed from the
 //! submitted segment rather than matched out of the request. One `ToxicLabels` entry
-//! is produced per input segment, in input order, and a `LanguageCode` the engine has
-//! no lexicon for is answered with the modelled `UnsupportedLanguageException`.
+//! is produced per input segment, in input order, each carrying the per-type score
+//! VECTOR the operation reports — one entry for every content type, so a client reads
+//! a category's confidence by looking its type up — and a `LanguageCode` the engine
+//! has no lexicon for is answered with the modelled `UnsupportedLanguageException`.
 //!
 //! ## Shape of an operation
 //!
@@ -117,6 +119,34 @@ const MAX_SEGMENTS: usize = 10;
 /// `LanguageCode` enum names is answered with the modelled
 /// `UnsupportedLanguageException` rather than with scores no analysis produced.
 const ANALYSABLE_LANGUAGES: &[&str] = &["en"];
+
+/// Every modelled `ToxicContentType`, in the order one `ToxicLabels` entry reports
+/// them.
+///
+/// The operation is a MULTI-LABEL classifier: `DetectToxicContentResponse$ResultList`
+/// documents each entry as carrying "a list of toxic content types identified in the
+/// text, along with a confidence score for each content type", and the response
+/// Comprehend's own toxicity-detection reference prints for one segment carries one
+/// `ToxicContent` entry per content type — every type, each with its own score —
+/// rather than only the types a segment turned out to carry. So `Labels` is a
+/// per-type score vector over this set, of fixed length, and the order is the one
+/// that reference prints the vector in. A caller reads a category's confidence by
+/// looking the type up in the list, and a segment carrying nothing toxic is reported
+/// as every type scoring low rather than as a response with no toxicity information
+/// in it at all.
+///
+/// The SET is `super::types::TOXIC_CONTENT_TYPE_VALUES`, the model's own enum, so no
+/// type can be missed out or invented here; only the order differs, which is checked
+/// against that constant in this crate's tests.
+const REPORTED_CONTENT_TYPES: [&str; 7] = [
+    "PROFANITY",
+    "HATE_SPEECH",
+    "INSULT",
+    "GRAPHIC",
+    "HARASSMENT_OR_ABUSE",
+    "SEXUAL",
+    "VIOLENCE_OR_THREAT",
+];
 
 /// The confidence ONE placement of toxic content carries, by how strongly the
 /// analyser placed it.
@@ -421,29 +451,31 @@ fn combined_confidence(confidences: impl Iterator<Item = f32>) -> Option<f32> {
 
 /// Analyse one text segment into the modelled per-string result.
 ///
-/// `Labels` carries one entry per modelled content type the analysers placed in the
-/// string, in the modelled enum's own order, with the confidence everything they
-/// placed of that type adds up to. `Toxicity` is the overall confidence that the
-/// string carries toxic content of ANY type: the same combination over every type's
-/// confidence. That makes it at least as large as the strongest single type, larger
-/// when several types are placed, and exactly zero for a string nothing was placed in
-/// — which comes back with no labels, rather than with an invented floor.
+/// `Labels` is the per-type score vector [`REPORTED_CONTENT_TYPES`] describes: one
+/// entry for EVERY modelled content type, in that order, carrying the confidence
+/// everything the analysers placed of that type adds up to — zero for a type they
+/// placed nothing of, which is a confidence the modelled range admits ("value range
+/// is zero to one") and not a missing member. `Toxicity` is the overall confidence
+/// that the string carries toxic content of ANY type: the same combination over
+/// every type's confidence. That makes it at least as large as the strongest single
+/// type, larger when several types are placed, and zero for a string nothing was
+/// placed in.
 fn analyse_segment(text: &str) -> ToxicLabels {
     let placed = placements(text);
 
-    let labels: Vec<ToxicContent> = TOXIC_CONTENT_TYPE_VALUES
+    let labels: Vec<ToxicContent> = REPORTED_CONTENT_TYPES
         .iter()
-        .filter_map(|name| {
-            combined_confidence(
-                placed
-                    .iter()
-                    .filter(|placement| placement.name == *name)
-                    .map(|placement| placement.confidence),
-            )
-            .map(|score| ToxicContent {
-                name: Some((*name).to_string()),
-                score: Some(score),
-            })
+        .map(|name| ToxicContent {
+            name: Some((*name).to_string()),
+            score: Some(
+                combined_confidence(
+                    placed
+                        .iter()
+                        .filter(|placement| placement.name == *name)
+                        .map(|placement| placement.confidence),
+                )
+                .unwrap_or(0.0),
+            ),
         })
         .collect();
 

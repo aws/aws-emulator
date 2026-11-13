@@ -5,10 +5,11 @@
 //! The operation is a pure function of `TextSegments` and `LanguageCode`, so every
 //! suite here asserts the RULE over a table of strings rather than one recorded
 //! request: one `ToxicLabels` entry per submitted string in input order, each
-//! entry's `Labels` naming the modelled `ToxicContentType` values the in-process
-//! engine placed in THAT string with a confidence in (0, 1], and its `Toxicity`
-//! the confidence that the string carries toxic content of any type — so a string
-//! the engine places nothing in scores strictly below one it does.
+//! entry's `Labels` carrying the per-type score vector (asserted as a vector in
+//! `single_document_conventions.rs`), and its `Toxicity` the confidence that the
+//! string carries toxic content of any type — so a string the engine places nothing
+//! in scores strictly below one it does. A type the engine PLACED content of is one
+//! whose entry scores above zero, which is what the helpers below read.
 
 use serde_json::{json, Value};
 use service_com_amazonaws_comprehend_comprehend_20171127::ops::types::{
@@ -110,7 +111,10 @@ fn request(texts: &[&str]) -> Value {
     })
 }
 
-/// Every `(Name, Score)` pair of one `ResultList` entry.
+/// Every `(Name, Score)` pair of one `ResultList` entry the analysers PLACED content
+/// of: the entries of the per-type score vector scoring above zero. The vector
+/// carries every modelled type whatever the string says, so "placed" is a non-zero
+/// score rather than a present member.
 fn labels_of(case: &str, entry: &Value) -> Vec<(String, f64)> {
     entry["Labels"]
         .as_array()
@@ -126,6 +130,7 @@ fn labels_of(case: &str, entry: &Value) -> Vec<(String, f64)> {
                 .unwrap_or_else(|| panic!("case {case:?}: expected Labels[].Score, got {label}"));
             (name, score)
         })
+        .filter(|(_, score)| *score > 0.0)
         .collect()
 }
 
@@ -161,9 +166,9 @@ async fn every_result_entry_is_a_well_formed_toxicity_verdict_for_its_string() {
         let labels = labels_of(case, &results[0]);
         let toxicity = toxicity_of(case, &results[0]);
 
-        // Every reported name is a modelled `ToxicContentType`, reported at most
-        // once, with a confidence in (0, 1] — a type the engine placed nothing of is
-        // left out rather than reported at zero.
+        // Every placed name is a modelled `ToxicContentType`, reported at most once,
+        // with a confidence in (0, 1] — a type the engine placed nothing of scores
+        // zero in the vector, which the helper above leaves out.
         let mut seen: Vec<&str> = Vec::new();
         for (name, score) in &labels {
             assert!(
@@ -254,8 +259,8 @@ async fn a_string_the_engine_places_toxic_content_in_scores_above_one_it_does_no
             );
             assert!(
                 labels_of(benign_case, benign_entry).is_empty(),
-                "case {benign_case:?}: the engine places no toxic content, so no label \
-                 may be reported, got {benign_entry}"
+                "case {benign_case:?}: the engine places no toxic content, so no type \
+                 may score above zero, got {benign_entry}"
             );
             assert!(
                 toxic_score > benign_score,

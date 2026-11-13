@@ -152,7 +152,10 @@ fn request(texts: &[&str]) -> Value {
     })
 }
 
-/// The `(Name, Score)` pairs of the first `ResultList` entry.
+/// The `(Name, Score)` pairs of the first `ResultList` entry the analysers PLACED
+/// content of: the entries of the per-type score vector scoring above zero. The
+/// vector carries every modelled type whatever the segment says, so "placed" is a
+/// non-zero score rather than a present member.
 fn labels(case: &str, output: &Value) -> Vec<(String, f64)> {
     output["ResultList"][0]["Labels"]
         .as_array()
@@ -164,6 +167,7 @@ fn labels(case: &str, output: &Value) -> Vec<(String, f64)> {
                 label["Score"].as_f64().unwrap_or(f64::NAN),
             )
         })
+        .filter(|(_, score)| *score > 0.0)
         .collect()
 }
 

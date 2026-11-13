@@ -126,23 +126,33 @@ fn ranked_labels(
     ]
 }
 
-/// The probability that ONE lexicon hit is a true sentiment signal rather than a
-/// word the lexicon happens to carry (a figure of speech, a brand name, a negated
-/// aside).
+/// How much one unit of a document's NEUTRAL material weighs against one unit of its
+/// sentiment-bearing material, in deciding whether the document carries sentiment at
+/// all.
 ///
-/// The engine answers how INTENSE the sentiment of a document is; the modelled
+/// The engine answers how INTENSE the sentiment in a document is, and over which
+/// share of it: `pos`, `neg` and `neu` are the shares of the document's weight
+/// carrying each polarity and no polarity, summing to 1. The modelled
 /// `SentimentScore` members are confidences — "the sentiments, and their
-/// corresponding confidence levels" — so an intensity has to be calibrated into one.
-/// The calibration is this: each sentiment-bearing word of the document is one
-/// independent piece of evidence that the document carries sentiment at all, each
-/// right with this probability, so a document holding `m` of them carries sentiment
-/// with confidence `1 - (1 - this)^m`. One hit leaves real doubt, a second squares it,
-/// and a handful leave a classifier's confidence — which is why a document of plain
-/// facts comes back NEUTRAL with near-certainty while a one-word complaint does not.
+/// corresponding confidence levels" — so the share has to be calibrated into one, and
+/// the calibration is a comparison: the document carries sentiment to the extent its
+/// sentiment-bearing material OUTWEIGHS its neutral material. In odds form, the
+/// confidence is `d / (d + this * (1 - d))` over the polarity-carrying share `d`,
+/// which is 0 for a document holding no sentiment-bearing word, approaches 1 for one
+/// holding nothing else, and rises with the share in between.
+///
+/// Below 1 because a sentiment-bearing word is the informative material in deciding
+/// this question and a neutral one is the background it stands in: a sentence of
+/// praise does not stop being praise for also naming what is praised. Not far below
+/// 1, because the comparison has to stay a comparison: a document of plain fact that
+/// happens to carry one evaluative word is mostly neutral material and must come back
+/// NEUTRAL, which is exactly what reporting a COUNT of lexicon hits cannot do — one
+/// hit in a long document and one in a three-word complaint are the same count and
+/// nothing like the same evidence.
 ///
 /// It is the ONE calibration constant of this projection, applied identically to
 /// every document, so no request can select it.
-const SENTIMENT_EVIDENCE_RELIABILITY: f64 = 0.9;
+const NEUTRAL_MATERIAL_WEIGHT: f64 = 0.3;
 
 /// The confidence each of the four modelled classes keeps whatever the document says.
 ///
@@ -154,38 +164,18 @@ const SENTIMENT_EVIDENCE_RELIABILITY: f64 = 0.9;
 /// reporting a flat 0 for a class the engine found no word for.
 const SENTIMENT_CLASS_PRIOR: f64 = 1e-3;
 
-/// How many words of `text` carry sentiment of their own.
-///
-/// The count of independent evidence [`SENTIMENT_EVIDENCE_RELIABILITY`] calibrates:
-/// each word is scored BY THE ENGINE on its own, and the ones the engine gives a
-/// non-zero polarity to are its lexicon's hits in this document. Scoring a word alone
-/// drops the document's negations and boosters, which is the point — this counts how
-/// much sentiment-bearing material the document holds, while the polarity and the
-/// balance of it come from the engine's reading of the whole text.
-fn sentiment_bearing_words(text: &str) -> usize {
-    text.split_whitespace()
-        .filter(|word| {
-            analyzer()
-                .polarity_scores(word)
-                .get("compound")
-                .copied()
-                .unwrap_or_default()
-                != 0.0
-        })
-        .count()
-}
-
 /// Score `text` into Comprehend's four confidences plus the winning label.
 ///
 /// The engine reports `pos`/`neg`/`neu` — the shares of the document's weight
 /// carrying each polarity, which sum to 1 — and `compound`, its normalised net
 /// polarity. Those become the four modelled confidences in two steps:
 ///
-/// 1. HOW SURE the document carries sentiment at all: `1 - (1 -
-///    `[`SENTIMENT_EVIDENCE_RELIABILITY`]`)^m` over the `m` sentiment-bearing words
-///    the engine finds in it ([`sentiment_bearing_words`]). Whatever is left of 1 is
-///    the confidence of `Neutral` — the hypothesis that the document carries no
-///    sentiment.
+/// 1. HOW SURE the document carries sentiment at all: the share of its weight that
+///    carries a polarity at all, `pos + neg`, weighed against the neutral material
+///    beside it ([`NEUTRAL_MATERIAL_WEIGHT`]). Whatever is left of 1 is the confidence
+///    of `Neutral` — the hypothesis that the document carries no sentiment — so a
+///    document of plain fact comes back NEUTRAL however long it is, and one whose
+///    every word is evaluative comes back with a classifier's confidence.
 /// 2. HOW that confidence splits between the signed classes: over the
 ///    sentiment-bearing weight alone, `p` and `n` are the positive and negative
 ///    shares (`p + n = 1`). `Mixed` is the part of it carrying BOTH polarities,
@@ -210,15 +200,17 @@ pub(crate) fn score_sentiment(text: &str) -> (String, SentimentScore) {
     let negative_share = scores.get("neg").copied().unwrap_or_default();
 
     // Step 1: the confidence that the document carries sentiment at all, from the
-    // number of independent lexicon hits in it.
-    let hits = sentiment_bearing_words(text);
-    // Past a few hits the confidence is already 1 to double precision, so the count
-    // is capped where the exponent stops changing the answer.
-    let carries_sentiment = 1.0 - (1.0 - SENTIMENT_EVIDENCE_RELIABILITY).powi(hits.min(64) as i32);
+    // share of its weight that carries a polarity against the neutral material
+    // beside it.
+    let signed = positive_share + negative_share;
+    let carries_sentiment = if signed > 0.0 {
+        signed / (signed + NEUTRAL_MATERIAL_WEIGHT * (1.0 - signed))
+    } else {
+        0.0
+    };
 
     // Step 2: how that confidence splits, from the balance of the two polarities
     // over the sentiment-bearing weight alone.
-    let signed = positive_share + negative_share;
     let (positive, negative, mixed) = if signed > 0.0 {
         let positive_part = positive_share / signed;
         let negative_part = negative_share / signed;

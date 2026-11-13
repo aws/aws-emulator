@@ -383,16 +383,28 @@ fn rules() -> &'static [Rule] {
                 None,
             ),
             // A street address: house number, street name, and a USPS (or Spanish)
-            // street-suffix word.
+            // street-suffix word, followed by as much of the locality line as the
+            // document writes — the city, the two-letter state or region code and the
+            // postal code. The modelled `ADDRESS` type is "a physical address", which
+            // is the WHOLE address a document writes, not its first line: a redaction
+            // client driven by these offsets must not leave the city and the postal
+            // code standing. Each part of the tail is optional and read in the order
+            // USPS Publication 28 writes them, so a street line on its own, one with a
+            // city, and one with the full locality line are all the one address they
+            // are written as. The tail is case-SENSITIVE (`(?-i:…)`) — a locality and a
+            // region code are capitalised, and reading them case-insensitively would
+            // swallow the running words after the street line.
             rule(
                 "ADDRESS",
                 Evidence::Format,
-                r"(?i)\b\d{1,6}\s+(?:[a-z0-9.'\-]+\s+){0,4}(?:street|st|avenue|ave|road|rd|boulevard|blvd|lane|ln|drive|dr|court|ct|way|place|pl|terrace|ter|parkway|pkwy|circle|cir|highway|hwy|calle|avenida)\b\.?",
+                r"(?i)\b\d{1,6}\s+(?:[a-z0-9.'\-]+\s+){0,4}(?:street|st|avenue|ave|road|rd|boulevard|blvd|lane|ln|drive|dr|court|ct|way|place|pl|terrace|ter|parkway|pkwy|circle|cir|highway|hwy|calle|avenida)\b\.?(?-i:(?:,?\s+(?:[A-Z][\p{L}.'\-]+)(?:\s+[A-Z][\p{L}.'\-]+){0,3})?(?:,?\s+[A-Z]{2}\b)?(?:,?\s+\d{5}(?:-\d{4})?\b)?)",
                 0,
                 None,
             ),
             // A personal name has no form of its own, so it is admitted only where
-            // the text introduces it: a courtesy title or a name field.
+            // the text introduces it: a courtesy title or a name field. A name the
+            // text does NOT introduce is placed by the service's person-name
+            // recogniser instead, which [`detect_pii_spans`] reads below.
             rule(
                 "NAME",
                 Evidence::Context,
@@ -645,6 +657,24 @@ pub fn detect_pii_spans(text: &str) -> Vec<PiiSpan> {
                 end: found.end(),
             });
         }
+    }
+
+    // A personal NAME the document does not introduce with a courtesy title or a name
+    // field: the modelled type is "an individual's name", however the document writes
+    // it, and a name standing in running text ("Contact John Smith at …") is one. It
+    // has no closed form to match, so what places it is the service's ONE person-name
+    // recogniser (`crate::ops::detect_entities::person_name_spans`) — the same
+    // evidence `DetectEntities` types a PERSON on — rather than a narrower rule here,
+    // so the two operations cannot disagree about who a document names. The evidence
+    // class is `Context` for the reason the rule above carries it: what admits the
+    // value is the text around it, not a form or a check digit of its own.
+    for span in crate::ops::detect_entities::person_name_spans(text) {
+        matched.push(ByteSpan {
+            entity_type: "NAME",
+            evidence: Evidence::Context,
+            begin: span.start,
+            end: span.end,
+        });
     }
 
     // A value the document itself NAMES is of the type the document names: where a

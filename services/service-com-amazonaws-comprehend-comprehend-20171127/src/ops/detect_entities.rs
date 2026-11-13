@@ -1347,10 +1347,28 @@ fn pattern_entities(text: &str) -> Vec<Recognised> {
 /// Every entity a capitalized phrase in running text yields.
 fn phrase_entities(text: &str) -> Vec<Recognised> {
     let tokens = tokenize(text);
+    // Where this service's part-of-speech tagger reads a proper noun. A capital is
+    // evidence of a name everywhere EXCEPT at the start of a sentence, where
+    // orthography puts one whatever the word is, so a sentence's first word is read
+    // as part of the name after it only where something says it is one: the tagger
+    // reads it as a proper noun (`Amazon Comprehend is a service`), or a lexicon here
+    // names it. With neither, the capital says nothing and the word is left out of the
+    // candidate — `Contact John Smith` names John Smith. A function word is left to
+    // the rule below, which is what reads the article of a name that carries one.
+    let proper_nouns = crate::ops::detect_syntax::tags_by_offset(text);
     let mut found = Vec::new();
     let mut index = 0;
     while index < tokens.len() {
         if !tokens[index].capitalized {
+            index += 1;
+            continue;
+        }
+        if tokens[index].sentence_initial
+            && !function_words().contains(tokens[index].lower.as_str())
+            && tokens.get(index + 1).is_some_and(|next| next.capitalized)
+            && proper_nouns.get(&tokens[index].start) != Some(&"PROPN")
+            && !named_by_a_lexicon(&tokens[index].lower)
+        {
             index += 1;
             continue;
         }
@@ -1412,6 +1430,16 @@ fn phrase_entities(text: &str) -> Vec<Recognised> {
     found
 }
 
+/// Whether one of this recogniser's own lexicons names `word`: a well-known
+/// organization, a place, or an English given name. Such a word carries its own
+/// evidence of being a name wherever it stands, including at the start of a sentence.
+fn named_by_a_lexicon(word: &str) -> bool {
+    let canonical = canonical(word);
+    organizations().contains(canonical.as_str())
+        || places().contains(canonical.as_str())
+        || given_names().contains(word)
+}
+
 /// How many characters of the phrase the tokens in `cues` hold, or `None` when the
 /// phrase carries no cue.
 ///
@@ -1469,10 +1497,24 @@ fn canonical_phrase(tokens: &[Token], phrase: Range<usize>) -> String {
 /// run is an institution, place or event head noun and so takes the connector's
 /// complement (`University of Washington`): `Jane Doe and Michael Brown` is two
 /// names, `Department of Justice` is one.
+///
+/// It is divided once more where a lexicon names its LEADING words as a company and
+/// further capitalised words follow: a company's name followed by a name of its own is
+/// the company and then the thing it names (`Amazon Comprehend` is Amazon's service,
+/// not a company called "Amazon Comprehend"), which is what keeps the two from being
+/// reported as one entity covering both. A tail carrying a legal-form or institution
+/// designator is NOT divided off, since that tail is part of the company's own name
+/// (`Microsoft Corporation`).
 fn divide_phrase(tokens: &[Token], phrase: Range<usize>) -> Vec<Range<usize>> {
     let whole = canonical_phrase(tokens, phrase.clone());
     if organizations().contains(whole.as_str()) || places().contains(whole.as_str()) {
         return vec![phrase];
+    }
+    if let Some(company) = leading_company(tokens, phrase.clone()) {
+        let mut parts = Vec::with_capacity(2);
+        parts.push(phrase.start..company);
+        parts.extend(divide_phrase(tokens, company..phrase.end));
+        return parts;
     }
     let mut parts = Vec::new();
     let mut start = phrase.start;
@@ -1498,6 +1540,57 @@ fn divide_phrase(tokens: &[Token], phrase: Range<usize>) -> Vec<Range<usize>> {
         parts.push(start..phrase.end);
     }
     parts
+}
+
+/// Where the company name a lexicon reads at the START of `phrase` ends, when the
+/// phrase carries one and further words follow it.
+///
+/// `None` when no leading run of the phrase names a company, when that run is the
+/// whole phrase, or when the words after it carry a legal-form or institution
+/// designator — then the tail is part of the company's own name rather than a name of
+/// its own. The LONGEST leading run a lexicon names is the one answered, so a company
+/// whose name is several words long is not cut in half.
+fn leading_company(tokens: &[Token], phrase: Range<usize>) -> Option<usize> {
+    let tail_designates = |from: usize| {
+        tokens[from..phrase.end].iter().any(|token| {
+            organization_designators().contains(token.lower.as_str())
+                || geographic_designators().contains(token.lower.as_str())
+                || event_designators().contains(token.lower.as_str())
+        })
+    };
+    (phrase.start + 1..phrase.end)
+        .rev()
+        .filter(|end| organizations().contains(canonical_phrase(tokens, phrase.start..*end).as_str()))
+        .find(|end| !tail_designates(*end))
+}
+
+/// Whether a lexicon names the capitalised words immediately in front of `phrase` as
+/// a company, inside the same sentence.
+///
+/// What `divide_phrase` divided off: the leading company name of one candidate span.
+/// Only whitespace may stand between the two, so a company named in an earlier clause
+/// says nothing about this span.
+///
+/// The look-back is bounded by [`MAX_SPAN_TOKENS`], the longest candidate span this
+/// recogniser reads, so the check costs a constant per phrase rather than a scan of
+/// everything in front of it — a document of thousands of capitalized tokens cannot
+/// make the pass quadratic.
+fn company_in_front(text: &str, tokens: &[Token], phrase: Range<usize>) -> bool {
+    let Some(before) = phrase.start.checked_sub(1) else {
+        return false;
+    };
+    if !text[tokens[before].end..tokens[phrase.start].start]
+        .chars()
+        .all(char::is_whitespace)
+    {
+        return false;
+    }
+    // Ascending, so the LONGEST run ending at `before` is the one read: a company
+    // whose name is several words long is read whole.
+    (before.saturating_sub(MAX_SPAN_TOKENS - 1)..=before).any(|start| {
+        tokens[start..=before].iter().all(|token| token.capitalized)
+            && organizations().contains(canonical_phrase(tokens, start..before + 1).as_str())
+    })
 }
 
 /// The character length of each of the phrase's tokens, in phrase order: what every
@@ -1735,6 +1828,15 @@ fn classify_phrase(text: &str, tokens: &[Token], phrase: Range<usize>) -> Option
         let named: usize = chars_of.get(run).map_or(0, |run| run.iter().sum());
         return typed(entity_type, EVIDENCE_PER_LEXICON_CHAR, named);
     }
+    // A name standing straight after a company's name, inside the same sentence, names
+    // something of that company's: a product or service it offers, which is the
+    // modelled `COMMERCIAL_ITEM`. The cue is the company name in front of the span —
+    // the same shape of evidence as the honorific that announces a person — so it
+    // weighs over the head of the span it announces, and it is read only where a
+    // lexicon names the words in front as a company, never from the capital alone.
+    if company_in_front(text, tokens, phrase.clone()) {
+        return typed(TYPE_COMMERCIAL_ITEM, EVIDENCE_PER_CUE_CHAR, head_chars);
+    }
     if normalised.len() >= 2 || !tokens[phrase.start].sentence_initial {
         // The span is a name — that is what its orthography says — but no rule
         // places it in a category, so the modelled `OTHER` is the reading reported
@@ -1849,6 +1951,46 @@ pub fn detect_entities(text: &str) -> Vec<Entity> {
             // member documents it as "empty for plain-text input".
             block_references: None,
         })
+        .collect()
+}
+
+/// Every entity the recogniser places in `text`, as its BYTE span paired with the
+/// modelled `EntityType` it is typed as, in document order.
+///
+/// The same recognition [`detect_entities`] reports, before the character-offset
+/// translation the modelled members carry — the scale a caller that works in byte
+/// offsets needs. Read by `DetectTargetedSentiment`, whose targets are the things the
+/// document NAMES: one recogniser answers what a document names, so the two
+/// operations cannot disagree about it.
+pub(crate) fn entity_spans(text: &str) -> Vec<(Range<usize>, &'static str)> {
+    let mut found = pattern_entities(text);
+    found.extend(phrase_entities(text));
+    resolve_overlaps(found)
+        .into_iter()
+        .map(|entity| (entity.start..entity.end, entity.entity_type))
+        .collect()
+}
+
+/// Every PERSON mention the entity recogniser places in `text`, as BYTE offsets into
+/// it.
+///
+/// The ONE person-name recogniser of this service, read by the PII family: a personal
+/// name carries no closed form, so what places one is the name's shape and the
+/// syntactic position it stands in ([`person_name_shape`],
+/// [`person_bearing_position`]) together with the honorifics and the person-lexicon
+/// entries beside it — exactly the evidence `DetectEntities` types a `PERSON` on. A
+/// document's names cannot depend on which operation asks for them, so
+/// `ContainsPiiEntities` and `DetectPiiEntities` place their `NAME` entities from this
+/// list rather than from a second, narrower recogniser of their own.
+///
+/// Byte offsets, because that is the scale the PII recognizer resolves overlaps on
+/// before translating the surviving spans to the character offsets the modelled
+/// members carry.
+pub(crate) fn person_name_spans(text: &str) -> Vec<Range<usize>> {
+    entity_spans(text)
+        .into_iter()
+        .filter(|(_, entity_type)| *entity_type == TYPE_PERSON)
+        .map(|(span, _)| span)
         .collect()
 }
 

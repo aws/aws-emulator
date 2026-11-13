@@ -171,9 +171,11 @@ const CUE_UNLISTED_READING: f64 = 1e-5;
 /// whitespace is skipped, since no token is reported for it.
 const SENTENCE_FINAL: &[char] = &['.', '!', '?', '…'];
 
-/// The articles. A word straight after one of them heads a noun phrase, so a verb
+/// The articles. A word straight after a DETERMINER heads a noun phrase, so a verb
 /// reading of it is spoken against by that context (`the train`, `the running of the
-/// bulls`).
+/// bulls`, `that report`); the articles are the determiners that can also be read as
+/// something else, and are named here for the candidate-span rules of the entity
+/// recogniser.
 const ARTICLES: &[&str] = &["a", "an", "the"];
 
 /// The forms of `be`. A clause whose predicate is one of these carries no other verb,
@@ -189,6 +191,21 @@ const COPULA_FORMS: &[&str] = &[
 /// The endings an English participle carries, for the predicative rule above.
 const PARTICIPLE_ENDINGS: &[&str] = &["ed", "en"];
 
+/// The words English opens a RELATIVE clause with that the lexicon also claims as a
+/// determiner.
+///
+/// Universal Dependencies v2 — the tag set this service reports — reads such a word
+/// as a relative PRONOUN when it stands for the noun its clause modifies (`the
+/// service that uses machine learning`) and as a DET only when it determines a noun
+/// of its own (`that service`). Both readings are in the lexicon, so the reading is
+/// decided by the position, which is what [`resolve_relative_pronouns`] does. `who`,
+/// `whom` and `whoever` need no rule: the lexicon claims them as pronouns alone.
+const RELATIVIZERS: &[&str] = &["that", "which"];
+
+/// The tags a clause's own predicate carries: a finite verb (`that uses`, `Amazon
+/// Comprehend is`) or an auxiliary heading a verb group (`that is used`).
+const PREDICATE_TAGS: &[&str] = &["VERB", "AUX"];
+
 /// The ending an English gerund carries: the form that names a thing rather than an
 /// action, which is what lets it stand inside a noun phrase.
 const GERUND_ENDING: &str = "ing";
@@ -200,6 +217,14 @@ pub(crate) const NOUN_PHRASE_MODIFIER_TAGS: &[&str] = &["DET", "ADJ", "NUM", "NO
 
 /// The tags a noun phrase can be headed by.
 pub(crate) const NOUN_PHRASE_HEAD_TAGS: &[&str] = &["NOUN", "PROPN"];
+
+/// The tags of a word that can modify the head of a nominal COMPOUND: a common noun,
+/// an adjective or a numeral in front of the word it modifies (`machine learning`,
+/// `natural language`). A proper noun is deliberately not one of them — a name in
+/// front of an `-ing` form introduces a participle clause (`saw John running`) as
+/// readily as it modifies a compound — and neither is a determiner, which opens a
+/// noun phrase rather than modifying inside one and is read by the article rule.
+const NOMINAL_COMPOUND_MODIFIER_TAGS: &[&str] = &["NOUN", "ADJ", "NUM"];
 
 /// The tags of a word that can stand between an auxiliary and the main verb it
 /// accompanies (`does not like`, `has really grown`).
@@ -479,6 +504,13 @@ impl Readings {
         }
     }
 
+    /// Whether the token's OWN evidence left a reading of `tag` at all.
+    fn has(&self, tag: &str) -> bool {
+        self.readings
+            .iter()
+            .any(|(candidate, _)| *candidate == tag)
+    }
+
     /// The reading holding the most weight, and its share of the whole.
     ///
     /// The share is strictly positive, and strictly below 1 for any token carrying
@@ -756,6 +788,22 @@ pub(crate) fn syntax_tokens(text: &str) -> Vec<SyntaxToken> {
         .collect()
 }
 
+/// The tag this service's part-of-speech tagger reads at each token of `text`, keyed
+/// by the token's BYTE offset.
+///
+/// The ONE place a caller asks what English makes of a word HERE — whether a capital
+/// marks a name (`Amazon Comprehend is a service`) or is the orthography of a
+/// sentence's first word (`Contact John Smith at …`), and whether a word is the noun
+/// a phrase is headed by. The tagger answers from the word's own evidence and the
+/// position it stands in, and the entity and targeted-sentiment recognisers read that
+/// answer rather than deciding it a second way.
+pub(crate) fn tags_by_offset(text: &str) -> HashMap<usize, &'static str> {
+    analyse(text)
+        .into_iter()
+        .map(|token| (token.byte_begin, token.tag()))
+        .collect()
+}
+
 /// One analysed token of a document: the span it occupies and the readings its own
 /// evidence and the context it stands in leave it with.
 ///
@@ -863,9 +911,145 @@ pub(crate) fn analyse(text: &str) -> Vec<AnalysedToken<'_>> {
         });
     }
 
+    resolve_proper_names(&mut tokens);
+    resolve_relative_pronouns(&mut tokens);
     resolve_noun_phrases(&mut tokens);
     resolve_auxiliaries(&mut tokens);
     tokens
+}
+
+/// Rule 0 of [`analyse`]: a capitalised word that stands in a NAME is read as a
+/// proper noun.
+///
+/// Capitalisation on its own is weak evidence, and it is no evidence at all where
+/// orthography demands a capital — at the start of a sentence — so a word the lexicon
+/// claims for another class (`Main` in `Main Street`) or claims for nothing at all
+/// (`Amazon` opening a sentence) is otherwise read as that class or as a common noun.
+/// Two kinds of evidence are read here, both about the RUN of capitalised words the
+/// token stands in rather than about the capital alone:
+///
+/// 1. The NEIGHBOUR: a word standing next to one that already reads as a proper noun
+///    is a further word of that same multiword name — the Universal Dependencies
+///    reading of every word of a name, not only of its head (`Main Street`).
+/// 2. The POSITION, for a word opening a sentence, where the capital says nothing: a
+///    word English has no class for, inside a capitalised run of more than one word
+///    standing as its clause's SUBJECT, is part of the name that run writes (`Amazon
+///    Comprehend is a service`, `Initech Inc announced its release`).
+///
+/// What the two guards keep out: a lone capital the orthography put there (`Dogs
+/// bark.`, `Insights matter.` — one word, so no run and no neighbour), and a word
+/// standing in its clause as something other than its subject (`Contact John Smith at
+/// …` — no predicate follows the run, so the opening word is not part of the name).
+///
+/// Two passes, left to right then right to left, so a name is read whichever end of it
+/// the anchor sits at (`Main Street`, `Amazon Comprehend`), and the whole run of a
+/// longer name is reached one word at a time.
+fn resolve_proper_names(tokens: &mut [AnalysedToken<'_>]) {
+    let capitalised: Vec<bool> = tokens
+        .iter()
+        .map(|token| starts_uppercase(token.text))
+        .collect();
+    // A word whose capital is the only orthographic evidence it has: it opens a
+    // sentence, so the capital is the orthography's rather than the name's.
+    let opens_a_sentence: Vec<bool> = tokens
+        .iter()
+        .enumerate()
+        .map(|(position, token)| capitalised[position] && !token.readings.has("PROPN"))
+        .collect();
+    let anchors = |tokens: &[AnalysedToken<'_>], position: usize| {
+        capitalised[position] && tokens[position].tag() == "PROPN"
+    };
+    let forward: Vec<usize> = (0..tokens.len()).collect();
+    for pass in [forward.clone(), forward.into_iter().rev().collect()] {
+        for position in pass {
+            if !capitalised[position] || tokens[position].tag() == "PROPN" {
+                continue;
+            }
+            if opens_a_sentence[position] {
+                // The capital says nothing here, so what reads the word as a name is
+                // the run it opens standing in subject position.
+                if tokens[position].readings.open_class_default
+                    && names_the_subject(tokens, &capitalised, position)
+                {
+                    tokens[position].readings.support("PROPN", CUE_CONTEXT);
+                }
+                continue;
+            }
+            let beside_a_name = position
+                .checked_sub(1)
+                .is_some_and(|before| anchors(tokens, before))
+                || (position + 1 < tokens.len() && anchors(tokens, position + 1));
+            if beside_a_name {
+                tokens[position].readings.support("PROPN", CUE_CONTEXT);
+            }
+        }
+    }
+}
+
+/// Whether the run of capitalised words starting at `position` writes a NAME standing
+/// as its clause's subject: more than one capitalised word, followed by the clause's
+/// predicate.
+///
+/// An abbreviating period inside or at the end of the run is part of how the name is
+/// spelled rather than a boundary — `Lars E. Nyqvist signed the lease`, `Initech Inc.
+/// shipped a release` — since the tokenizer reports that period as a token of its own.
+fn names_the_subject(
+    tokens: &[AnalysedToken<'_>],
+    capitalised: &[bool],
+    position: usize,
+) -> bool {
+    let mut after = position;
+    let mut words = 0usize;
+    while after < tokens.len() {
+        if capitalised[after] {
+            words += 1;
+            after += 1;
+            continue;
+        }
+        let abbreviating =
+            tokens[after].text == "." && after > position && capitalised[after - 1];
+        if !abbreviating {
+            break;
+        }
+        after += 1;
+    }
+    words > 1
+        && tokens
+            .get(after)
+            .is_some_and(|candidate| PREDICATE_TAGS.contains(&candidate.tag()))
+}
+
+/// Rule 0b of [`analyse`]: a relativizer standing for the noun its clause modifies is
+/// a relative PRONOUN rather than a determiner.
+///
+/// The position is what tells the two readings apart: a determiner determines the noun
+/// phrase behind it (`that service`), while a relative pronoun stands between the noun
+/// its clause modifies and that clause's own predicate (`the service that uses machine
+/// learning`, `the insights that are reported`). So the rule asks for exactly that
+/// position — a noun-phrase head in front, a predicate behind — which also leaves the
+/// complementiser alone, since that one follows a VERB (`said that it works`) rather
+/// than a noun.
+fn resolve_relative_pronouns(tokens: &mut [AnalysedToken<'_>]) {
+    for position in 0..tokens.len() {
+        if !RELATIVIZERS.contains(&tokens[position].lowercase.as_str()) {
+            continue;
+        }
+        let modifies_a_noun = position.checked_sub(1).is_some_and(|before| {
+            NOUN_PHRASE_HEAD_TAGS.contains(&tokens[before].tag()) || tokens[before].tag() == "PRON"
+        });
+        // The clause's predicate, past the adverbs standing in front of it.
+        let mut behind = position + 1;
+        while behind < tokens.len() && AUXILIARY_SKIPPABLE_TAGS.contains(&tokens[behind].tag()) {
+            behind += 1;
+        }
+        let heads_a_clause = tokens
+            .get(behind)
+            .is_some_and(|candidate| PREDICATE_TAGS.contains(&candidate.tag()));
+        if modifies_a_noun && heads_a_clause {
+            tokens[position].readings.support("PRON", CUE_CONTEXT);
+            tokens[position].readings.contradict("DET");
+        }
+    }
 }
 
 /// Rules 1 and 2 of [`analyse`], left to right: a resolved token is the context the
@@ -922,26 +1106,36 @@ fn resolve_noun_phrases(tokens: &mut [AnalysedToken<'_>]) {
         if tag != "VERB" {
             continue;
         }
-        // A gerund or a participle standing between a modifier and a head noun is
-        // part of that noun phrase rather than its clause's verb: the `-ing` form
-        // names a thing (`language processing service`) and the `-ed` form describes
-        // one (`the delayed flight`). A FINITE verb form in the same position is the
-        // clause's predicate (`the service finds insights`), so it keeps its reading.
+        // A gerund or a participle standing in a noun phrase is part of it rather
+        // than its clause's verb. A PARTICIPLE between a modifier and a head noun
+        // describes the head (`the delayed flight`). A GERUND needs no head behind it:
+        // standing after a common-noun or adjective modifier it names a thing — as the
+        // head of a nominal compound (`machine learning`, `data processing`) or as a
+        // further word inside one (`language processing service`) — which is the
+        // Universal Dependencies reading of a verbal noun. A FINITE verb form in the
+        // same position is the clause's predicate (`the service finds insights`), so it
+        // keeps its reading, and a gerund after an auxiliary is a progressive (`is
+        // processing data`), whose auxiliary is not a nominal modifier.
+        let compound_modifier = NOMINAL_COMPOUND_MODIFIER_TAGS.contains(&previous_tag);
         let nominal_modifier = NOUN_PHRASE_MODIFIER_TAGS.contains(&previous_tag)
             && next.is_some_and(|(tag, _)| NOUN_PHRASE_HEAD_TAGS.contains(&tag));
         let gerund = tokens[position].lowercase.ends_with(GERUND_ENDING);
         let participle = PARTICIPLE_ENDINGS
             .iter()
             .any(|ending| tokens[position].lowercase.ends_with(ending));
-        if ARTICLES.contains(&previous_word.as_str()) {
-            // An article opens a noun phrase, so the word it opens heads one.
+        if previous_tag == "DET" || ARTICLES.contains(&previous_word.as_str()) {
+            // A determiner opens a noun phrase, so the word it opens heads one. The
+            // relative reading of a relativizer is already resolved
+            // ([`resolve_relative_pronouns`]), so a clause's predicate is not demoted
+            // by the pronoun standing in front of it.
             tokens[position].readings.contradict("VERB");
             tokens[position].readings.support("NOUN", CUE_CONTEXT);
-        } else if nominal_modifier && (gerund || participle) {
+        } else if gerund && (compound_modifier || nominal_modifier) {
             tokens[position].readings.contradict("VERB");
-            tokens[position]
-                .readings
-                .support(if gerund { "NOUN" } else { "ADJ" }, CUE_CONTEXT);
+            tokens[position].readings.support("NOUN", CUE_CONTEXT);
+        } else if nominal_modifier && participle {
+            tokens[position].readings.contradict("VERB");
+            tokens[position].readings.support("ADJ", CUE_CONTEXT);
         }
     }
 }

@@ -83,6 +83,8 @@ mod resource_policies;
 mod resource_tags;
 #[path = "all/sentiment_jobs.rs"]
 mod sentiment_jobs;
+#[path = "all/single_document_conventions.rs"]
+mod single_document_conventions;
 #[path = "all/state_roundtrip.rs"]
 mod state_roundtrip;
 #[path = "all/sync_inference.rs"]
@@ -97,6 +99,11 @@ mod targeted_sentiment;
 mod toxic_content;
 #[path = "all/toxic_content_conduct.rs"]
 mod toxic_content_conduct;
+// Declared beside the suite it backs rather than under `s`: `zz_probe` holds the
+// whole-document baseline that `single_document_conventions` asserts the rules of,
+// for the single-document inference family.
+#[path = "all/zz_probe.rs"]
+mod zz_probe;
 // Declared beside the suites it backs rather than under `b`: `zz_scratch` holds the
 // documents written from scratch for the four `BatchDetect*` analysers and the
 // whole-document baseline they must keep answering, which

@@ -111,7 +111,8 @@
 #[allow(unused_imports)]
 use super::types::*;
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::ops::Range;
 use std::sync::OnceLock;
 
 use crate::ops::detect_sentiment::score_sentiment;
@@ -169,14 +170,8 @@ const GROUP_SCORE_FLOOR: f32 = 0.5;
 
 /// The most words a determiner-headed noun phrase may span before its head.
 ///
-/// A longer run is almost always the rule running past the phrase, so it is cut:
-/// this recogniser has no part-of-speech model to end the phrase for it.
+/// A longer run is almost always the rule running past the phrase, so it is cut.
 const MAX_NOUN_PHRASE_WORDS: usize = 4;
-
-/// The shortest word a verbal/adverbial suffix is read as morphology rather than as
-/// part of the stem, so `red` and `bed` stay nouns while `arrived` and `slowly` do
-/// not.
-const MIN_SUFFIX_WORD_CHARS: usize = 5;
 
 /// English honorifics, the closed set that marks the capitalised span after it as a
 /// person's name. Matched case-insensitively and without the abbreviating period,
@@ -482,14 +477,6 @@ fn is_numeric(token: &str) -> bool {
             .all(|c| c.is_ascii_digit() || c == '.' || c == ',')
 }
 
-/// Whether `lower` carries the verbal or adverbial morphology that says it heads no
-/// noun phrase (`-ed`, `-ing`, `-ly`), only counting it on a word long enough for
-/// the ending to be a suffix rather than part of the stem.
-fn has_verbal_suffix(lower: &str) -> bool {
-    lower.chars().count() >= MIN_SUFFIX_WORD_CHARS
-        && (lower.ends_with("ed") || lower.ends_with("ing") || lower.ends_with("ly"))
-}
-
 /// Whether the document between `from` and `to` is whitespace only, i.e. the two
 /// tokens either side are adjacent words of one span.
 fn adjacent(text: &str, from: usize, to: usize) -> bool {
@@ -538,6 +525,10 @@ fn capitalised_span(text: &str, words: &[Word<'_>], from: usize) -> Option<usize
 }
 
 /// The type a proper-noun span carries, from the typing cues its words show.
+///
+/// The LAST resort: what types a name here is this service's own entity recogniser
+/// ([`named_entity_types`]), which reads the whole document rather than the cues
+/// inside one span. These cues answer a span that recogniser placed nothing on.
 fn proper_noun_type(span: &[Word<'_>]) -> &'static str {
     let last = span
         .last()
@@ -555,36 +546,95 @@ fn proper_noun_type(span: &[Word<'_>]) -> &'static str {
     "OTHER"
 }
 
+/// Every entity this service's entity recogniser places in `text`, as its BYTE span
+/// paired with the modelled `TargetedSentimentEntityType` it is reported under.
+///
+/// What this operation targets is the things the document NAMES — the modelled
+/// `TargetedSentimentEntityType` values are the kinds of named thing, and the
+/// operation's own documentation is about "the sentiment … towards each entity" — so
+/// the targets are the entities `DetectEntities` places, read through
+/// [`crate::ops::detect_entities::entity_spans`]. One recogniser answers what a
+/// document names, so the two operations cannot disagree about it, and a named thing
+/// with no capital of its own (an e-mail address, a figure) is targeted too.
+fn named_entity_types(text: &str) -> Vec<(Range<usize>, &'static str)> {
+    crate::ops::detect_entities::entity_spans(text)
+        .into_iter()
+        .map(|(span, entity_type)| (span, targeted_type_of(entity_type)))
+        .collect()
+}
+
+/// The modelled `TargetedSentimentEntityType` an `EntityType` is targeted under.
+///
+/// Every `EntityType` value is a `TargetedSentimentEntityType` value too, under the
+/// same name, with one exception: `TITLE` names a creative work, which the targeted
+/// enum splits by medium (`MOVIE`, `MUSIC`, `BOOK`, `GAME`) — nothing says WHICH, so
+/// the work is targeted as `OTHER` rather than assigned a medium no evidence names.
+fn targeted_type_of(entity_type: &str) -> &'static str {
+    match entity_type {
+        "PERSON" => "PERSON",
+        "LOCATION" => "LOCATION",
+        "ORGANIZATION" => "ORGANIZATION",
+        "COMMERCIAL_ITEM" => "COMMERCIAL_ITEM",
+        "EVENT" => "EVENT",
+        "DATE" => "DATE",
+        "QUANTITY" => "QUANTITY",
+        _ => "OTHER",
+    }
+}
+
+/// The entity the recogniser placed on the name `[start, end)`, when it placed one:
+/// the typed span sharing the most characters with it.
+fn placed_entity(
+    entities: &[(Range<usize>, &'static str)],
+    start: usize,
+    end: usize,
+) -> Option<(Range<usize>, &'static str)> {
+    entities
+        .iter()
+        .filter_map(|(span, entity_type)| {
+            let overlap = end.min(span.end).saturating_sub(start.max(span.start));
+            (overlap > 0).then_some((overlap, span.clone(), *entity_type))
+        })
+        .max_by_key(|(overlap, _, _)| *overlap)
+        .map(|(_, span, entity_type)| (span, entity_type))
+}
+
 /// The head of the noun phrase starting at `from`, and the index just past the
 /// phrase.
 ///
-/// The phrase runs over the content words that follow the determiner and ends at the
-/// first word that cannot be in it — a function word, a capitalised word (which the
-/// proper-noun rule claims instead), a numeral, a word carrying verbal morphology, a
-/// sentence boundary, or [`MAX_NOUN_PHRASE_WORDS`] words. Its HEAD is the last word
-/// of the run, as an English noun phrase is head-final; the modifiers before it are
-/// not part of the mention, because without a part-of-speech model there is no way
-/// to tell a modifier from a word the run should have stopped at.
-fn noun_phrase_head<'a>(words: &[Word<'a>], from: usize) -> Option<(usize, Word<'a>)> {
+/// The phrase runs over the words this service's part-of-speech tagger reads as
+/// standing inside a noun phrase (`crate::ops::detect_syntax::NOUN_PHRASE_MODIFIER_TAGS`
+/// — a modifier, a numeral or a noun) and ends at the first word that cannot be in
+/// one, at a capitalised word (which the proper-noun rule claims instead), at a
+/// sentence boundary, or after [`MAX_NOUN_PHRASE_WORDS`] words. Its HEAD is the LAST
+/// noun of that run, as an English noun phrase is head-final: `a natural language
+/// processing service` is a mention of the SERVICE, and the nouns modifying it inside
+/// the compound are not mentions of their own.
+fn noun_phrase_head<'a>(
+    words: &[Word<'a>],
+    tags: &HashMap<usize, &'static str>,
+    from: usize,
+) -> Option<(usize, Word<'a>)> {
     let sentence = words.get(from)?.sentence;
     let mut end = from;
+    let mut head: Option<(usize, Word<'a>)> = None;
     while end - from < MAX_NOUN_PHRASE_WORDS {
         let Some(candidate) = words.get(end) else { break };
-        let lower = candidate.text.to_lowercase();
+        let tag = tags.get(&candidate.start).copied().unwrap_or_default();
         if candidate.sentence != sentence
             || !is_content_word(candidate)
             || is_capitalised(candidate.text)
             || is_numeric(candidate.text)
-            || has_verbal_suffix(&lower)
+            || !crate::ops::detect_syntax::NOUN_PHRASE_MODIFIER_TAGS.contains(&tag)
         {
             break;
         }
         end += 1;
+        if crate::ops::detect_syntax::NOUN_PHRASE_HEAD_TAGS.contains(&tag) {
+            head = Some((end, *candidate));
+        }
     }
-    if end == from {
-        return None;
-    }
-    words.get(end - 1).map(|head| (end, *head))
+    head
 }
 
 /// One mention the recogniser placed, before it is grouped.
@@ -596,6 +646,10 @@ struct Mention {
     text: String,
     kind: Kind,
     entity_type: &'static str,
+    /// Whether the type came from this service's entity RECOGNISER rather than from a
+    /// cue inside the mention. A recognised type is evidence about what the mention
+    /// names, so a mention carrying one does not join a group of another type.
+    typed: bool,
     score: f32,
     sentence: usize,
     /// What the mention can refer to, when it is a pronoun.
@@ -622,6 +676,7 @@ impl Mention {
             text: text[start..end].to_string(),
             kind,
             entity_type,
+            typed: false,
             score,
             sentence,
             pronoun,
@@ -630,7 +685,17 @@ impl Mention {
 }
 
 /// Place every mention the rules find, in document order and without overlap.
-fn place_mentions(text: &str, words: &[Word<'_>]) -> Vec<Mention> {
+///
+/// `entities` is what this service's entity recogniser placed in the document
+/// ([`named_entity_types`]): it TYPES every name span placed here, and every entity
+/// it placed that no rule here reached is a mention of its own, so a named thing the
+/// document writes without a capital of its own is targeted as well.
+fn place_mentions(
+    text: &str,
+    words: &[Word<'_>],
+    entities: &[(Range<usize>, &'static str)],
+) -> Vec<Mention> {
+    let tags = crate::ops::detect_syntax::tags_by_offset(text);
     let mut found: Vec<Mention> = Vec::new();
     let mut index = 0usize;
     while let Some(word) = words.get(index).copied() {
@@ -690,7 +755,7 @@ fn place_mentions(text: &str, words: &[Word<'_>]) -> Vec<Mention> {
             ));
             index += 1;
             if POSSESSIVE_PRONOUNS.contains(&lower.as_str()) {
-                if let Some((next, head)) = noun_phrase_head(words, index) {
+                if let Some((next, head)) = noun_phrase_head(words, &tags, index) {
                     found.push(Mention::new(
                         text,
                         head.start,
@@ -711,8 +776,27 @@ fn place_mentions(text: &str, words: &[Word<'_>]) -> Vec<Mention> {
         if is_span_word(&word) {
             let span_end = capitalised_span(text, words, index).unwrap_or(index + 1);
             let span = &words[index..span_end];
-            let entity_type = proper_noun_type(span);
-            let mut end = span.last().map_or(word.end, |last| last.end);
+            let span_start = word.start;
+            let span_last = span.last().map_or(word.end, |last| last.end);
+            // What the entity recogniser placed over these characters, when it placed
+            // anything: it read the WHOLE document, so where a name starts and ends is
+            // its answer rather than the capitalised run's — `Contact John Smith` is a
+            // mention of John Smith. A span it placed nothing on keeps the run's own
+            // extent and the cue typing.
+            let placed = placed_entity(entities, span_start, span_last);
+            let entity_type = placed
+                .as_ref()
+                .map_or_else(|| proper_noun_type(span), |(_, typed)| *typed);
+            let mut begin = placed
+                .as_ref()
+                .map_or(word.start, |(span, _)| span.start);
+            let mut end = placed.as_ref().map_or(span_last, |(span, _)| span.end);
+            // A name the recogniser read as starting before this run is already
+            // reported by the mention that run opened.
+            if begin < word.start {
+                begin = word.start;
+                end = end.max(span_last);
+            }
             let mut next = span_end;
             // A numeral right after a calendar name belongs to the date it dates.
             if entity_type == "DATE" {
@@ -726,28 +810,34 @@ fn place_mentions(text: &str, words: &[Word<'_>]) -> Vec<Mention> {
                     }
                 }
             }
+            // No word inside the reported span opens a mention of its own.
+            while words.get(next).is_some_and(|word| word.start < end) {
+                next += 1;
+            }
             let score = if entity_type == "OTHER" {
                 SCORE_PROPER_NOUN
             } else {
                 SCORE_TYPED_SPAN
             };
-            found.push(Mention::new(
+            let mut mention = Mention::new(
                 text,
-                word.start,
+                begin,
                 end,
                 Kind::ProperNoun,
                 entity_type,
                 score,
                 word.sentence,
                 None,
-            ));
+            );
+            mention.typed = placed.is_some();
+            found.push(mention);
             index = next;
             continue;
         }
 
         // A determiner opens a noun phrase whose head is a mention.
         if DETERMINERS.contains(&lower.as_str()) {
-            if let Some((next, head)) = noun_phrase_head(words, index + 1) {
+            if let Some((next, head)) = noun_phrase_head(words, &tags, index + 1) {
                 found.push(Mention::new(
                     text,
                     head.start,
@@ -781,6 +871,38 @@ fn place_mentions(text: &str, words: &[Word<'_>]) -> Vec<Mention> {
 
         index += 1;
     }
+
+    // Every entity the recogniser placed that no rule above reached: a named thing
+    // the document writes with no capital of its own (an e-mail address, an
+    // identifier) is a target too, and the operation reports the sentiment directed
+    // at it like any other.
+    for (span, entity_type) in entities {
+        if found
+            .iter()
+            .any(|mention| mention.start < span.end && span.start < mention.end)
+        {
+            continue;
+        }
+        let sentence = words
+            .iter()
+            .find(|word| word.end > span.start)
+            .map_or(0, |word| word.sentence);
+        let mut mention = Mention::new(
+            text,
+            span.start,
+            span.end,
+            Kind::ProperNoun,
+            entity_type,
+            SCORE_TYPED_SPAN,
+            sentence,
+            None,
+        );
+        mention.typed = true;
+        found.push(mention);
+    }
+    // The rules above run left to right, so they place their mentions in document
+    // order; the entities added after them are put back into it.
+    found.sort_by_key(|mention| mention.start);
     found
 }
 
@@ -963,7 +1085,7 @@ fn resolve_name(groups: &[Group], mention: &Mention, canonical: &str) -> Option<
     let index = most_recent(groups, |group| {
         group.speaker.is_none()
             && group.named
-            && admits_type(group, mention.entity_type)
+            && admits_type(group, mention)
             && !group.canonical_words.is_empty()
             && (words.iter().all(|word| group.canonical_words.contains(word))
                 || group
@@ -974,11 +1096,13 @@ fn resolve_name(groups: &[Group], mention: &Mention, canonical: &str) -> Option<
     Some((index, GROUP_SCORE_PARTIAL_NAME))
 }
 
-/// Whether a group still admits a name the recogniser typed `entity_type`: the two
-/// agree, or the group was retyped `PERSON` by a pronoun referring into it and the
-/// name carries no type cue of its own.
-fn admits_type(group: &Group, entity_type: &str) -> bool {
-    group.entity_type == entity_type || (group.entity_type == "PERSON" && entity_type == "OTHER")
+/// Whether a group still admits a name the recogniser typed: the two agree, or the
+/// group was retyped `PERSON` by a pronoun referring into it and the name carries no
+/// type of its own — a type the entity recogniser PLACED is evidence about what the
+/// mention names, so a mention carrying one stays out of a group of another type.
+fn admits_type(group: &Group, mention: &Mention) -> bool {
+    group.entity_type == mention.entity_type
+        || (group.entity_type == "PERSON" && mention.entity_type == "OTHER" && !mention.typed)
 }
 
 /// Byte offset -> character offset for every character boundary of the document,
@@ -1070,7 +1194,8 @@ fn descriptive_mention_index(order: &[usize], mentions: &[Mention]) -> Vec<i32> 
 /// it, and the sentiment of the clause it sits in.
 fn analyse(text: &str) -> Vec<TargetedSentimentEntity> {
     let (words, sentences) = segment(text);
-    let mentions = place_mentions(text, &words);
+    let entities = named_entity_types(text);
+    let mentions = place_mentions(text, &words, &entities);
     let (groups, group_scores) = group_mentions(&mentions);
     let offsets = character_offsets(text);
 
