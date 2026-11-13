@@ -247,6 +247,8 @@ mod terms_branding_and_passkey_refusal_wire;
 mod terms_documents;
 #[path = "all/terms_not_found_message.rs"]
 mod terms_not_found_message;
+#[path = "all/terms_pattern_expression_wording.rs"]
+mod terms_pattern_expression_wording;
 #[path = "all/token_issuer_endpoint.rs"]
 mod token_issuer_endpoint;
 #[path = "all/token_signing.rs"]

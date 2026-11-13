@@ -510,13 +510,15 @@ impl<O> WithSubmittedValues<O> {
 /// * that walk ELIDES a long value into the clause at a ceiling of its own, while Amazon
 ///   Cognito quotes the whole value the request carried: the elided half is replaced by that
 ///   value ([`quoting_the_whole_submitted_value`], within [`MAX_QUOTED_VALUE`]);
-/// * a `@pattern` requirement is quoted WITHOUT the `^`/`$` a whole-value pattern is written
-///   with in the model, which is how Amazon Cognito publishes the expression a value has to
-///   satisfy ([`unanchored`]). The CHECK is still the model's pattern as written: only this
-///   rendering drops the pair.
+/// * a `@pattern` requirement is quoted as the expression Amazon Cognito publishes for the
+///   violated member's target shape, which for most of this model's shapes is the modelled
+///   text WITHOUT the `^`/`$` a whole-value pattern is written with ([`unanchored`]) and for
+///   a terms document's own members is that text as the model writes it
+///   ([`pattern_as_stated`]). The CHECK is still the model's pattern as written: only this
+///   rendering decides the pair.
 ///
 /// The last of those is one half of [`requirement_as_stated`], which owns BOTH of this
-/// endpoint's requirement renderings: the unanchored `@pattern` expression and the order an
+/// endpoint's requirement renderings: the `@pattern` expression and the order an
 /// enumerated type's value set is listed in.
 ///
 /// Every other clause keeps the framework's own rendering, which already states the bytes the
@@ -540,13 +542,14 @@ fn quoting_the_submitted_value(violation: Violation, echo: SubmittedEcho) -> Vio
 /// `violation` with the REQUIREMENT half of its clause worded the way this endpoint words
 /// it, and every other half of the clause left exactly as the framework built it.
 ///
-/// Two requirement classes are stated differently from the way the model writes them, and
-/// both belong to the constraint rather than to the member, the operation or the depth the
-/// value sat at — so both are applied here, in the one place every refusal of this service
-/// passes through, rather than per operation:
+/// Two requirement classes are stated by the SHAPE the violated member targets rather than
+/// by the member, the operation or the depth the value sat at — so both are applied here, in
+/// the one place every refusal of this service passes through, rather than per operation:
 ///
-/// * a `@pattern` expression is published WITHOUT the `^`/`$` a whole-value pattern is
-///   written with in the model ([`unanchored`]);
+/// * a `@pattern` expression is published as the expression the violated member's TARGET
+///   SHAPE advertises, which is the modelled text with the whole-value `^`/`$` pair dropped
+///   for most of this model's shapes and the modelled text as written for a terms document's
+///   ([`pattern_as_stated`]);
 /// * an enumerated type's admissible set is enumerated in the order the set's own HASH
 ///   TABLE is walked — ascending bucket of each value's string hash, two values of one
 ///   bucket read from the head each was pushed onto — rather than in the order the model
@@ -562,12 +565,56 @@ fn quoting_the_submitted_value(violation: Violation, echo: SubmittedEcho) -> Vio
 fn requirement_as_stated(violation: &Violation) -> Violation {
     match &violation.kind {
         ViolationKind::Pattern(pattern) => Violation {
-            kind: ViolationKind::Pattern(unanchored(pattern)),
+            kind: ViolationKind::Pattern(pattern_as_stated(&violation.path, pattern)),
             ..violation.clone()
         },
         ViolationKind::EnumValue(_) => in_hashed_enum_order(violation),
         _ => violation.clone(),
     }
+}
+
+/// The members of this model whose clause quotes the modelled `@pattern` CHARACTER FOR
+/// CHARACTER, the `^`/`$` pair included: the two that address a set of terms documents,
+/// named as a clause names a member (lowerCamel) — `TermsId`, targeting `TermsIdType`
+/// (`^[0-9a-fA-F]{8}-…-[0-9a-fA-F]{12}$`), and `TermsName`, targeting `TermsNameType`
+/// (`^(terms-of-use|privacy-policy)$`); `smithy_query(query="shape",shape="TermsIdType")`
+/// and `…shape="TermsNameType"`.
+///
+/// The set is keyed by the MEMBER NAME because that is the only thing a violation carries
+/// about which shape declared the expression — the framework's member schema names the
+/// member, never its target — and these two names are each the name of exactly one member
+/// position of this model, whichever operation carries it (`TermsId` on `DeleteTerms`,
+/// `DescribeTerms` and `UpdateTerms`; `TermsName` on `CreateTerms`, `DescribeTermsByClient`
+/// and `UpdateTerms`). So the rendering follows the shape, not the operation or the request:
+/// every operation that addresses a terms document states its expression the same way.
+const PATTERN_QUOTED_AS_WRITTEN: &[&str] = &["termsId", "termsName"];
+
+/// The `@pattern` expression a clause about the member at `path` quotes, over the modelled
+/// `pattern` that refused the value.
+///
+/// A clause states the expression Amazon Cognito PUBLISHES for that member, and this endpoint
+/// publishes two renderings of the one modelled text:
+///
+/// * for a terms document's members ([`PATTERN_QUOTED_AS_WRITTEN`]) the modelled text itself,
+///   anchors and all;
+/// * for every other patterned member the modelled text without the whole-value `^`/`$` pair
+///   ([`unanchored`]), which is the expression a value has to satisfy once the pair that
+///   turns a find into a whole-string match is taken off.
+///
+/// The CHECK is the model's pattern as written in BOTH cases: a value is refused by the
+/// anchored expression whatever the clause goes on to quote, so the two renderings differ
+/// only in what the message advertises.
+///
+/// The LAST segment of the path names the member, so a member at any depth is rendered by
+/// the shape it targets rather than by the position it sat at; a map ENTRY's path ends in the
+/// collection step rather than in a member name, so a key's clause keeps the common
+/// rendering.
+fn pattern_as_stated(path: &str, pattern: &str) -> String {
+    let member = path.split('.').next_back().unwrap_or(path);
+    if PATTERN_QUOTED_AS_WRITTEN.contains(&member) {
+        return pattern.to_string();
+    }
+    unanchored(pattern)
 }
 
 /// `violation` with the clause's value half restored where the framework WITHHELD it.
@@ -1682,6 +1729,78 @@ mod tests {
                 "case {:?}: expected this service to claim it == {}, got {actual}",
                 row.case, row.expected
             );
+        }
+    }
+
+    /// RULE: every member name [`super::PATTERN_QUOTED_AS_WRITTEN`] holds is a member THIS
+    /// MODEL declares, at a position that carries a `@pattern` whose text is anchored at
+    /// both ends — so the set cannot name a member the model does not have, or one whose
+    /// expression the rendering would not change.
+    ///
+    /// Read off the model rather than restated, so a member renamed or a pattern rewritten
+    /// in the model fails here instead of leaving a stale name behind in the set.
+    #[test]
+    fn every_member_quoted_as_written_is_a_patterned_member_of_this_model() {
+        let model = std::fs::read_to_string(MODEL_PATH)
+            .expect("the model that generated this crate ships beside it");
+        let model: serde_json::Value =
+            serde_json::from_str(&model).expect("the model that generated this crate is JSON");
+        let shapes = model["shapes"]
+            .as_object()
+            .expect("a Smithy model declares shapes");
+
+        /// The `@pattern` the shape `target` declares, if any. A member whose target is a
+        /// prelude shape this model does not declare has none.
+        fn declared_pattern<'m>(
+            shapes: &'m serde_json::Map<String, serde_json::Value>,
+            target: &str,
+        ) -> Option<&'m str> {
+            shapes
+                .get(target)?
+                .get("traits")?
+                .get("smithy.api#pattern")?
+                .as_str()
+        }
+
+        for member in super::PATTERN_QUOTED_AS_WRITTEN {
+            // Every structure member of the model whose lowerCamel name is this one, with
+            // the pattern its target declares.
+            let patterns: Vec<&str> = shapes
+                .values()
+                .filter(|shape| shape["type"] == "structure")
+                .filter_map(|shape| shape["members"].as_object())
+                .flat_map(|members| members.iter())
+                .filter(|(name, _)| super::constraints::path::member(name) == *member)
+                .filter_map(|(_, declaration)| {
+                    declared_pattern(shapes, declaration["target"].as_str()?)
+                })
+                .collect();
+            assert!(
+                !patterns.is_empty(),
+                "case {member:?}: the set names a member this model declares with a declared \
+                 @pattern; the model has no such patterned member"
+            );
+            for pattern in patterns {
+                assert!(
+                    pattern.starts_with('^') && pattern.ends_with('$'),
+                    "case {member:?}: its modelled expression is anchored at both ends, so \
+                     quoting it as written is what distinguishes this member; got {pattern:?}"
+                );
+                assert_eq!(
+                    super::pattern_as_stated(member, pattern),
+                    pattern,
+                    "case {member:?}: its clause quotes the modelled expression as written, got \
+                     {:?}",
+                    super::pattern_as_stated(member, pattern)
+                );
+                assert_eq!(
+                    super::pattern_as_stated("userPoolId", pattern),
+                    super::unanchored(pattern),
+                    "case {member:?}: the same expression on a member outside the set loses the \
+                     whole-value pair, got {:?}",
+                    super::pattern_as_stated("userPoolId", pattern)
+                );
+            }
         }
     }
 }
