@@ -270,17 +270,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let store = ctx.credential_store();
         let now = ::std::time::SystemTime::now();
 
-        // A session policy must be a JSON policy document, and the refusal describes
-        // the specific error the submitted document has where it gives one to point at
-        // (see `state::policy_document_error`).
-        if let Some(why) = input.policy.as_deref().and_then(policy_document_error) {
-            return Err(GetFederationTokenErrorModeled::MalformedPolicyDocumentException(
-                MalformedPolicyDocumentException {
-                    message: Some(why),
-                },
-            )
-            .into());
-        }
+        // A session policy is read only AFTER the caller's credential class has decided this
+        // call; see the `policy_document_error` call below that check.
 
         if duplicate_tag_key(input.tags.as_deref()).is_some() {
             return Err(crate::scaffolded::Scaffolded::invalid_parameter_value(
@@ -355,6 +346,21 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             ));
         }
         let caller = caller.identity;
+
+        // The caller is allowed to make this call, so its OWN session policy is read now: a
+        // session policy must be a JSON policy document, and the refusal describes the
+        // specific error the submitted document has where it gives one to point at (see
+        // `state::policy_document_error`). Parsing it earlier would answer
+        // `MalformedPolicyDocument` to a caller whose credential may not call this operation
+        // at all.
+        if let Some(why) = input.policy.as_deref().and_then(policy_document_error) {
+            return Err(GetFederationTokenErrorModeled::MalformedPolicyDocumentException(
+                MalformedPolicyDocumentException {
+                    message: Some(why),
+                },
+            )
+            .into());
+        }
 
         // The federated user lives in the calling identity's account, and is named by
         // the request: `<account>:<Name>` and `arn:aws:sts::<account>:federated-user/<Name>`.

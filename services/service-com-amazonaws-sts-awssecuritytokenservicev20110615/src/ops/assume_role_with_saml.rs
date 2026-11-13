@@ -1,15 +1,35 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op AssumeRoleWithSAML
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `AssumeRoleWithSAML`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
+//! Federates a SAML 2.0 identity into a role session: the presented authentication response
+//! is VERIFIED against the keys the SAML provider the request names publishes in IAM and,
+//! when the provider really issued it, exchanged for a session of the role the request
+//! names — recorded in this service's registry like every other session, so
+//! `GetCallerIdentity` under the credential reports the assumed-role identity. The
+//! operation is ANONYMOUS (`auth: []`, `optionalAuth`), so it is served to a caller holding
+//! no Amazon Web Services credential at all — see `crate::service` for how such a request is
+//! attributed to this service.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`AssumeRoleWithSAML::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! What decides the answer is the response, read in the order a SAML service provider
+//! decides it (`crate::state::saml`, which holds the whole of that reading):
+//!
+//! * a value that is not the base64 of a SAML 2.0 `Response`, one carrying no XML signature,
+//!   and one whose signature names a transform or algorithm a verifier does not accept are
+//!   each `InvalidIdentityToken`;
+//! * a signature that does not check out against a key the REGISTERED provider publishes —
+//!   which is every response signed by a key the provider does not publish — is
+//!   `InvalidIdentityToken` stating that the signature is invalid, as is a response whose
+//!   `Issuer` is not the entity that provider is registered for and one naming no session;
+//! * a response outside the validity window it states — its conditions, its subject's
+//!   confirmation data, or the five minutes it may be redeemed in — is `ExpiredTokenException`;
+//! * a provider that reported an authentication failure, or that asserted no role the
+//!   request asked for, is `IDPRejectedClaim`: the claim itself is rejected;
+//! * a verified response is exchanged provided the role's trust policy admits the provider
+//!   for `sts:AssumeRoleWithSAML` with the `saml:` condition keys the response answers for;
+//!   otherwise `AccessDenied`.
+//!
+//! The inline session policy is parsed AFTER the trust policy decides, so a caller who
+//! cannot assume the role learns nothing about it from a deliberately malformed policy.
 //!
 //! ## Shape of an operation
 //!
@@ -280,18 +300,266 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `AssumeRoleWithSAML` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(AssumeRoleWithSAMLErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("AssumeRoleWithSAML"))
+        use crate::state::saml::{self, AssertionDefect};
+        use crate::state::{
+            packed_policy_bytes, packed_policy_size, packed_policy_too_large_message,
+            parse_role_arn, policy_document_error, sts_arn, Identity, NewSession, SessionKind,
+            SessionPolicies, ASSUME_ROLE_DEFAULT_DURATION_SECONDS, MAX_MANAGED_SESSION_POLICIES,
+            SESSION_TOKEN_SIZE_LIMIT,
+        };
+
+        let now = ::std::time::SystemTime::now();
+        let Some(state) = crate::state::service_state(&*self.engine) else {
+            // This service has no store on the engine it was mounted on, so it cannot record
+            // a session and must not hand one out. The router builds the one engine that
+            // does, so this is unreachable there.
+            return Err(crate::scaffolded::Scaffolded::not_implemented(
+                "AssumeRoleWithSAML",
+            ));
+        };
+        let store = ctx.credential_store();
+
+        // The ROLE ARN decides the account the session belongs to and the role name the
+        // assumed-role ARN carries. Its length and character set are modelled, but being an
+        // IAM role ARN of an account is not, so it is refused here — request-shape
+        // validation, which is decided before anything is authenticated or authorized.
+        if parse_role_arn(&input.role_arn).is_none() {
+            return Err(crate::scaffolded::Scaffolded::validation_error(format!(
+                "RoleArn '{}' is not an IAM role ARN of the form \
+                 arn:<partition>:iam::<account>:role/<name>",
+                input.role_arn
+            )));
+        }
+
+        // The RESPONSE is what this caller is, and it is decided next: it is verified against
+        // the keys the provider the request names publishes, so a provider the account does
+        // not hold can verify nothing at all.
+        let provider = saml::registered_provider(&*self.engine, &input.principal_arn)
+            .ok_or_else(|| refuse(AssertionDefect::ProviderNotFound))?;
+        let assertion = saml::resolve(&provider, &input.saml_assertion, now).map_err(refuse)?;
+        // "The role that you specify" has to be one the provider asserted for this subject:
+        // the `Role` attribute is what the provider claims about which role sessions it
+        // permits, so a request for a pair it does not name is a claim the provider rejects.
+        if !assertion.asserts(&input.role_arn, &input.principal_arn) {
+            return Err(refuse(AssertionDefect::RoleNotAsserted));
+        }
+
+        // The role is read from the IAM store in the same engine, and only the facts this
+        // decision needs are copied out, so the IAM lock and the session lock are never held
+        // at once. A router without IAM mounted holds no role at all, which is the same
+        // answer as a role the account does not hold.
+        let role = crate::state::iam_state(&*self.engine)
+            .and_then(|iam| crate::state::resolve_role(&iam.lock(), &input.role_arn));
+
+        // Nothing is assumed that the account does not hold and no trust policy admits. The
+        // principals a trust policy names for a SAML identity are the provider's own
+        // spellings, and the condition keys are the ones the provider publishes about the
+        // response it signed (`crate::state::saml`).
+        let account = ::engine::emulator_account_id().to_string();
+        let principals = saml::principals(&provider);
+        let context = saml::condition_context(&assertion, &provider, &account);
+        let published = saml::published_condition_keys(&assertion, &provider, &account);
+        let published: Vec<&str> = published.iter().map(String::as_str).collect();
+        let admitted = role.as_ref().is_some_and(|role| {
+            role.trust_policy_admits(
+                crate::state::ASSUME_ROLE_WITH_SAML_ACTION,
+                &principals,
+                &context,
+                &published,
+            )
+        });
+        // STS does not disclose whether the resource EXISTS, so a role this account holds no
+        // record of and a role whose trust policy withholds the grant are worded alike.
+        let Some(role) = role.filter(|_| admitted) else {
+            return Err(crate::scaffolded::Scaffolded::access_denied(
+                SAML_NOT_AUTHORIZED_MESSAGE,
+            ));
+        };
+
+        // The session policies are read only now: authorization is decided before the
+        // request's own policy document is parsed, so a caller who cannot assume the role is
+        // told that rather than told its policy is malformed.
+        if let Some(why) = input.policy.as_deref().and_then(policy_document_error) {
+            return Err(AssumeRoleWithSAMLErrorModeled::MalformedPolicyDocumentException(
+                MalformedPolicyDocumentException { message: Some(why) },
+            )
+            .into());
+        }
+
+        // The managed session policies a mint may name are capped by the operation's
+        // documentation, not by the model's list shape, so the refusal is STS's own sentence
+        // about that cap rather than the generic member-constraint rendering.
+        let named_policy_arns = crate::state::policy_arns(input.policy_arns.as_deref());
+        if named_policy_arns.len() > MAX_MANAGED_SESSION_POLICIES {
+            return Err(crate::scaffolded::Scaffolded::validation_error(
+                crate::state::policy_arns_over_limit_message(),
+            ));
+        }
+
+        // The packed-token rule this service applies to every mint: the measured size of the
+        // session policies and session tags (this operation carries no session tags),
+        // refused past the token budget with the size and the limit named.
+        let packed_bytes = packed_policy_bytes(input.policy.as_deref(), &named_policy_arns, &[]);
+        let packed_policy = packed_policy_size(input.policy.as_deref(), &named_policy_arns, &[]);
+        if packed_bytes > SESSION_TOKEN_SIZE_LIMIT {
+            return Err(AssumeRoleWithSAMLErrorModeled::PackedPolicyTooLargeException(
+                PackedPolicyTooLargeException {
+                    message: Some(packed_policy_too_large_message(packed_bytes)),
+                },
+            )
+            .into());
+        }
+
+        // "By default, the temporary security credentials created by AssumeRoleWithSAML last
+        // for one hour", and the ceiling is the role's own maximum session duration.
+        let duration_seconds = input
+            .duration_seconds
+            .unwrap_or(ASSUME_ROLE_DEFAULT_DURATION_SECONDS);
+        if duration_seconds > role.max_session_duration {
+            return Err(crate::scaffolded::Scaffolded::validation_error(
+                "The requested DurationSeconds exceeds the MaxSessionDuration set for this role.",
+            ));
+        }
+        // "Your role session lasts for the duration that you specify, or until the time
+        // specified in the SAML authentication response's SessionNotOnOrAfter value,
+        // whichever is shorter" (this operation's model), so the response's own session bound
+        // shortens the session it authorises rather than being ignored.
+        let duration_seconds = match assertion.session_not_on_or_after {
+            Some(until) => {
+                let left = until.saturating_sub(crate::state::unix_seconds(now));
+                let left = i32::try_from(left).unwrap_or(i32::MAX);
+                duration_seconds.min(left.max(1))
+            }
+            None => duration_seconds,
+        };
+
+        let assumed_role_id = format!("{}:{}", role.role_id, assertion.session_name);
+        let assumed_role_arn = sts_arn(
+            &role.account,
+            &format!("assumed-role/{}/{}", role.role_name, assertion.session_name),
+        );
+        let session_identity = Identity {
+            user_id: assumed_role_id.clone(),
+            account: role.account.clone(),
+            arn: assumed_role_arn.clone(),
+        };
+
+        let mut registry = state.lock();
+        let minted = crate::state::mint_session(
+            &*self.engine,
+            store,
+            &mut registry,
+            now,
+            NewSession {
+                packed_policy_size: Some(packed_policy),
+                // See `SessionPolicies`: the session policies this mint passed scope what the
+                // credential it vends may do.
+                policies: SessionPolicies {
+                    inline: input.policy.clone(),
+                    managed_arns: named_policy_arns,
+                },
+                role_arn: Some(role.arn.clone()),
+                source_identity: assertion.source_identity.clone(),
+                // The identity the exchanged response established travels with the session it
+                // mints, so a request the vended credential signs is decided against the very
+                // keys this assume was decided under
+                // (`crate::state::federated_claim_keys`).
+                federated_claims: context.clone(),
+                ..NewSession::new(session_identity, SessionKind::AssumedRole, duration_seconds)
+            },
+        );
+        let minted = match minted {
+            Ok(minted) => minted,
+            // The bounded session registry is full of sessions that have not expired, so this
+            // one cannot be recorded — and a credential that is not recorded must not be
+            // handed out.
+            Err(why) => return Err(crate::scaffolded::Scaffolded::validation(why.message())),
+        };
+        if let Err(why) = crate::state::honour_minimum_token_size(
+            &*self.engine,
+            &mut registry,
+            store,
+            &minted,
+            input.minimum_session_token_size,
+        ) {
+            return Err(crate::scaffolded::Scaffolded::validation(why));
+        }
+
+        let (session_token_utilization, session_token_size) =
+            crate::state::session_token_metrics(&minted.credentials);
+        // The credential this call vends speaks for the role it is a session of, which is what
+        // IAM's own authorizer judges a request signed with it on
+        // (`crate::state::publish_role_session`). The session lock is given up first, so this
+        // handler never holds the IAM lock and the session lock at once.
+        drop(registry);
+        crate::state::publish_role_session(
+            crate::state::iam_state(&*self.engine).as_ref(),
+            &minted,
+            now,
+        );
+        Ok(AssumeRoleWithSAMLOutput {
+            credentials: Some(minted.credentials),
+            assumed_role_user: Some(AssumedRoleUser {
+                assumed_role_id,
+                arn: assumed_role_arn,
+            }),
+            packed_policy_size: Some(packed_policy),
+            // The facts the response itself carried, as the provider signed them.
+            subject: Some(assertion.subject.clone()),
+            subject_type: Some(assertion.subject_type.clone()),
+            issuer: Some(assertion.issuer.clone()),
+            audience: Some(assertion.audience.clone()),
+            name_qualifier: Some(saml::name_qualifier(
+                &assertion.issuer,
+                &account,
+                &provider.name,
+            )),
+            source_identity: assertion.source_identity.clone(),
+            session_token_utilization: Some(session_token_utilization),
+            session_token_size: Some(session_token_size),
+        })
     }
 }
+
+/// How AWS words the refusal of a SAML identity the role's trust policy does not admit —
+/// which is also the answer for a role the account does not hold, because STS does not
+/// disclose whether the resource exists. A SAML identity presents no Amazon Web Services
+/// principal, so the sentence names the action alone.
+const SAML_NOT_AUTHORIZED_MESSAGE: &str = "Not authorized to perform sts:AssumeRoleWithSAML";
+
+/// The modelled failure AWS answers for a response that stands for no SAML identity, and the
+/// sentence it states it with.
+///
+/// The CLASSES are decided by the verification itself ([`crate::state::saml::resolve`]); this
+/// is only which modelled error each class travels as. A response outside its validity window
+/// is `ExpiredTokenException` / HTTP 400; a claim the provider itself rejected is
+/// `IDPRejectedClaim` / HTTP 403; and every other class is `InvalidIdentityToken` / HTTP 400,
+/// told apart by the fixed text its class carries.
+fn refuse(defect: crate::state::saml::AssertionDefect) -> AssumeRoleWithSAMLError {
+    use crate::state::saml::AssertionDefect;
+
+    let message = Some(defect.message());
+    match defect {
+        AssertionDefect::Expired
+        | AssertionDefect::NotRedeemable
+        | AssertionDefect::NotYetValid => {
+            AssumeRoleWithSAMLErrorModeled::ExpiredTokenException(ExpiredTokenException { message })
+        }
+        AssertionDefect::ClaimRejected => {
+            AssumeRoleWithSAMLErrorModeled::IDPRejectedClaimException(IDPRejectedClaimException {
+                message,
+            })
+        }
+        _ => AssumeRoleWithSAMLErrorModeled::InvalidIdentityTokenException(
+            InvalidIdentityTokenException { message },
+        ),
+    }
+    .into()
+}
+
+// Why a presented value is not a SAML identity this emulator can federate, and the identity a
+// response it CAN federate names — the verification itself — live in `crate::state::saml`:
+// resolving a response means reading an XML signature against the keys the account's provider
+// publishes, which is a question about that provider rather than about this operation's
+// inputs, and the handler above states only which modelled error each class it answers travels
+// as.

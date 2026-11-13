@@ -375,16 +375,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             )));
         }
 
-        // An inline session policy must be a JSON policy document, and the refusal
-        // "describes the specific error" the submitted document has.
-        if let Some(why) = input.policy.as_deref().and_then(policy_document_error) {
-            return Err(
-                AssumeRoleWithWebIdentityErrorModeled::MalformedPolicyDocumentException(
-                    MalformedPolicyDocumentException { message: Some(why) },
-                )
-                .into(),
-            );
-        }
+        // An inline session policy is read only AFTER the token has been verified and the
+        // role's trust policy has decided this exchange; see the `policy_document_error`
+        // call below the authorization step.
 
         // The managed session policies a mint may name are capped by the operation's
         // documentation, not by the model's list shape, so the refusal is STS's own
@@ -442,6 +435,19 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 WEB_IDENTITY_NOT_AUTHORIZED_MESSAGE,
             ));
         };
+
+        // The authorization boundary is behind us, so the request's OWN session policy is
+        // read now: an inline session policy must be a JSON policy document, and the refusal
+        // "describes the specific error" the submitted document has. Parsing it earlier would
+        // answer `MalformedPolicyDocument` to a caller the role does not admit at all.
+        if let Some(why) = input.policy.as_deref().and_then(policy_document_error) {
+            return Err(
+                AssumeRoleWithWebIdentityErrorModeled::MalformedPolicyDocumentException(
+                    MalformedPolicyDocumentException { message: Some(why) },
+                )
+                .into(),
+            );
+        }
 
         // "By default, the temporary security credentials created by
         // AssumeRoleWithWebIdentity last for one hour", and the ceiling is the role's own

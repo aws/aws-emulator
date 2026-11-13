@@ -19587,7 +19587,10 @@ dependencies = [
  "hex",
  "hmac 0.12.1",
  "http",
+ "rcgen",
  "regex",
+ "ring",
+ "roxmltree",
  "serde_json",
  "service-com-amazonaws-cognitoidentityprovider-awscognitoidentityproviderservice",
  "service-com-amazonaws-iam-awsidentitymanagementv20100508",
@@ -19596,6 +19599,7 @@ dependencies = [
  "sha2 0.10.9",
  "tokio",
  "tracing",
+ "x509-cert",
 ]
 
 [[package]]

@@ -35,6 +35,12 @@ use crate::ops::types::{Credentials, Tag};
 /// token against the key set its issuer publishes.
 pub mod web_identity;
 
+/// Which SAML 2.0 identity a presented authentication response stands for: the verification
+/// `AssumeRoleWithSAML` makes of it against the keys the registered provider publishes, and
+/// the class a response it cannot federate is refused as. One concern, one file — it is the
+/// only thing in this service that reads an XML signature.
+pub mod saml;
+
 /// `AssumeRole`'s default session length: "By default, the value is set to `3600`
 /// seconds." (`AssumeRoleRequest$DurationSeconds`, this service's model).
 pub const ASSUME_ROLE_DEFAULT_DURATION_SECONDS: i32 = 3600;
@@ -100,6 +106,11 @@ pub const SET_SOURCE_IDENTITY_ACTION: &str = "sts:SetSourceIdentity";
 /// service principal" (`AssumeRoleWithWebIdentity$RoleArn`, this service's model), which is
 /// a grant of this action to that principal.
 pub const ASSUME_ROLE_WITH_WEB_IDENTITY_ACTION: &str = "sts:AssumeRoleWithWebIdentity";
+
+/// The IAM action a role's trust policy must allow for a SAML 2.0 identity to assume it:
+/// the trust policy of such a role names the IAM SAML provider as its `Federated` principal
+/// and grants it this action (`AssumeRoleWithSAML`, this service's model).
+pub const ASSUME_ROLE_WITH_SAML_ACTION: &str = "sts:AssumeRoleWithSAML";
 
 /// The condition key a trust policy tests a request's `ExternalId` through.
 pub const EXTERNAL_ID_CONDITION_KEY: &str = "sts:ExternalId";
@@ -2540,7 +2551,7 @@ pub fn session_token_metrics(credentials: &Credentials) -> (i32, i32) {
 /// Seconds since the Unix epoch, for a timestamp on the wire. A time before the
 /// epoch cannot arise here (every instant is `now` or later), and reads as the epoch
 /// if it ever did.
-fn unix_seconds(at: SystemTime) -> i64 {
+pub fn unix_seconds(at: SystemTime) -> i64 {
     at.duration_since(UNIX_EPOCH)
         .map(|since| i64::try_from(since.as_secs()).unwrap_or(i64::MAX))
         .unwrap_or(0)

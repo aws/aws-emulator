@@ -444,6 +444,14 @@ const SAML_VALID_UNTIL_ATTRIBUTE: &str = "validUntil";
 /// The metadata attribute carrying a SAML entity's issuer name.
 const SAML_ENTITY_ID_ATTRIBUTE: &str = "entityID";
 
+/// The namespace of the XML signature vocabulary a SAML metadata document publishes its
+/// keys in (W3C "XML Signature Syntax and Processing" §1.3).
+pub const XML_SIGNATURE_NAMESPACE: &str = "http://www.w3.org/2000/09/xmldsig#";
+
+/// The element of that vocabulary carrying one key as the base64 of a DER X.509
+/// certificate (same recommendation, §4.4.4).
+const XML_SIGNATURE_CERTIFICATE: &str = "X509Certificate";
+
 /// The prefix of a minted `SAMLProviderUUID`. `privateKeyIdType` (which
 /// `GetSAMLProvider$SAMLProviderUUID` targets) is len 22..64 with pattern
 /// `^[A-Z0-9]+$`; this prefix plus [`UNIQUE_ID_SUFFIX_LEN`] base32 characters is 22
@@ -4467,6 +4475,15 @@ pub struct SamlMetadata {
     /// The root descriptor's `validUntil`, when the document carries one: the instant
     /// the metadata — and so the provider — stops being valid.
     pub valid_until: Option<::aws_smithy_types::DateTime>,
+    /// "The issuer's name": the entity descriptor's `entityID`
+    /// (`CreateSAMLProvider$SAMLMetadataDocument`, OASIS "Metadata for SAML V2.0" §2.3),
+    /// which is the name the provider's own messages carry as their `Issuer`.
+    pub entity_id: String,
+    /// The "keys" the document publishes: the base64 of each DER X.509 certificate its
+    /// `X509Certificate` elements carry, in document order. These are the certificates a
+    /// reader of this metadata checks a message from the provider against, so a document
+    /// publishing none can verify nothing.
+    pub signing_certificates: Vec<String>,
 }
 
 /// Read `document` as a SAML 2.0 metadata document, or `None` when it is not one.
@@ -4514,6 +4531,23 @@ pub fn parse_saml_metadata(document: &str) -> Option<SamlMetadata> {
     {
         return None;
     }
+    let entity_id = entity
+        .attribute(SAML_ENTITY_ID_ATTRIBUTE)
+        .unwrap_or_default()
+        .to_string();
+    // The keys the document publishes, each an `X509Certificate` of the XML signature
+    // namespace (W3C "XML Signature Syntax and Processing" §4.4.4), with the whitespace a
+    // PEM-wrapped body carries removed so the value is the base64 the element means.
+    let signing_certificates: Vec<String> = entity
+        .descendants()
+        .filter(|node| {
+            node.tag_name().namespace() == Some(XML_SIGNATURE_NAMESPACE)
+                && node.tag_name().name() == XML_SIGNATURE_CERTIFICATE
+        })
+        .filter_map(|node| node.text())
+        .map(|text| text.split_whitespace().collect::<String>())
+        .filter(|text| !text.is_empty())
+        .collect();
     // "Expiration information": `validUntil` on the root descriptor, or on the entity
     // descriptor itself when the root is a group that carries none. It is an
     // `xs:dateTime`, so it may state a UTC offset rather than `Z` (XML Schema Part 2,
@@ -4525,7 +4559,11 @@ pub fn parse_saml_metadata(document: &str) -> Option<SamlMetadata> {
         None => None,
         Some(text) => Some(parse_xs_date_time(text)?),
     };
-    Some(SamlMetadata { valid_until })
+    Some(SamlMetadata {
+        valid_until,
+        entity_id,
+        signing_certificates,
+    })
 }
 
 /// The message IAM refuses an operation taking a `SAMLMetadataDocument` with when the

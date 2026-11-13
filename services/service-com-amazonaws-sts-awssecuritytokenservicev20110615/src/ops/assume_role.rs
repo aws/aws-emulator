@@ -359,16 +359,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             ));
         }
 
-        // An inline session policy must be a JSON policy document, and the refusal
-        // "describes the specific error" the submitted document has.
-        if let Some(why) = input.policy.as_deref().and_then(policy_document_error) {
-            return Err(AssumeRoleErrorModeled::MalformedPolicyDocumentException(
-                MalformedPolicyDocumentException {
-                    message: Some(why),
-                },
-            )
-            .into());
-        }
+        // An inline session policy is read only AFTER the role's trust policy has decided
+        // this assume: the session policy belongs to the session this mint would create, so
+        // it is parsed once the caller is known to be allowed to create one. See the
+        // `policy_document_error` call below the authorization step.
 
         if duplicate_tag_key(input.tags.as_deref()).is_some() {
             return Err(crate::scaffolded::Scaffolded::invalid_parameter_value(
@@ -657,6 +651,20 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             } else {
                 ASSUME_ROLE_ACTION
             }));
+        }
+
+        // The authorization boundary is behind us, so the request's OWN session policy is
+        // read now: "an inline session policy" must be a JSON policy document, and the
+        // refusal "describes the specific error" the submitted document has. Parsing it
+        // earlier would answer `MalformedPolicyDocument` to a caller who may not assume the
+        // role at all, which tells that caller whether the role exists and is assumable.
+        if let Some(why) = input.policy.as_deref().and_then(policy_document_error) {
+            return Err(AssumeRoleErrorModeled::MalformedPolicyDocumentException(
+                MalformedPolicyDocumentException {
+                    message: Some(why),
+                },
+            )
+            .into());
         }
 
         // SerialNumber and TokenCode name the caller's MFA device; the challenge they
