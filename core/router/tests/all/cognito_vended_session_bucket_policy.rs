@@ -30,6 +30,12 @@
 //! login and its authenticated role for one that does, which is also what makes the
 //! principal each refusal names differ.
 //!
+//! The second suite reads the same rule along the PRINCIPAL axis: a bucket policy reaches a
+//! vended session only where it names the role that exchange resolved, so it varies which
+//! role the grant and the explicit deny name — one of the pool's two, a role the pool
+//! resolves for neither flow, both — while no role carries a document of its own, and reads
+//! each session's principal back through `sts:GetCallerIdentity` first.
+//!
 //! Every call goes over the wire. The vend legs carry no credential scope at all (their model
 //! lists no auth scheme); the setup legs and the read legs carry one, on a router with
 //! request authentication off as every suite in this crate runs it.
@@ -955,4 +961,275 @@ fn a_bucket_policy_decides_a_cognito_vended_session_read() {
         .expect("spawn the vended-session bucket-policy thread")
         .join()
         .expect("a bucket policy must decide a Cognito-vended session's read");
+}
+
+/// A role IAM holds that the pool resolves for NEITHER flow. A grant naming it reaches no
+/// session this pool vends: a vended session speaks for the role the pool resolved for that
+/// exchange and for no other.
+const UNMAPPED_ROLE: &str = "xsvc-cognito-unmapped-reader";
+
+/// The API version every awsQuery call to the token service carries, as
+/// `sts:GetCallerIdentity`'s own `Version` parameter.
+const STS_API_VERSION: &str = "2011-06-15";
+
+/// `sts:GetCallerIdentity` under `access_key_id`: the caller ARN this emulator resolves that
+/// credential to, which is the principal a bucket policy's `Principal` member is matched
+/// against.
+fn caller_arn(
+    router: &MultiServiceRouter,
+    runtime: &tokio::runtime::Runtime,
+    access_key_id: &str,
+) -> String {
+    let answered = dispatch(
+        router,
+        runtime,
+        Signing::As {
+            signing_name: "sts",
+            access_key_id,
+        },
+        "POST",
+        "/",
+        &[("content-type", "application/x-www-form-urlencoded")],
+        bytes::Bytes::from(format!("Action=GetCallerIdentity&Version={STS_API_VERSION}")),
+    );
+    assert_eq!(
+        answered.status,
+        200,
+        "setup: GetCallerIdentity under a vended credential must answer 200, got {} with {:?}",
+        answered.status,
+        answered.text()
+    );
+    answered.element("Arn").unwrap_or_default()
+}
+
+/// One round of the principal-scoped table: the bucket policy in force, and the reads the
+/// principals it names decide. No role carries a document of its own in these rounds, so the
+/// bucket policy's `Principal` sets are the only thing that can grant — which is what makes
+/// WHICH role a vended session speaks for observable.
+struct PrincipalRound<'a> {
+    /// What this round is, named in every assertion it drives.
+    case: &'static str,
+    /// The bucket's own policy for this round.
+    bucket_policy: String,
+    probes: Vec<Probe<'a>>,
+}
+
+/// The same rule read along the principal axis: a bucket policy reaches a vended session only
+/// where it names the role THAT exchange resolved, so a grant naming one of the pool's roles
+/// leaves a session of the other to IAM's implicit deny, a grant naming a role the pool
+/// resolves for neither flow reaches neither session, and a `Deny` scoped to one role refuses
+/// that role's session alone.
+///
+/// The rows vary what the rule generalises over: which role the grant names (the
+/// unauthenticated one, the authenticated one, a role the pool maps for neither, both), which
+/// role an explicit `Deny` names, and which session reads. Before any of them, each session's
+/// own principal is read back through `sts:GetCallerIdentity`, because that ARN is what the
+/// `Principal` sets below are matched against.
+#[test]
+fn a_bucket_policy_reaches_only_the_sessions_of_the_roles_it_names() {
+    std::thread::Builder::new()
+        .name("cognito-vended-session-bucket-policy-principals".to_string())
+        .stack_size(BOOT_STACK_SIZE)
+        .spawn(|| {
+            let engine: Arc<InMemoryEngine> = Arc::new(InMemoryEngine::new());
+            let mut router = build_router(engine);
+            router.set_request_authentication(false);
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .build()
+                .expect("a current-thread runtime");
+
+            let created = s3(&router, &runtime, SETUP_KEY_ID, "PUT", &format!("/{BUCKET}"), "");
+            assert_eq!(
+                created.status,
+                200,
+                "setup: CreateBucket({BUCKET:?}) must succeed, got {} with {:?}",
+                created.status,
+                created.text()
+            );
+            for (key, body) in [(GRANTED_KEY, GRANTED_BODY), (RESTRICTED_KEY, RESTRICTED_BODY)] {
+                let written = s3(
+                    &router,
+                    &runtime,
+                    SETUP_KEY_ID,
+                    "PUT",
+                    &format!("/{BUCKET}/{key}"),
+                    body,
+                );
+                assert_eq!(
+                    written.status,
+                    200,
+                    "setup: PutObject({key:?}) must succeed, got {} with {:?}",
+                    written.status,
+                    written.text()
+                );
+            }
+
+            // The pool's two roles and a third the pool names for neither flow. NONE of them
+            // carries an inline document in this suite: every grant below lives in the
+            // bucket's own policy, so what decides a read is which role the session the vend
+            // minted is a session of.
+            let pool_id = create_identity_pool(&router, &runtime, "xsvc-bucket-policy-principals");
+            let guest_role_arn = create_role(&router, &runtime, GUEST_ROLE, &pool_id);
+            let auth_role_arn = create_role(&router, &runtime, AUTH_ROLE, &pool_id);
+            let unmapped_role_arn = create_role(&router, &runtime, UNMAPPED_ROLE, &pool_id);
+            set_identity_pool_roles(
+                &router,
+                &runtime,
+                &pool_id,
+                &auth_role_arn,
+                &guest_role_arn,
+            );
+
+            let guest = Session {
+                label: "the pool's unauthenticated role session",
+                access_key_id: vended_access_key_id(&router, &runtime, &pool_id, Flow::Guest),
+                role_name: GUEST_ROLE,
+            };
+            let authenticated = Session {
+                label: "the pool's authenticated role session",
+                access_key_id: vended_access_key_id(
+                    &router,
+                    &runtime,
+                    &pool_id,
+                    Flow::Authenticated,
+                ),
+                role_name: AUTH_ROLE,
+            };
+            // The premise the rounds rest on: each vended credential speaks for a session of
+            // the role ITS exchange resolved, which is the principal spelling a bucket policy
+            // naming that role grants to.
+            for session in [&guest, &authenticated] {
+                let arn = caller_arn(&router, &runtime, &session.access_key_id);
+                assert_eq!(
+                    arn,
+                    session.principal(),
+                    "case {:?}: the vended session must resolve to a session of {}, got {arn:?}",
+                    session.label,
+                    session.role_name
+                );
+            }
+
+            let whole_bucket = format!("arn:aws:s3:::{BUCKET}/*");
+            let restricted_prefix = format!("arn:aws:s3:::{BUCKET}/restricted/*");
+            let guest_only = [guest_role_arn.as_str()];
+            let authenticated_only = [auth_role_arn.as_str()];
+            let unmapped_only = [unmapped_role_arn.as_str()];
+            let both_roles = [guest_role_arn.as_str(), auth_role_arn.as_str()];
+
+            let rounds = vec![
+                PrincipalRound {
+                    case: "a bucket allow naming the unauthenticated role alone, with its own \
+                           deny on the restricted prefix",
+                    bucket_policy: document(vec![
+                        resource_statement("Allow", &guest_only, &whole_bucket),
+                        resource_statement("Deny", &guest_only, &restricted_prefix),
+                    ]),
+                    probes: vec![
+                        Probe {
+                            session: &guest,
+                            key: GRANTED_KEY,
+                            expected: Expected::Served(GRANTED_BODY),
+                        },
+                        Probe {
+                            session: &guest,
+                            key: RESTRICTED_KEY,
+                            expected: Expected::Denied(RESOURCE_DENY),
+                        },
+                        // The grant names the other role, so nothing allows this session.
+                        Probe {
+                            session: &authenticated,
+                            key: GRANTED_KEY,
+                            expected: Expected::Denied(NO_GRANT),
+                        },
+                        Probe {
+                            session: &authenticated,
+                            key: RESTRICTED_KEY,
+                            expected: Expected::Denied(NO_GRANT),
+                        },
+                    ],
+                },
+                PrincipalRound {
+                    case: "a bucket allow naming the authenticated role alone",
+                    bucket_policy: document(vec![resource_statement(
+                        "Allow",
+                        &authenticated_only,
+                        &whole_bucket,
+                    )]),
+                    probes: vec![
+                        Probe {
+                            session: &authenticated,
+                            key: GRANTED_KEY,
+                            expected: Expected::Served(GRANTED_BODY),
+                        },
+                        Probe {
+                            session: &authenticated,
+                            key: RESTRICTED_KEY,
+                            expected: Expected::Served(RESTRICTED_BODY),
+                        },
+                        Probe {
+                            session: &guest,
+                            key: GRANTED_KEY,
+                            expected: Expected::Denied(NO_GRANT),
+                        },
+                    ],
+                },
+                PrincipalRound {
+                    case: "a bucket allow naming a role the pool resolves for neither flow",
+                    bucket_policy: document(vec![resource_statement(
+                        "Allow",
+                        &unmapped_only,
+                        &whole_bucket,
+                    )]),
+                    probes: vec![
+                        Probe {
+                            session: &guest,
+                            key: GRANTED_KEY,
+                            expected: Expected::Denied(NO_GRANT),
+                        },
+                        Probe {
+                            session: &authenticated,
+                            key: GRANTED_KEY,
+                            expected: Expected::Denied(NO_GRANT),
+                        },
+                    ],
+                },
+                PrincipalRound {
+                    case: "a bucket allow naming both roles with the deny scoped to the \
+                           unauthenticated one",
+                    bucket_policy: document(vec![
+                        resource_statement("Allow", &both_roles, &whole_bucket),
+                        resource_statement("Deny", &guest_only, &restricted_prefix),
+                    ]),
+                    probes: vec![
+                        Probe {
+                            session: &guest,
+                            key: RESTRICTED_KEY,
+                            expected: Expected::Denied(RESOURCE_DENY),
+                        },
+                        // The deny names the other role, so the prefix is still the
+                        // bucket allow's to grant for this session.
+                        Probe {
+                            session: &authenticated,
+                            key: RESTRICTED_KEY,
+                            expected: Expected::Served(RESTRICTED_BODY),
+                        },
+                        Probe {
+                            session: &guest,
+                            key: GRANTED_KEY,
+                            expected: Expected::Served(GRANTED_BODY),
+                        },
+                    ],
+                },
+            ];
+
+            for round in &rounds {
+                put_bucket_policy(&router, &runtime, &round.bucket_policy, round.case);
+                for probe in &round.probes {
+                    check(&router, &runtime, round.case, probe);
+                }
+            }
+        })
+        .expect("spawn the vended-session bucket-policy principals thread")
+        .join()
+        .expect("a bucket policy must reach only the sessions of the roles it names");
 }
