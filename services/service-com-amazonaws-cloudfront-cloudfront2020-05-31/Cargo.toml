@@ -46,8 +46,17 @@ service-common = { path = "../common" }
 service-com-amazonaws-cloudwatch-graniteserviceversion20100801 = { workspace = true }
 # The WAFv2 web ACL a distribution's configuration puts in front of it, and the ONE
 # evaluation of its rule tree (`service::web_acl`): a viewer request the web ACL does not
-# let through is answered 403 at the edge, with no origin request made.
+# let through is answered 403 at the edge, with no origin request made. It also holds the one
+# reading of the ADDRESS a viewer request came from, which a real-time log record reports.
 service-com-amazonaws-wafv2-awswaf-20190729 = { workspace = true }
+# The Kinesis data stream a cache behaviour's real-time log configuration delivers each served
+# viewer request's log record to (`service::edge::realtime_logs`), written over the emulator's
+# own in-process transport. Only the generated client is needed — the emulator supplies the
+# transport.
+aws-sdk-kinesis = { version = "1", default-features = false }
+# Percent-encodes the three characters a tab-delimited, single-line real-time log record's
+# framing owns, so no field value can carry one.
+percent-encoding = "2"
 
 # `rquickjs` is the QuickJS JavaScript engine, embedded in this process, which is what RUNS a
 # CloudFront function: `TestFunction` answers with "the function's result (the modified event
@@ -92,6 +101,15 @@ emulator-core-build-support = { workspace = true }
 [dev-dependencies]
 sha2 = { workspace = true }
 hex = { workspace = true }
+# DECODES the `Data` of a record this suite reads back off a Kinesis data stream, which that
+# API carries base64-encoded. TEST-ONLY.
+base64 = "0.22"
+# The Kinesis data stream the real-time log suite creates and polls, mounted on the same
+# router: the record the edge delivers is read back through Kinesis itself. TEST-ONLY.
+service-com-amazonaws-kinesis-kinesis-20131202 = { workspace = true }
+# The IAM roles the real-time log suite hands its endpoints, mounted on the same router:
+# whether a delivery role may put a record on its stream is IAM's decision. TEST-ONLY.
+service-com-amazonaws-iam-awsidentitymanagementv20100508 = { workspace = true }
 # DECODE the two content codings the edge compresses an answer under, so the edge suite reads
 # the bytes it served and proves they really are that coding's rather than mislabelled.
 brotli = "9"

@@ -129,6 +129,8 @@ mod edge_additional_metrics;
 mod edge_data_plane;
 #[path = "all/edge_geo_restriction.rs"]
 mod edge_geo_restriction;
+#[path = "all/edge_realtime_logs.rs"]
+mod edge_realtime_logs;
 #[path = "all/edge_request_metrics.rs"]
 mod edge_request_metrics;
 #[path = "all/edge_request_shaping.rs"]

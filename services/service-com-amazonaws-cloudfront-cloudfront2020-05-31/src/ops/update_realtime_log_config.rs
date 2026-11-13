@@ -223,7 +223,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .expect("the record the lookup above resolved is still held under its name");
         updated.sampling_rate = sampling_rate;
         updated.end_points = end_points;
-        updated.fields = fields;
+        // The field SET this update leaves behind, held in the order CloudFront sends the
+        // fields in, exactly as a create holds the set it was given
+        // ([`crate::state::canonical_field_order`]): the order a configuration reports is the
+        // service's own, so an update cannot put the fields in an order of the request's.
+        updated.fields = crate::state::canonical_field_order(&fields);
 
         Ok(UpdateRealtimeLogConfigOutput {
             // "A real-time log configuration" — the record as it now stands, read back from

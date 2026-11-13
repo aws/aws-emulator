@@ -126,6 +126,9 @@ pub mod forwarding;
 /// The `CloudFront-*` request headers the edge generates itself, and the viewer-stated ones
 /// it drops.
 pub mod generated_headers;
+/// The real-time log RECORD one served viewer request produces, and the Kinesis data streams
+/// the cache behaviour's real-time log configuration delivers it to.
+pub mod realtime_logs;
 
 use aws_smithy_runtime_api::client::http::HttpConnector;
 use aws_smithy_runtime_api::http::{Request as RtRequest, Response as RtResponse, StatusCode};
@@ -573,6 +576,10 @@ struct Behavior {
     /// `PathPattern` of the ordered behaviour that matched, or `None` for the default
     /// behaviour, which matches by being last.
     path_pattern: Option<String>,
+    /// `RealtimeLogConfigArn` — "the Amazon Resource Name (ARN) of the real-time log
+    /// configuration that is attached to this cache behavior", which is what the edge
+    /// delivers this request's log record through ([`realtime_logs`]).
+    realtime_log_config_arn: Option<String>,
     target_origin_id: String,
     /// `ViewerProtocolPolicy` — "the protocol that viewers can use to access the files in
     /// the origin specified by `TargetOriginId`", which is a required member of both
@@ -598,6 +605,7 @@ impl Behavior {
     fn of_ordered(behavior: &CacheBehavior) -> Self {
         Self {
             path_pattern: Some(behavior.path_pattern.clone()),
+            realtime_log_config_arn: behavior.realtime_log_config_arn.clone(),
             target_origin_id: behavior.target_origin_id.clone(),
             viewer_protocol_policy: behavior.viewer_protocol_policy.clone(),
             allowed_methods: behavior.allowed_methods.clone(),
@@ -614,6 +622,7 @@ impl Behavior {
     fn of_default(behavior: &DefaultCacheBehavior) -> Self {
         Self {
             path_pattern: None,
+            realtime_log_config_arn: behavior.realtime_log_config_arn.clone(),
             target_origin_id: behavior.target_origin_id.clone(),
             viewer_protocol_policy: behavior.viewer_protocol_policy.clone(),
             allowed_methods: behavior.allowed_methods.clone(),
@@ -932,6 +941,7 @@ pub async fn serve<Eng: Send + Sync + 'static>(
     let cf_id;
     let served_for;
     let plan;
+    let realtime_log;
     {
         let Some(state) = crate::state::service_state(engine) else {
             return generated(BAD_GATEWAY, NO_ORIGIN_DETAIL, "");
@@ -942,6 +952,13 @@ pub async fn serve<Eng: Send + Sync + 'static>(
         store.settle(now);
         cf_id = store.mint_edge_request_id();
         (served_for, plan) = plan_request(&store, req, &cf_id, now);
+        // WHETHER this request's log data is delivered at all is the matched behaviour's
+        // real-time log configuration to decide, and it is decided HERE, over the sequence of
+        // the requests that configuration covers ([`realtime_logs::sampled`]) — the record
+        // itself is built from the answer, which is not served yet.
+        realtime_log = served_for.as_ref().and_then(|served| {
+            realtime_logs::sampled(&mut store, served.realtime_log_config_arn.as_deref())
+        });
     }
     let method = req.method().to_ascii_uppercase();
     let request_bytes = req.body().bytes().map_or(0, <[u8]>::len);
@@ -1025,6 +1042,41 @@ pub async fn serve<Eng: Send + Sync + 'static>(
             },
             served.additional_metrics,
         );
+        // And what the edge did with it is ALSO what the real-time log record of this request
+        // states, for a cache behaviour whose real-time log configuration covers it: one
+        // record per request, delivered to each data stream that configuration names
+        // ([`realtime_logs`]). Delivered with this service's store released, since the hop
+        // locks the stores of the services it asks.
+        if let Some(configured) = realtime_log {
+            // The span the edge spent on the request, measured once, and the instant it
+            // finished responding read from the SAME pair of clock readings the rest of this
+            // request is reported by: `now` is when the edge received it, so the two values
+            // the record carries cannot describe different requests.
+            let taken = received.elapsed();
+            let logged = realtime_logs::LoggedRequest {
+                req,
+                at: now + taken,
+                taken,
+                origin_latency,
+                status: response.status().as_u16(),
+                response_bytes: response.body().bytes().map_or(0, <[u8]>::len),
+                content_type: response
+                    .headers()
+                    .get(CONTENT_TYPE),
+                distribution_domain: &served.domain_name,
+                viewer_path: &served.viewer_path,
+                query: &served.query,
+                country: &served.country,
+                request_id: &cf_id,
+                path_pattern: served.path_pattern.as_deref(),
+                result_type: realtime_logs::ResultType::of_answer(
+                    served_from,
+                    response.status().as_u16(),
+                ),
+            };
+            let record = logged.record(&configured.fields);
+            realtime_logs::deliver(ctx, &configured, &record, &cf_id).await;
+        }
     }
     response
 }
@@ -1065,6 +1117,18 @@ struct ServedFor {
     web_acl_id: String,
     viewer_path: String,
     query: String,
+    /// `Distribution$DomainName`, which is the name a record reports as the distribution's
+    /// own ([`realtime_logs`]).
+    domain_name: String,
+    /// The country the edge resolved for this viewer, read once and reported wherever a
+    /// country is.
+    country: String,
+    /// The `PathPattern` of the cache behaviour that matched, or `None` for the default
+    /// behaviour.
+    path_pattern: Option<String>,
+    /// `RealtimeLogConfigArn` of the behaviour that matched — the configuration this
+    /// request's log record goes through, when the behaviour names one.
+    realtime_log_config_arn: Option<String>,
 }
 
 /// Decide what the edge does with one viewer request, under the store's lock, and name the
@@ -1088,6 +1152,7 @@ fn plan_request(
             },
         );
     };
+    let behavior = select_behavior(resolved.distribution, resolved.viewer_path);
     let served_for = ServedFor {
         id: resolved.distribution.id.clone(),
         additional_metrics: edge_metrics::AdditionalMetrics::of_subscription(
@@ -1101,12 +1166,17 @@ fn plan_request(
             .unwrap_or_default(),
         viewer_path: resolved.viewer_path.to_string(),
         query: addressed.query.to_string(),
+        domain_name: resolved.distribution.domain_name.clone(),
+        country: viewer_country(req),
+        path_pattern: behavior.path_pattern.clone(),
+        realtime_log_config_arn: behavior.realtime_log_config_arn.clone(),
     };
-    let plan = plan_resolved(store, &addressed, &resolved, req, cf_id, now);
+    let plan = plan_resolved(store, &addressed, &resolved, req, cf_id, now, behavior);
     (Some(served_for), plan)
 }
 
-/// Decide what the edge does with one viewer request it has resolved to a distribution.
+/// Decide what the edge does with one viewer request it has resolved to a distribution,
+/// under the cache behaviour its path selected.
 fn plan_resolved(
     store: &ComAmazonawsCloudfrontCloudfront20200531State,
     addressed: &Addressed<'_>,
@@ -1114,6 +1184,7 @@ fn plan_resolved(
     req: &RtRequest,
     cf_id: &str,
     now: SystemTime,
+    behavior: Behavior,
 ) -> Plan {
     let distribution_id = resolved.distribution.id.clone();
     let viewer_path = resolved.viewer_path.to_string();
@@ -1142,7 +1213,9 @@ fn plan_resolved(
             detail: GEO_RESTRICTED_DETAIL,
         };
     }
-    let behavior = select_behavior(resolved.distribution, &viewer_path);
+    // The behaviour the viewer's path selected, chosen once by the caller so the record this
+    // request's log configuration is read off ([`realtime_logs`]) and the plan served here
+    // are the SAME behaviour's.
     // Decided by CloudFront from the matched behaviour's `ViewerProtocolPolicy` alone,
     // before the cache is read and before any origin request exists: the SCHEME the viewer
     // dialled is a property of the connection, not of what it asked for.
@@ -2354,6 +2427,7 @@ mod tests {
         for (case, policy, header, forwarded) in cases {
             let behavior = Behavior {
                 path_pattern: None,
+                realtime_log_config_arn: None,
                 target_origin_id: "primary".to_string(),
                 viewer_protocol_policy: "allow-all".to_string(),
                 allowed_methods: None,
@@ -2639,6 +2713,7 @@ mod tests {
     fn behavior_under_test() -> Behavior {
         Behavior {
             path_pattern: None,
+            realtime_log_config_arn: None,
             target_origin_id: "primary".to_string(),
             viewer_protocol_policy: "allow-all".to_string(),
             allowed_methods: None,

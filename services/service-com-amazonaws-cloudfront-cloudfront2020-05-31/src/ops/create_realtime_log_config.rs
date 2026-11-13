@@ -226,11 +226,16 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             arn: crate::state::realtime_log_config_arn(&input.name),
             name: input.name,
             sampling_rate: input.sampling_rate,
-            // Stored whole, and in the submitted ORDER: "In an API response, the fields are
-            // provided in the same order in which they are sent to the Amazon Kinesis data
-            // stream."
             end_points: input.end_points,
-            fields: input.fields,
+            // The submitted field SET, held in the order CloudFront SENDS the fields in:
+            // "In an API response, the fields are provided in the same order in which they
+            // are sent to the Amazon Kinesis data stream"
+            // ([`crate::state::canonical_field_order`]), so the submitted order decides
+            // neither what a read reports nor what a record carries.
+            fields: crate::state::canonical_field_order(&input.fields),
+            // No request this configuration covers has been served yet
+            // ([`crate::state::StoredRealtimeLogConfig::represents_next_request`]).
+            sampling_cursor: 0,
         };
         // Read from the record just built, never from the request.
         let realtime_log_config = stored.to_realtime_log_config();

@@ -353,7 +353,8 @@ pub(crate) fn assert_reports(node: &Node, row: &Submitted, context: &str, raw: &
         row.sampling_rate
     );
 
-    // The fields come back in the order they were submitted, not sorted and not reversed.
+    // The fields come back in the order CloudFront SENDS them in — the catalog's order,
+    // which the rows above are already written in — and not sorted, reversed or dropped.
     let reported_fields: Vec<&str> = node
         .at("Fields")
         .map(|fields| {

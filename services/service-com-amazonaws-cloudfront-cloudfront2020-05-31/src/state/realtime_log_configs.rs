@@ -62,6 +62,98 @@ pub const KINESIS_STREAM_TYPE: &str = "Kinesis";
 /// `InvalidArgument`.
 pub const MAX_REALTIME_LOG_CONFIG_END_POINTS: usize = 25;
 
+/// Every field CloudFront can include in a real-time log record, in the ONE order it sends
+/// them in.
+///
+/// The catalog, and the order, are the real-time log configuration fields of the CloudFront
+/// Developer Guide ("Real-time log configuration fields", the list
+/// `RealtimeLogConfig$Fields` points a reader at), read in the order that list states them.
+/// That order is the service's, not the request's: `RealtimeLogConfig$Fields` is "a list of
+/// fields that are included in each real-time log record. In an API response, the fields are
+/// provided in the same order in which they are sent to the Amazon Kinesis data stream" — so
+/// a configuration holds the submitted field SET in this order ([`canonical_field_order`]),
+/// every read reports it in this order, and each delivered record carries its values in that
+/// same order.
+pub const REALTIME_LOG_FIELDS: [&str; 45] = [
+    "timestamp",
+    "c-ip",
+    "time-to-first-byte",
+    "sc-status",
+    "sc-bytes",
+    "cs-method",
+    "cs-protocol",
+    "cs-host",
+    "cs-uri-stem",
+    "cs-bytes",
+    "x-edge-location",
+    "x-edge-request-id",
+    "x-host-header",
+    "time-taken",
+    "cs-protocol-version",
+    "c-ip-version",
+    "cs-user-agent",
+    "cs-referer",
+    "cs-cookie",
+    "cs-uri-query",
+    "x-edge-response-result-type",
+    "x-forwarded-for",
+    "ssl-protocol",
+    "ssl-cipher",
+    "x-edge-result-type",
+    "fle-encrypted-fields",
+    "fle-status",
+    "sc-content-type",
+    "sc-content-len",
+    "sc-range-start",
+    "sc-range-end",
+    "c-port",
+    "x-edge-detailed-result-type",
+    "c-country",
+    "cs-accept-encoding",
+    "cs-accept",
+    "cache-behavior-path-pattern",
+    "headers",
+    "header-names",
+    "headers-count",
+    "primary-distribution-id",
+    "primary-distribution-dns-name",
+    "origin-fbl",
+    "origin-lbl",
+    "asn",
+];
+
+/// The submitted field list as a configuration HOLDS it: the submitted SET, in
+/// [`REALTIME_LOG_FIELDS`] order.
+///
+/// A configuration carries "a list of fields to include in each real-time log record", and a
+/// field is either included or not, so the list is a SET: a name submitted twice is held
+/// once. The ORDER a configuration holds is the service's own — the order the fields are sent
+/// to the data stream, which is the order a read reports — so the submitted order decides
+/// nothing. A name the catalog does not carry has no position in that order, so it keeps the
+/// one it was submitted in, after every name that does.
+pub fn canonical_field_order(fields: &[String]) -> Vec<String> {
+    let mut ordered: Vec<String> = REALTIME_LOG_FIELDS
+        .iter()
+        .filter(|known| fields.iter().any(|field| field == *known))
+        .map(|known| (*known).to_string())
+        .collect();
+    for field in fields {
+        let known = REALTIME_LOG_FIELDS.contains(&field.as_str());
+        if !known && !ordered.iter().any(|held| held == field) {
+            ordered.push(field.clone());
+        }
+    }
+    ordered
+}
+
+/// The whole of a percentage, which a `SamplingRate` is stated as.
+///
+/// `CreateRealtimeLogConfigRequest$SamplingRate` is "a whole number between 1 and 100
+/// (inclusive) to determine the percentage of viewer requests that are represented in the
+/// real-time log data", so a rate is that many hundredths of the requests a configuration
+/// covers ([`StoredRealtimeLogConfig::represents_next_request`]).
+pub const WHOLE_SAMPLING_PERCENT: i64 = MAX_SAMPLING_RATE;
+
 /// The most fields ONE real-time log configuration may include in a log record.
 ///
 /// CHOSEN by this emulator, for the same reason and in the same way as
@@ -94,8 +186,13 @@ pub struct StoredRealtimeLogConfig {
     pub end_points: Vec<EndPoint>,
     /// `RealtimeLogConfig$Fields` — "In an API response, the fields are provided in the
     /// same order in which they are sent to the Amazon Kinesis data stream", so the stored
-    /// ORDER is the submitted one and a read preserves it.
+    /// ORDER is the one the records are sent in ([`canonical_field_order`]) and a read
+    /// reports that.
     pub fields: Vec<String>,
+    /// How much of a record's worth of sampling the requests this configuration has already
+    /// covered add up to, in hundredths of a request — bookkeeping of this emulator's, which
+    /// no response carries ([`StoredRealtimeLogConfig::represents_next_request`]).
+    pub sampling_cursor: i64,
 }
 
 impl StoredRealtimeLogConfig {
@@ -109,6 +206,28 @@ impl StoredRealtimeLogConfig {
             end_points: self.end_points.clone(),
             fields: self.fields.clone(),
         }
+    }
+
+    /// Whether the NEXT viewer request this configuration covers is one of the requests its
+    /// log data represents, advancing the configuration's own sampling cursor.
+    ///
+    /// `SamplingRate` is "a whole number between 1 and 100 (inclusive) to determine the
+    /// percentage of viewer requests that are represented in the real-time log data", so of
+    /// every hundred requests a configuration covers, exactly that many are represented: each
+    /// covered request adds the rate to the cursor, and a record is delivered — and a whole
+    /// percent spent — as soon as the cursor has a whole request's worth in it. What is left
+    /// over CARRIES to the next request, which is what makes the long-run share the rate
+    /// itself at every value of it: 100 represents every request, 75 three in four, 50 every
+    /// second one, and 1 one in a hundred. No randomness, and the cursor stays below one
+    /// whole percent plus the rate, which the create and update paths hold to
+    /// [`MAX_SAMPLING_RATE`].
+    pub fn represents_next_request(&mut self) -> bool {
+        self.sampling_cursor = self.sampling_cursor.saturating_add(self.sampling_rate);
+        if self.sampling_cursor < WHOLE_SAMPLING_PERCENT {
+            return false;
+        }
+        self.sampling_cursor -= WHOLE_SAMPLING_PERCENT;
+        true
     }
 }
 
@@ -157,6 +276,19 @@ impl ComAmazonawsCloudfrontCloudfront20200531State {
             (None, None) => return Err(RealtimeLogConfigAddress::NoIdentifier),
         };
         found.ok_or(RealtimeLogConfigAddress::NotFound)
+    }
+
+    /// The real-time log configuration `arn` names, to be MUTATED: the record is the one
+    /// [`Self::realtime_log_config_by_arn`] answers, reached the same way, for the edge's own
+    /// sampling cursor ([`StoredRealtimeLogConfig::represents_next_request`]), which is the
+    /// only part of a configuration anything but an update writes.
+    pub fn realtime_log_config_by_arn_mut(
+        &mut self,
+        arn: &str,
+    ) -> Option<&mut StoredRealtimeLogConfig> {
+        self.realtime_log_configs
+            .values_mut()
+            .find(|config| config.arn == arn)
     }
 
     /// The distribution a cache behaviour of which still sends its logs through the
