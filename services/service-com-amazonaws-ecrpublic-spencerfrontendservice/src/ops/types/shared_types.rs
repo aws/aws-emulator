@@ -140,3 +140,7 @@ pub const LAYER_FAILURE_CODE_VALUES: &[&str] = &["InvalidLayerDigest", "MissingL
 pub const REGISTRY_ALIAS_STATUS_VALUES: &[&str] = &["ACTIVE", "PENDING", "REJECTED"];
 
 
+/// The values `RepositoryType` accepts on the wire.
+pub const REPOSITORY_TYPE_VALUES: &[&str] = &["FREE"];
+
+

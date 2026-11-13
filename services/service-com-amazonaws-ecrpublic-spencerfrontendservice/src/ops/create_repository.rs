@@ -260,6 +260,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             arn: store.repository_arn(&input.repository_name),
             registry_id: store.registry_id.clone(),
             uri: store.repository_uri(&input.repository_name),
+            // The tier the repository is hosted in. This operation takes no tier member —
+            // a repository is created in a registry, and the registry decides the tier —
+            // so a repository of this registry carries the tier that registry hosts
+            // (`crate::state::DEFAULT_REPOSITORY_TYPE`), which is what every image of it
+            // is reported with.
+            repository_type: crate::state::DEFAULT_REPOSITORY_TYPE.to_string(),
             created_at,
             catalog_data: record.catalog_data,
             tags,

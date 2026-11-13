@@ -35,69 +35,8 @@ use serde_json::{json, Value};
 use service_com_amazonaws_ecrpublic_spencerfrontendservice::state::MAX_MANIFEST_LIST_ENTRIES;
 use smithy_server_runtime::MultiServiceRouter;
 
-use crate::harness::{blob_digest, given_manifest_blobs};
+use crate::harness::{descriptor, given_manifest_blobs, image_manifest, manifest_list};
 use crate::repository_image_lifecycle::{call, digest_of, ok, service};
-
-/// An OCI/Docker content descriptor, which is what both `layers[*]` and `manifests[*]`
-/// entries are: a media type, a digest and the size of the blob it points at.
-///
-/// The digest is minted through [`blob_digest`], so [`push`] can put the layer blob behind
-/// it into the repository before the manifest that names it is pushed — a manifest is only
-/// committed over blobs the repository already holds.
-fn descriptor(media_type: &str, body: &str, size: i64) -> Value {
-    json!({
-        "mediaType": media_type,
-        "digest": blob_digest(body),
-        "size": size,
-    })
-}
-
-/// An image manifest referencing `layer_sizes` layer blobs, plus a config blob of
-/// `config_size` bytes (which is content of the image too, so it is part of the image
-/// size).
-fn image_manifest(name: &str, config_size: i64, layer_sizes: &[i64]) -> String {
-    json!({
-        "schemaVersion": 2,
-        "mediaType": "application/vnd.oci.image.manifest.v1+json",
-        "annotations": {"name": name},
-        "config": descriptor(
-            "application/vnd.oci.image.config.v1+json",
-            &format!("{name}-config"),
-            config_size,
-        ),
-        "layers": layer_sizes
-            .iter()
-            .enumerate()
-            .map(|(index, size)| {
-                descriptor(
-                    "application/vnd.oci.image.layer.v1.tar+gzip",
-                    &format!("{name}-layer-{index}"),
-                    *size,
-                )
-            })
-            .collect::<Vec<Value>>(),
-    })
-    .to_string()
-}
-
-/// A manifest list referencing `children` by digest. Each entry declares the size of the
-/// CHILD MANIFEST DOCUMENT, which is not the child's image size.
-fn manifest_list(children: &[&str]) -> String {
-    json!({
-        "schemaVersion": 2,
-        "mediaType": "application/vnd.docker.distribution.manifest.list.v2+json",
-        "manifests": children
-            .iter()
-            .map(|digest| json!({
-                "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
-                "digest": digest,
-                "size": 1,
-                "platform": {"architecture": "amd64", "os": "linux"},
-            }))
-            .collect::<Vec<Value>>(),
-    })
-    .to_string()
-}
 
 /// Create one repository, named for the case.
 async fn repository(router: &MultiServiceRouter, name: &str) {

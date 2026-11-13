@@ -19,6 +19,8 @@ mod client_error_message_templates;
 mod harness;
 #[path = "all/identity_authorization.rs"]
 mod identity_authorization;
+#[path = "all/image_detail_repository_type.rs"]
+mod image_detail_repository_type;
 #[path = "all/image_tag_details.rs"]
 mod image_tag_details;
 #[path = "all/invalid_parameter_messages.rs"]

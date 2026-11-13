@@ -161,6 +161,22 @@ pub const DEFAULT_REGISTRY_ALIAS: &str = "emulator";
 /// usable — `ACTIVE`.
 pub const REGISTRY_ALIAS_STATUS_ACTIVE: &str = "ACTIVE";
 
+/// The registry tier a repository this registry holds sits in.
+///
+/// A public registry hosts its repositories in one tier, and the caller does not pick it:
+/// `CreateRepository` carries no tier member, so the tier is a property of the registry a
+/// repository was created in rather than of the request or of any image pushed to it. The
+/// default public registry of an account hosts free public repositories, which is the one
+/// value `RepositoryType` is modelled with
+/// ([`crate::ops::types::REPOSITORY_TYPE_VALUES`]), so every repository this store holds
+/// carries this tier and every image in it reports it
+/// ([`StoredRepository::image_detail`]).
+///
+/// Stated here rather than read off the value list, so the tier does not follow that
+/// list's ordering if `RepositoryType` ever gains another value; that it is one of the
+/// modelled values is asserted by `tests/all/image_detail_repository_type.rs`.
+pub const DEFAULT_REPOSITORY_TYPE: &str = "FREE";
+
 /// The largest page either `Describe*` operation will serve, and the page size a request
 /// that named none resolves to: `MaxResults` is modelled `range 1..1000`, so 1000 is the
 /// most a caller can ask for.
@@ -386,6 +402,11 @@ pub struct StoredRepository {
     pub arn: String,
     pub registry_id: String,
     pub uri: String,
+    /// The registry tier this repository sits in — the `repositoryType` every image of it
+    /// is reported with. Written once, by the create that inserted the repository
+    /// ([`DEFAULT_REPOSITORY_TYPE`] for one created in this registry), so two reads of one
+    /// repository report the same tier and a push never changes it.
+    pub repository_type: String,
     pub created_at: SystemTime,
     pub catalog_data: RepositoryCatalogData,
     /// Resource tags, keyed by tag key.
@@ -478,6 +499,13 @@ impl StoredRepository {
     /// looked and found a tag set, which is a different statement from "this image carries
     /// no tag". A manifest loses its last tag when another push moves that tag onto a
     /// different manifest, so this is a state an ordinary push reaches.
+    ///
+    /// `registryId`, `repositoryName` and `repositoryType` describe where the image sits
+    /// rather than the manifest itself, so all three are projected from the repository
+    /// that holds it and are the same on every entry of one repository's page: the tier is
+    /// a property of the repository ([`Self::repository_type`]), not of the image or of
+    /// the request, so it is reported on every image rather than only on a tagged or a
+    /// sized one.
     pub fn image_detail(&self, image: &StoredImage) -> ImageDetail {
         ImageDetail {
             registry_id: Some(self.registry_id.clone()),
@@ -492,6 +520,7 @@ impl StoredRepository {
             image_pushed_at: Some(as_timestamp(image.pushed_at)),
             image_manifest_media_type: image.manifest_media_type.clone(),
             artifact_media_type: image.artifact_media_type.clone(),
+            repository_type: Some(self.repository_type.clone()),
         }
     }
 
@@ -502,8 +531,8 @@ impl StoredRepository {
     /// [`Self::image_detail`] reports for `imageDigest`, `imageSizeInBytes`,
     /// `imagePushedAt`, `imageManifestMediaType` and `artifactMediaType`, so the two
     /// readers never disagree about one image. The shape carries no `imageTags` member —
-    /// the tag is the entry it hangs off — and no registry or repository member, both of
-    /// which the request already named.
+    /// the tag is the entry it hangs off — and no registry, repository or repository-tier
+    /// member: the request already named the repository those describe.
     pub fn referenced_image_detail(&self, image: &StoredImage) -> ReferencedImageDetail {
         ReferencedImageDetail {
             image_digest: Some(image.digest.clone()),

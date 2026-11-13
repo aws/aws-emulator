@@ -6,8 +6,9 @@
 //! The wire plumbing — `service`, `call`, `ok`, `refused`, `text`, `digest_of` and the
 //! registry constants — lives in `tests/all/repository_image_lifecycle.rs`, which every
 //! suite here imports; this module adds what a suite needs to read the MESSAGE of a
-//! refusal, and what it needs to get the LAYER BLOBS of a manifest into a repository
-//! before pushing it, so no suite keeps a second copy of either.
+//! refusal, what it needs to get the LAYER BLOBS of a manifest into a repository
+//! before pushing it, and the manifest documents themselves, so no suite keeps a second
+//! copy of any of them.
 
 use std::collections::BTreeMap;
 use std::sync::{Mutex, OnceLock};
@@ -139,6 +140,68 @@ pub async fn given_manifest_blobs(
             given_layer(router, repository, &body, case).await;
         }
     }
+}
+
+/// An OCI/Docker content descriptor, which is what both a `config`/`layers[*]` entry and a
+/// manifest list's `manifests[*]` entry is: a media type, a digest and the size of the blob
+/// it points at.
+///
+/// The digest is minted through [`blob_digest`], so [`given_manifest_blobs`] can put the
+/// blob behind it into the repository before the manifest that names it is pushed.
+pub fn descriptor(media_type: &str, body: &str, size: i64) -> Value {
+    json!({"mediaType": media_type, "digest": blob_digest(body), "size": size})
+}
+
+/// An image manifest referencing one layer blob per entry of `layer_sizes`, over a config
+/// blob of `config_size` bytes.
+///
+/// The config blob is content of the image too, so a suite asserting on a reported image
+/// size counts it; `config_size` is a parameter because that is the only thing the suites
+/// of this target disagree about. `name` is carried in an annotation, so two manifests
+/// built here are the same document only when they are asked for identically.
+pub fn image_manifest(name: &str, config_size: i64, layer_sizes: &[i64]) -> String {
+    json!({
+        "schemaVersion": 2,
+        "mediaType": "application/vnd.oci.image.manifest.v1+json",
+        "annotations": {"name": name},
+        "config": descriptor(
+            "application/vnd.oci.image.config.v1+json",
+            &format!("{name}-config"),
+            config_size,
+        ),
+        "layers": layer_sizes
+            .iter()
+            .enumerate()
+            .map(|(index, size)| {
+                descriptor(
+                    "application/vnd.oci.image.layer.v1.tar+gzip",
+                    &format!("{name}-layer-{index}"),
+                    *size,
+                )
+            })
+            .collect::<Vec<Value>>(),
+    })
+    .to_string()
+}
+
+/// A manifest list naming `children` by digest. Each entry declares the size of the CHILD
+/// MANIFEST DOCUMENT, which is not the child's image size, and the list references no
+/// config blob of its own.
+pub fn manifest_list(children: &[&str]) -> String {
+    json!({
+        "schemaVersion": 2,
+        "mediaType": "application/vnd.docker.distribution.manifest.list.v2+json",
+        "manifests": children
+            .iter()
+            .map(|digest| json!({
+                "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
+                "digest": digest,
+                "size": 1,
+                "platform": {"architecture": "amd64", "os": "linux"},
+            }))
+            .collect::<Vec<Value>>(),
+    })
+    .to_string()
 }
 
 /// The blob digests a manifest document names — its `config` descriptor's and each of its

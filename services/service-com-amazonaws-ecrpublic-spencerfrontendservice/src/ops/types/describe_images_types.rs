@@ -39,6 +39,7 @@ pub struct ImageDetail {
     pub image_pushed_at: Option<::aws_smithy_types::DateTime>,
     pub image_manifest_media_type: Option<String>,
     pub artifact_media_type: Option<String>,
+    pub repository_type: Option<String>,
 }
 
 #[smithy_macros::smithy(shape = "com.amazonaws.ecrpublic#ImageNotFoundException")]

@@ -25,7 +25,7 @@ use std::collections::BTreeSet;
 use serde_json::{json, Value};
 use smithy_server_runtime::MultiServiceRouter;
 
-use crate::harness::{blob_digest, given_manifest_blobs};
+use crate::harness::{given_manifest_blobs, manifest_list};
 use crate::repository_image_lifecycle::{digest_of, ok, refused, service, REGISTRY_ID};
 
 /// Create one repository, named for the case.
@@ -142,58 +142,15 @@ const SHARED_IMAGE_MEMBERS: [&str; 5] = [
     "artifactMediaType",
 ];
 
-/// An OCI content descriptor: a media type, a digest and the size of the blob it names.
-///
-/// The digest is minted through [`blob_digest`], so [`push`] can put the layer blob behind
-/// it into the repository before the manifest that names it is pushed.
-fn descriptor(media_type: &str, body: &str, size: i64) -> Value {
-    json!({"mediaType": media_type, "digest": blob_digest(body), "size": size})
-}
+/// The config-blob size every manifest this suite builds carries: an image's reported size
+/// is the total of the blobs its descriptors name, so every row's expectation carries that
+/// config blob too. The document itself is the shared builder's
+/// ([`crate::harness::image_manifest`]).
+const CONFIG_SIZE: i64 = 9_999;
 
-/// An image manifest referencing `layer_sizes` layer blobs, over a config blob of 9999
-/// bytes: an image's reported size is the total of the blobs its descriptors name, so every
-/// row's expectation carries that config blob too.
+/// An image manifest referencing `layer_sizes` layer blobs, over this suite's config blob.
 fn image_manifest(name: &str, layer_sizes: &[i64]) -> String {
-    json!({
-        "schemaVersion": 2,
-        "mediaType": "application/vnd.oci.image.manifest.v1+json",
-        "annotations": {"name": name},
-        "config": descriptor(
-            "application/vnd.oci.image.config.v1+json",
-            &format!("{name}-config"),
-            9_999,
-        ),
-        "layers": layer_sizes
-            .iter()
-            .enumerate()
-            .map(|(index, size)| {
-                descriptor(
-                    "application/vnd.oci.image.layer.v1.tar+gzip",
-                    &format!("{name}-layer-{index}"),
-                    *size,
-                )
-            })
-            .collect::<Vec<Value>>(),
-    })
-    .to_string()
-}
-
-/// A manifest list naming `children` by digest.
-fn manifest_list(children: &[&str]) -> String {
-    json!({
-        "schemaVersion": 2,
-        "mediaType": "application/vnd.docker.distribution.manifest.list.v2+json",
-        "manifests": children
-            .iter()
-            .map(|digest| json!({
-                "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
-                "digest": digest,
-                "size": 1,
-                "platform": {"architecture": "amd64", "os": "linux"},
-            }))
-            .collect::<Vec<Value>>(),
-    })
-    .to_string()
+    crate::harness::image_manifest(name, CONFIG_SIZE, layer_sizes)
 }
 
 /// A manifest document that references neither layers nor child manifests, so nothing
