@@ -33,20 +33,20 @@ const RECORDER_NAME: &str = "the-recorder";
 const CHANNEL_NAME: &str = "the-channel";
 
 /// The Config service principal a delivery bucket's policy has to name.
-const CONFIG_PRINCIPAL: &str = "config.amazonaws.com";
+pub(crate) const CONFIG_PRINCIPAL: &str = "config.amazonaws.com";
 
 /// The error code Config answers for a bucket whose policy does not allow it to deliver
 /// (`PutDeliveryChannel`'s `InsufficientDeliveryPolicyException`).
-const INSUFFICIENT_POLICY: &str = "InsufficientDeliveryPolicyException";
+pub(crate) const INSUFFICIENT_POLICY: &str = "InsufficientDeliveryPolicyException";
 
 /// The three actions the documented delivery policy grants: the bucket-level pair and the
 /// object write. Config's own refusals name two of them — the ACL read and the write — so a
 /// policy that withholds only `s3:ListBucket` is still taken.
-const GET_BUCKET_ACL: &str = "s3:GetBucketAcl";
+pub(crate) const GET_BUCKET_ACL: &str = "s3:GetBucketAcl";
 /// See [`GET_BUCKET_ACL`].
-const LIST_BUCKET: &str = "s3:ListBucket";
+pub(crate) const LIST_BUCKET: &str = "s3:ListBucket";
 /// See [`GET_BUCKET_ACL`].
-const PUT_OBJECT: &str = "s3:PutObject";
+pub(crate) const PUT_OBJECT: &str = "s3:PutObject";
 
 /// The ARN of the delivery bucket, which a statement's `Resource` names.
 fn bucket_arn() -> String {
@@ -56,7 +56,7 @@ fn bucket_arn() -> String {
 /// One `Allow` statement for `principal`, granting `actions` on `resources`, conditioned on
 /// the delivering account the way AWS's documented delivery policy conditions its
 /// statements.
-fn allow(principal: &str, actions: &[&str], resources: &[String]) -> Value {
+pub(crate) fn allow(principal: &str, actions: &[&str], resources: &[String]) -> Value {
     json!({
         "Effect": "Allow",
         "Principal": { "Service": principal },
@@ -67,7 +67,7 @@ fn allow(principal: &str, actions: &[&str], resources: &[String]) -> Value {
 }
 
 /// A bucket policy carrying `statements`.
-fn policy(statements: Vec<Value>) -> String {
+pub(crate) fn policy(statements: Vec<Value>) -> String {
     json!({ "Version": "2012-10-17", "Statement": statements }).to_string()
 }
 

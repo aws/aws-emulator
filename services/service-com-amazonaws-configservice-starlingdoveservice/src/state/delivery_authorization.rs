@@ -127,6 +127,13 @@ const OBJECT_ACL_KEY: &str = "s3:x-amz-acl";
 /// policy allows Config nothing.
 const NO_SUCH_BUCKET_POLICY: &str = "NoSuchBucketPolicy";
 
+/// The error code a delivery the bucket's policy withholds is reported under — the name of
+/// the refusal class Config carries for a delivery policy that does not admit it, which
+/// `PutDeliveryChannel` raises as a modelled error and a performed delivery reports through
+/// `lastErrorCode` ([`insufficient_delivery_policy_message`] being the sentence that goes
+/// with it).
+pub const INSUFFICIENT_DELIVERY_POLICY_CODE: &str = "InsufficientDeliveryPolicyException";
+
 /// The `s3KeyPrefix` a channel that configures none is reported with in
 /// [`insufficient_delivery_policy_message`], as the service words that sentence for a
 /// channel carrying no prefix.
@@ -201,28 +208,88 @@ pub async fn delivery_authorization(
     if unassumable {
         return DeliveryAuthorization::Denied(DeliveryCheck::AssumeRole);
     }
+    let document = match policy_in_force(callback, region, bucket).await {
+        PolicyInForce::Document(document) => document,
+        // A bucket carrying no policy grants Config nothing, so the first check it makes on
+        // the bucket is the one denied.
+        PolicyInForce::None => return DeliveryAuthorization::Denied(DELIVERY_CHECKS[0]),
+        PolicyInForce::Unanswered => return DeliveryAuthorization::Unanswered,
+    };
+    match denied_delivery_check(&document, region, bucket, key_prefix, source_arn) {
+        Some(denied) => DeliveryAuthorization::Denied(denied),
+        None => DeliveryAuthorization::Permitted,
+    }
+}
+
+/// Whether the policy in force on `bucket` allows Config the `s3:PutObject` that WRITING
+/// the delivered object `key` is.
+///
+/// This is the authorization of a delivery Config PERFORMS, rather than of the channel it
+/// is performed through: Config writes a delivered object as its own service principal, so
+/// the grant has to come from the bucket's own policy, read at the moment of the write —
+/// a policy taken away after the channel was established withholds the write just as one
+/// that never granted it does, and the delivery is reported as the failure it then is
+/// ([`INSUFFICIENT_DELIVERY_POLICY_CODE`]). It asks about the OBJECT the write targets, so
+/// a policy whose delivery statement covers that key permits it and one whose statement
+/// does not cover it does not.
+///
+/// `source_arn` is the resource of Config's the delivery is made for, for a policy that
+/// conditions its grant on it, exactly as [`delivery_authorization`] passes it.
+pub async fn delivered_object_authorization(
+    callback: &smithy_server_runtime::EmbeddedEmulator,
+    region: &str,
+    bucket: &str,
+    key: &str,
+    source_arn: Option<&str>,
+) -> DeliveryAuthorization {
+    let document = match policy_in_force(callback, region, bucket).await {
+        PolicyInForce::Document(document) => document,
+        // A bucket carrying no policy at all grants Config no write into it.
+        PolicyInForce::None => return DeliveryAuthorization::Denied(DeliveryCheck::ObjectWrite),
+        // S3 established nothing about the bucket's policy, so there is nothing to withhold
+        // the write on — as for the channel, this decides what the POLICY says and nothing
+        // else.
+        PolicyInForce::Unanswered => return DeliveryAuthorization::Unanswered,
+    };
+    if object_write_is_denied(&document, region, bucket, key, source_arn) {
+        return DeliveryAuthorization::Denied(DeliveryCheck::ObjectWrite);
+    }
+    DeliveryAuthorization::Permitted
+}
+
+/// What S3 says the bucket's policy is, over the in-process callback.
+enum PolicyInForce {
+    /// The policy document in force on the bucket.
+    Document(String),
+    /// The bucket carries no policy at all.
+    None,
+    /// S3 established nothing: it answered neither a policy nor that the bucket carries
+    /// none.
+    Unanswered,
+}
+
+/// Read the policy in force on `bucket` — the ONE place this crate asks S3 that question,
+/// so the channel's own authorization and the authorization of each delivery it performs
+/// read the same bucket the same way.
+async fn policy_in_force(
+    callback: &smithy_server_runtime::EmbeddedEmulator,
+    region: &str,
+    bucket: &str,
+) -> PolicyInForce {
     let answered = s3_client(callback, region)
         .get_bucket_policy()
         .bucket(bucket)
         .send()
         .await;
-    let document = match answered {
-        Ok(answer) => answer.policy.unwrap_or_default(),
+    match answered {
+        Ok(answer) => PolicyInForce::Document(answer.policy.unwrap_or_default()),
         Err(error) => {
             use ::aws_smithy_types::error::metadata::ProvideErrorMetadata;
-            return match error.code() {
-                // A bucket carrying no policy grants Config nothing, so the first check it
-                // makes on the bucket is the one denied.
-                Some(NO_SUCH_BUCKET_POLICY) => {
-                    DeliveryAuthorization::Denied(DELIVERY_CHECKS[0])
-                }
-                _ => DeliveryAuthorization::Unanswered,
-            };
+            match error.code() {
+                Some(NO_SUCH_BUCKET_POLICY) => PolicyInForce::None,
+                _ => PolicyInForce::Unanswered,
+            }
         }
-    };
-    match denied_delivery_check(&document, region, bucket, key_prefix, source_arn) {
-        Some(denied) => DeliveryAuthorization::Denied(denied),
-        None => DeliveryAuthorization::Permitted,
     }
 }
 
@@ -244,28 +311,64 @@ pub fn denied_delivery_check(
     // The object the write is judged against: the one Config itself puts in the bucket to
     // check that it can deliver there, under this account's own delivery path and the
     // channel's own prefix.
-    let object_arn = format!(
-        "{bucket_arn}/{}",
-        super::delivery_writability_check_key(key_prefix, &account_id)
-    );
+    let check_key = super::delivery_writability_check_key(key_prefix, &account_id);
+    let context = delivery_context(&account_id, source_arn);
+    DELIVERY_CHECKS.into_iter().find(|check| {
+        match check {
+            DeliveryCheck::BucketAcl => {
+                let request =
+                    Request::new(check.action(), &bucket_arn, &principals).with_context(&context);
+                resource_decision(document, &request) != Decision::Allowed
+            }
+            DeliveryCheck::ObjectWrite => {
+                object_write_is_denied(document, region, bucket, &check_key, source_arn)
+            }
+            // Not one of [`DELIVERY_CHECKS`]: the assume of the recorder's role is decided
+            // by IAM, not by this document, so no resource of the bucket stands for it.
+            DeliveryCheck::AssumeRole => false,
+        }
+    })
+}
+
+/// Whether `document` withholds the Config service principal the `s3:PutObject` that
+/// writing the object `key` of `bucket` is.
+///
+/// The ONE evaluation of that question, so the write Config performs before it will take a
+/// channel and the write a performed delivery makes are judged the same way, each about
+/// the key it goes to.
+pub fn object_write_is_denied(
+    document: &str,
+    region: &str,
+    bucket: &str,
+    key: &str,
+    source_arn: Option<&str>,
+) -> bool {
+    let account_id = ::emulator_server::emulator_account_id().to_string();
+    let principals = [CONFIG_SERVICE_PRINCIPAL.to_string()];
+    // A bucket this crate cannot name has no resource for a statement to grant on, so
+    // nothing permits a write into it.
+    let Some(bucket_arn) = bucket_arn(bucket, region) else {
+        return true;
+    };
+    let object_arn = format!("{bucket_arn}/{}", key.trim_start_matches('/'));
+    let context = delivery_context(&account_id, source_arn);
+    let request = Request::new(DeliveryCheck::ObjectWrite.action(), &object_arn, &principals)
+        .with_context(&context);
+    resource_decision(document, &request) != Decision::Allowed
+}
+
+/// The condition context a delivery carries, which every one of these evaluations passes:
+/// the account Config delivers for, the canned ACL it writes a delivered object with, and
+/// the resource of Config's the delivery is made for where there is one.
+fn delivery_context(account_id: &str, source_arn: Option<&str>) -> Vec<(String, String)> {
     let mut context = vec![
-        (SOURCE_ACCOUNT_KEY.to_string(), account_id),
+        (SOURCE_ACCOUNT_KEY.to_string(), account_id.to_string()),
         (OBJECT_ACL_KEY.to_string(), DELIVERY_OBJECT_ACL.to_string()),
     ];
     if let Some(source_arn) = source_arn {
         context.push((SOURCE_ARN_KEY.to_string(), source_arn.to_string()));
     }
-    DELIVERY_CHECKS.into_iter().find(|check| {
-        let resource = match check {
-            DeliveryCheck::BucketAcl => &bucket_arn,
-            DeliveryCheck::ObjectWrite => &object_arn,
-            // Not one of [`DELIVERY_CHECKS`]: the assume of the recorder's role is decided
-            // by IAM, not by this document, so no resource of the bucket stands for it.
-            DeliveryCheck::AssumeRole => return false,
-        };
-        let request = Request::new(check.action(), resource, &principals).with_context(&context);
-        resource_decision(document, &request) != Decision::Allowed
-    })
+    context
 }
 
 /// The ARN of a delivery channel's bucket (`arn:aws:s3:::<bucket>`), through the ONE place

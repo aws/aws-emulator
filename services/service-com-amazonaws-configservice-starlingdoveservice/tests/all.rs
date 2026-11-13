@@ -186,6 +186,11 @@ mod config_refusal_class_and_wording;
 mod config_snapshot_delivery;
 #[path = "all/delivery_channel_bucket_policy.rs"]
 mod delivery_channel_bucket_policy;
+// Declared beside the suite whose policy helpers it reuses, rather than appended at the
+// tail: every suite that lands appends there, so a declaration added there conflicts with
+// the next one that lands.
+#[path = "all/snapshot_delivery_bucket_policy.rs"]
+mod snapshot_delivery_bucket_policy;
 #[path = "all/delivery_channel_recorder_role.rs"]
 mod delivery_channel_recorder_role;
 #[path = "all/validation_clause_quotes_the_submitted_value.rs"]

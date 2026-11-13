@@ -13,15 +13,19 @@
 //! through the object itself. The write is made the way every other cross-service call
 //! of this crate is made, over the in-process callback
 //! ([`smithy_server_runtime::OperationContext::callback`]), so this crate names no other
-//! service crate; a bucket that refuses the write earns the channel a `FAILURE` status
-//! carrying the code and the message the bucket answered, and no object.
+//! service crate; and it is made as CONFIG, so the bucket's own policy has to allow the
+//! Config service principal the write at the moment it happens
+//! ([`super::delivered_object_authorization`]). A bucket whose policy withholds that write,
+//! or which refuses it when it is made, earns the channel a `FAILURE` status carrying the
+//! code and the message of the refusal, and no object.
 
 use std::io::Write;
 use std::time::SystemTime;
 
 use super::{
-    s3_client, service_state, ComAmazonawsConfigserviceStarlingdoveserviceState,
-    SnapshotDeliveryOutcome, SNAPSHOT_DELIVERY_SETTLE_AFTER,
+    delivered_object_authorization, insufficient_delivery_policy_message, s3_client,
+    service_state, ComAmazonawsConfigserviceStarlingdoveserviceState, DeliveryAuthorization,
+    SnapshotDeliveryOutcome, INSUFFICIENT_DELIVERY_POLICY_CODE, SNAPSHOT_DELIVERY_SETTLE_AFTER,
 };
 use crate::ops::types::ConfigurationItem;
 
@@ -271,11 +275,20 @@ pub async fn run_due_snapshot_delivery<Eng: Send + Sync + 'static>(
         }
         store
             .snapshot_delivery_target(channel, snapshot_id)
-            .map(|(bucket, prefix)| (bucket, prefix, store.snapshot_configuration_items(region)))
+            .map(|(bucket, prefix)| {
+                (
+                    bucket,
+                    prefix,
+                    // The resource of Config's the delivery is made for, which a bucket
+                    // policy that conditions its grant on it is judged against.
+                    store.customer_managed_recorder_arn(),
+                    store.snapshot_configuration_items(region),
+                )
+            })
     };
     // A channel naming no bucket has nowhere to deliver to, so the delivery did not
     // happen — which is reported as the failure it is, never left in flight for ever.
-    let Some((bucket, prefix, items)) = target else {
+    let Some((bucket, prefix, source_arn, items)) = target else {
         state.lock().record_snapshot_delivery_outcome(
             channel,
             snapshot_id,
@@ -294,6 +307,39 @@ pub async fn run_due_snapshot_delivery<Eng: Send + Sync + 'static>(
         now,
         snapshot_id,
     );
+
+    // Config writes a delivered object as its OWN service principal, so the write happens
+    // only while the policy in force on the bucket at this moment allows that principal the
+    // `s3:PutObject` on the key the object goes to. A policy that withholds it — one taken
+    // away after the channel was established as much as one that never granted it — leaves
+    // no object in the bucket, and the delivery is reported as the failure it then is, which
+    // is the only place that outcome is raised at all.
+    if let DeliveryAuthorization::Denied(denied) =
+        delivered_object_authorization(callback, region, &bucket, &key, source_arn.as_deref())
+            .await
+    {
+        ::tracing::warn!(
+            %bucket,
+            %key,
+            "the bucket's policy does not allow Config to deliver a configuration snapshot"
+        );
+        state.lock().record_snapshot_delivery_outcome(
+            channel,
+            snapshot_id,
+            SnapshotDeliveryOutcome::Failed {
+                at: now,
+                code: INSUFFICIENT_DELIVERY_POLICY_CODE.to_string(),
+                message: insufficient_delivery_policy_message(
+                    &bucket,
+                    denied,
+                    prefix.as_deref(),
+                    None,
+                ),
+            },
+        );
+        return;
+    }
+
     let outcome = match gzip(snapshot_document(snapshot_id, &items).to_string().as_bytes()) {
         None => SnapshotDeliveryOutcome::Failed {
             at: now,
