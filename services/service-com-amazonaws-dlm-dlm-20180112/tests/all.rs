@@ -63,6 +63,8 @@ mod policy_type;
 mod refused_parameter_element_names;
 #[path = "all/region_isolation.rs"]
 mod region_isolation;
+#[path = "all/reserved_tag_key_refusal_class.rs"]
+mod reserved_tag_key_refusal_class;
 #[path = "all/schedule_retention_floor.rs"]
 mod schedule_retention_floor;
 #[path = "all/schedule_retention_required.rs"]

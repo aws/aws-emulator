@@ -1854,9 +1854,24 @@ where
     })
 }
 
-/// The `InvalidRequestException` for a tag key a caller may not set.
-pub fn reserved_tag_key_refused() -> InvalidRequestException {
-    invalid_request(RESERVED_TAG_KEY_MESSAGE.to_string())
+/// How this service refuses a tag key a caller may not set, as the whole error
+/// channel of the operation that refuses it.
+///
+/// The reservation is a constraint of the tag key SHAPE — `TagKey` is
+/// `@pattern(^(?!aws:)[a-zA-Z+-=._:/]+$)` (`smithy_query(query="shape",
+/// shape="TagKey")`) — so a key under the prefix is input no request may carry,
+/// whatever the store holds, and not a rule of the policy the request addresses.
+/// Amazon Data Lifecycle Manager classifies that apart from the
+/// `InvalidRequestException` its own rules are stated in: the answer is HTTP 400
+/// under the error type `BadRequestException`, carrying
+/// [`RESERVED_TAG_KEY_MESSAGE`] in the lowercase `message` member that class
+/// declares. A client therefore tells "fix the request, never retry" from a
+/// refusal about the addressed resource by the error type alone.
+///
+/// Generic over the operation's modeled error enum, so every operation that sets
+/// tags refuses the same key with the same class, status and prose.
+pub fn reserved_tag_key_refused<Modeled>() -> crate::scaffolded::Scaffolded<Modeled> {
+    crate::scaffolded::Scaffolded::bad_request(RESERVED_TAG_KEY_MESSAGE)
 }
 
 /// A default policy's creation/retention cadence as ONE request states it,

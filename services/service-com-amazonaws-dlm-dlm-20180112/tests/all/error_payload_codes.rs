@@ -295,7 +295,6 @@ async fn the_client_error_classes_report_their_code() {
     // id space, which the store mints from `policy-0000000000000001` upwards.
     let missing_id = "policy-0fffffffffffffff";
     let missing_arn = policy_arn(REGION, missing_id);
-    let known_arn = policy_arn(REGION, &policy_id);
 
     let rows = vec![
         Refusal {
@@ -339,10 +338,16 @@ async fn the_client_error_classes_report_their_code() {
         },
         Refusal {
             call: Call {
-                case: "TagResource setting a key under the reserved prefix",
+                // A `TagResource` row for the modelled 400 class: the reserved
+                // tag-key prefix is NOT one, being answered in the
+                // malformed-input class that declares no `Code` member (see
+                // `error_paths::a_reserved_aws_tag_key_may_not_be_set`), so the
+                // row that keeps this operation in the table is a `ResourceArn`
+                // outside `PolicyArn`'s `@pattern` instead.
+                case: "TagResource with a ResourceArn outside its @pattern",
                 method: "POST",
-                uri: tags_uri(&known_arn),
-                body: Some(json!({"Tags": {"aws:reserved": "no"}})),
+                uri: tags_uri(&policy_arn(REGION, "policy.not-an-id")),
+                body: Some(json!({"Tags": {"team": "backups"}})),
             },
             shape: INVALID_REQUEST_EXCEPTION,
             status: INVALID_REQUEST_STATUS,

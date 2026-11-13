@@ -20,7 +20,9 @@
 //!    shape="CreateRule")`); a request stating both is refused, and refused
 //!    BEFORE any policy is stored or changed.
 //! 4. A tag key a caller SETS may not begin with the reserved `aws:` prefix, in
-//!    any case, on any operation that sets tags.
+//!    any case, on any operation that sets tags — refused as malformed input
+//!    (HTTP 400 `BadRequestException`, the reason in a lowercase `message`),
+//!    not with the modelled error that states a rule of the policy addressed.
 //! 5. On an operation that declares no 400-class client error, a `PolicyId`
 //!    outside the member's modelled constraints is the modelled
 //!    `ResourceNotFoundException` (HTTP 404) too — the same error shape and
@@ -54,6 +56,13 @@ const RESOURCE_NOT_FOUND_EXCEPTION: &str = "ResourceNotFoundException";
 const RESOURCE_NOT_FOUND_STATUS: u16 = 404;
 const RESOURCE_NOT_FOUND_CODE: &str = "ResourceNotFound";
 const POLICY_RESOURCE_TYPE: &str = "LIFECYCLE_POLICY";
+
+/// The refusal class Amazon Data Lifecycle Manager answers for input no request
+/// may carry, its status, and the text it states a reserved tag key with.
+const BAD_REQUEST_EXCEPTION: &str = "BadRequestException";
+const BAD_REQUEST_STATUS: u16 = 400;
+const RESERVED_TAG_KEY_MESSAGE: &str =
+    "Invalid tag key. Customers cannot set tag keys starting with aws: (case insensitive)";
 
 /// One emulator: a router carrying only this service, over one shared engine.
 fn emulator() -> MultiServiceRouter {
@@ -665,9 +674,34 @@ async fn a_create_rule_may_not_state_both_a_cron_expression_and_an_interval() {
     }
 }
 
+/// Assert `answer` is the refusal class this service answers for input it cannot
+/// accept whatever its state holds: HTTP 400 under `BadRequestException`, with
+/// the reason in the lowercase `message` member that class declares.
+fn assert_bad_request(case: &str, answer: &Answer, message: &str) {
+    assert_eq!(
+        answer.status, BAD_REQUEST_STATUS,
+        "case {case:?}: expected HTTP {BAD_REQUEST_STATUS}, got {} with {:?}",
+        answer.status, answer.body
+    );
+    assert!(
+        answer.error_code().ends_with(BAD_REQUEST_EXCEPTION),
+        "case {case:?}: expected {BAD_REQUEST_EXCEPTION}, got {:?}",
+        answer.error_code()
+    );
+    assert_eq!(
+        answer.body["message"],
+        json!(message),
+        "case {case:?}: expected the message {message:?}, got {:?}",
+        answer.body
+    );
+}
+
 /// RULE 4 — a tag key a caller sets may not begin with the reserved `aws:`
 /// prefix, in any case; a successful tag call answers `204 No Content` and the
 /// tags it set are read back from the stored policy.
+///
+/// The refusal is the malformed-input class, because the reservation is a
+/// constraint of the tag key shape rather than a rule of the policy addressed.
 ///
 /// The rows differ along the case of the prefix, where the reserved substring
 /// sits in the key, the encoding of the key (a tag key is arbitrary UTF-8, so a
@@ -712,7 +746,7 @@ async fn a_reserved_aws_tag_key_may_not_be_set() {
         .await;
         let listed = call(&router, "GET", &tags_uri(&arn), None).await;
         if *refused {
-            assert_invalid_request(case, &answer);
+            assert_bad_request(case, &answer, RESERVED_TAG_KEY_MESSAGE);
             assert_eq!(
                 listed.body["Tags"][*key],
                 Value::Null,
@@ -752,7 +786,11 @@ async fn a_reserved_aws_tag_key_may_not_be_set() {
         request["Tags"] = json!({*key: "value"});
         let answer = call(&router, "POST", "/policies", Some(request)).await;
         if *refused {
-            assert_invalid_request(&format!("CreateLifecyclePolicy: {case}"), &answer);
+            assert_bad_request(
+                &format!("CreateLifecyclePolicy: {case}"),
+                &answer,
+                RESERVED_TAG_KEY_MESSAGE,
+            );
         } else {
             assert_eq!(
                 answer.status, 200,

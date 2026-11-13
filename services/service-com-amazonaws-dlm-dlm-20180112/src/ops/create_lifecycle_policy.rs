@@ -380,7 +380,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         }
 
         // A caller may not SET a tag key under the reserved `aws:` prefix, here
-        // or through `TagResource`.
+        // or through `TagResource`, and the refusal is the same class, status and
+        // prose on both paths (`crate::state::reserved_tag_key_refused`).
         if crate::state::reserved_tag_key(
             input
                 .tags
@@ -389,10 +390,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         )
         .is_some()
         {
-            return Err(CreateLifecyclePolicyErrorModeled::InvalidRequestException(
-                crate::state::reserved_tag_key_refused(),
-            )
-            .into());
+            return Err(crate::state::reserved_tag_key_refused());
         }
 
         let now = ::std::time::SystemTime::now();

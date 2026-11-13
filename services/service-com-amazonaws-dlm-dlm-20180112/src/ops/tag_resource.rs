@@ -142,12 +142,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         };
 
         // A caller may not set a tag key under the reserved `aws:` prefix. The
-        // refusal precedes the lookup and the write, so nothing is tagged.
+        // refusal precedes the lookup and the write, so nothing is tagged, and it
+        // is stated in the class AWS answers for input it cannot accept at all
+        // rather than in a modeled error about the policy addressed.
         if crate::state::reserved_tag_key(input.tags.keys().map(String::as_str)).is_some() {
-            return Err(TagResourceErrorModeled::InvalidRequestException(
-                crate::state::reserved_tag_key_refused(),
-            )
-            .into());
+            return Err(crate::state::reserved_tag_key_refused());
         }
 
         let region = crate::state::request_region(ctx.parts());
