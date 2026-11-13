@@ -25,13 +25,15 @@
 //! dispatch an AWS call on) and no host path, host environment variable or host credential:
 //! the only environment they see is the execution's own `EnvironmentVariables`.
 //!
-//! Around the run, this module holds what one REQUEST may cost: the notebook object is
+//! Around the run, this module holds what one EXECUTION may cost: the notebook object is
 //! bounded before and after it is read ([`MAX_NOTEBOOK_BYTES`]), so is the number of cells
 //! ([`MAX_NOTEBOOK_CELLS`]), the runs this process performs at once are a bounded pool
-//! ([`MAX_CONCURRENT_NOTEBOOK_RUNS`]) each holding its place until its thread ends, and the
-//! caller waits for an answer no longer than the run's own wall clock and the grace on top
-//! of it. Nothing of a run happens on the async executor, and nothing of it happens under
-//! this service's store lock.
+//! ([`MAX_CONCURRENT_NOTEBOOK_RUNS`]) each holding its place until its thread ends, and a run
+//! is waited for no longer than its own wall clock and the grace on top of it. Nothing of a
+//! run happens on the async executor, nothing of it happens under this service's store lock,
+//! and nothing of it happens on the `StartNotebookExecution` request path
+//! ([`start_notebook_run`]): that call answers once the cluster has received the request, and
+//! the run's answer reaches the execution's record when the run is done.
 //!
 //! The cells share one set of globals and run in order, which is what a notebook kernel does
 //! ([`NOTEBOOK_KERNEL_SOURCE`]), and the execution's end is what that run answered:
@@ -50,6 +52,7 @@ use ::service_com_amazonaws_lambda_awsgirapiservice::state::execution::package::
 use ::service_com_amazonaws_lambda_awsgirapiservice::state::execution::python::{
     self, Budget, Completion, Finished, Stop,
 };
+use smithy_server_runtime::EmbeddedEmulator;
 
 use super::*;
 use crate::ops::types::NotebookS3LocationFromInput;
@@ -87,9 +90,9 @@ const RUN_STACK_BYTES: usize = 16 * 1024 * 1024;
 /// How long the cells of one notebook may run for.
 ///
 /// CHOSEN, not documented: a real execution runs for as long as its notebook does, on a
-/// cluster. Here the caller of `StartNotebookExecution` waits for the run, so the bound is
-/// what that caller may be kept waiting — and a notebook that outlasts it is reported as
-/// having failed on this bound rather than left running.
+/// cluster. Here it runs off the request path, so the bound is what one execution of this
+/// emulator may spend on a notebook — and a notebook that outlasts it is reported as having
+/// failed on this bound rather than left running.
 const NOTEBOOK_WALL_CLOCK: Duration = Duration::from_secs(5);
 
 /// How much longer than its own wall clock a run is waited for before it is given up on.
@@ -110,10 +113,18 @@ const NOTEBOOK_RUN_GRACE: Duration = Duration::from_secs(5);
 /// lasts.
 const MAX_CONCURRENT_NOTEBOOK_RUNS: usize = 4;
 
-/// How long a request waits for a run of the pool above to come free before nothing is run
-/// for it. CHOSEN: one run's whole wall clock, so a request that arrives while the pool is
-/// full is served once a run ahead of it ends.
-const NOTEBOOK_PERMIT_WAIT: Duration = NOTEBOOK_WALL_CLOCK;
+/// How long a run waits for a place in the pool above to come free before nothing is run for
+/// it.
+///
+/// CHOSEN: nothing is waiting on the answer — `StartNotebookExecution` has already answered,
+/// and the execution whose run this is sits at `RUNNING`, "being processed by the cluster",
+/// while it queues — so the wait covers two full-length runs ahead of it, each spending its
+/// own wall clock and the grace on top of it, which is the longest a place is ever held. It
+/// stays SHORT enough that a queued execution still settles inside the wait a client polling
+/// it allows: past it, the execution is reported as one nothing ran rather than left queued.
+const NOTEBOOK_PERMIT_WAIT: Duration = NOTEBOOK_WALL_CLOCK
+    .saturating_add(NOTEBOOK_RUN_GRACE)
+    .saturating_mul(2);
 
 /// The runs this process may perform at once ([`MAX_CONCURRENT_NOTEBOOK_RUNS`]).
 fn notebook_run_permits() -> &'static ::std::sync::Arc<::tokio::sync::Semaphore> {
@@ -230,6 +241,87 @@ fn cell_source(cell: &::serde_json::Value) -> Option<String> {
     }
 }
 
+/// Start this execution's OWN run of its notebook, off the request path, and record what it
+/// answered.
+///
+/// `StartNotebookExecution` answers once the cluster has received the request —
+/// "`START_PENDING` indicates that the cluster has received the execution request but
+/// execution has not begun" (`NotebookExecution$Status` doc) — so the notebook is run AFTER
+/// that answer rather than inside it: this hands the run to the emulator's own runtime and
+/// returns at once. The run then writes what it came to into the execution's record, which
+/// is the end of its status walk ([`NotebookExecutionRecord::record_outcome`]), so the
+/// execution leaves `RUNNING` when its notebook is really done.
+///
+/// What one run may cost is unchanged ([`run_notebook_cells`]): the pool bounds how many of
+/// them this process performs at once, however many executions a caller starts, and the
+/// number of executions is itself bounded ([`MAX_NOTEBOOK_EXECUTIONS`]).
+pub fn start_notebook_run<Eng: Send + Sync + 'static>(
+    ctx: &smithy_server_runtime::OperationContext<'_>,
+    engine: &::std::sync::Arc<Eng>,
+    region: &str,
+    execution_id: String,
+    location: Option<NotebookS3LocationFromInput>,
+    environment: Option<HashMap<String, String>>,
+) {
+    let Some(state) = service_state(&**engine) else {
+        return;
+    };
+    let Ok(runtime) = ::tokio::runtime::Handle::try_current() else {
+        return;
+    };
+    // The emulator's own in-process transport, as the request reached this service with: the
+    // run reads the notebook over it after the request has been answered.
+    let callback = ctx.callback().clone();
+    let region = region.to_string();
+    let run_state = ::engine::ServiceState::clone(&state);
+    let run_id = execution_id.clone();
+    // The run's own handle is recorded under the guard the run itself needs in order to
+    // report, so a run that answers at once cannot clear its entry before this records it —
+    // and the run stays abandonable for as long as it lasts.
+    let mut store = state.lock();
+    let handle = runtime.spawn(async move {
+        let outcome =
+            run_notebook(&callback, &region, location.as_ref(), environment.as_ref()).await;
+        let now = SystemTime::now();
+        let mut store = run_state.lock();
+        if let Some(record) = store.notebook_execution_mut(&run_id, now) {
+            record.record_outcome(outcome, now);
+        }
+        // This run has answered, so there is nothing left to abandon.
+        store.forget_notebook_run(&run_id);
+    });
+    store.set_notebook_run(execution_id, handle);
+}
+
+impl ComAmazonawsEmrElasticmapreduceState {
+    /// Keep the task performing the execution `id`'s run, so the run can be abandoned while
+    /// it lasts. A run this replaces is abandoned rather than merely forgotten.
+    fn set_notebook_run(&mut self, id: String, handle: ::tokio::task::JoinHandle<()>) {
+        if let Some(previous) = self.notebook_runs.insert(id, handle) {
+            previous.abort();
+        }
+    }
+
+    /// Forget the run of the execution `id` without abandoning it: what a run that has
+    /// already answered calls.
+    fn forget_notebook_run(&mut self, id: &str) {
+        self.notebook_runs.remove(id);
+    }
+
+    /// ABANDON the run of the execution `id`, if one is still under way.
+    ///
+    /// What `StopNotebookExecution` asks for: "`STOP_PENDING` indicates that the cluster has
+    /// received a `StopNotebookExecution` request and the stop is pending"
+    /// (`NotebookExecution$Status` doc), and a stopped execution ends `STOPPED` rather than
+    /// in what its notebook was going to come to — so the run it was waiting for is given up
+    /// on rather than left to report an end nobody is waiting for.
+    pub fn abandon_notebook_run(&mut self, id: &str) {
+        if let Some(handle) = self.notebook_runs.remove(id) {
+            handle.abort();
+        }
+    }
+}
+
 /// What a notebook execution's own run answered, for the Amazon S3 notebook `location` and
 /// the execution's own `environment`.
 ///
@@ -239,7 +331,7 @@ fn cell_source(cell: &::serde_json::Value) -> Option<String> {
 /// that reaches a run — the object to read and the environment the cells see — so nothing
 /// else a caller sent can steer either half.
 pub async fn run_notebook(
-    ctx: &smithy_server_runtime::OperationContext<'_>,
+    callback: &EmbeddedEmulator,
     region: &str,
     location: Option<&NotebookS3LocationFromInput>,
     environment: Option<&HashMap<String, String>>,
@@ -251,7 +343,7 @@ pub async fn run_notebook(
     let Some(location) = location else {
         return NotebookOutcome::NotRun;
     };
-    let Some(document) = notebook_object(ctx, region, location).await else {
+    let Some(document) = notebook_object(callback, region, location).await else {
         return NotebookOutcome::NotRun;
     };
     let Some(cells) = notebook_code_cells(&document) else {
@@ -277,13 +369,13 @@ pub async fn run_notebook(
 /// [`MAX_NOTEBOOK_BYTES`] both on the length Amazon S3 reports, before any of it is held,
 /// and on the bytes that arrived.
 async fn notebook_object(
-    ctx: &smithy_server_runtime::OperationContext<'_>,
+    callback: &EmbeddedEmulator,
     region: &str,
     location: &NotebookS3LocationFromInput,
 ) -> Option<Vec<u8>> {
     let bucket = location.bucket.as_deref().filter(|name| !name.is_empty())?;
     let key = location.key.as_deref().filter(|key| !key.is_empty())?;
-    let read = ::service_common::s3_client::s3_client(ctx.callback(), region)
+    let read = ::service_common::s3_client::s3_client(callback, region)
         .get_object()
         .bucket(bucket)
         .key(key)
@@ -308,10 +400,11 @@ async fn notebook_object(
 /// ([`notebook_budget`]):
 ///
 /// * a RUN of the process's pool ([`MAX_CONCURRENT_NOTEBOOK_RUNS`]), waited for no longer
-///   than [`NOTEBOOK_PERMIT_WAIT`] — a request that finds the pool full has nothing run for
-///   it rather than adding a thread to the process. The permit is MOVED into the run's own
-///   thread, so it comes back when that thread ends and a run that was given up on still
-///   holds its place in the pool while it lasts;
+///   than [`NOTEBOOK_PERMIT_WAIT`] — a run that finds the pool full queues for a place rather
+///   than adding a thread to the process, and one that never gets a place is reported as
+///   having run nothing. The permit is MOVED into the run's own thread, so it comes back when
+///   that thread ends and a run that was given up on still holds its place in the pool while
+///   it lasts;
 /// * the run happens on a thread of its own, with the stack a run is given
 ///   ([`RUN_STACK_BYTES`]), because the interpreter is synchronous and CPU-bound: nothing of
 ///   it runs on the async executor, so the emulator stays responsive while it runs;
@@ -334,7 +427,8 @@ async fn run_notebook_cells(
     else {
         ::tracing::warn!(
             runs = MAX_CONCURRENT_NOTEBOOK_RUNS,
-            "no run came free inside this request's wait, so the notebook was not run"
+            "no run came free inside the wait for a place in the pool, so the notebook was \
+             not run"
         );
         return NotebookOutcome::NotRun;
     };

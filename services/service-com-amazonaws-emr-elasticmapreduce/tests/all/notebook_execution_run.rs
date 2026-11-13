@@ -35,12 +35,15 @@ use smithy_server_runtime::MultiServiceRouter;
 const REGION: &str = "us-east-1";
 
 /// The bucket every notebook of this suite is written to.
-const BUCKET: &str = "emr-notebooks";
+///
+/// `pub(crate)` so a sibling suite writes its notebooks to one bucket through one name
+/// rather than its own copy of this harness.
+pub(crate) const BUCKET: &str = "emr-notebooks";
 
 /// The roles a launch and an execution name.
 const INSTANCE_PROFILE: &str = "EMR_EC2_DefaultRole";
 const SERVICE_ROLE: &str = "EMR_DefaultRole";
-const NOTEBOOK_ROLE: &str = "EMR_Notebooks_DefaultRole";
+pub(crate) const NOTEBOOK_ROLE: &str = "EMR_Notebooks_DefaultRole";
 
 /// How long a poll waits for an execution to reach a terminal status before giving up: the
 /// four phases of a finishing walk at [`NOTEBOOK_PHASE_SPAN`] each, with room to spare.
@@ -51,10 +54,10 @@ const DEADLINE: Duration = Duration::from_secs(40);
 const POLL_INTERVAL: Duration = Duration::from_millis(20);
 
 /// The statuses an execution never leaves (`NotebookExecutionStatus`).
-const TERMINAL: [&str; 3] = ["FINISHED", "FAILED", "STOPPED"];
+pub(crate) const TERMINAL: [&str; 3] = ["FINISHED", "FAILED", "STOPPED"];
 
 /// Amazon EMR and Amazon S3 on one engine, the shape the router mounts them in.
-fn emulator() -> MultiServiceRouter {
+pub(crate) fn emulator() -> MultiServiceRouter {
     let engine: Arc<engine::InMemoryEngine> = Arc::new(engine::InMemoryEngine::new());
     let mut router = MultiServiceRouter::new();
     router.set_request_authentication(false);
@@ -98,7 +101,7 @@ async fn emr(router: &MultiServiceRouter, operation: &str, body: Value) -> (u16,
 }
 
 /// One Amazon EMR call that must be served.
-async fn emr_ok(router: &MultiServiceRouter, operation: &str, body: Value) -> Value {
+pub(crate) async fn emr_ok(router: &MultiServiceRouter, operation: &str, body: Value) -> Value {
     let (status, payload) = emr(router, operation, body).await;
     assert_eq!(
         status, 200,
@@ -108,7 +111,7 @@ async fn emr_ok(router: &MultiServiceRouter, operation: &str, body: Value) -> Va
 }
 
 /// One path-style Amazon S3 request that must be served.
-async fn s3_ok(router: &MultiServiceRouter, case: &str, uri: &str, body: &[u8]) {
+pub(crate) async fn s3_ok(router: &MultiServiceRouter, case: &str, uri: &str, body: &[u8]) {
     let host = format!("s3.{REGION}.amazonaws.com");
     let request = ::http::Request::builder()
         .method("PUT")
@@ -134,7 +137,7 @@ async fn s3_ok(router: &MultiServiceRouter, case: &str, uri: &str, body: &[u8]) 
 }
 
 /// A cluster that runs the applications a headless notebook execution needs, kept alive.
-async fn notebook_cluster(router: &MultiServiceRouter) -> String {
+pub(crate) async fn notebook_cluster(router: &MultiServiceRouter) -> String {
     let launched = emr_ok(
         router,
         "RunJobFlow",
@@ -165,7 +168,7 @@ async fn notebook_cluster(router: &MultiServiceRouter) -> String {
 }
 
 /// A notebook document in the Jupyter format, holding `cells` as they are given.
-fn notebook(cells: Value, kernel_language: Option<&str>) -> Vec<u8> {
+pub(crate) fn notebook(cells: Value, kernel_language: Option<&str>) -> Vec<u8> {
     let mut document = json!({
         "cells": cells,
         "metadata": {},
@@ -181,7 +184,7 @@ fn notebook(cells: Value, kernel_language: Option<&str>) -> Vec<u8> {
 }
 
 /// One code cell whose source is the string `source`.
-fn code_cell(source: &str) -> Value {
+pub(crate) fn code_cell(source: &str) -> Value {
     json!({ "cell_type": "code", "source": source, "metadata": {}, "outputs": [] })
 }
 
@@ -192,7 +195,7 @@ fn code_cell_lines(lines: &[&str]) -> Value {
 }
 
 /// The execution `DescribeNotebookExecution` reports.
-async fn described(router: &MultiServiceRouter, id: &str) -> Value {
+pub(crate) async fn described(router: &MultiServiceRouter, id: &str) -> Value {
     emr_ok(
         router,
         "DescribeNotebookExecution",

@@ -177,7 +177,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // An execution that has already finished, failed or stopped has nothing left
         // to stop, so the request leaves its status alone rather than moving it
         // backwards out of a state it never leaves.
-        record.begin_stop(now);
+        let stopping = record.begin_stop(now);
+
+        // The stop abandons whatever the notebook's own run still owed: a stopped execution
+        // ends `STOPPED`, so the run it was waiting for is given up on rather than left to
+        // report an end nothing will take.
+        if stopping {
+            store.abandon_notebook_run(&input.notebook_execution_id);
+        }
 
         Ok(StopNotebookExecutionOutput)
     }

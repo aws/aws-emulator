@@ -73,6 +73,8 @@ mod multi_primary_termination_protection;
 mod notebook_execution_progression;
 #[path = "all/notebook_execution_run.rs"]
 mod notebook_execution_run;
+#[path = "all/notebook_execution_start_pacing.rs"]
+mod notebook_execution_start_pacing;
 #[path = "all/notebook_executions.rs"]
 mod notebook_executions;
 #[path = "all/persistent_app_ui.rs"]

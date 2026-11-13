@@ -55,16 +55,17 @@ pub const NOTEBOOK_EXECUTION_PROGRESSION: &[&str] = &[
     notebook_execution_status::RUNNING,
 ];
 
-/// How long an execution stays `RUNNING` — "the execution is being processed by the
-/// cluster" (`NotebookExecution$Status` doc) — before the end its run answered comes due.
+/// How much longer an execution stays `RUNNING` — "the execution is being processed by the
+/// cluster" (`NotebookExecution$Status` doc) — ONCE its own run has answered.
 ///
-/// CHOSEN, not documented, and deliberately the LONGEST phase of the walk: that is the phase
-/// a real execution spends its time in, and it is where a client acts on one — polling it,
-/// and stopping it while it is still going. A span as short as the phases around it would
-/// leave an execution terminal before a client that polls every few seconds had read it
-/// once, so a stop could never reach a running execution. Stored as a due instant — nothing
-/// sleeps.
-pub const NOTEBOOK_RUN_SPAN: Duration = Duration::from_secs(20);
+/// The clock does not time the run itself: an execution leaves `RUNNING` when its notebook's
+/// run reports what it came to ([`NotebookExecutionRecord::record_outcome`]), so the phase
+/// lasts as long as the notebook really runs for. This is what is added on top of that, so
+/// `RUNNING` is observable — and a stop still reaches a running execution — even for a
+/// notebook whose cells answered before the walk had got there. It is one phase of the walk
+/// like the moves around it, which is why it is one [`NOTEBOOK_PHASE_SPAN`]. Stored as a due
+/// instant — nothing sleeps.
+pub const NOTEBOOK_RUN_SPAN: Duration = NOTEBOOK_PHASE_SPAN;
 
 /// How long the move OFF `status` takes: leaving `RUNNING` costs [`NOTEBOOK_RUN_SPAN`],
 /// every other move one [`NOTEBOOK_PHASE_SPAN`].
@@ -178,13 +179,17 @@ pub const NOTEBOOK_EXECUTION_STOP_PROGRESSION: &[&str] = &[
 /// The ONE reading of what a notebook execution's clock owes it next, so the walk to
 /// `RUNNING`, the end the run answered and the stop progression cannot drift apart from the
 /// statuses above.
+/// An execution whose own run has NOT answered yet owes nothing past `RUNNING`: it is "being
+/// processed by the cluster" until that run reports what it came to, which is why `outcome`
+/// is optional here.
 pub fn next_notebook_execution_status(
     status: &str,
-    outcome: &NotebookOutcome,
+    outcome: Option<&NotebookOutcome>,
 ) -> Option<&'static str> {
+    let end: &'static [&'static str] = outcome.map(NotebookOutcome::end_progression).unwrap_or(&[]);
     for progression in [
         NOTEBOOK_EXECUTION_PROGRESSION,
-        outcome.end_progression(),
+        end,
         NOTEBOOK_EXECUTION_STOP_PROGRESSION,
     ] {
         if let Some(position) = progression.iter().position(|step| *step == status) {
@@ -192,10 +197,11 @@ pub fn next_notebook_execution_status(
                 .get(position + 1)
                 .copied()
                 // The walk to `RUNNING` ends where the END the run answered begins: a
-                // notebook that ran finishes, one that failed or that nothing ran fails.
+                // notebook that ran finishes, one that failed or that nothing ran fails —
+                // and a run that has not answered yet ends nothing.
                 .or_else(|| {
                     (progression == NOTEBOOK_EXECUTION_PROGRESSION)
-                        .then(|| outcome.end_progression().first().copied())
+                        .then(|| end.first().copied())
                         .flatten()
                 });
         }
@@ -227,18 +233,22 @@ pub struct NotebookExecutionRecord {
     pub execution: NotebookExecution,
     pub pending_status: Option<PendingNotebookExecutionStatus>,
     /// What this execution's own run of the notebook came to, which is the END of its
-    /// status walk ([`NotebookOutcome`]).
-    pub outcome: NotebookOutcome,
+    /// status walk ([`NotebookOutcome`]) — and `None` while that run is still under way,
+    /// which is what holds the execution at `RUNNING`.
+    pub outcome: Option<NotebookOutcome>,
 }
 
 impl NotebookExecutionRecord {
     /// The execution `StartNotebookExecution` records for `input`, under the id and ARN
-    /// EMR minted for it, with `outcome` as what running its notebook came to.
+    /// EMR minted for it.
+    ///
+    /// The notebook's own run has not answered yet — the cluster has only RECEIVED the
+    /// request — so the record carries no outcome until that run reports one
+    /// ([`Self::record_outcome`]).
     pub fn from_request(
         id: String,
         arn: String,
         input: StartNotebookExecutionInput,
-        outcome: NotebookOutcome,
         now: SystemTime,
     ) -> Self {
         let mut record = Self {
@@ -283,16 +293,50 @@ impl NotebookExecutionRecord {
             // `START_PENDING` owes NOTHING — the execution then simply stays where it is,
             // rather than being defaulted into a status nothing took it to.
             pending_status: None,
-            outcome,
+            outcome: None,
         };
-        record.pending_status =
-            next_notebook_execution_status(notebook_execution_status::START_PENDING, &record.outcome)
-                .map(|next| PendingNotebookExecutionStatus {
-                    due: now + notebook_phase_span(notebook_execution_status::START_PENDING),
-                    status: next.to_string(),
-                    reason: record.phase_reason(next),
-                });
+        record.pending_status = next_notebook_execution_status(
+            notebook_execution_status::START_PENDING,
+            record.outcome.as_ref(),
+        )
+        .map(|next| PendingNotebookExecutionStatus {
+            due: now + notebook_phase_span(notebook_execution_status::START_PENDING),
+            status: next.to_string(),
+            reason: record.phase_reason(next),
+        });
         record
+    }
+
+    /// Record what this execution's OWN run of its notebook came to, and owe the execution
+    /// the end that run answered.
+    ///
+    /// The run happens off the `StartNotebookExecution` request path, so this is how its
+    /// answer reaches the record: an execution already at `RUNNING` — "being processed by
+    /// the cluster", which is where one waits for its run — is owed the first status of that
+    /// end one phase later, and one the clock has not walked to `RUNNING` yet picks the same
+    /// end up when it gets there ([`Self::advance_to`]). An execution a caller stopped, or
+    /// one that has already ended, keeps the status it is walking to: the stop abandoned
+    /// whatever the run still owed.
+    pub fn record_outcome(&mut self, outcome: NotebookOutcome, now: SystemTime) {
+        if self.outcome.is_some() {
+            return;
+        }
+        self.outcome = Some(outcome);
+        let status = self.execution.status.clone().unwrap_or_default();
+        if notebook_execution_status::TERMINAL.contains(&status.as_str())
+            || NOTEBOOK_EXECUTION_STOP_PROGRESSION.contains(&status.as_str())
+            || self.pending_status.is_some()
+        {
+            return;
+        }
+        if let Some(next) = next_notebook_execution_status(&status, self.outcome.as_ref()) {
+            let reason = self.phase_reason(next);
+            self.pending_status = Some(PendingNotebookExecutionStatus {
+                due: now + notebook_phase_span(&status),
+                status: next.to_string(),
+                reason,
+            });
+        }
     }
 
     /// Materialise every status the clock already made due, and nothing else.
@@ -318,7 +362,9 @@ impl NotebookExecutionRecord {
                 return;
             }
             // Whatever the phase that just landed owes next, one span later.
-            if let Some(next) = next_notebook_execution_status(&pending.status, &self.outcome) {
+            if let Some(next) =
+                next_notebook_execution_status(&pending.status, self.outcome.as_ref())
+            {
                 let reason = self.phase_reason(next);
                 self.pending_status = Some(PendingNotebookExecutionStatus {
                     due: pending.due + notebook_phase_span(&pending.status),
@@ -339,7 +385,10 @@ impl NotebookExecutionRecord {
             return Some(NOTEBOOK_STOPPED_REASON.to_string());
         }
         if NOTEBOOK_EXECUTION_FAILURE_PROGRESSION.contains(&status) {
-            return self.outcome.failure_reason();
+            return self
+                .outcome
+                .as_ref()
+                .and_then(NotebookOutcome::failure_reason);
         }
         None
     }
@@ -365,7 +414,7 @@ impl NotebookExecutionRecord {
         self.execution.last_state_change_reason = Some(NOTEBOOK_STOPPED_REASON.to_string());
         self.pending_status = next_notebook_execution_status(
             notebook_execution_status::STOP_PENDING,
-            &self.outcome,
+            self.outcome.as_ref(),
         )
         .map(|next| PendingNotebookExecutionStatus {
             due: now + notebook_phase_span(notebook_execution_status::STOP_PENDING),

@@ -3,7 +3,11 @@
 //! @op StartNotebookExecution
 //! Records a notebook execution against the cluster its `ExecutionEngine` names: mints
 //! an execution id, persists a [`crate::state::NotebookExecutionRecord`] built from the
-//! request in the shared engine, and answers with that id.
+//! request in the shared engine, and answers with that id — at `START_PENDING`, "the
+//! cluster has received the execution request but execution has not begun"
+//! (`NotebookExecution$Status` doc), so the notebook's own run happens OFF this request
+//! path ([`crate::state::start_notebook_run`]) and its answer reaches the execution's
+//! record when it is done.
 //! `DescribeNotebookExecution` and `ListNotebookExecutions` report the record this
 //! handler wrote. An `ExecutionEngine.Id` naming no cluster this service holds is
 //! refused as a bad REQUEST — the request-validation envelope, HTTP 400, naming no
@@ -190,7 +194,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .into());
         };
 
-        {
+        let (id, location, environment) = {
             let mut store = state.lock();
 
             // Every transition the clock already made due is materialised before the store
@@ -226,12 +230,31 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 )
                 .into());
             }
-        }
 
-        // The notebook itself: fetched out of Amazon S3 and RUN, with NO store guard held.
-        // Three things bound what a request can make this process do here, and the module
-        // that performs it states each of them where it enforces them
-        // ([`crate::state::run_notebook`]):
+            // The execution is recorded under the id EMR mints for it, at the status the
+            // model names for a request the cluster has only just received: "START_PENDING
+            // indicates that the cluster has received the execution request but execution
+            // has not begun" (`NotebookExecution$Status` doc). Nothing of the notebook has
+            // run at this point, which is exactly what that status says.
+            let id = store.mint_notebook_execution_id();
+            let arn = crate::state::notebook_execution_arn(&region, &id);
+            // The two halves of the request a run reaches: the object to read and the
+            // environment the cells see. Taken before the request is recorded, since the
+            // record is built from the request itself.
+            let location = input.notebook_s3_location.clone();
+            let environment = input.environment_variables.clone();
+            let record = NotebookExecutionRecord::from_request(id.clone(), arn, input, now);
+            store.notebook_executions.insert(id.clone(), record);
+            (id, location, environment)
+        };
+
+        // The notebook itself: fetched out of Amazon S3 and RUN, OFF this request path and
+        // with no store guard held. The call above has already answered for the cluster
+        // having received the request, so the run happens after it and its answer reaches
+        // the execution's record when it is done — which is what the execution's status walk
+        // then ends in. Three things bound what a request can make this process do here, and
+        // the module that performs it states each of them where it enforces them
+        // ([`crate::state::start_notebook_run`]):
         //
         // * WHAT is fetched: an object of THIS emulator's own Amazon S3 store, addressed by
         //   the `NotebookS3Location` bucket and key alone. Nothing of the request becomes a
@@ -249,26 +272,16 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         //   `EnvironmentVariables`, which is why that map is the only other thing passed in.
         // * WHAT it may cost: the object is capped before and after it is read, the cells are
         //   counted, the runs this process performs at once are a bounded pool, the run has a
-        //   thread and a stack of its own rather than the async executor's, and this call
-        //   waits no longer than the run's own wall clock and the grace on top of it.
-        //
-        // What it ANSWERS is the end of the execution's status walk, so it is settled before
-        // the execution is recorded and every later read of that execution reports the same
-        // outcome.
-        let outcome = crate::state::run_notebook(
+        //   thread and a stack of its own rather than the async executor's, and it is waited
+        //   for no longer than the run's own wall clock and the grace on top of it.
+        crate::state::start_notebook_run(
             ctx,
+            &self.engine,
             &region,
-            input.notebook_s3_location.as_ref(),
-            input.environment_variables.as_ref(),
-        )
-        .await;
-
-        let mut store = state.lock();
-        let id = store.mint_notebook_execution_id();
-        let arn = crate::state::notebook_execution_arn(&region, &id);
-        let record = NotebookExecutionRecord::from_request(id.clone(), arn, input, outcome, now);
-        store.notebook_executions.insert(id.clone(), record);
-        drop(store);
+            id.clone(),
+            location,
+            environment,
+        );
 
         Ok(StartNotebookExecutionOutput {
             notebook_execution_id: Some(id),

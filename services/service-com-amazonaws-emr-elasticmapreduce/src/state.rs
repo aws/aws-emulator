@@ -1386,10 +1386,12 @@ pub const CLUSTER_STEPS_COMPLETED_WITH_ERRORS_REASON: &str = "Steps completed wi
 /// How long each phase of a notebook execution's status progression lasts
 /// ([`NOTEBOOK_EXECUTION_PROGRESSION`]).
 ///
-/// CHOSEN, not documented: a real execution takes as long as its notebook does. Two
-/// seconds per phase, so a client that polls `DescribeNotebookExecution` observes the
-/// phases the model names on the way rather than only the status the execution ended in.
-/// Stored as a due instant — nothing sleeps.
+/// CHOSEN, not documented: a real execution takes as long as its notebook does, and here the
+/// notebook's own run is what the `RUNNING` phase waits for, so the clock only paces the
+/// moves AROUND that run. Two seconds per move, so a client that polls
+/// `DescribeNotebookExecution` observes the phases the model names on the way rather than
+/// only the status the execution ended in, and the whole walk still settles well inside one
+/// poll of a client that polls seconds apart. Stored as a due instant — nothing sleeps.
 pub const NOTEBOOK_PHASE_SPAN: Duration = Duration::from_secs(2);
 
 /// `ListClusters` page size: "This call returns a maximum of 50 clusters in unsorted
@@ -1781,6 +1783,12 @@ pub struct ComAmazonawsEmrElasticmapreduceState {
     /// The running pump's task handle, kept so the pump it replaces is aborted rather
     /// than merely forgotten.
     cluster_clock_pump: Option<::tokio::task::JoinHandle<()>>,
+    /// The task each notebook execution's own run is performed by, per execution id
+    /// ([`start_notebook_run`]), kept so a run can be ABANDONED rather than merely
+    /// forgotten: a caller that stops an execution stops its run with it. An entry goes
+    /// when the run answers or when it is abandoned, so this holds no more entries than
+    /// there are executions ([`MAX_NOTEBOOK_EXECUTIONS`]).
+    notebook_runs: BTreeMap<String, ::tokio::task::JoinHandle<()>>,
 }
 
 /// The account's default configuration is in place before any caller puts one, so the
@@ -1811,6 +1819,7 @@ impl Default for ComAmazonawsEmrElasticmapreduceState {
             cluster_clock_pump_running: false,
             cluster_clock_pump_generation: 0,
             cluster_clock_pump: None,
+            notebook_runs: BTreeMap::new(),
         }
     }
 }
