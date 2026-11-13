@@ -31,6 +31,20 @@ pub struct ManagedRuleGroupDescriptor {
     /// The WCUs a web ACL spends on one rule that runs this group; see
     /// [`web_acl_capacity`].
     pub capacity: i64,
+    /// What the group's publisher says it does, in the words it publishes for the
+    /// CATALOGUE entry — `ManagedRuleGroupSummary$Description` is "the description
+    /// of the managed rule group, provided by Amazon Web Services Managed Rules or
+    /// the Amazon Web Services Marketplace seller who manages it", so the text is
+    /// the publisher's and is FIXED per group rather than generated.
+    ///
+    /// Carried beside [`Self::product_description`] rather than shared with it,
+    /// because the two members the model declares are two different published
+    /// texts: this one is the catalogue entry's description
+    /// (`EntityDescription`), and the product entry asks for "a SHORT description
+    /// of the managed rule group" (`ManagedProductDescriptor$ProductDescription`),
+    /// which is the one-line summary a product listing carries. A publisher that
+    /// states both states them separately, so neither is derived from the other.
+    pub description: &'static str,
     /// The group's display name (`ManagedProductDescriptor$ProductTitle` is "the
     /// display name for the managed rule group"), as the WAF Developer Guide's
     /// rule-group list titles it beside its `Name`.
@@ -72,6 +86,19 @@ pub struct ManagedRuleGroupDescriptor {
     /// catalogued group offers at least its initial version (see
     /// [`MANAGED_RULE_GROUP_CATALOGUE`]).
     pub versions: &'static [ManagedRuleGroupRelease],
+    /// The version its vendor currently sets as this group's DEFAULT, when that is
+    /// not simply the newest version it offers.
+    ///
+    /// `ListAvailableManagedRuleGroupVersionsResponse$CurrentDefaultVersion` is
+    /// "the name of the version that's currently set as the default", which is the
+    /// version a `ManagedRuleGroupStatement` that pins none runs: a property the
+    /// VENDOR publishes per group, and not the same thing as the version it
+    /// released last — a vendor that keeps a long version ladder on offer can hold
+    /// the default at an earlier version so that statements pinning nothing do not
+    /// move with every release. `None` means the vendor's default is the newest
+    /// version on offer, which is what a group with one version on offer has; see
+    /// [`Self::current_default_version`].
+    pub default_version: Option<&'static str>,
     /// The versions of this group its vendor has RETIRED, oldest first: ones it
     /// published and has since stopped offering.
     ///
@@ -110,18 +137,49 @@ pub struct ManagedRuleGroupDescriptor {
 }
 
 impl ManagedRuleGroupDescriptor {
-    /// The version of this group that is currently the default: the NEWEST version
-    /// its vendor offers.
+    /// The version of this group that is currently the default: the one its vendor
+    /// publishes as such ([`Self::default_version`]), and otherwise the NEWEST
+    /// version it offers.
     ///
     /// `ListAvailableManagedRuleGroupVersionsResponse$CurrentDefaultVersion` is
     /// "the name of the version that's currently set as the default", and
     /// `DescribeManagedRuleGroup$VersionName` says WAF "uses the vendor's default
     /// version" when a request names none. The catalogue keeps each group's
-    /// versions in release order, so its default is the last of them: a group gains
-    /// a default by being versioned, and gains a new one when a newer version is
-    /// published, with no second field to fall out of step with the list.
+    /// versions in release order, so a group whose vendor publishes no default of
+    /// its own defaults to the last of them — which is every group that keeps one
+    /// version on offer.
     pub fn current_default_version(&self) -> Option<&'static str> {
-        self.versions.last().map(|release| release.name)
+        self.default_version
+            .or_else(|| self.versions.last().map(|release| release.name))
+    }
+
+    /// The versions this group's vendor offers, NEWEST first: the order
+    /// `ListAvailableManagedRuleGroupVersions` reports them in, which is the
+    /// reverse of the release order the catalogue stores them in.
+    ///
+    /// A caller enumerates this list to pick a version to pin, and the newest is
+    /// what it is offered first; `NextMarker` is "the marker from the prior call",
+    /// the name of the last version of the page it hands back, so paging walks the
+    /// ladder from the newest version down to the oldest one still offered.
+    pub fn versions_newest_first(&self) -> Vec<&'static ManagedRuleGroupRelease> {
+        self.versions.iter().rev().collect()
+    }
+
+    /// This entry with `versions` on offer, `expired_versions` retired and
+    /// `default_version` published as the vendor's default — the version ladder of
+    /// a group whose publisher states one, replacing what the constructor assumed.
+    pub(super) const fn offering(
+        self,
+        versions: &'static [ManagedRuleGroupRelease],
+        expired_versions: &'static [ManagedRuleGroupRelease],
+        default_version: &'static str,
+    ) -> Self {
+        Self {
+            versions,
+            expired_versions,
+            default_version: Some(default_version),
+            ..self
+        }
     }
 
     /// This published group as the managed PRODUCT a describe reports it.
@@ -486,11 +544,14 @@ impl ManagedRuleGroupRelease {
 /// Each entry also carries the VERSIONS its vendor offers of that group (see
 /// [`ManagedRuleGroupDescriptor::versions`]), oldest first: every published group
 /// offers at least its initial version, which is what
-/// `ListAvailableManagedRuleGroupVersions` lists and what
-/// [`ManagedRuleGroupDescriptor::current_default_version`] answers the newest of.
+/// `ListAvailableManagedRuleGroupVersions` lists newest first, and the version its
+/// vendor sets as the default among them
+/// ([`ManagedRuleGroupDescriptor::current_default_version`]).
 ///
-/// And it carries what the group is PUBLISHED as — its display title and its
-/// one-sentence description, from the same list as its name and capacity, the slug
+/// And it carries what the group is PUBLISHED as — the description its publisher
+/// states for the catalogue entry
+/// ([`ManagedRuleGroupDescriptor::description`]), its display title and the
+/// one-line summary its managed product carries, the slug
 /// its labels live under ([`ManagedRuleGroupDescriptor::label_slug`]) and the labels
 /// its rules add and match ([`PublishedManagedRule`]), plus the
 /// two flags that list implies (see [`descriptor`], [`unversioned`] and
@@ -502,16 +563,28 @@ pub const MANAGED_RULE_GROUP_CATALOGUE: &[ManagedRuleGroupDescriptor] = &[
         "AWSManagedRulesCommonRuleSet",
         "core-rule-set",
         700,
+        "Contains rules that are generally applicable to web applications. This \
+         provides protection against exploitation of a wide range of \
+         vulnerabilities, including those described in OWASP publications.",
         "Core rule set (CRS)",
         "Provides protection against exploitation of a wide range of \
          vulnerabilities, including high risk and commonly occurring \
          vulnerabilities described in OWASP publications.",
         COMMON_RULE_SET_RULES,
+    )
+    .offering(
+        COMMON_RULE_SET_VERSIONS,
+        COMMON_RULE_SET_RETIRED_VERSIONS,
+        COMMON_RULE_SET_DEFAULT_VERSION,
     ),
     descriptor(
         "AWSManagedRulesAdminProtectionRuleSet",
         "admin-protection",
         100,
+        "Contains rules that allow you to block external access to exposed admin \
+         pages. This may be useful if you are running third-party software or \
+         would like to reduce the risk of a malicious actor gaining \
+         administrative access to your application.",
         "Admin protection",
         "Blocks external access to exposed administrative pages.",
         ADMIN_PROTECTION_RULES,
@@ -520,6 +593,10 @@ pub const MANAGED_RULE_GROUP_CATALOGUE: &[ManagedRuleGroupDescriptor] = &[
         "AWSManagedRulesKnownBadInputsRuleSet",
         "known-bad-inputs",
         200,
+        "Contains rules that allow you to block request patterns that are known to \
+         be invalid and are associated with exploitation or discovery of \
+         vulnerabilities. This can help reduce the risk of a malicious actor \
+         discovering a vulnerable application.",
         "Known bad inputs",
         "Blocks request patterns that are known to be invalid and are associated \
          with exploitation or discovery of vulnerabilities.",
@@ -529,6 +606,9 @@ pub const MANAGED_RULE_GROUP_CATALOGUE: &[ManagedRuleGroupDescriptor] = &[
         "AWSManagedRulesSQLiRuleSet",
         "sql-database",
         200,
+        "Contains rules that allow you to block request patterns associated with \
+         exploitation of SQL databases, like SQL injection attacks. This can help \
+         prevent remote injection of unauthorized queries.",
         "SQL database",
         "Blocks request patterns associated with the exploitation of SQL \
          databases, like SQL injection attacks.",
@@ -538,6 +618,10 @@ pub const MANAGED_RULE_GROUP_CATALOGUE: &[ManagedRuleGroupDescriptor] = &[
         "AWSManagedRulesLinuxRuleSet",
         "linux-os",
         200,
+        "Contains rules that block request patterns associated with exploitation \
+         of vulnerabilities specific to Linux, including LFI attacks. This can \
+         help prevent attacks that expose file contents or execute code for which \
+         the attacker should not have had access.",
         "Linux operating system",
         "Blocks request patterns associated with the exploitation of \
          vulnerabilities specific to Linux, including Linux-specific local file \
@@ -548,6 +632,10 @@ pub const MANAGED_RULE_GROUP_CATALOGUE: &[ManagedRuleGroupDescriptor] = &[
         "AWSManagedRulesUnixRuleSet",
         "posix-os",
         100,
+        "Contains rules that block request patterns associated with exploiting \
+         vulnerabilities specific to POSIX/POSIX-like OS, including LFI attacks. \
+         This can help prevent attacks that expose file contents or execute code \
+         for which the attacker should not have had access.",
         "POSIX operating system",
         "Blocks request patterns associated with the exploitation of \
          vulnerabilities specific to POSIX and POSIX-like operating systems.",
@@ -557,6 +645,10 @@ pub const MANAGED_RULE_GROUP_CATALOGUE: &[ManagedRuleGroupDescriptor] = &[
         "AWSManagedRulesWindowsRuleSet",
         "windows-os",
         200,
+        "Contains rules that block request patterns associated with exploiting \
+         vulnerabilities specific to Windows, (e.g., PowerShell commands). This \
+         can help prevent exploits that allow attacker to run unauthorized \
+         commands or execute malicious code.",
         "Windows operating system",
         "Blocks request patterns associated with the exploitation of \
          vulnerabilities specific to Windows, like remote execution of PowerShell \
@@ -567,6 +659,11 @@ pub const MANAGED_RULE_GROUP_CATALOGUE: &[ManagedRuleGroupDescriptor] = &[
         "AWSManagedRulesPHPRuleSet",
         "php-app",
         100,
+        "Contains rules that block request patterns associated with exploiting \
+         vulnerabilities specific to the use of the PHP programming language, \
+         including injection of unsafe PHP functions. This can help prevent \
+         exploits that allow an attacker to remotely execute code or commands for \
+         which they are not authorized.",
         "PHP application",
         "Blocks request patterns associated with the exploitation of \
          vulnerabilities specific to the use of the PHP programming language, \
@@ -577,6 +674,9 @@ pub const MANAGED_RULE_GROUP_CATALOGUE: &[ManagedRuleGroupDescriptor] = &[
         "AWSManagedRulesWordPressRuleSet",
         "wordpress-app",
         100,
+        "The WordPress Applications group contains rules that block request \
+         patterns associated with the exploitation of vulnerabilities specific to \
+         WordPress sites.",
         "WordPress application",
         "Blocks request patterns associated with the exploitation of \
          vulnerabilities specific to WordPress sites.",
@@ -586,6 +686,9 @@ pub const MANAGED_RULE_GROUP_CATALOGUE: &[ManagedRuleGroupDescriptor] = &[
         "AWSManagedRulesAmazonIpReputationList",
         "amazon-ip-list",
         25,
+        "This group contains rules that are based on Amazon threat intelligence. \
+         This is useful if you would like to block sources associated with bots \
+         or other threats.",
         "Amazon IP reputation list",
         "Blocks requests from sources that Amazon threat intelligence associates \
          with bots or other threats.",
@@ -595,6 +698,11 @@ pub const MANAGED_RULE_GROUP_CATALOGUE: &[ManagedRuleGroupDescriptor] = &[
         "AWSManagedRulesAnonymousIpList",
         "anonymous-ip-list",
         50,
+        "This group contains rules that allow you to block requests from services \
+         that permit the obfuscation of viewer identity. This can include \
+         requests originating from VPNs, proxies, Tor nodes, and hosting \
+         providers. This is useful if you want to filter out viewers that may be \
+         trying to hide their identity from your application.",
         "Anonymous IP list",
         "Blocks requests from services that permit the obfuscation of viewer \
          identity, such as VPNs, proxies, Tor nodes and hosting providers.",
@@ -606,6 +714,11 @@ pub const MANAGED_RULE_GROUP_CATALOGUE: &[ManagedRuleGroupDescriptor] = &[
         50,
         BOT_CONTROL_VERSIONS,
         NO_RETIRED_VERSIONS,
+        "Provides protection against automated bots that can consume excess \
+         resources, skew business metrics, cause downtime, or perform malicious \
+         activities. Bot Control provides additional visibility through Amazon \
+         CloudWatch and generates labels that you can use to control bot traffic \
+         to your applications.",
         "Bot Control",
         "Provides visibility into and control over bot traffic, including common \
          desirable bots and the targeted detection of self-identifying and \
@@ -619,6 +732,12 @@ pub const MANAGED_RULE_GROUP_CATALOGUE: &[ManagedRuleGroupDescriptor] = &[
         50,
         ATP_VERSIONS,
         ATP_RETIRED_VERSIONS,
+        "Provides protection for your login page against stolen credentials, \
+         credential stuffing attacks, brute force login attempts, and other \
+         anomalous login activities. With AWS WAF Fraud Control account takeover \
+         prevention (ATP), you can prevent unauthorized access that might lead to \
+         fraudulent activities, or inform legitimate users to take a preventive \
+         action.",
         "Account takeover prevention",
         "Detects and manages requests that are part of malicious account takeover \
          attempts against your login pages.",
@@ -631,6 +750,10 @@ pub const MANAGED_RULE_GROUP_CATALOGUE: &[ManagedRuleGroupDescriptor] = &[
         50,
         ACFP_VERSIONS,
         NO_RETIRED_VERSIONS,
+        "Provides protection against the creation of fraudulent accounts on your \
+         site. Fraudulent accounts can be used for activities such as abusing \
+         promotion and sign-up bonuses, impersonating someone, and to carry out \
+         phishing and spam attacks.",
         "Account creation fraud prevention",
         "Detects and manages requests that are part of malicious account creation \
          attempts against your account registration pages.",
@@ -643,6 +766,10 @@ pub const MANAGED_RULE_GROUP_CATALOGUE: &[ManagedRuleGroupDescriptor] = &[
         50,
         ANTI_DDOS_VERSIONS,
         NO_RETIRED_VERSIONS,
+        "Provides protection against distributed denial of service (DDoS) events. \
+         This rule group contains rules that detect requests that are \
+         contributing to a DDoS event against your protected resources and \
+         challenge or block them.",
         "Anti-DDoS",
         "Detects and manages requests that are part of a distributed \
          denial-of-service event against your protected resources.",
@@ -685,6 +812,65 @@ pub(super) const RETIRED_INITIAL_VERSION: &[ManagedRuleGroupRelease] =
 /// The retired versions of a group whose vendor has expired none of what it
 /// published: every version it ever named is still on offer.
 pub(super) const NO_RETIRED_VERSIONS: &[ManagedRuleGroupRelease] = &[];
+
+/// The versions offered of `AWSManagedRulesCommonRuleSet`, oldest first.
+///
+/// A vendor that revises a rule set keeps the versions it has published ON OFFER
+/// rather than only its latest one — `ManagedRuleGroupStatement$Version` pins one
+/// "until you change it", so every version a web ACL may still be pinned to has to
+/// stay listable — and the ladder therefore grows with each release and has GAPS
+/// where the vendor has since retired one ([`COMMON_RULE_SET_RETIRED_VERSIONS`]).
+/// This is the ladder this catalogue publishes for the core rule set, which is the
+/// group whose version history WAF publishes the longest of.
+///
+/// The instant on each release is the one THIS catalogue publishes as that
+/// version's last update — stable per version, and ordered with the list — because
+/// a vendor's own update instants are not something this emulator can know; what is
+/// published about a version is that it is on offer and carries an update instant
+/// of its own (`ManagedRuleGroupVersion$LastUpdateTimestamp`).
+pub(super) const COMMON_RULE_SET_VERSIONS: &[ManagedRuleGroupRelease] = &[
+    release("Version_1.0", "2019-11-25T00:00:00Z"),
+    release("Version_1.1", "2021-03-23T00:00:00Z"),
+    release("Version_1.3", "2021-06-14T00:00:00Z"),
+    release("Version_1.4", "2021-09-27T00:00:00Z"),
+    release("Version_1.6", "2022-01-24T00:00:00Z"),
+    release("Version_1.7", "2022-04-11T00:00:00Z"),
+    release("Version_1.8", "2022-07-18T00:00:00Z"),
+    release("Version_1.9", "2022-10-24T00:00:00Z"),
+    release("Version_1.10", "2023-01-23T00:00:00Z"),
+    release("Version_1.11", "2023-04-17T00:00:00Z"),
+    release("Version_1.12", "2023-07-24T00:00:00Z"),
+    release("Version_1.14", "2023-10-23T00:00:00Z"),
+    release("Version_1.15", "2024-01-22T00:00:00Z"),
+    release("Version_1.16", "2024-04-15T00:00:00Z"),
+    release("Version_1.17", "2024-07-22T00:00:00Z"),
+    release("Version_1.18", "2024-10-21T00:00:00Z"),
+    release("Version_1.19", "2025-01-27T00:00:00Z"),
+    release("Version_1.20", "2025-04-21T00:00:00Z"),
+    release("Version_1.21", "2025-07-21T00:00:00Z"),
+    release("Version_1.22", "2025-10-20T00:00:00Z"),
+];
+
+/// The versions of `AWSManagedRulesCommonRuleSet` its vendor has RETIRED, oldest
+/// first: the ones missing from [`COMMON_RULE_SET_VERSIONS`].
+///
+/// A retired version is pruned from what the vendor OFFERS while staying KNOWN to
+/// the describe (see [`ManagedRuleGroupDescriptor::expired_versions`]), so the gaps
+/// in a published ladder are exactly the versions a pinning caller is told to roll
+/// forward from — rather than names nobody published.
+pub(super) const COMMON_RULE_SET_RETIRED_VERSIONS: &[ManagedRuleGroupRelease] = &[
+    release("Version_1.2", "2021-04-26T00:00:00Z"),
+    release("Version_1.5", "2021-11-15T00:00:00Z"),
+    release("Version_1.13", "2023-08-21T00:00:00Z"),
+];
+
+/// The version its vendor currently publishes as the core rule set's DEFAULT.
+///
+/// Not the newest version on offer: a vendor holds the default of a long-lived rule
+/// set at an earlier version so that a `ManagedRuleGroupStatement` pinning none
+/// keeps running the same rules as new versions are published. See
+/// [`ManagedRuleGroupDescriptor::default_version`].
+pub(super) const COMMON_RULE_SET_DEFAULT_VERSION: &str = "Version_1.1";
 
 /// The versions offered of `AWSManagedRulesBotControlRuleSet`, oldest first.
 ///
@@ -741,6 +927,7 @@ pub(super) const fn descriptor(
     name: &'static str,
     label_slug: &'static str,
     capacity: i64,
+    description: &'static str,
     product_title: &'static str,
     product_description: &'static str,
     rules: &'static [PublishedManagedRule],
@@ -750,11 +937,13 @@ pub(super) const fn descriptor(
         name,
         label_slug,
         capacity,
+        description,
         product_title,
         product_description,
         is_versioning_supported: true,
         is_advanced_managed_rule_set: false,
         versions: CURRENT_VERSION_ONLY,
+        default_version: None,
         expired_versions: RETIRED_INITIAL_VERSION,
         rules,
         token_labels: NO_TOKEN_LABELS,
@@ -781,6 +970,7 @@ pub(super) const fn unversioned(
     name: &'static str,
     label_slug: &'static str,
     capacity: i64,
+    description: &'static str,
     product_title: &'static str,
     product_description: &'static str,
     rules: &'static [PublishedManagedRule],
@@ -790,11 +980,13 @@ pub(super) const fn unversioned(
         name,
         label_slug,
         capacity,
+        description,
         product_title,
         product_description,
         is_versioning_supported: false,
         is_advanced_managed_rule_set: false,
         versions: CURRENT_VERSION_ONLY,
+        default_version: None,
         expired_versions: RETIRED_INITIAL_VERSION,
         rules,
         token_labels: NO_TOKEN_LABELS,
@@ -818,6 +1010,7 @@ pub(super) const fn advanced(
     capacity: i64,
     versions: &'static [ManagedRuleGroupRelease],
     expired_versions: &'static [ManagedRuleGroupRelease],
+    description: &'static str,
     product_title: &'static str,
     product_description: &'static str,
     rules: &'static [PublishedManagedRule],
@@ -828,11 +1021,13 @@ pub(super) const fn advanced(
         name,
         label_slug,
         capacity,
+        description,
         product_title,
         product_description,
         is_versioning_supported: true,
         is_advanced_managed_rule_set: true,
         versions,
+        default_version: None,
         expired_versions,
         rules,
         token_labels,

@@ -4,10 +4,10 @@
 //!
 //! The rule asserted here: `ListAvailableManagedRuleGroupVersions` reports, for the
 //! `(VendorName, Name)` pair a request names, the versions that pair's vendor
-//! offers — in published order, one page of at most `Limit` of them at a time,
-//! resumed after `NextMarker` — beside the name of the newest, which is the version
-//! currently set as the default. A pair no vendor publishes names nothing that
-//! exists. The versions come from the service's own managed-rule-group catalogue
+//! offers — newest first, one page of at most `Limit` of them at a time, resumed
+//! after `NextMarker` — beside the name of the version its vendor currently sets as
+//! the default. A pair no vendor publishes names nothing that exists. The versions
+//! come from the service's own managed-rule-group catalogue
 //! (`service_…::state::MANAGED_RULE_GROUP_CATALOGUE`), the same catalogue that
 //! decides whether a `ManagedRuleGroupStatement` names a group that exists, so
 //! every expectation below is composed FROM that catalogue rather than written as a
@@ -52,9 +52,9 @@ fn most_versioned_group() -> &'static ManagedRuleGroupDescriptor {
         .expect("the catalogue publishes at least one group")
 }
 
-/// Every group the catalogue publishes answers exactly the versions it offers, in
-/// published order, with each version's `LastUpdateTimestamp` and the newest as
-/// `CurrentDefaultVersion` — and answers the same in either scope, because the
+/// Every group the catalogue publishes answers exactly the versions it offers,
+/// NEWEST first, with each version's `LastUpdateTimestamp` and the vendor's default
+/// as `CurrentDefaultVersion` — and answers the same in either scope, because the
 /// versions on offer are the vendor's and a scope is only the namespace the
 /// request is made in.
 ///
@@ -74,7 +74,7 @@ async fn every_catalogued_group_answers_the_versions_it_offers() {
                 .await;
 
             let expected: Vec<String> = group
-                .versions
+                .versions_newest_first()
                 .iter()
                 .map(|release| release.name.to_string())
                 .collect();
@@ -85,13 +85,13 @@ async fn every_catalogued_group_answers_the_versions_it_offers() {
             assert_eq!(
                 listed_names(&response),
                 expected,
-                "case {case:?}: expected the offered versions {expected:?}, got {response}"
+                "case {case:?}: expected the offered versions newest first \
+                 {expected:?}, got {response}"
             );
             assert_eq!(
                 response["CurrentDefaultVersion"],
                 json!(group.current_default_version()),
-                "case {case:?}: expected the newest offered version as the current \
-                 default, got {response}"
+                "case {case:?}: expected the vendor's default version, got {response}"
             );
             assert_eq!(
                 response["NextMarker"],
@@ -103,7 +103,7 @@ async fn every_catalogued_group_answers_the_versions_it_offers() {
             // Each version reports WHEN its vendor last updated it, as the instant
             // the catalogue publishes for that version — awsJson1_1 renders a
             // `Timestamp` as epoch seconds.
-            for (index, release) in group.versions.iter().enumerate() {
+            for (index, release) in group.versions_newest_first().iter().enumerate() {
                 let expected_secs = release
                     .last_update_timestamp()
                     .unwrap_or_else(|| {
@@ -136,7 +136,7 @@ async fn offered_versions_page_by_limit_and_next_marker() {
     let waf = Waf::new();
     let group = most_versioned_group();
     let all_names: Vec<String> = group
-        .versions
+        .versions_newest_first()
         .iter()
         .map(|release| release.name.to_string())
         .collect();
@@ -191,7 +191,7 @@ async fn offered_versions_page_by_limit_and_next_marker() {
         assert_eq!(
             seen, all_names,
             "case {case:?}: paging must enumerate every offered version exactly once, \
-             in published order"
+             newest first"
         );
         assert_eq!(
             pages,
@@ -354,13 +354,15 @@ async fn reading_the_offered_versions_changes_nothing() {
         "two identical reads must answer identically, got {first} then {second}"
     );
 
-    // The marker of the LAST page names the newest version, so nothing follows it;
-    // a marker naming no offered version at all is the same empty answer.
-    let last_offered = group
-        .current_default_version()
-        .expect("the group offers a version");
+    // The marker of the LAST page names the OLDEST version still offered, so nothing
+    // follows it; a marker naming no offered version at all is the same empty answer.
+    let last_listed = group
+        .versions
+        .first()
+        .expect("the group offers a version")
+        .name;
     for (case, marker) in [
-        ("the marker of the last page", last_offered.to_string()),
+        ("the marker of the last page", last_listed.to_string()),
         ("a version no vendor offers", "Version_999.0".to_string()),
     ] {
         let mut exhausted = body.clone();
@@ -439,7 +441,8 @@ async fn every_offered_version_can_be_pinned_by_a_web_acl_rule() {
 
 /// The catalogue's own invariants, which every expectation above composes itself
 /// from: each group offers at least one version, names them uniquely, dates each
-/// of them readably and in release order, and its default is the newest.
+/// of them readably and in release order, and its default is one of the versions it
+/// offers — the newest, for a group whose vendor publishes no default of its own.
 #[test]
 fn the_published_catalogue_is_well_formed() {
     for group in MANAGED_RULE_GROUP_CATALOGUE {
@@ -486,11 +489,31 @@ fn the_published_catalogue_is_well_formed() {
             }
             previous = Some(release);
         }
-        assert_eq!(
-            group.current_default_version(),
-            group.versions.last().map(|release| release.name),
-            "case {case:?}: the current default is the newest offered version"
+        let default = group
+            .current_default_version()
+            .expect("a published group offers a version");
+        assert!(
+            group
+                .versions
+                .iter()
+                .any(|release| release.name == default),
+            "case {case:?}: the current default {default:?} must be a version the \
+             group offers"
         );
+        assert_eq!(
+            group.default_version.unwrap_or(default),
+            default,
+            "case {case:?}: a group whose vendor publishes a default reports that \
+             one, and one that does not reports its newest offered version"
+        );
+        if group.default_version.is_none() {
+            assert_eq!(
+                Some(default),
+                group.versions.last().map(|release| release.name),
+                "case {case:?}: with no published default the newest offered version \
+                 is the default"
+            );
+        }
     }
 }
 

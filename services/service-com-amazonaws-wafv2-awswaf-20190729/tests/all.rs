@@ -97,6 +97,8 @@ mod overridden_group_rule_names;
 mod parameter_validation;
 #[path = "all/permission_policy.rs"]
 mod permission_policy;
+#[path = "all/published_managed_rule_catalog.rs"]
+mod published_managed_rule_catalog;
 #[path = "all/rate_based_statement_managed_keys.rs"]
 mod rate_based_statement_managed_keys;
 #[path = "all/rate_based_window_recovery.rs"]

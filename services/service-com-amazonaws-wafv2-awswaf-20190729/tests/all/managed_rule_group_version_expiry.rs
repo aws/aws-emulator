@@ -389,9 +389,9 @@ fn the_published_version_history_is_well_formed() {
             "case {case:?}: a published group keeps a version on offer"
         );
 
-        let oldest_offered = group
+        let newest_offered = group
             .versions
-            .first()
+            .last()
             .and_then(ManagedRuleGroupRelease::last_update_timestamp)
             .unwrap_or_else(|| panic!("case {case:?}: an offered version must be dated"))
             .as_secs_f64();
@@ -431,11 +431,15 @@ fn the_published_version_history_is_well_formed() {
                 );
             }
             previous = Some(release);
-            // A retired version is one an offered version superseded.
+            // A retired version is one a LATER version superseded: it sits somewhere
+            // in the published ladder, so it predates the newest version on offer
+            // without having to predate every one of them — a vendor retires a
+            // version in the middle of its ladder, which is what leaves the gaps a
+            // published history has.
             assert!(
-                at < oldest_offered,
-                "case {case:?}: the retired {:?} must predate every version still \
-                 offered, got {at} and {oldest_offered}",
+                at < newest_offered,
+                "case {case:?}: the retired {:?} must predate the newest version \
+                 still offered, got {at} and {newest_offered}",
                 release.name
             );
             assert_eq!(

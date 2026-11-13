@@ -322,6 +322,30 @@ fn capacity_cases() -> Vec<CapacityCase> {
             )]),
             expected: SQLI_WCU,
         },
+        CapacityCase {
+            case: "two managed rule groups beside two rules of other kinds",
+            // `ordered` assigns each rule its position as `Priority`, which is what
+            // makes the four priorities distinct; the numbers passed to
+            // `group_running_rule` below are the positions it will set anyway.
+            rules: ordered(json!([
+                group_running_rule(
+                    "core",
+                    0,
+                    aws_managed_statement("AWSManagedRulesCommonRuleSet")
+                ),
+                group_running_rule(
+                    "reputation",
+                    1,
+                    aws_managed_statement("AWSManagedRulesAmazonIpReputationList")
+                ),
+                rule("scan", byte_match_statement()),
+                rule("rate", rate_based_statement(false)),
+            ])),
+            expected: catalogued("AWSManagedRulesCommonRuleSet").capacity
+                + catalogued("AWSManagedRulesAmazonIpReputationList").capacity
+                + BYTE_MATCH_WCU
+                + RATE_BASED_WCU,
+        },
     ]
 }
 

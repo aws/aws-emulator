@@ -238,9 +238,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 versioning_supported: group.is_versioning_supported,
                 // "The description of the managed rule group, provided by Amazon Web
                 // Services Managed Rules or the Amazon Web Services Marketplace
-                // seller who manages it" — the group's published description, the
-                // same one `ManagedProductDescriptor$ProductDescription` carries.
-                description: Some(group.product_description.to_string()),
+                // seller who manages it" — the text the group's publisher states
+                // for its catalogue entry, carried per group
+                // (`crate::state::ManagedRuleGroupDescriptor::description`) and
+                // reported verbatim; it is not the one-line summary a managed
+                // product carries (`ProductDescription`).
+                description: Some(group.description.to_string()),
             })
             .collect();
 

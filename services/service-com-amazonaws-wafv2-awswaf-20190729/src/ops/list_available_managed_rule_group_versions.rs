@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op ListAvailableManagedRuleGroupVersions
-//! Answers the versions the VENDOR of a managed rule group offers of it, one page
-//! at a time, beside the name of the version that is currently the default.
+//! Answers the versions the VENDOR of a managed rule group offers of it, newest
+//! first, one page at a time, beside the name of the version that is currently the
+//! default.
 //!
 //! A managed rule group is published by its vendor and identified by its
 //! `(VendorName, Name)` pair; it is not a resource of this account, so the versions
@@ -238,21 +239,26 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             ListAvailableManagedRuleGroupVersionsErrorModeled::WAFInvalidParameterException,
         )?;
 
+        // WAF reports a group's versions NEWEST FIRST — the ladder its vendor
+        // offers, read from its latest release down — which is what
+        // `crate::state::ManagedRuleGroupDescriptor::versions_newest_first` answers
+        // (the reverse of the release order the catalogue stores).
+        //
         // `NextMarker` is "the marker from the prior call", which is the name of the
         // last version of the previous page, so this page starts at the version
-        // after it IN THE PUBLISHED ORDER. The position is found by name rather than
-        // by comparing names, because a version name orders by release and not
+        // after it IN THAT ORDER. The position is found by name rather than by
+        // comparing names, because a version name orders by release and not
         // lexically (`Version_10.0` follows `Version_9.0`). A marker naming no
         // published version names a position the catalogue does not hold, so nothing
         // follows it.
-        let remaining: &[crate::state::ManagedRuleGroupRelease] =
+        let published = group.versions_newest_first();
+        let remaining: &[&'static crate::state::ManagedRuleGroupRelease] =
             match input.next_marker.as_deref() {
-                None => group.versions,
-                Some(marker) => group
-                    .versions
+                None => &published,
+                Some(marker) => published
                     .iter()
                     .position(|release| release.name == marker)
-                    .map_or(&[], |at| &group.versions[at + 1..]),
+                    .map_or(&[], |at| &published[at + 1..]),
             };
         let page = &remaining[..remaining.len().min(page_size)];
 

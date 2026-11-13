@@ -115,8 +115,9 @@ async fn every_catalogued_group_is_listed_in_published_order() {
             );
             assert_eq!(
                 summary["Description"],
-                json!(group.product_description),
-                "case {case:?}: expected the published description, got {summary}"
+                json!(group.description),
+                "case {case:?}: expected the publisher's catalogue description, got \
+                 {summary}"
             );
         }
 
@@ -329,9 +330,11 @@ async fn listing_the_available_groups_changes_nothing() {
 /// What this list reports is what the service's other readers of the same published
 /// catalogue report: every listed `(VendorName, Name)` pair names a group
 /// `ListAvailableManagedRuleGroupVersions` offers versions of, and a group
-/// `DescribeAllManagedProducts` describes with the same versioning flag and the same
-/// description — so a caller that "retrieves the required names by calling
-/// ListAvailableManagedRuleGroups" can use every one of them.
+/// `DescribeAllManagedProducts` describes with the same versioning flag — each
+/// carrying the text its own modelled member asks for, the catalogue description
+/// here and the short product description there — so a caller that "retrieves the
+/// required names by calling ListAvailableManagedRuleGroups" can use every one of
+/// them.
 ///
 /// One row per listed group, which is the whole catalogue.
 #[tokio::test]
@@ -387,9 +390,22 @@ async fn every_listed_group_is_usable_through_the_other_readers() {
              group is versioned, got {summary} and {product}"
         );
         assert_eq!(
-            summary["Description"], product["ProductDescription"],
-            "case {case:?}: the two readers of the catalogue must report the same \
-             published description, got {summary} and {product}"
+            summary["Description"],
+            json!(MANAGED_RULE_GROUP_CATALOGUE
+                .iter()
+                .find(|group| group.name == name)
+                .map(|group| group.description)),
+            "case {case:?}: the summary must carry the publisher's catalogue \
+             description, got {summary}"
+        );
+        assert_eq!(
+            product["ProductDescription"],
+            json!(MANAGED_RULE_GROUP_CATALOGUE
+                .iter()
+                .find(|group| group.name == name)
+                .map(|group| group.product_description)),
+            "case {case:?}: the product must carry the group's short product \
+             description, got {product}"
         );
     }
 }
@@ -424,6 +440,11 @@ fn the_published_catalogue_names_one_position_per_marker() {
             "case {case:?}: a description must satisfy EntityDescription, got {} \
              characters",
             group.product_description.len()
+        );
+        assert!(
+            !group.description.is_empty(),
+            "case {case:?}: every published group carries its publisher's catalogue \
+             description"
         );
         assert_eq!(
             group.vendor_name,
