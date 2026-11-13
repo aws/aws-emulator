@@ -11,8 +11,8 @@
 //! created, from that service's OWN report of the attribute — including one the type
 //! publishes as a nested member of a reported container, which `Fn::GetAtt` reads through a
 //! dotted path.** An output carries no value only where the expression names something the
-//! estate does not hold (the public endpoint of a domain that has none), never because an
-//! attribute was left uncollected.
+//! estate does not hold (a version 2 address a domain that is not `dualstack` is provisioned
+//! none of), never because an attribute was left uncollected.
 //!
 //! The reported case is a multi-service pipeline — an Amazon S3 landing bucket whose
 //! notification drives an AWS Lambda indexer under an execution role, its CloudWatch Logs log
@@ -498,6 +498,30 @@ fn parameters(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
         .collect()
 }
 
+/// What the OWNING service publishes for the domain under the `DomainStatus` member an
+/// attribute of the type reports, as the single text that attribute reads as.
+///
+/// For every member but the two ENDPOINTS this is the member itself ([`reported_text`]). An
+/// endpoint is the address a client submits its requests to, and a domain reached inside a VPC
+/// has no public host at all: that service publishes its address in `DomainStatus$Endpoints`
+/// instead, the IPv4 one under `vpc` and the dual-stack one under `vpcv2`, so for such a
+/// domain those entries are the endpoints it publishes.
+fn published_as(status: &Value, member: &str) -> Option<String> {
+    let in_a_vpc = match member {
+        "Endpoint" => ENDPOINTS_KEY_VPC,
+        "EndpointV2" => ENDPOINTS_KEY_VPC_DUALSTACK,
+        _ => return reported_text(status, member),
+    };
+    reported_text(status, member)
+        .or_else(|| reported_text(status, &format!("Endpoints.{in_a_vpc}")))
+}
+
+/// The keys `DomainStatus$Endpoints` publishes a VPC-reached domain's hosts under, from that
+/// member's own documentation (`smithy_query(query="doc",shape="DomainStatus",
+/// member="Endpoints")`): the IPv4 host under `vpc` and the dual-stack one under `vpcv2`.
+const ENDPOINTS_KEY_VPC: &str = "vpc";
+const ENDPOINTS_KEY_VPC_DUALSTACK: &str = "vpcv2";
+
 /// One member of a reported record, by the dotted path naming it, as the single text
 /// `Fn::GetAtt` answers it as — or `None` where the record carries no such member.
 ///
@@ -721,7 +745,7 @@ async fn every_output_of_a_deployed_pipeline_carries_the_value_its_service_repor
         );
         let mut without_value: Vec<&str> = Vec::new();
         for (key, member) in DOMAIN_ATTRIBUTE_OUTPUTS {
-            let expected = reported_text(&status_document, member);
+            let expected = published_as(&status_document, member);
             let output = reported_output(&outputs, key, label);
             assert_eq!(
                 output.value, expected,
@@ -744,17 +768,22 @@ async fn every_output_of_a_deployed_pipeline_carries_the_value_its_service_repor
             );
         }
         // The domain of this estate is reachable, and the attribute a client addresses it
-        // through is the one the service published for it: the public endpoint for a public
-        // domain, and the host under `vpc` for one reached inside a VPC.
-        let reachable = ["DomainEndpoint", "DomainVpcHost"]
-            .iter()
-            .filter(|key| !without_value.contains(*key))
-            .count();
-        assert_eq!(
-            reachable, 1,
-            "case {label:?}: a deployed domain publishes exactly one address a client \
-             reaches it on, got {outputs:?}"
+        // through carries the address the service published for it: the public endpoint for a
+        // public domain, and the host under `vpc` for one reached inside a VPC — which is the
+        // same host that map entry carries, since it is the one address such a domain has.
+        let endpoint = value_of(&outputs, "DomainEndpoint", label);
+        assert!(
+            !endpoint.is_empty(),
+            "case {label:?}: a deployed domain is addressed somewhere, so \"DomainEndpoint\" \
+             must carry that address, got {outputs:?}"
         );
+        if let Some(host) = reported_output(&outputs, "DomainVpcHost", label).value.clone() {
+            assert_eq!(
+                endpoint, host,
+                "case {label:?}: a domain reached inside a VPC is addressed on the host its \
+                 endpoint map carries, got {outputs:?}"
+            );
+        }
 
         // The rule over the WHOLE response rather than the keys named above: no reported
         // output lacks its value except the attributes the owning service itself reports

@@ -1659,6 +1659,17 @@ pub(super) const DOMAIN_NON_CREATE_PROPERTIES: &[&str] = &["DomainName", "Tags",
 /// entries `Fn::GetAtt` reads one at a time through `DomainEndpoints.<key>`.
 pub(super) const DOMAIN_ENDPOINTS_ATTRIBUTE: &str = "DomainEndpoints";
 
+/// The keys that map carries the two hosts of a domain reached inside a VPC under:
+/// `(the IPv4 host, the dual-stack host)`.
+///
+/// Both are the owning service's own, from the member's documentation
+/// (`smithy_query(query="doc",shape="DomainStatus",member="Endpoints")`): "the key-value pair
+/// that exists if the OpenSearch Service domain uses VPC endpoints … IPv4 IP addresses —
+/// `'vpc','vpc-endpoint-….es.amazonaws.com'` … Dual stack IP addresses —
+/// `'vpcv2':'vpc-endpoint-….on.aws'`". They are the addresses such a domain IS reached on, so
+/// they are what its endpoint attributes report ([`domain_created`]).
+pub(super) const DOMAIN_VPC_ENDPOINT_KEYS: (&str, &str) = ("vpc", "vpcv2");
+
 /// The attribute that type publishes the DUAL-STACK endpoint of a domain under, and the
 /// `DomainStatus` member the owning service reports it as: "if `IPAddressType` [is] set to
 /// `dualstack`, a version 2 domain endpoint is provisioned. This endpoint functions like a
@@ -1771,8 +1782,16 @@ pub(super) async fn create_domain(
 /// re-points the `Id`/`<Type>Id` pair ([`super::template::identity_attributes`]); and
 /// `DomainStatus$Endpoint` is "the domain-specific endpoint used to submit index, search, and
 /// data upload requests", which is this type's `DomainEndpoint`. A member the answer does not
-/// carry — the public endpoint of a domain reached inside a VPC — leaves its attribute unset
-/// rather than guessed.
+/// carry leaves its attribute unset rather than guessed.
+///
+/// An ENDPOINT attribute is the address a client submits its requests to, so it carries the
+/// address the owning service published for the domain however that domain is REACHED: a
+/// domain provisioned inside a VPC has no public host at all and is addressed on the host
+/// that service publishes in `DomainStatus$Endpoints` under `vpc`, with its dual-stack
+/// address under `vpcv2` ([`DOMAIN_VPC_ENDPOINT_KEYS`]), so for such a domain those are the
+/// `DomainEndpoint` and the `DomainEndpointV2` it publishes. An attribute of a domain that
+/// is addressed nowhere yet — one still being provisioned — stays unset until that service
+/// reports an address for it, which is what [`domain_ready_attributes`] reads.
 ///
 /// The REST of the type's published set is read off that same answer, so every attribute it
 /// publishes carries the value that service holds rather than nothing: the dual-stack host
@@ -1782,7 +1801,7 @@ pub(super) async fn create_domain(
 /// `Fn::GetAtt` reads it by, exactly as a `DomainEndpoints.<key>` entry is, and a member the
 /// service does not report is left absent rather than invented.
 ///
-/// A domain reached inside a VPC publishes its hosts in `DomainStatus$Endpoints` instead,
+/// A domain reached inside a VPC publishes its hosts in `DomainStatus$Endpoints` too,
 /// "the key-value pair that exists if the OpenSearch Service domain uses VPC endpoints",
 /// which is this type's [`DOMAIN_ENDPOINTS_ATTRIBUTE`] return value. `Fn::GetAtt` reads one
 /// entry of a map-valued attribute through a dotted path, so each host that service reported
@@ -1803,15 +1822,30 @@ pub(super) fn domain_created(resource_type: &str, status: &Value) -> Created {
             domain_id,
         ));
     }
-    if let Some(endpoint) = status.get("Endpoint").and_then(Value::as_str) {
-        attributes.insert("DomainEndpoint".to_string(), endpoint.to_string());
-    }
+    // The hosts the owning service published for the domain, keyed as it keys them: the
+    // addresses a domain reached inside a VPC is addressed at, which are the ones its endpoint
+    // attributes report where it is reached that way.
+    let published_hosts = reported_endpoints(status);
+    let (vpc_key, vpc_dual_stack_key) = DOMAIN_VPC_ENDPOINT_KEYS;
     // The address the domain is reached on is part of its identity, like the ARN and the id
     // above, so it is recorded unconditionally: the attribute ceiling below bounds the
     // open-ended parts of the set, never these.
+    if let Some(endpoint) = status
+        .get("Endpoint")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .or_else(|| published_hosts.get(vpc_key).cloned())
+    {
+        attributes.insert("DomainEndpoint".to_string(), endpoint);
+    }
     let (dual_stack_attribute, dual_stack_member) = DOMAIN_ENDPOINT_V2;
-    if let Some(endpoint) = status.get(dual_stack_member).and_then(Value::as_str) {
-        attributes.insert(dual_stack_attribute.to_string(), endpoint.to_string());
+    if let Some(endpoint) = status
+        .get(dual_stack_member)
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .or_else(|| published_hosts.get(vpc_dual_stack_key).cloned())
+    {
+        attributes.insert(dual_stack_attribute.to_string(), endpoint);
     }
     for (container, members) in DOMAIN_NESTED_ATTRIBUTES {
         let Some(reported) = status.get(*container) else {
@@ -1826,23 +1860,29 @@ pub(super) fn domain_created(resource_type: &str, status: &Value) -> Created {
             }
         }
     }
-    for (key, host) in status
+    for (key, host) in &published_hosts {
+        if attributes.len() >= super::template::MAX_ATTRIBUTES_PER_RESOURCE {
+            break;
+        }
+        attributes.insert(
+            format!("{DOMAIN_ENDPOINTS_ATTRIBUTE}.{key}"),
+            host.clone(),
+        );
+    }
+    Created::attributes(attributes)
+}
+
+/// The hosts `DomainStatus$Endpoints` reports for a domain, keyed as the owning service keys
+/// them — empty for a domain that publishes no such map, which is every domain reached on a
+/// public endpoint.
+fn reported_endpoints(status: &Value) -> BTreeMap<String, String> {
+    status
         .get("Endpoints")
         .and_then(Value::as_object)
         .into_iter()
         .flatten()
-    {
-        if attributes.len() >= super::template::MAX_ATTRIBUTES_PER_RESOURCE {
-            break;
-        }
-        if let Some(host) = host.as_str() {
-            attributes.insert(
-                format!("{DOMAIN_ENDPOINTS_ATTRIBUTE}.{key}"),
-                host.to_string(),
-            );
-        }
-    }
-    Created::attributes(attributes)
+        .filter_map(|(key, host)| host.as_str().map(|host| (key.clone(), host.to_string())))
+        .collect()
 }
 
 /// The properties of an `AWS::OpenSearchService::Domain` that `UpdateDomainConfig` takes, so

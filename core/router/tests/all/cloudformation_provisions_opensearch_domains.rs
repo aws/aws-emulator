@@ -1156,11 +1156,18 @@ async fn a_domains_published_addresses_resolve_in_its_stacks_outputs() {
             "case {case:?}: expected a public endpoint only for a domain outside a VPC, got \
              {reported}"
         );
+        // `DomainEndpoint` is the address a client SUBMITS its requests to, so it is the
+        // address the owning service published for the domain however the domain is reached:
+        // the public host where it has one, and the host it is reached on inside a VPC — the
+        // `vpc` entry of the map above — where it has no public host at all.
+        let addressed_at = public
+            .map(str::to_string)
+            .or_else(|| published.get(ENDPOINTS_KEY_VPC).cloned());
         assert_eq!(
-            outputs.get("DomainEndpoint").map(String::as_str),
-            public,
-            "case {case:?}: expected DomainEndpoint to be the service's own Endpoint \
-             ({public:?}), got {outputs:?}"
+            outputs.get("DomainEndpoint").cloned(),
+            addressed_at,
+            "case {case:?}: expected DomainEndpoint to be the address the owning service \
+             publishes for the domain ({addressed_at:?}), got {outputs:?}"
         );
 
         // "Ref returns the domain name", whatever the domain is reached on.
@@ -1171,11 +1178,13 @@ async fn a_domains_published_addresses_resolve_in_its_stacks_outputs() {
         );
 
         // And the symptom itself, over the whole answer: the stack publishes an address for
-        // every output whose expression names one the service reported.
+        // every output whose expression names one the service reported — the entries of the
+        // endpoint map, and the endpoint attribute, which every deployed domain is addressed
+        // at one way or the other.
         let addressable: Vec<String> = published_keys(row.reach)
             .into_iter()
             .map(output_key)
-            .chain(public.map(|_| "DomainEndpoint".to_string()))
+            .chain(addressed_at.map(|_| "DomainEndpoint".to_string()))
             .collect();
         for name in &addressable {
             assert!(
