@@ -909,6 +909,28 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> CopyObject<Eng> {
             crate::state::sse_kms::WriteKey::Unasked => {}
         }
 
+        // Whether KMS runs that `kms:Decrypt` at all is the source key's own KEY STATE: while
+        // the key is in a state that runs no cryptographic operation, the copy has no
+        // plaintext to read and S3 relays KMS's own failure (HTTP 400 under the exception that
+        // state raises, with KMS's sentence) instead of copying anything
+        // ([`crate::state::sse_kms::decrypt_key_state_relay`] carries the rule). Asked before
+        // the question of permission, which is where KMS fails such a call.
+        if let Some(relay) = crate::state::sse_kms::decrypt_key_state_relay(
+            &*self.engine,
+            &crate::state::request_region(ctx.parts()),
+            crate::state::sse_kms::EncryptedObject {
+                bucket: &source.bucket,
+                key: &source.key,
+                encryption: &source_object.encryption,
+            },
+        ) {
+            return Err(crate::scaffolded::Scaffolded::unmodeled(
+                relay.code,
+                relay.status,
+                relay.message,
+            ));
+        }
+
         if let Some(denial) = crate::state::sse_kms::decrypt_refusal(
             &*self.engine,
             ctx,

@@ -580,6 +580,28 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // have permission to the kms:Decrypt … action" (this operation's own
         // documentation). The decision is the one every read of such an object's bytes is
         // made with ([`crate::state::sse_kms`]), about the SOURCE object.
+        // Whether KMS runs that `kms:Decrypt` at all is the source key's own KEY STATE: while
+        // the key is in a state that runs no cryptographic operation, the part copy has no
+        // plaintext to read and S3 relays KMS's own failure (HTTP 400 under the exception that
+        // state raises, with KMS's sentence)
+        // ([`crate::state::sse_kms::decrypt_key_state_relay`] carries the rule). Asked before
+        // the question of permission, which is where KMS fails such a call.
+        if let Some(relay) = crate::state::sse_kms::decrypt_key_state_relay(
+            &*self.engine,
+            &crate::state::request_region(ctx.parts()),
+            crate::state::sse_kms::EncryptedObject {
+                bucket: &source.bucket,
+                key: &source.key,
+                encryption: &source_object.encryption,
+            },
+        ) {
+            return Err(crate::scaffolded::Scaffolded::unmodeled(
+                relay.code,
+                relay.status,
+                relay.message,
+            ));
+        }
+
         if let Some(denial) = crate::state::sse_kms::decrypt_refusal(
             &*self.engine,
             ctx,

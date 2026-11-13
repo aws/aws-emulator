@@ -674,9 +674,33 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         drop(store);
 
         // The bytes of an SSE-KMS object are readable only THROUGH the KMS key the write
-        // stored it under, so serving them performs `kms:Decrypt` on that key as this
-        // request's caller — the principal of the session the credential speaks for — and
-        // through this service's own path to it. A caller no authority in force reaches
+        // stored it under, so serving them performs `kms:Decrypt` on that key — and the
+        // key's own KEY STATE decides whether KMS runs that operation at all: while the key
+        // is in a state that runs no cryptographic operation, the read has no plaintext to
+        // serve and S3 relays KMS's own failure (HTTP 400 under the exception that state
+        // raises, with KMS's sentence), exactly as a write relays the same failure of its
+        // envelope call ([`crate::state::sse_kms::decrypt_key_state_relay`] carries the
+        // rule). The state is asked first because that is where KMS fails such a call,
+        // before any question of permission.
+        if let Some(relay) = crate::state::sse_kms::decrypt_key_state_relay(
+            &*self.engine,
+            &crate::state::request_region(ctx.parts()),
+            crate::state::sse_kms::EncryptedObject {
+                bucket: &input.bucket,
+                key: &input.key,
+                encryption: &object.encryption,
+            },
+        ) {
+            return Err(crate::scaffolded::Scaffolded::unmodeled(
+                relay.code,
+                relay.status,
+                relay.message,
+            ));
+        }
+
+        // And WHOSE read this is: the `kms:Decrypt` is performed as this request's caller —
+        // the principal of the session the credential speaks for — and through this
+        // service's own path to it. A caller no authority in force reaches
         // that action for is refused with KMS's own denial sentence on S3's `AccessDenied`
         // channel ([`crate::state::sse_kms`] carries the rule), rather than being handed
         // the plaintext. An object stored under any other encryption asks KMS nothing.

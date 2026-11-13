@@ -55,6 +55,12 @@
 //! the write when KMS holds no key for the reference, or will not mint a data key under the
 //! one it holds, for want of a key rather than of permission.
 //!
+//! Permission is not the only thing KMS answers about a key. A key's own KEY STATE decides
+//! whether it runs cryptographic operations AT ALL, so a read that would serve an SSE-KMS
+//! object's bytes while its key is in a state that runs none has no plaintext to serve: S3
+//! relays KMS's own failure rather than the body ([`decrypt_key_state_relay`], the read's
+//! half of the relay [`write_key`] makes for a write, under the same two exceptions).
+//!
 //! What is NOT decided here: a read that serves no bytes. "A HEAD request has the same
 //! options as a GET operation on an object" (`HeadObject`'s own documentation) except that
 //! it answers no body at all, and the metadata it reports is S3's own record of the object
@@ -103,6 +109,54 @@ pub struct EncryptedObject<'a> {
     pub key: &'a str,
     /// What [`super::Object::encryption`] records for it.
     pub encryption: &'a super::ObjectEncryption,
+}
+
+/// Why KMS runs NO cryptographic operation on the key `object` is stored under, whoever
+/// asks — the key's own key state refuses them all — or `None` when that state runs them.
+///
+/// The `kms:Decrypt` behind serving an SSE-KMS object's bytes is a cryptographic operation
+/// on that object's key, and a key whose `KeyState` is outside the states that run them
+/// fails such a call inside KMS before any question of permission: a DISABLED key raises
+/// `DisabledException` and a key in any other unusable state `KMSInvalidStateException`,
+/// which is the split KMS's own `Decrypt` makes ([`unusable`] words both and
+/// [`kms_store::Cmk::is_usable`] decides which states run them). So the read has no
+/// plaintext to serve and S3 relays KMS's failure, under the exception's name qualified by
+/// the service that raised it and with KMS's own sentence, exactly as a WRITE relays the
+/// same failure of its own envelope call ([`write_key`]) — one key state, one relay, for
+/// both halves of the envelope. The refusal lifts the moment the key's state runs
+/// cryptographic operations again, because nothing about the object changed.
+///
+/// Asked only where BYTES are served: a read answering metadata alone has nothing for the
+/// key to open, so it asks KMS nothing (the module header carries that half).
+///
+/// Nothing is relayed for an object that is not SSE-KMS, for an engine carrying no KMS
+/// service to ask, or for a reference this endpoint resolves no key for — the absence of a
+/// key is the object-write path's subject, as it is for [`decrypt_refusal`].
+///
+/// `region` is the Region the request was signed for, which is where the object's key is
+/// resolved: an object and the key it is encrypted under live at the same endpoint.
+///
+/// Reading a key state changes nothing about the key: this resolves the reference the object
+/// already records and materialises no alias, so a read decided here leaves every later
+/// caller seeing exactly what it would have seen.
+pub fn decrypt_key_state_relay<Eng: Send + Sync + 'static>(
+    engine: &Eng,
+    region: &str,
+    object: EncryptedObject<'_>,
+) -> Option<Relay> {
+    if !object.encryption.uses_kms() {
+        return None;
+    }
+    let key_id = object.encryption.kms_key_id.as_deref()?;
+    let kms = kms_store::service_state(engine)?;
+    let store = kms.lock();
+    match store.resolve(region, key_id) {
+        kms_store::KeyRef::Found(key) if !key.is_usable() => Some(unusable(key)),
+        kms_store::KeyRef::Found(_)
+        | kms_store::KeyRef::NotFound
+        | kms_store::KeyRef::MalformedArn
+        | kms_store::KeyRef::UnauthorizedAccount => None,
+    }
 }
 
 /// Why KMS refuses to open `object` for the principal this request speaks for, or `None`
