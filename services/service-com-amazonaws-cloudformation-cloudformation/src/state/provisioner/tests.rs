@@ -16,6 +16,7 @@ fn declared_record_set(properties: Value) -> StoredResource {
         properties,
         materialised: false,
         deletion_policy: None,
+        update_replace_policy: None,
     }
 }
 

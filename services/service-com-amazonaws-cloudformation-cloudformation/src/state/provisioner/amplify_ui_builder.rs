@@ -848,6 +848,7 @@ mod tests {
                     properties: declared.clone(),
                     materialised: true,
                     deletion_policy: None,
+                    update_replace_policy: None,
                 };
                 let (app_id, environment_name, id) = entity_identity(&resource);
                 let collection_uri = collection_uri(entity, &app_id, &environment_name);

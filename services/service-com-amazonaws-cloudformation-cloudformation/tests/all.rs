@@ -23,6 +23,8 @@ mod appconfig_resource_types;
 mod apigateway_account_resource;
 #[path = "all/apigateway_vpc_link_resources.rs"]
 mod apigateway_vpc_link_resources;
+#[path = "all/apigatewayv2_api_property_updates.rs"]
+mod apigatewayv2_api_property_updates;
 #[path = "all/application_auto_scaling_resources.rs"]
 mod application_auto_scaling_resources;
 #[path = "all/bedrock_knowledge_base_identity.rs"]

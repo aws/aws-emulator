@@ -20,6 +20,7 @@ fn resource(resource_type: &str, properties: Value) -> StoredResource {
         properties,
         materialised: false,
         deletion_policy: None,
+        update_replace_policy: None,
     }
 }
 

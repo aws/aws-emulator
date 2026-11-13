@@ -520,9 +520,10 @@ pub const STACK_RESOURCE_TYPE: &str = "AWS::CloudFormation::Stack";
 /// transforms, which are macros hosted by CloudFormation."
 pub const CAPABILITY_AUTO_EXPAND: &str = "CAPABILITY_AUTO_EXPAND";
 
-/// The reason CloudFormation records on the second `CREATE_IN_PROGRESS` event of a
-/// resource — the one that reports the create request reached the resource's provisioner.
-pub const RESOURCE_CREATION_INITIATED: &str = "Resource creation Initiated";
+/// The `ResourceStatusReason` sentences CloudFormation writes on a resource's own events,
+/// re-exported because every caller reaches them through this module.
+mod resource_status_reasons;
+pub use resource_status_reasons::*;
 
 /// `StackDriftStatus` for a stack no drift detection has run against yet:
 /// "CloudFormation hasn't checked if the stack differs from its expected template
@@ -1543,6 +1544,16 @@ pub struct StoredResource {
     /// the attribute that governs the resource is the one of the template that deployed it,
     /// and a read must not re-parse a caller-sized body to find it.
     pub deletion_policy: Option<String>,
+    /// The `UpdateReplacePolicy` resource attribute the template declared for this resource,
+    /// as written — "with the `UpdateReplacePolicy` attribute you can specify how
+    /// CloudFormation handles the OLD physical resource" when a deployment REPLACES it, which
+    /// takes the same three values `DeletionPolicy` does ([`deletion_policy`]).
+    ///
+    /// `None` for a declaration that carries none, which is the documented default: the old
+    /// resource is deleted. Captured where the template is DEPLOYED, beside the
+    /// `DeletionPolicy` attribute — the record a REPLACEMENT acts on is the one the previous
+    /// deployment left.
+    pub update_replace_policy: Option<String>,
 }
 
 impl StoredResource {
@@ -4856,20 +4867,4 @@ pub async fn settle_due_rollbacks<Eng: Send + Sync + 'static>(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// [`CAPABILITY_AUTO_EXPAND`] names one value of the modelled `Capability` enum, whose
-    /// value set codegen carries as `CAPABILITY_VALUES` — so the constant this crate
-    /// compares an acknowledgement against cannot drift from the value a caller can
-    /// actually send.
-    #[test]
-    fn the_auto_expand_capability_is_a_modelled_capability_value() {
-        let modelled = crate::ops::types::CAPABILITY_VALUES;
-        assert!(
-            modelled.contains(&CAPABILITY_AUTO_EXPAND),
-            "case {CAPABILITY_AUTO_EXPAND:?}: expected the modelled Capability value set to \
-             carry it, got {modelled:?}"
-        );
-    }
-}
+mod tests;

@@ -249,6 +249,7 @@ mod tests {
             }),
             materialised: true,
             deletion_policy: None,
+            update_replace_policy: None,
         };
         let rows: &[(&str, &str, &str, Option<&str>)] = &[
             (
@@ -309,6 +310,7 @@ mod tests {
                 properties: ::serde_json::Value::Null,
                 materialised: made,
                 deletion_policy: None,
+                update_replace_policy: None,
             }
         };
         let parameter = "AWS::SSM::Parameter";
@@ -367,6 +369,7 @@ mod tests {
             properties: ::serde_json::Value::Null,
             materialised: false,
             deletion_policy: None,
+            update_replace_policy: None,
         };
         let held = |resource_type: &str, physical: &str, stack_id: &str| ManagedName {
             resource_type: resource_type.to_string(),

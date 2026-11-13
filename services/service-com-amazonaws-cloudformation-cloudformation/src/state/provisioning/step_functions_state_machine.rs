@@ -685,6 +685,7 @@ mod tests {
             properties,
             materialised: false,
             deletion_policy: None,
+            update_replace_policy: None,
         }
     }
 

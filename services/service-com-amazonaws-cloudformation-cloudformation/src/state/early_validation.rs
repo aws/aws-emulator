@@ -305,6 +305,7 @@ pub async fn taken_names(
             properties: Value::Null,
             materialised: true,
             deletion_policy: None,
+            update_replace_policy: None,
         };
         // The read is BOXED: one owning service's read is a call into that service's own
         // handler, whose future is as large as every arm of it, and this stage runs inside a

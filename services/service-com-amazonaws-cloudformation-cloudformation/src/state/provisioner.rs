@@ -2462,6 +2462,74 @@ impl Provisioner {
             // when an environment is made — which replace the resource instead — so a changed
             // declaration is applied to that environment rather than replacing it.
             Self::MwaaEnvironment => update_mwaa_environment(ctx, region, resource, declared).await,
+            // `UpdateApi` ("updates an Api resource") is the one call that changes an api API
+            // Gateway v2 already holds, and every property of
+            // `AWS::ApiGatewayV2::Api` but its protocol, its definition and its tags is a
+            // member of it — so a changed declaration of one is applied to the api the stack
+            // created, which keeps the `ApiId` that service minted and the endpoint it serves
+            // the api on, rather than replacing it. A declaration carrying a DEFINITION is
+            // applied by `ReimportApi` instead, which puts that definition over the same api
+            // ([`update_apigatewayv2_api`]).
+            // BOXED, for the reason the other heavy arms of this match are: the call's future
+            // is the owning service's whole handler, and holding one of those inline in this
+            // match's state machine is what takes a deployment past the thread's stack.
+            Self::ApiGatewayV2Api => {
+                Box::pin(update_apigatewayv2_api(ctx, region, resource, declared)).await
+            }
+            // Each of the resources that live INSIDE an api has its own patch, addressed by
+            // the api that holds it and the identifier that service minted for it, and taking
+            // the same members its create does — so a changed declaration of an integration,
+            // a route, a stage or an authorizer is applied to the resource the stack created
+            // rather than refused ([`update_apigatewayv2_child`]). Boxed for the reason the
+            // api's own arm above is.
+            Self::ApiGatewayV2Integration => {
+                Box::pin(update_apigatewayv2_child(
+                    ctx,
+                    region,
+                    resource,
+                    declared,
+                    &APIGATEWAYV2_INTEGRATION_CHILD,
+                ))
+                .await
+            }
+            Self::ApiGatewayV2Route => {
+                Box::pin(update_apigatewayv2_child(
+                    ctx,
+                    region,
+                    resource,
+                    declared,
+                    &APIGATEWAYV2_ROUTE_CHILD,
+                ))
+                .await
+            }
+            Self::ApiGatewayV2Stage => {
+                Box::pin(update_apigatewayv2_child(
+                    ctx,
+                    region,
+                    resource,
+                    declared,
+                    &APIGATEWAYV2_STAGE_CHILD,
+                ))
+                .await
+            }
+            // An `AWS::ApiGatewayV2::Deployment` has NO arm here: the one member
+            // `UpdateDeployment` takes is the deployment's description, and this emulator does
+            // not serve that operation yet (its own scaffold), so there is nothing to ask API
+            // Gateway v2 for — a changed declaration is reported as not applied rather than
+            // sent to a call that answers 501. A declaration that names another api or another
+            // stage is create-only either way
+            // ([`super::super::template::replacement_properties`]), so such a change replaces
+            // the deployment.
+            Self::ApiGatewayV2Authorizer => {
+                Box::pin(update_apigatewayv2_child(
+                    ctx,
+                    region,
+                    resource,
+                    declared,
+                    &APIGATEWAYV2_AUTHORIZER_CHILD,
+                ))
+                .await
+            }
             // Each `Update…` takes the entity's whole declared configuration by the id Amplify
             // UI Builder minted for it, in the app environment that is fixed when the entity
             // is made — a declaration restating either replaces the resource instead — so a

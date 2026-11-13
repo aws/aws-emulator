@@ -281,6 +281,7 @@ mod tests {
                 properties: properties.clone(),
                 materialised: false,
                 deletion_policy: None,
+                update_replace_policy: None,
             };
             let refused = function_of(&resource);
             assert!(

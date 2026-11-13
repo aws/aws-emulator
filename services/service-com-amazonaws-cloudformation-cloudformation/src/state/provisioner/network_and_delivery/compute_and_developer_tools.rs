@@ -1232,17 +1232,60 @@ pub(crate) async fn import_apigatewayv2_api(
     resource: &StoredResource,
     definition: &Value,
 ) -> Result<Created, Refusal> {
+    let (query, payload) = apigatewayv2_definition_request(
+        &resource.resource_type,
+        &resource.properties,
+        definition,
+        "the resource was not created.",
+    )?;
+    let answered = call_rest_json(
+        ctx,
+        API_GATEWAY_SIGNING_NAME,
+        region,
+        "PUT",
+        &format!("{APIGATEWAYV2_APIS_URI}{query}"),
+        Some(&payload),
+    )
+    .await?;
+    apigatewayv2_api_created(&answered, "ImportApi")
+}
+
+/// The DEFINITION one `AWS::ApiGatewayV2::Api` declaration carries, as the query string and
+/// the payload the call that reads it takes: `(query, payload)`, where the query is empty or
+/// already carries its `?`.
+///
+/// One reader for BOTH calls that read a definition — `ImportApi` makes the api and
+/// `ReimportApi` puts a definition over the api that exists — because the DECLARATION is the
+/// same on either: the definition travels as that operation's own `Body` member, with
+/// `BasePath` and `FailOnWarnings` on its query ([`APIGATEWAYV2_IMPORT_QUERY`]). An inline
+/// definition is declared as the JSON object it is and sent as the text those operations
+/// read.
+///
+/// Every remaining property of the type is one only `CreateApi` and `UpdateApi` take, and
+/// this type's own rule is that a declaration carrying a definition states none of them ("If
+/// you specify a Body or BodyS3Location, don't specify CorsConfiguration, CredentialsArn,
+/// DisableExecuteApiEndpoint, Name, ProtocolType, RouteKey, RouteSelectionExpression, Tags,
+/// Target, or Version"), so one that does is REFUSED rather than read with that property
+/// silently dropped — including `BodyS3Location`, whose object nothing here fetches.
+/// `unapplied` is what that refusal says became of the resource, which is the deployment's
+/// to state: a create left nothing behind, and an update left the api as it stood.
+fn apigatewayv2_definition_request(
+    resource_type: &str,
+    properties: &Value,
+    definition: &Value,
+    unapplied: &str,
+) -> Result<(String, Value), Refusal> {
     let mut query: Vec<String> = Vec::new();
     for (property, parameter) in APIGATEWAYV2_IMPORT_QUERY {
-        if let Some(value) = resource.properties.get(*property) {
+        if let Some(value) = properties.get(*property) {
             query.push(format!(
                 "{parameter}={}",
                 percent_encoded(&attribute_text(value))
             ));
         }
     }
-    if let Some(properties) = resource.properties.as_object() {
-        for property in properties.keys() {
+    if let Some(members) = properties.as_object() {
+        for property in members.keys() {
             if property == APIGATEWAYV2_BODY
                 || APIGATEWAYV2_IMPORT_QUERY
                     .iter()
@@ -1253,10 +1296,9 @@ pub(crate) async fn import_apigatewayv2_api(
             return Err(Refusal {
                 code: MISSING_PROPERTY_CODE.to_string(),
                 message: format!(
-                    "{} declares a {APIGATEWAYV2_BODY}, so the api is imported from that \
-                     definition, and {property} is no member of that import; the resource was \
-                     not created.",
-                    resource.resource_type
+                    "{resource_type} declares a {APIGATEWAYV2_BODY}, so the api is imported \
+                     from that definition, and {property} is no member of that import; \
+                     {unapplied}"
                 ),
             });
         }
@@ -1266,22 +1308,123 @@ pub(crate) async fn import_apigatewayv2_api(
         APIGATEWAYV2_BODY_MEMBER.to_string(),
         Value::String(attribute_text(definition)),
     );
-    let payload = Value::Object(payload);
-    let uri = if query.is_empty() {
-        APIGATEWAYV2_APIS_URI.to_string()
+    let query = if query.is_empty() {
+        String::new()
     } else {
-        format!("{APIGATEWAYV2_APIS_URI}?{}", query.join("&"))
+        format!("?{}", query.join("&"))
     };
-    let answered = call_rest_json(
+    Ok((query, Value::Object(payload)))
+}
+
+/// The `AWS::ApiGatewayV2::Api` properties `UpdateApi` can change on an api that already
+/// EXISTS: each one is a member of that patch under the same name with a lower-cased initial,
+/// exactly as it is a member of the create.
+///
+/// Source: `UpdateApi`'s own input members against the type's properties
+/// (`smithy_query(query="operation",operation="UpdateApi")`). What the type declares and that
+/// patch does NOT take is `ProtocolType` — an api's protocol is fixed when API Gateway v2
+/// makes it, which is why [`super::super::template::replacement_properties`] names it — the
+/// four properties that belong to a DEFINITION ([`APIGATEWAYV2_IMPORT_PROPERTIES`], applied
+/// by `ReimportApi` instead), and `Tags`, which are no part of any call that changes an api
+/// that exists.
+pub(crate) const APIGATEWAYV2_API_UPDATE_PROPERTIES: &[&str] = &[
+    "ApiKeySelectionExpression",
+    "CorsConfiguration",
+    "CredentialsArn",
+    "Description",
+    "DisableExecuteApiEndpoint",
+    "DisableSchemaValidation",
+    "IpAddressType",
+    "Name",
+    "RouteKey",
+    "RouteSelectionExpression",
+    "Target",
+    "Version",
+];
+
+/// Apply a changed `AWS::ApiGatewayV2::Api` declaration to the api the stack created, so a
+/// client that edits a mutable property of an HTTP or WebSocket API through CloudFormation
+/// gets that property changed on the api it already has — under the same `ApiId`, which is
+/// what `Ref` returns for the type — rather than a deployment that refuses the change.
+///
+/// `UpdateApi` (`PATCH /v2/apis/{ApiId}`) is the one call that changes an api that exists,
+/// and it is a PATCH: a member the request carries replaces the stored one and a member it
+/// omits leaves the stored value as it was. So the request carries exactly the properties
+/// this declaration states DIFFERENTLY from the ones the api was last deployed with, each
+/// under its own member name ([`APIGATEWAYV2_API_UPDATE_PROPERTIES`], re-cased by
+/// [`lower_camel_members`] as the create's members are) — and a property neither revision
+/// changed is not re-sent. A property the new declaration no longer states keeps the value an
+/// earlier deployment gave it rather than being sent as an empty value that call would refuse,
+/// which is the same reading [`update_mwaa_environment`] takes of a patch.
+///
+/// A declaration carrying a DEFINITION is applied by reading that definition over the api
+/// instead: `ReimportApi` (`PUT /v2/apis/{ApiId}`) "puts an Api resource" under the same
+/// `ApiId`, so a changed definition changes THIS api — its name, its description and the
+/// routes and integrations the document declares — rather than making a second one.
+///
+/// `Ok(None)` is a change neither call can make, so the deployment reports it as not applied
+/// rather than as a success that dropped it: a property outside both sets stated differently
+/// — a changed `Tags` map, which no member of `UpdateApi` carries, and a `BodyS3Location`,
+/// whose object nothing here fetches. (A changed `ProtocolType` never reaches this: the api's
+/// protocol is create-only, so such a declaration asks for a different api and the stack
+/// replaces it.)
+pub(crate) async fn update_apigatewayv2_api(
+    ctx: &smithy_server_runtime::OperationContext<'_>,
+    region: &str,
+    resource: &StoredResource,
+    declared: &Value,
+) -> Result<Option<Created>, Refusal> {
+    if let Some(definition) = declared.get(APIGATEWAYV2_BODY) {
+        let (query, payload) = apigatewayv2_definition_request(
+            &resource.resource_type,
+            declared,
+            definition,
+            "the resource was not updated.",
+        )?;
+        let answered = call_rest_json(
+            ctx,
+            API_GATEWAY_SIGNING_NAME,
+            region,
+            "PUT",
+            &format!(
+                "{}{query}",
+                apigatewayv2_api_uri(&resource.physical_resource_id)
+            ),
+            Some(&payload),
+        )
+        .await?;
+        return apigatewayv2_api_created(&answered, "ReimportApi").map(Some);
+    }
+    let mut request = Map::new();
+    if let Some(properties) = declared.as_object() {
+        for (property, value) in properties {
+            if resource.properties.get(property) == Some(value) {
+                continue;
+            }
+            if !APIGATEWAYV2_API_UPDATE_PROPERTIES.contains(&property.as_str()) {
+                return Ok(None);
+            }
+            request.insert(lower_initial(property), lower_camel_members(value, 0)?);
+        }
+    }
+    let answered = call_rest_json_named(
         ctx,
         API_GATEWAY_SIGNING_NAME,
         region,
-        "PUT",
-        &uri,
-        Some(&payload),
+        "UpdateApi",
+        "PATCH",
+        &apigatewayv2_api_uri(&resource.physical_resource_id),
+        Some(&Value::Object(request)),
     )
     .await?;
-    apigatewayv2_api_created(&answered, "ImportApi")
+    apigatewayv2_api_created(&answered, "UpdateApi").map(Some)
+}
+
+/// The URI that addresses ONE api of API Gateway v2 — `/v2/apis/{ApiId}`, the binding every
+/// operation on an api that exists is bound to (`GetApi`, `UpdateApi`, `ReimportApi`,
+/// `DeleteApi`) — by the `ApiId` that service assigned, which is this resource's physical id.
+pub(crate) fn apigatewayv2_api_uri(api_id: &str) -> String {
+    format!("{APIGATEWAYV2_APIS_URI}/{}", percent_encoded(api_id))
 }
 
 /// The api an answered create or import reports: the `ApiId` that service assigned, which
@@ -1308,11 +1451,7 @@ pub(crate) async fn delete_apigatewayv2_api(
     region: &str,
     physical_resource_id: &str,
 ) -> Result<(), Refusal> {
-    let uri = format!(
-        "{APIGATEWAYV2_APIS_URI}/{}",
-        percent_encoded(physical_resource_id)
-    );
-    api_gateway_deleted(ctx, region, &uri).await
+    api_gateway_deleted(ctx, region, &apigatewayv2_api_uri(physical_resource_id)).await
 }
 
 /// The api's configuration as API Gateway v2 reports it, for drift detection: `GetApi`'s
@@ -1327,10 +1466,7 @@ pub(crate) async fn describe_apigatewayv2_api(
     region: &str,
     physical_resource_id: &str,
 ) -> Result<Option<Value>, Refusal> {
-    let uri = format!(
-        "{APIGATEWAYV2_APIS_URI}/{}",
-        percent_encoded(physical_resource_id)
-    );
+    let uri = apigatewayv2_api_uri(physical_resource_id);
     match call_rest_json(ctx, API_GATEWAY_SIGNING_NAME, region, "GET", &uri, None).await {
         Ok(answer) => Ok(Some(reported_as_properties(
             &answer,
@@ -1580,7 +1716,7 @@ pub(crate) fn apigatewayv2_api_mapping_uri(resource: &StoredResource) -> Result<
 // ---------------------------------------------------------------------------
 
 /// One API Gateway v2 resource type whose resources live inside an api — an integration, a
-/// route, a stage, a deployment, an authorizer — as the three calls a stack makes about one
+/// route, a stage, a deployment, an authorizer — as the calls a stack makes about one
 /// of them.
 ///
 /// Every one of these types is in the SAME shape, which is why they are a table rather than
@@ -1588,7 +1724,8 @@ pub(crate) fn apigatewayv2_api_mapping_uri(resource: &StoredResource) -> Result<
 /// it (`POST /v2/apis/{ApiId}/<collection>`), every property of the type other than the ones
 /// that address that collection is a member of the create under the same name with its
 /// initial letter lower-cased, the create answers the identifier API Gateway v2 ASSIGNED,
-/// and the read and the delete address the resource as that collection plus that identifier.
+/// and the read, the patch that applies a changed declaration and the delete address the
+/// resource as that collection plus that identifier.
 ///
 /// Without these, a stack that declared an api and the integration, route and stage that
 /// make it serve created only the api: the rest were recorded as declared and nothing in
@@ -1623,6 +1760,12 @@ pub(crate) struct ApiGatewayV2Child {
     /// drift is judged on. Each is read off the member that answer spells it with — the
     /// property with its initial letter lower-cased, like every member here.
     pub(crate) reported: &'static [&'static str],
+    /// The properties the type's own PATCH takes no member for, beside the ones that address
+    /// the collection and the name the resource is created under: a value fixed when the
+    /// resource is made, so a declaration stating one differently asks for a different
+    /// resource ([`super::super::template::replacement_properties`] names them for the same
+    /// reason). Empty for a type whose every other property that patch takes.
+    pub(crate) create_only: &'static [&'static str],
 }
 
 /// `AWS::ApiGatewayV2::Integration`: `POST /v2/apis/{ApiId}/integrations`, whose answer
@@ -1653,6 +1796,9 @@ pub(crate) const APIGATEWAYV2_INTEGRATION_CHILD: ApiGatewayV2Child = ApiGatewayV
         "TimeoutInMillis",
         "TlsConfig",
     ],
+    // `UpdateIntegration` takes every member of the create but the api that holds the
+    // integration, which is this type's `path`.
+    create_only: &[],
 };
 
 /// `AWS::ApiGatewayV2::Route`: `POST /v2/apis/{ApiId}/routes`, whose answer carries the
@@ -1680,6 +1826,8 @@ pub(crate) const APIGATEWAYV2_ROUTE_CHILD: ApiGatewayV2Child = ApiGatewayV2Child
         "RouteResponseSelectionExpression",
         "Target",
     ],
+    // `UpdateRoute` takes every member of the create but the api that holds the route.
+    create_only: &[],
 };
 
 /// `AWS::ApiGatewayV2::Stage`: `POST /v2/apis/{ApiId}/stages`. "Ref returns the stage name",
@@ -1704,6 +1852,10 @@ pub(crate) const APIGATEWAYV2_STAGE_CHILD: ApiGatewayV2Child = ApiGatewayV2Child
         "RouteSettings",
         "StageVariables",
     ],
+    // `UpdateStage` takes every member of the create but the api and the stage name, which
+    // are its two `@httpLabel`s — the api is this type's `path` and the name is what the
+    // stage is created under ([`ApiGatewayV2Child::named_by`]).
+    create_only: &[],
 };
 
 /// `AWS::ApiGatewayV2::Deployment`: `POST /v2/apis/{ApiId}/deployments`, whose answer
@@ -1718,6 +1870,12 @@ pub(crate) const APIGATEWAYV2_DEPLOYMENT_CHILD: ApiGatewayV2Child = ApiGatewayV2
     // `GetDeployment` reports the deployment's own record — its description and the status
     // of the release — and not the stage a create released it to.
     reported: &["Description"],
+    // A deployment is a SNAPSHOT released to one stage: `CreateDeployment` takes the stage it
+    // is released to and `UpdateDeployment` takes the description alone, so a declaration
+    // naming another stage asks for a different deployment. (This type has no update arm at
+    // all — see [`super::super::Provisioner::update`] — so this list is what its REPLACEMENT
+    // reading is written from.)
+    create_only: &["StageName"],
 };
 
 /// `AWS::ApiGatewayV2::Authorizer`: `POST /v2/apis/{ApiId}/authorizers`, whose answer
@@ -1742,6 +1900,9 @@ pub(crate) const APIGATEWAYV2_AUTHORIZER_CHILD: ApiGatewayV2Child = ApiGatewayV2
         "JwtConfiguration",
         "Name",
     ],
+    // `UpdateAuthorizer` takes every member of the create but the api that holds the
+    // authorizer.
+    create_only: &[],
 };
 
 /// The collection path of a resource that lives directly inside an api: the `ApiId` its
@@ -1879,6 +2040,75 @@ pub(crate) fn apigatewayv2_data_keyed_map(value: &Value) -> Result<Value, Refusa
         mapped.insert(key.clone(), lower_camel_members(entry, 1)?);
     }
     Ok(Value::Object(mapped))
+}
+
+/// Apply a changed declaration to one resource that lives inside an api, through that
+/// type's own PATCH (`UpdateIntegration`, `UpdateRoute`, `UpdateStage`, `UpdateAuthorizer`) —
+/// so a client that edits a mutable property of an api's integration, route, stage or
+/// authorizer through CloudFormation gets that property changed on the resource the stack
+/// already has, under the identifier that service minted for it.
+///
+/// One arm for all of them, for the reason their creates are one arm: each is bound to the
+/// collection's URI plus the resource's own identifier — the URI its READ is addressed by —
+/// and takes the same members the create does, each under the property's name with its
+/// initial letter lower-cased. Each is a PATCH, so the request carries exactly the
+/// properties this declaration states DIFFERENTLY from the ones the resource was last
+/// deployed with, and a property neither revision changed is not re-sent; a property the new
+/// declaration no longer states keeps the value an earlier deployment gave it, as it does
+/// for the api itself ([`update_apigatewayv2_api`]).
+///
+/// `Ok(None)` is a change that patch cannot make, so the deployment reports it as not
+/// applied rather than as a success that dropped it: a property that addresses the api the
+/// resource lives in ([`ApiGatewayV2Child::path`]), one fixed when the resource is made
+/// ([`ApiGatewayV2Child::create_only`]), and a changed `Tags` map, which no member of these
+/// patches carries. (None of those normally reaches here: each is create-only, so such a
+/// declaration asks for a different resource and the stack replaces it.)
+pub(crate) async fn update_apigatewayv2_child(
+    ctx: &smithy_server_runtime::OperationContext<'_>,
+    region: &str,
+    resource: &StoredResource,
+    declared: &Value,
+    child: &ApiGatewayV2Child,
+) -> Result<Option<Created>, Refusal> {
+    let mut request = Map::new();
+    if let Some(properties) = declared.as_object() {
+        for (property, value) in properties {
+            if resource.properties.get(property) == Some(value) {
+                continue;
+            }
+            let addresses_the_collection = child
+                .path
+                .iter()
+                .any(|(parent, _)| parent == &property.as_str());
+            if property == "Tags"
+                || addresses_the_collection
+                || child.named_by == Some(property.as_str())
+                || child.create_only.contains(&property.as_str())
+            {
+                return Ok(None);
+            }
+            let member = lower_initial(property);
+            if child.data_keys.contains(&property.as_str()) {
+                request.insert(member, apigatewayv2_data_keyed_map(value)?);
+            } else {
+                request.insert(member, lower_camel_members(value, 0)?);
+            }
+        }
+    }
+    call_rest_json(
+        ctx,
+        API_GATEWAY_SIGNING_NAME,
+        region,
+        "PATCH",
+        &apigatewayv2_child_uri(resource, child)?,
+        Some(&Value::Object(request)),
+    )
+    .await?;
+    // The patch answers the resource's own record, and its identity is unchanged — that
+    // service assigned it when the resource was created — so there is nothing new for the
+    // stack to publish about it, exactly as there is nothing the create answers beyond that
+    // id.
+    Ok(Some(Created::attributes(BTreeMap::new())))
 }
 
 /// Delete one resource a stack created inside an api, addressed exactly as its own read is.

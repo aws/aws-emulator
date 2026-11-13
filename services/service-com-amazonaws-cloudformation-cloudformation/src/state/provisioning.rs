@@ -648,28 +648,31 @@ impl ResourceTransition {
         }
     }
 
-    /// The transition that OPENS a resource's create: `CREATE_IN_PROGRESS` before anything
-    /// exists.
+    /// The transition that OPENS a resource's create before anything exists: `status` is
+    /// `CREATE_IN_PROGRESS` for a resource the stack does not have, and the UPDATE's own
+    /// in-progress status for one this deployment REPLACES ([`Replacing`]), with that
+    /// replacement's `reason` beside it.
     ///
     /// `StackEvent$PhysicalResourceId` is "the name or unique identifier associated with
     /// the physical instance of the resource", and there is no such instance yet, so this
     /// event names an EMPTY one — the member is reported, and what it reports is that
     /// nothing has been created under it so far.
-    fn creating(resource: &StoredResource) -> Self {
+    fn creating(resource: &StoredResource, status: &str, reason: Option<&'static str>) -> Self {
         Self {
             physical_resource_id: Some(String::new()),
-            ..Self::starting(resource, super::resource_status::CREATE_IN_PROGRESS)
+            reason: reason.map(ToString::to_string),
+            ..Self::starting(resource, status)
         }
     }
 
     /// The transition that reports the create of a resource was INITIATED: the second
-    /// `CREATE_IN_PROGRESS` CloudFormation records for it, once the request to create it
+    /// in-progress event CloudFormation records for it, once the request to create it
     /// has gone to the service that owns it, naming the identifier it is being created
-    /// under.
-    fn initiated(resource: &StoredResource) -> Self {
+    /// under. `status` is the one the opening transition carried.
+    fn initiated(resource: &StoredResource, status: &str) -> Self {
         Self {
             reason: Some(super::RESOURCE_CREATION_INITIATED.to_string()),
-            ..Self::finished(resource, super::resource_status::CREATE_IN_PROGRESS, None)
+            ..Self::finished(resource, status, None)
         }
     }
 
@@ -692,6 +695,58 @@ impl ResourceTransition {
         Self {
             physical_resource_id: None,
             ..Self::finished(resource, status, Some(reason))
+        }
+    }
+}
+
+/// The statuses one resource's transitions are reported under in the walk that CREATES it,
+/// the verb its failure is summarised with, and the reason its opening transition carries.
+///
+/// A resource the stack does not have is CREATED, and its events are the `CREATE_*` ones. A
+/// resource the stack HAS, under an identity this deployment no longer asks for, is being
+/// REPLACED: CloudFormation creates the new physical resource as part of the update that
+/// asked for it, so the events are that UPDATE's own and the one that opens them says why
+/// the resource is being created at all ([`super::RESOURCE_REPLACEMENT_IN_PROGRESS`]) — which
+/// is what tells a client polling the stack that the resource it had was replaced rather than
+/// created for the first time. The old physical resource's removal is reported separately,
+/// when the update's cleanup takes it down.
+#[derive(Debug, Clone, Copy)]
+struct Reporting {
+    /// The status the resource's opening and initiated transitions carry.
+    in_progress: &'static str,
+    /// The status it reaches once the owning service has created it.
+    completed: &'static str,
+    /// The status it reaches when nothing created it.
+    failed: &'static str,
+    /// The verb the stack-level summary names this resource's failure under
+    /// ([`super::resource_failure_summary`]).
+    action: &'static str,
+    /// The reason the opening transition carries, which only a replacement has.
+    opening_reason: Option<&'static str>,
+}
+
+impl Reporting {
+    /// How a resource of the creating walk is reported: `replacing` is whether the stack
+    /// already has this logical resource under an identity this declaration no longer asks
+    /// for, and `express` the deployment mode a create's verb depends on
+    /// ([`super::create_action`]).
+    fn of(replacing: bool, express: bool) -> Self {
+        if replacing {
+            Self {
+                in_progress: super::resource_status::UPDATE_IN_PROGRESS,
+                completed: super::resource_status::UPDATE_COMPLETE,
+                failed: super::resource_status::UPDATE_FAILED,
+                action: super::failed_action::UPDATE,
+                opening_reason: Some(super::RESOURCE_REPLACEMENT_IN_PROGRESS),
+            }
+        } else {
+            Self {
+                in_progress: super::resource_status::CREATE_IN_PROGRESS,
+                completed: super::resource_status::CREATE_COMPLETE,
+                failed: super::resource_status::CREATE_FAILED,
+                action: super::create_action(express),
+                opening_reason: None,
+            }
         }
     }
 }
@@ -1975,7 +2030,11 @@ pub async fn reconcile(
                     Some(provisioner) => {
                         // The call is the stack's, made under its service role and about
                         // THIS resource ([`super::service_role`]).
-                        super::service_role::on_resource(
+                        // BOXED, for the reason the create's own call below records: the
+                        // call's future is the owning service's whole handler, and holding one
+                        // of those inline in this walk's state machine is what takes a
+                        // deployment of a wide template past the thread's stack.
+                        Box::pin(super::service_role::on_resource(
                             super::service_role::target_of(&resource),
                             provisioner.update(
                                 ctx,
@@ -1985,7 +2044,7 @@ pub async fn reconcile(
                                 &stack.tags_for(&resource.logical_id),
                                 &stack.capabilities,
                             ),
-                        )
+                        ))
                         .await
                     }
                     // Nothing exists in any owning service for this type, so there is
@@ -2002,12 +2061,12 @@ pub async fn reconcile(
                     Ok(Some(updated)) => {
                         // An update that answers with a DIFFERENT physical id did not
                         // change the resource that was there: it REPLACED it. The stack
-                        // publishes the id the owning service just minted, and the resource
-                        // it replaced is taken down below — the cleanup CloudFormation
-                        // performs for the old physical resource of a replacement, whose
-                        // documented default is to delete it (the `UpdateReplacePolicy`
-                        // values that say otherwise are not recorded on a resource yet, so
-                        // none is read here).
+                        // publishes the id the owning service just minted, and what becomes
+                        // of the resource it replaced is that resource's own
+                        // `UpdateReplacePolicy` — the attribute that governs the OLD physical
+                        // resource of a replacement, read here exactly as the cleanup walk of
+                        // a replacement the stack itself created reads it
+                        // ([`Policies::Replaced`]), whose documented default is to delete it.
                         let superseded = match &updated.physical_resource_id {
                             Some(minted) if *minted != resource.physical_resource_id => {
                                 let replaced = resource.clone();
@@ -2019,13 +2078,21 @@ pub async fn reconcile(
                         resource.attributes.extend(updated.attributes);
                         resource.properties = declared_properties.clone();
                         if let Some(replaced) = superseded {
-                            if let Some(owner) = owner_for(&replaced.resource_type) {
+                            // `Retain` "keeps the resource without deleting" it, so nothing at
+                            // all is asked of the owning service about the one this update
+                            // replaced: it stays exactly as it is and goes on serving its own
+                            // clients, which is the whole of what the attribute asks for.
+                            let retained = policy_of(&replaced, Policies::Replaced)
+                                == super::deletion_policy::RETAIN;
+                            if let Some(owner) =
+                                owner_for(&replaced.resource_type).filter(|_| !retained)
+                            {
                                 // What the owning service answers changes nothing about
                                 // this deployment: the replacement is already in force, and
                                 // a resource it could not take down is not a resource the
                                 // stack still publishes.
                                 let _taken_down =
-                                    owner.delete(ctx, region, &replaced, None).await;
+                                    Box::pin(owner.delete(ctx, region, &replaced, None)).await;
                             }
                         }
                         // ...and whether the change has been CARRIED OUT is that service's
@@ -2037,14 +2104,14 @@ pub async fn reconcile(
                         // anything, so nothing waits for it.
                         let readiness = match owner_for(&resource.resource_type) {
                             Some(provisioner) => {
-                                provisioner
-                                    .readiness(
-                                        ctx,
-                                        region,
-                                        &resource.physical_resource_id,
-                                        Some(&resource.properties),
-                                    )
-                                    .await
+                                // Boxed for the reason the change's own call above is.
+                                Box::pin(provisioner.readiness(
+                                    ctx,
+                                    region,
+                                    &resource.physical_resource_id,
+                                    Some(&resource.properties),
+                                ))
+                                .await
                             }
                             None => Ok(Readiness::Ready),
                         };
@@ -2176,10 +2243,11 @@ pub async fn reconcile(
             let retagged = match owner_for(&resource.resource_type) {
                 Some(provisioner) => {
                     let tags = stack.tags_for(&resource.logical_id);
-                    super::service_role::on_resource(
+                    // Boxed for the reason the configuration change's own call is.
+                    Box::pin(super::service_role::on_resource(
                         super::service_role::target_of(&resource),
                         provisioner.retag(ctx, region, &resource, &deployed_properties, &tags),
-                    )
+                    ))
                     .await
                 }
                 None => Ok(()),
@@ -2253,12 +2321,26 @@ pub async fn reconcile(
             outcome.resources.push(resource);
             continue;
         }
+        // Whether this create REPLACES the resource the stack already has under this logical
+        // id: the record did not match one it has ([`is_same_resource`]), and yet the stack
+        // holds a deployed resource of the same logical id and type — so the declaration asks
+        // for a value the resource that exists cannot take, and what the deployment does is
+        // create a new physical resource for it. That is reported as the UPDATE's own
+        // transitions rather than as a first create ([`Reporting`]).
+        let replacing = previous.iter().any(|existing| {
+            already_deployed(existing)
+                && existing.logical_id == resource.logical_id
+                && existing.resource_type == resource.resource_type
+        });
+        let reporting = Reporting::of(replacing, stack.express);
         // The deployment is CREATING this resource: the stack records it as one it created
         // once this is through, whether the create reaches an owning service or not, so the
         // transition that opens it is recorded here.
-        outcome
-            .transitions
-            .push(ResourceTransition::creating(&resource));
+        outcome.transitions.push(ResourceTransition::creating(
+            &resource,
+            reporting.in_progress,
+            reporting.opening_reason,
+        ));
         // A physical name identifies ONE resource, and CLOUDFORMATION itself holds the
         // record of which of this stack's resources holds which name: a declaration that
         // resolved to a name another resource of this stack already holds — the one the
@@ -2284,11 +2366,11 @@ pub async fn reconcile(
         if let Some(reason) = collision {
             failed.push((
                 resource.logical_id.clone(),
-                super::create_action(stack.express),
+                reporting.action,
             ));
             outcome.transitions.push(ResourceTransition::failed(
                 &resource,
-                super::resource_status::CREATE_FAILED,
+                reporting.failed,
                 reason,
             ));
             outcome.resources.push(resource);
@@ -2308,11 +2390,11 @@ pub async fn reconcile(
             if let Some(reason) = custom_resource::service_timeout_refusal(&deployed_properties) {
                 failed.push((
                     resource.logical_id.clone(),
-                    super::create_action(stack.express),
+                    reporting.action,
                 ));
                 outcome.transitions.push(ResourceTransition::failed(
                     &resource,
-                    super::resource_status::CREATE_FAILED,
+                    reporting.failed,
                     reason.to_string(),
                 ));
                 outcome.resources.push(resource);
@@ -2343,13 +2425,13 @@ pub async fn reconcile(
                     resource.materialised = true;
                     outcome
                         .transitions
-                        .push(ResourceTransition::initiated(&resource));
+                        .push(ResourceTransition::initiated(&resource, reporting.in_progress));
                     outcome.stabilising.push(Stabilising {
                         awaited: super::stabilising::Awaited::Ready,
                         logical_id: resource.logical_id.clone(),
                         resource_type: resource.resource_type.clone(),
                         physical_resource_id: resource.physical_resource_id.clone(),
-                        reported_state: super::resource_status::CREATE_IN_PROGRESS.to_string(),
+                        reported_state: reporting.in_progress.to_string(),
                         provider_request: Some(request),
                     });
                     // Its attributes are the `Data` that answer will carry, so nothing that
@@ -2357,7 +2439,7 @@ pub async fn reconcile(
                     unpublished.insert(resource.logical_id.clone());
                     outcome.transitions.push(ResourceTransition::finished(
                         &resource,
-                        super::resource_status::CREATE_COMPLETE,
+                        reporting.completed,
                         None,
                     ));
                     outcome.resources.push(resource);
@@ -2370,11 +2452,11 @@ pub async fn reconcile(
                 Err(refusal) => {
                     failed.push((
                         resource.logical_id.clone(),
-                        super::create_action(stack.express),
+                        reporting.action,
                     ));
                     outcome.transitions.push(ResourceTransition::failed(
                         &resource,
-                        super::resource_status::CREATE_FAILED,
+                        reporting.failed,
                         handler_failure_reason(None, &refusal, &resource.physical_resource_id),
                     ));
                     outcome.resources.push(resource);
@@ -2406,11 +2488,11 @@ pub async fn reconcile(
         {
             failed.push((
                 resource.logical_id.clone(),
-                super::create_action(stack.express),
+                reporting.action,
             ));
             outcome.transitions.push(ResourceTransition::failed(
                 &resource,
-                super::resource_status::CREATE_FAILED,
+                reporting.failed,
                 reason,
             ));
             outcome.resources.push(resource);
@@ -2450,10 +2532,10 @@ pub async fn reconcile(
             None => {
                 outcome
                     .transitions
-                    .push(ResourceTransition::initiated(&resource));
+                    .push(ResourceTransition::initiated(&resource, reporting.in_progress));
                 outcome.transitions.push(ResourceTransition::finished(
                     &resource,
-                    super::resource_status::CREATE_COMPLETE,
+                    reporting.completed,
                     None,
                 ));
                 outcome.resources.push(resource);
@@ -2519,7 +2601,7 @@ pub async fn reconcile(
                 resource.materialised = true;
                 outcome
                     .transitions
-                    .push(ResourceTransition::initiated(&resource));
+                    .push(ResourceTransition::initiated(&resource, reporting.in_progress));
                 // The create was ACCEPTED; whether the resource is usable is the owning
                 // service's to say. A type whose create leaves it coming up answers the
                 // state it is in, and the resource's creation is held open until that
@@ -2527,14 +2609,14 @@ pub async fn reconcile(
                 // not report a resource created on the strength of an accepted call.
                 let readiness = match owner {
                     Some(provisioner) => {
-                        provisioner
-                            .readiness(
-                                ctx,
-                                region,
-                                &resource.physical_resource_id,
-                                Some(&resource.properties),
-                            )
-                            .await
+                        // Boxed for the reason the create's own call just above is.
+                        Box::pin(provisioner.readiness(
+                            ctx,
+                            region,
+                            &resource.physical_resource_id,
+                            Some(&resource.properties),
+                        ))
+                        .await
                     }
                     None => Ok(Readiness::Ready),
                 };
@@ -2542,7 +2624,7 @@ pub async fn reconcile(
                     Ok(Readiness::Ready) => {
                         outcome.transitions.push(ResourceTransition::finished(
                             &resource,
-                            super::resource_status::CREATE_COMPLETE,
+                            reporting.completed,
                             None,
                         ));
                     }
@@ -2574,7 +2656,7 @@ pub async fn reconcile(
                         unpublished.insert(resource.logical_id.clone());
                         outcome.transitions.push(ResourceTransition::finished(
                             &resource,
-                            super::resource_status::CREATE_COMPLETE,
+                            reporting.completed,
                             None,
                         ));
                     }
@@ -2586,11 +2668,11 @@ pub async fn reconcile(
                     Ok(Readiness::Failed(reason)) => {
                         failed.push((
                             resource.logical_id.clone(),
-                            super::create_action(stack.express),
+                            reporting.action,
                         ));
                         outcome.transitions.push(ResourceTransition::finished(
                             &resource,
-                            super::resource_status::CREATE_FAILED,
+                            reporting.failed,
                             Some(reason),
                         ));
                         outcome.resources.push(resource);
@@ -2599,11 +2681,11 @@ pub async fn reconcile(
                     Err(refusal) => {
                         failed.push((
                             resource.logical_id.clone(),
-                            super::create_action(stack.express),
+                            reporting.action,
                         ));
                         outcome.transitions.push(ResourceTransition::finished(
                             &resource,
-                            super::resource_status::CREATE_FAILED,
+                            reporting.failed,
                             Some(handler_failure_reason(
                                 owner,
                                 &refusal,
@@ -2618,11 +2700,11 @@ pub async fn reconcile(
             Err(refusal) => {
                 failed.push((
                     resource.logical_id.clone(),
-                    super::create_action(stack.express),
+                    reporting.action,
                 ));
                 outcome.transitions.push(ResourceTransition::failed(
                     &resource,
-                    super::resource_status::CREATE_FAILED,
+                    reporting.failed,
                     // A name already in use that THIS REGION's stacks are what hold is
                     // reported in CloudFormation's own words, naming the stack that manages
                     // it; everything else the owning service refused is reported as that
@@ -2726,7 +2808,11 @@ pub async fn reconcile(
         held: &held,
         needs: &no_relation,
         on_refusal: OnRefusal::Orphan,
-        policies: Policies::Ignored,
+        // ...and the two read different attributes for the same reason: what becomes of the
+        // OLD physical resource of a replacement is its `UpdateReplacePolicy`
+        // ([`Policies::Replaced`]), while a resource the deployment no longer declares is
+        // governed by the `DeletionPolicy` the caller's own walk chose.
+        policies: Policies::Replaced,
     };
     let mut deleted = delete_pass(ctx, region, &replacements, &replacement_walk, &mut opened).await;
     if deleted.failure.is_some() {
@@ -3348,25 +3434,32 @@ async fn roll_back_failed_resource(
 /// deletion, and a deployment that no longer declares it. The OLD physical resource of a
 /// REPLACEMENT is a different event governed by a different attribute —
 /// `UpdateReplacePolicy`, whose action this service reports
-/// ([`super::change_plan::policy_action`]) and whose documented default is to delete that
-/// resource — so a walk taking one of those down reads no deletion policy for it.
+/// ([`super::change_plan::policy_action`]) — so a walk taking one of those down reads THAT
+/// attribute instead ([`Policies::Replaced`]), which takes the same three values and whose
+/// documented default is to delete the resource.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Policies {
     /// Each resource's own `DeletionPolicy` decides what becomes of it.
     Honoured,
-    /// The physical resource is deleted whatever `DeletionPolicy` its declaration states.
+    /// Each resource's own `UpdateReplacePolicy` decides what becomes of it: this walk is
+    /// taking down the old physical resource of a replacement.
+    Replaced,
+    /// The physical resource is deleted whatever either attribute states.
     Ignored,
 }
 
-/// What this walk does with one resource: its own `DeletionPolicy` where the walk reads the
-/// attribute, and the documented default ([`super::deletion_policy::DELETE`]) otherwise —
-/// which is also what a declaration naming no policy, and one naming a value that is none
-/// of the three, gets.
+/// What this walk does with one resource: the attribute the walk reads for it, and the
+/// documented default ([`super::deletion_policy::DELETE`]) otherwise — which is also what a
+/// declaration naming no policy, and one naming a value that is none of the three, gets.
 fn policy_of(resource: &StoredResource, policies: Policies) -> &str {
     match policies {
         Policies::Ignored => super::deletion_policy::DELETE,
         Policies::Honoured => resource
             .deletion_policy
+            .as_deref()
+            .unwrap_or(super::deletion_policy::DELETE),
+        Policies::Replaced => resource
+            .update_replace_policy
             .as_deref()
             .unwrap_or(super::deletion_policy::DELETE),
     }
@@ -3630,10 +3723,14 @@ async fn delete_pass(
                     .map(|response_url| Some(call.remembered(&response_url)))
             }
             (None, Some(provisioner)) => {
-                super::service_role::on_resource(
+                // BOXED, for the reason the deployment walk's own calls are: the call's future
+                // is the owning service's whole handler, and holding one of those inline in
+                // this walk's state machine is what takes a teardown of a wide stack past the
+                // thread's stack.
+                Box::pin(super::service_role::on_resource(
                     super::service_role::target_of(resource),
                     provisioner.delete(ctx, region, resource, final_snapshot.as_deref()),
-                )
+                ))
                 .await
                 .map(|()| None)
             }
@@ -3657,13 +3754,13 @@ async fn delete_pass(
                         super::resource_status::DELETE_IN_PROGRESS.to_string(),
                     )),
                     (None, Some(provisioner)) => {
-                        provisioner
-                            .removal(
-                                ctx,
-                                region,
-                                &outcome.resources[index].physical_resource_id,
-                            )
-                            .await
+                        // Boxed for the reason the delete's own call above is.
+                        Box::pin(provisioner.removal(
+                            ctx,
+                            region,
+                            &outcome.resources[index].physical_resource_id,
+                        ))
+                        .await
                     }
                     (None, None) => Ok(Removal::Gone),
                 };

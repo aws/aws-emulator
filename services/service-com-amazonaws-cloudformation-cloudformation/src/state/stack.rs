@@ -528,90 +528,29 @@ impl StoredStack {
         // deployment adopts and the ones an earlier one did ([`Self::adopted`]). Read out
         // here so the walk below only reads it.
         let adopted_in_force = self.adopted.clone();
-        // Whether any record took over an identifier its owning service MINTED, which is
-        // not the one the properties above were resolved against.
-        let mut adopted_minted_identity = false;
-        for resource in &mut resources {
-            // A resource this stack ADOPTED already exists in the service that owns it, under
-            // the identifier the plan that adopted it reported: that identifier is the one in
-            // force, so the record takes it over before anything is compared against it
-            // ([`resource_import::adopt_identifier`]). A declaration that STATES the
-            // resource's name decides the identity itself, so an adoption no longer applies
-            // to it — such a declaration asks for the resource that name belongs to.
-            let adopted = adopted_in_force
-                .get(&resource.logical_id)
-                .filter(|_| declared_name(resource).is_none());
-            if let Some(identifier) = adopted {
-                if resource_import::adopt_identifier(resource, identifier) {
-                    adopted_minted_identity = true;
-                }
+        // The identities in force are taken over, and the declarations resolved against them
+        // again, until a pass takes over nothing new.
+        //
+        // One pass settles the records whose identity can be judged from the properties as
+        // they stand ([`adopt_identities_in_force`]), and the re-resolution below gives every
+        // reference to one of them the identity that record now carries. That is what the
+        // NEXT pass needs: a resource whose create-only property NAMES another resource of
+        // the stack (an api's integration, whose `ApiId` is the api it lives in) is the same
+        // resource as the one the stack has only if that property names the same resource,
+        // and a reference still carrying the stand-in the naming rules computed would read as
+        // naming a different one. Each pass therefore settles one more level of that nesting,
+        // and the walk stops as soon as a pass changes no identity — so a template that
+        // declares no such chain pays for one pass.
+        for _ in 0..MAX_IDENTITY_PASSES {
+            if !adopt_identities_in_force(&mut resources, &already_created, &adopted_in_force) {
+                break;
             }
-            // Whether the identifier a resource of this type is known by is one this
-            // deployment cannot recompute, so the record carries the one in force FORWARD
-            // rather than reading the resource as a different one: an identifier assigned
-            // ELSEWHERE ([`identity_is_assigned_elsewhere`]), and the identifier of a
-            // resource this stack ADOPTED, which CloudFormation did not create and the
-            // template therefore states nowhere.
-            let keeps_its_identifier = identity_is_assigned_elsewhere(&resource.resource_type)
-                || adopted.is_some();
-            // The record of the same resource this stack already created. Judged by
-            // identity first; for a type whose id the OWNING SERVICE assigns, a record
-            // under the same logical id and type IS that resource, because nothing here
-            // can recompute the id it was created with — as long as the declaration still
-            // asks for the same resource, which is what the type's REPLACEMENT properties
-            // say ([`declares_the_same_replacing_properties`]). A declaration that states
-            // one of them differently is a different resource (AWS replaces such a resource
-            // when the template changes one), and a type that publishes none declares none
-            // on either side, so the test is vacuous for it.
-            let existing = already_created
-                .iter()
-                .find(|existing| {
-                    existing.materialised && provisioning::is_same_resource(existing, resource)
-                })
-                .or_else(|| {
-                    keeps_its_identifier
-                        .then(|| {
-                            already_created.iter().find(|existing| {
-                                existing.materialised
-                                    && existing.logical_id == resource.logical_id
-                                    && existing.resource_type == resource.resource_type
-                                    && declares_the_same_replacing_properties(existing, resource)
-                            })
-                        })
-                        .flatten()
-                });
-            if let Some(existing) = existing {
-                // Deliberately NOT `provisioning::carry_forward`: that one also carries
-                // the properties the resource was created with, and this record's
-                // properties are what `reconcile` compares against them to see whether
-                // the deployment asks for a DIFFERENT configuration of a resource that
-                // already exists. Only the fact that it exists, what the owning service
-                // reported about it, and an identity that service MINTED (which no
-                // deployment recomputes) carry forward here.
-                resource.materialised = true;
-                if keeps_its_identifier {
-                    // The identifier in force is the one that service minted, or the one an
-                    // adopted resource already had, so the record keeps it: an output naming
-                    // the resource reports the id a client can call that service with, and
-                    // `reconcile` sees the resource the stack already has rather than one to
-                    // create again.
-                    if existing.physical_resource_id != resource.physical_resource_id {
-                        adopted_minted_identity = true;
-                    }
-                    resource.physical_resource_id = existing.physical_resource_id.clone();
-                }
-                for (name, value) in &existing.attributes {
-                    resource.attributes.insert(name.clone(), value.clone());
-                }
-            }
-        }
-        // A property naming a resource whose identity its owning service MINTED was
-        // resolved against the stand-in the naming rules recomputed above, not against the
-        // identity now in force, so those properties are resolved ONCE MORE against the
-        // records as they stand. Only a deployment that really took such an identifier over
-        // pays for the second pass; without it a re-deploy of the same template would read
-        // as a CHANGED configuration of every resource that names one.
-        if adopted_minted_identity {
+            // A property naming a resource whose identity its owning service MINTED was
+            // resolved against the stand-in the naming rules recomputed above, not against the
+            // identity now in force, so those properties are resolved ONCE MORE against the
+            // records as they stand. Only a deployment that really took such an identifier over
+            // pays for the second pass; without it a re-deploy of the same template would read
+            // as a CHANGED configuration of every resource that names one.
             let in_force: BTreeMap<String, StoredResource> = resources
                 .iter()
                 .map(|resource| (resource.logical_id.clone(), resource.clone()))
@@ -3659,6 +3598,110 @@ pub(crate) fn declared_name(resource: &StoredResource) -> Option<String> {
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_owned)
         })
+}
+
+/// How many times a deployment takes over the identities in force and resolves its
+/// declarations against them ([`adopt_identities_in_force`]): enough passes for a chain of
+/// resources that NAME one another — an api, the integration inside it, the route wired to
+/// that integration, the response of that route — and bounded, so no template can make the
+/// walk go on indefinitely.
+const MAX_IDENTITY_PASSES: usize = 4;
+
+/// Give every record of a deployment the identity in force for the resource it declares, and
+/// answer whether any of them took one over that the properties were NOT resolved against.
+///
+/// `already_created` is what the stack has in the services that own its resources, and
+/// `adopted_in_force` the identifier each resource the stack ADOPTED already exists under
+/// ([`StoredStack::adopted`]). A record matched to one of those is the resource the stack
+/// already has: it carries forward the fact that it exists, what the owning service reported
+/// about it, and an identity that service MINTED, which no deployment can recompute.
+///
+/// `true` says a record now carries an identity the declarations were not resolved against,
+/// so a reference to it still holds the stand-in the naming rules computed — which is what
+/// makes the caller resolve them again and ask once more.
+fn adopt_identities_in_force(
+    resources: &mut [StoredResource],
+    already_created: &[StoredResource],
+    adopted_in_force: &BTreeMap<String, String>,
+) -> bool {
+    // Whether any record took over an identifier its owning service MINTED, which is
+    // not the one the properties were resolved against.
+    let mut adopted_minted_identity = false;
+    for resource in resources.iter_mut() {
+        // A resource this stack ADOPTED already exists in the service that owns it, under
+        // the identifier the plan that adopted it reported: that identifier is the one in
+        // force, so the record takes it over before anything is compared against it
+        // ([`resource_import::adopt_identifier`]). A declaration that STATES the
+        // resource's name decides the identity itself, so an adoption no longer applies
+        // to it — such a declaration asks for the resource that name belongs to.
+        let adopted = adopted_in_force
+            .get(&resource.logical_id)
+            .filter(|_| declared_name(resource).is_none());
+        if let Some(identifier) = adopted {
+            if resource_import::adopt_identifier(resource, identifier) {
+                adopted_minted_identity = true;
+            }
+        }
+        // Whether the identifier a resource of this type is known by is one this
+        // deployment cannot recompute, so the record carries the one in force FORWARD
+        // rather than reading the resource as a different one: an identifier assigned
+        // ELSEWHERE ([`identity_is_assigned_elsewhere`]), and the identifier of a
+        // resource this stack ADOPTED, which CloudFormation did not create and the
+        // template therefore states nowhere.
+        let keeps_its_identifier =
+            identity_is_assigned_elsewhere(&resource.resource_type) || adopted.is_some();
+        // The record of the same resource this stack already created. Judged by
+        // identity first; for a type whose id the OWNING SERVICE assigns, a record
+        // under the same logical id and type IS that resource, because nothing here
+        // can recompute the id it was created with — as long as the declaration still
+        // asks for the same resource, which is what the type's REPLACEMENT properties
+        // say ([`declares_the_same_replacing_properties`]). A declaration that states
+        // one of them differently is a different resource (AWS replaces such a resource
+        // when the template changes one), and a type that publishes none declares none
+        // on either side, so the test is vacuous for it.
+        let existing = already_created
+            .iter()
+            .find(|existing| {
+                existing.materialised && provisioning::is_same_resource(existing, resource)
+            })
+            .or_else(|| {
+                keeps_its_identifier
+                    .then(|| {
+                        already_created.iter().find(|existing| {
+                            existing.materialised
+                                && existing.logical_id == resource.logical_id
+                                && existing.resource_type == resource.resource_type
+                                && declares_the_same_replacing_properties(existing, resource)
+                        })
+                    })
+                    .flatten()
+            });
+        if let Some(existing) = existing {
+            // Deliberately NOT `provisioning::carry_forward`: that one also carries
+            // the properties the resource was created with, and this record's
+            // properties are what `reconcile` compares against them to see whether
+            // the deployment asks for a DIFFERENT configuration of a resource that
+            // already exists. Only the fact that it exists, what the owning service
+            // reported about it, and an identity that service MINTED (which no
+            // deployment recomputes) carry forward here.
+            resource.materialised = true;
+            if keeps_its_identifier {
+                // The identifier in force is the one that service minted, or the one an
+                // adopted resource already had, so the record keeps it: an output naming
+                // the resource reports the id a client can call that service with, and
+                // `reconcile` sees the resource the stack already has rather than one to
+                // create again.
+                if existing.physical_resource_id != resource.physical_resource_id {
+                    adopted_minted_identity = true;
+                }
+                resource.physical_resource_id = existing.physical_resource_id.clone();
+            }
+            for (name, value) in &existing.attributes {
+                resource.attributes.insert(name.clone(), value.clone());
+            }
+        }
+    }
+    adopted_minted_identity
 }
 
 /// Whether two revisions of one declaration ask for the SAME resource: they state every

@@ -557,6 +557,7 @@ mod tests {
                 properties: properties.clone(),
                 materialised: false,
                 deletion_policy: None,
+                update_replace_policy: None,
             };
             let family = declared_family(&resource);
             assert_eq!(

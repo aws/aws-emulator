@@ -592,6 +592,7 @@ mod tests {
                 properties: ::serde_json::Value::Null,
                 materialised: true,
                 deletion_policy: None,
+                update_replace_policy: None,
             };
             let adopted = adopt_identifier(&mut resource, identifier);
             let reported: Vec<(String, String)> = expected

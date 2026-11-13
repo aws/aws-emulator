@@ -1726,6 +1726,7 @@ pub fn provision(
                 properties: Value::Null,
                 materialised: false,
                 deletion_policy: declared_deletion_policy(declared),
+                update_replace_policy: declared_update_replace_policy(declared),
             },
         );
         names.push((declared, name));
@@ -2253,6 +2254,23 @@ fn declared_deletion_policy(declared: &DeclaredResource) -> Option<String> {
         .map(str::to_string)
 }
 
+/// The `UpdateReplacePolicy` resource attribute a declaration carries, as written: the
+/// attribute that says "how CloudFormation handles the OLD physical resource" when a
+/// deployment REPLACES it, read for the same reason and in the same way as the
+/// `DeletionPolicy` beside it ([`declared_deletion_policy`]) — the record keeps it so the
+/// walk that takes the replaced resource down reads the attribute of the template that
+/// deployed that resource.
+///
+/// `None` for a declaration that states none — the documented default, which deletes the old
+/// resource — and for one whose value is not a string, which names no policy.
+fn declared_update_replace_policy(declared: &DeclaredResource) -> Option<String> {
+    declared
+        .declaration
+        .get("UpdateReplacePolicy")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+}
+
 /// Whether a declared resource is one this deployment creates.
 ///
 /// Unconditional unless the declaration names a `Condition`, and then exactly when that
@@ -2689,6 +2707,27 @@ pub fn replacement_properties(resource_type: &str) -> &'static [&'static str] {
         // `UpdateEnvironment`, so a declaration restating either asks for a different
         // environment.
         MWAA_ENVIRONMENT => &["EndpointManagement", "KmsKey"],
+        // An api's PROTOCOL is fixed when API Gateway v2 makes it: `ProtocolType` is a member
+        // of `CreateApi` and of no member of `UpdateApi` — and no other call of that service
+        // changes an api's protocol — so a declaration stating another protocol asks for a
+        // DIFFERENT api, which is what that property's "Update requires: Replacement" says.
+        // Every other property of the type is one that patch takes, so stating one
+        // differently is a change to the api the stack already has
+        // (`crate::state::provisioner::update_apigatewayv2_api`).
+        APIGATEWAYV2_API => &["ProtocolType"],
+        // An integration, a route, a stage, a deployment and an authorizer each exist INSIDE
+        // the api their `ApiId` names, and API Gateway v2 publishes no call that moves one to
+        // another api — every call on one takes the api beside the resource's own identifier —
+        // so a declaration naming another api asks for a different resource, which is what
+        // that property's "Update requires: Replacement" says. A DEPLOYMENT is a snapshot
+        // released to one stage besides: `CreateDeployment` takes that stage and
+        // `UpdateDeployment` takes the description alone
+        // (`crate::state::provisioner::ApiGatewayV2Child::create_only`).
+        APIGATEWAYV2_INTEGRATION
+        | APIGATEWAYV2_ROUTE
+        | APIGATEWAYV2_STAGE
+        | APIGATEWAYV2_AUTHORIZER => &["ApiId"],
+        APIGATEWAYV2_DEPLOYMENT => &["ApiId", "StageName"],
         // An AppConfig environment and configuration profile belong to the application their
         // `ApplicationId` names, and a profile reads its configuration from the source its
         // `LocationUri` and `Type` fix: each is a member of that type's create and of no
@@ -2831,6 +2870,12 @@ pub fn conditionally_replacing_paths(resource_type: &str) -> &'static [&'static 
 /// `guardrailIdentifier` together with a new required `name`, the guardrail being identified
 /// by the id Amazon Bedrock minted for it.
 ///
+/// An API Gateway v2 api and the authorizer of one are two more: `UpdateApi` takes an `ApiId`
+/// together with a new `Name`, and `UpdateAuthorizer` an `AuthorizerId` together with a new
+/// `Name` — each resource being identified by the id that service minted for it, which is
+/// what that type's `Ref` returns ([`identity_is_service_assigned`]), so the `Name` a
+/// declaration states is only what the resource is called.
+///
 /// Read in the two places one rule governs: [`replacing_properties`], which is what a change
 /// set's preview and the deployment's own replacement decision share, and
 /// [`crate::state::stack`]'s reading of WHICH resource a re-deploy of a service-assigned
@@ -2844,6 +2889,8 @@ pub fn name_is_create_only(resource_type: &str) -> bool {
             | BEDROCK_AGENT_ALIAS
             | BEDROCK_DATA_SOURCE
             | BEDROCK_GUARDRAIL
+            | APIGATEWAYV2_API
+            | APIGATEWAYV2_AUTHORIZER
             // An AWS Amplify app and the three Amplify UI Builder entities of an app
             // environment are in that same position: each is identified by the id that service
             // minted for it, and `UpdateApp`, `UpdateComponent`, `UpdateForm` and `UpdateTheme`
