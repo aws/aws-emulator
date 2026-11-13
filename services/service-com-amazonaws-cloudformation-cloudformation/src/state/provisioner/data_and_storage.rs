@@ -2210,7 +2210,10 @@ pub(super) async fn create_bucket(
     // it behind: the resource the create could not finish is taken away again
     // ([`discard_created_bucket`]) and the refusal is what the deployment reports, so the
     // rollback of the failed stack leaves no bucket of its own standing.
-    if let Err(refusal) = configure_bucket(&client, resource, propagated).await {
+    // BOXED: each of those calls is Amazon S3's own handler reached through the in-process
+    // callback, and this create already runs several handlers down inside a deployment, so
+    // the stack-held future of the walk must not carry all of them inline.
+    if let Err(refusal) = Box::pin(configure_bucket(&client, resource, propagated)).await {
         return Err(discard_created_bucket(&client, bucket, refusal).await);
     }
     Ok(Created::default())

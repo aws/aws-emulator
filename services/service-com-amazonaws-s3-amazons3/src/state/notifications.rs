@@ -1032,31 +1032,43 @@ pub async fn unvalidated_destinations(
         let region = destination_region(&target.arn)
             .unwrap_or(bucket_region)
             .to_string();
+        // Each arm is BOXED: the call it makes is another service's whole handler, reached
+        // through the in-process callback, and a validation that runs inside a deployment is
+        // already several handlers down — the stack-held future of this one must not carry
+        // the called handler's as well, or a put made from a CloudFormation deployment takes
+        // the thread past its stack.
         let rejected = match destination {
             super::NotificationDestination::Queue => {
-                queue_rejection(
+                Box::pin(queue_rejection(
                     &mut clients,
                     callback,
                     &region,
                     &target.arn,
                     bucket,
                     &notification,
-                )
+                ))
                 .await
             }
             super::NotificationDestination::Topic => {
-                topic_rejection(
+                Box::pin(topic_rejection(
                     &mut clients,
                     callback,
                     &region,
                     &target.arn,
                     bucket,
                     &notification,
-                )
+                ))
                 .await
             }
             super::NotificationDestination::LambdaFunction => {
-                function_rejection(&mut clients, callback, &region, &target.arn, bucket).await
+                Box::pin(function_rejection(
+                    &mut clients,
+                    callback,
+                    &region,
+                    &target.arn,
+                    bucket,
+                ))
+                .await
             }
         };
         if let Some(rejection) = rejected {

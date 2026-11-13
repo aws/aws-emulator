@@ -1874,3 +1874,9 @@ mod cloudformation_provisions_cloudfront_resources;
 // service crate's test target can create the index and then read the document back out.
 #[path = "all/bedrock_knowledge_base_over_an_aoss_collection.rs"]
 mod bedrock_knowledge_base_over_an_aoss_collection;
+// Declared in the appended tail: whether an UpdateStack that changes an AWS::DynamoDB::Table
+// in place is reported complete only once DynamoDB reports that table ACTIVE again spans
+// CloudFormation (which makes the calls) and DynamoDB (which decides the table's status), so
+// neither crate's own test target can observe both ends of it.
+#[path = "all/cloudformation_dynamodb_table_in_place_update.rs"]
+mod cloudformation_dynamodb_table_in_place_update;
