@@ -22,7 +22,7 @@
 
 use serde_json::{json, Value};
 
-use crate::web_acl_lifecycle::{create_web_acl, rule, visibility, Waf};
+use crate::web_acl_lifecycle::{create_web_acl, ordered, rule, visibility, Waf};
 
 /// The WCUs a `ByteMatchStatement` costs for a positional constraint that compares
 /// the component at a FIXED position — `EXACTLY`, `STARTS_WITH`, `ENDS_WITH`
@@ -522,7 +522,7 @@ fn shared_transformation_rows() -> Vec<PricedRules> {
         .collect();
     rows.push(PricedRules {
         case: "two rules transforming the SAME component the same way".to_string(),
-        rules: json!([
+        rules: ordered(json!([
             rule(
                 "a",
                 byte_match("STARTS_WITH", json!({ "UriPath": {} }), &["LOWERCASE"])
@@ -531,12 +531,12 @@ fn shared_transformation_rows() -> Vec<PricedRules> {
                 "b",
                 byte_match("ENDS_WITH", json!({ "UriPath": {} }), &["LOWERCASE"])
             ),
-        ]),
+        ])),
         expected: 2 * BYTE_MATCH_ANCHORED + PER_TRANSFORMATION,
     });
     rows.push(PricedRules {
         case: "two rules transforming DIFFERENT components the same way".to_string(),
-        rules: json!([
+        rules: ordered(json!([
             rule(
                 "a",
                 byte_match("STARTS_WITH", json!({ "UriPath": {} }), &["LOWERCASE"])
@@ -545,12 +545,12 @@ fn shared_transformation_rows() -> Vec<PricedRules> {
                 "b",
                 byte_match("STARTS_WITH", json!({ "QueryString": {} }), &["LOWERCASE"])
             ),
-        ]),
+        ])),
         expected: 2 * BYTE_MATCH_ANCHORED + 2 * PER_TRANSFORMATION,
     });
     rows.push(PricedRules {
         case: "two rules over one component with different transformation chains".to_string(),
-        rules: json!([
+        rules: ordered(json!([
             rule(
                 "a",
                 byte_match("STARTS_WITH", json!({ "UriPath": {} }), &["LOWERCASE"])
@@ -563,12 +563,12 @@ fn shared_transformation_rows() -> Vec<PricedRules> {
                     &["LOWERCASE", "URL_DECODE"]
                 )
             ),
-        ]),
+        ])),
         expected: 2 * BYTE_MATCH_ANCHORED + 2 * PER_TRANSFORMATION,
     });
     rows.push(PricedRules {
         case: "two rules over one component, one transforming nothing".to_string(),
-        rules: json!([
+        rules: ordered(json!([
             rule(
                 "a",
                 byte_match("STARTS_WITH", json!({ "UriPath": {} }), &["NONE"])
@@ -577,13 +577,13 @@ fn shared_transformation_rows() -> Vec<PricedRules> {
                 "b",
                 byte_match("STARTS_WITH", json!({ "UriPath": {} }), &["LOWERCASE"])
             ),
-        ]),
+        ])),
         expected: 2 * BYTE_MATCH_ANCHORED + PER_TRANSFORMATION,
     });
     rows.push(PricedRules {
         case: "two rules over one component, one listing NONE beside the same chain"
             .to_string(),
-        rules: json!([
+        rules: ordered(json!([
             rule(
                 "a",
                 byte_match(
@@ -596,7 +596,7 @@ fn shared_transformation_rows() -> Vec<PricedRules> {
                 "b",
                 byte_match("STARTS_WITH", json!({ "UriPath": {} }), &["LOWERCASE"])
             ),
-        ]),
+        ])),
         // NONE transforms nothing, so both rules apply the same chain to the same
         // component and share its one charge.
         expected: 2 * BYTE_MATCH_ANCHORED + PER_TRANSFORMATION,

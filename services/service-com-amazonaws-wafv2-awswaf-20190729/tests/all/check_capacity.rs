@@ -32,7 +32,7 @@ use service_com_amazonaws_wafv2_awswaf_20190729::state::{
 use crate::managed_rule_groups::managed_statement;
 use crate::rule_group_lifecycle::{byte_match_statement, create_rule_group};
 use crate::web_acl_lifecycle::{
-    create_ip_set, create_web_acl, nested_statement, rule, sqli_statement, visibility,
+    create_ip_set, create_web_acl, nested_statement, ordered, rule, sqli_statement, visibility,
     xss_statement, Waf,
 };
 
@@ -251,21 +251,21 @@ fn capacity_cases() -> Vec<CapacityCase> {
         },
         CapacityCase {
             case: "three rules of the same kind, summed per rule",
-            rules: json!([
+            rules: ordered(json!([
                 rule("a", byte_match_statement()),
                 rule("b", byte_match_statement()),
                 rule("c", byte_match_statement()),
-            ]),
+            ])),
             expected: 3 * BYTE_MATCH_WCU,
         },
         CapacityCase {
             case: "four rules of different kinds, summed per rule",
-            rules: json!([
+            rules: ordered(json!([
                 rule("a", geo_match_statement()),
                 rule("b", sqli_statement()),
                 rule("c", xss_statement()),
                 rule("d", regex_match_statement()),
-            ]),
+            ])),
             expected: CHEAP_WCU + SQLI_WCU + XSS_WCU + REGEX_MATCH_WCU,
         },
         CapacityCase {
@@ -372,14 +372,14 @@ async fn check_capacity_equals_the_capacity_a_web_acl_with_the_same_rules_report
     });
     cases.push(CapacityCase {
         case: "a rule group reference beside a byte match",
-        rules: json!([
+        rules: ordered(json!([
             group_running_rule(
                 "a",
                 0,
                 json!({ "RuleGroupReferenceStatement": { "ARN": &group_arn } })
             ),
             rule("b", byte_match_statement()),
-        ]),
+        ])),
         expected: 42 + BYTE_MATCH_WCU,
     });
     cases.push(CapacityCase {
@@ -492,11 +492,11 @@ async fn a_rule_group_reference_costs_the_referenced_groups_own_reported_capacit
         ),
         (
             "a reference beside statements of its own".to_string(),
-            json!([
+            ordered(json!([
                 group_running_rule("a", 0, reference(&arns[1])),
                 rule("b", sqli_statement()),
                 rule("c", geo_match_statement()),
-            ]),
+            ])),
             declared[1] + SQLI_WCU + CHEAP_WCU,
         ),
     ];
@@ -570,12 +570,12 @@ async fn check_capacity_saturates_instead_of_overflowing_on_huge_declared_capaci
         ),
         (
             "three references and a statement of its own",
-            json!([
+            ordered(json!([
                 group_running_rule("a", 0, reference(&arns[0])),
                 group_running_rule("b", 1, reference(&arns[1])),
                 group_running_rule("c", 2, reference(&arns[2])),
                 rule("d", sqli_statement()),
-            ]),
+            ])),
             i64::MAX,
         ),
     ];
@@ -600,14 +600,14 @@ async fn check_capacity_reports_without_changing_anything_a_later_caller_sees() 
     let waf = Waf::new();
     let (group_id, group_arn, group_lock) =
         create_rule_group(&waf, "REGIONAL", "untouched-group", 64, json!([])).await;
-    let rules = json!([
+    let rules = ordered(json!([
         group_running_rule(
             "a",
             0,
             json!({ "RuleGroupReferenceStatement": { "ARN": &group_arn } })
         ),
         rule("b", sqli_statement()),
-    ]);
+    ]));
     let expected = 64 + SQLI_WCU;
 
     let before = waf
@@ -778,7 +778,7 @@ async fn create_rule_group_enforces_the_declared_capacity_against_the_rules_pric
         ("one byte match", json!([rule("a", byte_match_statement())])),
         (
             "a SQLi and an XSS rule",
-            json!([rule("a", sqli_statement()), rule("b", xss_statement())]),
+            ordered(json!([rule("a", sqli_statement()), rule("b", xss_statement())])),
         ),
         (
             "a nested logical statement",

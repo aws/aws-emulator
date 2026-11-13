@@ -266,6 +266,17 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
+        // `Description` is constrained by the model and its `@pattern` is written in
+        // the ASCII character classes a Smithy pattern is read with, so a
+        // description outside that form is a request-SHAPE failure — the
+        // `ValidationException` the boundary answers for every other modelled
+        // constraint — and is judged before anything about the web ACL itself.
+        if let Some(envelope) =
+            crate::state::entity_description_envelope(input.description.as_deref())
+        {
+            return Err(crate::scaffolded::Scaffolded::validation(envelope));
+        }
+
         // A `Scope` this request MINTS a web ACL into names the namespace the new web
         // ACL lands in, so the only thing wrong with it can be the value itself: a
         // global-namespace web ACL is created from a regional endpoint too, and the
@@ -411,6 +422,31 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 crate::state::nonexistent_item_exception(),
             )
             .into());
+        }
+
+        // Every precondition WAF resolves across the rule list AS A WHOLE: two rules
+        // claiming one name or one priority, a custom-response reference this
+        // document's own bodies do not define, an override naming no rule of the
+        // customer-owned group it overrides, and the per-web-ACL WCU ceiling. All of
+        // them are judged before anything is written, so a refused create leaves no
+        // web ACL behind and no listing shows the name it asked for.
+        if let Some(refusal) = state.web_acl_rule_set_refusal(
+            &input.scope,
+            input.rules.as_deref().unwrap_or_default(),
+            Some(&input.default_action),
+            input.custom_response_bodies.as_ref(),
+        ) {
+            crate::state::audit(
+                "CreateWebACL",
+                &input.scope,
+                &input.name,
+                "",
+                &format!(
+                    "WAFInvalidParameterException: {}",
+                    refusal.message.clone().unwrap_or_default()
+                ),
+            );
+            return Err(CreateWebACLErrorModeled::WAFInvalidParameterException(refusal).into());
         }
 
         let name_key = (input.scope.clone(), input.name.clone());

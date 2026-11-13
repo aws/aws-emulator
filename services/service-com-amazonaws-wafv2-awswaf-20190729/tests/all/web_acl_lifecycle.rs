@@ -181,6 +181,23 @@ pub(crate) fn rule(name: &str, statement: Value) -> Value {
     })
 }
 
+/// `rules` with each rule's `Priority` set to its position in the list.
+///
+/// `Rule$Priority` is the evaluation order and "the priorities don't need to be
+/// consecutive, but they must all be different", so a list of SEVERAL rules built
+/// from [`rule`] — which gives every rule the same priority — has to be ordered
+/// before it can be saved. The order is the one the list is written in, so a row
+/// that reads its rules back sees them as it submitted them.
+pub(crate) fn ordered(rules: Value) -> Value {
+    let Value::Array(mut rules) = rules else {
+        panic!("ordered expects a list of rules, got {rules}");
+    };
+    for (position, rule) in rules.iter_mut().enumerate() {
+        rule["Priority"] = json!(position);
+    }
+    Value::Array(rules)
+}
+
 /// A blob member — `ByteMatchStatement$SearchString` is one — travels base64-encoded
 /// in an awsJson body. One copy for every suite that writes such a statement.
 pub(crate) fn base64_of(value: &str) -> String {
@@ -898,11 +915,11 @@ async fn web_acl_capacity_is_derived_from_the_stored_rules() {
         ("one byte match", json!([rule("a", byte_match.clone())]), 10),
         (
             "three byte matches",
-            json!([
+            ordered(json!([
                 rule("a", byte_match.clone()),
                 rule("b", byte_match.clone()),
                 rule("c", byte_match.clone()),
-            ]),
+            ])),
             30,
         ),
         (
@@ -956,7 +973,7 @@ async fn web_acl_capacity_is_derived_from_the_stored_rules() {
         ("one XSS match", json!([rule("a", xss_statement())]), 40),
         (
             "two rules",
-            json!([rule("a", ip_set_reference.clone()), sqli_rule("b")]),
+            ordered(json!([rule("a", ip_set_reference.clone()), sqli_rule("b")])),
             21,
         ),
         (

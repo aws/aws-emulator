@@ -178,6 +178,16 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
     ) -> Result<Self::Output, Self::Error> {
         // The engine is reachable from `&self` (constructor-injected); `ctx` carries
         // request metadata (the region the ARN is minted in).
+        //
+        // `Description` is constrained by the model and its `@pattern` is written in
+        // the ASCII character classes a Smithy pattern is read with, so a description
+        // outside that form is the request-SHAPE failure the boundary answers for
+        // every other modelled constraint.
+        if let Some(envelope) =
+            crate::state::entity_description_envelope(input.description.as_deref())
+        {
+            return Err(crate::scaffolded::Scaffolded::validation(envelope));
+        }
         if let Err(refusal) = crate::service::requests::validate_scope(&input.scope, ctx.parts()) {
             return Err(CreateRegexPatternSetErrorModeled::WAFInvalidParameterException(refusal).into());
         }

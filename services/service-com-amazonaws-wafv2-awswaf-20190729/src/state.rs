@@ -18,7 +18,7 @@ use std::sync::LazyLock;
 use ::aws_smithy_schema::serde::{SerdeError, SerializableStruct, ShapeSerializer};
 use ::aws_smithy_schema::{Schema, ShapeId, ShapeType, TraitMap};
 use ::aws_smithy_schema_server::constraints::{
-    validate, ElementConstraintsTrait, LengthTrait, PatternTrait, Violation,
+    validate, ElementConstraintsTrait, LengthTrait, PatternTrait, Violation, ViolationKind,
 };
 
 use crate::ops::types::{
@@ -42,18 +42,24 @@ mod api_keys;
 mod capacity;
 /// The managed rule groups this service publishes.
 mod catalog;
+/// The `Description` an entity carries, and the form it has to take.
+mod description;
 /// The notation and the order an IP set holds its `Addresses` in.
 mod ip_set_addresses;
 /// The caller-supplied regular expressions a save carries, and the refusal one that
 /// is not something that matches draws.
 mod patterns;
+/// What a saved rule list has to satisfy across the whole list.
+mod rule_set;
 /// The `Scope` every resource is namespaced by.
 mod scope;
 pub use api_keys::*;
 pub use capacity::*;
 pub use catalog::*;
+pub use description::*;
 pub use ip_set_addresses::*;
 pub use patterns::*;
+pub use rule_set::*;
 pub use scope::*;
 
 // ---------------------------------------------------------------------------
@@ -1524,9 +1530,10 @@ impl ComAmazonawsWafv2Awswaf20190729State {
     /// through [`Self::arn_index`], each only to a resource of its own kind in the
     /// SAME scope, because a scope is a namespace. A `ManagedRuleGroupStatement`
     /// names no resource of this account at all — it names a group its VENDOR
-    /// publishes, identified by `(VendorName, Name)` — so it resolves against
-    /// [`MANAGED_RULE_GROUP_CATALOGUE`], the catalogue this service publishes, and a
-    /// pair the catalogue does not list names nothing that exists.
+    /// publishes, identified by `(VendorName, Name)`, and optionally one VERSION of
+    /// that group — so both resolve against [`MANAGED_RULE_GROUP_CATALOGUE`], the
+    /// catalogue this service publishes: a pair the catalogue does not list, and a
+    /// version no release of that group ever carried, name nothing that exists.
     /// The `Some` it answers is the DIAGNOSTIC for the refusal's
     /// audit record — the response itself carries [`NONEXISTENT_ITEM_MESSAGE`], the
     /// constant sentence that exception type always carries. That is also what keeps
@@ -1585,17 +1592,41 @@ impl ComAmazonawsWafv2Awswaf20190729State {
                     ));
                 }
             }
-            if let Some(managed) = statement
-                .managed_rule_group_statement
-                .as_ref()
-                .filter(|managed| {
-                    managed_rule_group(&managed.vendor_name, &managed.name).is_none()
-                })
-            {
-                return Some(format!(
-                    "No managed rule group named {:?} from vendor {:?} is available",
-                    managed.name, managed.vendor_name
-                ));
+            if let Some(managed) = statement.managed_rule_group_statement.as_ref() {
+                match managed_rule_group(&managed.vendor_name, &managed.name) {
+                    None => {
+                        return Some(format!(
+                            "No managed rule group named {:?} from vendor {:?} is available",
+                            managed.name, managed.vendor_name
+                        ));
+                    }
+                    // A statement that PINS a version names one more thing the
+                    // vendor publishes, so it resolves too: "the version of the
+                    // managed rule group to use… You can retrieve the available
+                    // versions for the managed rule group by calling
+                    // `ListAvailableManagedRuleGroupVersions`"
+                    // (`ManagedRuleGroupStatement$Version`), and a name that
+                    // listing does not carry names no rule set WAF could run. A
+                    // version the vendor published and has since RETIRED is its own
+                    // modelled refusal, judged before this one
+                    // ([`expired_managed_rule_group_version`]), so what is left here
+                    // is a name no version of the group ever carried.
+                    Some(group) => {
+                        if let Some(version) = managed
+                            .version
+                            .as_deref()
+                            .filter(|version| {
+                                group.version_state(version) == ManagedVersionState::Unknown
+                            })
+                        {
+                            return Some(format!(
+                                "No version {version:?} of the managed rule group named {:?} \
+                                 from vendor {:?} is published",
+                                managed.name, managed.vendor_name
+                            ));
+                        }
+                    }
+                }
             }
             pending.extend(nested_statements(statement));
         }
@@ -3120,8 +3151,10 @@ pub fn below_minimum_challenge_immunity(
 /// client reading an entity back to reason about evaluation order, or diffing it
 /// against a template, therefore sees the order the rules actually run in.
 ///
-/// The sort is STABLE, so two rules WAF would refuse for sharing a priority keep
-/// the order they were given rather than being shuffled by the normalisation.
+/// The sort is STABLE, so a list whose order its priorities leave undecided keeps
+/// the order it was given — though no stored list is one: a save carrying two rules
+/// at one priority is refused before anything is written ("they must all be
+/// different"; see [`duplicate_rule_priority`]).
 pub fn normalize_rule_order(rules: &mut [Rule]) {
     rules.sort_by_key(|rule| rule.priority);
 }

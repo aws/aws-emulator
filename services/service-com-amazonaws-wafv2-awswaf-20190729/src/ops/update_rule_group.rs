@@ -235,6 +235,17 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
+        // `Description` is constrained by the model and its `@pattern` is written in
+        // the ASCII character classes a Smithy pattern is read with, so a
+        // description outside that form is the request-SHAPE failure the boundary
+        // answers for every other modelled constraint, judged before anything is
+        // resolved or written.
+        if let Some(envelope) =
+            crate::state::entity_description_envelope(input.description.as_deref())
+        {
+            return Err(crate::scaffolded::Scaffolded::validation(envelope));
+        }
+
         // `ctx` carries the request's own metadata: the endpoint region the scope is
         // judged against. An update never re-mints the ARN, so it needs no other.
         if let Err(refusal) = crate::service::requests::validate_scope(&input.scope, ctx.parts()) {
@@ -364,6 +375,29 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 crate::state::nonexistent_item_exception(),
             )
             .into());
+        }
+
+        // Every precondition WAF resolves across the rule list AS A WHOLE: two rules
+        // claiming one name or one priority, and a custom-response reference the
+        // bodies THIS request carries do not define (an update replaces the map as
+        // well as the rules). A refusal here leaves the stored rules, bodies and lock
+        // token exactly as they were.
+        if let Some(refusal) = state.rule_set_refusal(
+            input.rules.as_deref().unwrap_or_default(),
+            None,
+            input.custom_response_bodies.as_ref(),
+        ) {
+            crate::state::audit(
+                "UpdateRuleGroup",
+                &input.scope,
+                &input.name,
+                &input.id,
+                &format!(
+                    "WAFInvalidParameterException: {}",
+                    refusal.message.clone().unwrap_or_default()
+                ),
+            );
+            return Err(UpdateRuleGroupErrorModeled::WAFInvalidParameterException(refusal).into());
         }
 
         // "When you add or modify the rules in a rule group, WAF enforces this limit"

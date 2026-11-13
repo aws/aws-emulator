@@ -786,6 +786,10 @@ async fn a_blocking_actions_own_custom_response_is_served_in_front_of_the_pool()
     ];
 
     for (index, row) in rows.iter().enumerate() {
+        // The create carries the plain block action: a `CustomResponseBodyKey` names "one
+        // of the keys in the CustomResponseBodies map that you provide for this web ACL",
+        // so the action that names a key and the map that defines it have to travel in
+        // the SAME save — the update below is where both arrive.
         let web_acl = create_web_acl(
             &edge,
             &format!("custom-{index}"),
@@ -794,17 +798,7 @@ async fn a_blocking_actions_own_custom_response_is_served_in_front_of_the_pool()
                 &format!("custom-{index}"),
                 0,
                 probe_header_match(),
-                json!({
-                    "Block": {
-                        "CustomResponse": {
-                            "ResponseCode": row.status,
-                            "CustomResponseBodyKey": row.body_key,
-                            "ResponseHeaders": [
-                                { "Name": "x-waf-decision", "Value": row.case },
-                            ],
-                        }
-                    }
-                }),
+                json!({ "Block": {} }),
             )]),
         )
         .await;

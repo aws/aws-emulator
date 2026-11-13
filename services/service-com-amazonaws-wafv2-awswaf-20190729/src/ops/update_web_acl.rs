@@ -294,6 +294,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
+        // `Description` is constrained by the model and its `@pattern` is written in
+        // the ASCII character classes a Smithy pattern is read with, so a
+        // description outside that form is a request-SHAPE failure — the
+        // `ValidationException` the boundary answers for every other modelled
+        // constraint — judged before anything is resolved, so the stored description
+        // and the lock token are left exactly as they were.
+        if let Some(envelope) =
+            crate::state::entity_description_envelope(input.description.as_deref())
+        {
+            return Err(crate::scaffolded::Scaffolded::validation(envelope));
+        }
+
         // `ctx` carries the request's own metadata: the endpoint region the scope is
         // judged against. An update never re-mints the ARN, so it needs no other.
         //
@@ -444,6 +456,31 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 crate::state::nonexistent_item_exception(),
             )
             .into());
+        }
+
+        // Every precondition WAF resolves across the rule list AS A WHOLE: two rules
+        // claiming one name or one priority, a custom-response reference the bodies
+        // THIS request carries do not define (an update replaces the map as well as
+        // the rules), an override naming no rule of the customer-owned group it
+        // overrides, and the per-web-ACL WCU ceiling. A refusal here leaves the
+        // stored rules, bodies and lock token exactly as they were.
+        if let Some(refusal) = state.web_acl_rule_set_refusal(
+            &input.scope,
+            input.rules.as_deref().unwrap_or_default(),
+            Some(&input.default_action),
+            input.custom_response_bodies.as_ref(),
+        ) {
+            crate::state::audit(
+                "UpdateWebACL",
+                &input.scope,
+                &input.name,
+                &input.id,
+                &format!(
+                    "WAFInvalidParameterException: {}",
+                    refusal.message.clone().unwrap_or_default()
+                ),
+            );
+            return Err(UpdateWebACLErrorModeled::WAFInvalidParameterException(refusal).into());
         }
 
         // Read out of state before the entry is borrowed mutably, so the derived

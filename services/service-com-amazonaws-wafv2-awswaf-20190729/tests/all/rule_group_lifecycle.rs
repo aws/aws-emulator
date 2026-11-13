@@ -22,7 +22,8 @@ use std::collections::BTreeSet;
 use serde_json::{json, Value};
 
 use crate::web_acl_lifecycle::{
-    create_ip_set, create_web_acl, is_model_uuid, rule, sqli_statement, visibility, Waf, TEST_REGION,
+    create_ip_set, create_web_acl, is_model_uuid, ordered, rule, sqli_statement, visibility, Waf,
+    TEST_REGION,
 };
 
 /// The region a CLOUDFRONT-scoped resource's ARN carries whatever the caller signed
@@ -208,11 +209,11 @@ async fn create_rule_group_persists_the_group_and_get_reads_it_back() {
             scope: "REGIONAL",
             capacity: 500,
             description: Some("a three rule group"),
-            rules: json!([
+            rules: ordered(json!([
                 labelled_rule("first", byte_match_statement(), &["suspect", "audited"]),
                 labelled_rule("second", sqli_statement(), &["suspect"]),
                 rule("third", byte_match_statement()),
-            ]),
+            ])),
             custom_response_bodies: None,
             // Deduplicated and in a stable order.
             available_labels: vec!["audited", "suspect"],
@@ -223,10 +224,10 @@ async fn create_rule_group_persists_the_group_and_get_reads_it_back() {
             scope: "REGIONAL",
             capacity: 50,
             description: None,
-            rules: json!([
+            rules: ordered(json!([
                 label_match_rule("consumer", "upstream-label"),
                 labelled_rule("producer", byte_match_statement(), &["downstream-label"]),
-            ]),
+            ])),
             custom_response_bodies: None,
             available_labels: vec!["downstream-label"],
             consumed_labels: vec!["upstream-label"],
@@ -613,11 +614,11 @@ async fn a_web_acl_rule_can_reference_a_stored_rule_group_and_is_charged_its_cap
         ),
         (
             "a reference beside a byte match and a SQLi match",
-            json!([
+            ordered(json!([
                 rule_group_reference_rule("rg", 0, &small_arn),
                 rule("bytes", byte_match_statement()),
                 rule("sqli", sqli_statement()),
-            ]),
+            ])),
             31,
         ),
     ];

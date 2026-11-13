@@ -154,14 +154,14 @@ async fn capacity_sums_the_published_capacity_of_every_managed_group_run() {
         ),
         (
             "a managed group beside an ordinary statement",
-            json!([
+            crate::web_acl_lifecycle::ordered(json!([
                 managed_rule(
                     "known-bad",
                     0,
                     managed_statement("AWS", "AWSManagedRulesKnownBadInputsRuleSet")
                 ),
                 crate::web_acl_lifecycle::rule("sqli", sqli_statement()),
-            ]),
+            ])),
             known_bad + SQLI_WCU,
         ),
         (

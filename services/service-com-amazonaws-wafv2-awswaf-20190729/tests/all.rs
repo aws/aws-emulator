@@ -31,6 +31,8 @@ mod challenge_immunity;
 mod check_capacity;
 #[path = "all/counted_rule_samples.rs"]
 mod counted_rule_samples;
+#[path = "all/entity_description_form.rs"]
+mod entity_description_form;
 #[path = "all/exception_messages.rs"]
 mod exception_messages;
 #[path = "all/firewall_manager_rule_groups.rs"]
@@ -71,6 +73,8 @@ mod managed_products_by_vendor;
 mod managed_rule_group_description;
 #[path = "all/managed_rule_group_labels.rs"]
 mod managed_rule_group_labels;
+#[path = "all/managed_rule_group_pinned_version.rs"]
+mod managed_rule_group_pinned_version;
 #[path = "all/managed_rule_group_version_expiry.rs"]
 mod managed_rule_group_version_expiry;
 #[path = "all/managed_rule_group_versioning.rs"]
@@ -157,3 +161,5 @@ mod web_acl_edge_reports;
 mod web_acl_lifecycle;
 #[path = "all/web_acl_request_metrics.rs"]
 mod web_acl_request_metrics;
+#[path = "all/web_acl_rule_set_preconditions.rs"]
+mod web_acl_rule_set_preconditions;

@@ -32,7 +32,7 @@
 use serde_json::{json, Value};
 
 use crate::rule_group_lifecycle::create_rule_group;
-use crate::web_acl_lifecycle::{create_web_acl, rule, sqli_statement, xss_statement, Waf};
+use crate::web_acl_lifecycle::{create_web_acl, ordered, rule, sqli_statement, xss_statement, Waf};
 
 /// `WAFUnsupportedAggregateKeyTypeException`'s sentence, as the model documents it
 /// (`smithy_query(query="shape",shape="WAFUnsupportedAggregateKeyTypeException")`),
@@ -207,11 +207,11 @@ async fn a_rate_based_rule_aggregating_solely_on_an_ip_reports_both_families_emp
         ServedCase {
             case: "third among several rules, with a scope-down statement",
             scope: "REGIONAL",
-            rules: json!([
+            rules: ordered(json!([
                 rule("plain-sqli", sqli_statement()),
                 rule("plain-xss", xss_statement()),
                 rule("rate-scoped", ip_rate_based_with_scope_down(2_000, 60)),
-            ]),
+            ])),
             rule_name: "rate-scoped",
             rule_group_rule_name: None,
             rule_group: None,
@@ -268,13 +268,13 @@ async fn a_rate_based_rule_aggregating_solely_on_an_ip_reports_both_families_emp
             rule_group_rule_name: Some("group-reference"),
             rule_group: Some((
                 "group-reference",
-                json!([
+                ordered(json!([
                     rule("grouped-sqli", sqli_statement()),
                     rule(
                         "grouped-rate-forwarded",
                         forwarded_ip_rate_based(10_000, "X-Forwarded-For", "MATCH")
                     ),
-                ]),
+                ])),
             )),
         },
     ];
@@ -368,21 +368,21 @@ async fn a_rate_based_rule_that_does_not_aggregate_solely_on_an_ip_is_refused() 
         "REGIONAL",
         "rate-keys-unsupported-group",
         200,
-        json!([
+        ordered(json!([
             rule("grouped-custom-keys", custom_keys_rate_based(1_000)),
             rule("grouped-constant", constant_rate_based(1_000)),
-        ]),
+        ])),
     )
     .await;
     let (regional_id, _regional_arn, _regional_lock) = create_web_acl(
         &waf,
         "REGIONAL",
         "rate-keys-unsupported",
-        json!([
+        ordered(json!([
             rule("rate-custom-keys", custom_keys_rate_based(5_000)),
             rule("rate-constant", constant_rate_based(20)),
             rule("group-reference", rule_group_reference(&group_arn)),
-        ]),
+        ])),
     )
     .await;
     let (cloudfront_id, _cloudfront_arn, _cloudfront_lock) = create_web_acl(
@@ -498,11 +498,11 @@ async fn a_report_for_an_instance_that_does_not_resolve_is_refused() {
         &waf,
         "REGIONAL",
         "rate-keys-addressed",
-        json!([
+        ordered(json!([
             rule("rate-ip", ip_rate_based(1_000)),
             rule("plain-sqli", sqli_statement()),
             rule("group-reference", rule_group_reference(&group_arn)),
-        ]),
+        ])),
     )
     .await;
 

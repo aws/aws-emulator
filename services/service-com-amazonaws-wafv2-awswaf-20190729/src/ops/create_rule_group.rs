@@ -213,6 +213,16 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
+        // `Description` is constrained by the model and its `@pattern` is written in
+        // the ASCII character classes a Smithy pattern is read with, so a
+        // description outside that form is the request-SHAPE failure the boundary
+        // answers for every other modelled constraint.
+        if let Some(envelope) =
+            crate::state::entity_description_envelope(input.description.as_deref())
+        {
+            return Err(crate::scaffolded::Scaffolded::validation(envelope));
+        }
+
         if let Err(refusal) = crate::service::requests::validate_scope(&input.scope, ctx.parts()) {
             return Err(CreateRuleGroupErrorModeled::WAFInvalidParameterException(refusal).into());
         }
@@ -328,6 +338,28 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 crate::state::nonexistent_item_exception(),
             )
             .into());
+        }
+
+        // Every precondition WAF resolves across the rule list AS A WHOLE: two rules
+        // claiming one name or one priority, and a custom-response reference this
+        // document's own bodies do not define. Judged before anything is written, so
+        // a refused create leaves no rule group behind.
+        if let Some(refusal) = state.rule_set_refusal(
+            input.rules.as_deref().unwrap_or_default(),
+            None,
+            input.custom_response_bodies.as_ref(),
+        ) {
+            crate::state::audit(
+                "CreateRuleGroup",
+                &input.scope,
+                &input.name,
+                "",
+                &format!(
+                    "WAFInvalidParameterException: {}",
+                    refusal.message.clone().unwrap_or_default()
+                ),
+            );
+            return Err(CreateRuleGroupErrorModeled::WAFInvalidParameterException(refusal).into());
         }
 
         // "You cannot change the name of a rule group after you create it"

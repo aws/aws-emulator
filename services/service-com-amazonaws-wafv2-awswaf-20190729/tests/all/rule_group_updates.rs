@@ -27,8 +27,8 @@ use crate::rule_group_lifecycle::{
     labelled_rule, rule_group_arn,
 };
 use crate::web_acl_lifecycle::{
-    create_ip_set, is_model_uuid, nested_statement, rule, sqli_statement, visibility, xss_statement,
-    Waf, TEST_REGION,
+    create_ip_set, is_model_uuid, nested_statement, ordered, rule, sqli_statement, visibility,
+    xss_statement, Waf, TEST_REGION,
 };
 
 /// The `(Name, Scope, Id, LockToken)` a mutating rule-group call addresses: the
@@ -153,10 +153,10 @@ async fn update_rule_group_replaces_the_whole_mutable_specification() {
             case: "one rule replaces two, and the description is dropped",
             scope: "REGIONAL",
             capacity: 30,
-            rules_before: json!([
+            rules_before: ordered(json!([
                 rule("first", byte_match_statement()),
                 rule("second", sqli_statement()),
-            ]),
+            ])),
             description_before: Some("two rules"),
             bodies_before: None,
             rules_after: json!([rule("only", byte_match_statement())]),
@@ -199,16 +199,16 @@ async fn update_rule_group_replaces_the_whole_mutable_specification() {
             case: "the same two rules in the opposite order",
             scope: "REGIONAL",
             capacity: 11,
-            rules_before: json!([
+            rules_before: ordered(json!([
                 rule("match", byte_match_statement()),
                 ip_set_rule("ips", &regional_ips_arn),
-            ]),
+            ])),
             description_before: Some("ordered"),
             bodies_before: None,
-            rules_after: json!([
+            rules_after: ordered(json!([
                 ip_set_rule("ips", &regional_ips_arn),
                 rule("match", byte_match_statement()),
-            ]),
+            ])),
             description_after: Some("ordered"),
             bodies_after: None,
             available_labels: vec![],
@@ -257,10 +257,10 @@ async fn update_rule_group_replaces_the_whole_mutable_specification() {
             rules_before: json!([rule("match", byte_match_statement())]),
             description_before: Some("global"),
             bodies_before: None,
-            rules_after: json!([
+            rules_after: ordered(json!([
                 rule("match", byte_match_statement()),
                 ip_set_rule("ips", &global_ips_arn),
-            ]),
+            ])),
             description_after: Some("global with an IP set"),
             bodies_after: Some(custom_bodies.clone()),
             available_labels: vec![],
@@ -617,17 +617,17 @@ async fn an_update_must_stay_within_the_groups_immutable_capacity() {
         ("one XSS rule", json!([rule("xss", xss_statement())])),
         (
             "two label-match rules",
-            json!([
+            ordered(json!([
                 label_match_rule("first", "one-label"),
                 label_match_rule("second", "another-label"),
-            ]),
+            ])),
         ),
         (
             "a byte match and an IP set reference",
-            json!([
+            ordered(json!([
                 rule("byte", byte_match_statement()),
                 ip_set_rule("ips", &ips_arn),
-            ]),
+            ])),
         ),
     ];
 

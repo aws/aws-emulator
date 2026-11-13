@@ -23,7 +23,7 @@
 use serde_json::{json, Value};
 
 use crate::rule_group_lifecycle::{byte_match_statement, create_rule_group};
-use crate::web_acl_lifecycle::{is_model_uuid, rule, sqli_statement, visibility, Waf};
+use crate::web_acl_lifecycle::{is_model_uuid, ordered, rule, sqli_statement, visibility, Waf};
 
 /// Create a rule group and answer the `RuleGroupSummary` the save reported.
 ///
@@ -125,10 +125,10 @@ async fn every_listed_summary_projects_the_stored_rule_group() {
             scope: "REGIONAL",
             capacity: 500,
             description: None,
-            rules: json!([
+            rules: ordered(json!([
                 rule("first", byte_match_statement()),
                 rule("second", sqli_statement()),
-            ]),
+            ])),
         },
         SummaryCase {
             case: "a byte-match rule in CLOUDFRONT scope, with a description",

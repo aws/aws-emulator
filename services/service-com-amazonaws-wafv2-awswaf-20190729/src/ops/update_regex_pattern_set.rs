@@ -193,6 +193,17 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
+        // `Description` is constrained by the model and its `@pattern` is written in
+        // the ASCII character classes a Smithy pattern is read with, so a description
+        // outside that form is the request-SHAPE failure the boundary answers for
+        // every other modelled constraint, judged before anything is resolved or
+        // written.
+        if let Some(envelope) =
+            crate::state::entity_description_envelope(input.description.as_deref())
+        {
+            return Err(crate::scaffolded::Scaffolded::validation(envelope));
+        }
+
         // `ctx` carries the request's own metadata: the endpoint region the scope is
         // judged against. An update never re-mints the ARN, so it needs no other.
         if let Err(refusal) = crate::service::requests::validate_scope(&input.scope, ctx.parts()) {
