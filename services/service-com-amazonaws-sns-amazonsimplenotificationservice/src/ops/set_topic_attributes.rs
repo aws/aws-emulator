@@ -226,46 +226,69 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             )
             .into());
         };
-        let mut store = store.lock();
-
-        let Some(topic) = store.topics.get(&input.topic_arn).cloned() else {
-            return Err(SetTopicAttributesErrorModeled::NotFoundException(
-                NotFoundException {
-                    message: Some(state::TOPIC_DOES_NOT_EXIST.to_string()),
-                },
-            )
-            .into());
-        };
-        // The value is judged against the attribute's own domain AND against the topic
-        // the write lands on — its kind, and the subscriptions a message of the size it
-        // would allow has to be deliverable to — under the rule every write of a topic
-        // attribute shares.
-        if let Some(value) = requested.as_deref() {
-            let protocols: Vec<String> = store
-                .subscriptions_of(&input.topic_arn)
-                .into_iter()
-                .map(|sub| sub.protocol.clone())
-                .collect();
-            if let Some(refusal) = state::topic_attributes::topic_attribute_refusal(
-                &input.attribute_name,
-                value,
-                state::topic_attributes::TopicSubject::of(&topic, &protocols),
-            ) {
-                return Err(match refusal {
-                    state::topic_attributes::TopicAttributeRefusal::InvalidParameter(message) => {
-                        invalid_parameter(message)
-                    }
-                    state::topic_attributes::TopicAttributeRefusal::Unauthorized(message) => {
-                        SetTopicAttributesErrorModeled::AuthorizationErrorException(
-                            AuthorizationErrorException {
-                                message: Some(message),
-                            },
-                        )
-                        .into()
-                    }
-                });
+        // The store's lock is held for the reads the value is judged against and RELEASED
+        // before the role a feedback attribute names is resolved: that resolution is an
+        // in-process call into another service's store, which must not run under this one's
+        // lock.
+        {
+            let store = store.lock();
+            let Some(topic) = store.topics.get(&input.topic_arn).cloned() else {
+                return Err(SetTopicAttributesErrorModeled::NotFoundException(
+                    NotFoundException {
+                        message: Some(state::TOPIC_DOES_NOT_EXIST.to_string()),
+                    },
+                )
+                .into());
+            };
+            // The value is judged against the attribute's own domain AND against the topic
+            // the write lands on — its kind, and the subscriptions a message of the size it
+            // would allow has to be deliverable to — under the rule every write of a topic
+            // attribute shares.
+            if let Some(value) = requested.as_deref() {
+                let protocols: Vec<String> = store
+                    .subscriptions_of(&input.topic_arn)
+                    .into_iter()
+                    .map(|sub| sub.protocol.clone())
+                    .collect();
+                if let Some(refusal) = state::topic_attributes::topic_attribute_refusal(
+                    &input.attribute_name,
+                    value,
+                    state::topic_attributes::TopicSubject::of(&topic, &protocols),
+                ) {
+                    return Err(match refusal {
+                        state::topic_attributes::TopicAttributeRefusal::InvalidParameter(
+                            message,
+                        ) => invalid_parameter(message),
+                        state::topic_attributes::TopicAttributeRefusal::Unauthorized(message) => {
+                            SetTopicAttributesErrorModeled::AuthorizationErrorException(
+                                AuthorizationErrorException {
+                                    message: Some(message),
+                                },
+                            )
+                            .into()
+                        }
+                    });
+                }
             }
         }
+        // A delivery-status feedback role is a role SNS has to ASSUME to write the records
+        // the attribute asks for, so the role is resolved in the account's own IAM records
+        // and refused here when its trust policy withholds that assume: the attribute never
+        // lands, and the topic does not read back as configured for logging that could
+        // never happen.
+        if let Some(value) = requested.as_deref() {
+            if let Some(message) = state::feedback_role::untrusted_role_refusal(
+                ctx,
+                &region,
+                &input.attribute_name,
+                value,
+            )
+            .await
+            {
+                return Err(invalid_parameter(message));
+            }
+        }
+        let mut store = store.lock();
 
         let Some(topic) = store.topics.get_mut(&input.topic_arn) else {
             return Err(SetTopicAttributesErrorModeled::NotFoundException(

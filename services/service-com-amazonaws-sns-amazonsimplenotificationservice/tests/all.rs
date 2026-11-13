@@ -56,6 +56,9 @@ mod effective_delivery_policy_entry_layout;
 #[path = "all/error_envelope.rs"]
 mod error_envelope;
 
+#[path = "all/feedback_role_trust.rs"]
+mod feedback_role_trust;
+
 #[path = "all/fifo_archive_replay.rs"]
 mod fifo_archive_replay;
 

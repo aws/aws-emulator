@@ -310,7 +310,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             return Err(invalid_parameter(message));
         }
 
-        let Some(store) = crate::state::service_state(&*self.engine) else {
+        let Some(store_handle) = crate::state::service_state(&*self.engine) else {
             return Err(CreateTopicErrorModeled::InternalErrorException(
                 InternalErrorException {
                     message: Some("the SNS store is unavailable".to_string()),
@@ -322,42 +322,57 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let region = state::request_region(ctx.parts());
         let arn = state::topic_arn(&region, &input.name);
 
-        let mut store = store.lock();
         // Every attribute the create carries is held to its own documented domain, and
         // to the topic it would leave — the SAME rule `SetTopicAttributes` holds a write
-        // to, so an attribute value one call accepts is one the other accepts too.
-        let protocols: Vec<String> = store
-            .subscriptions_of(&arn)
-            .into_iter()
-            .map(|sub| sub.protocol.clone())
-            .collect();
-        let subject = state::topic_attributes::TopicSubject {
-            is_fifo,
-            subscription_protocols: &protocols,
-        };
-        let mut names: Vec<&String> = attributes.keys().collect();
-        names.sort();
-        for name in names {
-            if let Some(refusal) = state::topic_attributes::topic_attribute_refusal(
-                name,
-                &attributes[name],
-                subject,
-            ) {
-                return Err(match refusal {
-                    state::topic_attributes::TopicAttributeRefusal::InvalidParameter(message) => {
-                        invalid_parameter(message)
-                    }
-                    state::topic_attributes::TopicAttributeRefusal::Unauthorized(message) => {
-                        CreateTopicErrorModeled::AuthorizationErrorException(
-                            AuthorizationErrorException {
-                                message: Some(message),
-                            },
-                        )
-                        .into()
-                    }
-                });
+        // to, so an attribute value one call accepts is one the other accepts too. The
+        // lock is held for these reads only and released before the roles the attributes
+        // name are resolved, which is a call into another service's store.
+        {
+            let store = store_handle.lock();
+            let protocols: Vec<String> = store
+                .subscriptions_of(&arn)
+                .into_iter()
+                .map(|sub| sub.protocol.clone())
+                .collect();
+            let subject = state::topic_attributes::TopicSubject {
+                is_fifo,
+                subscription_protocols: &protocols,
+            };
+            let mut names: Vec<&String> = attributes.keys().collect();
+            names.sort();
+            for name in names {
+                if let Some(refusal) = state::topic_attributes::topic_attribute_refusal(
+                    name,
+                    &attributes[name],
+                    subject,
+                ) {
+                    return Err(match refusal {
+                        state::topic_attributes::TopicAttributeRefusal::InvalidParameter(
+                            message,
+                        ) => invalid_parameter(message),
+                        state::topic_attributes::TopicAttributeRefusal::Unauthorized(message) => {
+                            CreateTopicErrorModeled::AuthorizationErrorException(
+                                AuthorizationErrorException {
+                                    message: Some(message),
+                                },
+                            )
+                            .into()
+                        }
+                    });
+                }
             }
         }
+        // A delivery-status feedback role this create names is held to the SAME trust
+        // relationship a write through `SetTopicAttributes` is: SNS has to assume that role
+        // to write the records the attribute asks for, so a role whose trust policy
+        // withholds the assume takes no create either, and no topic is left behind
+        // carrying it.
+        if let Some(message) =
+            state::feedback_role::untrusted_roles_refusal(ctx, &region, &attributes).await
+        {
+            return Err(invalid_parameter(message));
+        }
+        let mut store = store_handle.lock();
         // CreateTopic is idempotent: "if the requester already owns a topic with the
         // specified name, that topic's ARN is returned without creating a new topic"
         // (CreateTopic doc). Idempotent means the request asks for what the topic

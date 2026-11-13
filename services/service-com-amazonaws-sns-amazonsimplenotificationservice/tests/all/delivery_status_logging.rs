@@ -26,7 +26,8 @@
 //! topic carries, the sample rate (a full sample, none, and none named at all), the protocol
 //! the attributes were set for as against the one the delivery went over, whether the delivery
 //! succeeded or was withheld by the endpoint's own policy, whether the named role's trust
-//! policy admits this service, and which permissions that role carries.
+//! policy still admits this service when the delivery is made, and which permissions that role
+//! carries.
 //!
 //! Both delivery protocols SNS performs itself are exercised: the `sqs` one, whose endpoint is
 //! a queue reached by `SendMessage`, and the `lambda` one, whose endpoint is a function reached
@@ -314,6 +315,18 @@ async fn given_role(
     element(&answered, "Arn")
 }
 
+/// Narrow the trust policy of the role `name` to admit `trusted` alone, after a topic has
+/// already been given the role: a feedback role is only ACCEPTED while its trust policy admits
+/// this service, so this is how a topic comes to name a role it can no longer assume.
+async fn retrust(emulator: &Emulator, name: &str, trusted: &str) {
+    iam(
+        emulator,
+        "UpdateAssumeRolePolicy",
+        &[("RoleName", name), ("PolicyDocument", &trusts(trusted))],
+    )
+    .await;
+}
+
 /// The queue policy AWS documents for an SQS queue subscribed to an SNS topic, which is what
 /// makes a delivery to it SUCCEED; a queue carrying none has granted this service nothing, so
 /// its delivery FAILS.
@@ -518,7 +531,9 @@ struct Row {
     /// The feedback attributes the topic is given, as `(name, value)` pairs — the role ARN is
     /// substituted for [`ROLE_PLACEHOLDER`].
     attributes: &'static [(&'static str, &'static str)],
-    /// The service principal the named role's trust policy admits.
+    /// The service principal the named role's trust policy admits once the topic has been
+    /// configured: a role is only ACCEPTED as a feedback role while it admits this service, so
+    /// a row naming another principal narrows the trust policy after the write.
     trusted: &'static str,
     /// What the permissions in force on that role allow.
     permissions: Permissions,
@@ -586,7 +601,7 @@ fn rows() -> Vec<Row> {
             status: None,
         },
         Row {
-            case: "a role whose trust policy does not admit this service",
+            case: "a role whose trust policy no longer admits this service",
             attributes: &[
                 ("SQSSuccessFeedbackRoleArn", ROLE_PLACEHOLDER),
                 ("SQSSuccessFeedbackSampleRate", "100"),
@@ -658,13 +673,8 @@ async fn a_topic_with_a_feedback_role_logs_one_record_per_delivery() {
             &sns(&emulator, "CreateTopic", &[("Name", "feedback")]).await,
             "TopicArn",
         );
-        let role = given_role(
-            &emulator,
-            &format!("sns-feedback-{index}"),
-            row.trusted,
-            row.permissions,
-        )
-        .await;
+        let role_name = format!("sns-feedback-{index}");
+        let role = given_role(&emulator, &role_name, SNS_PRINCIPAL, row.permissions).await;
         let (_, endpoint) =
             given_queue(&emulator, &format!("feedback-{index}"), row.queue_grants).await;
         sns(
@@ -689,6 +699,13 @@ async fn a_topic_with_a_feedback_role_logs_one_record_per_delivery() {
                 ],
             )
             .await;
+        }
+        // A topic may only be GIVEN a feedback role whose trust policy admits this service, so
+        // a row whose role trusts something ELSE narrows the trust policy once the attributes
+        // are written: the role the topic names is then one this service cannot assume, and
+        // the publish below has nothing to write the record as.
+        if row.trusted != SNS_PRINCIPAL {
+            retrust(&emulator, &role_name, row.trusted).await;
         }
 
         sns(

@@ -292,6 +292,20 @@ fn maximum_message_size_refusal(
     })
 }
 
+/// The sentence SNS states for a value it cannot use as a delivery-status logging role: the
+/// attribute the value arrived in, and the value itself.
+///
+/// ONE sentence for the whole condition, because the caller has one thing to fix — the role
+/// the attribute names — whichever half of the rule the value broke: the ARN's own form, read
+/// here, or the trust relationship the account's IAM holds for the role it names, read in
+/// [`super::feedback_role`].
+pub fn not_a_valid_logging_role(name: &str, value: &str) -> String {
+    format!(
+        "Invalid parameter: {name}: {value} is not a valid role to allow SNS to write to \
+         Cloudwatch Logs"
+    )
+}
+
 /// The refusal a delivery-status feedback role ARN answers, or `None` when the value is
 /// a role this account's SNS could write a delivery's status record as.
 ///
@@ -304,6 +318,11 @@ fn maximum_message_size_refusal(
 ///   attribute and the value it could not use as a logging role;
 /// * a role ARN of ANOTHER ACCOUNT is an AUTHORIZATION fault — the role is real and well
 ///   formed, and what fails is this account's SNS being able to assume it.
+///
+/// Those are the two faults the VALUE itself carries. The third — a role of this account whose
+/// trust policy does not let this service assume it — is a fact about the role rather than
+/// about the ARN, so it is resolved against IAM in [`super::feedback_role`] and stated with the
+/// same parameter sentence.
 fn feedback_role_refusal(name: &str, value: &str) -> Option<TopicAttributeRefusal> {
     let account = super::owner_account_id();
     // An IAM role's ARN is `arn:<partition>:iam::<account-id>:role/<name>`: IAM is a
@@ -321,10 +340,9 @@ fn feedback_role_refusal(name: &str, value: &str) -> Option<TopicAttributeRefusa
             named_account
         }
         _ => {
-            return Some(TopicAttributeRefusal::InvalidParameter(format!(
-                "Invalid parameter: {name}: {value} is not a valid role to allow SNS to \
-                 write to Cloudwatch Logs"
-            )))
+            return Some(TopicAttributeRefusal::InvalidParameter(
+                not_a_valid_logging_role(name, value),
+            ))
         }
     };
     (named_account != account).then(|| {

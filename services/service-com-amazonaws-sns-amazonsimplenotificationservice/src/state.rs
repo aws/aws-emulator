@@ -44,6 +44,9 @@ pub mod retry_policy_bounds;
 /// What a topic configured with delivery-status feedback roles LOGS about each delivery
 /// it attempted.
 pub mod delivery_status;
+/// Whether a delivery-status feedback role a write of a topic attribute names is one this
+/// service could assume at all, asked before the attribute lands on the topic.
+pub mod feedback_role;
 /// Whether this account holds an origination entity SNS could send an SMS message from,
 /// which every operation whose own work is to send one asks before it accepts.
 pub mod sms_origination;
