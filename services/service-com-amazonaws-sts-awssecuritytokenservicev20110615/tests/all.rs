@@ -44,6 +44,9 @@ mod refusal_message_bytes;
 #[path = "all/request_admission.rs"]
 mod request_admission;
 
+#[path = "all/saml_assertion_expiry.rs"]
+mod saml_assertion_expiry;
+
 #[path = "all/saml_federation.rs"]
 mod saml_federation;
 
