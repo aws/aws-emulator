@@ -19,6 +19,8 @@ mod channel_configuration_pair_lookup;
 mod channel_configuration_workspace_precondition;
 #[path = "all/channel_role_account.rs"]
 mod channel_role_account;
+#[path = "all/channel_role_name_pattern.rs"]
+mod channel_role_name_pattern;
 #[path = "all/channel_role_pass_role_form.rs"]
 mod channel_role_pass_role_form;
 #[path = "all/console_authorized_workspace.rs"]

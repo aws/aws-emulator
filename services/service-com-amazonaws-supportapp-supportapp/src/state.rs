@@ -496,8 +496,8 @@ pub fn workspace_quota_exceeded_message(operation: &str) -> String {
 /// A service acting for one account cannot be handed a role another account owns, so the
 /// test is the one the member's own form states: the value has to be an IAM role ARN of
 /// the caller's account NAMING a role, which is that form with the account field filled
-/// in from [`::engine::emulator_account_id`] and a non-empty role name — exactly what the
-/// member's `(.+)` admits after `role/`. It therefore needs no ARN reading of its own and
+/// in from [`::engine::emulator_account_id`] and a role name the member's `(.+)` admits
+/// after `role/` ([`is_role_name`]). It therefore needs no ARN reading of its own and
 /// it fails CLOSED — anything that is not a role ARN of this account, whatever else it
 /// is, is a role this service cannot pass. EVERY operation that takes the member answers
 /// this refusal rather than persisting the value, before the account's store is
@@ -506,8 +506,36 @@ pub fn channel_role_account_refusal(role_arn: &str) -> Option<String> {
     let own_account_role = format!("arn:aws:iam::{}:role/", ::engine::emulator_account_id());
     let names_a_role_of_this_account = role_arn
         .strip_prefix(&own_account_role)
-        .is_some_and(|role_name| !role_name.is_empty());
+        .is_some_and(is_role_name);
     (!names_a_role_of_this_account).then(|| CROSS_ACCOUNT_PASS_ROLE_MESSAGE.to_string())
+}
+
+/// The characters a modelled `@pattern`'s `.` does NOT match.
+///
+/// A Smithy `@pattern` is an ECMA-262 regular expression, and there `.` matches every
+/// character except a LINE TERMINATOR: line feed, carriage return, line separator and
+/// paragraph separator. A value carrying any of them therefore cannot be matched by a `.`
+/// of such an expression, however many characters it has.
+///
+/// Stated here because the expression has to be applied by hand (see
+/// [`channel_role_account_refusal`]), and because the engine the framework's centralized
+/// constraint walk compiles a `@pattern` with reads `.` as every character except a line
+/// FEED alone, so the other three would be admitted there whatever the modelled expression
+/// says.
+const PATTERN_DOT_EXCLUDED_CHARS: [char; 4] = ['\n', '\r', '\u{2028}', '\u{2029}'];
+
+/// Whether `role_name` is what the member's `(.+)` admits after `role/`, with the `$` that
+/// anchors it: at least one character, and every one of them a character that expression's
+/// `.` matches — so none of the [`PATTERN_DOT_EXCLUDED_CHARS`] it does not.
+///
+/// This is the whole of the member's form that is left once the prefix the account test
+/// already pinned is stripped, so a value this rejects is outside the member's declared
+/// `@pattern` and could not be reported back through the same shape.
+fn is_role_name(role_name: &str) -> bool {
+    !role_name.is_empty()
+        && !role_name
+            .chars()
+            .any(|character| PATTERN_DOT_EXCLUDED_CHARS.contains(&character))
 }
 
 /// The `AccessDeniedException` message a refused pass-role attempt carries, as AWS words
