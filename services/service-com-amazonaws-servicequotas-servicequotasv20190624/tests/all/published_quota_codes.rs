@@ -79,7 +79,7 @@ fn services() -> Vec<Service> {
                 "DashboardsPerAccount",
                 "MetricStreamsPerAccount",
             ],
-            published: &["L-6FCAAA2E"],
+            published: &["L-6FCAAA2E", "L-69C44FFD", "L-6300B446", "L-722EAE58"],
         },
         Service {
             code: "mq",
@@ -115,7 +115,7 @@ fn services() -> Vec<Service> {
             code: "ses",
             name: "Amazon Simple Email Service(Amazon SES)",
             withdrawn: &["DailySendingQuota", "SendingRate"],
-            published: &["L-CDEF9B6B", "L-804C8AE8"],
+            published: &["L-CDEF9B6B", "L-804C8AE8", "L-E7F21B4C", "L-10E24536"],
         },
         Service {
             code: "signer",
@@ -157,7 +157,10 @@ fn rows() -> Vec<Row> {
             quota_name: "Rate of GetMetricWidgetImage requests",
             value: 20.0,
             period: (1, "SECOND"),
-            description: None,
+            description: Some(
+                "The maximum number of GetMetricWidgetImage requests that you can make, per \
+                 second, in this account in the current region.",
+            ),
             metric: json!({
                 "MetricNamespace": "AWS/Usage",
                 "MetricName": "CallCount",
@@ -194,8 +197,8 @@ fn rows() -> Vec<Row> {
             value: 200.0,
             period: (24, "HOUR"),
             description: Some(
-                "The maximum number of emails that Amazon SES can accept from this account \
-                 in the current Region in a 24-hour period.",
+                "The maximum number of emails that you can send in a 24-hour period for \
+                 this account in the current Region.",
             ),
             metric: json!({
                 "MetricNamespace": "AWS/Usage",
@@ -203,7 +206,7 @@ fn rows() -> Vec<Row> {
                 "MetricStatisticRecommendation": "Maximum",
                 "MetricDimensions": {
                     "Class": "None",
-                    "Resource": "SendingQuota",
+                    "Resource": "SendLast24Hours",
                     "Service": "SES",
                     "Type": "API",
                 },

@@ -205,11 +205,13 @@ fn rows() -> Vec<Row> {
         Row {
             service_code: "config",
             quota_code: "L-0BE82991",
-            quota_name: "Config rules per Region",
+            quota_name: "AWS Config Rules per region",
             value: 1000.0,
             unit: "None",
-            adjustable: true,
-            description: None,
+            adjustable: false,
+            description: Some(
+                "The maximum number of AWS Config Rules per region in an AWS account",
+            ),
             period: None,
             metric: None,
         },
@@ -235,7 +237,10 @@ fn rows() -> Vec<Row> {
             value: 20000.0,
             unit: "None",
             adjustable: true,
-            description: None,
+            description: Some(
+                "The maximum number of shards that you can create in this account in the \
+                 current Region.",
+            ),
             period: Some((5, "MINUTE")),
             metric: Some(("Kinesis Data Streams", "ProvisionedShards", "Resource")),
         },

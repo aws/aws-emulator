@@ -3440,7 +3440,17 @@ fn seed_quota_catalog() -> Vec<CatalogService> {
         service(
             "config",
             "AWS Config",
-            vec![quota("Config rules per Region", 1000.0).code("L-0BE82991")],
+            // AWS publishes the rule plane of a Region under this code as NOT
+            // adjustable, under the name and the sentence the recorded default-quota
+            // listing of this code carries. A row carries the quota's PUBLISHED name
+            // rather than a restatement of it: the name is what a client matching on
+            // `QuotaName` finds the quota by.
+            vec![quota("AWS Config Rules per region", 1000.0)
+                .code("L-0BE82991")
+                .fixed()
+                .describe(
+                    "The maximum number of AWS Config Rules per region in an AWS account",
+                )],
         ),
         service(
             "connect",
@@ -3614,7 +3624,13 @@ fn seed_quota_catalog() -> Vec<CatalogService> {
                         ("Resource", "ProvisionedShards"),
                         ("Type", "Resource"),
                     ],
-                ))],
+                ))
+                // The service's own published sentence for this quota, as the
+                // recorded default-quota listing of this code carries it.
+                .describe(
+                    "The maximum number of shards that you can create in this account in \
+                     the current Region.",
+                )],
         ),
         service(
             "kinesisvideo",
@@ -3774,7 +3790,7 @@ fn seed_quota_catalog() -> Vec<CatalogService> {
             // Both sending quotas are published over a WINDOW rather than as a
             // count, and under AWS's own codes, which the recorded listing of this
             // service states together with their names and the sending rate's usage
-            // metric.
+            // metric; the two COUNT planes below are published under AWS's codes too.
             vec![
                 quota("Sending rate", 1.0)
                     .code("L-CDEF9B6B")
@@ -3788,51 +3804,97 @@ fn seed_quota_catalog() -> Vec<CatalogService> {
                 // account's send usage rather than the per-second rate's own metric:
                 // SES publishes that usage in `AWS/Usage` as a call count whose
                 // LARGEST value in the window is the one that matters. The `Resource`
-                // dimension is this catalog's own naming of the series the quota
-                // counts (its published name as one identifier): no source available
-                // here states the value SES publishes it under, and the other three
-                // dimensions are the ones every `AWS/Usage` series carries.
+                // dimension is the SERIES NAME SES publishes that usage under, as the
+                // recorded listing of this code carries it — the value a client puts
+                // in the `GetMetricData` query it builds from `UsageMetric`, so a
+                // dimension named after the quota instead selects no data at all.
                 quota("Sending quota", 200.0)
                     .code("L-804C8AE8")
                     .period(24, "HOUR")
                     .metric(aws_usage_metric(
                         "CallCount",
                         "Maximum",
-                        "SES",
+                        SES_USAGE_SERVICE,
                         &[
                             ("Class", "None"),
-                            ("Resource", "SendingQuota"),
+                            ("Resource", "SendLast24Hours"),
                             ("Type", "API"),
                         ],
                     ))
-                    // AWS's own text for this row is not among the data available
-                    // here, so the description is this catalog's own wording, in the
-                    // form the service's published descriptions take (the window and
-                    // the scope the quota applies to).
                     .describe(
-                        "The maximum number of emails that Amazon SES can accept from this \
-                         account in the current Region in a 24-hour period.",
+                        "The maximum number of emails that you can send in a 24-hour \
+                         period for this account in the current Region.",
+                    ),
+                // The two COUNT planes of the Region, each metered by the service's
+                // `AWS/Usage` resource count over the five-minute window those counts
+                // are published on. Their `Resource` dimension is the RESOURCE TYPE the
+                // count is of, in the singular — the series name SES publishes the count
+                // under, as the recorded listing of these codes carries it — and not the
+                // quota's own name, which selects no data.
+                quota("Tenant count", 10000.0)
+                    .code("L-E7F21B4C")
+                    .metric(usage_metric(
+                        SES_USAGE_SERVICE,
+                        &[
+                            ("Class", "None"),
+                            ("Resource", "Tenant"),
+                            ("Type", "Resource"),
+                        ],
+                    ))
+                    .describe(
+                        "The maximum number of tenants that can exist within the current \
+                         Region.",
+                    ),
+                quota("Configuration set count", 10000.0)
+                    .code("L-10E24536")
+                    .metric(usage_metric(
+                        SES_USAGE_SERVICE,
+                        &[
+                            ("Class", "None"),
+                            ("Resource", "ConfigurationSet"),
+                            ("Type", "Resource"),
+                        ],
+                    ))
+                    // The sentence of the count class the row above publishes, with
+                    // the plane this one counts named in it.
+                    .describe(
+                        "The maximum number of configuration sets that can exist within \
+                         the current Region.",
                     ),
             ],
         ),
         service(
             "signin",
             "AWS IAM Identity Center",
-            // AWS publishes this quota under a code of its own, in bytes, and as not
-            // adjustable. The service's other published quota is not carried here: the
-            // coverage of this table is per PAIR (see `seed_default_quotas`), and a row
-            // whose published name this emulator cannot cite would be a quota AWS never
-            // published.
-            vec![quota(
-                "Maximum Signin resource based policy statement size",
-                10240.0,
-            )
-            .code("L-42359A23")
-            .unit("Bytes")
-            .fixed()
-            .describe(
-                "The maximum size of individual Resource-Based Policy statements in bytes",
-            )],
+            // The service publishes TWO quotas on the same plane under two codes of
+            // its own, both as not adjustable: the SIZE of one resource-based policy
+            // statement, in bytes, and how many such statements an account may hold, a
+            // plain count. A code identifies one quota, so each is published under the
+            // code the recorded default-quota listing of this service states for it —
+            // the two share a published `QuotaName`, which is AWS's, not a collision
+            // this catalog may resolve by renaming one of them.
+            vec![
+                quota(
+                    "Maximum Signin resource based policy statement size",
+                    10240.0,
+                )
+                .code("L-42359A23")
+                .unit("Bytes")
+                .fixed()
+                .describe(
+                    "The maximum size of individual Resource-Based Policy statements in bytes",
+                ),
+                quota(
+                    "Maximum Signin resource based policy statement size",
+                    100.0,
+                )
+                .code("L-5ECCC143")
+                .fixed()
+                .describe(
+                    "The maximum number of Resource-Based Policy statements that can be \
+                     created per AWS account",
+                ),
+            ],
         ),
         service(
             "sns",
