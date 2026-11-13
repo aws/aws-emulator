@@ -221,7 +221,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // send or a render names it, never rewritten here.
         let mut record = crate::state::EmailTemplateRecord::new(&name, content, now);
         record.tags = tags;
-        store.email_templates.insert(name, record);
+        store.email_templates.insert(name.clone(), record);
+
+        // The template belongs to the ACCOUNT rather than to this API, so it is published
+        // to the account's email-template registry: the classic SES surface reads it, lists
+        // it, refuses a second create under its name and renders a send that names it from
+        // the moment this call returns. The store lock is dropped first, since the
+        // publication takes it itself.
+        drop(store);
+        crate::state::publish_template(&*self.engine, &name);
 
         // `CreateEmailTemplateResponse` carries no members: the stored template is read
         // back with `GetEmailTemplate`.

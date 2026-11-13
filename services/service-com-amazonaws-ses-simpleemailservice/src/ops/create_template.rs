@@ -192,13 +192,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // kept exactly as they were sent: a template is rendered when a send
         // names it, never rewritten here.
         if state
-            .put_template(crate::state::EmailTemplate {
-                name: template_name.clone(),
+            .put_template(crate::state::recorded_template(
+                &template_name,
                 subject_part,
                 text_part,
                 html_part,
-                created_at: ::std::time::SystemTime::now(),
-            })
+                ::std::time::SystemTime::now(),
+            ))
             .is_none()
         {
             return Err(CreateTemplateErrorModeled::LimitExceededException(
@@ -211,6 +211,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             )
             .into());
         }
+
+        // The template belongs to the ACCOUNT rather than to this API, so it is published
+        // to the account's email-template registry: the SES v2 surface reads it, lists it,
+        // refuses a second create under its name and renders a send that names it from the
+        // moment this call returns. The store lock is dropped first, since the publication
+        // takes it itself.
+        drop(state);
+        crate::state::publish_template(&*self.engine, &template_name);
 
         Ok(CreateTemplateOutput {})
     }

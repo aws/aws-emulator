@@ -1,15 +1,14 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op ListEmailTemplates
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `ListEmailTemplates`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`ListEmailTemplates::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! Reports the email templates the ACCOUNT holds — the name and creation timestamp of each
+//! — in one stable order, a page at a time. The set is the account's rather than this
+//! API's ([`crate::state::templates`]), so a template recorded through the classic SES
+//! surface is listed here too, and the continuation token is the account registry's, so a
+//! token either surface's template listing issued continues this one.
+//!
+//! This is the ONLY file to touch for this operation.
 //!
 //! ## Shape of an operation
 //!
@@ -112,6 +111,19 @@ impl From<ListEmailTemplatesErrorModeled> for ListEmailTemplatesError {
     }
 }
 
+/// The page sizes `ListEmailTemplatesRequest$PageSize` admits, from its own documentation:
+/// "The value you specify has to be at least 1, and can be no more than 100." The model
+/// carries no `@range`, so the boundary validator passes a value outside it and this
+/// operation answers for it itself — refusing it, as this service's other listings over a
+/// documented page-size range do (`list_recommendations.rs`, `list_email_identities.rs`).
+const PAGE_SIZE_RANGE: ::std::ops::RangeInclusive<i32> = 1..=100;
+
+/// The page size used when the request names none: "Pass this token to a subsequent
+/// ListEmailTemplates call to retrieve the next 10 email templates"
+/// (`ListEmailTemplatesResponse$NextToken`), which is also the default page size the
+/// classic surface's `ListTemplates` documents over this same list.
+const DEFAULT_PAGE_SIZE: usize = 10;
+
 /// The `ListEmailTemplates` operation.
 ///
 /// Owns the shared engine (the constructor seam) and implements
@@ -148,18 +160,86 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `ListEmailTemplates` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(ListEmailTemplatesErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("ListEmailTemplates"))
+        // Request metadata is not needed: the listing covers the one emulated account.
+        let _ = ctx;
+        let Some(state) = crate::state::service_state(&*self.engine) else {
+            // No store at all, which is not a modelled SES state: answer the scaffold's
+            // 501 rather than a modelled error that reads as one.
+            return Err(crate::scaffolded::Scaffolded::not_implemented(
+                "ListEmailTemplates without the shared emulator state",
+            ));
+        };
+
+        let page_size = match input.page_size {
+            // Absent `PageSize`: the operation's own default page size, never the whole
+            // store.
+            None => DEFAULT_PAGE_SIZE,
+            Some(size) if PAGE_SIZE_RANGE.contains(&size) => size as usize,
+            Some(size) => {
+                return Err(bad_request(format!(
+                    "PageSize {size} is outside the supported range of {} to {}.",
+                    PAGE_SIZE_RANGE.start(),
+                    PAGE_SIZE_RANGE.end()
+                )))
+            }
+        };
+
+        // The token names the template the NEXT page starts at, and it belongs to the
+        // ACCOUNT's template listing rather than to this operation: both SES APIs page one
+        // list of the account's templates, so a token the classic surface's `ListTemplates`
+        // issued is a position in this list too (and the other way round). A value no
+        // listing of that list minted names no position in it and is refused in this
+        // service's one wording for that condition.
+        let Some(token_key) = crate::state::template_page_token_key(&*self.engine) else {
+            return Err(crate::scaffolded::Scaffolded::not_implemented(
+                "ListEmailTemplates without the account's email-template registry",
+            ));
+        };
+        let resume_from = match input.next_token.as_deref() {
+            None => None,
+            Some(token) => Some(
+                crate::state::template_page_cursor(&token_key, token)
+                    .ok_or_else(|| bad_request(crate::state::invalid_next_token()))?,
+            ),
+        };
+
+        let store = state.lock();
+        // The table is keyed by the template name, so iteration is in one stable
+        // (lexicographic) order for every caller — the same order the classic surface walks
+        // — which is what makes a `NextToken` resumable at all, on either surface. The
+        // cursor names where the next page starts, so a page boundary neither repeats nor
+        // skips an entry even when templates are added or removed between calls.
+        let page = match resume_from.as_deref() {
+            Some(resume_from) => (
+                ::std::ops::Bound::Included(resume_from),
+                ::std::ops::Bound::Unbounded,
+            ),
+            None => (::std::ops::Bound::Unbounded, ::std::ops::Bound::Unbounded),
+        };
+        let mut templates_metadata: Vec<EmailTemplateMetadata> = Vec::new();
+        let mut next_token = None;
+        for (name, record) in store.email_templates.range::<str, _>(page) {
+            if templates_metadata.len() == page_size {
+                next_token = Some(crate::state::template_page_token(&token_key, name));
+                break;
+            }
+            templates_metadata.push(record.metadata());
+        }
+
+        Ok(ListEmailTemplatesOutput {
+            // Present even when empty: an account with no templates has an empty list,
+            // which is a different answer from an absent member.
+            templates_metadata: Some(templates_metadata),
+            next_token,
+        })
     }
+}
+
+/// Refuse the request with this operation's input error: "The input you provided is
+/// invalid."
+fn bad_request(message: impl Into<String>) -> ListEmailTemplatesError {
+    ListEmailTemplatesErrorModeled::BadRequestException(BadRequestException {
+        message: Some(message.into()),
+    })
+    .into()
 }

@@ -133,22 +133,24 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // Request metadata is not needed: a template is keyed by its name within the
         // one emulated account.
         let _ = ctx;
-        let Some(state) = crate::state::service_state(&*self.engine) else {
+        if crate::state::service_state(&*self.engine).is_none() {
             // No store at all, which is not a modelled SES state: answer the scaffold's
             // 501 rather than a modelled error that reads as one.
             return Err(crate::scaffolded::Scaffolded::not_implemented(
                 "DeleteEmailTemplate without the shared emulator state",
             ));
-        };
+        }
 
         let name = input.template_name;
-        let mut store = state.lock();
         // "Deletes an email template": the whole record — its content, its tags and the
         // instant it was created — leaves the store, so every later read, listing, render
         // and send of that name reports the template as absent and a create under the name
-        // is accepted again. A name the store holds no template for is the modelled 404,
-        // worded the way every operation over an `EmailTemplateName` words it.
-        if store.email_templates.remove(&name).is_none() {
+        // is accepted again. The template belongs to the ACCOUNT rather than to this API, so
+        // it goes from the account's email-template registry too and the classic SES surface
+        // stops reporting it from the moment this call returns. A name the account holds no
+        // template for is the modelled 404, worded the way every operation over an
+        // `EmailTemplateName` words it.
+        if !crate::state::forget_template(&*self.engine, &name) {
             return Err(DeleteEmailTemplateErrorModeled::NotFoundException(
                 NotFoundException {
                     message: Some(crate::state::email_template_not_found(&name)),

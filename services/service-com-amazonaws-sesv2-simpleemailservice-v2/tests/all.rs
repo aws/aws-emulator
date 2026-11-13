@@ -113,6 +113,8 @@ mod email_identity_policies;
 mod email_identity_policies_read;
 #[path = "all/email_identity_verification_info.rs"]
 mod email_identity_verification_info;
+#[path = "all/email_template_listing.rs"]
+mod email_template_listing;
 #[path = "all/email_template_updates.rs"]
 mod email_template_updates;
 #[path = "all/email_templates.rs"]

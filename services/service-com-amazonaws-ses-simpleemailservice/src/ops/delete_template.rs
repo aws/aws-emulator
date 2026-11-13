@@ -124,22 +124,24 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
     ) -> Result<Self::Output, Self::Error> {
         // `ctx` carries only request metadata; this operation needs none of it.
         let _ = ctx;
-        let Some(state) = crate::state::service_state(&*self.engine) else {
+        if crate::state::service_state(&*self.engine).is_none() {
             // See `verify_email_identity.rs`: an engine with no store for this
             // service cannot serve the operation at all, and it models no server
             // error of its own.
             return Err(crate::scaffolded::Scaffolded::not_implemented(
                 "DeleteTemplate",
             ));
-        };
+        }
         // Keyed by the template name exactly as the writer recorded it
         // (`create_template.rs` stores a template under the name the request
         // names, byte for byte), so a template is deleted with the same name it
-        // was created with. Deleting a name the store does not hold succeeds:
-        // this operation models no not-found error. What the caller observes is
-        // the absence afterwards — `GetTemplate` refuses the name and
-        // `ListTemplates` omits it.
-        state.lock().templates.remove(&input.template_name);
+        // was created with. The template belongs to the ACCOUNT rather than to this
+        // API, so it goes from the account's email-template registry too and the SES
+        // v2 surface stops reporting it from the moment this call returns. Deleting
+        // a name the account does not hold succeeds: this operation models no
+        // not-found error. What the caller observes is the absence afterwards —
+        // `GetTemplate` refuses the name and `ListTemplates` omits it.
+        crate::state::forget_template(&*self.engine, &input.template_name);
 
         Ok(DeleteTemplateOutput {})
     }

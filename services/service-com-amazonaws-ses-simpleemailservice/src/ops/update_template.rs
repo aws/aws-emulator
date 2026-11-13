@@ -197,6 +197,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         stored.text_part = text_part;
         stored.html_part = html_part;
 
+        // The template belongs to the ACCOUNT rather than to this API, so the replaced
+        // content is published to the account's email-template registry: the SES v2 surface
+        // reads and renders THIS content from the moment the call returns. The store lock is
+        // dropped first, since the publication takes it itself.
+        drop(state);
+        crate::state::publish_template(&*self.engine, &template_name);
+
         Ok(UpdateTemplateOutput {})
     }
 }

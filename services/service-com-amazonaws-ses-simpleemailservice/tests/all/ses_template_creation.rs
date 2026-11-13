@@ -25,7 +25,7 @@
 
 use crate::harness::{call, element, elements, emulator, emulator_over, field, xml_text, Field};
 use service_com_amazonaws_ses_simpleemailservice::state::{
-    service_state, EmailTemplate, MAX_TEMPLATES,
+    recorded_template, service_state, MAX_TEMPLATES,
 };
 use smithy_server_runtime::MultiServiceRouter;
 use std::sync::Arc;
@@ -615,13 +615,13 @@ async fn a_create_past_the_accounts_template_ceiling_is_refused() {
     for index in 0..MAX_TEMPLATES {
         let recorded = store
             .lock()
-            .put_template(EmailTemplate {
-                name: format!("seeded-{index:05}"),
-                subject_part: Some(format!("Subject {index}")),
-                text_part: Some(format!("Text {index}")),
-                html_part: None,
-                created_at: UNIX_EPOCH + Duration::from_secs(1_767_225_600 + index as u64),
-            })
+            .put_template(recorded_template(
+                &format!("seeded-{index:05}"),
+                Some(format!("Subject {index}")),
+                Some(format!("Text {index}")),
+                None,
+                UNIX_EPOCH + Duration::from_secs(1_767_225_600 + index as u64),
+            ))
             .is_some();
         assert!(
             recorded,

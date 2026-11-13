@@ -57,6 +57,11 @@ pub mod event_destination_targets;
 /// services' own stores rather than decided here.
 pub mod s3_action_authorization;
 
+/// This surface's view of the ACCOUNT's email templates — one set for both SES APIs — and
+/// the token the template listing pages it with.
+pub mod templates;
+pub use templates::*;
+
 /// What the account's ACTIVE receipt rule set does with a message this account has just
 /// accepted for one of its own recipients — the receiving half of this service.
 pub mod inbound_delivery;
@@ -881,6 +886,11 @@ pub struct EmailTemplate {
     pub html_part: Option<String>,
     /// When the template was recorded.
     pub created_at: SystemTime,
+    /// Whether the account's email-template registry already carries this template
+    /// ([`templates`]). False on a record this surface has just recorded and not published
+    /// yet; a record that is registered here and gone from the registry was DELETED through
+    /// the other SES surface, so a reconciliation drops it.
+    pub registered: bool,
 }
 
 /// A configuration set a send may name.
@@ -3190,7 +3200,9 @@ fn system_entropy() -> u64 {
 /// every identity the account holds — including the ones recorded through the SES v2
 /// surface — and for none it has deleted. Its configuration sets are reconciled against
 /// the account's configuration-set registry the same way
-/// ([`reconcile_configuration_sets`]), and for the same reason.
+/// ([`reconcile_configuration_sets`]), and for the same reason. Its email templates are
+/// reconciled against the account's email-template registry the same way
+/// ([`reconcile_templates`]), and for the same reason.
 pub fn service_state<Eng: Send + Sync + 'static>(
     engine: &Eng,
 ) -> Option<::engine::ServiceState<ComAmazonawsSesSimpleemailserviceState>> {
@@ -3199,6 +3211,8 @@ pub fn service_state<Eng: Send + Sync + 'static>(
     reconcile_identities(&state, &registry, SystemTime::now());
     let configuration_sets = configuration_set_registry(engine)?;
     reconcile_configuration_sets(&state, &configuration_sets, SystemTime::now());
+    let templates = template_registry(engine)?;
+    reconcile_templates(&state, &templates);
     Some(state)
 }
 

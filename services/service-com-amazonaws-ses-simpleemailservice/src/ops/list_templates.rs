@@ -164,21 +164,30 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             }
         };
 
-        // A page token is OPAQUE and self-verifying: only a cursor this listing
-        // issued names a position in it, so anything else is refused instead of
-        // being read as some arbitrary position. Checked before the store is
-        // reached, because the answer does not depend on it. The refusal quotes
-        // the rejected value in angle brackets, as this service words it.
+        // A page token is OPAQUE and self-verifying: only a cursor a listing of the
+        // ACCOUNT's templates issued names a position in it, so anything else is
+        // refused instead of being read as some arbitrary position. The cursor is
+        // the account registry's rather than this surface's
+        // ([`crate::state::template_page_token`]), because the two SES APIs page ONE
+        // list of the account's templates: a token this listing issued continues the
+        // v2 listing and one the v2 listing issued continues this one. The refusal
+        // quotes the rejected value in angle brackets, as this service words it.
+        let Some(token_key) = crate::state::template_page_token_key(&*self.engine) else {
+            // No registry at all, so this surface has no account template list to
+            // page: see `verify_email_identity.rs` for why that answers the
+            // scaffold's 501 rather than a modelled client error.
+            return Err(crate::scaffolded::Scaffolded::not_implemented(
+                "ListTemplates",
+            ));
+        };
         let resume_from = match input.next_token.as_deref() {
             None => None,
             Some(token) => Some(
-                crate::state::decode_page_token(crate::state::LISTING_TEMPLATES, token).ok_or_else(
-                    || {
-                        crate::scaffolded::Scaffolded::invalid_parameter_value(format!(
-                            "Invalid PageToken <{token}>."
-                        ))
-                    },
-                )?,
+                crate::state::template_page_cursor(&token_key, token).ok_or_else(|| {
+                    crate::scaffolded::Scaffolded::invalid_parameter_value(format!(
+                        "Invalid PageToken <{token}>."
+                    ))
+                })?,
             ),
         };
 
@@ -208,10 +217,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let mut next_token = None;
         for (name, template) in state.templates.range::<str, _>(page) {
             if templates_metadata.len() == page_size {
-                next_token = Some(crate::state::encode_page_token(
-                    crate::state::LISTING_TEMPLATES,
-                    name,
-                ));
+                next_token = Some(crate::state::template_page_token(&token_key, name));
                 break;
             }
             templates_metadata.push(TemplateMetadata {

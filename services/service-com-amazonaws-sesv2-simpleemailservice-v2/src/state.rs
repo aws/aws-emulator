@@ -62,6 +62,9 @@ mod suppression;
 /// destination's message, which is the message variables a send supplies substituted into
 /// the template's parts.
 pub mod template_rendering;
+/// This surface's view of the ACCOUNT's email templates — one set for both SES APIs — and
+/// the token the template listing pages it with.
+pub mod templates;
 
 pub use configuration_sets::*;
 pub use dedicated_ips::*;
@@ -71,6 +74,7 @@ pub use export_job::*;
 pub use metric_series::*;
 pub use pricing::*;
 pub use suppression::*;
+pub use templates::*;
 
 /// How long after `CreateEmailIdentity` an identity's `PENDING` -> `SUCCESS`
 /// verification transition becomes due.
@@ -3248,6 +3252,11 @@ pub struct EmailTemplateRecord {
     pub tags: Vec<(String, String)>,
     /// When the template was created.
     pub created_at: SystemTime,
+    /// Whether the account's email-template registry already carries this template
+    /// ([`templates`]). False on a record this surface has just recorded and not published
+    /// yet; a record that is registered here and gone from the registry was DELETED through
+    /// the classic SES surface, so a reconciliation drops it.
+    pub registered: bool,
 }
 
 impl EmailTemplateRecord {
@@ -3262,6 +3271,7 @@ impl EmailTemplateRecord {
             content,
             tags: Vec::new(),
             created_at: now,
+            registered: false,
         }
     }
 
@@ -4491,7 +4501,9 @@ pub fn decode_page_token(token: &str) -> Option<String> {
 /// every identity the account holds — including the ones recorded through the classic
 /// SES surface — and for none it has deleted. Its configuration sets are reconciled
 /// against the account's configuration-set registry the same way
-/// ([`reconcile_configuration_sets`]), and for the same reason.
+/// ([`reconcile_configuration_sets`]), and for the same reason. Its email templates are
+/// reconciled against the account's email-template registry the same way
+/// ([`reconcile_templates`]), and for the same reason.
 pub fn service_state<Eng: Send + Sync + 'static>(
     engine: &Eng,
 ) -> Option<::engine::ServiceState<ComAmazonawsSesv2SimpleemailserviceV2State>> {
@@ -4500,6 +4512,8 @@ pub fn service_state<Eng: Send + Sync + 'static>(
     reconcile_identities(&state, &registry, SystemTime::now());
     let configuration_sets = configuration_set_registry(engine)?;
     reconcile_configuration_sets(&state, &configuration_sets, SystemTime::now());
+    let templates = template_registry(engine)?;
+    reconcile_templates(&state, &templates);
     Some(state)
 }
 

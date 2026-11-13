@@ -25,7 +25,8 @@ use crate::harness::{call, element, elements, emulator_over, field, Field};
 use aws_smithy_types::date_time::Format;
 use aws_smithy_types::DateTime;
 use service_com_amazonaws_ses_simpleemailservice::state::{
-    encode_page_token, service_state, EmailTemplate, LISTING_TEMPLATES,
+    encode_page_token, recorded_template, service_state, template_page_token,
+    template_page_token_key, LISTING_TEMPLATES,
 };
 use smithy_server_runtime::MultiServiceRouter;
 use std::sync::Arc;
@@ -49,8 +50,15 @@ const FIRST_CREATED_AT_SECS: u64 = 1_767_225_600;
 /// `names` — created a second apart, in the order given, which is NOT the
 /// lexicographic order the listing reports.
 ///
-/// Returns the router and, per template name, the epoch second it was created at.
-fn emulator_holding(names: &[String]) -> (MultiServiceRouter, Vec<(String, i64)>) {
+/// Returns the router, the engine behind it (whose account registry mints this
+/// listing's cursors) and, per template name, the epoch second it was created at.
+fn emulator_holding_over_engine(
+    names: &[String],
+) -> (
+    MultiServiceRouter,
+    Arc<engine::InMemoryEngine>,
+    Vec<(String, i64)>,
+) {
     let engine = Arc::new(engine::InMemoryEngine::new());
     let store = service_state(&*engine).expect("this service has a store on the shared engine");
     let mut created = Vec::new();
@@ -59,13 +67,13 @@ fn emulator_holding(names: &[String]) -> (MultiServiceRouter, Vec<(String, i64)>
         let created_at = UNIX_EPOCH + Duration::from_secs(secs);
         let recorded = store
             .lock()
-            .put_template(EmailTemplate {
-                name: name.clone(),
-                subject_part: Some(format!("Subject of {name}")),
-                text_part: Some(format!("Text of {name}")),
-                html_part: None,
+            .put_template(recorded_template(
+                name,
+                Some(format!("Subject of {name}")),
+                Some(format!("Text of {name}")),
+                None,
                 created_at,
-            })
+            ))
             .is_some();
         assert!(
             recorded,
@@ -74,7 +82,14 @@ fn emulator_holding(names: &[String]) -> (MultiServiceRouter, Vec<(String, i64)>
         created.push((name.clone(), secs as i64));
     }
     created.sort();
-    (emulator_over(engine), created)
+    (emulator_over(Arc::clone(&engine)), engine, created)
+}
+
+/// The same router and creation instants, for a case that needs no engine of its
+/// own.
+fn emulator_holding(names: &[String]) -> (MultiServiceRouter, Vec<(String, i64)>) {
+    let (router, _, created) = emulator_holding_over_engine(names);
+    (router, created)
 }
 
 /// `name-<index>` for each of `count` templates, in an order whose lexicographic
@@ -304,7 +319,9 @@ async fn a_page_size_past_the_ceiling_is_clamped_and_one_below_the_floor_is_refu
 #[tokio::test]
 async fn a_page_token_this_listing_did_not_issue_is_refused() {
     const STORED: usize = 12;
-    let (router, expected) = emulator_holding(&template_names(STORED));
+    let (router, engine, expected) = emulator_holding_over_engine(&template_names(STORED));
+    let token_key = template_page_token_key(&*engine)
+        .expect("the account's email-template registry is on the shared engine");
 
     // The cursor the listing itself hands out is accepted, and resumes the page
     // after the one it was cut from.
@@ -319,12 +336,12 @@ async fn a_page_token_this_listing_did_not_issue_is_refused() {
 
     // Each row is a token shaped unlike anything this listing issues, or one it
     // issued for a different sequence or a tampered position.
-    let real = encode_page_token(LISTING_TEMPLATES, &expected[3].0);
+    let real = template_page_token(&token_key, &expected[3].0);
     let tampered = {
-        let mut bytes = ::hex::decode(&real).expect("an issued token is hex");
+        let mut bytes = ::aws_smithy_types::base64::decode(&real).expect("an issued token is base64");
         let last = bytes.len() - 1;
         bytes[last] ^= 0x01;
-        ::hex::encode(bytes)
+        ::aws_smithy_types::base64::encode(&bytes)
     };
     let rows: Vec<(&str, String)> = vec![
         ("a token the caller made up", "not-a-real-pagination-token".to_string()),
@@ -339,6 +356,10 @@ async fn a_page_token_this_listing_did_not_issue_is_refused() {
         (
             "a cursor of another listing",
             encode_page_token("ListIdentities", &expected[3].0),
+        ),
+        (
+            "a cursor of this surface's own other listings",
+            encode_page_token(LISTING_TEMPLATES, &expected[3].0),
         ),
         // A rejected value is quoted back into the error envelope, so one
         // carrying XML metacharacters must travel escaped rather than breaking
@@ -392,7 +413,7 @@ async fn a_page_token_this_listing_did_not_issue_is_refused() {
     // template at or after it rather than refusing a caller whose page boundary
     // was deleted between calls.
     let resume_at = &expected[7].0;
-    let over_a_gap = encode_page_token(LISTING_TEMPLATES, &format!("{resume_at}-gone"));
+    let over_a_gap = template_page_token(&token_key, &format!("{resume_at}-gone"));
     let (after_gap, _) = list_templates(&router, None, Some(&over_a_gap)).await;
     assert_eq!(
         after_gap,

@@ -1682,6 +1682,13 @@ mod lambda_in_function_dynamodb_partition_conditions;
 // at once, so no single service crate's test target can ask it.
 #[path = "all/cloudformation_lambda_function_log_destination.rs"]
 mod cloudformation_lambda_function_log_destination;
+// Declared in the appended tail, which is where every new suite inserts its lines: that ONE
+// set of the account's email templates stands behind both Amazon SES APIs, and that a
+// continuation token either API's template listing issued continues that one list on the
+// other, spans the classic SES surface and the SESv2 surface at once, so no single service
+// crate's test target can ask it.
+#[path = "all/ses_templates_shared_across_v1_and_v2.rs"]
+mod ses_templates_shared_across_v1_and_v2;
 // Declared in the appended tail, which is where every new suite inserts its lines: the EBS
 // direct-API write loop driven THROUGH a refused block write and then observed as completed
 // spans the EBS direct APIs (which mint, refuse, write and seal) and Amazon EC2 (the only

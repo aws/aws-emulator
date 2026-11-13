@@ -560,6 +560,11 @@ pub mod ses_identities;
 /// configuration sets one account holds and the options of each that both APIs publish,
 /// written by whichever surface records, configures or deletes one and read by both.
 pub mod ses_configuration_sets;
+/// The account's EMAIL TEMPLATE registry, shared by the two SES surfaces: the set of email
+/// templates one account holds and the content of each, written by whichever surface
+/// records, replaces or deletes one and read by both — and the continuation token of the
+/// one template listing those two APIs page.
+pub mod ses_templates;
 /// Which member paths a boundary refusal states no value for, read from a service's own
 /// Smithy model: the members it marks `@sensitive`.
 pub mod sensitive_members;
