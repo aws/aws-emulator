@@ -23,6 +23,8 @@ mod pipe_bring_up;
 mod pipe_configuration_rules;
 #[path = "all/pipe_data_plane.rs"]
 mod pipe_data_plane;
+#[path = "all/pipe_dead_letter.rs"]
+mod pipe_dead_letter;
 #[path = "all/pipe_fifo_delivery.rs"]
 mod pipe_fifo_delivery;
 #[path = "all/pipe_description.rs"]

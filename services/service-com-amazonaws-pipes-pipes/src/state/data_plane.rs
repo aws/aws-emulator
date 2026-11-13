@@ -142,6 +142,7 @@ use ::serde_json::{json, Value};
 use super::{pipe_state, ComAmazonawsPipesPipesState, PipeRecord};
 use crate::ops::types::PipeTargetParameters;
 
+mod dead_letter;
 mod kinesis_source;
 
 /// How long the poller waits before looking at an idle source again. Short enough that
@@ -486,6 +487,9 @@ async fn poll_pipe(
     // Where the stream sources this poller may read have been read up to, for the length
     // of this poller.
     let mut positions = SourcePositions::default();
+    // What the batch this pipe's source stands at has cost in failed attempts, which is
+    // what the retries its source parameters allow are spent against.
+    let mut attempts = BatchAttempts::default();
     let mut failures = 0u32;
     // When this poller may read its source again. A batch it could not move left its
     // records checked out of that source, and they are the source's to hand to its other
@@ -564,7 +568,15 @@ async fn poll_pipe(
                     continue;
                 }
                 hold_source_until = None;
-                let moved = move_one_batch(callback, &mut clients, &mut positions, &record, &run).await;
+                let moved = move_one_batch(
+                    callback,
+                    &mut clients,
+                    &mut positions,
+                    &record,
+                    &run,
+                    &mut attempts,
+                )
+                .await;
                 match moved {
                     Batch::Moved { events } => {
                         metrics.count(super::metrics::EVENT_COUNT_METRIC, events);
@@ -596,6 +608,35 @@ async fn poll_pipe(
                             );
                         }
                         ::tokio::time::sleep(retry_backoff(failures)).await;
+                    }
+                    Batch::Discarded {
+                        stage,
+                        events,
+                        detail,
+                        dead_lettered,
+                    } => {
+                        // The attempts the pipe's source parameters allow are spent. The
+                        // events still entered the pipe and the execution still failed at
+                        // the stage that failed it, which is what those counters say — and
+                        // the source has moved past the batch, so the pass made progress:
+                        // the next one reads what is behind it at the pipe's own rate rather
+                        // than backing off, and nothing is held off, because the discarded
+                        // records are not read again.
+                        metrics.count(super::metrics::EVENT_COUNT_METRIC, events);
+                        metrics.count(super::metrics::EXECUTION_FAILED_METRIC, 1);
+                        if let Some(metric) = stage.failure_metric() {
+                            metrics.count(metric, 1);
+                        }
+                        failures = 0;
+                        hold_source_until = None;
+                        ::tracing::warn!(
+                            pipe = %pipe_name,
+                            stage = %stage.name(),
+                            detail = %detail,
+                            dead_letter = dead_lettered.as_deref().unwrap_or("none"),
+                            "a pipe discarded a batch it could not move after the retries its \
+                             source parameters allow; the records are not read again"
+                        );
                     }
                     Batch::Superseded => {
                         // Nothing was handed to a stage and nothing was asked of one, so
@@ -797,6 +838,17 @@ impl Stage {
             Self::Target => "target",
         }
     }
+
+    /// The stage as the RECORD of a failure names it: the stage of the pipe EventBridge
+    /// Pipes reports a failed execution against, so a client reading the record of a
+    /// discarded batch is told which of them gave up on it.
+    fn reported_stage(self) -> &'static str {
+        match self {
+            Self::Source => "SOURCE",
+            Self::Enrichment => "ENRICHMENT",
+            Self::Target => "TARGET",
+        }
+    }
 }
 
 /// What one pass of the poller came to.
@@ -837,6 +889,19 @@ enum Batch {
     /// their own checkout lapses, and the pipe is free to move whatever that source offers
     /// while it waits.
     NotProcessed { events: usize, detail: String },
+    /// The attempts the pipe's source parameters allow at a batch are SPENT: it was
+    /// attempted `MaximumRetryAttempts` times beyond the first and failed every time, so it
+    /// is discarded — the source moves past it and the records are not read again — and the
+    /// record of it went to the dead-letter destination the same parameters configure, named
+    /// here by `dead_lettered` when there was one to write to.
+    Discarded {
+        stage: Stage,
+        events: usize,
+        detail: String,
+        /// The destination the batch's dead letter was written to, or `None` for a pipe
+        /// that configures none.
+        dead_lettered: Option<String>,
+    },
 }
 
 /// Move one batch: poll the source, drop the records the pipe's filters do not admit,
@@ -854,12 +919,153 @@ enum Batch {
 /// the one question [`LiveRecord::refusal`] answers: may the role the pipe carries AT THAT
 /// MOMENT make this call on this resource? A call it may not make is the stage FAILING
 /// rather than the call happening.
+/// A batch a pass could not get through the pipe's stages, and what the poller may do about
+/// it: attempt it again, or — once the retries the pipe allows are spent — discard it.
+///
+/// Both halves of that decision are counted against the batch itself ([`BatchAttempts`]),
+/// never against the pipe: a pipe that keeps failing one poison batch while moving everything
+/// behind it has failed that batch as many times as it has attempted it.
+struct Attempt<'a> {
+    /// The configuration the batch was decided under, which is what says how many attempts
+    /// it gets and where its dead letter goes.
+    decided: &'a RunningPipe,
+    /// The batch itself, for the pointer its dead letter carries and the finish that moves
+    /// its source past it.
+    polled: &'a Polled,
+    /// What the batch the source stands at has cost in failed attempts so far.
+    attempts: &'a mut BatchAttempts,
+    /// When the records were checked out of their source, for a source they are a checkout
+    /// of ([`Polled::checked_out`]).
+    checked_out: Option<Instant>,
+}
+
+/// How many consecutive attempts the batch a source stands at has FAILED, for the length of
+/// one poller.
+///
+/// A source whose position has not moved hands the same batch over again, so the attempts at
+/// it are counted under the position it begins at ([`Polled::attempt_key`]) rather than
+/// under the pipe: a pipe that moves a batch and then fails the next one starts that one's
+/// count at its own first failure. It holds ONE key, because a pipe moves one batch at a
+/// time.
+#[derive(Debug, Default)]
+struct BatchAttempts {
+    /// The batch the count below belongs to, or `None` when nothing is counted.
+    batch: Option<String>,
+    /// How many attempts at that batch have failed, counting the first.
+    failed: u32,
+}
+
+impl BatchAttempts {
+    /// Count a failed attempt at the batch `key` names, and answer how many of its attempts
+    /// have now failed — this one included.
+    fn failed(&mut self, key: &str) -> u32 {
+        if self.batch.as_deref() != Some(key) {
+            self.batch = Some(key.to_string());
+            self.failed = 0;
+        }
+        self.failed = self.failed.saturating_add(1);
+        self.failed
+    }
+
+    /// Forget what was counted: the batch is finished with, either moved or discarded, so
+    /// the next one is counted from its own first failure.
+    fn settled(&mut self) {
+        self.batch = None;
+        self.failed = 0;
+    }
+}
+
+/// One FAILED attempt at a polled batch: the stage it failed at, why, and what that stage's
+/// own resource said about it.
+struct FailedAttempt {
+    /// Which of the pipe's stages failed the batch.
+    stage: Stage,
+    /// Why, as the one log line a repeatedly failing pipe writes reports it.
+    detail: String,
+    /// The error the invoked resource NAMED, for a call that answered one of its own — a
+    /// function's `FunctionError`. This is the invoked resource's own word for what went
+    /// wrong, so it is what a dead letter reports; `None` for a failure nothing named.
+    function_error: Option<String>,
+    /// Whether the records were WITHHELD from the source by a stage the pipe could not get
+    /// through, rather than left on it by a target that answered and reported it processed
+    /// no record of the batch.
+    withheld: bool,
+}
+
+impl FailedAttempt {
+    /// A stage the pipe could not get through: the records never reached the target, so they
+    /// are still checked out of their source.
+    fn withheld(stage: Stage, detail: String) -> Self {
+        Self {
+            stage,
+            detail,
+            function_error: None,
+            withheld: true,
+        }
+    }
+
+    /// A stage whose own call failed, carrying the error the invoked resource named when it
+    /// named one.
+    fn from_call(stage: Stage, failure: CallFailure) -> Self {
+        Self {
+            stage,
+            detail: failure.detail,
+            function_error: failure.function_error,
+            withheld: true,
+        }
+    }
+
+    /// A batch the target ANSWERED about, reporting it processed no record of it: the records
+    /// are on the source already.
+    fn unprocessed(stage: Stage, detail: String) -> Self {
+        Self {
+            stage,
+            detail,
+            function_error: None,
+            withheld: false,
+        }
+    }
+
+    /// This attempt as the pass's outcome, for a batch whose attempts are not spent yet: the
+    /// records stay on the source and a later pass hands them over again.
+    fn into_batch(self, events: usize, checked_out: Option<Instant>) -> Batch {
+        if self.withheld {
+            Batch::Failed {
+                stage: self.stage,
+                events,
+                detail: self.detail,
+                checked_out,
+            }
+        } else {
+            Batch::NotProcessed {
+                events,
+                detail: self.detail,
+            }
+        }
+    }
+}
+
+/// Move one batch: poll the source, drop the records the pipe's filters do not admit,
+/// hand the rest to the enrichment, deliver what came back to the target, and finish the
+/// batch with its source.
+///
+/// `run` is the configuration the POLL is taken under — which source is read, how many
+/// records at most and for how long. What the records are then DECIDED by is the
+/// configuration the pipe's record asks for once that poll is in ([`LiveRecord::resolved_now`]):
+/// the filter stage matches the patterns the record holds then, and the enrichment, the
+/// templates and the target are the ones it names then, so a call that replaced any of them
+/// while the batch was being collected governs the records it was collecting.
+///
+/// A batch no attempt gets through is attempted again — and only so many times: the retries
+/// the pipe's own source parameters allow are counted against it here, and a batch that has
+/// spent them is DISCARDED rather than attempted for ever ([`discarded_or_failed`]).
 async fn move_one_batch(
     callback: &smithy_server_runtime::EmbeddedEmulator,
     clients: &mut Clients,
     positions: &mut SourcePositions,
     record: &LiveRecord<'_>,
     run: &RunningPipe,
+    attempts: &mut BatchAttempts,
 ) -> Batch {
     let polled = match collect_batch(callback, clients, record, run, positions).await {
         Ok(polled) => polled,
@@ -890,6 +1096,135 @@ async fn move_one_batch(
         return Batch::Superseded;
     };
     let decided = &decided;
+    match run_stages(callback, clients, positions, record, decided, &polled, checked_out).await {
+        Ok(moved) => {
+            if matches!(moved, Batch::Moved { .. }) {
+                // The batch is finished with its source: whatever earlier attempts at it
+                // cost is spent, and the next batch is counted from its own first failure.
+                attempts.settled();
+            }
+            moved
+        }
+        Err(failure) => {
+            let attempt = Attempt {
+                decided,
+                polled: &polled,
+                attempts,
+                checked_out,
+            };
+            discarded_or_failed(callback, clients, positions, record, attempt, failure).await
+        }
+    }
+}
+
+/// What the poller does with a batch no attempt could move: attempt it again, or discard it
+/// because the retries the pipe allows are spent.
+///
+/// "Discard records after the specified number of retries. The default value is -1, which
+/// sets the maximum number of retries to infinite" (`MaximumRetryAttempts` of either stream
+/// source's parameters): a pipe that names no limit — and a source whose parameters carry no
+/// such member at all — attempts the batch for as long as its source holds it, which is what
+/// every pass before this one did. A pipe that names one gets that many attempts BEYOND the
+/// first, and the attempt after them discards the batch: its source moves past it, so the
+/// records are not read again, and the dead-letter destination the same parameters configure
+/// is sent the one record a client has of them ([`dead_letter`]).
+///
+/// A dead letter that could not be written is a batch that is NOT discarded: the records stay
+/// where they are and the pipe attempts them again, because a pipe that dropped them with
+/// nothing holding the record of them would be exactly the silent loss the destination exists
+/// to prevent.
+async fn discarded_or_failed(
+    callback: &smithy_server_runtime::EmbeddedEmulator,
+    clients: &mut Clients,
+    positions: &mut SourcePositions,
+    record: &LiveRecord<'_>,
+    attempt: Attempt<'_>,
+    failure: FailedAttempt,
+) -> Batch {
+    let Attempt {
+        decided,
+        polled,
+        attempts,
+        checked_out,
+    } = attempt;
+    let taken = polled.len();
+    let failed = attempts.failed(&polled.attempt_key());
+    let Some(allowed) = decided.maximum_retry_attempts else {
+        return failure.into_batch(taken, checked_out);
+    };
+    // The first attempt is not a retry: a pipe allowing one retry attempts the batch twice.
+    if failed <= allowed {
+        return failure.into_batch(taken, checked_out);
+    }
+    let dead_lettered = match (&decided.dead_letter, polled.discarded_batch()) {
+        (Some(destination), Some(batch)) => {
+            let body = dead_letter::payload(decided, &batch, &failure, failed);
+            match dead_letter::send(callback, clients, record, destination, &body).await {
+                Ok(()) => Some(destination.arn().to_string()),
+                Err(detail) => {
+                    ::tracing::warn!(
+                        pipe = %record.pipe,
+                        destination = %destination.arn(),
+                        detail = %detail,
+                        "a pipe could not record the batch it gave up on at its dead-letter \
+                         destination; it keeps the batch and attempts it again"
+                    );
+                    return failure.into_batch(taken, checked_out);
+                }
+            }
+        }
+        // A pipe that configures no destination still discards the batch — the retries it
+        // allowed are spent either way — and so does one whose source is not a kind a dead
+        // letter can point at.
+        _ => None,
+    };
+    // Discarded: the source moves past the whole batch, so the records it held are not read
+    // again. Nothing here can leave a stream's position where it stood, because the finish
+    // is for the whole batch.
+    if !matches!(
+        finish_batch(
+            callback,
+            clients,
+            positions,
+            record,
+            decided,
+            polled,
+            &Finished::WholeBatch,
+        )
+        .await,
+        SourceAdvance::MovedOn
+    ) {
+        ::tracing::warn!(
+            pipe = %record.pipe,
+            "a pipe could not move its source past the batch it discarded; it reads it again"
+        );
+    }
+    attempts.settled();
+    Batch::Discarded {
+        stage: failure.stage,
+        events: taken,
+        detail: failure.detail,
+        dead_lettered,
+    }
+}
+
+/// Run the pipe's stages over a batch that has been polled: the filter, the enrichment, the
+/// target, and the finish that moves the source past what the target processed.
+///
+/// Every one of those calls is made AS THE PIPE'S EXECUTION ROLE, so each is preceded by
+/// the one question [`LiveRecord::refusal`] answers: may the role the pipe carries AT THAT
+/// MOMENT make this call on this resource? A call it may not make is the stage FAILING
+/// rather than the call happening — and a stage that fails answers the FAILED ATTEMPT it
+/// was, which is what the caller counts against the batch's retries.
+async fn run_stages(
+    callback: &smithy_server_runtime::EmbeddedEmulator,
+    clients: &mut Clients,
+    positions: &mut SourcePositions,
+    record: &LiveRecord<'_>,
+    decided: &RunningPipe,
+    polled: &Polled,
+    checked_out: Option<Instant>,
+) -> Result<Batch, FailedAttempt> {
     let taken = polled.len();
     // The identifier its source names each polled record by: what a target's report of the
     // records it did not process names them by, and what the finish below leaves on the
@@ -899,14 +1234,7 @@ async fn move_one_batch(
     // The WHOLE polled batch, as one JSON array of record envelopes.
     let batch = match polled.envelopes(decided) {
         Ok(batch) => batch,
-        Err(detail) => {
-            return Batch::Failed {
-                stage: Stage::Source,
-                events: taken,
-                detail,
-                checked_out,
-            }
-        }
+        Err(detail) => return Err(FailedAttempt::withheld(Stage::Source, detail)),
     };
 
     // The filter decides which of the polled records enter the pipe, BEFORE the
@@ -920,7 +1248,7 @@ async fn move_one_batch(
             positions,
             record,
             decided,
-            &polled,
+            polled,
             &Finished::WholeBatch,
         )
         .await;
@@ -936,35 +1264,16 @@ async fn move_one_batch(
         Some(enrichment) => {
             let handed = match transformed(decided.enrichment_template.as_deref(), batch) {
                 Ok(handed) => handed,
-                Err(detail) => {
-                    return Batch::Failed {
-                        stage: Stage::Enrichment,
-                        events: taken,
-                        detail,
-                        checked_out,
-                    }
-                }
+                Err(detail) => return Err(FailedAttempt::withheld(Stage::Enrichment, detail)),
             };
             if let Some(detail) =
                 record.refusal(enrichment.invocation_action(), enrichment.arn())
             {
-                return Batch::Failed {
-                    stage: Stage::Enrichment,
-                    events: taken,
-                    detail,
-                    checked_out,
-                };
+                return Err(FailedAttempt::withheld(Stage::Enrichment, detail));
             }
             match invoke_enrichment(callback, clients, enrichment, &handed).await {
                 Ok(events) => events,
-                Err(detail) => {
-                    return Batch::Failed {
-                        stage: Stage::Enrichment,
-                        events: taken,
-                        detail,
-                        checked_out,
-                    }
-                }
+                Err(failure) => return Err(FailedAttempt::from_call(Stage::Enrichment, failure)),
             }
         }
     };
@@ -975,12 +1284,7 @@ async fn move_one_batch(
     if !events.is_empty() {
         if let Some(detail) = record.refusal(decided.target.delivery_action(), &decided.target_arn)
         {
-            return Batch::Failed {
-                stage: Stage::Target,
-                events: taken,
-                detail,
-                checked_out,
-            };
+            return Err(FailedAttempt::withheld(Stage::Target, detail));
         }
     }
 
@@ -991,14 +1295,7 @@ async fn move_one_batch(
     // no template is handed is the envelope itself, body as sent.
     let payloads = match target_payloads(decided, &events) {
         Ok(payloads) => payloads,
-        Err(detail) => {
-            return Batch::Failed {
-                stage: Stage::Target,
-                events: taken,
-                detail,
-                checked_out,
-            }
-        }
+        Err(detail) => return Err(FailedAttempt::withheld(Stage::Target, detail)),
     };
 
     // How the target TAKES them is the target's own: one call per event for a target whose
@@ -1007,28 +1304,21 @@ async fn move_one_batch(
     // did not process, for a target whose call answers the caller at all.
     let report =
         match deliver_batch(callback, clients, &decided.target, &payloads, &identifiers).await {
-        Ok(report) => report,
-        Err(detail) => {
-            return Batch::Failed {
-                stage: Stage::Target,
-                events: taken,
-                detail,
-                checked_out,
-            }
-        }
-    };
+            Ok(report) => report,
+            Err(failure) => return Err(FailedAttempt::from_call(Stage::Target, failure)),
+        };
     // A report that cannot be read as a report of the records of THIS batch — an identifier
     // the batch does not hold among them, or every record of it — leaves nothing of it
     // processed, so the records stay on the source in full and a later pass hands them over
     // again.
     if let ::service_common::batch_item_failures::BatchReport::WholeBatchFailed(detail) = &report {
-        return Batch::NotProcessed {
-            events: taken,
-            detail: format!(
+        return Err(FailedAttempt::unprocessed(
+            Stage::Target,
+            format!(
                 "the target {} reported no record of the batch as processed: {detail}",
                 decided.target_arn
             ),
-        };
+        ));
     }
     let processed =
         ::service_common::batch_item_failures::processed_records(&report, &identifiers)
@@ -1044,7 +1334,7 @@ async fn move_one_batch(
         Finished::Records(processed.iter().map(String::as_str).collect())
     };
     let advance =
-        finish_batch(callback, clients, positions, record, decided, &polled, &finished).await;
+        finish_batch(callback, clients, positions, record, decided, polled, &finished).await;
     moved_or_standing_still(advance, decided, taken, checked_out)
 }
 
@@ -1061,23 +1351,23 @@ fn moved_or_standing_still(
     run: &RunningPipe,
     taken: usize,
     checked_out: Option<Instant>,
-) -> Batch {
+) -> Result<Batch, FailedAttempt> {
     match advance {
-        SourceAdvance::MovedOn => Batch::Moved { events: taken },
-        SourceAdvance::HeadUnprocessed => Batch::NotProcessed {
-            events: taken,
-            detail: format!(
+        SourceAdvance::MovedOn => Ok(Batch::Moved { events: taken }),
+        SourceAdvance::HeadUnprocessed => Err(FailedAttempt::unprocessed(
+            Stage::Target,
+            format!(
                 "the target {} processed no record at the head of the batch, so the position \
                  of its source stands where it stood",
                 run.target_arn
             ),
-        },
-        SourceAdvance::PositionUnavailable(detail) => Batch::Failed {
+        )),
+        SourceAdvance::PositionUnavailable(detail) => Ok(Batch::Failed {
             stage: Stage::Source,
             events: taken,
             detail,
             checked_out,
-        },
+        }),
     }
 }
 
@@ -1457,6 +1747,85 @@ impl Polled {
                 .collect(),
             Self::Records(batch) => stream_identifiers(&batch.records),
             Self::KinesisRecords(batch) => kinesis_source::identifiers(&batch.records),
+        }
+    }
+
+    /// What the batch this poll took is COUNTED under when an attempt at it fails: the
+    /// position its source hands it over from, which is the shard it came from and the
+    /// identifier of its first record.
+    ///
+    /// A source whose position has not moved hands the same first record over again, so two
+    /// attempts at a batch beginning at that record are two attempts at the same work —
+    /// whether or not the later poll happened to collect more records behind it.
+    fn attempt_key(&self) -> String {
+        match self {
+            Self::Messages { messages, .. } => messages
+                .first()
+                .and_then(|message| message.message_id.clone())
+                .unwrap_or_default(),
+            Self::Records(batch) => format!(
+                "{}:{}",
+                batch.shard,
+                stream_identifiers(&batch.records)
+                    .first()
+                    .cloned()
+                    .unwrap_or_default()
+            ),
+            Self::KinesisRecords(batch) => format!(
+                "{}:{}",
+                batch.shard,
+                kinesis_source::identifiers(&batch.records)
+                    .first()
+                    .cloned()
+                    .unwrap_or_default()
+            ),
+        }
+    }
+
+    /// This poll as a DEAD LETTER points at the batch it took: the shard and the run of
+    /// sequence numbers it covered.
+    ///
+    /// `None` for a poll a dead letter cannot point at — an Amazon SQS receive, whose source
+    /// parameters carry no `DeadLetterConfig` to begin with, because a queue's records are
+    /// addressed by a receipt that is gone by then rather than by a position in a shard.
+    fn discarded_batch(&self) -> Option<dead_letter::DiscardedBatch> {
+        match self {
+            Self::Messages { .. } => None,
+            Self::Records(batch) => {
+                let identifiers = stream_identifiers(&batch.records);
+                let arrival = |record: Option<&::aws_sdk_dynamodbstreams::types::Record>| {
+                    record
+                        .and_then(|record| record.dynamodb.as_ref())
+                        .and_then(|change| change.approximate_creation_date_time.as_ref())
+                        .and_then(dead_letter::instant_text)
+                };
+                Some(dead_letter::DiscardedBatch {
+                    member: dead_letter::DYNAMODB_BATCH_INFO,
+                    shard: batch.shard.clone(),
+                    start_sequence_number: identifiers.first().cloned().unwrap_or_default(),
+                    end_sequence_number: identifiers.last().cloned().unwrap_or_default(),
+                    first_arrival: arrival(batch.records.first()),
+                    last_arrival: arrival(batch.records.last()),
+                    size: batch.records.len(),
+                })
+            }
+            Self::KinesisRecords(batch) => {
+                let identifiers = kinesis_source::identifiers(&batch.records);
+                let arrival = |record: Option<&::aws_sdk_kinesis::types::Record>| {
+                    record
+                        .and_then(::aws_sdk_kinesis::types::Record::approximate_arrival_timestamp)
+                        .and_then(dead_letter::instant_text)
+                };
+                Some(dead_letter::DiscardedBatch {
+                    member: dead_letter::KINESIS_BATCH_INFO,
+                    shard: batch.shard.clone(),
+                    start_sequence_number: identifiers.first().cloned().unwrap_or_default(),
+                    end_sequence_number: identifiers.last().cloned().unwrap_or_default(),
+                    first_arrival: arrival(batch.records.first()),
+                    last_arrival: arrival(batch.records.last()),
+                    size: batch.records.len(),
+                })
+            }
         }
     }
 
@@ -2328,6 +2697,30 @@ fn queue_record_envelope(
     envelope
 }
 
+/// Why a stage's own CALL did not come back with what the pipe needed, and — for a call the
+/// invoked resource answered an error of its own on — the error it named.
+///
+/// The error is the invoked resource's own word for what went wrong, which is what a record
+/// of a discarded batch reports ([`dead_letter::payload`]); everything else about the failure
+/// is this emulator's account of it and travels only in the log line.
+#[derive(Debug)]
+struct CallFailure {
+    detail: String,
+    /// "If present, indicates that an error occurred during function execution"
+    /// (`InvocationResponse$FunctionError`) — `None` for a call that failed without the
+    /// resource naming an error of its own.
+    function_error: Option<String>,
+}
+
+impl From<String> for CallFailure {
+    fn from(detail: String) -> Self {
+        Self {
+            detail,
+            function_error: None,
+        }
+    }
+}
+
 /// Hand the whole polled batch to the enrichment as ONE array, and read the events it
 /// returned.
 ///
@@ -2339,7 +2732,7 @@ async fn invoke_enrichment(
     clients: &mut Clients,
     enrichment: &Enrichment,
     batch: &[Value],
-) -> Result<Vec<Value>, String> {
+) -> Result<Vec<Value>, CallFailure> {
     let payload = Value::Array(batch.to_vec()).to_string();
     match enrichment {
         Enrichment::LambdaFunction { arn, region } => {
@@ -2360,7 +2753,10 @@ async fn invoke_enrichment(
             // (`InvocationResponse$FunctionError`): the batch is not enriched, so
             // nothing is delivered and the records stay on the source.
             if let Some(failure) = answer.function_error.as_deref() {
-                return Err(format!("the enrichment {arn} answered a {failure} error"));
+                return Err(CallFailure {
+                    detail: format!("the enrichment {arn} answered a {failure} error"),
+                    function_error: Some(failure.to_string()),
+                });
             }
             let returned = answer
                 .payload
@@ -2383,10 +2779,10 @@ async fn invoke_enrichment(
                     )
                 })?;
             if answer.status != ::aws_sdk_sfn::types::SyncExecutionStatus::Succeeded {
-                return Err(format!(
-                    "the enrichment {arn} ended {}",
-                    answer.status.as_str()
-                ));
+                return Err(CallFailure {
+                    detail: format!("the enrichment {arn} ended {}", answer.status.as_str()),
+                    function_error: Some(answer.status.as_str().to_string()),
+                });
             }
             let returned = answer.output.unwrap_or_default();
             enrichment_events(returned.as_bytes(), arn)
@@ -2396,7 +2792,7 @@ async fn invoke_enrichment(
 
 /// The events an enrichment's answer carries: the elements of a returned array, the one
 /// value a returned object or scalar is, or none when it returned nothing.
-fn enrichment_events(returned: &[u8], arn: &str) -> Result<Vec<Value>, String> {
+fn enrichment_events(returned: &[u8], arn: &str) -> Result<Vec<Value>, CallFailure> {
     let trimmed: &[u8] = {
         let text = returned;
         let start = text.iter().position(|byte| !byte.is_ascii_whitespace());
@@ -2408,8 +2804,10 @@ fn enrichment_events(returned: &[u8], arn: &str) -> Result<Vec<Value>, String> {
     if trimmed.is_empty() {
         return Ok(Vec::new());
     }
-    let value: Value = ::serde_json::from_slice(trimmed)
-        .map_err(|error| format!("the enrichment {arn} answered a body that is not JSON ({error})"))?;
+    let value: Value = ::serde_json::from_slice(trimmed).map_err(|error| CallFailure {
+        detail: format!("the enrichment {arn} answered a body that is not JSON ({error})"),
+        function_error: None,
+    })?;
     Ok(match value {
         Value::Null => Vec::new(),
         Value::Array(events) => events,
@@ -2445,7 +2843,7 @@ async fn deliver_batch(
     target: &Target,
     payloads: &[Delivery<'_>],
     records: &[String],
-) -> Result<::service_common::batch_item_failures::BatchReport, String> {
+) -> Result<::service_common::batch_item_failures::BatchReport, CallFailure> {
     match target {
         Target::Queue {
             url,
@@ -2526,7 +2924,10 @@ async fn deliver_batch(
             // asynchronous invocation reports none — Lambda has only accepted the event at
             // that point — so what such a target did with the batch is its own business.
             if let Some(failure) = answer.function_error.as_deref() {
-                return Err(format!("the target {arn} answered a {failure} error"));
+                return Err(CallFailure {
+                    detail: format!("the target {arn} answered a {failure} error"),
+                    function_error: Some(failure.to_string()),
+                });
             }
             if !*synchronous {
                 return Ok(
@@ -2810,6 +3211,8 @@ fn json_string_body(text: &str) -> String {
 /// of the batch that poll came back with ([`LiveRecord::resolved_now`]), so what the stages
 /// act under is never older than the batch they are handed.
 struct RunningPipe {
+    /// The pipe's own ARN: what a record of a batch this pipe gave up on names it by.
+    pipe_arn: String,
     /// The source the records are polled from, by the kind of resource the `Source`
     /// names.
     source: Source,
@@ -2835,6 +3238,14 @@ struct RunningPipe {
     target: Target,
     /// The `Target` itself: the resource the delivery is authorized on.
     target_arn: String,
+    /// `MaximumRetryAttempts`: how many attempts BEYOND the first a batch the pipe cannot
+    /// move gets before it is discarded. `None` is infinite — "the default value is -1,
+    /// which sets the maximum number of retries to infinite" — which is also what a source
+    /// whose parameters carry no such member at all comes to.
+    maximum_retry_attempts: Option<u32>,
+    /// `DeadLetterConfig`: where the record of a batch this pipe discarded goes, when the
+    /// pipe configures a destination for it.
+    dead_letter: Option<dead_letter::Destination>,
 }
 
 /// The source a pipe's records are polled from, by the resource its `Source` names.
@@ -2919,6 +3330,28 @@ impl Target {
     }
 }
 
+/// What the SOURCE half of a pipe's configuration comes to: which source is polled and the
+/// members that source's own parameter shape carries.
+///
+/// One shape per source kind carries them (`PipeSourceSqsQueueParameters`,
+/// `PipeSourceDynamoDBStreamParameters`, `PipeSourceKinesisStreamParameters`) and they do not
+/// carry the same members — only a stream's parameters say how often a batch is retried and
+/// where it goes when it is given up on — so this is what each arm of the resolution answers,
+/// read the same way whichever arm filled it.
+struct SourceConfiguration {
+    source: Source,
+    /// `BatchSize` as the pipe configured it, and the default for a source that named none.
+    batch_size: Option<i32>,
+    /// See [`Self::batch_size`].
+    default_batch_size: usize,
+    /// `MaximumBatchingWindowInSeconds` as the pipe configured it.
+    window_seconds: Option<i32>,
+    /// `MaximumRetryAttempts`, for a source whose parameters carry one.
+    retry_attempts: Option<i32>,
+    /// `DeadLetterConfig.Arn`, for a source whose parameters carry one.
+    dead_letter_arn: Option<String>,
+}
+
 /// What this record asks the stages to do, or why this data plane does not serve it.
 ///
 /// A configuration it cannot serve FAITHFULLY leaves the source untouched rather than
@@ -2932,21 +3365,33 @@ fn resolve_run(pipe: &PipeRecord) -> Result<RunningPipe, String> {
 
     // WHICH source is polled, and the parameters that source's own shape carries: a pipe
     // reads from exactly one source, which is the kind of resource its `Source` names.
-    let (source, batch_size, window_seconds, default_batch_size) = match parsed.vendor {
+    let SourceConfiguration {
+        source,
+        batch_size,
+        window_seconds,
+        default_batch_size,
+        retry_attempts,
+        dead_letter_arn,
+    } = match parsed.vendor {
         SQS_NAMESPACE => {
             let queue_name = parsed.resource;
             if queue_name.contains('/') || queue_name.contains(':') {
                 return Err(format!("its Source {} names no queue", pipe.source));
             }
             let queue = parameters.and_then(|p| p.sqs_queue_parameters.as_ref());
-            (
-                Source::Queue {
+            SourceConfiguration {
+                source: Source::Queue {
                     url: queue_url(&source_region, parsed.account, queue_name),
                 },
-                queue.and_then(|p| p.batch_size),
-                queue.and_then(|p| p.maximum_batching_window_in_seconds),
-                DEFAULT_BATCH_SIZE,
-            )
+                batch_size: queue.and_then(|p| p.batch_size),
+                window_seconds: queue.and_then(|p| p.maximum_batching_window_in_seconds),
+                default_batch_size: DEFAULT_BATCH_SIZE,
+                // `PipeSourceSqsQueueParameters` carries neither member: a queue's records
+                // are retried for as long as the queue holds them, and there is no
+                // dead-letter destination of the PIPE's — the queue has one of its own.
+                retry_attempts: None,
+                dead_letter_arn: None,
+            }
         }
         DYNAMODB_NAMESPACE => {
             // A DynamoDB source is the table's STREAM, which is the resource the ARN has
@@ -2966,14 +3411,19 @@ fn resolve_run(pipe: &PipeRecord) -> Result<RunningPipe, String> {
                      read its stream from"
                         .to_string()
                 })?;
-            (
-                Source::Stream {
+            SourceConfiguration {
+                source: Source::Stream {
                     starting_position: stream.starting_position.clone(),
                 },
-                stream.batch_size,
-                stream.maximum_batching_window_in_seconds,
-                DEFAULT_STREAM_BATCH_SIZE,
-            )
+                batch_size: stream.batch_size,
+                window_seconds: stream.maximum_batching_window_in_seconds,
+                default_batch_size: DEFAULT_STREAM_BATCH_SIZE,
+                retry_attempts: stream.maximum_retry_attempts,
+                dead_letter_arn: stream
+                    .dead_letter_config
+                    .as_ref()
+                    .and_then(|configured| configured.arn.clone()),
+            }
         }
         KINESIS_NAMESPACE => {
             // A Kinesis source is the data stream itself, which is the resource the ARN
@@ -2991,8 +3441,8 @@ fn resolve_run(pipe: &PipeRecord) -> Result<RunningPipe, String> {
                      read its stream from"
                         .to_string()
                 })?;
-            (
-                Source::KinesisStream {
+            SourceConfiguration {
+                source: Source::KinesisStream {
                     starting_position: stream.starting_position.clone(),
                     // "The time from which to start reading, in Unix time seconds"
                     // (`StartingPositionTimestamp`): the instant itself, read through the
@@ -3001,10 +3451,15 @@ fn resolve_run(pipe: &PipeRecord) -> Result<RunningPipe, String> {
                         .starting_position_timestamp
                         .and_then(|at| SystemTime::try_from(at).ok()),
                 },
-                stream.batch_size,
-                stream.maximum_batching_window_in_seconds,
-                DEFAULT_STREAM_BATCH_SIZE,
-            )
+                batch_size: stream.batch_size,
+                window_seconds: stream.maximum_batching_window_in_seconds,
+                default_batch_size: DEFAULT_STREAM_BATCH_SIZE,
+                retry_attempts: stream.maximum_retry_attempts,
+                dead_letter_arn: stream
+                    .dead_letter_config
+                    .as_ref()
+                    .and_then(|configured| configured.arn.clone()),
+            }
         }
         other => {
             return Err(format!(
@@ -3024,6 +3479,22 @@ fn resolve_run(pipe: &PipeRecord) -> Result<RunningPipe, String> {
         .unwrap_or(0)
         .clamp(*BATCHING_WINDOW_RANGE.start(), *BATCHING_WINDOW_RANGE.end());
     let batching_window = Duration::from_secs(u64::try_from(window_seconds).unwrap_or_default());
+
+    // "Discard records after the specified number of retries. The default value is -1, which
+    // sets the maximum number of retries to infinite" (`MaximumRetryAttempts` of either
+    // stream source's parameters): the negative value, and a source whose parameters name
+    // none, are a batch attempted for as long as its source holds it.
+    let maximum_retry_attempts = retry_attempts.and_then(|allowed| u32::try_from(allowed).ok());
+    // Where the record of a batch this pipe gives up on goes. A destination this data plane
+    // cannot write to is a configuration it does not serve: the pipe polls nothing rather
+    // than discarding batches whose record would reach nobody.
+    let dead_letter = match dead_letter_arn
+        .as_deref()
+        .filter(|arn| !arn.is_empty())
+    {
+        None => None,
+        Some(arn) => Some(dead_letter::resolve(arn)?),
+    };
 
     // The filters the pipe admits records by, read through the one reading of the
     // event-pattern language in this tree. An absent or empty pattern carries no pattern
@@ -3069,6 +3540,7 @@ fn resolve_run(pipe: &PipeRecord) -> Result<RunningPipe, String> {
     let target = resolve_target(&pipe.target, target_parameters)?;
 
     Ok(RunningPipe {
+        pipe_arn: pipe.arn.clone(),
         source,
         source_arn: pipe.source.clone(),
         source_region,
@@ -3080,6 +3552,8 @@ fn resolve_run(pipe: &PipeRecord) -> Result<RunningPipe, String> {
         target_template,
         target,
         target_arn: pipe.target.clone(),
+        maximum_retry_attempts,
+        dead_letter,
     })
 }
 
@@ -3333,6 +3807,7 @@ mod test_support {
     /// read their configuration off.
     pub(super) fn kinesis_run(starting_position: &str) -> RunningPipe {
         RunningPipe {
+            pipe_arn: "arn:aws:pipes:us-east-1:000000000000:pipe/orders-to-results".to_string(),
             source: Source::KinesisStream {
                 starting_position: starting_position.to_string(),
                 starting_position_timestamp: None,
@@ -3352,6 +3827,8 @@ mod test_support {
                 message_deduplication_id: None,
             },
             target_arn: "arn:aws:sqs:us-east-1:000000000000:results".to_string(),
+            maximum_retry_attempts: None,
+            dead_letter: None,
         }
     }
 }
@@ -3643,7 +4120,7 @@ mod tests {
         ];
         for (case, answer, expected) in rows {
             let events = enrichment_events(answer.as_bytes(), "arn:aws:lambda:us-west-2::function:e")
-                .unwrap_or_else(|error| panic!("case {case:?}: {error}"));
+                .unwrap_or_else(|error| panic!("case {case:?}: {}", error.detail));
             assert_eq!(
                 events.len(),
                 expected,
