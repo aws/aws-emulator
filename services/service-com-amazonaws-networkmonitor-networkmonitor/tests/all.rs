@@ -65,6 +65,8 @@ mod region_isolation;
 mod reserved_tag_keys;
 #[path = "all/resource_tags.rs"]
 mod resource_tags;
+#[path = "all/source_arn_grammar.rs"]
+mod source_arn_grammar;
 #[path = "all/state_roundtrip.rs"]
 mod state_roundtrip;
 #[path = "all/tag_count_ceiling_refusal.rs"]

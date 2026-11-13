@@ -11,9 +11,11 @@ engine = { workspace = true }
 # `service-common` carries two readers this crate needs.
 # `aws_validation_refusal`: the shared wording of a boundary constraint refusal, so
 # this service does not carry its own copy of how AWS states one.
-# `arn::region_label`: the ONE statement of the Region grammar, applied to the
-# caller-supplied signing region before it reaches the AUTHORITY of the endpoint the
-# in-process EC2 read is addressed at (`src/state.rs`, `ec2_client`).
+# `arn`: the ONE statement of what an ARN is — `region_label` for the Region grammar,
+# applied to the caller-supplied signing region before it reaches the AUTHORITY of the
+# endpoint the in-process EC2 read is addressed at (`src/state.rs`, `ec2_client`), and
+# `parse_of` for the six fields of the subnet ARN a probe's `sourceArn` names
+# (`src/state.rs`, `subnet_id_of`).
 # `iam_authorization`: the shared evaluation of IAM policy documents against an action
 # on a resource, so this service's authorization gate (`src/service/authorization.rs`)
 # reads a document exactly as every other service does.

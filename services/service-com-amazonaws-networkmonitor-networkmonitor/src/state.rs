@@ -296,6 +296,15 @@ pub const SUBNET_ARN_SERVICE: &str = "ec2";
 /// `arn:aws:ec2:<region>:<account>:subnet/<subnetId>`.
 pub const SUBNET_ARN_RESOURCE_TYPE: &str = "subnet";
 
+/// The separator between the resource TYPE and the id in a subnet ARN.
+///
+/// An ARN's resource field is written in either of two forms, `<type>/<id>` and
+/// `<type>:<id>`, and Amazon EC2 writes a subnet's in the first: the ARN that
+/// service reports for a subnet it created is
+/// `arn:aws:ec2:<region>:<account>:subnet/<subnetId>`. So a `sourceArn` is read
+/// as naming a subnet only in that form.
+pub const SUBNET_ARN_RESOURCE_SEPARATOR: char = '/';
+
 /// The id prefix every VPC subnet carries (`subnet-0123456789abcdef0`).
 pub const SUBNET_ID_PREFIX: &str = "subnet-";
 
@@ -371,24 +380,24 @@ pub fn arn_resource_id(arn: &str) -> &str {
 /// what the EXISTENCE half ([`resolve_source_subnet`]) looks up, since AWS
 /// resolves `sourceArn` against the subnets the caller's account really holds
 /// and refuses a probe whose source is not one of them.
+///
+/// What an ARN IS — its six fields and which of them may be empty — is read
+/// through the workspace's single ARN parse (`service_common::arn`, the same
+/// module this file reads a Region label from), so this service cannot drift
+/// from the rest of the tree about the grammar. What stays here is this
+/// service's own rules on top of those fields: the vendor the ARN must name, the
+/// account that has to hold the subnet, the `<type>/<id>` form EC2 writes a
+/// subnet's resource in ([`SUBNET_ARN_RESOURCE_SEPARATOR`]) and the EC2 id
+/// grammar ([`EC2_ID_SUFFIX_LENGTHS`]).
 pub fn subnet_id_of(source_arn: &str) -> Option<&str> {
-    // arn : partition : service : region : account : resource
-    let mut segments = source_arn.splitn(6, ':');
-    if segments.next()? != "arn" {
+    let arn = ::service_common::arn::parse_of(source_arn, SUBNET_ARN_SERVICE)?;
+    if arn.account != ::engine::emulator_account_id() {
         return None;
     }
-    let _partition = segments.next()?;
-    if segments.next()? != SUBNET_ARN_SERVICE {
-        return None;
-    }
-    let _region = segments.next()?;
-    if segments.next()? != ::engine::emulator_account_id() {
-        return None;
-    }
-    let (resource_type, subnet_id) = segments.next()?.split_once('/')?;
-    if resource_type != SUBNET_ARN_RESOURCE_TYPE {
-        return None;
-    }
+    let subnet_id = arn
+        .resource
+        .strip_prefix(SUBNET_ARN_RESOURCE_TYPE)?
+        .strip_prefix(SUBNET_ARN_RESOURCE_SEPARATOR)?;
     let suffix = subnet_id.strip_prefix(SUBNET_ID_PREFIX)?;
     if !EC2_ID_SUFFIX_LENGTHS.contains(&suffix.len())
         || !suffix.chars().all(|c| c.is_ascii_alphanumeric())
