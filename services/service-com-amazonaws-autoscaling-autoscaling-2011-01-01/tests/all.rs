@@ -79,6 +79,8 @@ mod state_roundtrip;
 // and the XML readers, defined once.
 #[path = "all/support.rs"]
 mod support;
+#[path = "all/target_tracking_alarm_series.rs"]
+mod target_tracking_alarm_series;
 #[path = "all/terminate_instance_in_auto_scaling_group.rs"]
 mod terminate_instance_in_auto_scaling_group;
 #[path = "all/vpc_zone_identifier_zones.rs"]
