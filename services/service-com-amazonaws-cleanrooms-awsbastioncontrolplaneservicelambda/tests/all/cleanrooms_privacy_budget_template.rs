@@ -35,7 +35,7 @@ use super::cleanrooms_collaboration_lifecycle::{
 };
 
 /// Every `PrivacyBudgetType` the model declares (shape `PrivacyBudgetType`).
-const ALL_PRIVACY_BUDGET_TYPES: [&str; 2] = ["DIFFERENTIAL_PRIVACY", "ACCESS_BUDGET"];
+pub(crate) const ALL_PRIVACY_BUDGET_TYPES: [&str; 2] = ["DIFFERENTIAL_PRIVACY", "ACCESS_BUDGET"];
 
 /// Every `PrivacyBudgetTemplateAutoRefresh` the model declares (shape
 /// `PrivacyBudgetTemplateAutoRefresh`).
@@ -70,7 +70,7 @@ const DEFAULT_AUTO_REFRESH: &str = "NONE";
 
 /// A membership id in the form the model's `MembershipIdentifier` pattern declares that
 /// no create in these tests mints.
-const ABSENT_UUID: &str = "00000000-0000-0000-0000-000000000000";
+pub(crate) const ABSENT_UUID: &str = "00000000-0000-0000-0000-000000000000";
 
 /// A collaboration plus the caller's membership in it: `(collaboration id, membership)`.
 async fn collaboration_with_membership(emulator: &Emulator, name: &str) -> (String, Value) {
@@ -97,7 +97,11 @@ async fn collaboration_with_membership(emulator: &Emulator, name: &str) -> (Stri
     (collaboration_id, joined["membership"].clone())
 }
 
-async fn create_template(emulator: &Emulator, membership_id: &str, body: Value) -> (u16, Value) {
+pub(crate) async fn create_template(
+    emulator: &Emulator,
+    membership_id: &str,
+    body: Value,
+) -> (u16, Value) {
     emulator
         .call(
             "POST",
@@ -107,7 +111,11 @@ async fn create_template(emulator: &Emulator, membership_id: &str, body: Value) 
         .await
 }
 
-async fn get_template(emulator: &Emulator, membership_id: &str, template_id: &str) -> (u16, Value) {
+pub(crate) async fn get_template(
+    emulator: &Emulator,
+    membership_id: &str,
+    template_id: &str,
+) -> (u16, Value) {
     emulator
         .call(
             "GET",

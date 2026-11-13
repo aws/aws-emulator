@@ -65,6 +65,8 @@ mod member_removal;
 mod membership_creation_and_departure;
 #[path = "all/membership_updates.rs"]
 mod membership_updates;
+#[path = "all/privacy_budget_template_listing.rs"]
+mod privacy_budget_template_listing;
 #[path = "all/protected_queries.rs"]
 mod protected_queries;
 #[path = "all/resource_tags.rs"]

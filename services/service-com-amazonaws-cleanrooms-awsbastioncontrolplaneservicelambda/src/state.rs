@@ -92,7 +92,8 @@ use crate::ops::types::{
     MembershipProtectedQueryOutputConfiguration, MembershipProtectedQueryResultConfiguration,
     MembershipQueryComputePaymentConfig, MembershipSummary,
     MembershipSyntheticDataGenerationPaymentConfig, PaymentConfiguration, PrivacyBudgetTemplate,
-    PrivacyBudgetTemplateParametersInput, PrivacyBudgetTemplateParametersOutput, ProtectedQuery,
+    PrivacyBudgetTemplateParametersInput, PrivacyBudgetTemplateParametersOutput,
+    PrivacyBudgetTemplateSummary, ProtectedQuery,
     ProtectedQueryError, ProtectedQueryOutputConfiguration, ProtectedQueryResultConfiguration,
     QueryComputePaymentConfig, ResourceNotFoundException, Schema, SchemaStatusDetail,
     SchemaStatusReason, SchemaTypeProperties, SnowflakeTableSchema, SyntheticDataParameters,
@@ -1886,6 +1887,25 @@ pub fn analysis_template_summary(template: &AnalysisTemplate) -> AnalysisTemplat
         collaboration_id: template.collaboration_id.clone(),
         description: template.description.clone(),
         is_synthetic_data: Some(template.synthetic_data_parameters.is_some()),
+    }
+}
+
+/// The modelled `PrivacyBudgetTemplateSummary` projection of a stored
+/// `PrivacyBudgetTemplate` — the same record, narrowed to the members the summary shape
+/// declares (it carries no `autoRefresh` and no `parameters`).
+pub fn privacy_budget_template_summary(
+    template: &PrivacyBudgetTemplate,
+) -> PrivacyBudgetTemplateSummary {
+    PrivacyBudgetTemplateSummary {
+        id: template.id.clone(),
+        arn: template.arn.clone(),
+        membership_id: template.membership_id.clone(),
+        membership_arn: template.membership_arn.clone(),
+        collaboration_id: template.collaboration_id.clone(),
+        collaboration_arn: template.collaboration_arn.clone(),
+        privacy_budget_type: template.privacy_budget_type.clone(),
+        create_time: template.create_time,
+        update_time: template.update_time,
     }
 }
 
