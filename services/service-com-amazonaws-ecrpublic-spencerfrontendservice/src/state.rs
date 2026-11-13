@@ -31,6 +31,16 @@
 /// operation of this service consults before it reads or writes anything.
 pub mod authorization;
 
+/// The repository logo as a hosted asset: the payload a catalog write uploads, the URL
+/// minted for it and the route that serves those bytes back.
+pub mod logo_asset;
+
+/// The repository policy document in the form this service reports it.
+pub mod policy_document;
+
+pub use logo_asset::{logo_asset_route, logo_url, StoredLogo};
+pub use policy_document::canonical_policy_document;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::SystemTime;
 
@@ -407,6 +417,18 @@ pub struct StoredRepository {
     /// so the registry records what it can report — the digest it computed over the
     /// uploaded bytes and how many there were.
     pub layers: BTreeMap<String, i64>,
+    /// The logo payload this repository currently publishes, which is the asset
+    /// [`RepositoryCatalogData::logo_url`] names, or `None` while the catalog record
+    /// supplies none.
+    ///
+    /// `logoImageBlob` is an INPUT-only member, so these bytes are observable only by
+    /// fetching that URL — which is why they are kept here rather than counted and
+    /// dropped. Exactly the payload the current catalog record names is held: a catalog
+    /// write replaces the record as a whole, so it replaces this asset too, and a write
+    /// that supplies no payload leaves the repository with no logo and no URL. That is
+    /// what bounds what one repository holds — one payload, itself inside the modelled
+    /// `@length(0..512000)` on the member — however many catalog writes it takes.
+    pub logo: Option<StoredLogo>,
 }
 
 impl StoredRepository {
@@ -810,6 +832,34 @@ impl ComAmazonawsEcrpublicSpencerfrontendserviceState {
             .values()
             .map(|upload| upload.received.len())
             .sum()
+    }
+
+    /// The logo payload `asset_id` of `repository_name` in the registry `registry_id`
+    /// names, or `None` when this registry holds no such asset — a registry that is not
+    /// this one, an unknown repository, a repository with no logo, or an asset id the
+    /// repository's current logo is not.
+    ///
+    /// The registry is part of the lookup rather than assumed: the fetch of a logo carries
+    /// no credential of its own (AWS serves a gallery logo anonymously), so the scope the
+    /// asset is read in is the one the URL this service minted named, and a path naming
+    /// another registry resolves to nothing rather than to this registry's asset.
+    ///
+    /// A pure read: the route that serves a logo resolves the asset through this, so the
+    /// bytes it answers are the ones a catalog write stored.
+    pub fn logo_asset(
+        &self,
+        registry_id: &str,
+        repository_name: &str,
+        asset_id: &str,
+    ) -> Option<&StoredLogo> {
+        if registry_id != self.registry_id {
+            return None;
+        }
+        self.repositories
+            .get(repository_name)?
+            .logo
+            .as_ref()
+            .filter(|logo| logo.asset_id == asset_id)
     }
 
     /// Whether `registry_id` — a request's `registryId`, which the model lets be either
@@ -1356,38 +1406,65 @@ pub fn as_timestamp(at: SystemTime) -> ::aws_smithy_types::DateTime {
     ::aws_smithy_types::DateTime::from_secs_f64(since_epoch.as_secs_f64())
 }
 
-/// The catalog data a repository ends up with, given the `RepositoryCatalogDataInput` a
-/// request supplied.
+/// The catalog record a repository ends up with, given the `RepositoryCatalogDataInput` a
+/// request supplied: the document every reader reports, and the logo payload it names.
+///
+/// The two travel together because `logoUrl` is a statement ABOUT the payload: a record
+/// that names an asset is only reportable while the registry holds that asset's bytes.
+#[derive(Debug, Clone)]
+pub struct CatalogRecord {
+    /// The catalog document as every reader of this repository reports it.
+    pub catalog_data: RepositoryCatalogData,
+    /// The payload [`RepositoryCatalogData::logo_url`] names, or `None` when the record
+    /// names no logo.
+    pub logo: Option<StoredLogo>,
+}
+
+/// The catalog record a repository ends up with, given the `RepositoryCatalogDataInput` a
+/// request supplied, the registry it is a repository of, and the endpoint this emulator is
+/// served at.
 ///
 /// Every text/list member passes through unchanged. `logoUrl` is documented as "the URL
 /// that contains the logo that's associated with the repository", so it exists only once
-/// a logo payload has been stored, and its last segment is the payload's own sha256
-/// digest — derived from the bytes, so the same logo always yields the same URL.
-/// `marketplaceCertified` is "whether the repository is certified by Amazon Web Services
-/// Marketplace": it is neither required nor defaulted, and nothing a caller of this API
-/// can do makes a certification statement about a repository, so it stays unset and is
-/// absent from every response — `false` would claim the service had decided the
-/// repository is not certified.
-pub fn catalog_data_of(
+/// a logo payload has been supplied, and names that payload on the endpoint this emulator
+/// serves the asset on ([`logo_asset::logo_url`]) — its last segment being the payload's
+/// own digest, so the same logo always yields the same URL and a replacement always yields
+/// a different one. `marketplaceCertified` is "whether the repository is certified by
+/// Amazon Web Services Marketplace": it is neither required nor defaulted, and nothing a
+/// caller of this API can do makes a certification statement about a repository, so it
+/// stays unset and is absent from every response — `false` would claim the service had
+/// decided the repository is not certified.
+pub fn catalog_record_of(
+    registry_id: &str,
     repository_name: &str,
     input: Option<&RepositoryCatalogDataInput>,
-) -> RepositoryCatalogData {
+    endpoint_base: &str,
+) -> CatalogRecord {
     let Some(input) = input else {
-        return RepositoryCatalogData::default();
+        return CatalogRecord {
+            catalog_data: RepositoryCatalogData::default(),
+            logo: None,
+        };
     };
-    RepositoryCatalogData {
-        description: input.description.clone(),
-        architectures: input.architectures.clone(),
-        operating_systems: input.operating_systems.clone(),
-        logo_url: input.logo_image_blob.as_ref().map(|blob| {
-            format!(
-                "https://{GALLERY_HOST}/logos/{repository_name}/{:x}",
-                Sha256::digest(blob)
-            )
-        }),
-        about_text: input.about_text.clone(),
-        usage_text: input.usage_text.clone(),
-        marketplace_certified: None,
+    let logo = logo_asset::logo_of(Some(input));
+    CatalogRecord {
+        catalog_data: RepositoryCatalogData {
+            description: input.description.clone(),
+            architectures: input.architectures.clone(),
+            operating_systems: input.operating_systems.clone(),
+            logo_url: logo.as_ref().map(|logo| {
+                logo_url(
+                    endpoint_base,
+                    registry_id,
+                    repository_name,
+                    &logo.asset_id,
+                )
+            }),
+            about_text: input.about_text.clone(),
+            usage_text: input.usage_text.clone(),
+            marketplace_certified: None,
+        },
+        logo,
     }
 }
 
@@ -1634,16 +1711,3 @@ pub const REPOSITORY_NAMES_PARAMETER: &str = "RepositoryNames";
 
 /// The `ImageIdentifierList` parameter as this service names it in a refusal clause.
 pub const IMAGE_IDS_PARAMETER: &str = "ImageIds";
-
-/// A repository policy document in the form this service REPORTS it: the canonical
-/// IAM-policy rendering ([`::service_common::iam_policy::canonical_document`]), which is
-/// the tree's ONE rendering of an attached policy.
-///
-/// ECR's policy engine parses the submitted document and re-serializes it, so the text
-/// `SetRepositoryPolicy` answers with — and `GetRepositoryPolicy` and
-/// `DeleteRepositoryPolicy` report afterwards — is that rendering and not the caller's
-/// bytes. The rendering is a fixed point, so canonicalising once on the write is what makes
-/// every later read report it.
-pub fn canonical_policy_document(text: &str) -> String {
-    ::service_common::iam_policy::canonical_document(text)
-}

@@ -199,8 +199,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             Err(problem) => return Err(tag_error(problem)),
         };
 
-        let catalog_data =
-            crate::state::catalog_data_of(&input.repository_name, input.catalog_data.as_ref());
         let created_at = ::std::time::SystemTime::now();
 
         let mut store = state.lock();
@@ -235,13 +233,35 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .into());
         }
 
+        // The catalog record this create resolves to, derived by the same helper
+        // `PutRepositoryCatalogData` uses: it depends on the request and on the registry
+        // the repository belongs to, which is also the scope the logo asset it names is
+        // served in.
+        let record = crate::state::catalog_record_of(
+            &store.registry_id,
+            &input.repository_name,
+            input.catalog_data.as_ref(),
+            ctx.endpoint().as_str(),
+        );
+        // A logo payload this registry will not publish is refused before the repository
+        // exists: the modelled byte cap is enforced at the boundary, and what remains is
+        // the service's own rule about the image itself.
+        if let Some(message) = crate::state::logo_asset::logo_violation(record.logo.as_ref()) {
+            return Err(CreateRepositoryErrorModeled::InvalidParameterException(
+                InvalidParameterException {
+                    message: Some(message.to_string()),
+                },
+            )
+            .into());
+        }
+
         let repository = crate::state::StoredRepository {
             name: input.repository_name.clone(),
             arn: store.repository_arn(&input.repository_name),
             registry_id: store.registry_id.clone(),
             uri: store.repository_uri(&input.repository_name),
             created_at,
-            catalog_data,
+            catalog_data: record.catalog_data,
             tags,
             // A new repository carries no repository policy until `SetRepositoryPolicy`
             // applies one.
@@ -251,6 +271,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // A new repository holds no image layer until a `CompleteLayerUpload` against
             // it finalises one.
             layers: ::std::collections::BTreeMap::new(),
+            // The logo payload the catalog record this create supplied names, which is
+            // what `crate::service` serves at the `logoUrl` that record carries.
+            logo: record.logo,
         };
         let output = CreateRepositoryOutput {
             repository: Some(repository.as_repository()),

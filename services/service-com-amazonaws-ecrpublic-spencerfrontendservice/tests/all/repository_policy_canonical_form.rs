@@ -122,9 +122,10 @@ fn documents() -> Vec<Document> {
 }"#,
         },
         Document {
-            // A condition's values are value lists too, and they are not all strings: a
-            // number and a boolean keep the characters they were written with. An empty
-            // list and an empty object are written `[ ]` and `{ }`.
+            // A condition's values are value lists too, and the policy engine reports
+            // every one of them as a string: a number and a boolean come back quoted,
+            // while a number outside a condition keeps the characters it was written
+            // with. An empty list and an empty object are written `[ ]` and `{ }`.
             case: "conditions, non-string values and empty elements",
             submitted: r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":"*","Action":"ecr-public:BatchGetImage","Resource":[],"Condition":{"NumericLessThan":{"aws:MultiFactorAuthAge":3600},"Bool":{"aws:SecureTransport":true},"StringEquals":{"aws:PrincipalOrgID":["o-abc123"],"aws:RequestTag/team":["red","blue"]},"Null":{}}}]}"#,
             reported: r#"{
@@ -136,10 +137,10 @@ fn documents() -> Vec<Document> {
     "Resource" : [ ],
     "Condition" : {
       "NumericLessThan" : {
-        "aws:MultiFactorAuthAge" : 3600
+        "aws:MultiFactorAuthAge" : "3600"
       },
       "Bool" : {
-        "aws:SecureTransport" : true
+        "aws:SecureTransport" : "true"
       },
       "StringEquals" : {
         "aws:PrincipalOrgID" : "o-abc123",
@@ -281,11 +282,15 @@ async fn the_rendering_keeps_the_content_the_caller_submitted() {
 }
 
 /// The CONTENT a policy document holds, as a comparison can see it: the parsed JSON with
-/// every one-value list of strings replaced by that string.
+/// every one-value list of strings replaced by that string, and every value inside a
+/// `Condition` block in the string form the policy language gives it.
 ///
 /// Two renderings of one document compare equal here whichever of the two forms each writes
-/// a one-value value list in, so a caller of this says "the same policy" without saying
-/// anything about the layout — the layout is pinned, byte for byte, by [`documents`].
+/// a one-value value list in, and whichever JSON type a condition's values were written as,
+/// so a caller of this says "the same policy" without saying anything about the layout or
+/// about the typing the policy engine settles — the layout is pinned, byte for byte, by
+/// [`documents`], and the condition typing by
+/// `tests/all/repository_policy_condition_values.rs`.
 fn content(value: &Value) -> Value {
     match value {
         Value::Array(entries) => {
@@ -298,9 +303,40 @@ fn content(value: &Value) -> Value {
         Value::Object(members) => Value::Object(
             members
                 .iter()
-                .map(|(key, member)| (key.clone(), content(member)))
+                .map(|(key, member)| {
+                    let member = if key == "Condition" {
+                        condition_content(member)
+                    } else {
+                        content(member)
+                    };
+                    (key.clone(), member)
+                })
                 .collect(),
         ),
+        other => other.clone(),
+    }
+}
+
+/// The content of a `Condition` block: [`content`]'s folding of one-value lists, plus every
+/// number and boolean in the string form the policy language defines a condition's values
+/// as.
+fn condition_content(value: &Value) -> Value {
+    match value {
+        Value::Array(entries) => {
+            let folded: Vec<Value> = entries.iter().map(condition_content).collect();
+            match folded.as_slice() {
+                [Value::String(only)] => Value::String(only.clone()),
+                _ => Value::Array(folded),
+            }
+        }
+        Value::Object(members) => Value::Object(
+            members
+                .iter()
+                .map(|(key, member)| (key.clone(), condition_content(member)))
+                .collect(),
+        ),
+        Value::Number(number) => Value::String(number.to_string()),
+        Value::Bool(flag) => Value::String(flag.to_string()),
         other => other.clone(),
     }
 }

@@ -59,12 +59,16 @@ mod registry_describe;
 mod repository_catalog_data;
 #[path = "all/repository_image_lifecycle.rs"]
 mod repository_image_lifecycle;
+#[path = "all/repository_logo_asset.rs"]
+mod repository_logo_asset;
 #[path = "all/repository_policy.rs"]
 mod repository_policy;
 #[path = "all/repository_policy_and_catalog_data.rs"]
 mod repository_policy_and_catalog_data;
 #[path = "all/repository_policy_canonical_form.rs"]
 mod repository_policy_canonical_form;
+#[path = "all/repository_policy_condition_values.rs"]
+mod repository_policy_condition_values;
 #[path = "all/resource_tags.rs"]
 mod resource_tags;
 #[path = "all/response_field_fidelity.rs"]

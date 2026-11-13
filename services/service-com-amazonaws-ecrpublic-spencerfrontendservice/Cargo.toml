@@ -25,6 +25,9 @@ tracing = { workspace = true }
 sha2 = { workspace = true }
 # Hex encoding for the manifest digest and for the opaque pagination tokens.
 hex = { workspace = true }
+# Reads the pixel dimensions out of an uploaded image's own header, which is what the
+# repository logo's dimension floor is decided against.
+imagesize = "0.15"
 # `iam_authorization`: the shared evaluation of IAM policy documents against
 # (action, resource), which every operation's authorization gate runs.
 service-common = { path = "../common" }

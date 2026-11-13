@@ -341,3 +341,86 @@ async fn delete_repository_reports_a_non_empty_repository_without_counting_its_i
         );
     }
 }
+
+#[tokio::test]
+async fn set_repository_policy_reports_the_lockout_refusal_rather_than_a_constraint() {
+    // A document that would deny this account the policy-setting action is refused, when
+    // `force` is absent or false, with the SERVICE's lockout refusal: the fixed sentence
+    // AWS documents the `force` parameter in — what the document would do, and the
+    // parameter to re-send with. `force` is a legal input value rather than a constrained
+    // one, so the message names no member and no constraint.
+    //
+    // (case, the document that would lock the policy, whether `force` is sent as false or
+    // left out) — the rows span the ways a `Deny` reaches this account (every principal,
+    // this account by ARN, a wildcard action, a second statement) and both ways the
+    // request can decline to force it, because the refusal is one sentence for all of
+    // them.
+    let rows: [(&str, &str, bool); 4] = [
+        (
+            "every principal, this action, force omitted",
+            r#"{"Version":"2012-10-17","Statement":[{"Effect":"Deny","Principal":"*","Action":"ecr-public:SetRepositoryPolicy"}]}"#,
+            false,
+        ),
+        (
+            "every principal, every action, force sent false",
+            r#"{"Version":"2012-10-17","Statement":[{"Effect":"Deny","Principal":"*","Action":"*"}]}"#,
+            true,
+        ),
+        (
+            "this account by ARN, an action prefix, force omitted",
+            r#"{"Version":"2012-10-17","Statement":[{"Effect":"Deny","Principal":{"AWS":"arn:aws:iam::000000000000:root"},"Action":"ecr-public:Set*"}]}"#,
+            false,
+        ),
+        (
+            "a second statement that denies it, force sent false",
+            r#"{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":"*","Action":"ecr-public:BatchGetImage"},{"Effect":"Deny","Principal":"*","Action":"ecr-public:SetRepositoryPolicy"}]}"#,
+            true,
+        ),
+    ];
+
+    // The sentence AWS documents the `force` parameter in; the same one for every row.
+    let expected = "You are about to set a repository policy that will prevent you from \
+                    setting another one in the future. Use the force parameter to override \
+                    this exception.";
+
+    let router = service();
+    for (index, (case, document, send_force)) in rows.into_iter().enumerate() {
+        let repository = format!("policy/lockout-refusal-{index}");
+        ok(
+            &router,
+            "CreateRepository",
+            json!({"repositoryName": repository}),
+            case,
+        )
+        .await;
+
+        let mut request = json!({"repositoryName": repository, "policyText": document});
+        if send_force {
+            request["force"] = json!(false);
+        }
+        let body = refused(
+            &router,
+            "SetRepositoryPolicy",
+            request,
+            "InvalidParameterException",
+            case,
+        )
+        .await;
+
+        let actual = message(&body, case);
+        assert_eq!(
+            actual, expected,
+            "case {case:?}: expected {expected:?}, got {actual:?}"
+        );
+
+        // With `force` the same document is stored, so the refusal is about the lockout
+        // and not about the document being unacceptable.
+        ok(
+            &router,
+            "SetRepositoryPolicy",
+            json!({"repositoryName": repository, "policyText": document, "force": true}),
+            case,
+        )
+        .await;
+    }
+}

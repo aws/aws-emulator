@@ -52,6 +52,11 @@ use std::sync::Arc;
 /// router builds one shared engine and hands it to `new`.
 pub struct EmulatedService<Eng: Send + Sync + 'static> {
     entry: crate::ServiceDefinition<Eng>,
+    /// The shared engine, kept so the non-modelled asset route below reaches this
+    /// service's own store ([`crate::state::service_state`]) — that route is answered by
+    /// this service rather than by an operation, so it has no `OperationContext` to
+    /// reach state through.
+    engine: Arc<Eng>,
 }
 
 impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
@@ -60,7 +65,8 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
     /// operation's behaviour lives in that operation's own `impl Operation`.
     pub fn new(engine: Arc<Eng>) -> Self {
         Self {
-            entry: crate::ServiceDefinition::new(engine),
+            entry: crate::ServiceDefinition::new(Arc::clone(&engine)),
+            engine,
         }
     }
 }
@@ -243,7 +249,19 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
         // name shared by several services, or access-key-id-based routing.
         match smithy_server_runtime::resolve_route_key(parts) {
             Some(key) => key == self.entry.identity().signing_name(),
-            None => false,
+            None => {
+                // The repository logo a catalog write published
+                // (`RepositoryCatalogData$logoUrl`) is fetched by whatever browser,
+                // gallery preview or publish pipeline holds that URL: anonymously, with
+                // no credential scope and no `X-Amz-Target` to name this service by —
+                // only the path this service itself minted, which carries the registry
+                // the asset is read in. A GET (or a HEAD, which asks what that asset is)
+                // of exactly that path is therefore claimed here, so the logo is
+                // reachable at the URL this service reported; every other path still
+                // needs the routing key above.
+                (parts.method == http::Method::GET || parts.method == http::Method::HEAD)
+                    && crate::state::logo_asset_route(&parts.uri.to_string()).is_some()
+            }
         }
     }
 
@@ -306,12 +324,64 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
     ) -> Option<aws_smithy_runtime_api::http::Response> {
         // The router calls this when a request reached this service but named no
         // modeled operation — neither `override_operation` nor the generated
-        // routing table resolved it. Returning `None` renders the protocol-correct
-        // default for this service's envelope (query -> 400 InvalidAction text/xml,
-        // awsJson -> 404, rpcv2Cbor -> 404, rest -> 501). Return `Some(resp)` to
-        // word that routing failure in your own envelope instead.
-        let _ = req;
-        None
+        // routing table resolved it. This endpoint serves ONE route the Smithy model does
+        // not describe: the repository logo asset a catalog write published, which
+        // `RepositoryCatalogData$logoUrl` locates for an anonymous client to fetch
+        // (`logoImageBlob` is input-only, so fetching that URL is the only way the
+        // uploaded bytes are observable). AWS serves it unauthenticated from the gallery's
+        // own host, which is what this seam gives: the router consults it before it
+        // authenticates anything, so an anonymous GET reaches the asset the same way it
+        // does on AWS.
+        //
+        // Every other unrouted request keeps the protocol-correct default for this
+        // service's envelope (awsJson -> 404) — including a path of this shape that names
+        // no stored asset, so nothing is answered for a logo this registry does not hold.
+        //
+        // `HEAD` is answered exactly as `GET` is, with no body: a client that asks only
+        // what the asset IS — its media type and its size — is asking about the same
+        // asset, and an HTTP asset host answers both methods.
+        let body_wanted = match req.method() {
+            "GET" => true,
+            "HEAD" => false,
+            _ => return None,
+        };
+        let (registry_id, repository_name, asset_id) =
+            crate::state::logo_asset_route(req.uri())?;
+        let state = crate::state::service_state(&*self.engine)?;
+        // Rendering the STORED bytes is a pure read: the asset is resolved in the registry
+        // the URL this service minted names, against the repository that published it, and
+        // nothing about the registry changes.
+        let logo = {
+            let store = state.lock();
+            store
+                .logo_asset(registry_id, repository_name, asset_id)
+                .cloned()
+        };
+        // An asset-hosting answer, not a modelled API one: the bytes when this registry
+        // holds them, and 404 when it does not — a logo it never stored, one a later
+        // catalog write replaced, or a repository that does not exist. Nothing is
+        // invented for an asset that is not there.
+        let status = if logo.is_some() { 200u16 } else { 404 };
+        let body = match (&logo, body_wanted) {
+            (Some(logo), true) => logo.bytes.clone(),
+            _ => Vec::new(),
+        };
+        let mut response = aws_smithy_runtime_api::http::Response::new(
+            aws_smithy_runtime_api::http::StatusCode::try_from(status).ok()?,
+            ::aws_smithy_types::body::SdkBody::from(body),
+        );
+        let headers = response.headers_mut();
+        if let Some(logo) = logo.as_ref() {
+            // What the asset IS: the media type its own bytes announce, and the size of
+            // the asset itself — which a `HEAD` reports with no body, as HTTP defines it.
+            headers.insert("content-type", logo.media_type());
+            headers.insert("content-length", logo.bytes.len().to_string());
+            // The bytes are a caller's upload served back from this emulator's own
+            // origin, so the type this response announces is the only type a browser may
+            // treat them as: nothing is re-sniffed into a type the service did not state.
+            headers.insert("x-content-type-options", "nosniff");
+        }
+        Some(response)
     }
 
     fn override_framework_error(

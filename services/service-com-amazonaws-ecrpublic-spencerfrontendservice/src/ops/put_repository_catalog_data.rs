@@ -8,13 +8,20 @@
 //! repository's whole catalog record, so every member the request omits ends up unset on
 //! the repository — which is also what makes two concurrent puts settle on exactly the
 //! document the last one supplied. The record is derived by
-//! [`crate::state::catalog_data_of`], the same helper `CreateRepository` uses, so the
+//! [`crate::state::catalog_record_of`], the same helper `CreateRepository` uses, so the
 //! `catalogData` the two operations report agrees member for member: text and list
 //! members pass through unchanged, `logoUrl` exists only while a logo payload is
-//! supplied and names that payload's own digest, and `marketplaceCertified` is left
+//! supplied and names that payload's own digest on the endpoint this emulator serves the
+//! asset on, and `marketplaceCertified` is left
 //! unset — nothing a caller of this API does makes a Marketplace certification statement
 //! about a repository, so the member is absent from the reported record rather than
 //! reported as `false`.
+//!
+//! The payload itself is STORED with the repository, because `logoImageBlob` is an
+//! input-only member: the minted `logoUrl` is the only way a client can observe the logo,
+//! and `crate::service` serves that URL from these bytes. A payload the service will not
+//! publish is refused before anything is written, so the repository keeps the record — and
+//! the asset — it already had.
 //!
 //! ## Shape of an operation
 //!
@@ -178,13 +185,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             return Err(server_error());
         };
 
-        // The catalog record this request resolves to. Derived before the store is
-        // locked, because it depends on the request alone — and derived by the same
-        // helper `CreateRepository` uses, so one repository cannot end up carrying two
-        // different readings of the same catalog input.
-        let catalog_data =
-            crate::state::catalog_data_of(&input.repository_name, Some(&input.catalog_data));
-
         let mut store = state.lock();
         if let Some(registry_id) = input.registry_id.as_deref() {
             if !store.is_this_registry(registry_id) {
@@ -204,9 +204,37 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             }
         }
 
+        let registry_id = store.registry_id.clone();
+
+        // The catalog record this request resolves to — derived by the same helper
+        // `CreateRepository` uses, so one repository cannot end up carrying two different
+        // readings of the same catalog input. It depends on the request and on the
+        // registry this repository belongs to, which is also the scope the logo asset it
+        // names is served in.
+        let record = crate::state::catalog_record_of(
+            &registry_id,
+            &input.repository_name,
+            Some(&input.catalog_data),
+            ctx.endpoint().as_str(),
+        );
+        let catalog_data = record.catalog_data.clone();
+
+        // A logo payload this registry will not publish is refused here, before anything
+        // is written: the modelled byte cap is enforced at the boundary, and what remains
+        // is the service's own rule about the image itself.
+        if let Some(message) = crate::state::logo_asset::logo_violation(record.logo.as_ref()) {
+            return Err(
+                PutRepositoryCatalogDataErrorModeled::InvalidParameterException(
+                    InvalidParameterException {
+                        message: Some(message.to_string()),
+                    },
+                )
+                .into(),
+            );
+        }
+
         // Catalog data is part of a repository, so there is nothing to put until that
         // repository exists: this operation never creates one.
-        let registry_id = store.registry_id.clone();
         let Some(repository) = store.repositories.get_mut(&input.repository_name) else {
             return Err(
                 PutRepositoryCatalogDataErrorModeled::RepositoryNotFoundException(
@@ -223,6 +251,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         };
 
         repository.catalog_data = catalog_data.clone();
+        // The record is a whole document, so the asset it names replaces the one the
+        // repository published before it — and a record naming no logo leaves none.
+        repository.logo = record.logo;
         let repository_name = input.repository_name;
         drop(store);
 

@@ -258,16 +258,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         }
 
         // The document being applied would deny the policy-setting action in the future,
-        // which `force` exists to acknowledge.
+        // which `force` exists to acknowledge. `force` is a legal input value rather than
+        // a constrained one, so the refusal is the service's own lockout refusal — the
+        // sentence AWS documents the parameter in, which tells the caller both what the
+        // document would do and how to apply it anyway — and not a constraint violation
+        // on the input member.
         if document.denies_policy_management(&registry_id) && !input.force {
             return Err(SetRepositoryPolicyErrorModeled::InvalidParameterException(
                 InvalidParameterException {
-                    message: Some(format!(
-                        "Invalid parameter at 'force' failed to satisfy constraint: 'Member \
-                         must be true because the policy would prevent \
-                         {POLICY_MANAGEMENT_ACTION} from being called on this repository in \
-                         the future'"
-                    )),
+                    message: Some(LOCKOUT_REFUSAL.to_string()),
                 },
             )
             .into());
@@ -297,6 +296,17 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 /// (`awsService$arnNamespace` = `ecr-public`, see [`crate::state::ARN_NAMESPACE`]) and the
 /// operation name, which is how every AWS API action is named.
 const POLICY_MANAGEMENT_ACTION: &str = "ecr-public:SetRepositoryPolicy";
+
+/// What the service answers a caller whose document would lock this repository's policy
+/// and who did not send `force`: the fixed sentence AWS documents the `force` parameter in
+/// — what the document would do, and the parameter to re-send with to apply it anyway.
+///
+/// It is the SERVICE's refusal, not a statement about an input member's value: the
+/// document is a legal one and `force` is a legal value either way, so nothing here names
+/// a constraint.
+const LOCKOUT_REFUSAL: &str = "You are about to set a repository policy that will prevent \
+                               you from setting another one in the future. Use the force \
+                               parameter to override this exception.";
 
 /// The modelled server fault for a state store this service could not reach.
 fn server_error() -> SetRepositoryPolicyError {

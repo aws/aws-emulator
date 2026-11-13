@@ -165,14 +165,17 @@ pub(crate) fn digest_of(manifest: &str) -> String {
 /// `RepositoryCatalogData$logoUrl` is "the URL that contains the logo that's associated
 /// with the repository", so it exists only once a payload has been stored, and its last
 /// segment is that payload's own sha256 digest: the same bytes always yield the same URL
-/// and different bytes never do. The host is the universal gallery prefix
-/// `public.ecr.aws` (`Registry$registryUri`, `crate::state::GALLERY_HOST`).
+/// and different bytes never do. The host is the endpoint THIS emulator is served at,
+/// which for an in-process router is the unserved base
+/// (`smithy_server_runtime::UNSERVED_URL_BASE`), and the path is the asset plane the
+/// service serves the logo on, under the registry that published it.
 ///
 /// `pub(crate)` so the sibling catalog-data suite asserts the same derivation instead of
 /// keeping a second copy of it.
 pub(crate) fn logo_url(repository: &str, blob: &[u8]) -> String {
     format!(
-        "https://public.ecr.aws/logos/{repository}/{:x}",
+        "{}/_aws/ecr-public-logos/{REGISTRY_ID}/{repository}/{:x}",
+        smithy_server_runtime::UNSERVED_URL_BASE,
         Sha256::digest(blob)
     )
 }

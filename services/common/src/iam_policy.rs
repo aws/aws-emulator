@@ -630,10 +630,39 @@ const MAX_CANONICAL_NESTING: usize = 128;
 /// [`MAX_CANONICAL_NESTING`]: this is a rendering, not a validation, and the policy grammar
 /// ([`resource_policy_defect`]) is what refuses an unusable document.
 pub fn canonical_document(text: &str) -> String {
+    render_canonically(text, false)
+}
+
+/// [`canonical_document`], plus the one thing a policy ENGINE settles that re-indenting does
+/// not: every value inside a statement's `Condition` is written as a **string**.
+///
+/// The policy language defines a condition's values as strings — "a string or an array of
+/// strings" for a condition key's values, the same form `Action` and `Resource` take — so a
+/// service whose policy engine parses the document and re-serializes it reports a value the
+/// caller wrote as a JSON number or boolean in its string form (`300` comes back `"300"`,
+/// `true` comes back `"true"`), and a one-value list of them collapses to that string like
+/// any other value list. `null` is left as it was written: the language gives it no string
+/// form.
+///
+/// Everything else is [`canonical_document`] exactly — member order, the statement list,
+/// each string literal's own escapes, and the characters a number OUTSIDE a condition was
+/// written with — because this is the SAME walk with one token rewritten rather than a
+/// second reading of the document.
+///
+/// Taken by a service whose recorded reads show that coercion; a service whose reads report
+/// the caller's own JSON types takes [`canonical_document`].
+pub fn canonical_document_with_condition_values_as_strings(text: &str) -> String {
+    render_canonically(text, true)
+}
+
+/// The rendering both entry points above share: the one walk, with or without the condition
+/// coercion.
+fn render_canonically(text: &str, condition_values_as_strings: bool) -> String {
     let mut renderer = PolicyRenderer {
         source: text,
         at: 0,
         nesting: 0,
+        condition_values_as_strings,
         rendered: String::with_capacity(text.len() + text.len() / 2),
     };
     if renderer.render() {
@@ -642,6 +671,11 @@ pub fn canonical_document(text: &str) -> String {
         text.to_string()
     }
 }
+
+/// The element whose value is a statement's condition block: inside it, a condition's values
+/// are the strings the policy language defines them as (see
+/// [`canonical_document_with_condition_values_as_strings`]).
+const CONDITION_ELEMENT: &str = "Condition";
 
 /// The re-indenter behind [`canonical_document`]: walks the submitted document a token at a
 /// time, copying every token verbatim into `rendered` and writing the canonical whitespace
@@ -656,15 +690,18 @@ struct PolicyRenderer<'a> {
     /// [`MAX_CANONICAL_NESTING`] bounds. Counted separately from the INDENTATION depth,
     /// because an array adds a level of recursion while adding no indentation.
     nesting: usize,
+    /// Whether a condition's values are rendered as strings
+    /// ([`canonical_document_with_condition_values_as_strings`]).
+    condition_values_as_strings: bool,
     /// What has been rendered so far.
     rendered: String,
 }
 
-impl PolicyRenderer<'_> {
+impl<'a> PolicyRenderer<'a> {
     /// Render the whole document, reporting whether it was one JSON value and nothing else.
     /// `false` leaves `rendered` half-written, which [`canonical_document`] discards.
     fn render(&mut self) -> bool {
-        if self.value(0).is_none() {
+        if self.value(0, false).is_none() {
             return false;
         }
         self.skip_space();
@@ -701,13 +738,15 @@ impl PolicyRenderer<'_> {
         }
     }
 
-    /// Render one JSON value, whose own members sit `depth` objects deep.
+    /// Render one JSON value, whose own members sit `depth` objects deep. `in_condition` says
+    /// whether it sits inside a statement's condition block, where a scalar may be rendered
+    /// as a string (see [`canonical_document_with_condition_values_as_strings`]).
     ///
     /// The one place the walk recurses, so the one place the nesting a document may carry
     /// is bounded ([`MAX_CANONICAL_NESTING`]): past it the render fails and
     /// [`canonical_document`] hands the text back unrendered, which is what keeps a
     /// caller-supplied run of opening brackets off the stack.
-    fn value(&mut self, depth: usize) -> Option<()> {
+    fn value(&mut self, depth: usize, in_condition: bool) -> Option<()> {
         self.skip_space();
         if self.nesting == MAX_CANONICAL_NESTING {
             return None;
@@ -715,18 +754,19 @@ impl PolicyRenderer<'_> {
         self.nesting += 1;
         let rendered = match self.peek()? {
             // An object's members are one level deeper than the object itself.
-            b'{' => self.object(depth + 1),
+            b'{' => self.object(depth + 1, in_condition),
             // An array is inline, so it adds no level of its own.
-            b'[' => self.array(depth),
-            b'"' => self.string(),
-            _ => self.scalar(),
+            b'[' => self.array(depth, in_condition),
+            b'"' => self.string().map(drop),
+            _ => self.scalar(in_condition),
         };
         self.nesting -= 1;
         rendered
     }
 
-    /// Render a JSON object whose members are written at `depth`.
-    fn object(&mut self, depth: usize) -> Option<()> {
+    /// Render a JSON object whose members are written at `depth`. A member keyed
+    /// [`CONDITION_ELEMENT`] opens a condition block, which every value under it is inside.
+    fn object(&mut self, depth: usize, in_condition: bool) -> Option<()> {
         self.expect(b'{')?;
         self.rendered.push('{');
         self.skip_space();
@@ -738,11 +778,12 @@ impl PolicyRenderer<'_> {
         loop {
             self.skip_space();
             self.newline(depth);
-            self.string()?;
+            let key = self.string()?;
+            let inside = in_condition || key == CONDITION_ELEMENT;
             self.skip_space();
             self.expect(b':')?;
             self.rendered.push_str(CANONICAL_KEY_SEPARATOR);
-            self.value(depth)?;
+            self.value(depth, inside)?;
             self.skip_space();
             match self.peek()? {
                 b',' => {
@@ -763,7 +804,7 @@ impl PolicyRenderer<'_> {
     /// Render a JSON array inline, its elements' own members staying at `depth` — or, when
     /// it is a value list holding exactly one value, as that value alone (see
     /// [`canonical_document`]).
-    fn array(&mut self, depth: usize) -> Option<()> {
+    fn array(&mut self, depth: usize, in_condition: bool) -> Option<()> {
         self.expect(b'[')?;
         self.skip_space();
         if self.peek()? == b']' {
@@ -774,9 +815,16 @@ impl PolicyRenderer<'_> {
         // Where this array's rendering begins: its brackets are written only once it is
         // known not to be a one-value list, which is rendered without them.
         let opens_at = self.rendered.len();
-        let holds_values = self.peek()? == b'"';
-        self.value(depth)?;
+        let opened_with = self.peek()?;
+        self.value(depth, in_condition)?;
         self.skip_space();
+        // A VALUE list is one whose element is a string \u2014 as written, or as a condition's
+        // own value was coerced to ([`canonical_document_with_condition_values_as_strings`]),
+        // which is what makes a one-value list of them collapse like any other.
+        let holds_values = opened_with == b'"'
+            || (self.condition_values_as_strings
+                && in_condition
+                && self.rendered.as_bytes().get(opens_at) == Some(&b'"'));
         if holds_values && self.peek()? == b']' {
             self.at += 1;
             return Some(());
@@ -795,15 +843,16 @@ impl PolicyRenderer<'_> {
                 }
                 _ => return None,
             }
-            self.value(depth)?;
+            self.value(depth, in_condition)?;
             self.skip_space();
         }
     }
 
-    /// Copy a string literal — a key's or a value's — out verbatim, escapes and all. A
+    /// Copy a string literal — a key's or a value's — out verbatim, escapes and all, and
+    /// answer the text between its quotes so a caller can tell which element it keys. A
     /// UTF-8 continuation byte is never one of the ASCII bytes scanned for, so reading the
     /// literal byte by byte cannot split a character.
-    fn string(&mut self) -> Option<()> {
+    fn string(&mut self) -> Option<&'a str> {
         let source = self.source;
         if self.peek()? != b'"' {
             return None;
@@ -823,12 +872,17 @@ impl PolicyRenderer<'_> {
             }
         }
         self.rendered.push_str(&source[start..self.at]);
-        Some(())
+        Some(&source[start + 1..self.at - 1])
     }
 
     /// Copy a number, `true`, `false` or `null` out verbatim: a token that runs up to the
     /// next structural character.
-    fn scalar(&mut self) -> Option<()> {
+    ///
+    /// Inside a condition block, and only for a caller that asked for it
+    /// ([`canonical_document_with_condition_values_as_strings`]), a number or a boolean is
+    /// written back QUOTED — the string form the policy language gives a condition's values.
+    /// `null` has no string form, so it is copied through as it is.
+    fn scalar(&mut self, in_condition: bool) -> Option<()> {
         let source = self.source;
         let start = self.at;
         while self
@@ -840,7 +894,17 @@ impl PolicyRenderer<'_> {
         if self.at == start {
             return None;
         }
-        self.rendered.push_str(&source[start..self.at]);
+        let token = &source[start..self.at];
+        let coerced = self.condition_values_as_strings
+            && in_condition
+            && (matches!(token, "true" | "false") || token.parse::<f64>().is_ok());
+        if coerced {
+            self.rendered.push('"');
+            self.rendered.push_str(token);
+            self.rendered.push('"');
+        } else {
+            self.rendered.push_str(token);
+        }
         Some(())
     }
 }
@@ -1455,6 +1519,116 @@ mod tests {
             assert_eq!(
                 again, actual,
                 "case {case:?}: expected re-rendering to change nothing, got {again:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_condition_value_is_rendered_as_a_string_for_a_caller_that_asks() {
+        // The rows differ along what the coercion generalises over: which JSON type the
+        // value was written as, whether it stands alone or in a list of one or of several,
+        // which operator carries it, a value already written as a string, `null` (which the
+        // language gives no string form), and the same types OUTSIDE a condition block.
+        let statement = |elements: &str| {
+            format!("{{\"Statement\":{{\"Effect\":\"Allow\",\"Principal\":\"*\",{elements}}}}}")
+        };
+        let rows: [(&str, String, &str); 7] = [
+            (
+                "an integer under a numeric operator",
+                statement(
+                    "\"Action\":\"svc:A\",\
+                     \"Condition\":{\"NumericLessThanEquals\":{\"aws:MultiFactorAuthAge\":300}}",
+                ),
+                "\"aws:MultiFactorAuthAge\" : \"300\"",
+            ),
+            (
+                "a fractional number, with the digits it was written with",
+                statement(
+                    "\"Action\":\"svc:A\",\
+                     \"Condition\":{\"NumericLessThan\":{\"k\":1.50}}",
+                ),
+                "\"k\" : \"1.50\"",
+            ),
+            (
+                "a boolean",
+                statement(
+                    "\"Action\":\"svc:A\",\
+                     \"Condition\":{\"Bool\":{\"aws:SecureTransport\":true}}",
+                ),
+                "\"aws:SecureTransport\" : \"true\"",
+            ),
+            (
+                "a one-value list, which collapses to the string like any value list",
+                statement(
+                    "\"Action\":\"svc:A\",\
+                     \"Condition\":{\"NumericEquals\":{\"k\":[300]}}",
+                ),
+                "\"k\" : \"300\"",
+            ),
+            (
+                "a list of several values",
+                statement(
+                    "\"Action\":\"svc:A\",\
+                     \"Condition\":{\"NumericEquals\":{\"k\":[60,300]}}",
+                ),
+                "\"k\" : [ \"60\", \"300\" ]",
+            ),
+            (
+                "a value already written as a string",
+                statement(
+                    "\"Action\":\"svc:A\",\
+                     \"Condition\":{\"StringEquals\":{\"k\":\"v\"}}",
+                ),
+                "\"k\" : \"v\"",
+            ),
+            (
+                "null, which the language gives no string form",
+                statement(
+                    "\"Action\":\"svc:A\",\
+                     \"Condition\":{\"Null\":{\"k\":null}}",
+                ),
+                "\"k\" : null",
+            ),
+        ];
+
+        for (case, submitted, expected) in rows {
+            let actual = canonical_document_with_condition_values_as_strings(&submitted);
+            assert!(
+                actual.contains(expected),
+                "case {case:?}: expected a rendering carrying {expected:?}, got {actual:?}"
+            );
+            // The same walk, so the layout is the one every reader of a policy reports, and
+            // re-rendering what was read changes nothing.
+            let again = canonical_document_with_condition_values_as_strings(&actual);
+            assert_eq!(
+                again, actual,
+                "case {case:?}: expected re-rendering to change nothing, got {again:?}"
+            );
+            assert_eq!(
+                canonical_document(&actual),
+                actual,
+                "case {case:?}: expected the coerced rendering to be the canonical layout"
+            );
+        }
+    }
+
+    #[test]
+    fn the_coercion_leaves_everything_outside_a_condition_as_it_was_written() {
+        // A number and a boolean outside any condition block keep the characters they were
+        // written with, under both entry points: the coercion is about a condition's values
+        // and nothing else. (The policy grammar admits no such document, which is why this
+        // is asserted on the rendering rather than through a service.)
+        let submitted = "{\"Id\":3600,\"Flag\":true,\"Statement\":[]}";
+        for (case, rendered) in [
+            ("the plain rendering", canonical_document(submitted)),
+            (
+                "the coercing rendering",
+                canonical_document_with_condition_values_as_strings(submitted),
+            ),
+        ] {
+            assert!(
+                rendered.contains("\"Id\" : 3600") && rendered.contains("\"Flag\" : true"),
+                "case {case:?}: expected the values as submitted, got {rendered:?}"
             );
         }
     }
