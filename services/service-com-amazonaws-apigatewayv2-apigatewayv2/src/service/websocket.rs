@@ -96,6 +96,10 @@
 //! ([`connect_authorizer`]) and the `$connect` route's integration serves the connection
 //! request ([`integration`]).
 
+// What the STAGE logs about each call a connection makes: the access-log record its own
+// `AccessLogSettings` ask for, rendered from the `$context` of that call and delivered to the
+// destination the stage names.
+pub mod access_logs;
 pub mod connect_authorizer;
 pub mod dispatch;
 // What the api's own socket answers a request on it that is NOT an opening handshake: the
@@ -628,6 +632,10 @@ pub async fn serve_with_transport<Eng: Send + Sync + 'static>(
             &connection,
             &connect,
             &event::Call::Connect,
+            // The id of this connection request, as the event the integration is handed
+            // reports it: this endpoint completes no handshake, so there is no record of the
+            // call to join it to, and the call still names itself.
+            &crate::service::invoke::proxy_event::mint_request_id(),
         )
         .await
         {

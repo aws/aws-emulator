@@ -184,8 +184,22 @@ impl Call {
 }
 
 /// The event the route `route_key` of this connection is invoked with for `call`.
+///
+/// The call's own id is minted here, the way the gateway mints one per call. A caller that
+/// has to REPORT that id beside the event — the access-log record of the same call — states
+/// it instead ([`event_of`]), so the record and the event the integration observed name the
+/// same call.
 pub fn event(connection: &Connection, route_key: &str, call: &Call) -> Value {
-    let request_id = proxy_event::mint_request_id();
+    event_of(connection, route_key, call, &proxy_event::mint_request_id())
+}
+
+/// [`event`] with the call's own `requestId` stated rather than minted.
+pub fn event_of(
+    connection: &Connection,
+    route_key: &str,
+    call: &Call,
+    request_id: &str,
+) -> Value {
     let mut event = Map::new();
     if call.carries_the_handshake() {
         event.insert(
@@ -218,7 +232,7 @@ pub fn event(connection: &Connection, route_key: &str, call: &Call) -> Value {
     }
     event.insert(
         "requestContext".to_string(),
-        request_context(connection, route_key, call, &request_id),
+        request_context(connection, route_key, call, request_id),
     );
     if let Call::Message(body) = call {
         event.insert("body".to_string(), json!(body));
@@ -242,11 +256,22 @@ pub fn template_context(
     route_key: &str,
     call: &Call,
 ) -> BTreeMap<String, String> {
-    let request_id = proxy_event::mint_request_id();
+    template_context_of(connection, route_key, call, &proxy_event::mint_request_id())
+}
+
+/// [`template_context`] with the call's own `requestId` stated rather than minted, for a
+/// reader that has to name the same call the event named — the stage's access-log record of
+/// it ([`super::access_logs`]).
+pub fn template_context_of(
+    connection: &Connection,
+    route_key: &str,
+    call: &Call,
+    request_id: &str,
+) -> BTreeMap<String, String> {
     let mut values = BTreeMap::new();
     flattened(
         "",
-        &request_context(connection, route_key, call, &request_id),
+        &request_context(connection, route_key, call, request_id),
         MAX_CONTEXT_DEPTH,
         &mut values,
     );

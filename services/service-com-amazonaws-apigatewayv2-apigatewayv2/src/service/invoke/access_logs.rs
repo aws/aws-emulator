@@ -32,7 +32,11 @@ use smithy_server_runtime::OperationContext;
 
 /// The lowest status that IS an error, which is what `$context.error.message` is about: the
 /// 4xx and 5xx classes RFC 9110 defines as the client-error and server-error classes.
-const FIRST_ERROR_STATUS: u16 = 400;
+///
+/// Shared with the WEBSOCKET plane's own records
+/// ([`crate::service::websocket::access_logs`]): one reading of which statuses carry an error
+/// to name, for both planes' records.
+pub(crate) const FIRST_ERROR_STATUS: u16 = 400;
 
 /// The request header the caller's user agent travels in, which `$context.identity.userAgent`
 /// reports.
@@ -146,7 +150,11 @@ fn planned<Eng: Send + Sync + 'static>(
 ///
 /// The day is taken from the one timestamp rendering this service has — the date half of the
 /// `date-time` form — rather than from a second calendar here.
-fn log_stream_name(api_id: &str, stage: &str) -> String {
+///
+/// Shared with the WEBSOCKET plane's own records ([`crate::service::websocket::access_logs`]):
+/// API Gateway names the stream a stage's access log goes to the same way whichever plane the
+/// stage belongs to.
+pub(crate) fn log_stream_name(api_id: &str, stage: &str) -> String {
     let stamp = ::aws_smithy_types::DateTime::from(SystemTime::now())
         .fmt(::aws_smithy_types::date_time::Format::DateTime)
         .unwrap_or_default();

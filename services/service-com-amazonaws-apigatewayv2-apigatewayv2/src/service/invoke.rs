@@ -142,8 +142,10 @@
 
 mod dispatch;
 /// What the stage LOGS about a request it served: its access-log record, rendered by the
-/// stage's own `$context` format.
-mod access_logs;
+/// stage's own `$context` format. `pub(crate)` only for the stream NAMING a stage's records
+/// go to and the reading of which statuses carry an error to name, which the WEBSOCKET
+/// plane's own records share.
+pub(crate) mod access_logs;
 /// What the stage PUBLISHES about a request it served: the CloudWatch counters and
 /// measurements of that request.
 mod request_metrics;

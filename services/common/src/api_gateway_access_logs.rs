@@ -129,6 +129,22 @@ pub async fn delivered(
     crate::cloudwatch_logs::delivered(ctx, region, log_group, log_stream, records).await
 }
 
+/// [`delivered`] for a plane served on a core-owned SOCKET, which holds the in-process
+/// transport itself and no request context (an API Gateway WebSocket api's own endpoint).
+///
+/// The same write ([`crate::cloudwatch_logs::delivered_over`]), so a stage's record of a
+/// request it answered through the front door and its record of a call carried on a socket
+/// land in the destination alike.
+pub async fn delivered_over(
+    callback: &::smithy_server_runtime::EmbeddedEmulator,
+    region: &str,
+    log_group: &str,
+    log_stream: &str,
+    records: &[String],
+) -> bool {
+    crate::cloudwatch_logs::delivered_over(callback, region, log_group, log_stream, records).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

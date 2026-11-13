@@ -291,6 +291,8 @@ mod vpc_link_listing;
 mod vpc_link_subnet_resolution;
 #[path = "all/vpc_link_update.rs"]
 mod vpc_link_update;
+#[path = "all/websocket_access_logging.rs"]
+mod websocket_access_logging;
 #[path = "all/websocket_call_context.rs"]
 mod websocket_call_context;
 #[path = "all/websocket_connect_authorization.rs"]
@@ -307,5 +309,7 @@ mod websocket_lambda_routes;
 mod websocket_stage_metrics;
 #[path = "all/websocket_message_refusals.rs"]
 mod websocket_message_refusals;
+#[path = "all/websocket_tls_transport.rs"]
+mod websocket_tls_transport;
 #[path = "all/websocket_transport_data_plane.rs"]
 mod websocket_transport_data_plane;

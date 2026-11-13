@@ -156,10 +156,27 @@ pub async fn delivered(
     log_stream: &str,
     records: &[String],
 ) -> bool {
+    delivered_over(ctx.callback(), region, log_group, log_stream, records).await
+}
+
+/// [`delivered`] for a deliverer that holds the in-process transport ITSELF rather than a
+/// request's context: a data plane served on a core-owned socket (an API Gateway WebSocket
+/// api's own endpoint) has no `OperationContext` at all, and the handle is the one piece the
+/// write needs.
+///
+/// The same write, so a record delivered from a socket and one delivered from an operation
+/// cannot land differently.
+pub async fn delivered_over(
+    callback: &::smithy_server_runtime::EmbeddedEmulator,
+    region: &str,
+    log_group: &str,
+    log_stream: &str,
+    records: &[String],
+) -> bool {
     if records.is_empty() {
         return true;
     }
-    let client = logs_client(ctx, region);
+    let client = logs_client(callback, region);
     match client
         .create_log_group()
         .log_group_name(log_group)
@@ -243,7 +260,7 @@ pub async fn delivered(
 /// delivering service's own records name, so a record lands where the destination's ARN says
 /// it does.
 fn logs_client(
-    ctx: &::smithy_server_runtime::OperationContext<'_>,
+    callback: &::smithy_server_runtime::EmbeddedEmulator,
     region: &str,
 ) -> ::aws_sdk_cloudwatchlogs::Client {
     let config = ::aws_sdk_cloudwatchlogs::Config::builder()
@@ -252,8 +269,8 @@ fn logs_client(
             region.to_string(),
         ))
         .endpoint_url(format!("https://logs.{region}.amazonaws.com"))
-        .credentials_provider(ctx.callback().aws_credentials_provider())
-        .http_client(ctx.callback().http_client())
+        .credentials_provider(callback.aws_credentials_provider())
+        .http_client(callback.http_client())
         // The transport is in-process: there is nothing to retry, time out or watch for a
         // stalled stream, and each of those would need a sleep implementation this client is
         // not given. The same goes for caching the identity: the credentials are handed over

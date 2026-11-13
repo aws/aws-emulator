@@ -56,7 +56,7 @@
 use std::collections::BTreeMap;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::time::{Instant, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use ::emulator_server::{ListenerConn, NativeHandler, TlsUpgrader};
 use ::futures_util::{SinkExt, StreamExt};
@@ -73,7 +73,7 @@ use ::tokio_tungstenite::tungstenite::protocol::CloseFrame;
 use ::tokio_tungstenite::tungstenite::{Error as SocketError, Message};
 
 use super::event::{Call, Connection};
-use super::{dispatch, event, integration};
+use super::{access_logs, dispatch, event, integration};
 // The `AWS/ApiGateway` series this stage publishes about the traffic it serves: a frame
 // carried over this socket leaves no response a later caller can read, so the connections,
 // the messages, the backend latency and the failures are reported there as they happen.
@@ -218,10 +218,17 @@ async fn serve_connection(
         super::endpoint_http::serve(callback, conn).await;
         return;
     }
-    let (admitted, refusal) = match admission(&state, &callback, metrics, &api_id, &offer).await {
-        Ok(admitted) => (Some(admitted), None),
-        Err(refusal) => (None, Some(refusal)),
+    // One id for the CONNECTION REQUEST, minted by this socket: the event the `$connect`
+    // route's integration is handed reports it, and so does the stage's access-log record of
+    // the same call.
+    let request_id = crate::service::invoke::proxy_event::mint_request_id();
+    let started = Instant::now();
+    let decision = admission(&state, &callback, metrics, &api_id, &offer, &request_id).await;
+    let (admitted, refusal) = match &decision.outcome {
+        Ok(admitted) => (Some(admitted.clone()), None),
+        Err(refusal) => (None, Some(refusal.clone())),
     };
+    let logged_refusal = refusal.clone();
     let conn: ListenerConn = Box::new(Prefixed::new(head, conn));
     let decide = move |_request: &HandshakeRequest,
                        response: HandshakeResponse|
@@ -231,26 +238,59 @@ async fn serve_connection(
             Some(refusal) => Err(refusal.rendered()),
         }
     };
-    let socket = match ::tokio_tungstenite::accept_hdr_async_with_config(
+    let completed = match ::tokio_tungstenite::accept_hdr_async_with_config(
         conn,
         decide,
         Some(socket_limits()),
     )
     .await
     {
-        Ok(socket) => socket,
+        Ok(socket) => Some(socket),
         Err(error) => {
             // Either the refusal above (already written to the client by the handshake) or a
             // client that did not complete the handshake at all.
             tracing::debug!(%api_id, %error, "a WebSocket opening handshake was not completed");
-            return;
+            None
         }
     };
-    let Some(accepted) = admitted else {
+    // The STAGE's record of the connection request, written once the client has been answered
+    // — the status it was answered with is part of it: the `101` only where the handshake was
+    // COMPLETED, the refusal's own status where the gateway refused it, and none at all for a
+    // client that was admitted and then did not finish the handshake, where nothing was
+    // answered to report. A handshake that resolved no stage of this api resolved no
+    // `AccessLogSettings` either, and leaves no record.
+    if let Some(connection) = decision.connection.as_ref() {
+        let status = match (&logged_refusal, &completed) {
+            (Some(refusal), _) => Some(refusal.status),
+            (None, Some(_)) => Some(SWITCHING_PROTOCOLS),
+            (None, None) => None,
+        };
+        access_logs::delivered(
+            &state,
+            &callback,
+            connection,
+            &access_logs::Served {
+                call: Call::Connect,
+                route_key: dispatch::CONNECT_ROUTE_KEY.to_string(),
+                request_id,
+                status,
+                response_length: logged_refusal.as_ref().and_then(Refusal::body_length),
+                latency: access_logs::latency_since(started),
+                error_message: logged_refusal.as_ref().and_then(Refusal::logged_message),
+            },
+        )
+        .await;
+    }
+    let (Some(socket), Some(accepted)) = (completed, admitted) else {
         return;
     };
     carry_frames(state, registry, callback, accepted, socket).await;
 }
+
+/// The status a COMPLETED opening handshake carries (RFC 6455 §4.1: the server's handshake
+/// is a `101 Switching Protocols`), which is what the stage's record of an admitted
+/// connection request reports as the status it was answered with.
+const SWITCHING_PROTOCOLS: u16 = 101;
 
 /// The bytes of one HTTP request HEAD, read up to and including the blank line that ends it,
 /// or `None` for a client that sent none within [`MAX_HEAD_BYTES`].
@@ -500,6 +540,29 @@ impl Refusal {
                 .expect("500 with no body builds")
         })
     }
+
+    /// How many bytes the client read with this refusal, which is what the stage's record
+    /// reports as the length of what it was answered with.
+    fn body_length(&self) -> Option<usize> {
+        self.rendered().body().as_ref().map(String::len)
+    }
+
+    /// The sentence this refusal was worded in, as `$context.error.message` reports it: the
+    /// gateway's own for a refusal it stated, and the `message` member of the body for one
+    /// the connection request's integration decided — which is where an integration that
+    /// refuses a client words its reason.
+    fn logged_message(&self) -> Option<String> {
+        match &self.body {
+            RefusalBody::Gateway(message) => Some(message.clone()),
+            RefusalBody::Backend(body) => ::serde_json::from_str::<::serde_json::Value>(
+                body.as_deref().unwrap_or_default(),
+            )
+            .ok()
+            .as_ref()
+            .and_then(|document| document.get(FRAME_MESSAGE_MEMBER))
+            .and_then(|message| message.as_str().map(str::to_string)),
+        }
+    }
 }
 
 /// Whether this opening handshake is completed, from the api's own records and from what the
@@ -548,17 +611,21 @@ async fn admission(
     metrics_store: Option<::engine::ServiceState<CloudWatchState>>,
     api_id: &str,
     offer: &Offer,
-) -> Result<Admitted, Refusal> {
+    request_id: &str,
+) -> Decided {
     if let Some(refusal) = browser_refusal(offer) {
-        return Err(refusal);
+        return Decided::refused(None, refusal);
     }
     let stage_name = super::super::data_plane::first_segment(offer.path())
         .unwrap_or_default()
         .to_string();
+    let offered = match offered(state, api_id, &stage_name, offer) {
+        Ok(offered) => offered,
+        Err(refusal) => return Decided::refused(None, refusal),
+    };
     // A refusal from here on is METERED, so the publisher is built before the step that can
     // refuse: a handshake refused before a stage of the api resolved belongs to no stage and
     // is counted under none.
-    let offered = offered(state, api_id, &stage_name, offer)?;
     let metrics = StageMetrics::new(metrics_store, api_id, &stage_name);
     let per_route_connect = offered.per_route_connect;
     let route = per_route_connect.as_deref();
@@ -569,25 +636,30 @@ async fn admission(
     // and answered here so it is metered on the stage it was refused at.
     if let Some((status, message)) = offered.unauthorized {
         metrics.served(route, refused_connection(status));
-        return Err(Refusal::gateway(status, message));
+        return Decided::refused(
+            Some(offered.connection),
+            Refusal::gateway(status, message),
+        );
     }
     let mut connection = offered.connection;
     if let Some((authorizer, identity)) = offered.authorizer {
-        let decided = super::connect_authorizer::decided(
-            callback,
-            &connection,
-            &authorizer,
-            &identity,
-        )
-        .await
-        .map_err(|(status, message)| {
-            // An authorizer that refused, or one this configuration could not run at all, is
-            // a route that did not execute.
-            metrics.served(route, refused_connection(status));
-            Refusal::gateway(status, message)
-        })?;
-        connection.authorizer_context = decided.context;
-        connection.authorizer_principal = decided.principal_id;
+        match super::connect_authorizer::decided(callback, &connection, &authorizer, &identity)
+            .await
+        {
+            Ok(decided) => {
+                connection.authorizer_context = decided.context;
+                connection.authorizer_principal = decided.principal_id;
+            }
+            Err((status, message)) => {
+                // An authorizer that refused, or one this configuration could not run at all,
+                // is a route that did not execute.
+                metrics.served(route, refused_connection(status));
+                return Decided::refused(
+                    Some(connection),
+                    Refusal::gateway(status, message),
+                );
+            }
+        }
     }
     let admitted = |connection: Connection| Admitted {
         connection,
@@ -597,17 +669,18 @@ async fn admission(
         // No `$connect` route: there is nothing to refuse the connection, and no integration
         // was sent the connection request.
         metrics.served(route, CallOutcome::default());
-        return Ok(admitted(connection));
+        return Decided::admitted(admitted(connection));
     };
     // The connection request IS sent to the `$connect` route's integration from here.
     metrics.connect_dispatched(route);
     let began = Instant::now();
-    let performed = integration::perform(callback, &connection, &connect, &Call::Connect).await;
+    let performed =
+        integration::perform(callback, &connection, &connect, &Call::Connect, request_id).await;
     match performed {
         Ok(answered) if dispatch::is_success_status(answered.status_code.as_deref()) => {
             metrics.integration_latency(route, began.elapsed());
             metrics.served(route, CallOutcome::default());
-            Ok(admitted(connection))
+            Decided::admitted(admitted(connection))
         }
         Ok(answered) => {
             // The STATUS the integration answered is what the handshake is refused with, and
@@ -630,19 +703,20 @@ async fn admission(
             // call has a latency to report, and the refusal is metered by the status that
             // reached the client.
             metrics.integration_latency(route, began.elapsed());
-            match status {
+            let refusal = match status {
                 Some(status) => {
                     metrics.served(route, refused_connection(status));
-                    Err(Refusal::from_backend(status, answered.payload))
+                    Refusal::from_backend(status, answered.payload)
                 }
                 None => {
                     metrics.served(
                         route,
                         refused_connection(super::super::data_plane::UNPLACEABLE_STATUS),
                     );
-                    Err(internal_server_error())
+                    internal_server_error()
                 }
-            }
+            };
+            Decided::refused(Some(connection), refusal)
         }
         Err(unserved) => {
             tracing::warn!(
@@ -661,7 +735,39 @@ async fn admission(
                     ..refused_connection(super::super::data_plane::UNPLACEABLE_STATUS)
                 },
             );
-            Err(internal_server_error())
+            Decided::refused(Some(connection), internal_server_error())
+        }
+    }
+}
+
+/// What a handshake came to, and what the gateway knows about the connection request it was:
+/// the outcome the client is answered with, and the CONNECTION the api's records resolved for
+/// it, which is what the stage's own record of the call is written from.
+///
+/// The connection is reported for a refusal too, because a refused connection request is a
+/// call the stage LOGS: only a handshake that resolved no deployed stage of this api resolves
+/// no connection at all, and such a handshake reaches no `AccessLogSettings` either.
+#[derive(Debug, Clone)]
+struct Decided {
+    connection: Option<Connection>,
+    outcome: Result<Admitted, Refusal>,
+}
+
+impl Decided {
+    /// A handshake every step let through.
+    fn admitted(admitted: Admitted) -> Self {
+        Self {
+            connection: Some(admitted.connection.clone()),
+            outcome: Ok(admitted),
+        }
+    }
+
+    /// A handshake refused at the step `refusal` carries, with what the gateway had resolved
+    /// about the connection request by then.
+    fn refused(connection: Option<Connection>, refusal: Refusal) -> Self {
+        Self {
+            connection,
+            outcome: Err(refusal),
         }
     }
 }
@@ -978,13 +1084,20 @@ async fn carry_frames<S>(
                 }
                 let served =
                     served_frame(&state, &callback, &metrics, &connection, &body).await;
-                if let Some(served) = served {
-                    if outgoing.send(frame_of(served.reply)).await.is_err() {
+                if let Some(reply) = served.reply {
+                    if outgoing.send(frame_of(reply)).await.is_err() {
                         break;
                     }
                     // The reply reached the client, which is one more message of the stage.
                     metrics.message(served.per_route.as_deref());
                 }
+                // The STAGE's record of the message, written once the client has been
+                // answered: one record per route execution. It carries the call's `$context`
+                // and the stage's format, never the frame's payload, and the frames that can
+                // drive it are the ones this socket already reads under its own message and
+                // frame ceilings ([`socket_limits`]) on a connection the core's listener cap
+                // admitted.
+                access_logs::delivered(&state, &callback, &connection, &served.logged).await;
             }
         }
     }
@@ -992,7 +1105,7 @@ async fn carry_frames<S>(
     // is invoked with it, before the connection's record goes, so a handler that reads the
     // registry still sees the connection it is being told about.
     let (status_code, reason) = closed.unwrap_or((None, None));
-    disconnected(
+    let logged = disconnected(
         &state,
         &callback,
         &metrics,
@@ -1003,6 +1116,9 @@ async fn carry_frames<S>(
         },
     )
     .await;
+    // The STAGE's record of the close, which is the third route execution of a session that
+    // ran.
+    access_logs::delivered(&state, &callback, &connection, &logged).await;
     // The connection has ended: its record goes, so its id addresses a connection that no
     // longer exists — which is `GoneException` from each of the three `@connections`
     // operations. The id stays ISSUED, so it is never refused as one that never existed.
@@ -1011,42 +1127,61 @@ async fn carry_frames<S>(
 }
 
 /// Invoke the `$disconnect` route's integration for a connection that has ended, if the
-/// serving deployment holds such a route.
+/// serving deployment holds such a route, and answer what the stage LOGS about the close.
 ///
 /// "API Gateway invokes [the `$disconnect` route] when a client disconnects from your API",
 /// and the close is a one-way call: nothing can be sent back over a socket that has ended, so
 /// what the integration replied is logged and never answered. The call is a message of the
 /// stage like the others, and the integration that served it reports how long it took.
+///
+/// The close is a route execution whether or not the api holds a `$disconnect` route, so it
+/// is always reported for the stage's record; the status is the one that route's integration
+/// produced, and none where nothing ran.
 async fn disconnected(
     state: &::engine::ServiceState<ServiceStore>,
     callback: &EmbeddedEmulator,
     metrics: &StageMetrics,
     connection: &Connection,
     call: Call,
-) {
+) -> access_logs::Served {
+    let request_id = crate::service::invoke::proxy_event::mint_request_id();
+    let started = Instant::now();
+    let mut logged = access_logs::Served {
+        call: call.clone(),
+        route_key: dispatch::DISCONNECT_ROUTE_KEY.to_string(),
+        request_id: request_id.clone(),
+        status: None,
+        response_length: None,
+        latency: Duration::default(),
+        error_message: None,
+    };
     let selected = {
         let store = state.lock();
-        let Some((_api, stage, deployed)) = integration::deployed(
-            &store,
-            &connection.api_id,
-            &connection.stage_name,
-        ) else {
-            return;
-        };
-        integration::select_route_key(deployed, dispatch::DISCONNECT_ROUTE_KEY).map(|selected| {
-            let per_route = metrics::publishes_per_route(stage, &selected.route_key)
-                .then(|| selected.route_key.clone());
-            (selected, per_route)
-        })
+        integration::deployed(&store, &connection.api_id, &connection.stage_name).and_then(
+            |(_api, stage, deployed)| {
+                integration::select_route_key(deployed, dispatch::DISCONNECT_ROUTE_KEY).map(
+                    |selected| {
+                        let per_route = metrics::publishes_per_route(stage, &selected.route_key)
+                            .then(|| selected.route_key.clone());
+                        (selected, per_route)
+                    },
+                )
+            },
+        )
     };
     let Some((selected, per_route)) = selected else {
-        return;
+        logged.latency = access_logs::latency_since(started);
+        return logged;
     };
     let route = per_route.as_deref();
     metrics.message(route);
     let began = Instant::now();
-    match integration::perform(callback, connection, &selected, &call).await {
-        Ok(_answered) => {
+    match integration::perform(callback, connection, &selected, &call, &request_id).await {
+        Ok(answered) => {
+            logged.status = answered
+                .status_code
+                .as_deref()
+                .and_then(|status| status.trim().parse::<u16>().ok());
             metrics.integration_latency(route, began.elapsed());
             metrics.served(route, CallOutcome::default());
         }
@@ -1067,6 +1202,8 @@ async fn disconnected(
             );
         }
     }
+    logged.latency = access_logs::latency_since(started);
+    logged
 }
 
 
@@ -1125,7 +1262,7 @@ where
 const BINARY_UNSUPPORTED_REASON: &str = "Binary is not supported";
 const MESSAGE_TOO_BIG_REASON: &str = "Message too big";
 
-/// What one frame is answered with, or `None` when the api sends nothing back for it.
+/// What one frame is answered with, and what the stage LOGS about serving it.
 ///
 /// Three answers, all from the configuration the stage deployed and from what the serving
 /// route's integration replied ([`integration::perform`]):
@@ -1154,9 +1291,32 @@ async fn served_frame(
     metrics: &StageMetrics,
     connection: &Connection,
     body: &str,
-) -> Option<Served> {
+) -> ServedFrame {
     let api_id = connection.api_id.as_str();
     let connection_id = connection.connection_id.as_str();
+    // One id for THIS message, minted by the socket that carries it: the event its route's
+    // integration is handed reports it, a gateway frame names it, and so does the stage's
+    // access-log record of the call.
+    let request_id = crate::service::invoke::proxy_event::mint_request_id();
+    let started = Instant::now();
+    let call = Call::Message(body.to_string());
+    let answer = |reply: Option<Vec<u8>>,
+                  route_key: &str,
+                  per_route: Option<String>,
+                  status: Option<u16>,
+                  error_message: Option<String>| ServedFrame {
+        logged: access_logs::Served {
+            call: call.clone(),
+            route_key: route_key.to_string(),
+            request_id: request_id.clone(),
+            status,
+            response_length: reply.as_ref().map(Vec::len),
+            latency: access_logs::latency_since(started),
+            error_message,
+        },
+        reply,
+        per_route,
+    };
     let serving = {
         let store = state.lock();
         match integration::deployed(&store, api_id, &connection.stage_name) {
@@ -1191,7 +1351,7 @@ async fn served_frame(
                     ..CallOutcome::default()
                 },
             );
-            return None;
+            return answer(None, "", None, None, None);
         }
         Serving::Unrouted => {
             tracing::info!(%api_id, %connection_id, "a WebSocket message selected no route");
@@ -1205,24 +1365,26 @@ async fn served_frame(
                     ..CallOutcome::default()
                 },
             );
-            return Some(Served {
-                reply: gateway_frame(super::super::data_plane::FORBIDDEN_MESSAGE, connection_id)
-                    .into_bytes(),
-                per_route: None,
-            });
+            let frame = gateway_frame(
+                super::super::data_plane::FORBIDDEN_MESSAGE,
+                connection_id,
+                &request_id,
+            );
+            return answer(
+                Some(frame.into_bytes()),
+                "",
+                None,
+                Some(super::super::data_plane::FORBIDDEN_STATUS),
+                Some(super::super::data_plane::FORBIDDEN_MESSAGE.to_string()),
+            );
         }
         Serving::Route(selected, per_route) => (*selected, per_route),
     };
     let route = per_route.as_deref();
     metrics.message(route);
     let began = Instant::now();
-    let performed = integration::perform(
-        callback,
-        connection,
-        &selected,
-        &Call::Message(body.to_string()),
-    )
-    .await;
+    let performed =
+        integration::perform(callback, connection, &selected, &call, &request_id).await;
     match performed {
         Ok(answered) => {
             tracing::debug!(
@@ -1234,14 +1396,12 @@ async fn served_frame(
             );
             metrics.integration_latency(route, began.elapsed());
             metrics.served(route, CallOutcome::default());
-            selected
-                .two_way
-                .then_some(answered.payload)
-                .flatten()
-                .map(|reply| Served {
-                    reply,
-                    per_route: per_route.clone(),
-                })
+            let status = answered
+                .status_code
+                .as_deref()
+                .and_then(|status| status.trim().parse::<u16>().ok());
+            let reply = selected.two_way.then_some(answered.payload).flatten();
+            answer(reply, &selected.route_key, per_route.clone(), status, None)
         }
         Err(unserved) => {
             tracing::info!(
@@ -1260,10 +1420,14 @@ async fn served_frame(
                     ..CallOutcome::default()
                 },
             );
-            Some(Served {
-                reply: gateway_frame(INTERNAL_MESSAGE, connection_id).into_bytes(),
-                per_route,
-            })
+            let frame = gateway_frame(INTERNAL_MESSAGE, connection_id, &request_id);
+            answer(
+                Some(frame.into_bytes()),
+                &selected.route_key,
+                per_route.clone(),
+                Some(super::super::data_plane::UNPLACEABLE_STATUS),
+                Some(INTERNAL_MESSAGE.to_string()),
+            )
         }
     }
 }
@@ -1286,26 +1450,25 @@ enum Serving {
     Undeployed,
 }
 
-/// What ONE frame is answered with: the payload the client reads back, and the route it is
-/// attributed to when the serving stage publishes its per-route series (`None` for the
-/// gateway's own frame, which belongs to no route).
-#[derive(Debug, Clone)]
-struct Served {
-    reply: Vec<u8>,
+/// What serving one frame came to: the payload the client reads back where anything was sent,
+/// the route it is attributed to when the serving stage publishes its per-route series (`None`
+/// for the gateway's own frame, which belongs to no route), and what the stage LOGS about the
+/// call.
+#[derive(Debug)]
+struct ServedFrame {
+    reply: Option<Vec<u8>>,
     per_route: Option<String>,
+    logged: access_logs::Served,
 }
 
 /// A frame the GATEWAY sends rather than a route: its reason, the connection it is about and
 /// the id of the call, which is the shape API Gateway's own `Forbidden` and
 /// `Internal server error` frames have.
-fn gateway_frame(message: &str, connection_id: &str) -> String {
+fn gateway_frame(message: &str, connection_id: &str, request_id: &str) -> String {
     let frame: BTreeMap<&str, String> = [
         (FRAME_MESSAGE_MEMBER, message.to_string()),
         (FRAME_CONNECTION_ID_MEMBER, connection_id.to_string()),
-        (
-            FRAME_REQUEST_ID_MEMBER,
-            crate::service::invoke::proxy_event::mint_request_id(),
-        ),
+        (FRAME_REQUEST_ID_MEMBER, request_id.to_string()),
     ]
     .into_iter()
     .collect();

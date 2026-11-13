@@ -73,7 +73,11 @@ const REQUEST_ID_HEADER: &str = "x-amzn-requestid";
 
 /// The three services this rule spans, over ONE engine, as `core/router/src/lib.rs` mounts
 /// them.
-fn emulator() -> (MultiServiceRouter, Arc<engine::InMemoryEngine>) {
+///
+/// `pub(crate)` because the WEBSOCKET plane's own access-log suite
+/// ([`crate::websocket_access_logging`]) spans the same three services and reads its records
+/// back through the same readers below, rather than keeping a second copy of this harness.
+pub(crate) fn emulator() -> (MultiServiceRouter, Arc<engine::InMemoryEngine>) {
     let engine: Arc<engine::InMemoryEngine> = Arc::new(engine::InMemoryEngine::new());
     let mut router = MultiServiceRouter::new();
     router.set_request_authentication(false);
@@ -92,7 +96,13 @@ fn emulator() -> (MultiServiceRouter, Arc<engine::InMemoryEngine>) {
 }
 
 /// One CloudWatch Logs call over its `awsJson1_1` wire, answering its status and parsed body.
-async fn logs(router: &MultiServiceRouter, operation: &str, body: Value) -> (u16, Value) {
+///
+/// `pub(crate)` for the reason [`emulator`] is.
+pub(crate) async fn logs(
+    router: &MultiServiceRouter,
+    operation: &str,
+    body: Value,
+) -> (u16, Value) {
     let answer = crate::websocket_handshake_data_plane::send_with_body(
         router,
         &format!("logs.{REGION}.amazonaws.com"),
@@ -115,11 +125,16 @@ async fn logs(router: &MultiServiceRouter, operation: &str, body: Value) -> (u16
     (answer.status, answer.body)
 }
 
-/// The messages `FilterLogEvents` reports for [`GROUP`], or `None` when the account holds no
+/// The messages `FilterLogEvents` reports for `group`, or `None` when the account holds no
 /// such group at all — which is what "nothing was delivered and nothing was created" looks
 /// like to a client.
-async fn delivered(router: &MultiServiceRouter) -> Option<Vec<String>> {
-    let (status, body) = logs(router, "FilterLogEvents", json!({ "logGroupName": GROUP })).await;
+///
+/// `pub(crate)` for the reason [`emulator`] is.
+pub(crate) async fn delivered_to(
+    router: &MultiServiceRouter,
+    group: &str,
+) -> Option<Vec<String>> {
+    let (status, body) = logs(router, "FilterLogEvents", json!({ "logGroupName": group })).await;
     if status != 200 {
         return None;
     }
@@ -142,12 +157,24 @@ async fn delivered(router: &MultiServiceRouter) -> Option<Vec<String>> {
     )
 }
 
-/// The ARN of the destination log group, as a stage's `DestinationArn` names one.
-fn group_arn() -> String {
+/// [`delivered_to`] for this suite's own destination.
+async fn delivered(router: &MultiServiceRouter) -> Option<Vec<String>> {
+    delivered_to(router, GROUP).await
+}
+
+/// The ARN of the log group `group`, as a stage's `DestinationArn` names one.
+///
+/// `pub(crate)` for the reason [`emulator`] is.
+pub(crate) fn log_group_arn(group: &str) -> String {
     format!(
-        "arn:aws:logs:{REGION}:{account}:log-group:{GROUP}",
+        "arn:aws:logs:{REGION}:{account}:log-group:{group}",
         account = engine::emulator_account_id()
     )
+}
+
+/// The ARN of the destination log group, as a stage's `DestinationArn` names one.
+fn group_arn() -> String {
+    log_group_arn(GROUP)
 }
 
 /// The `$default` stage with auto-deploy on, carrying `AccessLogSettings` that render by

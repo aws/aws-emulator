@@ -1127,12 +1127,19 @@ pub(super) const RUNTIME_SOURCE: &str = r##"
     }
 
     // The message the RUNTIME reports for an error class whose own wording it states rather
-    // than the engine's. Two of them:
+    // than the engine's. Four of them:
     //
     // * `require` is not a binding of ES module scope, and a module that reaches for it is
     //   told which of the two module systems it is in and what to use instead;
     // * a reserved word used where the module system does not accept it names the token it
-    //   found, which is how a node runtime reports a syntax error of that class.
+    //   found, which is how a node runtime reports a syntax error of that class;
+    // * a property READ on `undefined` or `null` is reported "Cannot read properties of
+    //   <undefined|null> (reading '<name>')", and a property WRITE on one "Cannot set
+    //   properties of <undefined|null> (setting '<name>')" — the wording the JavaScript
+    //   engine a `nodejs` runtime embeds states for that `TypeError`, which is the text a
+    //   client reads in the function's log and in the error document the invocation answers.
+    //   The class, the property name and the value read are the engine's own; only the
+    //   wording is the runtime's.
     function decorated(message) {
         if (message === 'require is not defined') {
             var told = 'require is not defined in ES module scope, you can use import instead';
@@ -1143,6 +1150,14 @@ pub(super) const RUNTIME_SOURCE: &str = r##"
         var keyword = /^unsupported keyword: ([A-Za-z]+)$/.exec(message);
         if (keyword !== null) {
             return "Unexpected token '" + keyword[1] + "'";
+        }
+        var read = /^cannot read property '(.*)' of (undefined|null)$/.exec(message);
+        if (read !== null) {
+            return 'Cannot read properties of ' + read[2] + " (reading '" + read[1] + "')";
+        }
+        var written = /^cannot set property '(.*)' of (undefined|null)$/.exec(message);
+        if (written !== null) {
+            return 'Cannot set properties of ' + written[2] + " (setting '" + written[1] + "')";
         }
         return message;
     }

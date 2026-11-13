@@ -377,6 +377,8 @@ mod log_level_requires_json_format;
 mod missing_policy_refusal;
 #[path = "all/node_error_trace_lines.rs"]
 mod node_error_trace_lines;
+#[path = "all/node_handler_error_wording.rs"]
+mod node_handler_error_wording;
 #[path = "all/node_handler_sdk_aggregated_client.rs"]
 mod node_handler_sdk_aggregated_client;
 #[path = "all/node_handler_sdk_esm.rs"]
@@ -389,6 +391,8 @@ mod node_invoke_run;
 mod node_loader_errors;
 #[path = "all/node_runtime_environment.rs"]
 mod node_runtime_environment;
+#[path = "all/node_unhandled_error_log.rs"]
+mod node_unhandled_error_log;
 #[path = "all/nodejs_invoke_run.rs"]
 mod nodejs_invoke_run;
 #[path = "all/package_unzipped_ceiling.rs"]

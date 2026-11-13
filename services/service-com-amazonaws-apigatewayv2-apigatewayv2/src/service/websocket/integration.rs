@@ -107,11 +107,16 @@ pub fn select_message(
 
 /// Perform `selected`'s integration for one `call` of `connection`, and answer what it
 /// replied.
+///
+/// `request_id` is the id of THIS call, minted by the socket that carries it: the event the
+/// backend is handed reports it, and so does the stage's access-log record of the same call
+/// ([`super::access_logs`]), which is how a client joins the two.
 pub async fn perform(
     callback: &EmbeddedEmulator,
     connection: &Connection,
     selected: &Selected,
     call: &Call,
+    request_id: &str,
 ) -> Result<Answered, Unserved> {
     let integration = selected
         .integration
@@ -121,7 +126,8 @@ pub async fn perform(
         // The template is rendered against the CALL: the `$context` the gateway reports
         // about it and the serving stage's own variables, whichever of the three calls it
         // is, and the frame's payload for the one call that carries a frame.
-        let context = event::template_context(connection, &selected.route_key, call);
+        let context =
+            event::template_context_of(connection, &selected.route_key, call, request_id);
         let frame = match call {
             Call::Message(body) => Some(TemplateCall::new(
                 &context,
@@ -158,7 +164,7 @@ pub async fn perform(
                 .unwrap_or_default()
         )));
     }
-    lambda_proxy(callback, connection, selected, integration, call).await
+    lambda_proxy(callback, connection, selected, integration, call, request_id).await
 }
 
 /// Run the function this route's Lambda proxy integration names, with the event this call
@@ -169,6 +175,7 @@ async fn lambda_proxy(
     selected: &Selected,
     integration: &Integration,
     call: &Call,
+    request_id: &str,
 ) -> Result<Answered, Unserved> {
     // The stage's own variables are interpolated into the function the integration names
     // before it is addressed: "you can use API Gateway stage variables … as part of an HTTP
@@ -199,7 +206,7 @@ async fn lambda_proxy(
     // (`Integration$RequestParameters`), so what the function is told is the call as that
     // mapping leaves it ([`super::parameters`]).
     let mapped = super::parameters::mapped(connection, &integration.request_parameters);
-    let event = event::event(&mapped, &selected.route_key, call);
+    let event = event::event_of(&mapped, &selected.route_key, call, request_id);
     let payload = ::serde_json::to_vec(&event).map_err(|error| {
         Unserved::Unperformable(format!("the event for this call could not be stated: {error}"))
     })?;

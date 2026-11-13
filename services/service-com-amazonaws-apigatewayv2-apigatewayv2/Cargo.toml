@@ -154,6 +154,11 @@ service-com-amazonaws-cloudwatchlogs-logs-20140328 = { workspace = true }
 # an SDK client encodes a path label: a minted id is base64, whose alphabet carries `/` and
 # `+`. DEV-ONLY.
 percent-encoding = "2"
+# The CLIENT half of the in-band TLS upgrade a client of AWS performs before its opening
+# handshake: a WEBSOCKET api announces a `wss://` address, so a case dials it with TLS the
+# way that client does. DEV-ONLY.
+rustls = { workspace = true }
+tokio-rustls = "0.26"
 
 [lints]
 workspace = true
