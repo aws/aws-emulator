@@ -135,7 +135,10 @@ fn application_arn(name: &str) -> String {
 }
 
 /// Create the app block every application below is created against.
-async fn create_app_block(emulator: &Emulator, case: &str, name: &str) -> String {
+///
+/// Shared with the other suites in this target (`tests/all/update_application.rs`), so
+/// every application suite stands its app block up the same way.
+pub(crate) async fn create_app_block(emulator: &Emulator, case: &str, name: &str) -> String {
     let created = emulator
         .ok(
             case,

@@ -39,6 +39,8 @@ mod state_roundtrip;
 mod streaming_session_resolution;
 #[path = "all/streaming_url.rs"]
 mod streaming_url;
+#[path = "all/update_application.rs"]
+mod update_application;
 #[path = "all/update_stack.rs"]
 mod update_stack;
 #[path = "all/usage_report_subscription.rs"]

@@ -31,7 +31,9 @@
 //!
 //! Applications live here as well: `CreateApplication` resolves the app block the request
 //! names against the stored app blocks and then writes one [`ApplicationRecord`] under the
-//! name it allocates, `DescribeApplications` renders the stored records back, a page at
+//! name it allocates, `UpdateApplication` applies the members it is given to that record
+//! and clears the fields its `AttributesToDelete` names, `DescribeApplications` renders
+//! the stored records back, a page at
 //! a time, and `DeleteApplication` removes one while nothing still holds it. Which
 //! application an Elastic fleet streams lives here too: `AssociateApplicationFleet` writes
 //! the `(fleet, application)` edge once the fleet's platform is one the application

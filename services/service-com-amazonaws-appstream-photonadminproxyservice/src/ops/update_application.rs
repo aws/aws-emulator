@@ -1,15 +1,14 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op UpdateApplication
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `UpdateApplication`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
-//!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`UpdateApplication::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! IMPLEMENTED: applies every member the request carries to the stored
+//! [`crate::state::ApplicationRecord`] the `Name` addresses, clears the stored field each
+//! `ApplicationAttribute` in `AttributesToDelete` names, and returns the modelled
+//! `Application` rendered FROM that updated record — so a later `DescribeApplications`
+//! answers with exactly what this call stored. A `Name` this account holds no application
+//! under answers `ResourceNotFoundException` (HTTP 404) and stores nothing, as does an
+//! `AppBlockArn` that addresses no app block this account holds (the same gate
+//! `CreateApplication` applies to the app block an application's binaries come from).
 //!
 //! ## Shape of an operation
 //!
@@ -152,18 +151,128 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `UpdateApplication` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(UpdateApplicationErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("UpdateApplication"))
+        // See `create_stack.rs` for why an engine without this service's store answers
+        // "not written for that engine" rather than a fabricated success.
+        let state = crate::state::service_state(&*self.engine)
+            .ok_or_else(|| crate::scaffolded::Scaffolded::not_implemented("UpdateApplication"))?;
+        let mut state = state.lock();
+
+        let attributes_to_delete = input.attributes_to_delete.clone().unwrap_or_default();
+        for attribute in &attributes_to_delete {
+            if !APPLICATION_ATTRIBUTE_VALUES.contains(&attribute.as_str()) {
+                return Err(crate::scaffolded::Scaffolded::validation(format!(
+                    "AttributesToDelete contains an unknown application attribute: {attribute}"
+                )));
+            }
+            // Setting a field and deleting it in one request asks for two different
+            // outcomes for the same field. This operation models no
+            // `InvalidParameterCombinationException`, so the combination is refused
+            // through the generic 400 channel rather than resolved silently one way.
+            if let Some(member) = supplied_member(&input, attribute) {
+                return Err(crate::scaffolded::Scaffolded::validation(format!(
+                    "{member} cannot be specified while AttributesToDelete contains \
+                     {attribute}"
+                )));
+            }
+        }
+
+        // An application's binaries come from an app block that EXISTS, which is the gate
+        // `CreateApplication` applies: re-pointing the application at a syntactically
+        // valid ARN that addresses no app block this account holds is refused, and the
+        // stored application is left exactly as it was. Resolved here, while the store is
+        // only read, so the record below can be taken mutably.
+        let missing_app_block = input
+            .app_block_arn
+            .clone()
+            .filter(|arn| state.app_block_by_arn(arn).is_none());
+
+        // The application is the resource this operation updates, so it is the one that
+        // has to exist: a name this account holds none under is a resource that was not
+        // found — as it is for every other resource this API names by name.
+        let record = state.applications.get_mut(&input.name).ok_or_else(|| {
+            UpdateApplicationErrorModeled::ResourceNotFoundException(ResourceNotFoundException {
+                message: Some(crate::state::resource_not_found_message(
+                    crate::state::APPLICATION_KIND,
+                    &input.name,
+                )),
+            })
+        })?;
+
+        if let Some(arn) = missing_app_block {
+            return Err(UpdateApplicationErrorModeled::ResourceNotFoundException(
+                ResourceNotFoundException {
+                    message: Some(crate::state::app_block_not_found_message(&arn)),
+                },
+            )
+            .into());
+        }
+
+        // Every member the request carries replaces the stored field; a member the
+        // request omits leaves that field alone. `Name` addresses the application rather
+        // than renaming it, so it is never written here.
+        if let Some(display_name) = input.display_name {
+            record.display_name = Some(display_name);
+        }
+        if let Some(description) = input.description {
+            record.description = Some(description);
+        }
+        if let Some(icon_s3_location) = input.icon_s3_location {
+            record.icon_s3_location = icon_s3_location;
+        }
+        if let Some(launch_path) = input.launch_path {
+            record.launch_path = launch_path;
+        }
+        if let Some(launch_parameters) = input.launch_parameters {
+            record.launch_parameters = Some(launch_parameters);
+        }
+        if let Some(working_directory) = input.working_directory {
+            record.working_directory = Some(working_directory);
+        }
+        if let Some(app_block_arn) = input.app_block_arn {
+            record.app_block_arn = app_block_arn;
+        }
+        for attribute in &attributes_to_delete {
+            delete_attribute(record, attribute);
+        }
+
+        Ok(UpdateApplicationOutput {
+            application: Some(record.to_application(&ctx.url_signer())),
+        })
+    }
+}
+
+/// The `UpdateApplication` member that SETS the application field `attribute` clears,
+/// when this request carries it — so naming both can be refused rather than silently
+/// resolved one way.
+///
+/// The attribute values are `ApplicationAttribute`'s (`smithy_query(query="shape",
+/// shape="ApplicationAttribute")`, also kept as `APPLICATION_ATTRIBUTE_VALUES` in
+/// `types/shared_types.rs`).
+fn supplied_member(input: &UpdateApplicationInput, attribute: &str) -> Option<&'static str> {
+    match attribute {
+        "LAUNCH_PARAMETERS" => input
+            .launch_parameters
+            .is_some()
+            .then_some("LaunchParameters"),
+        "WORKING_DIRECTORY" => input
+            .working_directory
+            .is_some()
+            .then_some("WorkingDirectory"),
+        _ => None,
+    }
+}
+
+/// Clear the stored field `attribute` names, so the rendered application no longer
+/// carries it.
+///
+/// A cleared optional field becomes `None`, which is what makes the member absent from
+/// the rendered `Application` (see `crate::state`). Clearing never follows a reference
+/// out of this service: the app block the binaries come from and the S3 object the icon
+/// lives in are resources of their own and keep their own lifecycle.
+fn delete_attribute(record: &mut crate::state::ApplicationRecord, attribute: &str) {
+    match attribute {
+        "LAUNCH_PARAMETERS" => record.launch_parameters = None,
+        "WORKING_DIRECTORY" => record.working_directory = None,
+        _ => {}
     }
 }
