@@ -446,14 +446,29 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         let region = crate::state::arn_region(&machine_arn);
 
+        // What this execution's work is done as is the state machine's EXECUTION ROLE.
+        // Acting as the role is itself a call this service makes BEFORE any of that
+        // work: the assume presents the state machine the credentials are taken on for,
+        // so a trust policy narrowed to another state machine or another account is one
+        // this service may not act under for THIS execution. Resolved here, where the
+        // walk is started, and weighed again for the outcome the CLOCK owes
+        // ([`crate::state::encryption::fail_due_runs_the_key_refuses`]).
+        let unassumable = crate::state::task_authorization::unassumable_role(
+            ctx.callback(),
+            &region,
+            &role_arn,
+            &machine_arn,
+        )
+        .await;
+
         // An execution of a state machine on a CUSTOMER MANAGED key has its data
         // sealed under that key, and TWO identities have to be allowed to seal it:
         // the CALLER, whose `input` this call hands the service to keep, and the state
         // machine's EXECUTION ROLE, which is the identity Step Functions does the run's
-        // own cryptographic work as. A key no cryptographic operation can use, and
-        // either identity being refused the data key, each refuse the start with the
-        // modelled `Kms*` error and start nothing. Both decisions are taken with no
-        // store of this service locked, before the walk.
+        // own cryptographic work as. A key no cryptographic operation can use, either
+        // identity being refused the data key, and a role this service cannot act as at
+        // all, each refuse the start with the modelled `Kms*` error and start nothing.
+        // Both decisions are taken with no store of this service locked, before the walk.
         if let Some(refusal) = crate::state::encryption::state_machine_seal_denied(
             &*self.engine,
             ctx,
@@ -467,6 +482,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             &region,
             &machine_arn,
             &role_arn,
+            unassumable.is_some(),
         ) {
             return Err(crate::kms_key_refusal!(StartExecutionErrorModeled, refusal).into());
         }
@@ -503,11 +519,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // What this execution's `Task` states may do is what the policies in force on
         // the state machine's execution role allow them: the calls below are made as
         // that role ([`crate::state::task_authorization`]) — which this service has to
-        // ASSUME before it makes any of them, so a role it cannot assume fails the
-        // first `Task` of the execution instead of its work being done as nobody.
-        let unassumable =
-            crate::state::task_authorization::unassumable_role(ctx.callback(), &region, &role_arn)
-                .await;
+        // ASSUME before it makes any of them, so a role it cannot assume (resolved
+        // above, before anything was sealed under the key) fails the first `Task` of the
+        // execution instead of its work being done as nobody.
         let acting = crate::state::task_authorization::acting(
             &self.engine,
             &region,

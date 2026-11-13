@@ -101,6 +101,8 @@ mod execution_redrive;
 mod execution_reports_publish_what_they_settle;
 #[path = "all/execution_role_assumption.rs"]
 mod execution_role_assumption;
+#[path = "all/execution_role_trust_conditions.rs"]
+mod execution_role_trust_conditions;
 #[path = "all/execution_status_change_events.rs"]
 mod execution_status_change_events;
 #[path = "all/express_execution_arn_identity.rs"]

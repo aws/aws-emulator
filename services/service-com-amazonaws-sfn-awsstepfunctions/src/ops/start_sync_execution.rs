@@ -437,9 +437,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // The calls this execution's `Task` states make are made as the state
         // machine's execution role, which this service assumes first: a role it cannot
         // assume fails the task rather than having its work done as nobody.
-        let unassumable =
-            crate::state::task_authorization::unassumable_role(ctx.callback(), &region, &role_arn)
-                .await;
+        let unassumable = crate::state::task_authorization::unassumable_role(
+            ctx.callback(),
+            &region,
+            &role_arn,
+            &machine_arn,
+        )
+        .await;
         let acting = crate::state::task_authorization::acting(
             &self.engine,
             &region,

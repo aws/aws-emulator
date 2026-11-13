@@ -219,6 +219,49 @@ pub async fn role_is_unassumable_through(
     }
 }
 
+/// Whether IAM ANSWERED that `role_arn` is a role `service_principal` cannot assume FOR ONE
+/// PARTICULAR assume — the request whose condition keys `context` states, as `(key, value)`
+/// pairs.
+///
+/// The question [`role_is_unassumable_through`] answers, narrowed to the assume a named piece
+/// of work would make: a service that takes a role on to do that work may act under it only
+/// where the grant covers it, so a statement's `Condition` is part of the decision
+/// ([`crate::iam_trust_policy::grants_service_principal`]) — which is what makes the
+/// confused-deputy keys a service presents when it assumes a role (`aws:SourceAccount`,
+/// `aws:SourceArn`, naming the resource the work is for) decide anything at all. The keys the
+/// assume carries are the caller's to state, and no value is guessed for one it does not: a
+/// clause the request cannot be shown to satisfy is no grant, the fail-closed reading
+/// [`crate::iam_authorization`] takes of every undecidable clause.
+///
+/// The grounds and the non-answers are [`role_is_unassumable_through`]'s, so the two readings
+/// of one document differ only in how much of the assume they are told about: `false` — do
+/// not refuse — for a value that names no role of this account, an answer this emulator could
+/// not read, and an emulator with no IAM to ask.
+pub async fn role_assume_is_unauthorized_through(
+    callback: &smithy_server_runtime::EmbeddedEmulator,
+    region: &str,
+    role_arn: &str,
+    service_principal: &str,
+    context: &[(String, String)],
+) -> bool {
+    let Some(role_name) = role_name(role_arn) else {
+        return false;
+    };
+    match role_answer(callback, region, role_name).await {
+        RoleAnswer::Held(document) => !document.is_some_and(|document| {
+            crate::iam_trust_policy::grants_service_principal(
+                &document,
+                service_principal,
+                role_arn,
+                context,
+            )
+            .unwrap_or(false)
+        }),
+        RoleAnswer::Absent => true,
+        RoleAnswer::Unknown => false,
+    }
+}
+
 /// Whether IAM ANSWERED that `role_arn` is a role it HOLDS and `service_principal` cannot
 /// assume: this account holds a role under the name the ARN carries, and the trust policy
 /// that stored role carries does not admit that principal.

@@ -68,13 +68,22 @@
 //! made as nobody. That is the deploy-time/run-time split the service exposes
 //! deliberately — `CreateStateMachine` does not require the role to exist, and the
 //! data plane does — and it is decided from what IAM ANSWERS about the role
-//! ([`::service_common::iam_role::role_is_unassumable_through`], the tree's one
+//! ([`::service_common::iam_role::role_assume_is_unauthorized_through`], the tree's one
 //! reading of a caller-supplied execution role): this account holding no such role, or
 //! holding one whose trust policy lets NEITHER of this service's two principals
 //! ([`SERVICE_PRINCIPAL`] and the Region's own, [`regional_service_principal`]) assume
 //! it, are both answers that the assume fails. Everything else — an ARN naming no role
 //! of this account, an emulator with no IAM to ask — is evidence of nothing and leaves
 //! the execution to run.
+//!
+//! The assume is one PARTICULAR assume, so a trust statement's `Condition` is part of
+//! the grant it has to be covered by: this service presents the resource the work is
+//! for under the two confused-deputy keys a service trust policy is written against
+//! ([`assume_context`]), and a role whose grant is narrowed to another state machine,
+//! or to another account, is one this service may not take on for THIS execution —
+//! which is the whole point of hardening a service role that way. Nothing is guessed
+//! for a key the assume does not carry: an undecidable clause is no grant, the
+//! fail-closed reading the shared evaluator takes of every one of them.
 
 use ::std::sync::Arc;
 
@@ -100,6 +109,43 @@ pub fn regional_service_principal(region: &str) -> String {
     format!("states.{region}.amazonaws.com")
 }
 
+/// `aws:SourceAccount` — the global condition key naming the ACCOUNT whose resource a
+/// service is making a call on behalf of, and one of the two keys AWS publishes a
+/// service role's trust policy as being scoped by.
+const SOURCE_ACCOUNT_CONDITION_KEY: &str = "aws:SourceAccount";
+
+/// `aws:SourceArn` — the other one: the ARN of the RESOURCE the call is made on behalf
+/// of, which for an assume of an execution role is the state machine whose execution
+/// the credentials are taken on for.
+const SOURCE_ARN_CONDITION_KEY: &str = "aws:SourceArn";
+
+/// The condition keys the assume of a state machine's execution role carries: the state
+/// machine the credentials are taken on FOR, and the account that state machine belongs
+/// to, read out of its own ARN.
+///
+/// These are the two keys a trust policy that guards against the confused-deputy problem
+/// is written against, and the values are fixed by the state machine rather than by
+/// anything a caller states, so a statement narrowed to one state machine or one account
+/// is DECIDED rather than left undecidable. An ARN this cannot read carries neither key,
+/// and a clause over a key the assume does not carry is no grant.
+#[must_use]
+pub fn assume_context(state_machine_arn: &str) -> Vec<(String, String)> {
+    let Some(parsed) = ::service_common::arn::parse(state_machine_arn) else {
+        return Vec::new();
+    };
+    let mut context = vec![(
+        SOURCE_ARN_CONDITION_KEY.to_string(),
+        state_machine_arn.to_string(),
+    )];
+    if !parsed.account.is_empty() {
+        context.push((
+            SOURCE_ACCOUNT_CONDITION_KEY.to_string(),
+            parsed.account.to_string(),
+        ));
+    }
+    context
+}
+
 /// What a `Task` state fails with when the execution role `role_arn` cannot be
 /// assumed, or `None` when nothing of the kind can be shown (see the module docs).
 ///
@@ -111,10 +157,16 @@ pub fn regional_service_principal(region: &str) -> String {
 /// It is resolved ONCE per walk, where the walk is started, because every `Task` state
 /// of that walk acts as the same role: the credentials a real execution assumes are
 /// held for the run rather than fetched per state.
+///
+/// `state_machine_arn` is the state machine the credentials are taken on FOR, which is
+/// what the assume presents under the confused-deputy keys ([`assume_context`]): the
+/// same role is assumable for one state machine and not for another whenever its trust
+/// policy says so.
 pub async fn unassumable_role(
     callback: &::smithy_server_runtime::EmbeddedEmulator,
     region: &str,
     role_arn: &str,
+    state_machine_arn: &str,
 ) -> Option<Failed> {
     if role_arn.is_empty() {
         return None;
@@ -122,12 +174,14 @@ pub async fn unassumable_role(
     // Either principal getting the role is enough, so the Region's own is asked about
     // only where the global one was refused.
     let regional = regional_service_principal(region);
+    let context = assume_context(state_machine_arn);
     for principal in [SERVICE_PRINCIPAL, regional.as_str()] {
-        let unassumable = ::service_common::iam_role::role_is_unassumable_through(
+        let unassumable = ::service_common::iam_role::role_assume_is_unauthorized_through(
             callback,
             region,
             role_arn,
             principal,
+            &context,
         )
         .await;
         if !unassumable {

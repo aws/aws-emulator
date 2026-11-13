@@ -931,9 +931,9 @@ async fn a_start_the_key_refuses_the_caller_starts_nothing() {
          {answer:?}"
     );
     assert!(
-        message(&answer).contains("kms:DescribeKey"),
-        "case the policy allows the caller nothing: expected the refusal to name the read of the \
-         key a start begins with, got {answer:?}"
+        message(&answer).contains("kms:GenerateDataKey"),
+        "case the policy allows the caller nothing: expected the refusal to name the data-key mint \
+         sealing the start's input makes, got {answer:?}"
     );
     let listed = chain
         .sfn("ListExecutions", &json!({ "stateMachineArn": machine }))

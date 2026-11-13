@@ -341,6 +341,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 ctx.callback(),
                 &region,
                 &context.role_arn,
+                &context.state_machine_arn,
             )
             .await;
             let acting = crate::state::task_authorization::acting(

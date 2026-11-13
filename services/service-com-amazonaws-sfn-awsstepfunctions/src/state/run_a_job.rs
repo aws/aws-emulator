@@ -265,8 +265,13 @@ async fn resolve<Eng: Send + Sync + 'static>(
         // The states after the job call as the execution role the states before it
         // did, which is the role the state machine carries — assumed again for this
         // continuation, so a role that cannot be assumed fails the task.
-        let unassumable =
-            super::task_authorization::unassumable_role(callback, &region, &context.role_arn).await;
+        let unassumable = super::task_authorization::unassumable_role(
+            callback,
+            &region,
+            &context.role_arn,
+            &context.state_machine_arn,
+        )
+        .await;
         let acting = super::task_authorization::acting(
             engine,
             &region,
