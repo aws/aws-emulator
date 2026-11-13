@@ -16,13 +16,32 @@
 //! fails here. The rows differ along what the rule generalises over: how the handler ends
 //! (a document, a bare value, no value at all, an exception), whether this emulator can run
 //! the package at all, and whether a caller had already ended the execution.
+//!
+//! Every wait here is for a CONDITION and never for a span of wall clock. What settles an
+//! execution is the delivery of the invocation it is the handle on, and the emulator bounds
+//! ONE delivery attempt and the wait between two of them and nothing else — an attempt that
+//! found no capacity to run the function ran nothing, so the event is attempted again for as
+//! long as it is retained, and how many attempts a loaded host costs it is not a row's to
+//! bound. So a row waits for that delivery with the progress-aware helper the asynchronous
+//! invoke suite publishes ([`settled_newest`]), which fails only on the emulator going quiet
+//! about the event, and then looks at `GetDurableExecution` again until it reports what the
+//! run produced. Every limit no row is about — the `Timeout` the handler runs under above all
+//! — is far above what the work takes, so how fast the host runs decides nothing asserted
+//! here.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
+use service_com_amazonaws_lambda_awsgirapiservice::state::execution::HOST_WAIT_CEILING;
+use service_com_amazonaws_lambda_awsgirapiservice::state::AsyncInvocationOutcome;
 use smithy_server_runtime::MultiServiceRouter;
 
+// Waiting for the DELIVERY of an accepted asynchronous invocation is the same wait the
+// asynchronous invoke suite makes, so this one makes it with the helper that suite publishes
+// rather than with a budget of its own: it looks at the queue entry again until the attempt
+// has settled, and fails only when nothing is working on the event any more.
+use crate::asynchronous_invoke_run::settled_newest;
 use crate::function_lifecycle::{
     create_function, json_call, make_activation_due, package_bytes, router_on, send, zip_file,
     Answer, ROLE,
@@ -58,9 +77,25 @@ const EVENT_EXECUTION_STARTED: &str = "ExecutionStarted";
 const EVENT_EXECUTION_SUCCEEDED: &str = "ExecutionSucceeded";
 const EVENT_EXECUTION_FAILED: &str = "ExecutionFailed";
 
-/// How long a row waits for the run its invocation started — the delivery is made off the
-/// response path, so the terminal status arrives shortly after the call that accepted it.
-const BUDGET: Duration = Duration::from_secs(30);
+/// The `Timeout` every function here runs its handler under.
+///
+/// Generous on purpose, because no row here is about the timeout: a handler stopped at that
+/// deadline is reported as a run that ERRORED, so a tight value would turn a loaded host into
+/// a failure the handler never raised. Minutes for handlers that return in milliseconds, and
+/// well inside the range the model allows the member (`smithy_query(query="shape",
+/// shape="Timeout")`: 1 to 5400).
+const GENEROUS_TIMEOUT_SECONDS: i64 = 300;
+
+/// How long a row waits for the execution to report what a SETTLED run produced.
+///
+/// The run itself is not bounded here at all — it is waited for as the condition it is
+/// ([`settled_newest`]) — and between the queue entry carrying what the attempt came to and
+/// the execution carrying it there is no span this emulator waits out: the same delivery task
+/// does the one after the other. So this is only room for the host to get to that task, taken
+/// generously from a span the emulator itself allows one run ([`HOST_WAIT_CEILING`]) rather
+/// than picked here, and it is a backstop against an emulator that settles the invocation
+/// without ever settling the execution.
+const HANDOVER_CEILING: Duration = HOST_WAIT_CEILING;
 
 /// How often a row looks again while it waits.
 const LOOK_AGAIN: Duration = Duration::from_millis(50);
@@ -135,7 +170,7 @@ async fn given_durable_function(
             "Role": ROLE,
             "Runtime": "python3.12",
             "Handler": HANDLER,
-            "Timeout": 10,
+            "Timeout": GENEROUS_TIMEOUT_SECONDS,
             "Code": { "ZipFile": zip_file(code) },
             "DurableConfig": { "ExecutionTimeout": EXECUTION_TIMEOUT },
         }),
@@ -166,10 +201,21 @@ async fn started(router: &MultiServiceRouter, function: &str, execution: &str) -
         .unwrap_or_else(|| panic!("case {execution}: the invocation must answer an execution ARN"))
 }
 
-/// The execution `arn` addresses, once it has left `RUNNING`, or the last reading of it when
-/// the budget runs out.
-async fn settled(router: &MultiServiceRouter, case: &str, arn: &str) -> Value {
-    let deadline = Instant::now() + BUDGET;
+/// The execution `arn` addresses, once the RUN of the invocation it is the handle on has been
+/// made and the execution has left `RUNNING`.
+///
+/// Two waits, each for a condition: the delivery of that invocation, waited for however many
+/// attempts a loaded host costs it ([`settled_newest`]), and then the execution reporting what
+/// the attempt came to, looked for again until it does.
+async fn settled(
+    router: &MultiServiceRouter,
+    engine: &Arc<engine::InMemoryEngine>,
+    case: &str,
+    function: &str,
+    arn: &str,
+) -> Value {
+    let delivered = settled_newest(engine, case, function).await;
+    let deadline = Instant::now() + HANDOVER_CEILING;
     loop {
         let answer = get_execution(router, arn).await;
         assert_eq!(
@@ -190,8 +236,10 @@ async fn settled(router: &MultiServiceRouter, case: &str, arn: &str) -> Value {
         }
         assert!(
             Instant::now() < deadline,
-            "case {case:?}: the execution's run must settle it within {BUDGET:?}, it is still \
-             {status}: {execution}"
+            "case {case:?}: the run of this execution's invocation came to {:?}, so the \
+             execution must report what that run produced, and it is still {status} \
+             {HANDOVER_CEILING:?} later: {execution}",
+            delivered.outcome
         );
         tokio::time::sleep(LOOK_AGAIN).await;
     }
@@ -288,7 +336,7 @@ async fn a_durable_execution_ends_in_the_status_its_run_produced() {
         let function = format!("durable-run-{index}");
         given_durable_function(&router, &engine, &function, &package(source)).await;
         let arn = started(&router, &function, "the-execution").await;
-        let execution = settled(&router, case, &arn).await;
+        let execution = settled(&router, &engine, case, &function, &arn).await;
 
         assert_eq!(
             execution.get("Status").and_then(Value::as_str),
@@ -350,7 +398,14 @@ async fn an_execution_whose_package_cannot_be_run_fails_with_the_reason() {
     // Bytes that are no archive at all: there is nothing in them to run.
     given_durable_function(&router, &engine, "durable-unreadable", &package_bytes(64)).await;
     let arn = started(&router, "durable-unreadable", "unreadable").await;
-    let execution = settled(&router, "a package that is no archive", &arn).await;
+    let execution = settled(
+        &router,
+        &engine,
+        "a package that is no archive",
+        "durable-unreadable",
+        &arn,
+    )
+    .await;
 
     assert_eq!(
         execution.get("Status").and_then(Value::as_str),
@@ -396,18 +451,30 @@ async fn a_stopped_execution_is_not_re_opened_by_its_run() {
         String::from_utf8_lossy(&stopped.body)
     );
 
-    // Past the delivery and the run it makes, the stop still stands.
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    // Past the delivery and the run it makes, the stop still stands. The run is waited for as
+    // the condition it is — the queue entry carrying what its attempt came to — so the stop is
+    // read back after a run that really happened rather than after a span of wall clock.
+    let case = "an execution stopped before its run finished";
+    let delivered = settled_newest(&engine, case, "durable-stopped").await;
+    assert!(
+        matches!(
+            delivered.outcome,
+            AsyncInvocationOutcome::Delivered {
+                function_error: None
+            }
+        ),
+        "case {case:?}: the handler of this function must have run and returned, so the stop is \
+         read back past the run that could re-open the execution, got {:?}",
+        delivered.outcome
+    );
     let execution = get_execution(&router, &arn).await.json();
     assert_eq!(
         execution.get("Status").and_then(Value::as_str),
         Some(STATUS_STOPPED),
-        "case \"an execution stopped before its run finished\": expected {STATUS_STOPPED}, got \
-         {execution}"
+        "case {case:?}: expected {STATUS_STOPPED}, got {execution}"
     );
     assert!(
         execution.get("Result").is_none(),
-        "case \"an execution stopped before its run finished\": a stopped execution reports no \
-         result, got {execution}"
+        "case {case:?}: a stopped execution reports no result, got {execution}"
     );
 }
