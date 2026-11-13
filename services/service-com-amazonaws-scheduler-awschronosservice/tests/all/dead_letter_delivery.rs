@@ -13,6 +13,20 @@
 //! reported there, and neither is one whose execution role may not write to that
 //! queue.
 //!
+//! RULE: what the dead-letter queue is handed is the failed EVENT — the REQUEST the
+//! invocation attempted against its target's own API, since a templated target names
+//! one API operation of the target's service and the schedule's `Target` members are
+//! that operation's request — so the undelivered payload is carried under the member
+//! that request takes it in, and is the whole body only where that request is the
+//! payload itself.
+//!
+//! RULE: the failure's reported `ERROR_CODE` is the code the service that refused the
+//! call answers it with, so a call the execution role's permissions withheld is
+//! reported under that service's OWN spelling of AWS's authorization refusal, and its
+//! `ERROR_MESSAGE` is AWS's authorization sentence — the principal the call was made
+//! by, the action and the resource — with the action named the way that same service
+//! names an action in a refusal of its own.
+//!
 //! The rows span the class rather than one recorded case: they differ along the KIND
 //! of failure (the target does not exist, the target refuses the request, the
 //! permissions withhold the call), along whether the invocation reaches its target at
@@ -43,9 +57,11 @@ const PATIENCE: Duration = Duration::from_secs(80);
 /// performed, and a report it would have delivered, have both had their chance.
 const QUIET_WINDOW: Duration = Duration::from_secs(15);
 
-/// The error code AWS refuses an unauthorized call with, which is what a report of a
-/// call the invocation's own permissions withheld carries.
-const ACCESS_DENIED: &str = "AccessDeniedException";
+/// The error code Amazon SQS answers a call its caller is not authorized to make with.
+/// A query-compatible service answers such a call with the legacy Query code AWS
+/// refuses an unauthorized call under, which is what a report of a withheld invocation
+/// of a QUEUE target carries.
+const QUEUE_ACCESS_DENIED: &str = "AccessDenied";
 
 /// What the row's schedule points its target at.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -113,7 +129,7 @@ const ROWS: &[Row] = &[
         may_invoke: false,
         may_dead_letter: true,
         retries: None,
-        expected: Expected::DeadLettered(Some(ACCESS_DENIED)),
+        expected: Expected::DeadLettered(Some(QUEUE_ACCESS_DENIED)),
     },
     Row {
         case: "an invocation the target accepts",
@@ -215,10 +231,15 @@ async fn a_failed_invocation_is_reported_to_the_dead_letter_queue() {
                 let message = reported
                     .first()
                     .unwrap_or_else(|| panic!("case {case:?}: nothing was dead-lettered"));
+                // What is reported is the failed EVENT: the `SendMessage` request the
+                // invocation attempted, which addresses the target queue and carries
+                // the undelivered payload as its `MessageBody`. The table below spans
+                // the other target kinds.
+                let expected_body = json!({ "QueueUrl": target_url, "MessageBody": marker });
                 assert_eq!(
-                    message["Body"].as_str(),
-                    Some(marker.as_str()),
-                    "case {case:?}: expected the undelivered payload {marker:?}, got {message}"
+                    body_document(message),
+                    expected_body,
+                    "case {case:?}: expected the failed event {expected_body}, got {message}"
                 );
                 let attribute = |name: &str| {
                     message["MessageAttributes"][name]["StringValue"]
@@ -248,10 +269,11 @@ async fn a_failed_invocation_is_reported_to_the_dead_letter_queue() {
                     !detail.is_empty(),
                     "case {case:?}: expected the failure's message to be reported, got {message}"
                 );
-                if code == Some(ACCESS_DENIED) {
-                    // AWS's own authorization refusal: the call that was withheld and
-                    // the resource it was on.
-                    for expected in ["is not authorized to perform: sqs:SendMessage", &target_arn] {
+                if code == Some(QUEUE_ACCESS_DENIED) {
+                    // AWS's own authorization refusal: the call that was withheld, named
+                    // the way Amazon SQS names an action in a refusal of its own (case-
+                    // folded throughout), and the resource it was on.
+                    for expected in ["is not authorized to perform: sqs:sendmessage", &target_arn] {
                         assert!(
                             detail.contains(expected),
                             "case {case:?}: expected the refusal to name {expected:?}, got \
@@ -430,4 +452,268 @@ async fn received(router: &MultiServiceRouter, url: &str) -> Vec<Value> {
         "receive {url}: ReceiveMessage answered {status} {answered}"
     );
     answered["Messages"].as_array().cloned().unwrap_or_default()
+}
+
+/// The document a dead-letter message's body IS: a failed event is the request the
+/// invocation attempted, so the body is read as that document rather than as text.
+fn body_document(message: &Value) -> Value {
+    let body = message["Body"].as_str().unwrap_or_default();
+    serde_json::from_str(body).unwrap_or_else(|_| Value::String(body.to_string()))
+}
+
+/// The `QueueUrl` Amazon SQS addresses the queue an ARN names by, which is how the
+/// `SendMessage` request a queue target's invocation makes names it:
+/// `<endpoint>/<accountId>/<QueueName>`. Pinned against the url the service itself
+/// reports for a queue in the table below.
+fn queue_url_of(queue_arn: &str) -> String {
+    let name = queue_arn.rsplit(':').next().unwrap_or_default();
+    format!("https://sqs.{REGION}.amazonaws.com/{}/{name}", account_id())
+}
+
+/// `MessageGroupId`, as Amazon SQS's own `SendMessage` request names it — the member a
+/// queue target's `Target.SqsParameters` states.
+const MESSAGE_GROUP_ID_MEMBER: &str = "MessageGroupId";
+
+/// One row of the failed-event table: what the schedule's target names, what it states
+/// for it, and the members of the request that target's API takes.
+struct EventRow {
+    case: &'static str,
+    /// `Target.Arn`, with `{region}` and `{account}` where the row's own emulator
+    /// fills them in.
+    target: &'static str,
+    /// The member of the target API's request that ADDRESSES the target, or `None` for
+    /// a universal target, whose `Input` already IS the request.
+    addressed_under: Option<&'static str>,
+    /// Whether that member addresses the target by the url Amazon SQS reports for it
+    /// rather than by its ARN.
+    by_queue_url: bool,
+    /// The member of that request the undelivered payload is carried under.
+    carried_under: Option<&'static str>,
+    /// The FIFO message group `Target.SqsParameters` states, if any.
+    message_group_id: Option<&'static str>,
+    /// The error code the target's own service answers a call its caller is not
+    /// authorized to make with, which is what the report of this row's withheld
+    /// invocation carries.
+    refused_with: &'static str,
+    /// The action as the refusal NAMES it: the IAM action the call is authorized by,
+    /// worded the way the service that answered the refusal words one.
+    reported_action: &'static str,
+}
+
+const EVENT_ROWS: &[EventRow] = &[
+    EventRow {
+        // "The templated target type for the Amazon SQS SendMessage API operation"
+        // (`Target$SqsParameters`), whose request takes `QueueUrl` and `MessageBody`.
+        case: "a queue target",
+        target: "arn:aws:sqs:{region}:{account}:failed-event-target",
+        addressed_under: Some("QueueUrl"),
+        by_queue_url: true,
+        carried_under: Some("MessageBody"),
+        message_group_id: None,
+        // Amazon SQS is query-compatible, so its answer carries the legacy Query code,
+        // and that service names the action case-folded throughout.
+        refused_with: QUEUE_ACCESS_DENIED,
+        reported_action: "sqs:sendmessage",
+    },
+    EventRow {
+        // The same operation, with the one parameter that target kind states: the
+        // group travels with the invocation, so it is part of the request that failed.
+        case: "a FIFO queue target the schedule states a message group for",
+        target: "arn:aws:sqs:{region}:{account}:failed-event-target.fifo",
+        addressed_under: Some("QueueUrl"),
+        by_queue_url: true,
+        carried_under: Some("MessageBody"),
+        message_group_id: Some("orders"),
+        refused_with: QUEUE_ACCESS_DENIED,
+        reported_action: "sqs:sendmessage",
+    },
+    EventRow {
+        // Amazon SNS's `Publish`, which takes `TopicArn` and `Message`.
+        case: "a topic target",
+        target: "arn:aws:sns:{region}:{account}:failed-event-topic",
+        addressed_under: Some("TopicArn"),
+        by_queue_url: false,
+        carried_under: Some("Message"),
+        message_group_id: None,
+        // Amazon SNS MODELS its authorization refusal
+        // (`AuthorizationErrorException`, Query code `AuthorizationError`).
+        refused_with: "AuthorizationError",
+        // An SNS action is `SNS:<OperationName>`, which is how that service names the
+        // action a refusal of its own withheld.
+        reported_action: "SNS:Publish",
+    },
+    EventRow {
+        // Step Functions' `StartExecution`, which takes `StateMachineArn` and `Input`.
+        case: "a state machine target",
+        target: "arn:aws:states:{region}:{account}:stateMachine:failed-event-machine",
+        addressed_under: Some("StateMachineArn"),
+        by_queue_url: false,
+        carried_under: Some("Input"),
+        message_group_id: None,
+        refused_with: "AccessDeniedException",
+        // AWS's authorization layer answers for this service, naming the action as the
+        // service documents it.
+        reported_action: "states:StartExecution",
+    },
+    EventRow {
+        // AWS Lambda's `Invoke`, which takes `FunctionName` and `Payload`.
+        case: "a function target",
+        target: "arn:aws:lambda:{region}:{account}:function:failed-event-function",
+        addressed_under: Some("FunctionName"),
+        by_queue_url: false,
+        carried_under: Some("Payload"),
+        message_group_id: None,
+        refused_with: "AccessDeniedException",
+        reported_action: "lambda:InvokeFunction",
+    },
+    EventRow {
+        // A universal target's `Input` already IS the request the invocation makes, so
+        // there is nothing to build around it. The call it names is a queue's, so the
+        // refusal is the one Amazon SQS answers.
+        case: "a universal target",
+        target: "arn:aws:scheduler:::aws-sdk:sqs:sendMessage",
+        addressed_under: None,
+        by_queue_url: false,
+        carried_under: None,
+        message_group_id: None,
+        refused_with: QUEUE_ACCESS_DENIED,
+        reported_action: "sqs:sendmessage",
+    },
+];
+
+/// Every row: what the dead-letter queue is handed is the REQUEST the invocation
+/// attempted against its target's own API — the target it addresses, the undelivered
+/// payload under the member that request carries it in, and the parameters the target
+/// states — and a universal target's own input as it stands.
+///
+/// Every row's execution role may write to the dead-letter queue alone, so every row's
+/// invocation is withheld and every row's failed event is reported.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_dead_lettered_event_is_the_request_the_invocation_attempted() {
+    for (index, row) in EVENT_ROWS.iter().enumerate() {
+        let case = row.case;
+        let emulator = emulator();
+        let (dead_letter_url, dead_letter_arn) =
+            given_queue(&emulator, case, &format!("event-dlq-{index}")).await;
+        // The row's own queue: what a universal target's request addresses, and a
+        // queue the execution role may not write to either.
+        let (queue_url, queue_arn) =
+            given_queue(&emulator, case, &format!("event-queue-{index}")).await;
+        // The url the request carries for a queue is the one Amazon SQS itself reports
+        // for it, so the form this suite derives below is pinned against that service.
+        assert_eq!(
+            queue_url_of(&queue_arn),
+            queue_url,
+            "case {case:?}: expected the queue url Amazon SQS reports for {queue_arn}"
+        );
+        let role = given_execution_role_for(
+            &emulator,
+            case,
+            &format!("event-role-{index}"),
+            &[&dead_letter_arn],
+        )
+        .await;
+
+        let target_arn = row
+            .target
+            .replace("{region}", REGION)
+            .replace("{account}", account_id());
+        let marker = format!("{{\"marker\":\"{index}\"}}");
+        let payload = match row.addressed_under {
+            // A universal target's input is the call's own request, which this row
+            // makes of the queue it created.
+            None => json!({ "QueueUrl": queue_url, "MessageBody": marker }),
+            Some(_) => json!({ "marker": format!("{index}") }),
+        };
+        let input = payload.to_string();
+        let mut target = json!({
+            "Arn": target_arn,
+            "RoleArn": role,
+            "Input": input,
+            "RetryPolicy": { "MaximumRetryAttempts": 0 },
+            "DeadLetterConfig": { "Arn": dead_letter_arn },
+        });
+        if let Some(group) = row.message_group_id {
+            target["SqsParameters"] = json!({ "MessageGroupId": group });
+        }
+        let name = format!("failed-event-{index}");
+        let (status, created) = scheduler(
+            &emulator,
+            "POST",
+            &format!("/schedules/{name}"),
+            Some(json!({
+                "ScheduleExpression": format!("at({})", at_expression_body(seconds_from_now(4))),
+                "FlexibleTimeWindow": { "Mode": "OFF" },
+                "State": "ENABLED",
+                "Target": target,
+            })),
+        )
+        .await;
+        assert_eq!(
+            status, 200,
+            "case {case:?}: CreateSchedule answered {status} {created}"
+        );
+
+        let expected = match (row.addressed_under, row.carried_under) {
+            (Some(address), Some(member)) => {
+                let mut document = serde_json::Map::new();
+                let addressed = match row.by_queue_url {
+                    true => queue_url_of(&target_arn),
+                    false => target_arn.clone(),
+                };
+                document.insert(address.to_string(), Value::String(addressed));
+                document.insert(member.to_string(), Value::String(input.clone()));
+                if let Some(group) = row.message_group_id {
+                    document.insert(
+                        MESSAGE_GROUP_ID_MEMBER.to_string(),
+                        Value::String(group.to_string()),
+                    );
+                }
+                Value::Object(document)
+            }
+            _ => payload.clone(),
+        };
+        let reported = messages_once(&emulator, &dead_letter_url, 1, PATIENCE).await;
+        let message = reported
+            .first()
+            .unwrap_or_else(|| panic!("case {case:?}: nothing was dead-lettered"));
+        assert_eq!(
+            body_document(message),
+            expected,
+            "case {case:?}: expected the dead-lettered event {expected}, got {message}"
+        );
+        // The report is of a call the invocation's own permissions withheld, under the
+        // code the target's own service answers such a call with.
+        assert_eq!(
+            message["MessageAttributes"]["ERROR_CODE"]["StringValue"].as_str(),
+            Some(row.refused_with),
+            "case {case:?}: expected {:?} to be reported, got {message}",
+            row.refused_with
+        );
+        // And worded the way the service that refused the call words such a refusal: the
+        // principal the call was made by — the session this invocation assumed the
+        // execution role under, named by a token of the invocation's own execution id —
+        // the action as that service names it, and the resource.
+        let execution = message["MessageAttributes"]["EXECUTION_ID"]["StringValue"]
+            .as_str()
+            .unwrap_or_default()
+            .replace('-', "");
+        let action = row.reported_action;
+        let refused_on = match row.addressed_under {
+            Some(_) => target_arn.clone(),
+            // The universal row's call is made against the queue it created.
+            None => queue_arn.clone(),
+        };
+        let expected_message = format!(
+            "User: arn:aws:sts::{account}:assumed-role/event-role-{index}/{execution} is not \
+             authorized to perform: {action} on resource: {refused_on} because no \
+             identity-based policy allows the {action} action",
+            account = account_id(),
+        );
+        assert_eq!(
+            message["MessageAttributes"]["ERROR_MESSAGE"]["StringValue"].as_str(),
+            Some(expected_message.as_str()),
+            "case {case:?}: expected the refusal {expected_message:?}, got {message}"
+        );
+    }
 }

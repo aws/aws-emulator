@@ -72,8 +72,9 @@
 //! one that role's permissions allow or it is not made at all; and a call that was
 //! made and failed is made AGAIN, inside both bounds `Target$RetryPolicy` states,
 //! until one of them is exhausted. The invocation that could not be delivered is then
-//! handed to the queue `Target$DeadLetterConfig` names, carrying the payload the
-//! target was to be handed and the detail of the failure that ended it. That half of
+//! handed to the queue `Target$DeadLetterConfig` names, carrying the request the
+//! attempt made of the target's own API ([`failed_event`]) and the detail of the
+//! failure that ended it. That half of
 //! the question — which failures are worth another attempt, how many attempts the
 //! policy admits, and what the dead-letter message carries — is [`super::dead_letter`];
 //! the attempts themselves wait on this clock, so nothing sleeps between them either.
@@ -91,7 +92,8 @@ use crate::ops::types::{FlexibleTimeWindow, Target};
 
 use super::dead_letter::{
     dead_letter_attributes, failure_of, withheld, Attempt, Exhaustion, Failure, Report,
-    RetryBounds, RETRY_INTERVAL,
+    RetryBounds, ACCESS_DENIED_CODE, AUTHORIZATION_ERROR_CODE, QUERY_ACCESS_DENIED_CODE,
+    RETRY_INTERVAL,
 };
 use super::universal_target::{self, UniversalCall};
 use super::{
@@ -864,7 +866,11 @@ async fn attempt(
             return;
         }
     }
-    dead_letter(callback, &pending, &body, &failure, exhausted, retries_made).await;
+    // What is reported is the failed EVENT — the request the attempt carried to the
+    // target's own API ([`failed_event`]) — rather than the bare payload the target
+    // was to be handed.
+    let event = failed_event(&pending.target, &pending.region, &body);
+    dead_letter(callback, &pending, &event, &failure, exhausted, retries_made).await;
 }
 
 /// WHAT one occurrence calls, which is what the target's own ARN names.
@@ -918,7 +924,7 @@ async fn perform(
     if let Some(refusal) =
         super::execution_role_violation(callback, &pending.region, &pending.target.role_arn).await
     {
-        return Attempt::Failed(withheld(refusal));
+        return Attempt::Failed(withheld(ACCESS_DENIED_CODE, refusal));
     }
     // The access request the call is subject to: a templated target names the resource
     // the call acts on ITSELF, while a universal target's REQUEST names it, and a
@@ -950,6 +956,92 @@ fn invoking_action(vendor: &str) -> Option<&'static str> {
     }
 }
 
+/// What separates an IAM action's service from its operation: an action is
+/// `<service>:<Operation>`.
+const ACTION_SEPARATOR: char = ':';
+
+/// Amazon SNS's IAM action prefix, which is the case that service names an action in:
+/// "an SNS action is `SNS:<OperationName>`", the spelling its own refusals use.
+const SNS_ACTION_PREFIX: &str = "SNS";
+
+/// WHICH service answered a refusal of one invocation's call, for the two whose answer
+/// has a code or a wording of its own.
+///
+/// Read off the IAM action that call is authorized by — an action's prefix is the
+/// service's own namespace ([`ACTION_SEPARATOR`]) — so one reading serves a templated
+/// target and a universal one alike. The comparison ignores case, because the case an
+/// action is spelled in is each service's own wording and never part of the decision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Refusing {
+    /// Amazon SQS.
+    Sqs,
+    /// Amazon SNS.
+    Sns,
+    /// A service whose refusal is AWS's authorization layer's own, in both its code and
+    /// its wording.
+    Layer,
+}
+
+/// The service `action` is of ([`Refusing`]).
+fn refusing_service(action: &str) -> Refusing {
+    let service = action.split(ACTION_SEPARATOR).next().unwrap_or_default();
+    if service.eq_ignore_ascii_case(SQS_ARN_NAMESPACE) {
+        return Refusing::Sqs;
+    }
+    if service.eq_ignore_ascii_case(SNS_ARN_NAMESPACE) {
+        return Refusing::Sns;
+    }
+    Refusing::Layer
+}
+
+/// The error code the service an invocation's call is made to answers a call its caller
+/// is not authorized to make with.
+///
+/// AWS's authorization layer answers in the refused service's own terms, so the code is
+/// the one that service publishes for such an answer
+/// ([`QUERY_ACCESS_DENIED_CODE`], [`AUTHORIZATION_ERROR_CODE`], [`ACCESS_DENIED_CODE`]).
+fn authorization_refusal_code(action: &str) -> &'static str {
+    match refusing_service(action) {
+        Refusing::Sqs => QUERY_ACCESS_DENIED_CODE,
+        Refusing::Sns => AUTHORIZATION_ERROR_CODE,
+        Refusing::Layer => ACCESS_DENIED_CODE,
+    }
+}
+
+/// The action as a refusal of the service that ANSWERED it names it, which is that
+/// service's own wording rather than the spelling the decision was taken on: IAM compares
+/// an action name without regard to its case, so the case a refusal reports is a wording
+/// choice of the refusing service.
+///
+/// Each arm is the rule the service that owns the refusal states for its own: Amazon SQS
+/// names the action case-folded throughout (`sqs:sendmessage`), Amazon SNS names it
+/// `SNS:<OperationName>` ([`SNS_ACTION_PREFIX`]), and a refusal AWS's authorization layer
+/// answers for a service names the action as that service documents it.
+fn reported_action(action: &str) -> String {
+    match refusing_service(action) {
+        Refusing::Sqs => action.to_lowercase(),
+        Refusing::Sns => action.split_once(ACTION_SEPARATOR).map_or_else(
+            || action.to_string(),
+            |(_, operation)| format!("{SNS_ACTION_PREFIX}{ACTION_SEPARATOR}{operation}"),
+        ),
+        Refusing::Layer => action.to_string(),
+    }
+}
+
+/// How the refusal of a call the invocation's own permissions withhold is WORDED: AWS's
+/// authorization refusal, naming the principal the call was made by — the session this
+/// invocation assumed the execution role under — the action as the refusing service names
+/// it ([`reported_action`]) and the resource it was on.
+fn authorization_refusal_message(pending: &Pending, action: &str, resource: &str) -> String {
+    let named = reported_action(action);
+    ::service_common::iam_authorization::not_authorized_by_identity_policy(
+        &invocation_principal(&pending.target.role_arn, &pending.execution_id),
+        &named,
+        resource,
+        &::service_common::iam_authorization::no_identity_policy_allows(&named),
+    )
+}
+
 /// The failure a call the invocation's own permissions withhold comes to, or `None`
 /// when nothing withholds it.
 ///
@@ -979,20 +1071,26 @@ async fn withheld_action(
         return None;
     }
     Some(withheld(
-        ::service_common::iam_authorization::not_authorized_by_identity_policy(
-            &invocation_principal(role_arn, &pending.execution_id),
-            action,
-            resource,
-            &::service_common::iam_authorization::no_identity_policy_allows(action),
-        ),
+        authorization_refusal_code(action),
+        authorization_refusal_message(pending, action, resource),
     ))
 }
+
+/// The separator the form an execution id is REPORTED in carries, and which a session
+/// name does not: a session is named by an opaque token rather than by that form.
+const EXECUTION_ID_SEPARATOR: char = '-';
 
 /// The principal one invocation's calls are made by: the session the schedule's
 /// execution role is assumed under, which is what an authorization refusal of such a
 /// call names. The session is the invocation's own, so two invocations of one
 /// schedule are not one session.
+///
+/// The session is named by a token of that invocation — the characters of its own
+/// execution id, without the separators of the grouped form that id is REPORTED in
+/// ([`dead_letter_attributes`]) — so the name is this invocation's and no other's, and
+/// is the opaque run of characters a session name is.
 fn invocation_principal(role_arn: &str, execution_id: &str) -> String {
+    let execution_id = execution_id.replace(EXECUTION_ID_SEPARATOR, "");
     let parsed = ::service_common::arn::parse_of(role_arn, "iam");
     let name = ::service_common::iam_role::role_name(role_arn);
     match (parsed, name) {
@@ -1006,20 +1104,115 @@ fn invocation_principal(role_arn: &str, execution_id: &str) -> String {
     }
 }
 
+/// The members of a templated target's own API request: the one that ADDRESSES the
+/// target, and the one that carries the payload the schedule hands it.
+///
+/// Each pair is the one that API publishes for its request — Amazon SQS's `SendMessage`
+/// takes `QueueUrl`, `MessageBody` and `MessageGroupId`, Amazon SNS's `Publish` takes
+/// `TopicArn` and `Message`, AWS Lambda's `Invoke` takes `FunctionName` and `Payload`,
+/// and Step Functions' `StartExecution` takes `StateMachineArn` and `Input` — spelled
+/// the way a UNIVERSAL target's own input spells the same call
+/// ([`super::universal_target`]), so one call is written one way whichever kind of
+/// target names it.
+const QUEUE_URL_MEMBER: &str = "QueueUrl";
+/// See [`QUEUE_URL_MEMBER`].
+const MESSAGE_BODY_MEMBER: &str = "MessageBody";
+/// See [`QUEUE_URL_MEMBER`].
+const MESSAGE_GROUP_ID_MEMBER: &str = "MessageGroupId";
+/// See [`QUEUE_URL_MEMBER`].
+const TOPIC_ARN_MEMBER: &str = "TopicArn";
+/// See [`QUEUE_URL_MEMBER`].
+const MESSAGE_MEMBER: &str = "Message";
+/// See [`QUEUE_URL_MEMBER`].
+const FUNCTION_NAME_MEMBER: &str = "FunctionName";
+/// See [`QUEUE_URL_MEMBER`].
+const PAYLOAD_MEMBER: &str = "Payload";
+/// See [`QUEUE_URL_MEMBER`].
+const STATE_MACHINE_ARN_MEMBER: &str = "StateMachineArn";
+/// See [`QUEUE_URL_MEMBER`].
+const EXECUTION_INPUT_MEMBER: &str = "Input";
+
+/// The FAILED EVENT one undelivered invocation IS: the request the attempt carried to
+/// the target's own API, with `payload` where that request carries it.
+///
+/// `Target$DeadLetterConfig` is the queue "EventBridge Scheduler delivers failed events
+/// that could not be successfully delivered to a target" to, and what an invocation
+/// delivers is a CALL: every target names one, a UNIVERSAL target naming it outright
+/// and a templated target naming one API operation of the target's service —
+/// `SqsParameters` is "the templated target type for the Amazon SQS `SendMessage` API
+/// operation" — of whose request the target it addresses, `Target$Input` ("the text, or
+/// well-formed JSON, passed to the target") and that target's own parameters are the
+/// members. So the failed event is that request's own document, written the way a
+/// universal target's input writes the same call: a templated target's is built here
+/// from the members the schedule states, and a universal target's input already IS the
+/// request, so it is dead-lettered as it stands.
+///
+/// `region` is the schedule's, for an ARN carrying no Region label of its own — the same
+/// fallback the invocation itself is made in ([`perform`]).
+fn failed_event(target: &Target, region: &str, payload: &str) -> String {
+    let text = |value: &str| ::serde_json::Value::String(value.to_string());
+    let arn = target.arn.as_str();
+    let Some(parsed) = ::service_common::arn::parse(arn) else {
+        return payload.to_string();
+    };
+    if universal_target::names_universal_target(&parsed) {
+        return payload.to_string();
+    }
+    let region = ::service_common::arn::region_of(arn, parsed.vendor).unwrap_or(region);
+    let mut request = ::serde_json::Map::new();
+    match parsed.vendor {
+        SQS_ARN_NAMESPACE => {
+            // A queue is addressed by its url rather than by its ARN, which is the one
+            // address this request can carry ([`queue_url`]).
+            let Some(url) = queue_url(region, parsed.account, parsed.resource) else {
+                return payload.to_string();
+            };
+            request.insert(QUEUE_URL_MEMBER.to_string(), text(&url));
+            request.insert(MESSAGE_BODY_MEMBER.to_string(), text(payload));
+            // "The FIFO message group ID to use as the target" travels with the
+            // invocation ([`deliver`]), so it is part of the request that failed.
+            if let Some(group) = target
+                .sqs_parameters
+                .as_ref()
+                .and_then(|parameters| parameters.message_group_id.as_deref())
+            {
+                request.insert(MESSAGE_GROUP_ID_MEMBER.to_string(), text(group));
+            }
+        }
+        SNS_ARN_NAMESPACE => {
+            request.insert(TOPIC_ARN_MEMBER.to_string(), text(arn));
+            request.insert(MESSAGE_MEMBER.to_string(), text(payload));
+        }
+        LAMBDA_ARN_NAMESPACE => {
+            request.insert(FUNCTION_NAME_MEMBER.to_string(), text(arn));
+            request.insert(PAYLOAD_MEMBER.to_string(), text(payload));
+        }
+        STATES_ARN_NAMESPACE => {
+            request.insert(STATE_MACHINE_ARN_MEMBER.to_string(), text(arn));
+            request.insert(EXECUTION_INPUT_MEMBER.to_string(), text(payload));
+        }
+        // A kind this emulator does not invoke, no call of which ever fails: nothing
+        // is attempted for it, so nothing of it is dead-lettered either.
+        _ => return payload.to_string(),
+    }
+    ::serde_json::Value::Object(request).to_string()
+}
+
 /// Report an invocation that could not be delivered to the queue the schedule names
 /// for one: "EventBridge Scheduler delivers failed events that could not be
 /// successfully delivered to a target to the queue".
 ///
-/// The message body is the payload the target was to be handed, and its attributes
-/// are the failure's own detail ([`dead_letter_attributes`]). The send is made under
-/// the schedule's execution role as well — a dead-letter queue is reached by the same
-/// `sqs:SendMessage` a queue target is, which is the grant AWS documents for one — so
-/// a role that may not write to that queue leaves the failure in this emulator's log
-/// alone, which is also all a schedule naming no such queue leaves behind.
+/// The message body is `event`, the failed event the invocation could not deliver
+/// ([`failed_event`]), and its attributes are the failure's own detail
+/// ([`dead_letter_attributes`]). The send is made under the schedule's execution role
+/// as well — a dead-letter queue is reached by the same `sqs:SendMessage` a queue
+/// target is, which is the grant AWS documents for one — so a role that may not write
+/// to that queue leaves the failure in this emulator's log alone, which is also all a
+/// schedule naming no such queue leaves behind.
 async fn dead_letter(
     callback: &::smithy_server_runtime::EmbeddedEmulator,
     pending: &Pending,
-    body: &str,
+    event: &str,
     failure: &Failure,
     exhausted: Option<Exhaustion>,
     retries: u32,
@@ -1080,7 +1273,7 @@ async fn dead_letter(
     let mut request = sqs_client(callback, region)
         .send_message()
         .queue_url(url)
-        .message_body(body);
+        .message_body(event);
     for attribute in attributes {
         let value = ::aws_sdk_sqs::types::MessageAttributeValue::builder()
             .data_type(attribute.data_type)

@@ -20,8 +20,9 @@
 //! uses as a dead-letter queue for your schedule. If specified, EventBridge
 //! Scheduler delivers failed events that could not be successfully delivered to a
 //! target to the queue." So the event that could not be delivered is sent to that
-//! queue, carrying the payload the target was to be handed and, beside it, the
-//! detail of the failure that ended the invocation ([`Report`]). A schedule that
+//! queue, carrying the request the attempt made of the target's own API — which the
+//! invocation half builds, since it is the half that makes that call — and, beside it,
+//! the detail of the failure that ended the invocation ([`Report`]). A schedule that
 //! names no such queue leaves nothing behind but this emulator's own log: the
 //! service has nowhere to report the failure to.
 //!
@@ -68,9 +69,20 @@ pub(crate) const RETRY_INTERVAL: Duration = Duration::from_secs(1);
 /// has failed because of an unknown error, exception or failure".
 const UNREADABLE_FAILURE_CODE: &str = "InternalFailure";
 
-/// The error code of a call the invocation's own permissions withheld, which is the
-/// code AWS refuses an unauthorized call with.
+/// The error code of a call the invocation's own permissions withheld, for a service
+/// whose protocol spells AWS's authorization refusal in its modern form, which is the
+/// one AWS's authorization layer answers such a call with.
 pub(crate) const ACCESS_DENIED_CODE: &str = "AccessDeniedException";
+
+/// The same refusal as answered by a QUERY-COMPATIBLE service, Amazon SQS among them
+/// (`awsQueryCompatible`): such a service answers with the legacy Query code, which is
+/// what an SDK surfaces for it, and AWS's Query code for an unauthorized call is this.
+pub(crate) const QUERY_ACCESS_DENIED_CODE: &str = "AccessDenied";
+
+/// The refusal Amazon SNS answers an unauthorized call with, which that service MODELS
+/// rather than leaving to AWS's authorization layer: `AuthorizationErrorException`,
+/// whose `awsQueryError` code — the code an SDK surfaces — is this, under HTTP 403.
+pub(crate) const AUTHORIZATION_ERROR_CODE: &str = "AuthorizationError";
 
 /// The status a throttled call is answered with ("429 Too Many Requests"), which is
 /// the one client-side status worth another attempt.
@@ -294,11 +306,12 @@ where
     }
 }
 
-/// The failure a call the invocation's own permissions withheld came to: AWS's
-/// authorization refusal, which no further attempt would be answered differently.
-pub(crate) fn withheld(message: String) -> Failure {
+/// The failure a call the invocation's own permissions withheld came to: the
+/// authorization refusal the answering service gives such a call, under the `code` that
+/// service answers it with, which no further attempt would be answered differently.
+pub(crate) fn withheld(code: &str, message: String) -> Failure {
     Failure {
-        code: ACCESS_DENIED_CODE.to_string(),
+        code: code.to_string(),
         message,
         retryable: false,
     }
