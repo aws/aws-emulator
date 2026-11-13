@@ -307,6 +307,8 @@ mod resource_untagging;
 mod response_members;
 #[path = "all/response_request_id.rs"]
 mod response_request_id;
+#[path = "all/root_catalog_protection.rs"]
+mod root_catalog_protection;
 #[path = "all/schema_registry.rs"]
 mod schema_registry;
 #[path = "all/schema_version_by_definition.rs"]
