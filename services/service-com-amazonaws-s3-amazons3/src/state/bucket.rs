@@ -1084,7 +1084,9 @@ impl Bucket {
     ///   ACL grants, the way IAM combines the two.
     ///
     /// A Requester Pays bucket refuses it ahead of all of that
-    /// ([`Self::requester_pays_anonymous_refusal`]): there is no account to charge.
+    /// ([`Self::requester_pays_anonymous_refusal`]): there is no account to charge. And a
+    /// request that came through an access point confined to a VPC is refused ahead of even
+    /// that, for the network it arrived over.
     ///
     /// `account` is the Block Public Access configuration the owning ACCOUNT carries, in
     /// force on this bucket together with its own ([`settings_in_force`]), so either level's
@@ -1096,6 +1098,14 @@ impl Bucket {
         object: Option<&Object>,
         account: Option<BucketPublicAccessBlock>,
     ) -> Option<&'static str> {
+        // An access point confined to a VPC answers no request from outside it, whoever
+        // makes it: the restriction is on the network the path is reachable over, so it is
+        // decided before this bucket's own configuration is read and nothing in that
+        // configuration lifts it (the same reading the credentialed decision takes,
+        // `crate::state::access_points::addressed_outside_its_vpc`).
+        if crate::state::access_points::addressed_outside_its_vpc().is_some() {
+            return Some(ACCESS_DENIED_MESSAGE);
+        }
         if let Some(message) = self.requester_pays_anonymous_refusal() {
             return Some(message);
         }

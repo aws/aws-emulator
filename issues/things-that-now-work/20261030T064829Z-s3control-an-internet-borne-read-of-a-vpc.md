@@ -58,3 +58,26 @@ Replay the behavioral suite against the emulator and re-run exactly the check in
 5. s3 GetObject(Bucket=<AccessPointArn>, Key="private.txt") from outside that VPC. Expect HTTP 403 / AccessDenied with message `User: <caller arn> is not authorized to perform: s3:GetObject on resource: "<AccessPointArn>/object/private.txt" with an explicit deny in a resource-based policy`. Observed: NoSuchBucket.
 6. s3control PutAccessPointPolicy(AccountId, Name=<vpc-ap>, Policy={Allow, Principal {"AWS":"*"}, Action s3:GetObject, Resource "<AccessPointArn>/object/*"}) and repeat step 5 — the refusal must be unchanged (the VPC-origin deny is not liftable by a resource policy Allow).
 7. Positive control: s3control CreateAccessPoint(AccountId, Name=<net-ap>, Bucket=<same bucket>) with no VpcConfiguration, then s3 GetObject(Bucket=<that AccessPointArn>, Key="private.txt") — expect 200 and the exact bytes b"vpc-only".
+
+## Resolution
+
+The VPC network origin is now ENFORCED on the data path: the VPC an access point is bound to
+is published with its data path (`service-com-amazonaws-s3control`'s `state::confining_vpc` ->
+`state::access_point_routes::publish`), and a request that reaches that path from outside the
+VPC is refused 403 `AccessDenied` with IAM's resource-policy-deny sentence over the resource
+the access point names, ahead of and not liftable by any policy — for the credentialed caller
+(`service-com-amazonaws-s3`'s `service::request_authorization::denial`) and the anonymous one
+(`state::Bucket::anonymous_object_read_refusal`) alike. Proven end to end over every address an
+access point is reached by, both key forms, the read/HEAD/listing actions, four access point
+policy documents and the unsigned caller, by
+`core/router/tests/all/s3_access_point_vpc_network_origin.rs`.
+
+The recorded check `s3control.access-point-vpc-origin-denies-internet-read-rejected` STILL
+answers `NoSuchBucket` for its own read, and not because the rule above is missing: against the
+emulator's IP-literal endpoint the SDK degrades the access-point ARN away entirely. The read
+arrives as `GET /private.txt` with the bare endpoint authority as its `Host` — no bucket in the
+path and no access point in the host — so it identifies neither, and the emulator answers it as
+AWS answers a path-style read of a bucket that does not exist. That endpoint form is the open
+issue `20261029T083133Z-s3-virtual-hosted-style-bucket-addressing-is-unreachable.md`, whose fix
+is the listener/endpoint announcement in the read-only `vendor/` tree; this check cannot pass
+until an access-point address can reach the emulator at all.

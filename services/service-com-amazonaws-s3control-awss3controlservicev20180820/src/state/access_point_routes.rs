@@ -44,6 +44,13 @@ pub fn publish<Eng: Send + Sync + 'static>(engine: &Eng, record: &AccessPointRec
         account_id: record.account_id.clone(),
         alias: record.alias.clone(),
         bucket: record.bucket.clone(),
+        // The VPC the access point is CONFINED to, when the create bound it to one: "if this
+        // field is specified, this access point will only allow connections from the
+        // specified VPC ID" (`VpcConfiguration$VpcId`). The restriction is on the data path,
+        // so it is published with the path rather than kept here, where no data-plane
+        // request could consult it — read through this service's own one reading of it
+        // ([`crate::state::confining_vpc`]), the same reading the reported network origin is.
+        vpc_id: crate::state::confining_vpc(record.vpc_configuration.as_ref()),
         policy: record.policy.clone(),
     })
 }

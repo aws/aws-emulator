@@ -457,6 +457,11 @@ pub fn request_caller<Eng: Send + Sync + 'static>(
 /// access point's policy is not among the documents in force on them. A grant is needed for
 /// the path the request took: an `Allow` naming either resource, in the caller's
 /// identity-based documents, in the bucket's policy or in the access point's.
+///
+/// An access point confined to a VPC is decided BEFORE any of that: it "will only allow
+/// connections from the specified VPC ID" (`VpcConfiguration$VpcId`), so a request that
+/// reached it from outside that VPC is refused for the NETWORK it came over, in the sentence
+/// an explicit resource-policy deny is worded in — and no grant in any document lifts it.
 #[must_use]
 pub fn denial(
     caller: &Caller,
@@ -481,6 +486,17 @@ pub fn denial(
             state::authorization_denial(&caller.arn, action, &named, reason)
         })
     };
+    // A VPC-CONFINED access point answers no request that did not arrive from the VPC it is
+    // bound to — "if this field is specified, this access point will only allow connections
+    // from the specified VPC ID" (`VpcConfiguration$VpcId`). That is a restriction on the
+    // network the path is reachable over, not a document, so it is decided HERE: before any
+    // policy is read, and therefore not liftable by a grant in any of them — an `Allow` for
+    // every principal in the access point's own policy leaves the refusal exactly as it is.
+    // Which requests arrived outside that VPC is the store's one reading of it
+    // ([`crate::state::access_points::addressed_outside_its_vpc`]).
+    if crate::state::access_points::addressed_outside_its_vpc().is_some() {
+        return refusal(state::RESOURCE_POLICY_DENY_REASON);
+    }
     let prepared = policy.map(iam::PreparedDocument::read);
     let access_point_policy = through
         .as_ref()

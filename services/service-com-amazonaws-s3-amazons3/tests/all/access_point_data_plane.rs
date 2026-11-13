@@ -290,6 +290,10 @@ impl Emulator {
             account_id: engine::emulator_account_id().to_string(),
             alias: format!("{name}-0123456789abcdefghijklmn-s3alias"),
             bucket: bucket.to_string(),
+            // An Internet-origin access point: these rows are about the policy decision, and
+            // `core/router/tests/all/s3_access_point_vpc_network_origin.rs` drives the
+            // VPC-confined one.
+            vpc_id: None,
             policy: None,
         };
         let state = service_com_amazonaws_s3_amazons3::state::service_state(&*self.engine)

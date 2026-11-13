@@ -3092,12 +3092,21 @@ pub fn access_point_alias(account_id: &str, name: &str) -> String {
     format!("{head}-{suffix}{ALIAS_TAIL}")
 }
 
+/// The `NetworkOrigin` an access point restricted to a VPC reports, as
+/// [`network_origin`] decides it: the one spelling both that projection and the
+/// confinement the data path enforces ([`confining_vpc`]) are read from.
+const VPC_NETWORK_ORIGIN: &str = "VPC";
+
 /// The network origin of an access point: `VPC` when the create call restricted
 /// it to a VPC, otherwise `Internet` — the rule the `AccessPoint$NetworkOrigin`
 /// documentation states.
 pub fn network_origin(vpc_configuration: Option<&VpcConfiguration>) -> String {
     let vpc_restricted = vpc_configuration.is_some_and(|vpc| !vpc.vpc_id.is_empty());
-    let wanted = if vpc_restricted { "VPC" } else { "Internet" };
+    let wanted = if vpc_restricted {
+        VPC_NETWORK_ORIGIN
+    } else {
+        "Internet"
+    };
     // The spelling that goes on the wire is the one the generated
     // NETWORK_ORIGIN_VALUES carries (from the model's `NetworkOrigin` enum),
     // found by VALUE rather than by position: neither a reordering of the
@@ -3108,6 +3117,23 @@ pub fn network_origin(vpc_configuration: Option<&VpcConfiguration>) -> String {
         .find(|value| *value == wanted)
         .unwrap_or(wanted)
         .to_string()
+}
+
+/// The VPC an access point is CONFINED to: the id its `VpcConfiguration` names
+/// when that configuration makes the access point's network origin `VPC`
+/// ([`network_origin`], the one reading of that rule), and `None` for an access
+/// point of `Internet` origin.
+///
+/// "If this field is specified, this access point will only allow connections
+/// from the specified VPC ID" (`VpcConfiguration$VpcId`) — a restriction on the
+/// DATA PATH, which is published with that path
+/// ([`crate::state::access_point_routes::publish`]). Derived from the same
+/// reading the reported origin is, so what this service REPORTS about an access
+/// point and what its data path ENFORCES cannot drift.
+pub fn confining_vpc(vpc_configuration: Option<&VpcConfiguration>) -> Option<String> {
+    (network_origin(vpc_configuration) == VPC_NETWORK_ORIGIN)
+        .then(|| vpc_configuration.map(|configuration| configuration.vpc_id.clone()))
+        .flatten()
 }
 
 /// Encode a `ListAccessPoints` page token: the opaque form of the last access

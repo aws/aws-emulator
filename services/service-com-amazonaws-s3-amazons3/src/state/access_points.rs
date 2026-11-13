@@ -19,7 +19,7 @@
 //! data plane resolves were different records.
 //!
 //! WHICH addresses reach one access point is the published addressing of its endpoint,
-//! and all of them resolve to the same record ([`AccessPointRoute::is_addressed_by`]):
+//! and all of them resolve to the same record ([`AccessPointRoute::addresses`]):
 //!
 //! * its ARN, which is what the `Bucket` field of a data-plane call takes ("you can use the
 //!   access point ARN in place of a bucket name");
@@ -29,6 +29,10 @@
 //!   form every AWS SDK rewrites an access point ARN into before it sends the request
 //!   (`https://<name>-<account-id>.s3-accesspoint.<region>.amazonaws.com/<key>`) — so a
 //!   client that addresses an access point by ARN arrives here addressing it by this label.
+//!
+//! A spelling this store holds a BUCKET under is that bucket's and reaches no access point
+//! ([`ComAmazonawsS3Amazons3State::addressed_access_point`]) — an alias and an endpoint label
+//! are both shaped like a bucket name, so one spelling never reaches two resources.
 //!
 //! The REQUEST-SCOPED note at the bottom of this file is how the authorization step learns
 //! that the request it is judging came through an access point, recorded where the address
@@ -76,6 +80,15 @@ pub struct AccessPointRoute {
     /// The bucket the access point fronts: the bucket every request addressed to this
     /// access point reaches.
     pub bucket: String,
+    /// The VPC this access point is CONFINED to, and `None` for one that answers requests
+    /// from anywhere — the difference between a network origin of `VPC` and one of
+    /// `Internet`.
+    ///
+    /// "If this field is specified, this access point will only allow connections from the
+    /// specified VPC ID" (`VpcConfiguration$VpcId`), which is a restriction on the DATA PATH
+    /// and not a document: it decides every request addressed to the access point, so the
+    /// store that serves that path is where it is held, beside the policy it overrides.
+    pub vpc_id: Option<String>,
     /// The document the last `PutAccessPointPolicy` stored, byte for byte, and `None` for
     /// an access point carrying no policy — which is what it carries when it is created and
     /// again once `DeleteAccessPointPolicy` removes one.
@@ -92,6 +105,12 @@ impl AccessPointRoute {
     /// the one place the set is stated.
     pub fn addresses(&self) -> [String; 2] {
         [self.alias.clone(), self.endpoint_label()]
+    }
+
+    /// Whether this access point answers only requests that arrive from the VPC it is bound
+    /// to — its network origin being `VPC` rather than `Internet` (see [`Self::vpc_id`]).
+    pub fn confined_to_a_vpc(&self) -> bool {
+        self.vpc_id.is_some()
     }
 
     /// The first label of this access point's endpoint host: `<name>-<account-id>`.
@@ -134,6 +153,12 @@ impl ComAmazonawsS3Amazons3State {
     /// the INDEX of the addresses that reach one, so the address every request carries costs
     /// one lookup rather than a scan.
     pub fn addressed_access_point(&self, address: &str) -> Option<&AccessPointRoute> {
+        // A spelling this store holds a BUCKET under addresses that bucket: the data plane
+        // resolves a bucket before an access point ([`super::addressed_bucket_in`]), so a
+        // name that is both reaches the bucket here too rather than two resources at once.
+        if self.bucket(address).is_some() {
+            return None;
+        }
         if let Some(route) = self.access_points.get(address) {
             return Some(route);
         }
@@ -254,6 +279,20 @@ pub(crate) fn addressed() -> Option<AccessPointRoute> {
     ADDRESSED.with(|note| note.borrow().clone())
 }
 
+/// The access point the request being served came through, when that access point answers
+/// only requests from a VPC this request did not arrive from — the one state in which the
+/// access point refuses the request whatever the documents in force say.
+///
+/// A request reaching this emulator reached its one internet-facing data plane, and no VPC
+/// carries traffic into it, so a request that arrives here arrived from outside every VPC:
+/// an access point confined to one ([`AccessPointRoute::confined_to_a_vpc`]) does not answer
+/// it. ONE place, so the decision taken for a CREDENTIALED caller
+/// (`crate::service::request_authorization::denial`) and the one taken for the ANONYMOUS
+/// caller ([`super::Bucket::anonymous_object_read_refusal`]) answer it alike.
+pub(crate) fn addressed_outside_its_vpc() -> Option<AccessPointRoute> {
+    addressed().filter(AccessPointRoute::confined_to_a_vpc)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -268,6 +307,7 @@ mod tests {
             account_id: "000000000000".to_string(),
             alias: format!("{name}-0123456789abcdef-s3alias"),
             bucket: bucket.to_string(),
+            vpc_id: None,
             policy: None,
         }
     }
@@ -457,6 +497,81 @@ mod tests {
             store.addressed_access_point(&first.arn),
             Some(&first),
             "case one past the ceiling: expected the oldest route kept"
+        );
+    }
+
+    #[test]
+    fn a_name_this_store_holds_a_bucket_under_reaches_that_bucket_and_no_access_point() {
+        let mut store = ComAmazonawsS3Amazons3State::default();
+        let held = route("reports-ap", "reports-bucket");
+        store.record_access_point(held.clone());
+        // An access point's ENDPOINT LABEL is shaped like a bucket name, so a bucket can be
+        // held under it. Before such a bucket exists, the label reaches the access point.
+        let shared = held.endpoint_label();
+        assert_eq!(
+            store.addressed_access_point(&shared),
+            Some(&held),
+            "case no bucket of that name: {shared:?} must reach the access point, got {:?}",
+            store.addressed_access_point(&shared)
+        );
+        store.create_bucket(&shared, "us-east-1");
+        assert!(
+            store.addressed_access_point(&shared).is_none(),
+            "case a bucket of that name: {shared:?} must reach the bucket and no access point, \
+             got {:?}",
+            store.addressed_access_point(&shared)
+        );
+        // Every other address of the same access point still reaches it.
+        for address in [held.arn.clone(), held.alias.clone()] {
+            assert_eq!(
+                store.addressed_access_point(&address),
+                Some(&held),
+                "case {address:?}: must still reach the access point, got {:?}",
+                store.addressed_access_point(&address)
+            );
+        }
+    }
+
+    #[test]
+    fn only_a_route_confined_to_a_vpc_is_one_the_request_arrived_outside_of() {
+        // (case, the VPC the access point is bound to, whether a request through it arrived
+        // outside that VPC) — this emulator's data plane carries no VPC traffic, so every
+        // request through a VPC-confined access point did.
+        let rows: [(&str, Option<&str>, bool); 3] = [
+            ("an Internet-origin access point", None, false),
+            (
+                "a VPC-origin access point",
+                Some("vpc-0a1b2c3d4e5f67890"),
+                true,
+            ),
+            ("another VPC's access point", Some("vpc-00000000000000001"), true),
+        ];
+        for (case, vpc_id, outside) in rows {
+            let held = AccessPointRoute {
+                vpc_id: vpc_id.map(str::to_string),
+                ..route("reports-ap", "reports-bucket")
+            };
+            remember(Some(held.clone()));
+            assert_eq!(
+                addressed_outside_its_vpc().is_some(),
+                outside,
+                "case {case}: expected outside-its-VPC {outside}, got {:?}",
+                addressed_outside_its_vpc()
+            );
+            assert_eq!(
+                held.confined_to_a_vpc(),
+                vpc_id.is_some(),
+                "case {case}: expected confined {}, got {}",
+                vpc_id.is_some(),
+                held.confined_to_a_vpc()
+            );
+        }
+        // And a request that came through no access point is outside nothing.
+        remember(None);
+        assert!(
+            addressed_outside_its_vpc().is_none(),
+            "case no access point: expected nothing, got {:?}",
+            addressed_outside_its_vpc()
         );
     }
 

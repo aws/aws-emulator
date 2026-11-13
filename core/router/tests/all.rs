@@ -746,7 +746,6 @@ mod sfn_task_target_authorization;
 mod sfn_lambda_task_invocation;
 #[path = "all/sfn_integration_error_names.rs"]
 mod sfn_integration_error_names;
-// Declared beside the other Step Functions suites, for the reason the lines above give.
 #[path = "all/sfn_sns_publish_task.rs"]
 mod sfn_sns_publish_task;
 #[path = "all/sfn_parallel_branch_cancellation.rs"]
@@ -1600,7 +1599,6 @@ mod s3_sns_lambda_chain_invoke_permission;
 // stack-declared secret rotation DOES — the four-step rotation protocol a CloudFormation
 // `AWS::SecretsManager::RotationSchedule` puts in force — spans CloudFormation, AWS Secrets
 // Manager, AWS Lambda, IAM and STS at once, so no single service crate's test target can ask
-// it.
 #[path = "all/cloudformation_rotation_schedule_rotates_its_secret.rs"]
 mod cloudformation_rotation_schedule_rotates_its_secret;
 // ROLLED-BACK stack leaves behind in Amazon S3 — nothing — which spans CloudFormation (the
@@ -1694,7 +1692,6 @@ mod cloudformation_lambda_function_log_destination;
 // set of the account's email templates stands behind both Amazon SES APIs, and that a
 // continuation token either API's template listing issued continues that one list on the
 // other, spans the classic SES surface and the SESv2 surface at once, so no single service
-// crate's test target can ask it.
 #[path = "all/ses_templates_shared_across_v1_and_v2.rs"]
 mod ses_templates_shared_across_v1_and_v2;
 // Declared in the appended tail, which is where every new suite inserts its lines: the EBS
@@ -1711,3 +1708,9 @@ mod ebs_refused_block_write_then_ec2_snapshot_completion;
 // can ask it.
 #[path = "all/lambda_in_function_sqs_authorization.rs"]
 mod lambda_in_function_sqs_authorization;
+// Declared in the appended tail, which is where every new suite inserts its lines: the NETWORK
+// ORIGIN of an S3 access point, enforced on the data path — the access point created with its
+// VpcConfiguration through S3 Control's own API and then addressed on S3's — spans S3 Control
+// (which records the VPC it is bound to) and Amazon S3 (which decides the request), so no
+#[path = "all/s3_access_point_vpc_network_origin.rs"]
+mod s3_access_point_vpc_network_origin;
