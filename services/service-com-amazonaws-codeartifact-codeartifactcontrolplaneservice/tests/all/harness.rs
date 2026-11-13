@@ -74,6 +74,38 @@ pub fn package_group_arn(domain: &str, pattern: &str) -> String {
     )
 }
 
+// ---------------------------------------------------------------------------
+// The refusal sentences several suites assert
+//
+// One sentence per resource KIND, stated here once so the suites that assert it — and the
+// next change to one of them — have a single place to read it from. Each names the
+// resource it could not find the way that resource is ADDRESSED: a domain inside an
+// account, a repository inside a domain inside an account, and an external connection by
+// its name in the service-wide registry catalog, which no repository, domain or account
+// scopes.
+// ---------------------------------------------------------------------------
+
+/// The `ResourceNotFoundException` sentence for a domain the store does not hold for the
+/// account the request addressed.
+pub fn domain_not_found(domain: &str, owner: &str) -> String {
+    format!("Domain not found. Domain '{domain}' owned by account '{owner}' does not exist.")
+}
+
+/// The `ResourceNotFoundException` sentence for a repository the addressed domain does not
+/// hold — the parent domain and its owning account are named too.
+pub fn repository_not_found(domain: &str, owner: &str, repository: &str) -> String {
+    format!(
+        "Repository not found. Repository '{repository}' in domain '{domain}' owned by \
+         account '{owner}' does not exist."
+    )
+}
+
+/// The `ResourceNotFoundException` sentence for an `externalConnection` that names no
+/// registry this service offers: the connection the request asked for, and nothing else.
+pub fn external_connection_not_found(connection: &str) -> String {
+    format!("External connection '{connection}' not found.")
+}
+
 /// One HTTP answer, reduced to what a client branches on.
 #[derive(Debug)]
 pub struct Answer {

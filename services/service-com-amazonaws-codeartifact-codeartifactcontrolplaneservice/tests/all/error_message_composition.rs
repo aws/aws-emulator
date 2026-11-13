@@ -31,6 +31,7 @@ use serde_json::{json, Value};
 use smithy_server_runtime::MultiServiceRouter;
 
 use super::domain_repository_lifecycle::{call, emulator, Answer, ACCOUNT};
+use crate::harness::{domain_not_found, repository_not_found};
 
 /// A 12-digit account that is NOT the one this emulator serves: the cross-account
 /// `domainOwner` a caller can pin a domain to. The account a refusal reports is the one
@@ -69,19 +70,9 @@ struct Case {
     message: String,
 }
 
-/// RULE 1, for a resource that is not held: the `ResourceNotFoundException` message for a
-/// domain.
-fn domain_not_found(domain: &str, owner: &str) -> String {
-    format!("Domain not found. Domain '{domain}' owned by account '{owner}' does not exist.")
-}
-
-/// RULE 1, for a repository: the parent domain is named too.
-fn repository_not_found(domain: &str, owner: &str, repository: &str) -> String {
-    format!(
-        "Repository not found. Repository '{repository}' in domain '{domain}' owned by \
-         account '{owner}' does not exist."
-    )
-}
+// RULE 1, for a resource that is not held: the `ResourceNotFoundException` sentences for a
+// domain and for a repository (the parent domain is named there too) come from the shared
+// harness, so this suite and `tests/all/error_envelopes.rs` assert one wording.
 
 /// RULE 1, for a create whose name is already held.
 fn domain_exists(domain: &str, owner: &str) -> String {

@@ -2661,24 +2661,17 @@ pub const DOMAIN_NOT_EMPTY_MESSAGE: &str = "Domain must contain 0 repositories b
 /// The `ResourceNotFoundException` message for an `externalConnection` that is not a
 /// registry this service offers ([`EXTERNAL_CONNECTIONS`]).
 ///
-/// Worded the way this service words every other resource it looked for and did not find
-/// ([`domain_not_found_message`], [`repository_not_found_message`],
-/// [`package_group_not_found_message`]): the resource KIND and its "not found" clause,
-/// then the kind again with the identifier the request supplied, the resources it was
-/// looked for IN — the repository, its domain and the account owning that domain — and the
-/// statement that it does not exist. Naming the repository is what distinguishes "no such
-/// connection" from "not this repository's connection" for a caller reading the sentence.
-pub fn external_connection_not_found_message(
-    domain: &str,
-    domain_owner: Option<&str>,
-    repository: &str,
-    external_connection: &str,
-) -> String {
-    format!(
-        "External connection not found. External connection '{external_connection}' in \
-         repository '{repository}' in domain '{domain}' owned by account '{}' does not exist.",
-        addressed_domain_owner(domain_owner)
-    )
+/// The resource KIND, the identifier the request supplied, and the statement that it was
+/// not found — nothing more. The identifier is the connection name AND NOTHING ELSE: the
+/// registries this service can connect to are a service-wide catalog addressed by name
+/// alone ([`EXTERNAL_CONNECTIONS`]), not a per-repository collection, so the thing that was
+/// looked for and not found is identified without naming a repository, a domain or the
+/// account owning one — unlike a repository, which exists only inside a domain
+/// ([`repository_not_found_message`]), or a domain, which exists only inside an account
+/// ([`domain_not_found_message`]), both of whose sentences do name what holds them. No part
+/// of this sentence is read off the store: a caller gets back only what it sent.
+pub fn external_connection_not_found_message(external_connection: &str) -> String {
+    format!("External connection '{external_connection}' not found.")
 }
 
 /// The `ResourceNotFoundException` message for a package group the addressed domain does

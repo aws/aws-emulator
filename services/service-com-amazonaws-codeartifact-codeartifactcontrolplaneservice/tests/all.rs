@@ -125,3 +125,5 @@ mod domain_resource_fields;
 mod arn_addressed_authorization;
 #[path = "all/root_package_group_description.rs"]
 mod root_package_group_description;
+#[path = "all/external_connection_not_found_sentence.rs"]
+mod external_connection_not_found_sentence;

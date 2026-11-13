@@ -236,7 +236,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // exist, which is a 404 and not a 400: the value satisfies every constraint
         // `ExternalConnectionName` declares (len 2..100, pattern
         // `^[A-Za-z0-9][A-Za-z0-9._\-:]{1,99}$`), so there is nothing about the REQUEST to
-        // refuse — the registry it asks for is simply not one this service offers.
+        // refuse — the registry it asks for is simply not one this service offers. The
+        // refusal names that registry and nothing else (see
+        // [`crate::state::external_connection_not_found_message`]): the catalog is
+        // service-wide, so the resource that is missing is identified by its name alone.
         // `resourceType` is left unset: `ResourceType` models only `asset`, `domain`,
         // `package`, `package-version` and `repository`, so there is no enum value for an
         // external connection to report.
@@ -251,9 +254,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 AssociateExternalConnectionErrorModeled::ResourceNotFoundException(
                     ResourceNotFoundException {
                         message: crate::state::external_connection_not_found_message(
-                            &domain_name,
-                            input.domain_owner.as_deref(),
-                            &input.repository,
                             &input.external_connection,
                         ),
                         resource_id: Some(input.external_connection.clone()),

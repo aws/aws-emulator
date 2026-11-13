@@ -100,11 +100,28 @@ pub(crate) async fn associate(
     repository: &str,
     connection: &str,
 ) -> Answer {
+    associate_as_owner(router, domain, repository, connection, None).await
+}
+
+/// [`associate`], naming the `domainOwner` the call addresses where a suite pins one. Both
+/// forms go through the same query-string construction, so the connection name is
+/// percent-encoded identically whether or not the owner is named.
+pub(crate) async fn associate_as_owner(
+    router: &MultiServiceRouter,
+    domain: &str,
+    repository: &str,
+    connection: &str,
+    domain_owner: Option<&str>,
+) -> Answer {
+    let owner = match domain_owner {
+        Some(owner) => format!("&domain-owner={owner}"),
+        None => String::new(),
+    };
     call(
         router,
         "POST",
         &format!(
-            "/v1/repository/external-connection?domain={domain}&repository={repository}\
+            "/v1/repository/external-connection?domain={domain}&repository={repository}{owner}\
              &external-connection={}",
             urlencode(connection)
         ),

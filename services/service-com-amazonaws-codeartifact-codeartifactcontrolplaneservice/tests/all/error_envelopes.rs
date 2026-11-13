@@ -39,7 +39,10 @@ use smithy_server_runtime::MultiServiceRouter;
 
 use crate::domain_repository_lifecycle::create_repository;
 use crate::external_connection::{associate, urlencode};
-use crate::harness::{call, create_domain, emulator, Answer, ACCOUNT, REGION};
+use crate::harness::{
+    call, create_domain, domain_not_found, emulator, external_connection_not_found,
+    repository_not_found, Answer, ACCOUNT, REGION,
+};
 use crate::package_group_hierarchy::{create_package_group, describe_package_group};
 use crate::package_version_publish::{
     binary_content, describe, emulator_with_repository, publish, Publish, DOMAIN, NAMESPACE,
@@ -82,33 +85,15 @@ fn coordinate(namespace: &str, package: &str, version: &str) -> String {
     format!("{namespace}/{package}/{version}")
 }
 
-/// RULE 5: the sentences a domain, a repository and a package group that are not held are
-/// refused with, which the tagging operations state for an ARN-addressed resource too.
-fn domain_not_found(domain: &str, owner: &str) -> String {
-    format!("Domain not found. Domain '{domain}' owned by account '{owner}' does not exist.")
-}
-
-fn repository_not_found(domain: &str, owner: &str, repository: &str) -> String {
-    format!(
-        "Repository not found. Repository '{repository}' in domain '{domain}' owned by \
-         account '{owner}' does not exist."
-    )
-}
+// RULE 5: the sentences a domain and a repository that are not held are refused with —
+// which the tagging operations state for an ARN-addressed resource too — come from the
+// shared harness, so this suite and `tests/all/error_message_composition.rs` assert one
+// wording. The package-group sentence below is this suite's own.
 
 fn package_group_not_found(domain: &str, owner: &str, pattern: &str) -> String {
     format!(
         "Package Group not found not found. Package Group '{pattern}' in domain {domain} \
          owned by account {owner} does not exist"
-    )
-}
-
-/// RULE 4: the sentence a well-formed `externalConnection` that names no registry this
-/// service offers is refused with — the same not-found form, naming the connection and the
-/// repository, domain and account it was asked for.
-fn external_connection_not_found(domain: &str, repository: &str, connection: &str) -> String {
-    format!(
-        "External connection not found. External connection '{connection}' in repository \
-         '{repository}' in domain '{domain}' owned by account '{ACCOUNT}' does not exist."
     )
 }
 
@@ -498,7 +483,7 @@ async fn external_connection_refusals_are_classified_by_what_is_wrong() {
             ),
             (
                 Some(*connection),
-                external_connection_not_found(domain, &repository, connection).as_str()
+                external_connection_not_found(connection).as_str()
             ),
             "case {connection:?}: the refusal names the connection asked for, got {answer:?}"
         );

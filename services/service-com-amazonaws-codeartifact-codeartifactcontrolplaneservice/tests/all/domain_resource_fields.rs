@@ -41,7 +41,7 @@ use smithy_server_runtime::MultiServiceRouter;
 
 use crate::domain_repository_lifecycle::create_repository;
 use crate::external_connection::associate;
-use crate::harness::{call, create_domain, Answer, ACCOUNT, REGION};
+use crate::harness::{call, create_domain, external_connection_not_found, Answer, ACCOUNT, REGION};
 use crate::package_group_hierarchy::{create_package_group, describe_package_group};
 use crate::resource_tags::encode_query;
 
@@ -757,11 +757,7 @@ async fn an_unsupported_external_connection_is_refused_as_not_found() {
         );
         assert_eq!(
             answer.message(),
-            format!(
-                "External connection not found. External connection '{connection}' in \
-                 repository '{repository}' in domain '{domain}' owned by account \
-                 '{ACCOUNT}' does not exist."
-            ),
+            external_connection_not_found(connection),
             "case {connection:?}: expected the service's not-found sentence, got {answer:?}"
         );
         assert_eq!(
