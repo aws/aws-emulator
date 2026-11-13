@@ -1204,8 +1204,9 @@ fn output_cases() -> Vec<OutputCase> {
             // a template declares them with an intrinsic as readily as with a literal: this
             // row takes both from parameters, so `Endpoint.Port` can only be right if the
             // declared properties were evaluated. The last resource's engine resolves to
-            // nothing (a `Ref` to a name the template never declares), so its port is
-            // reported with no value rather than defaulted to one engine's. Every resource
+            // nothing (a `Ref` to the pseudo parameter that stands for no value), so its
+            // port is reported with no value rather than defaulted to one engine's. Every
+            // resource
             // of this row is a DB CLUSTER, a type this emulator records rather than
             // provisions, so the row stays about evaluating the declared properties: an
             // engine that resolves to nothing is not a create Amazon RDS would accept.
@@ -1216,12 +1217,6 @@ fn output_cases() -> Vec<OutputCase> {
                 "  DBPort:\n",
                 "    Type: String\n",
                 "  EngineName:\n",
-                "    Type: String\n",
-                // Declared and left unsupplied, so it has no value in force: a parameter
-                // the template DOES declare, which is what makes the engine below
-                // unresolvable rather than a name the template never declared (that is a
-                // template error the request is refused for).
-                "  UnsuppliedEngine:\n",
                 "    Type: String\n",
                 "Resources:\n",
                 "  FixedPortCluster:\n",
@@ -1239,7 +1234,12 @@ fn output_cases() -> Vec<OutputCase> {
                 "    Type: AWS::RDS::DBCluster\n",
                 "    Properties:\n",
                 "      DBClusterIdentifier: probe-unknown-engine\n",
-                "      Engine: !Ref UnsuppliedEngine\n",
+                // The pseudo parameter that resolves to NO value at all
+                // ("AWS::NoValue … removes the corresponding resource property"), which is
+                // what makes this engine unresolvable — a declared parameter cannot be
+                // left without a value, since a declaration with no `Default` the request
+                // supplies no value for is refused outright.
+                "      Engine: !Ref AWS::NoValue\n",
                 "Outputs:\n",
                 "  FixedPort:\n",
                 "    Value: !GetAtt FixedPortCluster.Endpoint.Port\n",
@@ -1264,12 +1264,11 @@ fn output_cases() -> Vec<OutputCase> {
             case: "outputs this service cannot evaluate are reported without a value",
             stack_name: "unresolved",
             // Two expressions that resolve to no value: a `Fn::Select` past the end of the
-            // list it selects from, and a `Ref` to a parameter the request supplied no value
-            // for. (An `Fn::ImportValue` of a name nothing exports is NOT one of them — it
+            // list it selects from, and a `Ref` to the pseudo parameter that stands for no
+            // value. (An `Fn::ImportValue` of a name nothing exports is NOT one of them — it
             // fails the whole deployment, which `unresolvable_imports.rs` pins.)
-            template: r#"{"Parameters":{"Unsupplied":{"Type":"String"}},
-                 "Outputs":{"Selected":{"Value":{"Fn::Select":["3",["a","b"]]}},
-                   "Missing":{"Value":{"Ref":"Unsupplied"}}}}"#
+            template: r#"{"Outputs":{"Selected":{"Value":{"Fn::Select":["3",["a","b"]]}},
+                   "Missing":{"Value":{"Ref":"AWS::NoValue"}}}}"#
                 .to_string(),
             parameters: vec![],
             expected: vec![

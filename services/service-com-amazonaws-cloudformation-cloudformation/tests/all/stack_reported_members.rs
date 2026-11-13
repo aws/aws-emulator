@@ -305,18 +305,20 @@ async fn parameters_report_the_values_in_force_including_template_defaults() {
             expected: vec![("TagValue", "supplied")],
         },
         ParameterCase {
-            case: "a declared parameter with no Default and no supplied value reports none",
+            // A parameter with no `Default` has to be given a value, so the stack in force
+            // here mixes one of each: the supplied value and the untouched default.
+            case: "a parameter with no Default supplied beside one left to its Default",
             stack_name: "par-absent",
-            template: r#"{"Parameters":{"TagValue":{"Type":"String"}}}"#,
-            supplied: vec![],
-            expected: vec![],
+            template: r#"{"Parameters":{"TagValue":{"Type":"String"},"Other":{"Type":"String","Default":"kept"}}}"#,
+            supplied: vec![("TagValue", "given")],
+            expected: vec![("Other", "kept"), ("TagValue", "given")],
         },
         ParameterCase {
-            case: "two declared defaults, with a value for a parameter the template omits",
+            case: "two declared defaults, one of them overridden",
             stack_name: "par-several",
             template: r#"{"Parameters":{"Alpha":{"Type":"String","Default":"a"},"Zulu":{"Type":"String","Default":"z"}}}"#,
-            supplied: vec![("Extra", "e")],
-            expected: vec![("Alpha", "a"), ("Zulu", "z"), ("Extra", "e")],
+            supplied: vec![("Zulu", "Z")],
+            expected: vec![("Alpha", "a"), ("Zulu", "Z")],
         },
         ParameterCase {
             case: "a template declaring no parameters reports none",
@@ -326,9 +328,9 @@ async fn parameters_report_the_values_in_force_including_template_defaults() {
             expected: vec![],
         },
         ParameterCase {
-            case: "a body that is not JSON declares nothing, so only supplied values are in force",
+            case: "a body that is not JSON, whose declaration takes the supplied value",
             stack_name: "par-yaml",
-            template: "Description: plain\n",
+            template: "Description: plain\nParameters:\n  Only:\n    Type: String\n",
             supplied: vec![("Only", "supplied")],
             expected: vec![("Only", "supplied")],
         },

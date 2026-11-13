@@ -31,14 +31,82 @@
 //! declaration that states it has its sentence reported for whichever of its constraints the
 //! value failed.
 //!
+//! The SET of parameters is part of that same contract, and is held to it before any one
+//! value is judged ([`set_refusal`]): a declaration with no `Default` that nothing puts a
+//! value in force for, and a key the request states that the section declares nothing for,
+//! are both refused.
+//!
 //! The values this pass reads are the ones IN FORCE — what the request supplied, over the
 //! template's own `Default` for a parameter it passed none for — so a declaration whose own
 //! default its constraints do not admit is refused on the same rule, which is what a
 //! template submitted with no values at all is held to.
 
-use ::std::collections::BTreeMap;
+use ::std::collections::{BTreeMap, BTreeSet};
 
 use super::template::{self, DeclaredParameter};
+
+/// `Some(message)` when the parameter set a stack operation puts in force does not MATCH the
+/// set the template declares; `None` when the two agree.
+///
+/// The `Parameters` section names exactly which parameters a stack operation states values
+/// for, so the SET itself is part of the template's input contract and is held to it before
+/// any value is judged:
+///
+/// * a declared parameter is answered either from a value in force for it or from the
+///   declaration's own `Default` — "a value of the appropriate type for the template to use if
+///   no value is specified" — so a declaration stating no `Default` with nothing in force for
+///   it has no value at all, and every such parameter is named together in the one refusal
+///   saying they must be given values;
+/// * a value the request STATES for a key the section declares no parameter for answers
+///   nothing in the template — only a declared parameter can be referenced — and is refused
+///   naming those keys.
+///
+/// The two sets are different questions and so are read from different inputs: what is in
+/// force is everything the operation resolved (what it states, each declaration's own
+/// `Default`, and on an update the value the stack already carries), while an undeclared key
+/// is one THIS request named — a value carried over from a stack whose template declared it
+/// is not a key this request stated.
+///
+/// The unsatisfied keys are named in the order the section declares them and the undeclared
+/// ones in name order, so one body and one set of values always answer the same sentence.
+pub fn set_refusal(
+    body: &str,
+    in_force: &BTreeSet<&str>,
+    stated: &BTreeSet<&str>,
+) -> Option<String> {
+    let declared = template::parse(body)?;
+    let unsatisfied: Vec<&str> = declared
+        .parameters
+        .iter()
+        .filter(|parameter| {
+            parameter.default.is_none() && !in_force.contains(parameter.key.as_str())
+        })
+        .map(|parameter| parameter.key.as_str())
+        .collect();
+    if !unsatisfied.is_empty() {
+        return Some(format!(
+            "Parameters: [{}] must have values",
+            unsatisfied.join(", ")
+        ));
+    }
+    let keys: BTreeSet<&str> = declared
+        .parameters
+        .iter()
+        .map(|parameter| parameter.key.as_str())
+        .collect();
+    let undeclared: Vec<&str> = stated
+        .iter()
+        .copied()
+        .filter(|key| !keys.contains(key))
+        .collect();
+    if !undeclared.is_empty() {
+        return Some(format!(
+            "Parameters: [{}] do not exist in the template",
+            undeclared.join(", ")
+        ));
+    }
+    None
+}
 
 /// `Some(message)` for the first value in force its parameter's declaration does not admit,
 /// worded as CloudFormation words that refusal; `None` when every value satisfies the

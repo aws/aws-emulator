@@ -614,7 +614,7 @@ fn template_cases() -> Vec<TemplateCase> {
         TemplateCase {
             case: "three parameters whose values carry spaces, symbols and an empty string",
             stack_name: "params-3",
-            template: r#"{"Description":"parameterised","Parameters":{"Alpha":{"Type":"String"}}}"#
+            template: r#"{"Description":"parameterised","Parameters":{"Alpha":{"Type":"String"},"Beta":{"Type":"String"},"Gamma":{"Type":"String"}}}"#
                 .to_string(),
             description: Some("parameterised"),
             parameters: kv(&[("Alpha", "a b&c=d"), ("Beta", ""), ("Gamma", "3")]),
@@ -652,7 +652,7 @@ fn template_cases() -> Vec<TemplateCase> {
             case: "large template body and a long parameter value",
             stack_name: "large",
             template: format!(
-                r#"{{"Description":"large","Metadata":{{"Pad":"{}"}}}}"#,
+                r#"{{"Description":"large","Parameters":{{"Pad":{{"Type":"String"}}}},"Metadata":{{"Pad":"{}"}}}}"#,
                 "x".repeat(8192)
             ),
             description: Some("large"),
@@ -1083,7 +1083,8 @@ struct UpdateCase {
 
 #[tokio::test]
 async fn update_stack_mutates_the_same_stack_and_is_observable_through_the_reads() {
-    const ORIGINAL: &str = r#"{"Description":"v1","Parameters":{"Alpha":{"Type":"String"}}}"#;
+    const ORIGINAL: &str =
+        r#"{"Description":"v1","Parameters":{"Alpha":{"Type":"String"},"Beta":{"Type":"String"}}}"#;
     const REPLACEMENT: &str = r#"{"Description":"v2","Resources":{"T2":{"Type":"AWS::CloudFormation::WaitConditionHandle"}}}"#;
 
     let cases = vec![

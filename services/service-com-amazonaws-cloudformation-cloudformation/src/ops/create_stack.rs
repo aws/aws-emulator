@@ -609,6 +609,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             &crate::state::request_region(ctx.parts()),
         )
         .map_err(crate::scaffolded::Scaffolded::validation_error)?;
+        // The `Parameters` section is the template's input CONTRACT, so the parameter set
+        // this create resolved is held to it before anything is created: a declared
+        // parameter with no `Default` and no value in force has no value at all, and a key
+        // the request named that the template declares nothing for answers nothing in it
+        // (`crate::state::parameter_constraints`). Weighed after the rules above, since a
+        // `Parameters` key that is no parameter NAME declares no parameter to have a value.
+        crate::state::validate_parameter_set(
+            &template_body,
+            &parameters,
+            input.parameters.as_deref(),
+        )
+        .map_err(crate::scaffolded::Scaffolded::validation_error)?;
         // "Rules: validates a parameter or a combination of parameters passed to a template
         // during a stack creation": an assertion that does not hold for the values in force
         // is not a bad request — it fails the create this call opens, which then rolls back,

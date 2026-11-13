@@ -767,6 +767,16 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             &request_region,
         )
         .map_err(crate::scaffolded::Scaffolded::validation_error)?;
+        // The same input CONTRACT a create is held to, in the same place in the order: the
+        // parameter set this update resolved has to match what the template it would deploy
+        // declares, so the stack keeps the parameters it has rather than starting an update
+        // real AWS would refuse (`crate::state::parameter_constraints`).
+        crate::state::validate_parameter_set(
+            &template_body,
+            &parameters,
+            input.parameters.as_deref(),
+        )
+        .map_err(crate::scaffolded::Scaffolded::validation_error)?;
         // "Rules: validates a parameter or a combination of parameters passed to a template
         // during a stack creation or stack update": an assertion the values in force do not
         // satisfy fails the update, which leaves the stack as it was — and so does a

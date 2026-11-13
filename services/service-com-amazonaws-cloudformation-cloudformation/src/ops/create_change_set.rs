@@ -850,6 +850,16 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // on the stack is also what says which of its parameters are masked, which that
         // resolution records, and `ExecuteChangeSet` carries onto the stack with the values.
         let mut parameters = crate::state::parameters_in_force(&template_body, parameters);
+        // A change set is a plan over a deployment, so the parameter set it would deploy
+        // with is held to the template's input CONTRACT before the plan is written: the
+        // same rule `CreateStack` and `UpdateStack` apply
+        // (`crate::state::parameter_constraints`).
+        crate::state::validate_parameter_set(
+            &template_body,
+            &parameters,
+            input.parameters.as_deref(),
+        )
+        .map_err(crate::scaffolded::Scaffolded::validation_error)?;
         // The VALUE in force for an SSM-typed parameter is the one Parameter Store held when
         // this call resolved it above, recorded beside the name that addressed it: the change
         // set reports the name as its `ParameterValue` and that value as its `ResolvedValue`,

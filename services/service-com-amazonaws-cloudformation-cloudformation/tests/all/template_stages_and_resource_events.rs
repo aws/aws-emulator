@@ -1865,9 +1865,12 @@ fn unprocessable_cases() -> Vec<UnprocessableCase> {
             r#"{"Transform":"AWS::LanguageExtensions","Resources":{"Fn::ForEach::Bad":["Suffix",["Alpha"]]}}"#.to_string(),
         ),
         (
-            "a ForEach whose collection is a parameter reference",
+            // "The collection ... can be a list or a reference to a list": a reference to a
+            // parameter whose value is NOT a list resolves to a scalar, which is no
+            // collection to iterate.
+            "a ForEach whose collection references a parameter that is not a list",
             "bad-collection",
-            r#"{"Transform":"AWS::LanguageExtensions","Parameters":{"Names":{"Type":"CommaDelimitedList"}},"Resources":{"Fn::ForEach::Params":["Name",{"Ref":"Names"},{"P${Name}":{"Type":"AWS::CloudFormation::WaitConditionHandle"}}]}}"#.to_string(),
+            r#"{"Transform":"AWS::LanguageExtensions","Parameters":{"Names":{"Type":"String","Default":"a,b"}},"Resources":{"Fn::ForEach::Params":["Name",{"Ref":"Names"},{"P${Name}":{"Type":"AWS::CloudFormation::WaitConditionHandle"}}]}}"#.to_string(),
         ),
         (
             "a ForEach whose collection items are objects",
