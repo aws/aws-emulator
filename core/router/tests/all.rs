@@ -53,7 +53,6 @@ mod cloudformation_provisions_cognito_user_pools;
 // mount both sides of it.
 #[path = "all/workmailmessageflow_resolves_an_s3_object.rs"]
 mod workmailmessageflow_resolves_an_s3_object;
-// Declared here, in this same head region, for the reason the entry above records: what a
 // client is answered by an endpoint serving a model SageMaker trained spans IAM, Amazon S3,
 // the SageMaker control plane and the SageMaker runtime at once, so neither SageMaker
 // crate's own test target can train a model and then invoke what it deployed.
@@ -1791,10 +1790,6 @@ mod cloudformation_rest_api_token_authorizer_credentials;
 // see both ends of it.
 #[path = "all/kafka_msk_own_refusals_precede_the_subnet_lookup.rs"]
 mod kafka_msk_own_refusals_precede_the_subnet_lookup;
-#[path = "all/cloudformation_monitored_alb_search_estate.rs"]
-mod cloudformation_monitored_alb_search_estate;
-#[path = "all/cloudformation_domain_endpoint_outputs.rs"]
-mod cloudformation_domain_endpoint_outputs;
 #[path = "all/cloudfront_edge_generated_headers.rs"]
 mod cloudfront_edge_generated_headers;
 // Declared beside those two, in the same quiet span and for the same reason. This one pins
@@ -1811,3 +1806,9 @@ mod apigateway_dynamodb_service_integration;
 // once, in the head region above.
 // it. Declared once, in the head region above.
 // crate's test target can ask it. Declared once, beside the suites above.
+// Declared here, in this same head region, for the reason the entry above records: subscribing a
+// Lambda function to a log group a Step Functions state machine vends its runs into spans
+// CloudWatch Logs, AWS Lambda and Step Functions at once, so no single crate's own test target
+// can wire it and then read the group back.
+#[path = "all/logs_vended_group_lambda_subscriber_permission.rs"]
+mod logs_vended_group_lambda_subscriber_permission;
