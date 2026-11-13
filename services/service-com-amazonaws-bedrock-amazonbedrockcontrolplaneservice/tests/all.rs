@@ -87,6 +87,8 @@ mod evaluation_jobs;
 mod explicit_deny_names_the_addressed_guardrail;
 #[path = "all/foundation_model_agreement_offers.rs"]
 mod foundation_model_agreement_offers;
+#[path = "all/foundation_model_availability.rs"]
+mod foundation_model_availability;
 #[path = "all/foundation_model_capability_projection.rs"]
 mod foundation_model_capability_projection;
 #[path = "all/foundation_model_capability_records.rs"]
