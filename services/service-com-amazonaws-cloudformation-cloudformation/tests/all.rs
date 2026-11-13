@@ -275,6 +275,8 @@ mod macro_acknowledgement_and_include_refresh;
 mod malformed_policy_document_rollback;
 #[path = "all/management_event_recording.rs"]
 mod management_event_recording;
+#[path = "all/monitored_registrations.rs"]
+mod monitored_registrations;
 #[path = "all/nested_resource_outputs.rs"]
 mod nested_resource_outputs;
 #[path = "all/nested_stack_output_attributes.rs"]

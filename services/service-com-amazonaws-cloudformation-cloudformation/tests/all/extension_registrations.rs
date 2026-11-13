@@ -39,7 +39,7 @@ use std::time::SystemTime;
 use serde_json::json;
 
 use crate::harness::{
-    call, member, router_with_engine, store, xml_blocks, xml_text, xml_texts, REGION,
+    call, member, refusal, router_with_engine, store, xml_blocks, xml_text, xml_texts, REGION,
 };
 use crate::stack_resource_provisioning::s3;
 use service_com_amazonaws_cloudformation_cloudformation::state::registry::{
@@ -321,14 +321,6 @@ async fn registration_tokens(
         Some(block) => xml_texts(&block, "member"),
         None => Vec::new(),
     }
-}
-
-/// The `Code` and `Message` a refusal's envelope carries.
-fn refusal(body: &str) -> (String, String) {
-    (
-        xml_text(body, "Code").unwrap_or_default(),
-        xml_text(body, "Message").unwrap_or_default(),
-    )
 }
 
 /// One row of the registration table: the extension a package declares, and what the registry
@@ -1376,9 +1368,14 @@ async fn a_registration_token_nothing_issued_resolves_no_request() {
             code, REGISTRY_REFUSAL_CODE,
             "case {case:?}: expected {REGISTRY_REFUSAL_CODE}, got {code:?} in {body}"
         );
-        assert!(
-            message.contains(token),
-            "case {case:?}: expected the refusal to name the token {token:?}, got {message:?}"
+        // The registry's own sentence for a token it resolves to no request, written out here
+        // rather than read off the implementation's constant. It quotes nothing from the
+        // request, so the row's token is not part of it — `monitored_registrations.rs` is the
+        // suite that holds that wording across the token forms the model admits.
+        assert_eq!(
+            message, "UUID is invalid",
+            "case {case:?}: expected the registry's sentence for an unresolved token, got \
+             {message:?}"
         );
     }
 }

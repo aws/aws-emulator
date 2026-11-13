@@ -31,7 +31,7 @@
 //! asserted is what a client sees.
 
 use std::sync::Arc;
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 
 use service_com_amazonaws_cloudformation_cloudformation::state::registry::{
     registration_status, registry_type, type_arn, type_version_arn, StoredTypeRegistration,
@@ -40,7 +40,8 @@ use service_com_amazonaws_cloudformation_cloudformation::state::registry::{
 use smithy_server_runtime::MultiServiceRouter;
 
 use crate::harness::{
-    call_in, member, router_with_engine, store, xml_blocks, xml_text, xml_texts, REGION,
+    already_due, call_in, member, router_with_engine, still_running, store, xml_blocks, xml_text,
+    xml_texts, REGION,
 };
 
 /// Another Region's registry, for the rows that hold the listing to its own Region: the
@@ -75,18 +76,6 @@ const REGISTRY_REFUSAL_CODE: &str = "CFNRegistryException";
 
 /// This service's wire code for a request it refuses on input grounds.
 const INPUT_REFUSAL_CODE: &str = "ValidationError";
-
-/// An instant far enough ahead that a request seeded as still running is still running when
-/// the listing reads it: the conclusion of a registration is due at an instant, and no case
-/// but the clock case asks about that instant.
-fn still_running() -> SystemTime {
-    SystemTime::now() + Duration::from_secs(3_600)
-}
-
-/// An instant already past, for a request whose conclusion the clock has already made due.
-fn already_due() -> SystemTime {
-    SystemTime::now() - Duration::from_secs(1)
-}
 
 /// The `TypeVersionId` a seeded request registered: the registry's version ids are
 /// zero-padded and the first version of a record carries this one. No case here is about

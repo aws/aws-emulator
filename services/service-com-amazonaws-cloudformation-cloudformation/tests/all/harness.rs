@@ -8,7 +8,7 @@
 //! is what a client sees.
 
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use service_com_amazonaws_cloudformation_cloudformation::state::publisher::MarketplaceSellerEnrollment;
 use service_com_amazonaws_cloudformation_cloudformation::state::{
@@ -387,6 +387,33 @@ pub fn ec2_tag_value(body: &str, key: &str) -> Option<String> {
         .zip(xml_texts(body, "value"))
         .find(|(held, _)| held == key)
         .map(|(_, value)| value)
+}
+
+/// The `Code` and `Message` a refusal's envelope carries.
+///
+/// The ONE reading of an error envelope for the suites that assert WHICH refusal was due:
+/// every awsQuery refusal of this service is one `<Error>` with those two elements, so the
+/// suites that read them share this reader rather than each spelling it.
+pub fn refusal(body: &str) -> (String, String) {
+    (
+        xml_text(body, "Code").unwrap_or_default(),
+        xml_text(body, "Message").unwrap_or_default(),
+    )
+}
+
+/// An instant far enough ahead that a record seeded as still running is still running when a
+/// case reads it: an asynchronous conclusion is due at an INSTANT, and nothing in the service
+/// sleeps for it.
+///
+/// Shared by the suites that seed records carrying such an instant, so one definition fixes
+/// what "not due yet" means for all of them.
+pub fn still_running() -> SystemTime {
+    SystemTime::now() + Duration::from_secs(3_600)
+}
+
+/// An instant already past, for a record whose conclusion the clock has already made due.
+pub fn already_due() -> SystemTime {
+    SystemTime::now() - Duration::from_secs(1)
 }
 
 /// `CreateStack` with a template body and whatever else the case needs.
