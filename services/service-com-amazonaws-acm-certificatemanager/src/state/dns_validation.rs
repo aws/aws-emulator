@@ -15,6 +15,12 @@
 //! (`CertificateDetail$FailureReason` doc) and no value that enum declares names a
 //! challenge nobody published yet.
 //!
+//! The same store answers the other DNS question a public request turns on: whether the
+//! names it covers are in the public DNS at all ([`any_name_is_not_in_public_dns_in`]).
+//! A name the registries reserve is held by nobody UNLESS the account is itself
+//! authoritative for it here — a public hosted zone is a delegation the account publishes
+//! the name from — and only a name with no holder at all is the up-front request failure.
+//!
 //! Whether the record is published is the DNS service's fact, not this one's, so it is
 //! READ from the Route 53 store in the shared engine: the record set has to carry the
 //! name, the type and the value this service handed out, in a PUBLIC hosted zone of the
@@ -78,6 +84,70 @@ impl ComAmazonawsAcmCertificatemanagerState {
             resolve_dns_validation(certificate, &zones, now);
         }
     }
+}
+
+/// Whether any of `domain_names` names no domain in the public DNS at all, so that
+/// NOBODY could publish evidence of control over it.
+///
+/// Two facts decide it, and a name needs both to be unholdable:
+///
+/// * the registries reserve the name rather than delegating it
+///   ([`domain_is_not_in_public_dns`]), and
+/// * no PUBLIC hosted zone of the account is authoritative for it
+///   ([`zone_delegates`]) — a zone the account holds is a delegation it publishes the
+///   name from, so the name has a holder, and that holder is the caller.
+///
+/// Which names are delegated is the DNS service's fact, not this one's, exactly as
+/// whether a challenge is published is: it is READ from the Route 53 store in the shared
+/// engine, so a zone created or deleted there changes this answer with it and nothing is
+/// copied into a certificate's record. Every name is judged under ONE acquisition of
+/// that store, and a name the registries delegate needs no lookup at all.
+///
+/// This is what a certificate request is refused up front for ("unless it fails for any
+/// of the reasons given in the troubleshooting topic Certificate request fails",
+/// `CertificateDetail$Status` doc) — and one unholdable name is enough, since "each
+/// domain name that you specify must be validated" (`RequestCertificate` doc). Every
+/// other public request names domains whose holder COULD publish the evidence, so it
+/// enters `PENDING_VALIDATION` and waits the documented [`VALIDATION_WINDOW`] out — or
+/// reaches issuance once the challenge is published ([`resolve_dns_validation`]).
+///
+/// LOCK ORDER: the ACM store is held by the handler that calls in and the DNS store is
+/// taken under it, the same order [`ComAmazonawsAcmCertificatemanagerState::materialize_due_in`]
+/// uses.
+pub fn any_name_is_not_in_public_dns_in<Eng: ::std::marker::Send + ::std::marker::Sync + 'static>(
+    engine: &Eng,
+    domain_names: &[String],
+) -> bool {
+    // The name ACM proves control of, for each name the registries reserve — the only
+    // ones a delegation of the account's could still answer for.
+    let reserved: Vec<&str> = domain_names
+        .iter()
+        .filter(|name| domain_is_not_in_public_dns(name))
+        .map(|name| validation_target(name))
+        .collect();
+    if reserved.is_empty() {
+        return false;
+    }
+    // An engine carrying no DNS store holds no zone, so it delegates nothing.
+    let Some(zones) = dns_store::service_state(engine) else {
+        return true;
+    };
+    let zones = zones.lock();
+    reserved
+        .iter()
+        .any(|name| !zones.zones.values().any(|zone| zone_delegates(zone, name)))
+}
+
+/// Whether `zone` is a PUBLIC hosted zone authoritative for `domain_name`: its apex is
+/// that name or a parent of it.
+///
+/// A private zone resolves nowhere the public DNS can see it, so it delegates no public
+/// name — the same reason it proves no challenge ([`record_is_published`]). Which names
+/// one zone answers for is the DNS service's own rule (`name_is_in_zone`), which
+/// compares label by label, so the trailing dot and the letter case a zone was created
+/// with do not decide it and a sibling name is not inside the zone.
+fn zone_delegates(zone: &dns_store::StoredZone, domain_name: &str) -> bool {
+    !zone.private_zone && dns_store::name_is_in_zone(domain_name, &zone.name)
 }
 
 /// Resolve one certificate's pending DNS validation against the published DNS.

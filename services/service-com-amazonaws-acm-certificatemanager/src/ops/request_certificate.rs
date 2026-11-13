@@ -390,10 +390,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             })
             .collect();
 
-        // Which outcome the clock owes this request is decided from the request, before
-        // the record is built — it depends on every name the certificate covers, not on
-        // the one `DomainName` named.
-        let outcome = validation_outcome(&input, &names);
+        // Which outcome the clock owes this request is decided from the request and the
+        // public DNS, before the record is built — it depends on every name the
+        // certificate covers, not on the one `DomainName` named.
+        let outcome = validation_outcome(&*self.engine, &input, &names);
 
         let certificate = crate::state::Certificate {
             arn: arn.clone(),
@@ -481,8 +481,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
     }
 }
 
-/// How the validation of the certificate this request creates will resolve, as far as
-/// the REQUEST alone decides it.
+/// How the validation of the certificate this request creates will resolve, as the
+/// request and the public DNS it names domains in decide it.
 ///
 /// Three outcomes:
 ///
@@ -491,8 +491,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 ///   has nothing left to prove and is ISSUED.
 /// * A request naming a domain the public DNS delegates to nobody — a name the
 ///   registries reserve rather than delegate, at or under a special-use top-level label
-///   or a reserved documentation second-level name
-///   ([`crate::state::domain_is_not_in_public_dns`]) — is one of the requests that
+///   or a reserved documentation second-level name, and which no public hosted zone of
+///   the account is authoritative for either
+///   ([`crate::state::any_name_is_not_in_public_dns_in`]) — is one of the requests that
 ///   fail "upon being requested" instead of entering `PENDING_VALIDATION`
 ///   (`CertificateDetail$Status` doc), with the reason ACM models for a request it
 ///   cannot process without information it has to obtain elsewhere.
@@ -512,16 +513,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 /// instead ([`crate::state::ComAmazonawsAcmCertificatemanagerState::materialize_due_in`]),
 /// which is why that wait is what a public request starts out owing rather than what it
 /// is stuck with.
-fn validation_outcome(
+fn validation_outcome<Eng: ::std::marker::Send + ::std::marker::Sync + 'static>(
+    engine: &Eng,
     input: &RequestCertificateInput,
     names: &[String],
 ) -> crate::state::ValidationOutcome {
     if input.certificate_authority_arn.is_some() {
         crate::state::ValidationOutcome::Issued
-    } else if names
-        .iter()
-        .any(|name| crate::state::domain_is_not_in_public_dns(name))
-    {
+    } else if crate::state::any_name_is_not_in_public_dns_in(engine, names) {
         crate::state::ValidationOutcome::Failed
     } else {
         crate::state::ValidationOutcome::TimedOut

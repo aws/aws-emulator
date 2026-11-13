@@ -81,7 +81,7 @@
 //! A requested certificate's record carries the outcome the clock owes it and the
 //! instant it falls due ([`PendingValidation`]) — issuance for a request that needs no
 //! proof of domain control, the up-front refusal of a name the public DNS delegates to
-//! nobody ([`domain_is_not_in_public_dns`]), and otherwise the timeout at the end of the
+//! nobody ([`any_name_is_not_in_public_dns_in`]), and otherwise the timeout at the end of the
 //! documented [`VALIDATION_WINDOW`], which is what a request waiting for evidence from
 //! outside is owed. Beside it — for a certificate ACM validates by EMAIL — sits the
 //! instant the initial validation mail it owes falls due
@@ -99,6 +99,8 @@
 //! issuance.
 
 mod dns_validation;
+
+pub use dns_validation::any_name_is_not_in_public_dns_in;
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::time::{Duration, SystemTime};
@@ -287,16 +289,20 @@ pub const RESERVED_TOP_LEVEL_LABELS: &[&str] = &[
 pub const RESERVED_SECOND_LEVEL_NAMES: &[&str] =
     &["example.com", "example.net", "example.org"];
 
-/// Whether `domain_name` names no domain in the public DNS, because the registries
-/// reserve the name itself rather than delegating it to a registrant: its top-level
-/// label is a reserved one ([`RESERVED_TOP_LEVEL_LABELS`]) or it sits at or under a
-/// reserved second-level name ([`RESERVED_SECOND_LEVEL_NAMES`]).
+/// Whether the REGISTRIES reserve `domain_name` rather than delegating it to a
+/// registrant: its top-level label is a reserved one ([`RESERVED_TOP_LEVEL_LABELS`]) or
+/// it sits at or under a reserved second-level name ([`RESERVED_SECOND_LEVEL_NAMES`]).
 ///
-/// A certificate request for such a name is one ACM cannot carry through at all, so it
-/// is refused up front rather than left waiting for evidence that cannot arrive — "a
-/// certificate enters status PENDING_VALIDATION upon being requested, unless it fails
-/// for any of the reasons given in the troubleshooting topic Certificate request fails"
-/// (`CertificateDetail$Status` doc).
+/// That is only half of whether the name has a holder: a name the ACCOUNT is itself
+/// authoritative for in the public DNS this emulator serves has one whatever the
+/// registries say, so the question a certificate request is decided by is
+/// [`any_name_is_not_in_public_dns_in`], which reads the DNS as well.
+///
+/// A certificate request for a name NOBODY holds is one ACM cannot carry through at
+/// all, so it is refused up front rather than left waiting for evidence that cannot
+/// arrive — "a certificate enters status PENDING_VALIDATION upon being requested, unless
+/// it fails for any of the reasons given in the troubleshooting topic Certificate
+/// request fails" (`CertificateDetail$Status` doc).
 ///
 /// Every name the public DNS DOES delegate is one whose holder could publish the
 /// evidence, whether or not this emulator ever observes it published, so its request

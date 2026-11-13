@@ -49,7 +49,7 @@ const PRIVATE_ZONE_VPC: &str = "vpc-4d3c2b1a";
 /// A router serving ACM and Route 53 over ONE engine, beside that engine — so the
 /// certificate's challenge and the zone it is published in are the same account's, and
 /// a test can read the instant the emulator stored for an owed transition.
-fn router_with_dns() -> (MultiServiceRouter, Arc<engine::InMemoryEngine>) {
+pub(crate) fn router_with_dns() -> (MultiServiceRouter, Arc<engine::InMemoryEngine>) {
     let engine: Arc<engine::InMemoryEngine> = Arc::new(engine::InMemoryEngine::new());
     {
         // Which VPCs the account holds is Amazon EC2's fact, and Route 53 resolves the
@@ -137,7 +137,7 @@ async fn create_zone(
 }
 
 /// Create a PUBLIC hosted zone for `apex` and return its bare id.
-async fn create_public_zone(
+pub(crate) async fn create_public_zone(
     router: &MultiServiceRouter,
     apex: &str,
     caller_reference: &str,
@@ -147,7 +147,7 @@ async fn create_public_zone(
 
 /// Create a PRIVATE hosted zone for `apex`, associated with [`PRIVATE_ZONE_VPC`], and
 /// return its bare id.
-async fn create_private_zone(
+pub(crate) async fn create_private_zone(
     router: &MultiServiceRouter,
     apex: &str,
     caller_reference: &str,
@@ -161,10 +161,10 @@ async fn create_private_zone(
 
 /// One DNS record to write: the name, the type and the single value.
 #[derive(Debug, Clone)]
-struct Record {
-    name: String,
-    rr_type: String,
-    value: String,
+pub(crate) struct Record {
+    pub(crate) name: String,
+    pub(crate) rr_type: String,
+    pub(crate) value: String,
 }
 
 /// The TTL every record this suite writes carries. Immaterial to the rule — nothing
@@ -172,7 +172,7 @@ struct Record {
 const RECORD_TTL: i64 = 60;
 
 /// Submit one change batch applying `action` to `record`, and assert it was accepted.
-async fn submit_change(
+pub(crate) async fn submit_change(
     case: &str,
     router: &MultiServiceRouter,
     zone_id: &str,
@@ -235,7 +235,7 @@ fn handed_out_records(case: &str, detail: &Value) -> Vec<Record> {
 /// Request a DNS-validated certificate for `domain_name` (plus `sans`) and return its
 /// ARN beside the records ACM handed out for it, after asserting the request is
 /// `PENDING_VALIDATION` with every covered name still unproven.
-async fn request_dns_validated(
+pub(crate) async fn request_dns_validated(
     case: &str,
     router: &MultiServiceRouter,
     domain_name: &str,
@@ -276,7 +276,7 @@ async fn request_dns_validated(
 /// Assert that `arn` is still waiting on proof: `PENDING_VALIDATION`, no
 /// `FailureReason`, every domain unproven, and the outcome the store owes it still the
 /// documented 72-hour timeout rather than an issuance.
-async fn assert_still_waiting(
+pub(crate) async fn assert_still_waiting(
     case: &str,
     router: &MultiServiceRouter,
     engine: &Arc<engine::InMemoryEngine>,
@@ -310,7 +310,7 @@ async fn assert_still_waiting(
 
 /// Assert that `arn` has proof recorded: the store now owes it an ISSUANCE, due within
 /// the settle span and not instantly, while the read still reports the pending state.
-async fn assert_issuance_owed(
+pub(crate) async fn assert_issuance_owed(
     case: &str,
     router: &MultiServiceRouter,
     engine: &Arc<engine::InMemoryEngine>,
@@ -333,7 +333,7 @@ async fn assert_issuance_owed(
 }
 
 /// Assert everything issuance implies for a described certificate.
-fn assert_issued(case: &str, detail: &Value) {
+pub(crate) fn assert_issued(case: &str, detail: &Value) {
     assert_eq!(
         detail["Status"].as_str(),
         Some("ISSUED"),
