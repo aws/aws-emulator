@@ -257,8 +257,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             arn: crate::state::service_arn(&region, &format!("namespace/{id}")),
             id: id.clone(),
             name: input.name.clone(),
-            // An HTTP namespace holds no hosted zone, so it carries only
-            // `Properties.HttpProperties.HttpName`.
+            // An HTTP namespace holds no hosted zone, so it names no
+            // `Properties.DnsProperties.HostedZoneId` and holds no SOA TTL of its own;
+            // it is discoverable under `Properties.HttpProperties.HttpName`.
             namespace_type: "HTTP".to_string(),
             description: crate::state::described(input.description.clone()),
             create_date: now,

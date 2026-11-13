@@ -279,8 +279,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // same name: `HttpName` "in most cases" equals the namespace `Name`.
             http_name: Some(input.name.clone()),
             hosted_zone_id: Some(hosted_zone_id),
-            // `Properties.DnsProperties.SOA.TTL`, reported back only when the caller
-            // chose one — nothing is invented for a create that named no SOA.
+            // `Properties.DnsProperties.SOA.TTL`, stored only when the caller chose one;
+            // a create that named no SOA sets no TTL for the namespace to cache
+            // negative answers for.
             soa_ttl: input
                 .properties
                 .as_ref()

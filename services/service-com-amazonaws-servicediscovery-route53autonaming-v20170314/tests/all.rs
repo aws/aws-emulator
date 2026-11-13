@@ -43,6 +43,8 @@ mod list_instances;
 mod list_operations;
 #[path = "all/namespace_listing.rs"]
 mod namespace_listing;
+#[path = "all/namespace_properties.rs"]
+mod namespace_properties;
 #[path = "all/operation_id_form.rs"]
 mod operation_id_form;
 #[path = "all/public_dns_namespace.rs"]

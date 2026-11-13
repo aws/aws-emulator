@@ -329,6 +329,16 @@ pub fn described(description: Option<String>) -> Option<String> {
 /// `WEIGHTED`, is what a creator asks for explicitly).
 pub const DEFAULT_ROUTING_POLICY: &str = "MULTIVALUE";
 
+/// The `Properties.DnsProperties.SOA.TTL` a namespace reports when nothing ever set one
+/// for it.
+///
+/// `SOA$TTL` is "the time to live (TTL) for purposes of negative caching" and is modelled
+/// `@required` on the `SOA` a namespace read reports, so the member always carries a
+/// number; a namespace no creator or update ever gave a TTL — every namespace that holds
+/// no SOA record of its own — caches no negative answer for any time at all, the low bound
+/// of the modelled `RecordTTL` range (0..=2147483647).
+pub const NO_NEGATIVE_CACHING_TTL: i64 = 0;
+
 /// A `DnsConfig` as it is PERSISTED: the configuration the caller stated, plus the
 /// members the service itself decides.
 ///
@@ -542,10 +552,10 @@ pub struct NamespaceRecord {
     /// `Properties.DnsProperties.HostedZoneId`, set only for a DNS namespace.
     pub hosted_zone_id: Option<String>,
     /// `Properties.DnsProperties.SOA.TTL` — the TTL "for purposes of negative
-    /// caching" of the hosted zone's Start of Authority record. Held only for a DNS
-    /// namespace whose creator stated it: `SOA` is optional on the reported
-    /// `DnsProperties`, AWS publishes no default value for it, and the emulator
-    /// reports no TTL it was never given rather than inventing one.
+    /// caching" of the hosted zone's Start of Authority record, held only for a
+    /// namespace whose creator or updater stated one. A namespace that was never given
+    /// a TTL reports [`NO_NEGATIVE_CACHING_TTL`] on the `SOA` every namespace read
+    /// carries; nothing else is invented for it.
     pub soa_ttl: Option<i64>,
     /// The `OperationId` of the create that owns this name, which is what a later
     /// create of the SAME name is refused with (`DuplicateRequest`).
@@ -1225,14 +1235,24 @@ pub fn namespace_view(record: &NamespaceRecord, service_count: i32) -> Namespace
         description: record.description.clone(),
         service_count: Some(service_count),
         properties: Some(NamespaceProperties {
-            // A DNS namespace's hosted zone; absent for an HTTP namespace, which has none.
-            dns_properties: record.hosted_zone_id.as_ref().map(|hosted_zone_id| {
-                crate::ops::types::DnsProperties {
-                    hosted_zone_id: Some(hosted_zone_id.clone()),
-                    // The SOA record of that hosted zone, reported only when the
-                    // namespace carries a TTL for it.
-                    soa: record.soa_ttl.map(|ttl| SOA { ttl }),
-                }
+            // `NamespaceProperties` is "information that's specific to the namespace
+            // type", and the DNS side of it — the hosted zone Cloud Map keeps for the
+            // namespace and the Start of Authority record of that zone — is part of
+            // what a namespace IS rather than something a read leaves out: the
+            // structure is reported for every namespace, carrying the properties that
+            // namespace actually has.
+            dns_properties: Some(crate::ops::types::DnsProperties {
+                // The hosted zone Cloud Map created for the namespace, which only a DNS
+                // namespace has: a namespace with no hosted zone names none.
+                hosted_zone_id: record.hosted_zone_id.clone(),
+                // `SOA$TTL` is modelled `@required`, so the SOA a namespace reports
+                // always carries its TTL "for purposes of negative caching": the one
+                // stored for the namespace, and zero — no negative caching — for a
+                // namespace nothing ever set one for, which is every namespace with no
+                // SOA record of its own.
+                soa: Some(SOA {
+                    ttl: record.soa_ttl.unwrap_or(NO_NEGATIVE_CACHING_TTL),
+                }),
             }),
             http_properties: record
                 .http_name

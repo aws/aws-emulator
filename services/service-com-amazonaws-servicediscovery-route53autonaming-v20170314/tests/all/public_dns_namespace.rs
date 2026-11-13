@@ -63,26 +63,27 @@ fn is_hosted_zone_id(candidate: &str) -> bool {
 /// stored namespace reports what the request stated, plus the ids the service mints.
 ///
 /// The SOA TTL rows span the published `RecordTTL` range (`smithy_query(query="shape",
-/// shape="RecordTTL")`: 0..=2147483647), including both bounds, and the row that states
-/// no `Properties` at all.
+/// shape="RecordTTL")`: 0..=2147483647), including both bounds, and the rows that state
+/// no `Properties` at all — where the namespace holds no SOA TTL of its own and so
+/// reports the zero of "no negative caching" on the `SOA` every namespace read carries.
 #[tokio::test]
 async fn a_created_public_dns_namespace_reports_back_what_was_stored() {
     let router = emulator();
 
     // (case, the request members beside Name, expected Description, expected SOA TTL)
-    let cases: Vec<(&str, Value, Option<&str>, Option<i64>)> = vec![
-        ("only the required name", json!({}), None, None),
+    let cases: Vec<(&str, Value, Option<&str>, i64)> = vec![
+        ("only the required name", json!({}), None, 0),
         (
             "a description and no properties",
             json!({ "Description": "the storefront namespace" }),
             Some("the storefront namespace"),
-            None,
+            0,
         ),
         (
             "the low bound of the published TTL range",
             json!({ "Properties": { "DnsProperties": { "SOA": { "TTL": 0 } } } }),
             None,
-            Some(0),
+            0,
         ),
         (
             "a TTL inside the range",
@@ -91,13 +92,13 @@ async fn a_created_public_dns_namespace_reports_back_what_was_stored() {
                 "Properties": { "DnsProperties": { "SOA": { "TTL": 15 } } },
             }),
             Some("fifteen second negative caching"),
-            Some(15),
+            15,
         ),
         (
             "the high bound of the published TTL range",
             json!({ "Properties": { "DnsProperties": { "SOA": { "TTL": 2147483647_i64 } } } }),
             None,
-            Some(2147483647),
+            2147483647,
         ),
         (
             "tags and a creator request id",
@@ -107,7 +108,7 @@ async fn a_created_public_dns_namespace_reports_back_what_was_stored() {
                 "Properties": { "DnsProperties": { "SOA": { "TTL": 300 } } },
             }),
             None,
-            Some(300),
+            300,
         ),
     ];
 
@@ -180,7 +181,7 @@ async fn a_created_public_dns_namespace_reports_back_what_was_stored() {
         );
         assert_eq!(
             namespace["Properties"]["DnsProperties"]["SOA"]["TTL"],
-            soa_ttl.map_or(Value::Null, |ttl| json!(ttl)),
+            json!(soa_ttl),
             "case {case:?}: expected SOA TTL {soa_ttl:?}, got {namespace}"
         );
 
