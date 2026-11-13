@@ -331,13 +331,21 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // Lambda destinations", so a request asking for that records the configuration as
         // given and publishes no test notification.
         if input.skip_destination_validation != Some(true) {
-            let unvalidated = crate::state::notifications::unvalidated_destinations(
+            // Boxed, so the resolution's own state machine lives on the heap instead of
+            // being inlined into this handler's future. The resolution dispatches back into
+            // this same emulator (each destination is resolved through its owning service's
+            // API), and this handler is itself reached through such a dispatch when another
+            // service puts a configuration — a CloudFormation stack declaring a bucket's
+            // `NotificationConfiguration`, say. Inlined, every level of that nesting carries
+            // the level below it in the serving task's own frame, which is what makes a
+            // legitimately nested put exhaust the stack rather than answer.
+            let unvalidated = Box::pin(crate::state::notifications::unvalidated_destinations(
                 ctx.callback(),
                 &input.bucket,
                 &bucket_region,
                 &configuration,
                 &correlation,
-            )
+            ))
             .await;
             if !unvalidated.is_empty() {
                 ::tracing::warn!(

@@ -231,6 +231,8 @@ mod period_refusal_message;
 mod probe_counts;
 #[path = "all/published_data_is_queryable.rs"]
 mod published_data_is_queryable;
+#[path = "all/published_unit_value_refusal.rs"]
+mod published_unit_value_refusal;
 #[path = "all/put_metric_data_validation.rs"]
 mod put_metric_data_validation;
 #[path = "all/query_compatible_error_envelope.rs"]
