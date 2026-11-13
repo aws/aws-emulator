@@ -15,6 +15,8 @@
 mod access_grant_usage_limit;
 #[path = "all/access_grants_arns.rs"]
 mod access_grants_arns;
+#[path = "all/access_grants_credential_scope.rs"]
+mod access_grants_credential_scope;
 #[path = "all/access_grants_data_plane.rs"]
 mod access_grants_data_plane;
 #[path = "all/access_grants_instance.rs"]

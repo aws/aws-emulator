@@ -4,11 +4,20 @@
 //!
 //! Vends a temporary credential for an S3 path the account's S3 Access Grants
 //! instance has granted: it selects the grant whose scope covers `Target` for
-//! the requested `Permission` and is closest to it, mints a session credential
-//! in the emulator's credential store for the session duration the request asks
+//! the requested `Permission` and is closest to it, mints a session of the
+//! registered location's IAM role for the session duration the request asks
 //! for, and reports it with the scope the token carries and the matched grant's
 //! grantee. A target no grant of the instance covers is refused with
 //! `AccessDenied` and no credential.
+//!
+//! The credential is SCOPED to what was granted, not to what the calling
+//! identity can reach: the session the token names carries a session policy
+//! derived from the scope it was vended for and the permission asked for
+//! ([`crate::state::data_access_session`]), so Amazon S3's own authorizer serves
+//! it the data under that scope and refuses it everything else. Nothing of that
+//! decision is taken here — the data plane takes it, from the session — because
+//! the service that mints a credential is not the service that serves the calls
+//! made with it.
 //!
 //! Two parts of the modelled surface cannot change which grant is selected here,
 //! and are recorded rather than silently dropped:
@@ -185,8 +194,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        use ::emulator_server::aws_credentials::{AWS_SESSION, SECRET_ACCESS_KEY, SESSION_TOKEN};
-
         let Some(state) = crate::state::service_state(&*self.engine) else {
             return Err(crate::state::state_unavailable());
         };
@@ -201,31 +208,36 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         // A vended credential whose expiration has passed is over whether or
         // not anybody called, so the credentials this process holds are brought
-        // up to the clock before another is vended — and the material is
-        // forgotten with the record, so neither outlives the session. The state
+        // up to the clock before another is vended — and the session is
+        // forgotten with the record, so neither outlives the other. The state
         // guard is dropped before the credential store is touched.
         let expired = state.lock().expire_data_access_credentials(now);
         for access_key_id in expired {
-            if ctx.credential_store().delete(&access_key_id).is_err() {
-                ::tracing::warn!(
-                    operation = Self::NAME,
-                    "an expired S3 Access Grants credential was already forgotten"
-                );
-            }
+            crate::state::data_access_session::forget(
+                &*self.engine,
+                ctx.credential_store(),
+                &access_key_id,
+            );
         }
 
         // The authorization decision: the grant of THIS account's instance in
         // THIS Region whose scope covers the requested target for the requested
         // permission and is closest to it. No grant covering it means no
-        // credential — the refusal, not an empty success.
-        let (grantee, grant_scope) = {
-            let store = state.lock();
-            let Some(grant) = store.grant_covering(
-                &input.account_id,
-                &region,
-                &input.target,
-                &input.permission,
-            ) else {
+        // credential — the refusal, not an empty success. The registered
+        // location the matched grant narrows is read under the same guard,
+        // because the credential is a session of THAT location's role.
+        let (grantee, grant_scope, location_role_arn, session_name) = {
+            let mut store = state.lock();
+            let matched = store
+                .grant_covering(&input.account_id, &region, &input.target, &input.permission)
+                .map(|grant| {
+                    (
+                        grant.grantee.clone(),
+                        grant.grant_scope.clone(),
+                        grant.access_grants_location_id.clone(),
+                    )
+                });
+            let Some((grantee, grant_scope, location_id)) = matched else {
                 // Vending credentials is what this operation is for, so each
                 // decision leaves a record: the operation, who asked, what was
                 // asked for and how it was answered. Never the credential, and
@@ -242,7 +254,16 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     &input.target,
                 ));
             };
-            (grant.grantee.clone(), grant.grant_scope.clone())
+            let location_role_arn = store
+                .access_grants_location(&input.account_id, &region, &location_id)
+                .map(|location| location.iam_role_arn.clone());
+            // The session's own name, minted per vend so two vends are two
+            // sessions (see `new_data_access_session_name`).
+            let session_name = store.new_data_access_session_name();
+            (grantee, grant_scope, location_role_arn, session_name)
+        };
+        let Some(location_role_arn) = location_role_arn else {
+            return Err(crate::state::data_access_credential_unscopable());
         };
 
         // "Minimal – The scope of the returned temporary access token is the
@@ -270,37 +291,51 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 crate::state::DATA_ACCESS_MIN_DURATION_SECONDS,
                 crate::state::DATA_ACCESS_MAX_DURATION_SECONDS,
             );
-        let expires_at =
-            now + ::std::time::Duration::from_secs(u64::from(duration_seconds.unsigned_abs()));
 
-        // The credential this call returns: created in the emulator's credential
-        // store, so the emulator accepts requests signed with it and neither the
-        // id nor the secrets are chosen here.
-        let minted = ctx.credential_store().create(&AWS_SESSION);
-        let (Some(secret_access_key), Some(session_token)) = (
-            minted.secret(SECRET_ACCESS_KEY).map(str::to_string),
-            minted.secret(SESSION_TOKEN).map(str::to_string),
+        // The credential this call returns: a SESSION of the location's role,
+        // capped by a session policy derived from the scope the token carries and
+        // the permission asked for, recorded where every service resolves a
+        // temporary credential's principal and its scope
+        // ([`crate::state::data_access_session`]). So Amazon S3 serves this
+        // credential the data the grant covers and refuses it everything else,
+        // and neither the id nor the secrets are chosen here. This service's
+        // guard is given up before the stores that hold the session are reached.
+        let plan = crate::state::data_access_session::DataAccessSessionPlan {
+            role_arn: location_role_arn,
+            scope: matched_grant_target.clone(),
+            permission: input.permission.clone(),
+            duration_seconds,
+            session_name,
+        };
+        let Some(vended) = crate::state::data_access_session::vend(
+            &*self.engine,
+            ctx.credential_store(),
+            now,
+            &plan,
         ) else {
-            let _ = ctx.credential_store().delete(&minted.id);
-            return Err(crate::state::credential_without_secrets());
+            return Err(crate::state::data_access_credential_unscopable());
         };
 
         // The credentials this process has vended are bounded: past the bound
         // the vend is refused rather than leaving behind material nothing will
         // release until it expires. The bound is read and the record written
         // under ONE guard, so two concurrent vends cannot both pass a bound only
-        // one of them fits in — and the credential a refused vend had already
+        // one of them fits in — and the session a refused vend had already
         // minted is forgotten again.
         {
             let mut store = state.lock();
             if store.data_access_credentials.len() >= crate::state::DATA_ACCESS_CREDENTIAL_QUOTA {
                 drop(store);
-                let _ = ctx.credential_store().delete(&minted.id);
+                crate::state::data_access_session::forget(
+                    &*self.engine,
+                    ctx.credential_store(),
+                    &vended.access_key_id,
+                );
                 return Err(crate::state::data_access_credential_store_full());
             }
             store
                 .data_access_credentials
-                .insert(minted.id.clone(), expires_at);
+                .insert(vended.access_key_id.clone(), vended.expires_at);
         }
         ::tracing::info!(
             operation = Self::NAME,
@@ -308,15 +343,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             permission = ?input.permission,
             duration_seconds,
             outcome = "vended",
-            "vended a temporary credential for a granted S3 path"
+            "vended a temporary credential scoped to a granted S3 path"
         );
 
         Ok(GetDataAccessOutput {
             credentials: Some(Credentials {
-                access_key_id: Some(minted.id),
-                secret_access_key: Some(secret_access_key),
-                session_token: Some(session_token),
-                expiration: Some(::aws_smithy_types::DateTime::from(expires_at)),
+                access_key_id: Some(vended.access_key_id),
+                secret_access_key: Some(vended.secret_access_key),
+                session_token: Some(vended.session_token),
+                expiration: Some(::aws_smithy_types::DateTime::from(vended.expires_at)),
             }),
             matched_grant_target: Some(matched_grant_target),
             grantee: Some(grantee),

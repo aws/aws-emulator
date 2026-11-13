@@ -48,6 +48,10 @@ pub mod batch_job_worker;
 /// Where a bucket this service associates actually lives, read from the object
 /// store that owns the bucket.
 pub mod bucket_regions;
+/// What the temporary credential `GetDataAccess` vends IS — a session of the
+/// registered location's IAM role, capped by a session policy derived from the
+/// matched grant — held where every service resolves a temporary credential.
+pub mod data_access_session;
 
 /// One stored access point: everything `GetAccessPoint`, `ListAccessPoints` and
 /// `GetAccessPointPolicy` report, recorded by `CreateAccessPoint`.
@@ -1781,6 +1785,11 @@ pub const ACCESS_GRANT_QUOTA: usize = 1_000;
 /// so the bound is on credentials that are still live.
 pub const DATA_ACCESS_CREDENTIAL_QUOTA: usize = 1_000;
 
+/// What the name of the session one `GetDataAccess` vends starts with, so the ARN
+/// that session is reported under says which service minted it. See
+/// [`ComAmazonawsS3controlAwss3controlservicev20180820State::new_data_access_session_name`].
+pub const DATA_ACCESS_SESSION_NAME_PREFIX: &str = "s3-access-grants-";
+
 /// The session duration `GetDataAccess` vends a credential for when the request
 /// names none.
 ///
@@ -2075,6 +2084,21 @@ impl ComAmazonawsS3controlAwss3controlservicev20180820State {
     /// auto-generates when the grant is created.
     pub fn new_access_grant_id(&mut self) -> String {
         self.new_resource_id()
+    }
+
+    /// A fresh name for the session one `GetDataAccess` vends a credential for.
+    ///
+    /// "The temporary credential is an Amazon Web Services STS token"
+    /// (`GetDataAccess`), and S3 Access Grants vends a NEW one per call, so each
+    /// carries a session name of its own: the ARN
+    /// `sts:GetCallerIdentity` reports for one vend's credentials names no other
+    /// vend's. Minted over this store's own counter, so two names are distinct
+    /// whatever the clock reports.
+    pub fn new_data_access_session_name(&mut self) -> String {
+        format!(
+            "{DATA_ACCESS_SESSION_NAME_PREFIX}{}",
+            self.new_resource_id()
+        )
     }
 
     /// The location `location_id` names in `account_id`'s instance in `region`,
@@ -4774,13 +4798,17 @@ pub fn state_unavailable<E>() -> crate::scaffolded::Scaffolded<E> {
     )
 }
 
-/// `InternalError` (HTTP 500): the credential store minted a session credential
-/// without the secrets a session always carries, so there is no credential to
-/// answer with. Never answered with material chosen here.
-pub fn credential_without_secrets<E>() -> crate::scaffolded::Scaffolded<E> {
+/// `InternalError` (HTTP 500): no session of the matched grant's location role
+/// could be recorded, so the credential this call would answer with could not be
+/// scoped to the grant at all (see [`data_access_session::vend`]).
+///
+/// Answered rather than vending an unscoped credential: a session the emulator
+/// cannot cap is one that acts as the whole account, which is not the
+/// least-privilege credential this operation exists to hand out.
+pub fn data_access_credential_unscopable<E>() -> crate::scaffolded::Scaffolded<E> {
     crate::scaffolded::Scaffolded::service_failure(
         "InternalError",
         500,
-        "A temporary credential was created without its secrets.",
+        "A temporary credential scoped to the matched access grant could not be created.",
     )
 }

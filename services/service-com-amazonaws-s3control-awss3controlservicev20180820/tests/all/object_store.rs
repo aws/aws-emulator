@@ -97,6 +97,34 @@ impl ObjectStore {
         (Self { router }, iam)
     }
 
+    /// Amazon S3, S3 Control and the TOKEN SERVICE on one shared engine, and that
+    /// engine itself.
+    ///
+    /// A suite that pins what the temporary CREDENTIAL an S3 Access Grants vend hands
+    /// out may do needs both: the token service, because the identity a credential
+    /// speaks for is the question it owns (`sts:GetCallerIdentity`), and the engine,
+    /// because the role that session is of is resolved against the account's IAM
+    /// records in the same engine.
+    pub(crate) fn with_sts() -> (Self, Arc<engine::InMemoryEngine>) {
+        let engine: Arc<engine::InMemoryEngine> = Arc::new(engine::InMemoryEngine::new());
+        let mut router = MultiServiceRouter::new();
+        router.set_request_authentication(false);
+        router.register_service(
+            service_com_amazonaws_s3control_awss3controlservicev20180820::EmulatedService::new(
+                Arc::clone(&engine),
+            ),
+        );
+        router.register_service(service_com_amazonaws_s3_amazons3::EmulatedService::new(
+            Arc::clone(&engine),
+        ));
+        router.register_service(
+            service_com_amazonaws_sts_awssecuritytokenservicev20110615::EmulatedService::new(
+                Arc::clone(&engine),
+            ),
+        );
+        (Self { router }, engine)
+    }
+
     /// One S3 Control call, signed for `region` and made for the emulator's own
     /// account.
     pub(crate) async fn s3control(
