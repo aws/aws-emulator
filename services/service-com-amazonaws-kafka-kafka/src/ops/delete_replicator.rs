@@ -12,11 +12,15 @@
 //! this service waits for one.
 //!
 //! The replicator is resolved as the readers resolve it: a value that is not shaped
-//! like a replicator ARN is a `BadRequestException`, and a well-formed one this
-//! endpoint's region holds no replicator for is a `NotFoundException` naming the
-//! input member at fault. A `CurrentVersion` the caller supplies must be the version
-//! the replicator is actually at, so a delete quoting a stale version is refused
-//! rather than applied to a replicator the caller has not seen.
+//! like a replicator ARN is a `BadRequestException` — naming the version
+//! pre-condition the request asked for and this service cannot check against a
+//! reference that resolves no replicator, or the ARN member itself when the request
+//! supplied no version ([`crate::state::unreadable_delete_reference`]) — and a
+//! well-formed one this endpoint's region holds no replicator for is a
+//! `NotFoundException` naming the input member at fault. A `CurrentVersion` the
+//! caller supplies must be the version the replicator is actually at, so a delete
+//! quoting a stale version is refused rather than applied to a replicator the caller
+//! has not seen.
 //!
 //! ## Shape of an operation
 //!
@@ -169,10 +173,16 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let region = crate::state::request_region(ctx.parts());
         // A value that is not a replicator ARN at all names no replicator: the
         // service's one fixed sentence for an unusable value, which echoes none of
-        // it.
+        // it. A request that supplied `currentVersion` asked for a version
+        // pre-condition that no unreadable reference can ever satisfy, so that is
+        // the input the refusal names.
         if !crate::state::is_replicator_arn(&input.replicator_arn) {
             return Err(DeleteReplicatorErrorModeled::BadRequestException(
-                crate::state::invalid_replicator_arn(),
+                crate::state::unreadable_delete_reference(
+                    input.current_version.as_deref(),
+                    crate::state::REPLICATOR_ARN_MEMBER,
+                    crate::state::VALUE_NOT_VALID_MESSAGE,
+                ),
             )
             .into());
         }

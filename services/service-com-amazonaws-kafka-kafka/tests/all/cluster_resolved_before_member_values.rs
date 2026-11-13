@@ -30,8 +30,6 @@
 //! what that operation answers an out-of-range freshness on a channel it does
 //! hold is `channel_destination_update.rs`'s rule.
 
-use std::time::{Duration, Instant};
-
 use serde_json::{json, Value};
 
 // The service's own fixed refusal wordings and the published bounds the rows are
@@ -42,17 +40,11 @@ use service_com_amazonaws_kafka_kafka::state::{
     RESOURCE_NOT_FOUND_MESSAGE,
 };
 
-// The router harness, the signing region, the account id and the URI encoder
-// every suite of this crate shares, so this one adds only its own rule.
-use super::kafka_harness::{pct, ClusterRequest, Emulator, Reply, ACCOUNT, REGION};
-
-/// How long a poll waits for a cluster to reach `ACTIVE` before the suite calls
-/// it a failure: far longer than the span the service owes the transition, so the
-/// deadline says nothing about how fast the host runs.
-const ACTIVE_DEADLINE: Duration = Duration::from_secs(60);
-
-/// How long a poll waits between two reads of a cluster that has not settled yet.
-const POLL_INTERVAL: Duration = Duration::from_millis(100);
+// The router harness, the signing region, the account id, the URI encoder and the
+// shared wait for a cluster to settle, so this one adds only its own rule.
+use super::kafka_harness::{
+    pct, poll_until_active, ClusterRequest, Emulator, Reply, ACCOUNT, REGION,
+};
 
 /// One row: an operation that names its cluster in the URI, called with ONE
 /// member value the service refuses.
@@ -159,32 +151,6 @@ async fn send(emulator: &Emulator, cluster_arn: &str, row: &Row) -> Reply {
             Some(row.body.clone()),
         )
         .await
-}
-
-/// Poll `DescribeCluster` until the cluster reports `ACTIVE` and hand back the
-/// version it settled at. Waits for the CONDITION rather than for a span: the
-/// transition is one the clock owes the cluster, so the loop reads again until it
-/// is reported or [`ACTIVE_DEADLINE`] passes.
-async fn poll_until_active(emulator: &Emulator, arn: &str, case: &str) -> String {
-    let deadline = Instant::now() + ACTIVE_DEADLINE;
-    loop {
-        let described = emulator.describe(arn).await;
-        if described.at("/clusterInfo/state").as_str() == Some("ACTIVE") {
-            return described
-                .at("/clusterInfo/currentVersion")
-                .as_str()
-                .unwrap_or_else(|| {
-                    panic!("case {case}: an ACTIVE cluster reported no currentVersion")
-                })
-                .to_string();
-        }
-        assert!(
-            Instant::now() < deadline,
-            "case {case}: the cluster never reported ACTIVE, last read {}",
-            described.body
-        );
-        std::thread::sleep(POLL_INTERVAL);
-    }
 }
 
 /// A cluster created in `region` and waited into `ACTIVE`, as (ARN, version).

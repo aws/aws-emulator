@@ -87,6 +87,8 @@ mod connectivity_update;
 mod create_and_update_input_gates;
 #[path = "all/create_cluster_v2.rs"]
 mod create_cluster_v2;
+#[path = "all/delete_version_precondition_attribution.rs"]
+mod delete_version_precondition_attribution;
 #[path = "all/describe_cluster_v2.rs"]
 mod describe_cluster_v2;
 #[path = "all/identity_policy_gate.rs"]

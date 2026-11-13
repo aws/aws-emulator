@@ -15,7 +15,7 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use serde_json::{json, Map, Value};
 use service_com_amazonaws_iam_awsidentitymanagementv20100508::state as iam;
@@ -1092,6 +1092,46 @@ impl ClusterRequest {
 /// timer feature; nothing else has to make progress here.
 pub fn sleep_past_activation() {
     std::thread::sleep(CLUSTER_ACTIVATION_DELAY + Duration::from_millis(250));
+}
+
+/// How long [`poll_until_active`] waits for a cluster to report `ACTIVE` before
+/// a suite calls it a failure: far longer than the span the service owes that
+/// transition, so the deadline says nothing about how fast the host runs.
+pub const CLUSTER_ACTIVE_DEADLINE: Duration = Duration::from_secs(60);
+
+/// How long that poll waits between two reads of a cluster that has not settled
+/// yet — a probing cadence, not a bound on the transition.
+pub const CLUSTER_POLL_INTERVAL: Duration = Duration::from_millis(100);
+
+/// Poll `DescribeCluster` until the cluster reports `ACTIVE`, and hand back the
+/// version it settled at.
+///
+/// Waits for the CONDITION rather than for a span: the transition is one the
+/// clock owes the cluster, so the loop reads again until it is reported or
+/// [`CLUSTER_ACTIVE_DEADLINE`] passes. The shared counterpart of
+/// [`sleep_past_activation`] for a suite that would rather look again than wait a
+/// fixed time; `std::thread::sleep` between probes because the workspace's tokio
+/// carries no timer feature, and nothing else has to make progress here.
+pub async fn poll_until_active(emulator: &Emulator, arn: &str, case: &str) -> String {
+    let deadline = Instant::now() + CLUSTER_ACTIVE_DEADLINE;
+    loop {
+        let described = emulator.describe(arn).await;
+        if described.at("/clusterInfo/state").as_str() == Some("ACTIVE") {
+            return described
+                .at("/clusterInfo/currentVersion")
+                .as_str()
+                .unwrap_or_else(|| {
+                    panic!("case {case}: an ACTIVE cluster reported no currentVersion")
+                })
+                .to_string();
+        }
+        assert!(
+            Instant::now() < deadline,
+            "case {case}: the cluster never reported ACTIVE, last read {}",
+            described.body
+        );
+        std::thread::sleep(CLUSTER_POLL_INTERVAL);
+    }
 }
 
 /// Sleep past the emulator's own `CREATING` -> `ACTIVE` span for a CHANNEL, which

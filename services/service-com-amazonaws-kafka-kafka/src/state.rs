@@ -4282,6 +4282,33 @@ pub fn invalid_replicator_arn() -> BadRequestException {
     parameter_refusal(REPLICATOR_ARN_MEMBER, VALUE_NOT_VALID_MESSAGE)
 }
 
+/// The refusal a DELETE whose version pre-condition is OPT-IN answers a resource
+/// reference it cannot read with — and which input that refusal blames.
+///
+/// The two deletes of this service take the resource's version on the optional
+/// `currentVersion` query parameter, so a request that sends one asks for the
+/// delete to go through only while the resource is still at that version. A
+/// reference the service cannot read at all resolves no resource, so that
+/// pre-condition can never be satisfied: the input the refusal names is the
+/// version it could not check ([`CURRENT_VERSION_MEMBER`]). A request that sent
+/// no version states no such pre-condition, so the same refusal names the member
+/// that carried the unreadable reference (`arn_member`).
+///
+/// The sentence is the surface's own either way ([`BAD_REQUEST_MESSAGE`] for the
+/// cluster delete, [`VALUE_NOT_VALID_MESSAGE`] for the replicator one), fixed end
+/// to end: only which input is blamed depends on the request, and neither the
+/// reference nor the version reaches the message.
+pub fn unreadable_delete_reference(
+    current_version: Option<&str>,
+    arn_member: &str,
+    message: &str,
+) -> BadRequestException {
+    match current_version {
+        Some(_) => parameter_refusal(CURRENT_VERSION_MEMBER, message),
+        None => parameter_refusal(arn_member, message),
+    }
+}
+
 /// The sentence an operation that models NO `NotFoundException` answers a
 /// well-formed resource ARN this endpoint's region holds nothing for with.
 ///

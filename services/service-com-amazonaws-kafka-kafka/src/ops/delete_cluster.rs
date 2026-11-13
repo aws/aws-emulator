@@ -14,8 +14,12 @@
 //! real service's longer-lived `DELETING` window.
 //!
 //! A `ClusterArn` that is not shaped like an MSK cluster ARN is a
-//! `BadRequestException`; a well-formed one this endpoint's region holds no cluster
-//! for — absent, or belonging to another region — is a `NotFoundException`.
+//! `BadRequestException` naming the version pre-condition the request asked for
+//! and this service cannot check against a reference that resolves no cluster
+//! (`currentVersion`), or the ARN member itself when the request supplied no
+//! version ([`crate::state::unreadable_delete_reference`]); a well-formed one
+//! this endpoint's region holds no cluster for — absent, or belonging to another
+//! region — is a `NotFoundException`.
 //!
 //! ## Shape of an operation
 //!
@@ -168,9 +172,17 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .into());
         };
         let region = crate::state::request_region(ctx.parts());
+        // A reference this service cannot read as a cluster ARN resolves no
+        // cluster, so a request that supplied `currentVersion` is told the
+        // version pre-condition it asked for is what cannot be satisfied; one
+        // that supplied none is told about the reference itself.
         if !crate::state::is_cluster_arn(&input.cluster_arn) {
             return Err(DeleteClusterErrorModeled::BadRequestException(
-                crate::state::malformed_arn(crate::state::CLUSTER_ARN_MEMBER),
+                crate::state::unreadable_delete_reference(
+                    input.current_version.as_deref(),
+                    crate::state::CLUSTER_ARN_MEMBER,
+                    crate::state::BAD_REQUEST_MESSAGE,
+                ),
             )
             .into());
         }
