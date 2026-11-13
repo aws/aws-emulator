@@ -268,9 +268,7 @@ impl ComAmazonawsBedrockagentAmazonbedrockagentbuildtimelambdaState {
         if flow_version == DRAFT_VERSION {
             return self.flows.contains_key(flow_id);
         }
-        flow_version
-            .parse::<u32>()
-            .is_ok_and(|version| self.flow_versions.contains_key(&(flow_id.to_string(), version)))
+        self.flow_version_of(flow_id, flow_version).is_some()
     }
 
     /// One `ListFlowAliases` page: this flow's aliases in creation order and

@@ -41,6 +41,8 @@ mod flow_version_listing;
 mod flow_version_minting;
 #[path = "all/flow_version_prepare_ordering.rs"]
 mod flow_version_prepare_ordering;
+#[path = "all/flow_version_reads.rs"]
+mod flow_version_reads;
 #[path = "all/flow_version_snapshots.rs"]
 mod flow_version_snapshots;
 #[path = "all/immutable_configuration_members.rs"]

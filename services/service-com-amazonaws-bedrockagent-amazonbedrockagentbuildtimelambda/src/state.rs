@@ -175,7 +175,7 @@ use crate::ops::types::{
     Agent, AgentSummary, CreateFlowOutput, CreateFlowVersionOutput, CustomDocumentIdentifier,
     CustomOrchestration, DataSource, DataSourceConfiguration, DocumentContent, DocumentIdentifier,
     DocumentMetadata, FlowDefinition, FlowValidation, FlowVersionSummary, GetFlowOutput,
-    GuardrailConfiguration, ImageExtractionConfiguration, IngestionJob, IngestionJobStatistics,
+    GetFlowVersionOutput, GuardrailConfiguration, ImageExtractionConfiguration, IngestionJob, IngestionJobStatistics,
     KnowledgeBase, KnowledgeBaseConfiguration, KnowledgeBaseDocumentDetail, KnowledgeBaseSummary,
     MediaExtractionConfiguration, MemoryConfiguration, PromptOverrideConfiguration, S3Content,
     S3Location, ServerSideEncryptionConfiguration, StorageConfiguration, UpdateFlowOutput,
@@ -355,15 +355,15 @@ impl AgentRecord {
 /// an emulator serves, and it is what stops the flow state growing without end.
 pub const FLOW_QUOTA: usize = 1_000;
 
-/// The `GetFlow$includedData` value that asks for resource metadata only: the
-/// member is documented "Set to METADATA_ONLY to return only resource metadata.
-/// Set to ALL_DATA or omit this field to return the full response", and the flow
+/// The `includedData` value that asks for resource metadata only: the member is
+/// documented "Set to METADATA_ONLY to return only resource metadata. Set to
+/// ALL_DATA or omit this field to return the full response", and the flow
 /// definition is the one non-metadata part of that response.
 pub const INCLUDED_DATA_METADATA_ONLY: &str = "METADATA_ONLY";
 
-/// Whether a `GetFlow` carrying this `includedData` is asking for the flow
+/// Whether a read carrying this `includedData` is asking for the flow
 /// definition: every value but [`INCLUDED_DATA_METADATA_ONLY`] is, an omitted
-/// member included.
+/// member included. One rule for every operation the member is modelled on.
 pub fn included_data_carries_definition(included_data: Option<&str>) -> bool {
     included_data != Some(INCLUDED_DATA_METADATA_ONLY)
 }
@@ -810,6 +810,27 @@ impl FlowVersionRecord {
             created_at: to_date_time(self.created_at),
             version: self.version.to_string(),
             definition: self.definition.clone(),
+        }
+    }
+
+    /// This record as the `GetFlowVersion` response: the snapshot the version was
+    /// cut as, reported from the store rather than read back off the flow, so a
+    /// later change to the DRAFT never moves what a numbered version reports.
+    ///
+    /// `with_definition` is false for a metadata-only read, which drops the flow
+    /// definition and nothing else.
+    pub fn to_get_output(&self, with_definition: bool) -> GetFlowVersionOutput {
+        GetFlowVersionOutput {
+            name: self.name.clone(),
+            description: self.description.clone(),
+            execution_role_arn: self.execution_role_arn.clone(),
+            customer_encryption_key_arn: self.customer_encryption_key_arn.clone(),
+            id: self.flow_id.clone(),
+            arn: self.arn.clone(),
+            status: self.status.as_wire().to_string(),
+            created_at: to_date_time(self.created_at),
+            version: self.version.to_string(),
+            definition: with_definition.then(|| self.definition.clone()).flatten(),
         }
     }
 }
@@ -3262,6 +3283,16 @@ impl ComAmazonawsBedrockagentAmazonbedrockagentbuildtimelambdaState {
                 .collect(),
             next_token,
         )
+    }
+
+    /// The stored version the modelled `NumericalVersion` token names on this
+    /// flow, or `None` when the flow holds no version cut under that number.
+    ///
+    /// A numbered version is identified by the pair, so one flow never reports
+    /// another flow's version.
+    pub fn flow_version_of(&self, flow_id: &str, flow_version: &str) -> Option<&FlowVersionRecord> {
+        let version = flow_version.parse::<u32>().ok()?;
+        self.flow_versions.get(&(flow_id.to_string(), version))
     }
 
     /// The numbered versions this flow has been cut into.
