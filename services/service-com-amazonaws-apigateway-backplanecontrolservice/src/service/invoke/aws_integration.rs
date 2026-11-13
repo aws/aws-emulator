@@ -21,7 +21,10 @@
 //!   when its path names a bucket and nothing under it (`path/{bucket}`);
 //! * AMAZON SQS, whose queue actions the `path` form addresses by the queue
 //!   (`path/{account-id}/{queue-name}`) and whose action and parameters the integration
-//!   request then carries as its own query api's wire form does ([`sqs`]).
+//!   request then carries as its own query api's wire form does ([`sqs`]);
+//! * AMAZON DYNAMODB, whose actions the `action` form names and whose inputs the
+//!   integration request carries in its BODY, as that service's own JSON api's wire form
+//!   does ([`dynamodb`]).
 //!
 //! The call is made THROUGH THE EMULATOR this service is running within, over the
 //! in-process transport `OperationContext::callback` hands a handler: nothing is invented
@@ -904,6 +907,17 @@ fn bounded(bytes: usize) -> Result<(), UnservedIntegration> {
         });
     }
     Ok(())
+}
+
+/// The SERVICE the fifth field of an integration ARN names, from the two spellings
+/// `Integration$uri` documents for it: `{subdomain.service|service}`. So the service is the
+/// field itself, or the label after its last dot where the `uri` carries a subdomain in
+/// front of it — which names the same service either way.
+fn named_service(field: &str) -> &str {
+    match field.rsplit_once('.') {
+        Some((_, service)) => service,
+        None => field,
+    }
 }
 
 /// What the service answered a call it REFUSED, read off the answer itself: the status it

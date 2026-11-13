@@ -51,8 +51,9 @@ use crate::service::mapping_template::TemplateInputs;
 
 use super::super::{MethodRequest, UnservedIntegration, INTEGRATION_REQUEST_QUERY_PREFIX};
 use super::{
-    bounded, mapped_value, refusal_of, substituted, unanswered, Answered, ACCESS_DENIED_CODE,
-    ACCESS_DENIED_STATUS, ACTION_FORM_PREFIX, APIGATEWAY_VENDOR, PATH_FORM_PREFIX,
+    bounded, mapped_value, named_service, refusal_of, substituted, unanswered, Answered,
+    ACCESS_DENIED_CODE, ACCESS_DENIED_STATUS, ACTION_FORM_PREFIX, APIGATEWAY_VENDOR,
+    PATH_FORM_PREFIX,
 };
 
 /// The subdomain field that names Amazon SQS, from the form `Integration$uri` documents.
@@ -280,17 +281,6 @@ pub(super) fn addressed_queue(
         return None;
     }
     Some(resolved_queue(integration, &arn, default_region, call))
-}
-
-/// The SERVICE the fifth field of an integration ARN names, from the two spellings
-/// `Integration$uri` documents for it: `{subdomain.service|service}`. So the service is the
-/// field itself, or the label after its last dot where the `uri` carries a subdomain in
-/// front of it — which names the same service either way.
-fn named_service(field: &str) -> &str {
-    match field.rsplit_once('.') {
-        Some((_, service)) => service,
-        None => field,
-    }
 }
 
 /// The call the integration ARN `arn` and the integration request together name.

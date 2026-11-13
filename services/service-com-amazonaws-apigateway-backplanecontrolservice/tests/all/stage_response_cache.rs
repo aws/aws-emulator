@@ -23,7 +23,9 @@
 //! * a `Cache-Control: max-age=0` ask that needs the `execute-api:InvalidateCache` grant and
 //!   has none is answered as the stage's `unauthorizedCacheControlHeaderStrategy` says, over
 //!   a table spanning each of the three modelled strategies, a stage that requires no
-//!   authorization at all, and an api whose resource policy grants the action;
+//!   authorization at all, an api whose resource policy grants the action, and each half of
+//!   the refusal the failing strategy takes — the missing-token refusal for a caller that
+//!   presented no credential, and the IAM-shaped one for a caller that presented one;
 //! * the integration's `cacheNamespace` decides which resources share one entry, over a
 //!   table of two resources grouped under one namespace and two carrying the per-resource
 //!   default;
@@ -80,6 +82,14 @@ const WARNING_HEADER: &str = "warning";
 
 /// The invalidation ask: the header API Gateway documents for reloading a cached entry.
 const INVALIDATION_ASK: (&str, &str) = ("cache-control", "max-age=0");
+
+/// A SigV4 credential scope naming this endpoint, as a signed request carries one: what
+/// tells a caller that PRESENTED a credential from one that presented none. The signature
+/// itself is not verified here (the harness runs with request authentication off), so only
+/// its presence is what a row varies.
+const SIGNED_CREDENTIAL: &str =
+    "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20260101/us-east-1/execute-api/aws4_request, \
+     SignedHeaders=host, Signature=0123456789abcdef";
 
 /// One deployed api carrying a cached `GET /items`, with the stage's cache cluster settled.
 struct Deployed {
@@ -638,26 +648,46 @@ async fn the_cache_namespace_decides_which_resources_share_an_entry() {
 struct Answered {
     /// The status the ask is answered with.
     status: u16,
-    /// The body it is answered with, or `None` when the body is the refusal sentence
-    /// rather than one of the two integration bodies.
+    /// The body it is answered with, or `None` when the body is the refusal rather than one
+    /// of the two integration bodies — which refusal is decided by whether the caller
+    /// presented a credential at all ([`REFUSED_UNSIGNED_MESSAGE`]).
     body: Option<&'static str>,
     /// Whether the response carries the warning header.
     warned: bool,
 }
 
+/// The sentence an ask from a caller that presented NO credential is refused with: nothing
+/// authenticated, so the endpoint answers the missing-token refusal rather than a decision
+/// about a principal.
+const REFUSED_UNSIGNED_MESSAGE: &str = "Missing Authentication Token";
+
+/// What the refusal of an ask from a caller that DID present a credential names: the action
+/// the api's policy decided against, in the sentence AWS refuses an unauthorized call with.
+const REFUSED_SIGNED_ACTION: &str = "is not authorized to perform: execute-api:InvalidateCache";
+
 #[tokio::test]
 async fn an_unauthorized_cache_control_ask_is_answered_as_the_stages_strategy_says() {
     // Rows span every modelled `unauthorizedCacheControlHeaderStrategy` value, plus the two
     // ways an ask is AUTHORIZED at all: a stage that requires no authorization for it, and
-    // an api whose resource policy grants the action. The last row is the control for that
-    // grant: a policy granting only `execute-api:Invoke` authorizes no invalidation.
-    type Row = (&'static str, bool, Option<&'static str>, Option<&'static str>, Answered);
+    // an api whose resource policy grants the action. Two rows are the control for that
+    // grant: a policy granting only `execute-api:Invoke` authorizes no invalidation, for a
+    // caller that presented a credential and for one that presented none — the two halves
+    // of the refusal the failing strategy takes.
+    type Row = (
+        &'static str,
+        bool,
+        Option<&'static str>,
+        Option<&'static str>,
+        bool,
+        Answered,
+    );
     let rows: &[Row] = &[
         (
             "the strategy that fails the request",
             true,
             Some("FAIL_WITH_403"),
             None,
+            false,
             Answered {
                 status: 403,
                 body: None,
@@ -669,6 +699,7 @@ async fn an_unauthorized_cache_control_ask_is_answered_as_the_stages_strategy_sa
             true,
             Some("SUCCEED_WITH_RESPONSE_HEADER"),
             None,
+            false,
             Answered {
                 status: 200,
                 body: Some(FIRST_BODY),
@@ -680,6 +711,7 @@ async fn an_unauthorized_cache_control_ask_is_answered_as_the_stages_strategy_sa
             true,
             Some("SUCCEED_WITHOUT_RESPONSE_HEADER"),
             None,
+            false,
             Answered {
                 status: 200,
                 body: Some(FIRST_BODY),
@@ -691,6 +723,7 @@ async fn an_unauthorized_cache_control_ask_is_answered_as_the_stages_strategy_sa
             false,
             Some("FAIL_WITH_403"),
             None,
+            false,
             Answered {
                 status: 200,
                 body: Some(SECOND_BODY),
@@ -702,6 +735,7 @@ async fn an_unauthorized_cache_control_ask_is_answered_as_the_stages_strategy_sa
             true,
             Some("FAIL_WITH_403"),
             Some("execute-api:InvalidateCache"),
+            false,
             Answered {
                 status: 200,
                 body: Some(SECOND_BODY),
@@ -713,6 +747,19 @@ async fn an_unauthorized_cache_control_ask_is_answered_as_the_stages_strategy_sa
             true,
             Some("FAIL_WITH_403"),
             Some("execute-api:Invoke"),
+            false,
+            Answered {
+                status: 403,
+                body: None,
+                warned: false,
+            },
+        ),
+        (
+            "a signed caller a policy granting only the invoke does not authorize",
+            true,
+            Some("FAIL_WITH_403"),
+            Some("execute-api:Invoke"),
+            true,
             Answered {
                 status: 403,
                 body: None,
@@ -721,7 +768,9 @@ async fn an_unauthorized_cache_control_ask_is_answered_as_the_stages_strategy_sa
         ),
     ];
 
-    for (index, (case, require, named_strategy, granted, expected)) in rows.iter().enumerate() {
+    for (index, (case, require, named_strategy, granted, signed, expected)) in
+        rows.iter().enumerate()
+    {
         let gateway = Gateway::new();
         let deployed = Deployed::stand_up(&gateway, &format!("ask-{index}"), true).await;
         if let Some(action) = granted {
@@ -763,7 +812,11 @@ async fn an_unauthorized_cache_control_ask_is_answered_as_the_stages_strategy_sa
             .rewrite_response(&gateway, case, SECOND_BODY)
             .await;
 
-        let answered = deployed.invoke(&gateway, &[INVALIDATION_ASK]).await;
+        let ask: Vec<(&str, &str)> = match signed {
+            true => vec![INVALIDATION_ASK, ("authorization", SIGNED_CREDENTIAL)],
+            false => vec![INVALIDATION_ASK],
+        };
+        let answered = deployed.invoke(&gateway, &ask).await;
         assert_eq!(
             answered.status, expected.status,
             "case {case}: expected {} for the ask, got {} with {:?}",
@@ -775,20 +828,28 @@ async fn an_unauthorized_cache_control_ask_is_answered_as_the_stages_strategy_sa
                 "case {case}: expected {body} for the ask, got {:?}",
                 answered.body
             ),
+            None if *signed => {
+                // A caller that PRESENTED a credential names a principal the api's policy
+                // decided against, so the refusal is the IAM-shaped sentence naming the
+                // action it asked for and the method it asked for.
+                assert!(
+                    answered.body.contains(REFUSED_SIGNED_ACTION)
+                        && answered.body.contains(&deployed.method_arn()),
+                    "case {case}: expected the IAM-shaped refusal sentence naming \
+                     {REFUSED_SIGNED_ACTION}, got {:?}",
+                    answered.body
+                );
+            }
             None => {
-                // The refusal names the principal, the action it asked for and the method
-                // it asked for — the sentence AWS refuses an unauthorized call with.
+                // A caller that presented NO credential authenticated nobody, so the
+                // endpoint answers the refusal it takes for an authorization it cannot take
+                // at all rather than a decision about a principal.
                 let parsed: Value = serde_json::from_str(&answered.body)
                     .unwrap_or_else(|_| panic!("case {case}: expected a JSON body, got {:?}", answered.body));
-                let expected_message = format!(
-                    "User: anonymous is not authorized to perform: \
-                     execute-api:InvalidateCache on resource: {arn}",
-                    arn = deployed.method_arn()
-                );
                 assert_eq!(
-                    parsed["Message"].as_str(),
-                    Some(expected_message.as_str()),
-                    "case {case}: expected the IAM-shaped refusal sentence, got {:?}",
+                    parsed["message"].as_str(),
+                    Some(REFUSED_UNSIGNED_MESSAGE),
+                    "case {case}: expected the missing-token refusal, got {:?}",
                     answered.body
                 );
             }

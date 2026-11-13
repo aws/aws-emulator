@@ -1766,3 +1766,12 @@ mod cognito_signed_session_leading_keys_partition;
 // target can deploy it.
 #[path = "all/cloudformation_rest_api_token_authorizer_credentials.rs"]
 mod cloudformation_rest_api_token_authorizer_credentials;
+// deployed REST stage whose method integrates an Amazon DynamoDB ACTION answers, and what the
+// stage's response cache then holds for it, spans IAM, DynamoDB and API Gateway at once, so
+// no single crate's test target can make the call and then read the item it wrote.
+#[path = "all/apigateway_dynamodb_service_integration.rs"]
+mod apigateway_dynamodb_service_integration;
+// EventBridge at once, so no single service crate's test target can deploy it. Declared
+// once, in the head region above.
+// it. Declared once, in the head region above.
+// crate's test target can ask it. Declared once, beside the suites above.

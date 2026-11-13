@@ -216,7 +216,9 @@
 //!   `requireAuthorizationForCacheControl` decides whether that ask needs the
 //!   [`resource_policy::INVALIDATE_CACHE_ACTION`] grant. An ask that needs one and has none
 //!   is answered as `unauthorizedCacheControlHeaderStrategy` says: `FAIL_WITH_403` refuses
-//!   the request with the IAM-shaped sentence for that action, and the two `SUCCEED_…`
+//!   the request — as the missing-token refusal where the caller presented no credential at
+//!   all, and with the IAM-shaped sentence for that action where it presented one
+//!   ([`response_cache::invalidation_refusal`]) — and the two `SUCCEED_…`
 //!   values serve the request with the header ignored — stating that in the response
 //!   ([`IGNORED_CACHE_CONTROL_WARNING`]) or not, as the value says.
 //!
@@ -399,17 +401,12 @@ const STRATEGY_SUCCEED_WITH_RESPONSE_HEADER: &str = "SUCCEED_WITH_RESPONSE_HEADE
 /// status or transformation of a message" in.
 const WARNING_HEADER: &str = "warning";
 
-/// What that header says. The warn-code is 199, the "miscellaneous warning" HTTP reserves
-/// for text a client may show its user, and the warn-agent is the endpoint that added it.
-/// AWS publishes the STRATEGY (`SUCCEED_WITH_RESPONSE_HEADER` — serve the request and state
-/// that the header was ignored) rather than a field or a sentence for it, so what is
-/// MODELLED here is that a response states it at all: the text names the permission the
-/// request lacked, which is what the caller would have to be granted, and the wire test
-/// asserts the header's PRESENCE rather than this text, so correcting the wording later
-/// changes no expectation.
-const IGNORED_CACHE_CONTROL_WARNING: &str = "199 execute-api \"Cache-Control header ignored: \
-                                             the caller is not authorized to perform \
-                                             execute-api:InvalidateCache\"";
+/// What that header says: the sentence AWS answers an ignored cache-control header with,
+/// whole. The warn-code is 199, the "miscellaneous warning" HTTP reserves for text a client
+/// may show its user, and nothing in the line is taken from the request — AWS emits this
+/// same text for every request this strategy serves.
+const IGNORED_CACHE_CONTROL_WARNING: &str =
+    "199 Cache-control headers were ignored because the caller was unauthorized.";
 
 /// The `methodSettings` key that names EVERY method of a stage, which is the fallback for a
 /// method the stage holds no settings of its own for: `UpdateStage` keys a patch of
@@ -1817,8 +1814,9 @@ async fn serving<Eng: Send + Sync + 'static>(
                 Caching::On(plan) => Some(plan),
                 // The stage requires authorization for a cache-control header, this caller
                 // holds none and the stage's strategy is to fail such a request: answered
-                // through `ACCESS_DENIED`, carrying the sentence for the action it asked for.
-                Caching::Refused(message) => {
+                // through the refusal this endpoint takes for an authorization it cannot
+                // take at all ([`invalidation_refusal`]).
+                Caching::Refused(refusal) => {
                     tracing::warn!(
                         api_id = %api.id,
                         stage = %stage.stage_name,
@@ -1826,10 +1824,7 @@ async fn serving<Eng: Send + Sync + 'static>(
                         verb = %verb,
                         "the caller is not authorized to invalidate this stage's cached response"
                     );
-                    break 'planned Planned::answered(refusal_response(
-                        Some(api),
-                        access_denied(message),
-                    ));
+                    break 'planned Planned::answered(refusal_response(Some(api), refusal));
                 }
             };
 

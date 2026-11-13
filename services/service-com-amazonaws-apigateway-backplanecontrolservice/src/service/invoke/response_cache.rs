@@ -21,8 +21,9 @@ pub(super) enum Caching {
     On(CachePlan),
     /// The request asked for the held entry to be reloaded, the stage requires
     /// authorization for that ask, the caller holds none and the stage's strategy for such
-    /// a request is to fail it: this is the sentence it is refused with.
-    Refused(String),
+    /// a request is to fail it: this is the refusal it is answered through
+    /// ([`invalidation_refusal`]).
+    Refused(GatewayRefusal),
 }
 
 /// What this call's caching amounts to: the entry the stage's cluster holds it under, how
@@ -107,7 +108,7 @@ pub(super) fn cache_plan(
                 .as_deref()
             {
                 Some(STRATEGY_FAIL_WITH_403) => {
-                    return Caching::Refused(resource_policy::invalidation_not_authorized(call));
+                    return Caching::Refused(invalidation_refusal(req, call));
                 }
                 Some(STRATEGY_SUCCEED_WITH_RESPONSE_HEADER) => warn = true,
                 // `SUCCEED_WITHOUT_RESPONSE_HEADER`, and a stage that names no strategy at
@@ -122,6 +123,25 @@ pub(super) fn cache_plan(
         reload,
         warn,
     })
+}
+
+/// How the endpoint refuses an invalidation ask the stage requires authorization for and
+/// this caller does not hold, under the strategy that fails such a request
+/// ([`STRATEGY_FAIL_WITH_403`]).
+///
+/// Which refusal that is follows the ONE rule this endpoint refuses every request needing an
+/// authorization it cannot take by: a request carrying NO credential at all authenticated
+/// nobody, so there is no principal for a policy to be read against and it is answered the
+/// way an unsigned request to a method needing a credential is — the missing-token refusal,
+/// `403` through [`MISSING_AUTHENTICATION_TOKEN`]. A request that DID present a credential
+/// names a principal the api's policy decided against, which is an authorization failure: it
+/// is answered through `ACCESS_DENIED`, carrying the sentence AWS refuses the action it asked
+/// for with ([`resource_policy::invalidation_not_authorized`]).
+fn invalidation_refusal(req: &RtRequest, call: &resource_policy::Call<'_>) -> GatewayRefusal {
+    if carries_sigv4_credential(req) {
+        return access_denied(resource_policy::invalidation_not_authorized(call));
+    }
+    MISSING_AUTHENTICATION_TOKEN
 }
 
 /// The method settings in force for the method `verb` on the deployed resource path

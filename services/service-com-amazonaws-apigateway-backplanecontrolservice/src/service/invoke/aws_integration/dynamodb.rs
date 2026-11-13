@@ -147,9 +147,8 @@ fn resolved(
         true => default_region,
         false => arn.region,
     };
-    let resource = substituted(arn.resource, integration, &call.inputs).map_err(|reason| {
-        unanswered(&reason)
-    })?;
+    let resource =
+        substituted(arn.resource, integration, &call.inputs).map_err(|reason| unanswered(&reason))?;
     // Only the ACTION form addresses this api: the `path` form is a service's own REST path,
     // and this one publishes none — every operation of it is reached at the service's root.
     let Some(named) = resource.strip_prefix(ACTION_FORM_PREFIX) else {
