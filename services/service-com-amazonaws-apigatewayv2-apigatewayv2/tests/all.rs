@@ -185,6 +185,8 @@ mod portal_product_update;
 mod portal_publication;
 #[path = "all/portal_publication_revocation.rs"]
 mod portal_publication_revocation;
+#[path = "all/portal_summary_projection.rs"]
+mod portal_summary_projection;
 #[path = "all/portal_terminal_lifecycle.rs"]
 mod portal_terminal_lifecycle;
 #[path = "all/portal_update.rs"]

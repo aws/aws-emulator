@@ -40,3 +40,8 @@ Replay verdict `mismatch`. Cause 1 detail: `$.items[0]: missing (expected {... '
 
 ## Steps to Reproduce
 Replay the corpus. Cause 1: create a portal, then GET /v2/portals (fixture apigatewayv2-portal-create-update-delete-lifecycle step task#3) — the single element of `items` has no `preview` key. Cause 2: create two portals and GET /v2/portals (apigatewayv2-portal-multiple-isolation#task#3) — neither element carries `preview`.
+
+## Resolution
+Both causes are resolved: every element of a `ListPortals` page carries `preview` (the empty structure until a preview has been built), because the operation projects each paged record through the one portal projection every portal reader shares. Pinned by `services/service-com-amazonaws-apigatewayv2-apigatewayv2/tests/all/portal_summary_projection.rs`, over collections of one to five portals with no, some and every preview built, at every page size.
+
+The replay key `apigateway|ListPortals|2xx->2xx|$.items[*]` is a WHOLE-ELEMENT key and still diverges, on one member only: `endpointConfiguration.portalDefaultDomainName`, the loopback address the emulator is reachable on (the Note above excludes it from this issue). That member is owned by `issues/things-that-do-not-work/20261103T032504Z-apigateway-portal-responses-return-a-host-port-url.md`, which carries the same member's keys for `CreatePortal`, `GetPortal` and `UpdatePortal`; the element cannot diverge in any other member, because the list element and the `GetPortal` body are one projection of one record. So read this key as resolved for `preview` and still open for that member under the issue that owns it.
