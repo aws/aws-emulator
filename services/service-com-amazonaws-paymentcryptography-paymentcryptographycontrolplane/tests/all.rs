@@ -21,6 +21,8 @@ mod export_and_replication_parameters;
 mod export_key;
 #[path = "all/key_lifecycle.rs"]
 mod key_lifecycle;
+#[path = "all/key_modes_of_use_discriminator.rs"]
+mod key_modes_of_use_discriminator;
 #[path = "all/key_usage_and_replication.rs"]
 mod key_usage_and_replication;
 #[path = "all/resource_tags.rs"]

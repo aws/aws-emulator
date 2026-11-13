@@ -77,7 +77,26 @@ pub struct ValidationException {
     pub message: Option<String>,
 }
 
-#[smithy_macros::smithy(shape = "com.amazonaws.paymentcryptography#KeyModesOfUse")]
+/// The list of cryptographic operations a key may be used for.
+///
+/// Written out by hand rather than produced by `#[smithy_macros::smithy(shape = ...)]`
+/// for one reason: this service puts a type discriminator on the serialized object.
+/// Every response that carries this structure — nested under `Key.KeyAttributes` or
+/// under `KeySummary.KeyAttributes` — carries, beside the nine modelled booleans, a
+/// `__type` member naming the structure the service resolves this shape to
+/// ([`KeyModesOfUse::TYPE_DISCRIMINATOR`]). The member is not in the model, so the
+/// macro cannot emit it, and it belongs on the ONE writer of this shape rather than at
+/// each call site: writing it in [`SerializableStruct::serialize_members`] below puts it
+/// on every path that serializes these modes of use, whichever operation that is.
+///
+/// Everything else mirrors the macro's output for a structure: one `M_<MEMBER>` member
+/// schema per modelled member (index = position in the member list), a `SCHEMA` naming
+/// them in that order, the `<SHAPE>_SCHEMA` alias, and the serialize/deserialize pair.
+/// The discriminator's own member schema is deliberately absent from `SCHEMA`, which
+/// stays exactly the modelled shape: a request that echoes `__type` back at us is then
+/// skipped as an unknown member, as AWS's forward-compatible readers do. Constraint
+/// traits are absent for the same reason as elsewhere: a `PrimitiveBoolean` carries
+/// none.
 #[derive(Debug, Clone, Default)]
 pub struct KeyModesOfUse {
     pub encrypt: bool,
@@ -89,6 +108,191 @@ pub struct KeyModesOfUse {
     pub verify: bool,
     pub derive_key: bool,
     pub no_restrictions: bool,
+}
+
+#[allow(non_upper_case_globals)]
+impl KeyModesOfUse {
+    const SHAPE_ID: &'static str = "com.amazonaws.paymentcryptography#KeyModesOfUse";
+    const NAMESPACE: &'static str = "com.amazonaws.paymentcryptography";
+
+    /// The structure this service resolves the modes of use to, as the discriminator
+    /// on the serialized object names it. Fixed text: it identifies a shape, so it is
+    /// the same in every response, for every key and every caller.
+    pub const TYPE_DISCRIMINATOR: &'static str = "com.amazonaws.magnus#KeyModesOfUse";
+
+    pub const M_ENCRYPT: ::aws_smithy_schema::Schema = ::aws_smithy_schema::Schema::new_member(
+        ::aws_smithy_schema::ShapeId::from_static(
+            "com.amazonaws.paymentcryptography#KeyModesOfUse$Encrypt",
+            Self::NAMESPACE,
+            "Encrypt",
+        ),
+        ::aws_smithy_schema::ShapeType::Boolean,
+        "Encrypt",
+        0,
+    );
+    pub const M_DECRYPT: ::aws_smithy_schema::Schema = ::aws_smithy_schema::Schema::new_member(
+        ::aws_smithy_schema::ShapeId::from_static(
+            "com.amazonaws.paymentcryptography#KeyModesOfUse$Decrypt",
+            Self::NAMESPACE,
+            "Decrypt",
+        ),
+        ::aws_smithy_schema::ShapeType::Boolean,
+        "Decrypt",
+        1,
+    );
+    pub const M_WRAP: ::aws_smithy_schema::Schema = ::aws_smithy_schema::Schema::new_member(
+        ::aws_smithy_schema::ShapeId::from_static(
+            "com.amazonaws.paymentcryptography#KeyModesOfUse$Wrap",
+            Self::NAMESPACE,
+            "Wrap",
+        ),
+        ::aws_smithy_schema::ShapeType::Boolean,
+        "Wrap",
+        2,
+    );
+    pub const M_UNWRAP: ::aws_smithy_schema::Schema = ::aws_smithy_schema::Schema::new_member(
+        ::aws_smithy_schema::ShapeId::from_static(
+            "com.amazonaws.paymentcryptography#KeyModesOfUse$Unwrap",
+            Self::NAMESPACE,
+            "Unwrap",
+        ),
+        ::aws_smithy_schema::ShapeType::Boolean,
+        "Unwrap",
+        3,
+    );
+    pub const M_GENERATE: ::aws_smithy_schema::Schema = ::aws_smithy_schema::Schema::new_member(
+        ::aws_smithy_schema::ShapeId::from_static(
+            "com.amazonaws.paymentcryptography#KeyModesOfUse$Generate",
+            Self::NAMESPACE,
+            "Generate",
+        ),
+        ::aws_smithy_schema::ShapeType::Boolean,
+        "Generate",
+        4,
+    );
+    pub const M_SIGN: ::aws_smithy_schema::Schema = ::aws_smithy_schema::Schema::new_member(
+        ::aws_smithy_schema::ShapeId::from_static(
+            "com.amazonaws.paymentcryptography#KeyModesOfUse$Sign",
+            Self::NAMESPACE,
+            "Sign",
+        ),
+        ::aws_smithy_schema::ShapeType::Boolean,
+        "Sign",
+        5,
+    );
+    pub const M_VERIFY: ::aws_smithy_schema::Schema = ::aws_smithy_schema::Schema::new_member(
+        ::aws_smithy_schema::ShapeId::from_static(
+            "com.amazonaws.paymentcryptography#KeyModesOfUse$Verify",
+            Self::NAMESPACE,
+            "Verify",
+        ),
+        ::aws_smithy_schema::ShapeType::Boolean,
+        "Verify",
+        6,
+    );
+    pub const M_DERIVE_KEY: ::aws_smithy_schema::Schema = ::aws_smithy_schema::Schema::new_member(
+        ::aws_smithy_schema::ShapeId::from_static(
+            "com.amazonaws.paymentcryptography#KeyModesOfUse$DeriveKey",
+            Self::NAMESPACE,
+            "DeriveKey",
+        ),
+        ::aws_smithy_schema::ShapeType::Boolean,
+        "DeriveKey",
+        7,
+    );
+    pub const M_NO_RESTRICTIONS: ::aws_smithy_schema::Schema =
+        ::aws_smithy_schema::Schema::new_member(
+            ::aws_smithy_schema::ShapeId::from_static(
+                "com.amazonaws.paymentcryptography#KeyModesOfUse$NoRestrictions",
+                Self::NAMESPACE,
+                "NoRestrictions",
+            ),
+            ::aws_smithy_schema::ShapeType::Boolean,
+            "NoRestrictions",
+            8,
+        );
+
+    /// The member schema the type discriminator is written through. Its member name is
+    /// the wire key, and its index sits past the modelled members so it can never be
+    /// mistaken for one of them on the read side.
+    pub const M_TYPE: ::aws_smithy_schema::Schema = ::aws_smithy_schema::Schema::new_member(
+        ::aws_smithy_schema::ShapeId::from_static(
+            "com.amazonaws.paymentcryptography#KeyModesOfUse$__type",
+            Self::NAMESPACE,
+            "__type",
+        ),
+        ::aws_smithy_schema::ShapeType::String,
+        "__type",
+        9,
+    )
+    .with_json_name("__type");
+
+    pub const SCHEMA: ::aws_smithy_schema::Schema = ::aws_smithy_schema::Schema::new_struct(
+        ::aws_smithy_schema::ShapeId::from_static(
+            Self::SHAPE_ID,
+            Self::NAMESPACE,
+            "KeyModesOfUse",
+        ),
+        ::aws_smithy_schema::ShapeType::Structure,
+        &[
+            &Self::M_ENCRYPT,
+            &Self::M_DECRYPT,
+            &Self::M_WRAP,
+            &Self::M_UNWRAP,
+            &Self::M_GENERATE,
+            &Self::M_SIGN,
+            &Self::M_VERIFY,
+            &Self::M_DERIVE_KEY,
+            &Self::M_NO_RESTRICTIONS,
+        ],
+    );
+}
+
+pub static KEY_MODES_OF_USE_SCHEMA: &::aws_smithy_schema::Schema = &KeyModesOfUse::SCHEMA;
+
+impl ::aws_smithy_schema::serde::SerializableStruct for KeyModesOfUse {
+    fn serialize_members(
+        &self,
+        s: &mut dyn ::aws_smithy_schema::serde::ShapeSerializer,
+    ) -> ::std::result::Result<(), ::aws_smithy_schema::serde::SerdeError> {
+        // The discriminator first, then the nine modelled flags. Each flag is a
+        // `PrimitiveBoolean` with `@default false`, so all nine are always written.
+        s.write_string(&Self::M_TYPE, Self::TYPE_DISCRIMINATOR)?;
+        s.write_boolean(&Self::M_ENCRYPT, self.encrypt)?;
+        s.write_boolean(&Self::M_DECRYPT, self.decrypt)?;
+        s.write_boolean(&Self::M_WRAP, self.wrap)?;
+        s.write_boolean(&Self::M_UNWRAP, self.unwrap)?;
+        s.write_boolean(&Self::M_GENERATE, self.generate)?;
+        s.write_boolean(&Self::M_SIGN, self.sign)?;
+        s.write_boolean(&Self::M_VERIFY, self.verify)?;
+        s.write_boolean(&Self::M_DERIVE_KEY, self.derive_key)?;
+        s.write_boolean(&Self::M_NO_RESTRICTIONS, self.no_restrictions)?;
+        Ok(())
+    }
+}
+
+impl ::aws_smithy_schema_server::DeserializableStruct for KeyModesOfUse {
+    fn deserialize(
+        d: &mut dyn ::aws_smithy_schema::serde::ShapeDeserializer,
+    ) -> ::std::result::Result<Self, ::aws_smithy_schema::serde::SerdeError> {
+        let mut out = Self::default();
+        d.read_struct(&Self::SCHEMA, &mut |member, d| {
+            match member.member_index() {
+                Some(0) => out.encrypt = d.read_boolean(&Self::M_ENCRYPT)?,
+                Some(1) => out.decrypt = d.read_boolean(&Self::M_DECRYPT)?,
+                Some(2) => out.wrap = d.read_boolean(&Self::M_WRAP)?,
+                Some(3) => out.unwrap = d.read_boolean(&Self::M_UNWRAP)?,
+                Some(4) => out.generate = d.read_boolean(&Self::M_GENERATE)?,
+                Some(5) => out.sign = d.read_boolean(&Self::M_SIGN)?,
+                Some(6) => out.verify = d.read_boolean(&Self::M_VERIFY)?,
+                Some(7) => out.derive_key = d.read_boolean(&Self::M_DERIVE_KEY)?,
+                Some(8) => out.no_restrictions = d.read_boolean(&Self::M_NO_RESTRICTIONS)?,
+                _ => {}
+            }
+            Ok(())
+        })?;
+        Ok(out)
+    }
 }
 
 #[smithy_macros::smithy(union_for = "com.amazonaws.paymentcryptography#DiffieHellmanDerivationData")]
