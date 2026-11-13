@@ -43,6 +43,9 @@ const SUBNET_IDS_PER_HOP: usize = 64;
 
 /// An AWS SDK client for EC2 over the in-process callback into this same emulator.
 ///
+/// Shared with [`super::ec2_security_groups`], the other hop this service makes into the
+/// owner of VPC resources, so both ask the same way.
+///
 /// `region` is the request's own signing region, so the question is asked in the Region the
 /// caller addressed. The endpoint URL is only the address the callback's transport routes on
 /// IN PROCESS: no socket is opened, no name is resolved and nothing leaves this process. The
@@ -54,7 +57,7 @@ const SUBNET_IDS_PER_HOP: usize = 64;
 /// (`service_common::arn::region_label`, the one place this tree states that grammar)
 /// instead of being interpolated as given: `None` for a value that would name an authority
 /// the caller chose rather than the peer service this emulator asks.
-fn ec2(
+pub(super) fn ec2(
     ctx: &smithy_server_runtime::OperationContext<'_>,
     region: &str,
 ) -> Option<::aws_sdk_ec2::Client> {
@@ -171,6 +174,7 @@ pub async fn resolve_subnet_networks(
                         subnet_id: subnet_id.to_string(),
                         cidr_block: subnet.cidr_block().map(str::to_string),
                         availability_zone: subnet.availability_zone().map(str::to_string),
+                        vpc_id: subnet.vpc_id().map(str::to_string),
                     },
                 );
             }

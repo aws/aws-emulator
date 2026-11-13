@@ -53,8 +53,9 @@ const CUSTOMER_DNS_IPS: [&str; 2] = ["10.7.0.10", "10.7.1.10"];
 
 /// A `SubnetId` of the shape the modelled pattern
 /// `^(subnet-[0-9a-f]{8}|subnet-[0-9a-f]{17})$` admits that EC2 mints no subnet for, so it
-/// reaches the create's resolution and resolves to nothing.
-const ABSENT_SUBNET: &str = "subnet-00000000deadbeef0";
+/// reaches the create's resolution and resolves to nothing. `pub(crate)` because the sibling
+/// suite `directory_security_group` asserts what a directory placed in nothing reports.
+pub(crate) const ABSENT_SUBNET: &str = "subnet-00000000deadbeef0";
 
 /// How long a polled state may take to settle before a case fails: far longer than any span
 /// this service publishes, and well inside what a client's waiter allows.
@@ -145,6 +146,8 @@ async fn resize_settled(
 ///
 /// Nothing here is written by this suite: the identifier, the block and the zone are all
 /// read back from the owner, which is also where the service under test resolves them.
+/// `pub(crate)` because the sibling suite `directory_security_group` places directories in
+/// the same account network.
 #[derive(Debug, Clone)]
 pub(crate) struct AccountSubnet {
     pub(crate) id: String,
@@ -164,7 +167,7 @@ pub(crate) struct Network {
     pub(crate) client: Vec<AccountSubnet>,
     /// The subnets EC2 materialises for the account's default VPC in this Region, in zone
     /// order — blocks this suite never writes.
-    default: Vec<AccountSubnet>,
+    pub(crate) default: Vec<AccountSubnet>,
 }
 
 /// The blocks the client's own subnets carry, which is what the rows differ along: four
@@ -188,8 +191,9 @@ const ZONES: [&str; 4] = ["us-east-1a", "us-east-1b", "us-east-1c", "us-east-1a"
 /// Stand this service up beside EC2 on one engine and build the account's network through
 /// EC2's own API.
 ///
-/// Shared with the sibling suite that needs the OWNER of VPCs and subnets mounted beside this
-/// service (`crate::vpc_resolution`), rather than stood up a second time there.
+/// Shared with the sibling suites that need the OWNER of VPCs and subnets mounted beside this
+/// service (`crate::vpc_resolution`, `crate::directory_security_group`), rather than stood up
+/// a second time there.
 pub(crate) async fn network() -> Network {
     let engine: Arc<engine::InMemoryEngine> = Arc::new(engine::InMemoryEngine::new());
     let mut router = MultiServiceRouter::new();
@@ -269,7 +273,7 @@ pub(crate) async fn network() -> Network {
 
 /// An EC2 client over `callback`, the in-process seam this emulator routes on: no socket is
 /// opened and the endpoint URL is only the address that transport routes by.
-fn ec2_client(callback: &EmbeddedEmulator) -> ::aws_sdk_ec2::Client {
+pub(crate) fn ec2_client(callback: &EmbeddedEmulator) -> ::aws_sdk_ec2::Client {
     let config = ::aws_sdk_ec2::Config::builder()
         .behavior_version(::aws_sdk_ec2::config::BehaviorVersion::latest())
         .region(::aws_sdk_ec2::config::Region::new(REGION.to_string()))

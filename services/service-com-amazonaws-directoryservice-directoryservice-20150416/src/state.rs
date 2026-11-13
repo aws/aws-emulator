@@ -83,6 +83,7 @@ mod directory_deletion;
 pub mod directory_network;
 pub mod directory_servers;
 pub mod directory_updates;
+pub mod ec2_security_groups;
 pub mod ec2_subnets;
 pub mod security_log;
 pub mod subnet_zones;
@@ -94,6 +95,7 @@ pub use directory_updates::UpdateActivityRecord;
 
 pub use directory_network::{server_address, SubnetNetwork};
 pub use directory_servers::{os_version_of, MICROSOFT_AD_OS_VERSION};
+pub use ec2_security_groups::{placement_vpc_id, provision_controllers_group};
 pub use ec2_subnets::{resolve_subnet_networks, vpc_absence};
 pub use subnet_zones::single_zone_defect;
 
@@ -2897,8 +2899,10 @@ impl Directory {
 
     /// This directory's placement as the modelled `DirectoryVpcSettingsDescription`: the VPC
     /// and subnets the create named, with the Availability Zones read off the subnets it
-    /// resolved. `None` for a directory stored without VPC settings, which reports its
-    /// placement as connection settings instead.
+    /// resolved and the security group the create provisioned for the directory's servers in
+    /// the service that owns security groups ([`ec2_security_groups`]). `None` for a directory
+    /// stored without VPC settings, which reports its placement as connection settings
+    /// instead.
     fn described_vpc_settings(&self) -> Option<DirectoryVpcSettingsDescription> {
         let settings = self.vpc_settings.as_ref()?;
         Some(DirectoryVpcSettingsDescription {
@@ -2909,7 +2913,9 @@ impl Directory {
 
     /// An AD Connector's placement as the modelled `DirectoryConnectSettingsDescription`:
     /// the VPC, subnets and service account the connect named, with the Availability Zones
-    /// of the subnets it resolved and the addresses of the connector servers themselves
+    /// of the subnets it resolved, the security group the connect provisioned for the
+    /// connector's servers ([`ec2_security_groups`]) and the addresses of those servers
+    /// themselves
     /// (`ConnectIps`, "the IP addresses of the AD Connector servers") — one per chosen
     /// subnet, out of that subnet's own block, placed exactly as a directory server is
     /// ([`Self::server_addresses`]). `None` for every other directory type.

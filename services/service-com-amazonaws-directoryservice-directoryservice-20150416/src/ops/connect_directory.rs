@@ -211,12 +211,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // placement naming a VPC the account does not have names a resource that does not
         // exist, which is the resource-semantics failure class (`ClientException`). Nothing is
         // refused where EC2 could not be asked.
-        if let Some(defect) = crate::state::vpc_absence(
-            ctx,
-            &crate::state::region_from_request(ctx.parts()),
-            &input.connect_settings.vpc_id,
-        )
-        .await
+        let region = crate::state::region_from_request(ctx.parts());
+        if let Some(defect) =
+            crate::state::vpc_absence(ctx, &region, &input.connect_settings.vpc_id).await
         {
             return Err(
                 ConnectDirectoryErrorModeled::ClientException(crate::state::refusal(defect))
@@ -225,10 +222,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         }
         let subnet_networks = crate::state::resolve_subnet_networks(
             ctx,
-            &crate::state::region_from_request(ctx.parts()),
+            &region,
             &input.connect_settings.subnet_ids,
         )
         .await;
+        // WHICH VPC the connector's servers end up on is the VPC of those subnets, as their
+        // owner reports it — the network the security group this create provisions for them
+        // has to be in. Read before the placement is moved into the record below.
+        let placement_vpc = crate::state::placement_vpc_id(&subnet_networks);
 
         // Two DIFFERENT subnets still have to be in two different zones, which only that
         // service can answer: a pair EC2 reports in ONE zone is refused as the
@@ -263,25 +264,49 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .collect();
 
         let now = ::std::time::SystemTime::now();
-        let mut store = state.lock();
-        store.advance_clock(now);
-
+        // The Region quota and the directory's own identifier: ONE short-lived lock, released
+        // with this block, so the hop into the owner of security groups below holds no guard.
+        // The group that hop asks for is named after the directory it belongs to, so the
+        // identifier is minted first — and the quota is what decides whether there is a
+        // connector to provision at all, so a create refused for it asks EC2 for nothing.
+        //
         // Each category of directory carries its own published Region quota, so this
         // create counts against the connected one alone — the same bound
         // `GetDirectoryLimits` reports as `ConnectedDirectoriesLimit`.
-        if store.category_limit_reached(crate::state::DirectoryLimitCategory::Connected) {
-            return Err(
-                ConnectDirectoryErrorModeled::DirectoryLimitExceededException(
-                    crate::state::refusal(format!(
-                        "Maximum number of directories in the region has been reached: {}",
-                        crate::state::MAX_CONNECTED_DIRECTORIES
-                    )),
-                )
-                .into(),
-            );
-        }
+        let directory_id = {
+            let mut store = state.lock();
+            store.advance_clock(now);
+            if store.category_limit_reached(crate::state::DirectoryLimitCategory::Connected) {
+                return Err(
+                    ConnectDirectoryErrorModeled::DirectoryLimitExceededException(
+                        crate::state::refusal(format!(
+                            "Maximum number of directories in the region has been reached: {}",
+                            crate::state::MAX_CONNECTED_DIRECTORIES
+                        )),
+                    )
+                    .into(),
+                );
+            }
+            store.mint_directory_id()
+        };
 
-        let directory_id = store.mint_directory_id();
+        // The connector's servers sit behind a security group Directory Service provisions for
+        // them — `DirectoryConnectSettingsDescription$SecurityGroupId`, "the security group
+        // identifier for the AD Connector directory". A security group is Amazon EC2's
+        // resource, so it is CREATED THERE, in the VPC the subnets resolved above belong to,
+        // and the id EC2 minted is what this directory reports: the group a client authorizes
+        // traffic to the connector's servers against is one the owner of security groups
+        // really holds. `None` where there was no resolved placement to put a group in, so
+        // nothing is reported that names no group anywhere.
+        let security_group_id = crate::state::provision_controllers_group(
+            ctx,
+            &region,
+            &directory_id,
+            placement_vpc.as_deref(),
+        )
+        .await;
+
+        let mut store = state.lock();
         let seq = store.next_seq();
         let record = crate::state::Directory {
             directory_id: directory_id.clone(),
@@ -309,13 +334,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 vpc_id: Some(input.connect_settings.vpc_id),
                 subnet_ids: Some(input.connect_settings.subnet_ids),
                 customer_user_name: Some(input.connect_settings.customer_user_name),
-                // The security group names an EC2 security group this create does not make,
-                // so it stays absent rather than invented. The Availability Zones and the
-                // addresses of the connector servers are REPORTED from the subnets resolved
-                // above (`Directory::availability_zones` / `Directory::server_addresses`);
-                // the IPv6 half belongs to a connector placed on an IPv6 block, which no
-                // create here records one for.
-                security_group_id: None,
+                // The security group the hop above provisioned for the connector's servers,
+                // as EC2 minted it. The Availability Zones and the addresses of the connector
+                // servers are REPORTED from the subnets resolved above
+                // (`Directory::availability_zones` / `Directory::server_addresses`); the IPv6
+                // half belongs to a connector placed on an IPv6 block, which no create here
+                // records one for.
+                security_group_id,
                 availability_zones: None,
                 connect_ips: None,
                 connect_ips_v6: None,
@@ -341,7 +366,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             tags,
             // The Region this connector is created in — its `Primary` one — is the one
             // the request was signed for.
-            primary_region: crate::state::region_from_request(ctx.parts()),
+            primary_region: region.clone(),
             additional_regions: ::std::collections::BTreeMap::new(),
             // `AddIpRoutes` is what routes an address block to this directory.
             ip_routes: ::std::collections::BTreeMap::new(),

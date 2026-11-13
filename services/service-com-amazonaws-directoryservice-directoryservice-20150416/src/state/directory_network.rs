@@ -49,6 +49,14 @@ pub struct SubnetNetwork {
     pub cidr_block: Option<String>,
     /// The Availability Zone the subnet sits in, as EC2 reports it.
     pub availability_zone: Option<String>,
+    /// The VPC the subnet belongs to, as EC2 reports it — the network the directory's
+    /// servers are really on, which is not the same claim as the `VpcId` the create's
+    /// settings block named.
+    ///
+    /// What it is for: the security group this service provisions for those servers is a
+    /// group IN that VPC ([`super::ec2_security_groups`]), so the create reads the VPC off
+    /// the subnets the owner of subnets resolved rather than off the request.
+    pub vpc_id: Option<String>,
 }
 
 /// How many addresses at the START of a subnet's CIDR block carry no server of the account.

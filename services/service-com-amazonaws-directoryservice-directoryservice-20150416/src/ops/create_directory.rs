@@ -240,6 +240,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             }
             None => ::std::collections::BTreeMap::new(),
         };
+        // WHICH VPC the directory's servers end up on is the VPC of those subnets, as their
+        // owner reports it — the network the security group this create provisions for them
+        // has to be in. Read before the placement is moved into the record below.
+        let placement_vpc = crate::state::placement_vpc_id(&subnet_networks);
 
         // Two DIFFERENT subnets still have to be in two different zones, which only that
         // service can answer: a pair EC2 reports in ONE zone is refused as the
@@ -272,23 +276,48 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .collect();
 
         let now = ::std::time::SystemTime::now();
-        let mut store = state.lock();
-        store.advance_clock(now);
-
+        // The Region quota and the directory's own identifier: ONE short-lived lock, released
+        // with this block, so the hop into the owner of security groups below holds no guard.
+        // The group that hop asks for is named after the directory it belongs to, so the
+        // identifier is minted first — and the quota is what decides whether there is a
+        // directory to provision at all, so a create refused for it asks EC2 for nothing.
+        //
         // Each category of directory carries its own published Region quota, so this
         // create counts against the cloud-only (Simple AD) one alone — the same bound
         // `GetDirectoryLimits` reports as `CloudOnlyDirectoriesLimit`.
-        if store.category_limit_reached(crate::state::DirectoryLimitCategory::CloudOnly) {
-            return Err(CreateDirectoryErrorModeled::DirectoryLimitExceededException(
-                crate::state::refusal(format!(
-                    "Maximum number of directories in the region has been reached: {}",
-                    crate::state::MAX_CLOUD_ONLY_DIRECTORIES
-                )),
-            )
-            .into());
-        }
+        let directory_id = {
+            let mut store = state.lock();
+            store.advance_clock(now);
+            if store.category_limit_reached(crate::state::DirectoryLimitCategory::CloudOnly) {
+                return Err(CreateDirectoryErrorModeled::DirectoryLimitExceededException(
+                    crate::state::refusal(format!(
+                        "Maximum number of directories in the region has been reached: {}",
+                        crate::state::MAX_CLOUD_ONLY_DIRECTORIES
+                    )),
+                )
+                .into());
+            }
+            store.mint_directory_id()
+        };
 
-        let directory_id = store.mint_directory_id();
+        // The directory's servers sit behind a security group Directory Service provisions for
+        // them — `DirectoryVpcSettingsDescription$SecurityGroupId`, "the domain controller
+        // security group identifier for the directory". A security group is Amazon EC2's
+        // resource, so it is CREATED THERE, in the VPC the subnets resolved above belong to,
+        // and the id EC2 minted is what this directory reports: the group a client authorizes
+        // traffic to the directory's servers against is one the owner of security groups
+        // really holds. `None` where there was no resolved placement to put a group in — a
+        // directory created with no VPC settings at all, or one whose subnets the owner
+        // reports nothing for — so nothing is reported that names no group anywhere.
+        let security_group_id = crate::state::provision_controllers_group(
+            ctx,
+            &primary_region,
+            &directory_id,
+            placement_vpc.as_deref(),
+        )
+        .await;
+
+        let mut store = state.lock();
         let seq = store.next_seq();
         let record = crate::state::Directory {
             directory_id: directory_id.clone(),
@@ -311,11 +340,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 .map(|requested| DirectoryVpcSettingsDescription {
                     vpc_id: Some(requested.vpc_id),
                     subnet_ids: Some(requested.subnet_ids),
-                    // The security group names an EC2 security group this create does
-                    // not make, so it stays absent rather than invented; the
-                    // Availability Zones are REPORTED from the subnets resolved above,
-                    // through `Directory::availability_zones`.
-                    security_group_id: None,
+                    // The security group the hop above provisioned for the directory's
+                    // servers, as EC2 minted it; the Availability Zones are REPORTED from
+                    // the subnets resolved above, through
+                    // `Directory::availability_zones`.
+                    security_group_id,
                     availability_zones: None,
                 }),
             // Only an AD Connector carries connection settings; `ConnectDirectory` is
@@ -336,7 +365,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // directory has none for `DescribeDomainControllers` to report.
             domain_controllers: ::std::collections::BTreeMap::new(),
             tags,
-            primary_region,
+            primary_region: primary_region.clone(),
             // `AddRegion` is what replicates a directory to another
             // Region; a fresh directory exists in its primary Region only.
             additional_regions: ::std::collections::BTreeMap::new(),

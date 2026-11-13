@@ -26,6 +26,12 @@
 //! and gives each controller an address out of its own subnet's CIDR block — the addresses
 //! `DescribeDirectories` reports as `DnsIpAddrs`.
 //!
+//! The create also provisions the network the controllers sit behind: the domain controller
+//! security group is created in the service that OWNS security groups, in the VPC those
+//! subnets belong to ([`crate::state::provision_controllers_group`]), and the id it minted is
+//! recorded on the directory — the `VpcSettings.SecurityGroupId` every reporting operation
+//! then names.
+//!
 //! The directory is persisted in the modelled `Requested` stage, and the stage the create
 //! owes is the CHAIN a build goes through: `Creating` once
 //! [`crate::state::TRANSITION_SPAN`] has elapsed, and `Active` only once the directory's
@@ -234,12 +240,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // placement naming a VPC the account does not have names a resource that does not
         // exist, which is the resource-semantics failure class (`ClientException`) and not a
         // malformed identifier. Nothing is refused where EC2 could not be asked.
-        if let Some(defect) = crate::state::vpc_absence(
-            ctx,
-            &crate::state::region_from_request(ctx.parts()),
-            &input.vpc_settings.vpc_id,
-        )
-        .await
+        let region = crate::state::region_from_request(ctx.parts());
+        if let Some(defect) =
+            crate::state::vpc_absence(ctx, &region, &input.vpc_settings.vpc_id).await
         {
             return Err(
                 CreateMicrosoftADErrorModeled::ClientException(crate::state::refusal(defect))
@@ -255,12 +258,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // to the validation refusal a MALFORMED subnet id gets — and nothing is refused
         // where EC2 could not be asked. Asked BEFORE the store lock is taken, so no guard
         // is held across the hop.
-        let subnet_networks = crate::state::resolve_subnet_networks(
-            ctx,
-            &crate::state::region_from_request(ctx.parts()),
-            &input.vpc_settings.subnet_ids,
-        )
-        .await;
+        let subnet_networks =
+            crate::state::resolve_subnet_networks(ctx, &region, &input.vpc_settings.subnet_ids)
+                .await;
+        // WHICH VPC the directory's servers end up on is the VPC of those subnets, as their
+        // owner reports it — the network the security group this create provisions for them
+        // has to be in. Read before the placement is moved into the record below.
+        let placement_vpc = crate::state::placement_vpc_id(&subnet_networks);
         if let Some(defect) =
             crate::state::single_zone_defect(&subnet_networks, &input.vpc_settings.subnet_ids)
         {
@@ -293,26 +297,51 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         };
 
         let now = ::std::time::SystemTime::now();
-        let mut store = state.lock();
-        store.advance_clock(now);
-
+        // The Region quota and the directory's own identifier: ONE short-lived lock, released
+        // with this block, so the hop into the owner of security groups below holds no guard.
+        // The group that hop asks for is named after the directory it belongs to, so the
+        // identifier is minted first — and the quota is what decides whether there is a
+        // directory to provision at all, so a create refused for it asks EC2 for nothing.
+        //
         // Each category of directory carries its own published Region quota, so this
         // create counts against the Managed Microsoft AD one alone — the same bound
         // `GetDirectoryLimits` reports as `CloudOnlyMicrosoftADLimit`.
-        if store.category_limit_reached(crate::state::DirectoryLimitCategory::CloudOnlyMicrosoftAd)
-        {
-            return Err(
-                CreateMicrosoftADErrorModeled::DirectoryLimitExceededException(
-                    crate::state::refusal(format!(
-                        "Maximum number of directories in the region has been reached: {}",
-                        crate::state::MAX_CLOUD_ONLY_MICROSOFT_AD_DIRECTORIES
-                    )),
-                )
-                .into(),
-            );
-        }
+        let directory_id = {
+            let mut store = state.lock();
+            store.advance_clock(now);
+            if store
+                .category_limit_reached(crate::state::DirectoryLimitCategory::CloudOnlyMicrosoftAd)
+            {
+                return Err(
+                    CreateMicrosoftADErrorModeled::DirectoryLimitExceededException(
+                        crate::state::refusal(format!(
+                            "Maximum number of directories in the region has been reached: {}",
+                            crate::state::MAX_CLOUD_ONLY_MICROSOFT_AD_DIRECTORIES
+                        )),
+                    )
+                    .into(),
+                );
+            }
+            store.mint_directory_id()
+        };
 
-        let directory_id = store.mint_directory_id();
+        // The directory's domain controllers sit behind a security group Directory Service
+        // provisions for them — `DirectoryVpcSettingsDescription$SecurityGroupId`, "the
+        // domain controller security group identifier for the directory". A security group is
+        // Amazon EC2's resource, so it is CREATED THERE, in the VPC the subnets resolved
+        // above belong to, and the id EC2 minted is what this directory reports: the group a
+        // client authorizes traffic to the directory's servers against is one the owner of
+        // security groups really holds. `None` where there was no resolved placement to put a
+        // group in, so nothing is reported that names no group anywhere.
+        let security_group_id = crate::state::provision_controllers_group(
+            ctx,
+            &region,
+            &directory_id,
+            placement_vpc.as_deref(),
+        )
+        .await;
+
+        let mut store = state.lock();
         let seq = store.next_seq();
         let record = crate::state::Directory {
             directory_id: directory_id.clone(),
@@ -338,11 +367,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             vpc_settings: Some(DirectoryVpcSettingsDescription {
                 vpc_id: Some(input.vpc_settings.vpc_id),
                 subnet_ids: Some(input.vpc_settings.subnet_ids),
-                // The security group names an EC2 security group this create does not make,
-                // so it stays absent rather than invented; the Availability Zones are
-                // REPORTED from the subnets resolved above, through
-                // `Directory::availability_zones`.
-                security_group_id: None,
+                // The security group the hop above provisioned for the directory's domain
+                // controllers, as EC2 minted it; the Availability Zones are REPORTED from the
+                // subnets resolved above, through `Directory::availability_zones`.
+                security_group_id,
                 availability_zones: None,
             }),
             // The subnets the directory's servers are placed in, as the owner of subnets
@@ -373,7 +401,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             tags,
             // The Region this directory is created in — its `Primary` one — is the one
             // the request was signed for.
-            primary_region: crate::state::region_from_request(ctx.parts()),
+            primary_region: region.clone(),
             // `AddRegion` is what replicates a directory to another
             // Region; a fresh directory exists in its primary Region only.
             additional_regions: ::std::collections::BTreeMap::new(),
@@ -439,7 +467,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             crate::state::directory_active_at(now),
         );
 
-        // Read the id back out of the store, so the response cannot name a directory
+        // Read the record back out of the store, so the response cannot name a directory
         // the insert did not persist.
         let stored = store
             .directories
