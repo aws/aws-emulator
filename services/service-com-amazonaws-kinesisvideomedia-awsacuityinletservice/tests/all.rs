@@ -17,6 +17,8 @@ mod control_plane_stream_reads;
 mod get_media;
 #[path = "all/ingest_plane_addressing.rs"]
 mod ingest_plane_addressing;
+#[path = "all/media_endpoint_grouping.rs"]
+mod media_endpoint_grouping;
 #[path = "all/put_media_ingest.rs"]
 mod put_media_ingest;
 #[path = "all/read_plane_addressing.rs"]

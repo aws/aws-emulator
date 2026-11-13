@@ -12,15 +12,16 @@
 //! public data host carries no control route at all.
 //!
 //! So a control-plane call that reached an address this store announced for a plane
-//! ([`super::super::state::published_plane`]) reached an endpoint that binds no operation
-//! for its path, and is answered as such: this family's front-door envelope for a request
-//! it can name no operation for ([`super::unknown_operation::unknown_operation_response`]),
-//! with no operation run, no member reported and nothing in the store touched. That is the
-//! envelope for a path the family DOES bind on an endpoint that does not bind it; a path no
-//! route of the family binds at all is the 404 of
-//! [`super::unknown_operation::unrouted_path_response`] instead. Every other address — the
-//! endpoint the client is already talking to, this service's published regional host —
-//! keeps serving the whole control surface.
+//! ([`super::super::state::published_plane`]) reached an endpoint that binds no route for
+//! its path at all, and is answered as such: the status this family gives a path it routes
+//! nothing for, with NO body, and the refusal's class in the `x-amzn-errortype` header
+//! ([`super::unknown_operation::UNKNOWN_OPERATION_CODE`]) — no operation run, no member
+//! reported, no message member of any kind, and nothing in the store touched. The class is
+//! stated where a restJson1 client reads a failure's code because this is the refusal a
+//! client re-discovers its endpoint off: it is the one a caller reaches by addressing the
+//! wrong plane of an endpoint set it was HANDED. Every other address — the endpoint the
+//! client is already talking to, this service's published regional host — keeps serving the
+//! whole control surface.
 
 use ::aws_smithy_runtime_api::http::{Request as RtRequest, Response as RtResponse};
 use ::smithy_server_runtime::{BoxFuture, ErasedOperation, OperationContext, Service};
@@ -41,7 +42,7 @@ pub fn addressed_a_data_plane<Eng: Send + Sync + 'static>(engine: &Eng, req: &Rt
 }
 
 /// Answers a control-plane call that reached a data plane's address: the refusal an
-/// endpoint gives a path it binds no operation for.
+/// endpoint gives a path it routes nothing for.
 ///
 /// Served as an operation rather than decided in `can_handle`, because the answer is this
 /// endpoint's own and not the router's "no service claimed it": the request did reach this
@@ -68,17 +69,32 @@ impl ErasedOperation for UnroutedOnDataPlaneAddress {
 }
 
 /// The front door's own answer to a request for a control route that reached an address
-/// this service announced for a data plane: no operation was identified to name a member or
-/// a value for.
+/// this service announced for a data plane: the 404 an endpoint gives a path it routes
+/// NOTHING for, identified by the refusal's own class and carrying no body at all.
 ///
-/// The wording is this family's envelope for a request it ACCEPTED on a route of the family
-/// and could then name no operation for
-/// ([`super::unknown_operation::unknown_operation_response`]) — which is what a control
-/// route asked for at the wrong address of this emulator is: the path is one this family
-/// binds, on an endpoint that does not bind it. A path NO route of the family binds at all
-/// is the other answer, the 404 of
-/// [`super::unknown_operation::unrouted_path_response`] — which is what the ingest route
-/// (`/putMedia`, bound at the write plane's address alone) answers everywhere else.
+/// A data endpoint hosts that plane's media APIs only, so a control route asked for there
+/// is a path that endpoint binds no route for — the status an endpoint answers such a path
+/// with ([`super::unknown_operation::UNROUTED_PATH_STATUS`]), and NO body: no operation was
+/// identified, so there is no member, value or sentence to state, and no message member of
+/// any kind is reported.
+///
+/// What it does state is its CLASS, in the `x-amzn-errortype` header
+/// ([`super::unknown_operation::UNKNOWN_OPERATION_CODE`]) — the one field a restJson1 client
+/// resolves a failure's code from, and the only thing in this answer. This is the refusal a
+/// client that followed `GetDataEndpoint` and then addressed the wrong plane of the endpoint
+/// set it was handed meets, and the code is what it branches on to discover its endpoint
+/// again, so an answer whose class an SDK cannot read leaves that loop unable to fire.
 fn unrouted_address_response() -> RtResponse {
-    super::unknown_operation::unknown_operation_response()
+    let mut response = RtResponse::new(
+        ::aws_smithy_runtime_api::http::StatusCode::try_from(
+            super::unknown_operation::UNROUTED_PATH_STATUS,
+        )
+        .expect("the status is a constant of the front door's own module"),
+        ::aws_smithy_types::body::SdkBody::empty(),
+    );
+    response.headers_mut().insert(
+        "x-amzn-errortype",
+        super::unknown_operation::UNKNOWN_OPERATION_CODE,
+    );
+    response
 }

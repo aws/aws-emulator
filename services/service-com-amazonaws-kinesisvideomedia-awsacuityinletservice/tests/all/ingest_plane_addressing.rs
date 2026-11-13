@@ -3,21 +3,24 @@
 //! WHERE the ingest route is served: the address the control plane announces for the
 //! write plane, and nowhere else on this emulator.
 //!
-//! The rule under test: a Kinesis Video Streams media API belongs to ONE access mode and
-//! is bound on the address announced for that mode — Kinesis Video Media's
+//! The rule under test: a Kinesis Video Streams media API is bound on the address
+//! `GetDataEndpoint` announces for the media endpoint that serves it — Kinesis Video
+//! Media's
 //! `InvalidEndpointException` is "Caller used wrong endpoint to write data to a stream. On
 //! receiving such an exception, the user must call `GetDataEndpoint` with `AccessMode` set
 //! to \"READ\"" — so `POST /putMedia` is served at the origin
 //! `GetDataEndpoint(APIName=PUT_MEDIA)` hands a producer. Every OTHER address of this
 //! emulator — the control-plane front door the discovery call itself arrived on, and the
-//! read plane's own origin — hosts no API at that path at all, so it answers the 404 an
+//! archived-media endpoint's own origin — hosts no API at that path at all, so it answers
+//! the 404 an
 //! endpoint gives a path it binds no ROUTE for, whose whole body is the bare element
 //! naming the unknown-operation class and which carries no error-type header, and ingests
 //! nothing: the stream's archive stays empty, while the identical bytes sent to the
 //! announced write origin persist exactly one fragment.
 //!
 //! The table's rows differ in the ADDRESS the producer sent the identical request to: the
-//! announced write origin, the announced read origin, and three forms of this emulator's
+//! announced write origin, the announced archive origin, and three forms of this
+//! emulator's
 //! own front-door address (an IPv4 loopback authority, the `localhost` name and a
 //! bracketed IPv6 literal) — plus the service's published regional host, which this
 //! emulator announced no plane at and cannot place on one, where the route's own claim
@@ -44,12 +47,12 @@ const PUBLISHED_HOST: &str = "kinesisvideo.us-east-1.amazonaws.com";
 /// One router over one engine, carrying the three services the ingest round trip needs:
 /// the control plane that creates the stream and announces the planes, this ingest/media
 /// service, and the archive read plane that reports what was ingested.
-struct Harness {
+pub(crate) struct Harness {
     router: MultiServiceRouter,
 }
 
 impl Harness {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let engine: Arc<engine::InMemoryEngine> = Arc::new(engine::InMemoryEngine::new());
         let mut router = MultiServiceRouter::new();
         router.set_request_authentication(false);
@@ -61,7 +64,7 @@ impl Harness {
 
     /// The SigV4 credential scope every request carries: its service field is the routing
     /// key the five Kinesis Video services share.
-    fn authorization() -> String {
+    pub(crate) fn authorization() -> String {
         format!(
             "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20261107/{REGION}/kinesisvideo/\
              aws4_request, SignedHeaders=host, Signature=0000"
@@ -69,7 +72,7 @@ impl Harness {
     }
 
     /// POST one restJson1 call at `authority`, the address the request arrives on.
-    async fn call_at(
+    pub(crate) async fn call_at(
         &self,
         authority: &str,
         path: &str,
@@ -90,7 +93,7 @@ impl Harness {
 
     /// POST one ingest session to `authority`, with the path a producer appends to the
     /// endpoint it was handed.
-    async fn put_media_at(
+    pub(crate) async fn put_media_at(
         &self,
         authority: &str,
         headers: &IngestHeaders,
@@ -115,7 +118,7 @@ impl Harness {
 
     /// Create `name` through the control plane, on the address the discovery call is made
     /// at, wait for it to be readable, and answer the `StreamARN` it minted.
-    async fn create_stream(&self, control: &str, name: &str) -> String {
+    pub(crate) async fn create_stream(&self, control: &str, name: &str) -> String {
         let response = self
             .call_at(
                 control,
@@ -170,7 +173,12 @@ impl Harness {
 
     /// The authority `GetDataEndpoint` announces for `api_name`, with the scheme stripped
     /// off: the address a producer or reader then dials.
-    async fn announced_authority(&self, control: &str, name: &str, api_name: &str) -> String {
+    pub(crate) async fn announced_authority(
+        &self,
+        control: &str,
+        name: &str,
+        api_name: &str,
+    ) -> String {
         let response = self
             .call_at(
                 control,
@@ -201,7 +209,7 @@ impl Harness {
 
     /// How many fragments the archive read plane reports for the stream `name`, over a
     /// window wide enough to hold anything this suite could ingest.
-    async fn archived_fragments(&self, control: &str, name: &str) -> usize {
+    pub(crate) async fn archived_fragments(&self, control: &str, name: &str) -> usize {
         let response = self
             .call_at(
                 control,
@@ -233,11 +241,11 @@ impl Harness {
     }
 }
 
-fn status(response: &http::Response<Bytes>) -> u16 {
+pub(crate) fn status(response: &http::Response<Bytes>) -> u16 {
     response.status().as_u16()
 }
 
-fn text(response: &http::Response<Bytes>) -> String {
+pub(crate) fn text(response: &http::Response<Bytes>) -> String {
     String::from_utf8_lossy(response.body()).to_string()
 }
 
@@ -247,7 +255,7 @@ fn json(response: &http::Response<Bytes>) -> serde_json::Value {
 
 /// The `EventType` values an ingest answer's acknowledgement stream carries, in order:
 /// one JSON object per line, which is what a producer reads off this wire.
-fn event_types(response: &http::Response<Bytes>) -> Vec<String> {
+pub(crate) fn event_types(response: &http::Response<Bytes>) -> Vec<String> {
     text(response)
         .lines()
         .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
@@ -265,8 +273,8 @@ fn event_types(response: &http::Response<Bytes>) -> Vec<String> {
 enum Address {
     /// The origin announced for `PUT_MEDIA`.
     AnnouncedWritePlane,
-    /// The origin announced for the read APIs.
-    AnnouncedReadPlane,
+    /// The origin announced for the archived-media APIs.
+    AnnouncedArchivePlane,
     /// A literal address of this emulator's own front door.
     FrontDoor(&'static str),
     /// The service's published regional host.
@@ -290,8 +298,8 @@ const ROWS: &[Row] = &[
         served: true,
     },
     Row {
-        case: "the announced read origin",
-        address: Address::AnnouncedReadPlane,
+        case: "the announced archive origin",
+        address: Address::AnnouncedArchivePlane,
         served: false,
     },
     Row {
@@ -330,12 +338,13 @@ async fn the_ingest_route_is_served_only_at_the_origin_announced_for_the_write_p
     let write_plane = harness
         .announced_authority(control, "plane-probe", "PUT_MEDIA")
         .await;
-    let read_plane = harness
+    let archive_plane = harness
         .announced_authority(control, "plane-probe", "LIST_FRAGMENTS")
         .await;
     assert_ne!(
-        write_plane, read_plane,
-        "the two planes must be announced at different addresses, got {write_plane:?} for both"
+        write_plane, archive_plane,
+        "the two media endpoints must be announced at different addresses, \
+         got {write_plane:?} for both"
     );
     assert_ne!(
         write_plane, control,
@@ -351,7 +360,7 @@ async fn the_ingest_route_is_served_only_at_the_origin_announced_for_the_write_p
         } = *row;
         let authority = match address {
             Address::AnnouncedWritePlane => write_plane.clone(),
-            Address::AnnouncedReadPlane => read_plane.clone(),
+            Address::AnnouncedArchivePlane => archive_plane.clone(),
             Address::FrontDoor(literal) => literal.to_string(),
             Address::PublishedHost => PUBLISHED_HOST.to_string(),
         };
@@ -508,8 +517,9 @@ async fn a_producer_dials_the_announced_write_origin_as_it_stands() {
     );
 }
 
-/// RULE: the read plane's own routes keep being served at the address announced for them —
-/// scoping the ingest route to its own origin takes nothing away from the other plane.
+/// RULE: the read routes keep being served at the address announced for the media endpoint
+/// that binds each of them — scoping the ingest route to its own origin takes nothing away
+/// from the reads, and the live read shares the ingest's own origin.
 #[tokio::test]
 async fn the_read_plane_still_serves_its_own_routes_at_the_origin_announced_for_it() {
     let harness = Harness::new();
@@ -518,9 +528,17 @@ async fn the_read_plane_still_serves_its_own_routes_at_the_origin_announced_for_
     let write_plane = harness
         .announced_authority(control, "read-probe", "PUT_MEDIA")
         .await;
-    let read_plane = harness
+    let live_plane = harness
+        .announced_authority(control, "read-probe", "GET_MEDIA")
+        .await;
+    let archive_plane = harness
         .announced_authority(control, "read-probe", "LIST_FRAGMENTS")
         .await;
+    assert_eq!(
+        live_plane, write_plane,
+        "case \"GET_MEDIA\": the live read is served at the origin the ingest is, \
+         got {live_plane:?} against {write_plane:?}"
+    );
 
     let headers = ingest_headers(
         ("x-amzn-stream-name", "read-probe".to_string()),
@@ -542,8 +560,13 @@ async fn the_read_plane_still_serves_its_own_routes_at_the_origin_announced_for_
         text(&ingested)
     );
 
-    // Each read route of the archive plane, asked for at the address announced for it.
-    for path in ["/listFragments", "/getMedia"] {
+    // Each read route, asked for at the origin announced for the media endpoint that
+    // binds it: the live read at this service's own origin, the archive listing at the
+    // archived-media endpoint's.
+    for (path, plane) in [
+        ("/listFragments", &archive_plane),
+        ("/getMedia", &live_plane),
+    ] {
         let body = match path {
             "/getMedia" => serde_json::json!({
                 "StreamName": "read-probe",
@@ -557,11 +580,11 @@ async fn the_read_plane_still_serves_its_own_routes_at_the_origin_announced_for_
                 },
             }),
         };
-        let response = harness.call_at(&read_plane, path, &body).await;
+        let response = harness.call_at(plane, path, &body).await;
         assert_eq!(
             status(&response),
             200,
-            "case {path:?} ({read_plane}): expected the announced read origin to serve it, \
+            "case {path:?} ({plane}): expected the origin announced for it to serve it, \
              got {} {}",
             status(&response),
             text(&response)

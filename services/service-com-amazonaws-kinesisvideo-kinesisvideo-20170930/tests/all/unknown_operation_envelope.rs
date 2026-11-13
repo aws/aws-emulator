@@ -11,10 +11,11 @@
 //! `x-amzn-errortype` names a shape of this service's.
 //!
 //! The rows differ in WHY no operation could be named: a method this service's model binds
-//! no route under, on each of several of its own routes, and a route of its own asked for
-//! at an address it announced for a data plane (where this endpoint's control routes are
-//! not bound at all). The modelled `POST` on the same route at the control-plane endpoint
-//! is served, so the refusals are about what is bound rather than about the request.
+//! no route under, on each of several of its own routes. The modelled `POST` on the same
+//! route at the control-plane endpoint is served, so the refusals are about what is bound
+//! rather than about the request. A route of this service asked for at an address it
+//! announced for a DATA plane is the other refusal class — a path that endpoint routes
+//! nothing for — and is asserted in `tests/all/data_plane_addresses.rs`.
 
 use std::sync::Arc;
 

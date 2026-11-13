@@ -258,8 +258,8 @@ async fn the_announced_data_endpoint_serves_the_media_reads_of_its_plane() {
     );
     await_active(&router, STREAM).await;
 
-    // One row per plane the published `APIName` set is partitioned into: the plane media is
-    // written to, and the plane it is read back from.
+    // One row per media endpoint the published `APIName` set is partitioned into: the live
+    // media endpoint, which binds the ingest and the live read, and the archived-media one.
     let write = data_endpoint(&router, "PUT_MEDIA").await;
     let read = data_endpoint(&router, "GET_MEDIA").await;
     let write_authority = announced_authority("PUT_MEDIA", &write);
@@ -272,39 +272,49 @@ async fn the_announced_data_endpoint_serves_the_media_reads_of_its_plane() {
         );
         assert_dialable(case, authority);
     }
-    assert_ne!(
+    assert_eq!(
         write_authority, read_authority,
-        "the plane that writes media must not be announced at the address that reads it, got \
-         {write_authority:?} and {read_authority:?}"
+        "the ingest and the live read are two APIs of one media endpoint, so one authority \
+         serves both, got {write_authority:?} and {read_authority:?}"
     );
-    // Every API that reads the stream shares the read plane's one address.
-    for api_name in ["LIST_FRAGMENTS", "GET_MEDIA_FOR_FRAGMENT_LIST", "GET_CLIP"] {
+    // Every API the ARCHIVED-media endpoint binds shares that endpoint's one address, which
+    // is not the live media endpoint's.
+    let archive = data_endpoint(&router, "LIST_FRAGMENTS").await;
+    let archive_authority = announced_authority("LIST_FRAGMENTS", &archive);
+    assert_ne!(
+        archive_authority, read_authority,
+        "the endpoint that reads stored fragments must not be announced at the live media \
+         one's address, got {archive_authority:?} for both"
+    );
+    assert_dialable("LIST_FRAGMENTS", &archive_authority);
+    for api_name in ["GET_MEDIA_FOR_FRAGMENT_LIST", "GET_CLIP"] {
         let endpoint = data_endpoint(&router, api_name).await;
         assert_eq!(
-            endpoint, read,
-            "case {api_name:?}: every API that reads the stream resolves to one endpoint, got \
-             {endpoint:?}"
+            endpoint, archive,
+            "case {api_name:?}: every API the archived-media endpoint binds resolves to one \
+             endpoint, got {endpoint:?}"
         );
     }
 
-    // The media and archived-media operations of the read plane, addressed to the authority
-    // the control plane announced for it: each is served by the service that models it. The
-    // same call addressed to the CONTROL-plane authority meets the other half of the split —
-    // a stream's media APIs are not served at the endpoint the discovery call is made to
-    // ("You must first call the GetDataEndpoint API to get an endpoint. Then send the
-    // GetMedia requests to this endpoint"), so Kinesis Video Media's own route is bound on
-    // the announced address alone and the control-plane front door answers it as the
+    // The media and archived-media operations, each addressed to the authority the control
+    // plane announced for the endpoint that binds it: each is served by the service that
+    // models it. The same call addressed to the CONTROL-plane authority meets the other half
+    // of the split — a stream's media APIs are not served at the endpoint the discovery call
+    // is made to ("You must first call the GetDataEndpoint API to get an endpoint. Then send
+    // the GetMedia requests to this endpoint"), so Kinesis Video Media's own route is bound
+    // on the announced address alone and the control-plane front door answers it as the
     // unroutable request it is. Archived Media's `/listFragments` is that service's route
     // and is not scoped by this emulator yet, so it still answers at either address; what
     // the row pins is that the announced authority is an address of THIS emulator rather
     // than a different one.
     //
-    // (case, path, the status at the announced read authority, the status at the
-    // control-plane authority)
-    let reads: &[(&str, &str, u16, u16, Value)] = &[
+    // (case, path, the authority announced for the endpoint binding it, the status there,
+    // the status at the control-plane authority)
+    let reads: &[(&str, &str, &String, u16, u16, Value)] = &[
         (
             "GetMedia on the announced authority",
             "/getMedia",
+            &read_authority,
             200,
             400,
             json!({ "StreamName": STREAM, "StartSelector": { "StartSelectorType": "EARLIEST" } }),
@@ -312,14 +322,15 @@ async fn the_announced_data_endpoint_serves_the_media_reads_of_its_plane() {
         (
             "ListFragments on the announced authority",
             "/listFragments",
+            &archive_authority,
             200,
             200,
             json!({ "StreamName": STREAM, "FragmentSelector": whole_archive() }),
         ),
     ];
-    for (case, path, on_the_plane, on_the_control_plane, body) in reads {
+    for (case, path, announced, on_the_plane, on_the_control_plane, body) in reads {
         for (authority, expected) in [
-            (read_authority.as_str(), *on_the_plane),
+            (announced.as_str(), *on_the_plane),
             (CONTROL_AUTHORITY, *on_the_control_plane),
         ] {
             let answer = call(&router, authority, path, body).await;

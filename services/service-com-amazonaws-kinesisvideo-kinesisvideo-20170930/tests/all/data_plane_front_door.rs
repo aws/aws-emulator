@@ -105,13 +105,14 @@ async fn an_announced_authority_resolves_to_the_plane_it_was_published_for() {
         )
         .await;
 
-    // (the API the address was announced for, the access mode it needs)
+    // (the API the address was announced for, the media endpoint that serves it)
     let rows: &[(&str, DataPlane)] = &[
-        ("PUT_MEDIA", DataPlane::Write),
-        ("GET_MEDIA", DataPlane::Read),
-        ("LIST_FRAGMENTS", DataPlane::Read),
-        ("GET_MEDIA_FOR_FRAGMENT_LIST", DataPlane::Read),
-        ("GET_CLIP", DataPlane::Read),
+        ("PUT_MEDIA", DataPlane::Media),
+        ("GET_MEDIA", DataPlane::Media),
+        ("LIST_FRAGMENTS", DataPlane::Archive),
+        ("GET_MEDIA_FOR_FRAGMENT_LIST", DataPlane::Archive),
+        ("GET_CLIP", DataPlane::Archive),
+        ("GET_IMAGES", DataPlane::Archive),
     ];
     for (api_name, plane) in rows {
         let authority = harness.announced_authority("scoped", api_name).await;

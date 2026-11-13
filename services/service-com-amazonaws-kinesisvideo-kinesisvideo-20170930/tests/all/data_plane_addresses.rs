@@ -2,9 +2,9 @@
 
 //! Which PLANE an address belongs to: the reading a plane's own routes are scoped by.
 //!
-//! The rule under test: an announced data endpoint is the address of ONE access mode's
-//! plane — Kinesis Video Media's `InvalidEndpointException` is "Caller used wrong endpoint
-//! to write data to a stream. On receiving such an exception, the user must call
+//! The rule under test: an announced data endpoint is the address of ONE media endpoint of
+//! this family — Kinesis Video Media's `InvalidEndpointException` is "Caller used wrong
+//! endpoint to write data to a stream. On receiving such an exception, the user must call
 //! `GetDataEndpoint` with `AccessMode` set to \"READ\"" — so the address announced for an
 //! `APIName` maps back to the plane that serves that API, and every other address maps to
 //! no plane at all: the control-plane front door the discovery call arrived on, the
@@ -13,7 +13,7 @@
 //! nowhere else, which is the half of the contract the data planes' own crates apply.
 //!
 //! The table spans what the rule generalises over: every `APIName` the model publishes
-//! (whose access modes partition them), both identifier forms of a stream, and the shapes
+//! (which the two media endpoints partition between them), both identifier forms of a stream, and the shapes
 //! of address that are not a plane's — this emulator's own front door, the published
 //! service host, an announced authority's host on another port, and a value no host is
 //! shaped like.
@@ -161,23 +161,25 @@ async fn an_announced_address_maps_back_to_the_plane_that_serves_its_api() {
 
 /// RULE: this service's own routes are served at the endpoint a control call arrives on
 /// and not at an address it announced for a data plane — a control call that reached a
-/// plane's address reached an endpoint that binds no operation for its path, so the front
-/// door answers it with HTTP 400 and this family's unknown-operation envelope, names no
-/// error type and changes nothing in the store, while the same call at the control-plane
-/// address is served.
+/// plane's address reached an endpoint that routes nothing for its path, so it is answered
+/// with the status this family gives such a path, with no body of any kind and its
+/// `x-amzn-errortype` naming the refusal's class where a restJson1 client reads a failure's
+/// code, and nothing in the store changes, while the same call at the control-plane address
+/// is served.
 ///
 /// The rows differ in the control operation asked for (a read, a list and the discovery
-/// call itself) and in the plane whose address it is asked at (write and read), so the
-/// scoping is a property of the address rather than of one operation.
+/// call itself) and in the plane whose address it is asked at (the live media endpoint and
+/// the archived-media one), so the scoping is a property of the address rather than of one
+/// operation.
 #[tokio::test]
 async fn a_control_call_is_not_served_at_an_address_announced_for_a_data_plane() {
     let harness = Harness::new();
     harness.create_stream("scoped").await;
-    let write = harness
+    let media = harness
         .announced_authority(serde_json::json!({ "StreamName": "scoped" }), "PUT_MEDIA")
         .await;
-    let read = harness
-        .announced_authority(serde_json::json!({ "StreamName": "scoped" }), "GET_MEDIA")
+    let archive = harness
+        .announced_authority(serde_json::json!({ "StreamName": "scoped" }), "LIST_FRAGMENTS")
         .await;
 
     // (the control path, the body it carries).
@@ -189,32 +191,35 @@ async fn a_control_call_is_not_served_at_an_address_announced_for_a_data_plane()
             serde_json::json!({ "StreamName": "scoped", "APIName": "PUT_MEDIA" }),
         ),
     ];
-    for plane in [&write, &read] {
+    for plane in [&media, &archive] {
         for (path, body) in &calls {
             let case = format!("{path} on {plane}");
             let response = harness.call_at(plane, path, body.clone()).await;
             assert_eq!(
                 response.status().as_u16(),
-                400,
+                404,
                 "case {case:?}: a data plane's address routes no control operation, got {} {:?}",
                 response.status(),
                 String::from_utf8_lossy(response.body())
             );
-            // The refusal is the front door's own answer to a request it can name no
-            // operation for, with no error-type header, because no operation was
-            // identified to name one for.
-            assert!(
-                response.headers().get("x-amzn-errortype").is_none(),
-                "case {case:?}: no operation was identified, so none is named in the \
-                 error-type header, got {:?}",
+            // The refusal states its own class, and nothing else: the class a client
+            // re-discovers its endpoint off, where a restJson1 client reads a failure's
+            // code.
+            assert_eq!(
+                response
+                    .headers()
+                    .get("x-amzn-errortype")
+                    .and_then(|value| value.to_str().ok()),
+                Some(kvs::service::unknown_operation::UNKNOWN_OPERATION_CODE),
+                "case {case:?}: the refusal states its own class in the error-type header, \
+                 got {:?}",
                 response.headers().get("x-amzn-errortype")
             );
             assert_eq!(
-                serde_json::from_slice::<serde_json::Value>(response.body())
-                    .unwrap_or(serde_json::Value::Null),
-                crate::unknown_operation_envelope::unknown_operation_envelope(),
-                "case {case:?}: expected the one envelope this family states an unroutable \
-                 request in, got {:?}",
+                String::from_utf8_lossy(response.body()).as_ref(),
+                "",
+                "case {case:?}: the refusal carries no body, and so no message member of any \
+                 kind, got {:?}",
                 String::from_utf8_lossy(response.body())
             );
         }
@@ -239,16 +244,16 @@ async fn a_control_call_is_not_served_at_an_address_announced_for_a_data_plane()
 async fn an_address_no_plane_was_announced_at_belongs_to_no_plane() {
     let harness = Harness::new();
     harness.create_stream("unplaced").await;
-    let write = harness
+    let media = harness
         .announced_authority(serde_json::json!({ "StreamName": "unplaced" }), "PUT_MEDIA")
         .await;
-    let (host, port) = write
-        .rsplit_once(':')
-        .unwrap_or_else(|| panic!("expected the announced origin to carry its port, got {write:?}"));
+    let (host, port) = media.rsplit_once(':').unwrap_or_else(|| {
+        panic!("expected the announced origin to carry its port, got {media:?}")
+    });
     let other_port = port
         .parse::<u16>()
         .map(|port| format!("{host}:{}", port.wrapping_add(1)))
-        .unwrap_or_else(|_| panic!("expected a port, got {write:?}"));
+        .unwrap_or_else(|_| panic!("expected a port, got {media:?}"));
 
     let cases: Vec<(&str, String)> = vec![
         ("the control-plane front door", CONTROL_AUTHORITY.to_string()),
@@ -272,8 +277,9 @@ async fn an_address_no_plane_was_announced_at_belongs_to_no_plane() {
     // And the one address that IS a plane's still is, so the cases above are not passing
     // because nothing was announced at all.
     assert_eq!(
-        kvs::state::published_plane(&*harness.engine, &write),
-        Some(kvs::state::DataPlane::Write),
-        "the announced write address must belong to the write plane, got none for {write:?}"
+        kvs::state::published_plane(&*harness.engine, &media),
+        Some(kvs::state::DataPlane::Media),
+        "the announced media address must belong to the live media endpoint, got none for \
+         {media:?}"
     );
 }

@@ -10,12 +10,12 @@
 //! this process does not answer on makes the discovered data plane unreachable however
 //! well-formed it looks. The value is therefore a bare `scheme://host[:port]` origin —
 //! no path, because "The returned endpoint does not have the API name appended. The
-//! client needs to add the API name to the returned endpoint" — of the plane the
-//! requested `APIName` needs, distinct per plane (Kinesis Video Media's
+//! client needs to add the API name to the returned endpoint" — of the media endpoint
+//! that serves the requested `APIName`, distinct per endpoint (Kinesis Video Media's
 //! `InvalidEndpointException`, "Caller used wrong endpoint to write data to a stream …
-//! the user must call `GetDataEndpoint` with `AccessMode` set to \"READ\"", is why the
-//! two modes are reported as two addresses) and distinct from the control-plane endpoint
-//! the call itself arrived on. Which operations each address SERVES is the rule
+//! the user must call `GetDataEndpoint` with `AccessMode` set to \"READ\"", is why an API
+//! addressed at an endpoint that does not bind it is refused) and distinct from the
+//! control-plane endpoint the call itself arrived on. Which operations each address SERVES is the rule
 //! `crate::service::data_plane_address` and the media services' own route claims state,
 //! asserted by `tests/all/data_plane_addresses.rs`.
 //!
@@ -288,20 +288,53 @@ async fn send_to_endpoint(
     }
 }
 
-/// The only API that WRITES media onto a stream; every other published value reads it.
+/// The API that WRITES media onto a stream, and the one the ingest route is addressed at.
 /// From the `APIName` enum (`smithy_query(query="shape", shape="APIName")`).
 const PUT_MEDIA: &str = "PUT_MEDIA";
 
-/// Every `APIName` the model publishes resolves to the data endpoint of the plane that
-/// serves it: a bare base URL that this emulator accepts a connection on, never the
-/// control-plane endpoint the call arrived on, with every API of one access mode on one
-/// endpoint and the two modes on different ones.
+/// Which media endpoint of this family serves each published `APIName`: the LIVE media
+/// endpoint (Kinesis Video Media, whose model binds `GetMedia`, with the recorded
+/// `PutMedia` ingest beside it) or the ARCHIVED-media one (Kinesis Video Archived Media,
+/// whose model binds `GetClip`, `GetDASHStreamingSessionURL`, `GetHLSStreamingSessionURL`,
+/// `GetImages`, `GetMediaForFragmentList` and `ListFragments`).
+///
+/// Written out here from each endpoint's own model (`smithy_query(query="digest")` on the
+/// Kinesis Video Media and Kinesis Video Archived Media models) rather than read back off
+/// the code under test, so a regrouping of the published API set has to fail here.
+const SERVING_ENDPOINT: &[(&str, &str)] = &[
+    ("PUT_MEDIA", "the live media endpoint"),
+    ("GET_MEDIA", "the live media endpoint"),
+    ("GET_CLIP", "the archived-media endpoint"),
+    ("GET_DASH_STREAMING_SESSION_URL", "the archived-media endpoint"),
+    ("GET_HLS_STREAMING_SESSION_URL", "the archived-media endpoint"),
+    ("GET_IMAGES", "the archived-media endpoint"),
+    ("GET_MEDIA_FOR_FRAGMENT_LIST", "the archived-media endpoint"),
+    ("LIST_FRAGMENTS", "the archived-media endpoint"),
+];
+
+/// The endpoint the catalog says serves `api_name`.
+fn serving_endpoint(api_name: &str) -> &'static str {
+    SERVING_ENDPOINT
+        .iter()
+        .find(|(name, _)| *name == api_name)
+        .map(|(_, endpoint)| *endpoint)
+        .unwrap_or_else(|| panic!("case {api_name:?}: the catalog must name the endpoint serving it"))
+}
+
+/// Every `APIName` the model publishes resolves to the data endpoint of the media endpoint
+/// that serves it: a bare base URL that this emulator accepts a connection on, never the
+/// control-plane endpoint the call arrived on, with every API one media endpoint binds on
+/// one address and the two endpoints on different ones.
 #[tokio::test]
 async fn each_api_name_resolves_to_a_reachable_endpoint_of_the_plane_that_serves_it() {
-    assert!(
-        kvs::ops::types::A_P_I_NAME_VALUES.contains(&PUT_MEDIA),
-        "the model should publish {PUT_MEDIA:?}, got {:?}",
-        kvs::ops::types::A_P_I_NAME_VALUES
+    // The catalog is about the published API set and nothing else: every value the model
+    // publishes is placed, and nothing it does not.
+    let catalogued: BTreeSet<&str> = SERVING_ENDPOINT.iter().map(|(name, _)| *name).collect();
+    let published: BTreeSet<&str> = kvs::ops::types::A_P_I_NAME_VALUES.iter().copied().collect();
+    assert_eq!(
+        catalogued, published,
+        "the catalog must name exactly the APIName values the model publishes, got \
+         {catalogued:?} against {published:?}"
     );
 
     for control in CONTROL_PLANES {
@@ -362,28 +395,38 @@ async fn each_api_name_resolves_to_a_reachable_endpoint_of_the_plane_that_serves
                 }
             }
 
-            // The published API set is partitioned by the access mode each API needs:
-            // the one that writes media to the stream, and the ones that read it. Two
-            // endpoints, and one plane's is not the other's.
-            let write_endpoint = endpoints
-                .get(PUT_MEDIA)
-                .unwrap_or_else(|| panic!("case {stream:?}: no endpoint for {PUT_MEDIA}"));
-            let read_endpoints: BTreeSet<&String> = endpoints
-                .iter()
-                .filter(|(api, _)| api.as_str() != PUT_MEDIA)
-                .map(|(_, endpoint)| endpoint)
-                .collect();
+            // The published API set is partitioned by the media endpoint that serves each
+            // API: the live media endpoint and the archived-media one. Each group is one
+            // address, and one group's is not the other's.
+            let mut grouped: BTreeMap<&str, BTreeSet<&String>> = BTreeMap::new();
+            for (api_name, endpoint) in &endpoints {
+                grouped
+                    .entry(serving_endpoint(api_name))
+                    .or_default()
+                    .insert(endpoint);
+            }
             assert_eq!(
-                read_endpoints.len(),
-                1,
-                "case {stream:?} on {}: every API that reads the stream shares one data \
-                 endpoint, got {endpoints:?}",
+                grouped.len(),
+                2,
+                "case {stream:?} on {}: the published APIs are served by two media \
+                 endpoints, got {grouped:?}",
                 control.authority
             );
-            assert!(
-                !read_endpoints.contains(write_endpoint),
-                "case {stream:?} on {}: the endpoint that writes media must not be the one \
-                 that reads it, got {endpoints:?}",
+            for (group, addresses) in &grouped {
+                assert_eq!(
+                    addresses.len(),
+                    1,
+                    "case {stream:?} {group:?} on {}: every API one media endpoint binds \
+                     shares one data endpoint, got {endpoints:?}",
+                    control.authority
+                );
+            }
+            let distinct: BTreeSet<&&String> = grouped.values().flatten().collect();
+            assert_eq!(
+                distinct.len(),
+                2,
+                "case {stream:?} on {}: the two media endpoints are two addresses, \
+                 got {endpoints:?}",
                 control.authority
             );
         }
@@ -500,8 +543,8 @@ async fn an_announced_data_endpoint_is_answered_by_this_emulators_own_front_door
     let router = harness();
     create_stream(&router, control, "dialled").await;
 
-    // One case per plane, each dialled with the media path of that plane: the write
-    // plane's ingest path and a read plane's archived-media path.
+    // One case per plane, each dialled with a media path that plane serves: the live
+    // media endpoint's ingest path and the archived-media endpoint's listing path.
     let cases: &[(&str, &str)] = &[(PUT_MEDIA, "/putMedia"), ("LIST_FRAGMENTS", "/listFragments")];
     for (api_name, path) in cases {
         let case = format!("{api_name} dialled at {path}");
@@ -647,25 +690,24 @@ async fn a_data_endpoint_is_stable_across_reads_and_is_the_planes_own() {
              for it, got {values:?}"
         );
     }
-    // The partition is by the ACCESS MODE each API needs: the one that writes media to
-    // the stream, and the ones that read it.
-    let write = seen
+    // The partition is by the media endpoint that serves each API: the live media
+    // endpoint `PUT_MEDIA` and `GET_MEDIA` share, and the archived-media one.
+    let media = seen
         .get(PUT_MEDIA)
         .unwrap_or_else(|| panic!("no endpoint for {PUT_MEDIA}"));
-    for api_name in ["GET_MEDIA", "LIST_FRAGMENTS"] {
-        let read = seen
-            .get(api_name)
-            .unwrap_or_else(|| panic!("no endpoint for {api_name}"));
-        assert_ne!(
-            read, write,
-            "case {api_name:?}: the plane that reads media is not the one that writes it, \
-             got {seen:?}"
-        );
-    }
     assert_eq!(
         seen.get("GET_MEDIA"),
-        seen.get("LIST_FRAGMENTS"),
-        "the APIs that read a stream share one endpoint, got {seen:?}"
+        Some(media),
+        "case \"GET_MEDIA\": the live read is served by the endpoint the ingest is, \
+         got {seen:?}"
+    );
+    let archive = seen
+        .get("LIST_FRAGMENTS")
+        .unwrap_or_else(|| panic!("no endpoint for LIST_FRAGMENTS"));
+    assert_ne!(
+        archive, media,
+        "case \"LIST_FRAGMENTS\": the endpoint that reads stored fragments is not the live \
+         media one, got {seen:?}"
     );
 }
 

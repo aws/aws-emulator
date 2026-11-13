@@ -26,13 +26,14 @@
 //!
 //! - the front door MATCHED a route of this family and could name no operation in it — a
 //!   request this service claimed that names no modelled operation of it
-//!   ([`super::EmulatedService::override_routing_error`]), and a control call that reached
-//!   an address announced for a data plane ([`super::data_plane_address`]): the envelope
-//!   above, with [`UNKNOWN_OPERATION_STATUS`];
+//!   ([`super::EmulatedService::override_routing_error`]): the envelope above, with
+//!   [`UNKNOWN_OPERATION_STATUS`];
 //! - the endpoint binds NO route for the path at all — the ingest route `/putMedia`, bound
-//!   at the write plane's announced address alone, asked for at any other address of this
-//!   emulator: [`unrouted_path_response`], the 404 whose whole body is
-//!   [`UNROUTED_PATH_BODY`].
+//!   at the media plane's announced address alone, asked for at any other address of this
+//!   emulator, and a CONTROL route asked for at an address announced for a data plane
+//!   ([`super::data_plane_address`], which adds the class in `x-amzn-errortype` for the
+//!   client that has an endpoint to re-discover): [`unrouted_path_response`], the 404 whose
+//!   whole body is [`UNROUTED_PATH_BODY`].
 //!
 //! The first reply is served both as a plain response (the routing-error seam, which
 //! answers one) and as the [`ErasedOperation`] below (the `override_operation` seam, which
@@ -57,6 +58,17 @@ pub const UNKNOWN_OPERATION_TYPE: &str =
 /// The one sentence that class carries. It states no operation, path or value, because the
 /// front door identified none.
 pub const UNKNOWN_OPERATION_MESSAGE: &str = "Unable to determine operation name";
+
+/// The error CLASS a refusal of this kind is identified BY, bare: the value a restJson1
+/// client reads out of an `x-amzn-errortype` header and reports as the failure's code.
+///
+/// The envelope below names the same class qualified by the front door's own namespace, in
+/// its `__type`, and carries no such header: the front door identified no operation, so it
+/// names no shape. Where the class IS stated in the header is the refusal an announced data
+/// endpoint gives a request for a route of ANOTHER plane
+/// ([`super::data_plane_address`]) — that answer identifies the endpoint's own refusal
+/// class rather than an operation, and a client re-discovers its endpoint off it.
+pub const UNKNOWN_OPERATION_CODE: &str = "UnknownOperationException";
 
 /// The version of the front door's own envelope, which wraps the fault in `Output`.
 const ENVELOPE_VERSION: &str = "1.0";

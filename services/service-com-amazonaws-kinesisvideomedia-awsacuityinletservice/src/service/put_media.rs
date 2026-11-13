@@ -9,7 +9,7 @@
 //! control plane binds 32 operations and none of them is it, and this service's own
 //! model binds `GetMedia` alone (`smithy_query(query="digest")` on either model). The
 //! ingest front end is recorded behaviour, and the control plane names it: an `APIName`
-//! of `PUT_MEDIA` resolves a stream's WRITE data endpoint
+//! of `PUT_MEDIA` resolves this service's own data endpoint
 //! (`service-com-amazonaws-kinesisvideo-kinesisvideo-20170930/src/state/data_endpoint.rs`),
 //! and `GetMedia`'s own documentation points at it — "When you put media data
 //! (fragments) on a stream, Kinesis Video Streams stores each incoming fragment and
@@ -677,14 +677,16 @@ fn invalid_argument(message: String) -> Refusal {
 
 /// Whether the ADDRESS a request arrived on is one the ingest route is served at.
 ///
-/// A Kinesis Video Streams media API belongs to ONE access mode and is served at the
-/// address announced for that mode — "Caller used wrong endpoint to write data to a
-/// stream. On receiving such an exception, the user must call `GetDataEndpoint` with
-/// `AccessMode` set to \"READ\"" — so the ingest route is bound on the address
-/// `GetDataEndpoint(APIName=PUT_MEDIA)` hands a producer and on no other address of this
-/// emulator. A producer that skipped discovery, cached the control-plane endpoint or
-/// addressed the read plane has reached an endpoint that does not route `/putMedia`, and
-/// is answered as such ([`unrouted_address_response`]) with nothing ingested.
+/// A Kinesis Video Streams media API is served at the address announced for the media
+/// endpoint that binds it — "Caller used wrong endpoint to write data to a stream. On
+/// receiving such an exception, the user must call `GetDataEndpoint` with `AccessMode` set
+/// to \"READ\"" — so the ingest route is bound on the address
+/// `GetDataEndpoint(APIName=PUT_MEDIA)` hands a producer, which is this service's own
+/// endpoint and so the address `GET_MEDIA` resolves to as well, and on no other address of
+/// this emulator. A producer that skipped discovery, cached the control-plane endpoint or
+/// addressed the archived-media endpoint has reached an endpoint that does not route
+/// `/putMedia`, and is answered as such ([`unrouted_address_response`]) with nothing
+/// ingested.
 ///
 /// Which plane an address IS comes from the control plane that announced it
 /// ([`control_plane::published_plane`]): this emulator knows the plane of the addresses it
@@ -698,7 +700,7 @@ fn ingest_served_at<Eng: Send + Sync + 'static>(engine: &Eng, req: &RtRequest) -
     else {
         return true;
     };
-    control_plane::published_plane(engine, &address) == Some(control_plane::DataPlane::Write)
+    control_plane::published_plane(engine, &address) == Some(control_plane::DataPlane::Media)
 }
 
 /// What an address that does not route `/putMedia` answers a producer that sent one
@@ -708,7 +710,7 @@ fn ingest_served_at<Eng: Send + Sync + 'static>(engine: &Eng, req: &RtRequest) -
 ///
 /// The ingest route is bound at ONE address of this emulator — the one
 /// `GetDataEndpoint(APIName=PUT_MEDIA)` announces — so every other endpoint, the
-/// control-plane front door and the addresses announced for the read and archive planes
+/// control-plane front door and the address announced for the archived-media endpoint
 /// among them, hosts no API at that path at all. That is a missing route rather than a
 /// request the front door read and could name no operation in, which is why it is answered
 /// neither with that envelope nor with its status.

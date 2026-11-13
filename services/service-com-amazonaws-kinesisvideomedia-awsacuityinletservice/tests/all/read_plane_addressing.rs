@@ -4,19 +4,21 @@
 //! the READ plane, and nowhere else on this emulator — and what an address that does not
 //! bind it answers instead.
 //!
-//! The rule under test: a Kinesis Video Streams media API belongs to ONE access mode and
-//! is bound on the address `GetDataEndpoint` announces for that mode — "You must first
+//! The rule under test: a Kinesis Video Streams media API is bound on the address
+//! `GetDataEndpoint` announces for the media endpoint that serves it — "You must first
 //! call the `GetDataEndpoint` API to get an endpoint. Then send the `GetMedia` requests to
 //! this endpoint using the `--endpoint-url` parameter", with this service's own
-//! `InvalidEndpointException` stating the same split from the data side — so `POST
-//! /getMedia` is served at the origin announced for a reading `APIName` and at no other
+//! `InvalidEndpointException` stating the same rule from the data side — so `POST
+//! /getMedia` is served at the origin announced for `GET_MEDIA`, which is this service's
+//! own endpoint and so the origin `PUT_MEDIA` resolves to as well, and at no other
 //! address of this emulator. An endpoint that binds no operation for a request's method
 //! and URI answers it from the front door, ahead of any handler, in that family's
 //! unknown-operation envelope: HTTP 400 with `Output.__type`, `Output.Message` and
 //! `Version`, and nothing in it taken from the request.
 //!
 //! The first table's rows differ in the ADDRESS the identical call was sent to: the
-//! announced read origin, the announced write origin, three forms of this emulator's own
+//! announced live-media origin, the announced archived-media origin, three forms of this
+//! emulator's own
 //! front-door address (an IPv4 loopback authority, the `localhost` name and a bracketed
 //! IPv6 literal), the service's published regional host — which this emulator announced no
 //! plane at and cannot place on one, where the route's own claim stands — and a request
@@ -195,10 +197,10 @@ fn read_from_the_start(name: &str) -> serde_json::Value {
 /// Which address a row sends the read request to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Address {
-    /// The origin announced for a reading `APIName`.
+    /// The origin announced for `GET_MEDIA`, which `PUT_MEDIA` shares.
     AnnouncedReadPlane,
-    /// The origin announced for `PUT_MEDIA`.
-    AnnouncedWritePlane,
+    /// The origin announced for the archived-media APIs.
+    AnnouncedArchivePlane,
     /// A literal address of this emulator's own front door.
     FrontDoor(&'static str),
     /// The service's published regional host.
@@ -219,13 +221,13 @@ struct Row {
 /// The rows, differing along the address the reader sent the request to.
 const ROWS: &[Row] = &[
     Row {
-        case: "the announced read origin",
+        case: "the announced live-media origin",
         address: Address::AnnouncedReadPlane,
         served: true,
     },
     Row {
-        case: "the announced write origin",
-        address: Address::AnnouncedWritePlane,
+        case: "the announced archived-media origin",
+        address: Address::AnnouncedArchivePlane,
         served: false,
     },
     Row {
@@ -255,7 +257,8 @@ const ROWS: &[Row] = &[
     },
 ];
 
-/// RULE: `POST /getMedia` is served at the origin announced for the read plane; at every
+/// RULE: `POST /getMedia` is served at the origin announced for the media endpoint that
+/// binds it — the one `GET_MEDIA` and `PUT_MEDIA` share; at every
 /// other address of this emulator the path is bound to no operation, so the front door
 /// answers it with HTTP 400 and the unknown-operation envelope, names no error type, and
 /// reads no stream.
@@ -272,9 +275,18 @@ async fn the_read_route_is_served_only_at_the_origin_announced_for_the_read_plan
     let write_plane = harness
         .announced_authority(control, "read-probe", "PUT_MEDIA")
         .await;
-    assert_ne!(
+    let archive_plane = harness
+        .announced_authority(control, "read-probe", "GET_MEDIA_FOR_FRAGMENT_LIST")
+        .await;
+    assert_eq!(
         read_plane, write_plane,
-        "the two planes must be announced at different addresses, got {read_plane:?} for both"
+        "the live read and the ingest are one endpoint's APIs, so one origin serves both; \
+         got {read_plane:?} against {write_plane:?}"
+    );
+    assert_ne!(
+        read_plane, archive_plane,
+        "the archived-media endpoint must be announced at its own address, \
+         got {read_plane:?} for both"
     );
     assert_ne!(
         read_plane, control,
@@ -289,7 +301,7 @@ async fn the_read_route_is_served_only_at_the_origin_announced_for_the_read_plan
         } = *row;
         let authority = match address {
             Address::AnnouncedReadPlane => Some(read_plane.clone()),
-            Address::AnnouncedWritePlane => Some(write_plane.clone()),
+            Address::AnnouncedArchivePlane => Some(archive_plane.clone()),
             Address::FrontDoor(literal) => Some(literal.to_string()),
             Address::PublishedHost => Some(PUBLISHED_HOST.to_string()),
             Address::NoHost => None,

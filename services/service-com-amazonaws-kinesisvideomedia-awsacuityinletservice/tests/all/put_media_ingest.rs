@@ -121,6 +121,14 @@ pub(crate) struct Container {
     clusters: Vec<Cluster>,
 }
 
+impl Cluster {
+    /// The frames this Cluster carries, in order — the bytes a reader of the stream has
+    /// to get back.
+    pub(crate) fn frames(&self) -> Vec<Vec<u8>> {
+        self.frames.iter().map(|(_, frame)| frame.clone()).collect()
+    }
+}
+
 impl Container {
     /// A container of `clusters` with a millisecond timecode scale and a sized segment.
     pub(crate) fn of(clusters: Vec<Cluster>) -> Self {

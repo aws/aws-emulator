@@ -8,23 +8,23 @@
 //! have the API name appended" — and because there is more than one such endpoint per
 //! stream.
 //!
-//! WHICH endpoint an `APIName` resolves to is decided by the ACCESS MODE the API it
-//! names needs. Kinesis Video Media states the rule: `InvalidEndpointException` is
-//! "Status Code: 400, Caller used wrong endpoint to write data to a stream. On receiving
-//! such an exception, the user must call `GetDataEndpoint` with `AccessMode` set to
-//! \"READ\" and use the endpoint Kinesis Video returns in the next `GetMedia` call" — so
-//! the endpoint a WRITE is served at is not the one a READ is, and `GetMedia`'s is
-//! obtained under the read mode. `PUT_MEDIA` is the one API that writes media onto a
-//! stream; every other published `APIName` reads media back off it — `GET_MEDIA` the
-//! live stream, and `LIST_FRAGMENTS`, `GET_MEDIA_FOR_FRAGMENT_LIST`, `GET_CLIP`,
-//! `GET_HLS_STREAMING_SESSION_URL`, `GET_DASH_STREAMING_SESSION_URL` and `GET_IMAGES`
-//! its archive.
+//! WHICH endpoint an `APIName` resolves to is decided by the media ENDPOINT that serves
+//! the API it names. A `DataEndpoint` is the address of one media endpoint of this
+//! family, and the APIs a stream's media is reached through are bound on two of them:
+//! the Kinesis Video Media endpoint, which binds `GetMedia` and the recorded `PutMedia`
+//! ingest, and the Kinesis Video Archived Media endpoint, which binds every API that
+//! reads a stream's STORED fragments back. Kinesis Video Media states what follows from
+//! that: `InvalidEndpointException` is "Status Code: 400, Caller used wrong endpoint to
+//! write data to a stream. On receiving such an exception, the user must call
+//! `GetDataEndpoint` with `AccessMode` set to \"READ\" and use the endpoint Kinesis
+//! Video returns in the next `GetMedia` call" — an API addressed at an endpoint that
+//! does not bind it is refused, so which endpoint serves it has to be reported per API.
 //!
 //! So the value reported is a bare `<scheme>://<authority>` base URL — scheme and host
-//! only, no path, because the client appends the API name itself — of the plane the
-//! requested `APIName` needs. Every API of one access mode resolves to one endpoint, the
-//! two modes resolve to different ones, and neither is the control-plane endpoint the
-//! call arrived on.
+//! only, no path, because the client appends the API name itself — of the endpoint that
+//! serves the requested `APIName`. Every API one endpoint binds resolves to one address,
+//! the two endpoints resolve to different ones, and neither is the control-plane endpoint
+//! the call arrived on.
 //!
 //! What this module decides is which endpoint each API is TOLD to use, and which plane
 //! an address that arrives on a request BELONGS to ([`published_plane`]) — the reading a
@@ -81,42 +81,49 @@ use ::smithy_server_runtime::EmbeddedEmulator;
 
 use super::ComAmazonawsKinesisvideoKinesisvideo20170930State as ServiceState;
 
-/// The access mode a stream's media API needs, and so the data endpoint that serves it.
+/// The media endpoint of this family that serves a stream's media API, and so the data
+/// endpoint `GetDataEndpoint` reports for it.
 ///
-/// The two modes Kinesis Video Media names ("the user must call `GetDataEndpoint` with
-/// `AccessMode` set to \"READ\"", said of a write addressed to the wrong endpoint): media
-/// is WRITTEN to a stream through one endpoint and READ back through another.
+/// The two endpoints a stream's media is reached through, each binding its own
+/// operations: the live media endpoint (Kinesis Video Media) and the archived-media one
+/// (Kinesis Video Archived Media).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum DataPlane {
-    /// The endpoint media is written to: the ingest front end `PUT_MEDIA` names.
-    Write,
-    /// The endpoint media is read back through: the live read and every archived-media
-    /// API.
-    Read,
+    /// The LIVE media endpoint: the ingest front end `PUT_MEDIA` names and the live read
+    /// `GET_MEDIA` names — the two APIs Kinesis Video Media serves.
+    Media,
+    /// The ARCHIVED-media endpoint: every API that reads a stream's stored fragments
+    /// back.
+    Archive,
 }
 
 
-/// Which plane serves one `APIName`, or `None` for a value the model does not publish.
+/// Which endpoint serves one `APIName`, or `None` for a value the model does not publish.
 ///
 /// The catalog below is the `APIName` enum (`smithy_query(query="shape",
 /// shape="APIName")`, mirrored in [`crate::ops::types::A_P_I_NAME_VALUES`]), each value
-/// paired with the access mode the API it names needs: `PUT_MEDIA` WRITES media onto a
-/// stream, and every other published value reads media back off it — `GET_MEDIA` the
-/// live stream, the rest its archive.
+/// paired with the media endpoint of this family that binds the API it names. Which
+/// endpoint that is comes from the endpoints' own models rather than from this list's
+/// wording: `smithy_query(query="digest")` on the Kinesis Video Media model (`sdk_id`
+/// "Kinesis Video Media") binds `GetMedia`, beside the recorded `PutMedia` ingest its own
+/// documentation names, and on the Kinesis Video Archived Media model (`sdk_id` "Kinesis
+/// Video Archived Media") binds `GetClip`, `GetDASHStreamingSessionURL`,
+/// `GetHLSStreamingSessionURL`, `GetImages`, `GetMediaForFragmentList` and
+/// `ListFragments` — the six APIs that read stored fragments.
 ///
 /// `None` is what refuses an `APIName` outside that published set, so a value this
-/// service cannot place on a plane is answered as a bad argument rather than handed an
-/// endpoint chosen for it.
+/// service cannot place on an endpoint is answered as a bad argument rather than handed
+/// an endpoint chosen for it.
 pub fn data_plane_of(api_name: &str) -> Option<DataPlane> {
     const PLANES: &[(&str, DataPlane)] = &[
-        ("PUT_MEDIA", DataPlane::Write),
-        ("GET_MEDIA", DataPlane::Read),
-        ("GET_MEDIA_FOR_FRAGMENT_LIST", DataPlane::Read),
-        ("LIST_FRAGMENTS", DataPlane::Read),
-        ("GET_CLIP", DataPlane::Read),
-        ("GET_HLS_STREAMING_SESSION_URL", DataPlane::Read),
-        ("GET_DASH_STREAMING_SESSION_URL", DataPlane::Read),
-        ("GET_IMAGES", DataPlane::Read),
+        ("PUT_MEDIA", DataPlane::Media),
+        ("GET_MEDIA", DataPlane::Media),
+        ("GET_MEDIA_FOR_FRAGMENT_LIST", DataPlane::Archive),
+        ("LIST_FRAGMENTS", DataPlane::Archive),
+        ("GET_CLIP", DataPlane::Archive),
+        ("GET_HLS_STREAMING_SESSION_URL", DataPlane::Archive),
+        ("GET_DASH_STREAMING_SESSION_URL", DataPlane::Archive),
+        ("GET_IMAGES", DataPlane::Archive),
     ];
     PLANES
         .iter()
@@ -224,11 +231,12 @@ pub const DATA_PLANE_SCHEME: &str = "http";
 /// Which plane of THIS store the authority `authority` is the published address of, or
 /// `None` for an address no plane of it was announced at.
 ///
-/// This is the reading a plane's routes are SCOPED by: a route belongs to one access mode
-/// ("Caller used wrong endpoint to write data to a stream"), so the address announced for
-/// that mode is the address it is served at, and a request for it that arrived somewhere
-/// else reached an endpoint that does not route it. `None` is every address that is not a
-/// plane's — this emulator's control-plane front door among them.
+/// This is the reading a plane's routes are SCOPED by: a route is bound on the media
+/// endpoint that serves it ("Caller used wrong endpoint to write data to a stream"), so
+/// the address announced for that endpoint is the address it is served at, and a request
+/// for it that arrived somewhere else reached an endpoint that does not route it. `None`
+/// is every address that is not a plane's — this emulator's control-plane front door
+/// among them.
 pub fn published_plane<Eng: Send + Sync + 'static>(engine: &Eng, authority: &str) -> Option<DataPlane> {
     let state = super::service_state(engine)?;
     let store = state.lock();
