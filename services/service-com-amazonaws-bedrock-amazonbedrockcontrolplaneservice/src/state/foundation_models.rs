@@ -2400,13 +2400,29 @@ pub const OFFER_TYPE_PUBLIC: &str = "PUBLIC";
 /// party's terms, which is what [`model_agreement_offers`] reads it for.
 pub const AWS_MODEL_PROVIDER: &str = "Amazon";
 
+/// Whether `model` is offered under an AGREEMENT at all: a set of terms the account accepts
+/// before it may use the model.
+///
+/// A model from a THIRD-PARTY provider is published under that provider's own end-user
+/// license agreement, which is the agreement an offer is an offer OF; the models AWS
+/// publishes itself ([`AWS_MODEL_PROVIDER`]) are reached without accepting another party's
+/// terms, so there is no agreement for an offer of them to be about.
+///
+/// Stated once here because it decides two things that must not drift apart: which models
+/// expose an offer ([`model_agreement_offers`]), and which `modelId` the offers listing can
+/// read as the identifier of an agreement-bearing model at all.
+#[must_use]
+pub fn model_offered_under_agreement(model: &FoundationModel) -> bool {
+    model.provider_name != AWS_MODEL_PROVIDER
+}
+
 /// The offers associated with `model`, narrowed to `offer_type` when the request names one.
 ///
 /// A model from a THIRD-PARTY provider is offered under that provider's own end-user
 /// license agreement, which the account accepts — by the `offerToken` of one of these
 /// offers — before it may use the model; the models AWS publishes itself
-/// ([`AWS_MODEL_PROVIDER`]) carry no such agreement, so they expose no offer and the
-/// listing for one is an empty list rather than a refusal.
+/// ([`AWS_MODEL_PROVIDER`]) carry no such agreement, so they expose no offer
+/// ([`model_offered_under_agreement`]).
 ///
 /// Every offer here is PUBLIC: this emulator holds no privately agreed offer, so
 /// [`OFFER_TYPE_ALL`] and [`OFFER_TYPE_PUBLIC`] admit the same one offer per model, and a
@@ -2419,7 +2435,7 @@ pub const AWS_MODEL_PROVIDER: &str = "Amazon";
 /// carries are present and name no document, price or duration rather than inventing one.
 #[must_use]
 pub fn model_agreement_offers(model: &FoundationModel, offer_type: Option<&str>) -> Vec<Offer> {
-    if model.provider_name == AWS_MODEL_PROVIDER {
+    if !model_offered_under_agreement(model) {
         return Vec::new();
     }
     // The one offer a third-party model is published under is PUBLIC, so it is admitted by

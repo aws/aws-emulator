@@ -31,8 +31,9 @@
 //!    model**, read off the same agreement offers `ListFoundationModelAgreementOffers`
 //!    reports: while the terms a third-party model is offered under are unaccepted there is
 //!    no agreement, no entitlement and no authorization, and a model AWS publishes itself
-//!    needs none; the region a catalogued model is offered in is always available, and the
-//!    read writes nothing.
+//!    needs none — there being no agreement of such a model, that listing has no offer of
+//!    it to report and refuses its id instead; the region a catalogued model is offered in
+//!    is always available, and the read writes nothing.
 //!
 //! # What the tables generalise over
 //!
@@ -661,6 +662,13 @@ async fn availability(emu: &Emulator, model_id: &str) -> Reply {
     .await
 }
 
+/// The offers `ListFoundationModelAgreementOffers` reports for a catalogued model.
+///
+/// EMPTY for a model AWS publishes itself: there is no agreement of such a model for an
+/// offer to be an offer of, so that operation refuses its id as one naming no
+/// agreement-bearing model rather than answering with an empty list. Which answer each
+/// model gets is decided here from the catalog itself, so neither branch is a status this
+/// helper merely tolerates.
 async fn offers(emu: &Emulator, model_id: &str) -> Vec<Value> {
     let reply = emu
         .call(
@@ -669,9 +677,28 @@ async fn offers(emu: &Emulator, model_id: &str) -> Vec<Value> {
             None,
         )
         .await;
+    let offered_under_agreement = bedrock::state::catalogued_model(model_id)
+        .is_some_and(bedrock::state::model_offered_under_agreement);
+    if !offered_under_agreement {
+        assert_eq!(
+            (reply.status, code(&reply), message(model_id, &reply).as_str()),
+            (
+                400,
+                "ValidationException",
+                bedrock::state::INVALID_MODEL_IDENTIFIER_MESSAGE
+            ),
+            "case {model_id}: a model offered under no agreement must be refused as an \
+             identifier naming no agreement-bearing model, got {} {} {:?}",
+            reply.status,
+            code(&reply),
+            reply.body
+        );
+        return Vec::new();
+    }
     assert_eq!(
         reply.status, 200,
-        "case {model_id}: the offers of a catalogued model must be served, got {} {:?}",
+        "case {model_id}: the offers of a model offered under an agreement must be served, got \
+         {} {:?}",
         reply.status, reply.body
     );
     reply.get("offers").as_array().cloned().unwrap_or_default()

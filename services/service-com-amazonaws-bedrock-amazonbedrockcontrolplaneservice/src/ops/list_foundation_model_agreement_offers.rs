@@ -4,17 +4,25 @@
 //!
 //! Lists the agreement offers associated with one published foundation model.
 //!
-//! The `modelId` names a row of this account's own published catalog
-//! ([`crate::state::FOUNDATION_MODELS`]), and an id the catalog does not carry resolves to
-//! no model at all: that is refused 404 `ResourceNotFoundException`, the error this
-//! operation models for a resource that was not found, rather than answered with an empty
-//! list.
-//!
-//! A model the catalog DOES carry answers 200 with that model's offers
-//! ([`crate::state::model_agreement_offers`]) — the offer whose `offerToken` feeds
-//! `CreateFoundationModelAgreement` for a model offered under a third-party end-user
-//! license agreement, and no offer for a model AWS publishes itself — narrowed to the
+//! An offer is an offer of the AGREEMENT a model is published under, so the `modelId` has
+//! to name a model this account's published catalog
+//! ([`crate::state::FOUNDATION_MODELS`]) offers under one
+//! ([`crate::state::model_offered_under_agreement`]). A model offered under an agreement
+//! answers 200 with that model's offers ([`crate::state::model_agreement_offers`]) — the
+//! offer whose `offerToken` feeds `CreateFoundationModelAgreement` — narrowed to the
 //! `offerType` the request names.
+//!
+//! Every other `modelId` names no such model, and is refused rather than answered with an
+//! empty list:
+//!
+//! * a model AWS publishes itself is reached under no provider's terms, so there is no
+//!   agreement for an offer of it to be an offer of, and an id naming no model of this
+//!   catalog at all names nothing either. Neither is a value this operation can read as the
+//!   identifier of an agreement-bearing model, which is the INPUT fault this service states
+//!   once ([`crate::state::INVALID_MODEL_IDENTIFIER_MESSAGE`]): 400 `ValidationException`;
+//! * a model this service recognises and offers no longer is a resource that is GONE, which
+//!   every read of this catalog reports as 404 `ResourceNotFoundException` carrying the
+//!   end-of-life reason ([`crate::state::FOUNDATION_MODEL_END_OF_LIFE_MESSAGE`]).
 //!
 //! ## Shape of an operation
 //!
@@ -174,25 +182,60 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         };
         let store = state.lock();
 
-        // The offers of a model are the model's own, so the id has to name one this
-        // account's catalog carries. The qualified form of a base model id — the id
-        // followed by the `:`-separated qualifiers `BedrockModelId`'s pattern admits —
-        // names the same published model.
-        let Some(model) = store.foundation_models.qualified_model(&input.model_id) else {
-            return Err(
-                ListFoundationModelAgreementOffersErrorModeled::ResourceNotFoundException(
-                    ResourceNotFoundException {
-                        message: Some(crate::state::foundation_model_not_found(&input.model_id)),
-                    },
-                )
-                .into(),
-            );
+        // An offer is an offer of the AGREEMENT a model is published under, so the id has
+        // to name a model this account's catalog offers under one. `modelId` is a
+        // `BedrockModelId`, so it names a base model by its id alone, in the qualified form
+        // that pattern admits — the id followed by the `:`-separated qualifiers, which name
+        // a variant of the same published model.
+        let model = match store.foundation_models.resolve_base_model(&input.model_id) {
+            // A model the catalog offers under an agreement: the one case there are offers
+            // of it to list.
+            crate::state::BaseModelIdentity::Offered(model)
+                if crate::state::model_offered_under_agreement(model) =>
+            {
+                *model
+            }
+            // A model this service recognises and offers no longer is a resource that is
+            // GONE, which every read of this catalog reports the same way: 404
+            // `ResourceNotFoundException` carrying the end-of-life reason, rather than a
+            // statement about the value the request carried.
+            crate::state::BaseModelIdentity::Retired => {
+                return Err(
+                    ListFoundationModelAgreementOffersErrorModeled::ResourceNotFoundException(
+                        ResourceNotFoundException {
+                            message: Some(
+                                crate::state::FOUNDATION_MODEL_END_OF_LIFE_MESSAGE.to_string(),
+                            ),
+                        },
+                    )
+                    .into(),
+                );
+            }
+            // Everything else names no model offered under an agreement — no model of this
+            // catalog at all, or a model AWS publishes itself, which is reached under no
+            // provider's terms and so has no offer to be an offer of. Neither is a value
+            // this operation can read as the identifier of an agreement-bearing model, so
+            // both are the INPUT fault this service states once
+            // ([`crate::state::INVALID_MODEL_IDENTIFIER_MESSAGE`]) rather than an empty
+            // success.
+            _ => {
+                return Err(
+                    ListFoundationModelAgreementOffersErrorModeled::ValidationException(
+                        ValidationException {
+                            message: Some(
+                                crate::state::INVALID_MODEL_IDENTIFIER_MESSAGE.to_string(),
+                            ),
+                        },
+                    )
+                    .into(),
+                );
+            }
         };
 
         Ok(ListFoundationModelAgreementOffersOutput {
             // The id the request named, which is the model these offers are for.
             model_id: input.model_id.clone(),
-            offers: crate::state::model_agreement_offers(model, input.offer_type.as_deref()),
+            offers: crate::state::model_agreement_offers(&model, input.offer_type.as_deref()),
         })
     }
 }
