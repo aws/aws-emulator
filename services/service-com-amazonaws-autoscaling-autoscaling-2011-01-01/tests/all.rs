@@ -27,6 +27,8 @@ mod cancel_instance_refresh_absent_group;
 mod client_error_refusal_wording;
 #[path = "all/describe_lifecycle_hooks_projection.rs"]
 mod describe_lifecycle_hooks_projection;
+#[path = "all/describe_policies_page_size.rs"]
+mod describe_policies_page_size;
 #[path = "all/describe_tags.rs"]
 mod describe_tags;
 #[path = "all/error_envelope.rs"]
