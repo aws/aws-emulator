@@ -323,9 +323,12 @@ async fn a_source_declaring_no_data_source_is_named_the_way_its_kind_names_one()
     {
         let name = format!("default-source-{index}");
         let pipeline = create_and_read(&emulator, &name, body).await;
-        // A CloudWatch Logs source's data source is the pipeline itself, so the row
-        // expects the name THIS pipeline was created with rather than a literal.
-        let expected = expected.unwrap_or_else(|| json!([{ "Name": name, "Type": "default" }]));
+        // A CloudWatch Logs source's data source is the pipeline itself, named the way
+        // the log event metadata names one: an identifier, which separates its words
+        // with `_` where the resource name separates them with `-`. So the row expects
+        // THIS pipeline's name in that form rather than a literal.
+        let expected = expected
+            .unwrap_or_else(|| json!([{ "Name": name.replace('-', "_"), "Type": "default" }]));
         assert_eq!(
             pipeline.pointer("/ConfigurationSummary/DataSources"),
             Some(&expected),

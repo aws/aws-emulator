@@ -32,11 +32,16 @@
 //!   reports that keyword: an ABSENT required property under the report's `name` key,
 //!   which is the property's own name, and everything else at the PATH in the document
 //!   it is about, named relative to the document's own pipeline;
+//! * a section reading log events AWS vends runs a processor the schema's branch for
+//!   that source does not admit, or more of them than it admits, or leaves out a
+//!   property that branch's source requires — each reported under the restriction's own
+//!   reason, keyed by the restriction's descriptors, and a position naming a processor
+//!   that branch does not define at all reported as the undefined property it is
+//!   ([`vended_log_schema`]);
 //! * a position of a section's `processor` sequence names a processor, or an option,
 //!   this emulator does not run, which carries its own reason code because the document
-//!   may be one the real service accepts — the schema catalogue the real service
-//!   validates a processor NAME against is not in this service's model, so a name is
-//!   never reported as one the schema does not define;
+//!   may be one the real service accepts: what the emulator cannot RUN is a different
+//!   observation from what the schema does not define;
 //! * a field of the document whose name names an ARN (its last name token is `arn`:
 //!   the role a source assumes, the resource a sink writes to) does not carry one,
 //!   measured against the ARN syntax this service's own model declares — the narrower
@@ -126,6 +131,18 @@ use crate::ops::test_telemetry_pipeline::{
     declared_sections, is_section, parse_configuration, processor_chain, step_defect, Node,
     PROCESSOR_KEY, SINK_KEY, SOURCE_KEY,
 };
+
+/// The vended-log branches of the pipeline schema, which the walk below reports a
+/// document's defects against alongside the schema's own properties. `pub(crate)`
+/// because the kind of source it splits plugins by is the same split a pipeline's
+/// summary reports a data source by (`crate::state`).
+///
+/// The `#[path]` is what every module under `ops/` carries, for the reason the
+/// generated `ops/mod.rs` states: this file is reached through an explicit path, so a
+/// bare `mod` item in it resolves against `ops/` rather than against this operation's
+/// own directory.
+#[path = "validate_telemetry_pipeline_configuration/vended_log_schema.rs"]
+pub(crate) mod vended_log_schema;
 
 // `#[operation_error]` below expands to an invocation of the LOCAL declarative
 // `smithy!` macro, which this line is what emits into the module. Without it the
@@ -336,7 +353,11 @@ fn configuration_defects(body: &str) -> Vec<ValidationError> {
     };
 
     let sections = declared_sections(&root);
-    let mut defects = schema_defects(&root, &sections);
+    // The schema's vended-log branches first: what a pipeline reading AWS-vended log
+    // events may run is a restriction on the properties the document declares, so it is
+    // reported ahead of the defects of those properties themselves.
+    let mut defects = vended_log_schema::vended_log_defects(&sections);
+    defects.extend(schema_defects(&root, &sections));
     // The chain is a property of the document as a whole: which section reads which.
     // A document that declares no section has no chain to report anything about —
     // what it is missing is the pipeline itself, which `schema_defects` has just
@@ -504,7 +525,7 @@ fn processor_path(prefix: &str, index: usize) -> String {
 /// reads to point at the field to add.
 fn missing_field(property: &str) -> ValidationError {
     ValidationError {
-        message: Some(format!("required property '{property}' not found")),
+        message: Some(missing_property_message(property)),
         reason: Some(REASON_MISSING_FIELD.to_string()),
         field_map: Some(HashMap::from([(
             NAME_KEY.to_string(),
@@ -520,11 +541,35 @@ fn unknown_property(property: &str, path: &str) -> ValidationError {
     at_path(
         path,
         REASON_UNKNOWN_PROPERTY,
-        format!(
-            "property '{property}' is not defined in the schema and the schema does not allow \
-             additional properties"
-        ),
+        undefined_property_message(property),
     )
+}
+
+/// The sentence a schema validator words an ABSENT required property with. The
+/// template is the report's own, so every check that reports one — a property of the
+/// document, a property of a section, a property a vended-log branch requires
+/// ([`vended_log_schema`]) — words it identically and only the property's name differs.
+pub(crate) fn missing_property_message(property: &str) -> String {
+    format!("required property '{property}' not found")
+}
+
+/// The sentence a schema validator words a property the schema does not DEFINE with,
+/// at a place the schema admits no further properties. Shared for the reason
+/// [`missing_property_message`] is.
+pub(crate) fn undefined_property_message(property: &str) -> String {
+    format!(
+        "property '{property}' is not defined in the schema and the schema does not allow \
+         additional properties"
+    )
+}
+
+/// The sentence a schema validator words a property carrying more items than the schema
+/// allows with: the limit that property has, and how many items it carries. Shared for
+/// the reason [`missing_property_message`] is — the limit is the one the check that
+/// reports it applies, which is the plugin count for a `source` or a `sink` and the
+/// processors a vended-log branch admits for a `processor` sequence.
+pub(crate) fn at_most_items_message(limit: usize, found: usize) -> String {
+    format!("must have at most {limit} items but found {found}")
 }
 
 /// The defect of a processor position this emulator cannot run: the refusal the
@@ -546,7 +591,7 @@ fn too_many_items(path: &str, found: usize) -> ValidationError {
     at_path(
         path,
         REASON_VALIDATION_ERROR,
-        format!("must have at most {MAX_PLUGINS_PER_PROPERTY} items but found {found}"),
+        at_most_items_message(MAX_PLUGINS_PER_PROPERTY, found),
     )
 }
 

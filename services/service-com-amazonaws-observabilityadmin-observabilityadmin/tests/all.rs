@@ -64,3 +64,6 @@ mod test_telemetry_pipeline;
 
 #[path = "all/validate_telemetry_pipeline_configuration.rs"]
 mod validate_telemetry_pipeline_configuration;
+
+#[path = "all/vended_log_pipelines.rs"]
+mod vended_log_pipelines;

@@ -51,6 +51,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::ops::test_telemetry_pipeline::{
     declared_sections, parse_configuration, Node, PROCESSOR_KEY, SINK_KEY, SOURCE_KEY,
 };
+// Which source plugins read log events AWS itself vends. The model states no catalogue
+// of them, so the set is the one the pipeline schema's vended-log branches govern, read
+// from there rather than listed again here, so the summary a read reports and the
+// defects the validator reports never disagree about what a vended source is.
+use crate::ops::validate_telemetry_pipeline_configuration::vended_log_schema::is_vended_log_source_type;
 use crate::ops::types::{
     CentralizationRule, CentralizationRuleSummary, ConfigurationSummary, DataSource, Encryption,
     IntegrationSummary, RegionStatus, Source, TelemetryPipeline, TelemetryPipelineConfiguration,
@@ -241,34 +246,13 @@ pub const PIPELINE_VALIDATION_ERRORS_MESSAGE: &str = "Validation errors found";
 
 /// The value a data source's `Type` carries when the configuration document names none
 /// and the source is one that reads log events AWS vends (see
-/// [`VENDED_LOG_SOURCE_PLUGINS`]).
+/// [`is_vended_log_source_type`]).
 ///
 /// The recorded summary reports this token for such a data source.
 pub const DEFAULT_DATA_SOURCE_TYPE: &str = "default";
 
 /// The property a source plugin lists its data sources under.
 const DATA_SOURCES_KEY: &str = "data_sources";
-
-/// The source plugins that read log events AWS itself vends, as opposed to a
-/// third-party source the pipeline pulls from.
-///
-/// `DataSource`'s own documentation (`smithy_query(query="shape",
-/// shape="DataSource")`) reports a data source differently for the two kinds: "For
-/// CloudWatch Logs sources, this includes both a name and type extracted from the log
-/// event metadata. For third-party sources (such as S3), this includes only a name, with
-/// the type field left empty." `DataSource$Name` adds that for a third-party source the
-/// name "is either the configured `data_source_name` or defaults to the plugin name if
-/// not specified". [`data_source`] below is that split.
-///
-/// The model states no catalogue of source plugins, so this set is not derivable from
-/// it: it holds the AWS-vended source types the recorded validation report names as its
-/// restrictions' own `source_type` descriptors, and a plugin it does not list is read as
-/// a third-party source. A recording naming another vended source type extends it.
-const VENDED_LOG_SOURCE_PLUGINS: &[&str] = &[
-    "cloudwatch_logs",
-    "amazon_vpc_flow",
-    "amazon_cloudfront",
-];
 
 /// The properties a data source's NAME and TYPE are declared under on a source plugin's
 /// own block, which `DataSource`'s documentation names: `Name` "corresponds to the
@@ -803,7 +787,12 @@ pub fn declared_source_types(body: &str) -> Vec<(String, String)> {
 /// carries: the entries of the mapping a source is written as, and the entries of each
 /// mapping of the sequence a sink is written as — the two forms this format writes a
 /// plugin in.
-fn plugins_declared(property: Option<&Node>) -> Vec<(&str, &Node)> {
+///
+/// `pub(crate)` because the configuration VALIDATOR reads a section's source out of the
+/// same document shape this summary does
+/// (`crate::ops::validate_telemetry_pipeline_configuration::vended_log_schema`), so both
+/// read it through one reader rather than two that could disagree.
+pub(crate) fn plugins_declared(property: Option<&Node>) -> Vec<(&str, &Node)> {
     let Some(property) = property else {
         return Vec::new();
     };
@@ -849,26 +838,48 @@ fn processors_declared(property: Option<&Node>) -> Vec<&str> {
 /// names, on the plugin's own block. A source declaring neither still has one data
 /// source, and what it is named and typed is [`data_source`]'s business.
 fn data_sources_declared(plugin: &str, options: &Node, pipeline: &str) -> Vec<DataSource> {
-    let declared = options
+    let declared = declared_data_sources(options);
+    if declared.is_empty() {
+        return vec![data_source(plugin, pipeline, None, None)];
+    }
+    declared
+        .into_iter()
+        .map(|(name, declared_type)| data_source(plugin, pipeline, name, declared_type))
+        .collect()
+}
+
+/// The data sources a source plugin's `options` DECLARE, each as the name and the type
+/// the document declared for it — the one reader of that document shape, so every caller
+/// reads the same answer out of it.
+///
+/// The `data_sources` list is where a source declares more than one, so it is what
+/// decides: a plugin that writes one carries its entries, each either the name on its
+/// own or a mapping carrying the name and the type; a plugin that writes none declares
+/// at most the one its own `data_source_name`/`data_source_type` pair names. A plugin
+/// declaring neither declares NO data source, which is a different observation from
+/// declaring one anonymously.
+fn declared_data_sources(options: &Node) -> Vec<(Option<&str>, Option<&str>)> {
+    let listed = options
         .get(DATA_SOURCES_KEY)
         .and_then(Node::as_sequence)
         .unwrap_or_default();
-    if declared.is_empty() {
-        return vec![data_source(
-            plugin,
-            pipeline,
+    if listed.is_empty() {
+        let own = (
             declared_text(options, DATA_SOURCE_NAME_KEY),
             declared_text(options, DATA_SOURCE_TYPE_KEY),
-        )];
+        );
+        return if own == (None, None) {
+            Vec::new()
+        } else {
+            vec![own]
+        };
     }
-    declared
+    listed
         .iter()
         .map(|entry| match entry.as_str() {
             // An entry that is just a name names the data source and declares no type.
-            Some(name) => data_source(plugin, pipeline, Some(name), None),
-            None => data_source(
-                plugin,
-                pipeline,
+            Some(name) => (Some(name), None),
+            None => (
                 declared_text(entry, NAME_KEY)
                     .or_else(|| declared_text(entry, DATA_SOURCE_NAME_KEY)),
                 declared_text(entry, TYPE_KEY)
@@ -883,31 +894,61 @@ fn declared_text<'a>(node: &'a Node, key: &str) -> Option<&'a str> {
     node.get(key).and_then(Node::as_str)
 }
 
+/// The data sources a source plugin DECLARES by name in `options`: the names of the
+/// data sources [`declared_data_sources`] reads out of the document, which is what the
+/// configuration validator narrows a vended-log restriction to. A data source the
+/// document declares without a name has none here, and a source declaring none declares
+/// nothing — what such a source's one data source is CALLED is [`data_source`]'s
+/// business.
+pub(crate) fn declared_data_source_names(options: &Node) -> Vec<&str> {
+    declared_data_sources(options)
+        .into_iter()
+        .filter_map(|(name, _)| name)
+        .collect()
+}
+
 /// One data source of a summary: the name and the type the document declared for it, and
 /// what each is when the document declared it not.
 ///
 /// `DataSource`'s documentation splits BOTH of those by the KIND of source, which is why
 /// the source plugin and the pipeline's name reach here. For a source reading log events
-/// AWS vends ([`VENDED_LOG_SOURCE_PLUGINS`]), the data source "includes both a name and
+/// AWS vends ([`is_vended_log_source_type`]), the data source "includes both a name and
 /// type extracted from the log event metadata": those events are the ones vended for the
-/// pipeline itself, so a name the document leaves out is the pipeline's own and a type it
-/// leaves out is [`DEFAULT_DATA_SOURCE_TYPE`]. "For third-party sources (such as S3),
-/// this includes only a name", which "defaults to the plugin name if not specified",
-/// "with the type field left empty" — so such a source reports no type at all unless the
-/// document declares one.
+/// pipeline itself, so a name the document leaves out is the pipeline's own — as
+/// [`data_source_identifier`] spells it, since what the metadata carries is an
+/// identifier — and a type it leaves out is [`DEFAULT_DATA_SOURCE_TYPE`]. "For
+/// third-party sources (such as S3), this includes only a name", which "defaults to the
+/// plugin name if not specified", "with the type field left empty" — so such a source
+/// reports no type at all unless the document declares one.
 fn data_source(
     plugin: &str,
     pipeline: &str,
     name: Option<&str>,
     declared_type: Option<&str>,
 ) -> DataSource {
-    let vended = VENDED_LOG_SOURCE_PLUGINS.contains(&plugin);
+    let vended = is_vended_log_source_type(plugin);
     DataSource {
-        name: Some(name.unwrap_or(if vended { pipeline } else { plugin }).to_string()),
+        name: Some(match name {
+            Some(declared) => declared.to_string(),
+            None if vended => data_source_identifier(pipeline),
+            None => plugin.to_string(),
+        }),
         r#type: declared_type
             .map(str::to_string)
             .or_else(|| vended.then(|| DEFAULT_DATA_SOURCE_TYPE.to_string())),
     }
+}
+
+/// The pipeline `name` as the data source of its own vended log events names it: the
+/// `data_source_name` the metadata carries is an IDENTIFIER, which separates its words
+/// with `_`, where a pipeline's resource name separates them with `-`.
+///
+/// The two forms cannot be confused: `TelemetryPipelineName`'s pattern
+/// (`smithy_query(query="shape", shape="TelemetryPipelineName")` — `[a-z][a-z0-9\-]+`)
+/// admits no `_` at all, so a pipeline name never arrives in identifier form and this
+/// value is one the service derives rather than one a caller sent.
+fn data_source_identifier(name: &str) -> String {
+    name.replace('-', "_")
 }
 
 /// A stored S3 Table integration's key: the region it lives in, then the id this

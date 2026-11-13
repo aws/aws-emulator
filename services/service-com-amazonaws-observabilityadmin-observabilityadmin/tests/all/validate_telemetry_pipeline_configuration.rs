@@ -26,7 +26,9 @@
 //!    number of items the schema does not allow, a POSITION of the processor sequence
 //!    this emulator cannot run (its own category, since the document may be one the real
 //!    service accepts), and every field naming an ARN carrying one — the IAM role syntax
-//!    where the field names the role a plugin assumes;
+//!    where the field names the role a plugin assumes. A section reading AWS-vended log
+//!    events is checked against the schema's restricted branches for that source as well,
+//!    whose own category and descriptors `vended_log_pipelines.rs` asserts;
 //! 4. nothing is stored and nothing is created: the call leaves the store exactly as it
 //!    found it, so the same call answers the same way twice.
 
@@ -52,6 +54,31 @@ const UNSUPPORTED_PROCESSOR: &str = "UNSUPPORTED_PROCESSOR";
 /// property that is not there, and a property the schema does not define.
 const MISSING_FIELD: &str = "MISSING_FIELD";
 const UNKNOWN_PROPERTY: &str = "UNKNOWN_PROPERTY";
+/// The category a defect of one of the schema's vended-log restrictions carries, and the
+/// two shapes of `FieldMap` descriptors such a defect names: the restriction about one
+/// vended data source names that data source too, where the restriction about a whole
+/// source type names the processors it admits as a set. `vended_log_pipelines.rs`
+/// asserts their values; here they are the defects a case reports.
+const RESTRICTED: &str = "DATA_SOURCE_PROCESSOR_RESTRICTED";
+const DATA_SOURCE_DESCRIPTORS: &str = "allowed_processor+data_source_name+source_type";
+const SOURCE_TYPE_DESCRIPTORS: &str = "allowed_processors+source_type";
+/// How [`defects`] joins the keys of a defect that names more than one.
+const FIELD_SEPARATOR: &str = "+";
+
+/// The defects every vended-log branch of the schema reports against a section that
+/// declares NO source: such a section pins no branch, so each of the five the schema
+/// carries is measured against its processors — two restrictions about a vended data
+/// source of `cloudwatch_logs`, and one each about the three source types whose whole
+/// log shape is restricted.
+fn unpinned_branches() -> Vec<(&'static str, &'static str)> {
+    vec![
+        (RESTRICTED, DATA_SOURCE_DESCRIPTORS),
+        (RESTRICTED, DATA_SOURCE_DESCRIPTORS),
+        (RESTRICTED, SOURCE_TYPE_DESCRIPTORS),
+        (RESTRICTED, SOURCE_TYPE_DESCRIPTORS),
+        (RESTRICTED, SOURCE_TYPE_DESCRIPTORS),
+    ]
+}
 
 /// One ARN of each form this service's model declares
 /// (`smithy_query(query="shape", shape="IamRoleArn,ResourceArn")`): the IAM role a
@@ -70,8 +97,12 @@ async fn validate(emulator: &Emulator, configuration: &str) -> (u16, Value) {
     .await
 }
 
-/// The reported defects as `(Reason, the one FieldMap key)` pairs, sorted so a case
-/// asserts the SET of defects rather than the order two independent checks ran in.
+/// The reported defects as `(Reason, its FieldMap's keys)` pairs, sorted so a case
+/// asserts the SET of defects rather than the order two independent checks ran in. A
+/// defect pinned to one field of the document names that one key; a defect of one of the
+/// schema's vended-log restrictions is about the restriction rather than about a field,
+/// so it names that restriction's descriptors, joined — their VALUES and messages are
+/// asserted in `vended_log_pipelines.rs`, which is where that rule lives.
 fn defects(case: &str, response: &Value) -> Vec<(String, String)> {
     let errors = response
         .get("Errors")
@@ -101,17 +132,21 @@ fn defects(case: &str, response: &Value) -> Vec<(String, String)> {
                 .unwrap_or_else(|| {
                     panic!("case {case:?}: every reported defect carries a FieldMap, got {error:?}")
                 });
-            assert_eq!(
-                field_map.len(),
-                1,
-                "case {case:?}: a defect names the ONE field it is about, got {field_map:?}"
-            );
-            let (field, issue) = field_map.iter().next().expect("one field");
             assert!(
-                issue.as_str().is_some_and(|issue| !issue.is_empty()),
-                "case {case:?}: the FieldMap entry for {field} carries the issue, got {issue:?}"
+                !field_map.is_empty(),
+                "case {case:?}: a defect names what it is about, got {field_map:?}"
             );
-            (reason.to_string(), field.clone())
+            let mut fields: Vec<&str> = Vec::new();
+            for (field, issue) in field_map {
+                assert!(
+                    issue.as_str().is_some_and(|issue| !issue.is_empty()),
+                    "case {case:?}: the FieldMap entry for {field} carries the issue, \
+                     got {issue:?}"
+                );
+                fields.push(field);
+            }
+            fields.sort_unstable();
+            (reason.to_string(), fields.join(FIELD_SEPARATOR))
         })
         .collect();
     reported.sort();
@@ -363,7 +398,9 @@ async fn every_defect_of_a_document_is_reported_against_its_field() {
         (
             "a top-level pipeline with no source",
             "processor:\n  - parse_json: {}\nsink:\n  - cloudwatch_logs: {}\n".to_string(),
-            vec![(MISSING_FIELD, "name")],
+            // The section names no source, so nothing pins a vended-log branch and each
+            // of them is measured against its processor as well.
+            [vec![(MISSING_FIELD, "name")], unpinned_branches()].concat(),
         ),
         (
             "a top-level pipeline with no sink",
@@ -373,7 +410,11 @@ async fn every_defect_of_a_document_is_reported_against_its_field() {
         (
             "a named section with neither a source nor a sink",
             "log-pipeline:\n  processor:\n    - parse_json: {}\n".to_string(),
-            vec![(MISSING_FIELD, "name"), (MISSING_FIELD, "name")],
+            [
+                vec![(MISSING_FIELD, "name"), (MISSING_FIELD, "name")],
+                unpinned_branches(),
+            ]
+            .concat(),
         ),
         (
             "a section naming two sources",

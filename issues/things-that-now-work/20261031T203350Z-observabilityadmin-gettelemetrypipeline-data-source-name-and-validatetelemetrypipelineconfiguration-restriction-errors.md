@@ -55,3 +55,34 @@ Cause 2 — fixture observabilityadmin-telemetry-pipeline-workflow, step task#5,
 1. Clone this checkout, boot the emulator from it, and replay the wire corpus simparity-wire-aws-v1 for service observabilityadmin.
 2. Cause 1: replay fixture observabilityadmin-telemetry-pipeline-workflow step task#3 — POST /ValidateTelemetryPipelineConfiguration with the recorded multi-defect pipeline document (restricted data-source/processor combinations for cloudwatch_logs+aws_cloudtrail, amazon_vpc_flow, amazon_cloudfront, cloudwatch_logs+aws_security_hub_cspm and amazon_route53; 'lowercase_string'/'uppercase_string' at processor positions 0 and 1; and no 'source' or 'sink' section). Expect HTTP 200 with nine Errors entries in the recorded order: five Reason 'DATA_SOURCE_PROCESSOR_RESTRICTED' with FieldMap keyed 'source_type'/'data_source_name'/'allowed_processor(s)', two Reason 'UNKNOWN_PROPERTY' with FieldMap {'path': 'processor[0]'} and {'path': 'processor[1]'}, then the two Reason 'MISSING_FIELD' with FieldMap {'name': 'source'} and {'name': 'sink'}. The emulator returns only the last two, first.
 3. Cause 2: replay fixture observabilityadmin-telemetry-pipeline-workflow step task#5 — CreateTelemetryPipeline with a hyphenated Name and a cloudwatch_logs source document that declares no data source, wait for Status ACTIVE, then POST /GetTelemetryPipeline with its identifier and read Pipeline.ConfigurationSummary.DataSources[0].Name. Expect the pipeline name in underscore form (every '-' replaced by '_'); the emulator returns the hyphenated name verbatim. Re-run with a document that DOES declare a data_source_name to confirm a declared name is still reported exactly as declared.
+
+## Resolution
+
+Both causes are FIXED.
+
+* **Cause 1 — the vended-log restriction pass is WRITTEN.** The pipeline schema's
+  branches for a source that reads AWS-vended log events now live beside the walk that
+  reports a document's defects, in
+  `src/ops/validate_telemetry_pipeline_configuration/vended_log_schema.rs`: one branch
+  per vended source type, and per vended data source for a source type whose restriction
+  is per data source, each carrying the processors it admits and the property its source
+  requires. A section declaring a vended source type is measured against that type's
+  branches, narrowed to the data sources it names; a section declaring NO source pins no
+  branch, so every branch it violates is reported; a section reading from a third-party
+  source carries none of these restrictions. Each violated branch answers one
+  `DATA_SOURCE_PROCESSOR_RESTRICTED` entry whose `FieldMap` carries the restriction's own
+  descriptors (`source_type`, `data_source_name`, and `allowed_processor` or the
+  `/`-joined `allowed_processors`) and whose message is the schema's sentence for the
+  keyword it violates, and a position of such a section's processor sequence naming a
+  processor that branch does not define answers the plain `UNKNOWN_PROPERTY` entry at
+  `processor[<i>]`. The restriction defects are reported ahead of the defects of the
+  document's own properties. Fixture observabilityadmin-telemetry-pipeline-workflow step
+  task#3 replays clean.
+* **Cause 2 — the data-source identifier is NORMALIZED.** A vended source that declares
+  no data source reads the events vended for the pipeline itself, and the
+  `data_source_name` that metadata carries is an identifier, so `src/state.rs` reports the
+  pipeline's name with `-` replaced by `_` rather than cloning the resource name; a data
+  source the document declares is still reported exactly as declared, and a third-party
+  source still defaults to its plugin name. The replay's residual difference at
+  `$.Pipeline.ConfigurationSummary.DataSources[0]` is the fixture's per-run hex suffix in
+  the pipeline name it generates, which this report already states is not a requirement.
