@@ -386,6 +386,13 @@ async fn an_admin_reset_follows_the_pools_account_recovery_setting() {
             "RecoveryMechanisms": [{ "Name": "admin_only", "Priority": 1 }]
         }
     });
+    // An SMS reset code leaves the pool through the Amazon SNS caller its
+    // `SmsConfiguration` names, so a pool that stores none has no SMS delivery
+    // path and the phone mechanism cannot be the one a code goes over
+    // (`SmsConfigurationType` in this service's model). Every row below that
+    // expects a text message therefore configures that caller.
+    let sends_sms =
+        json!({ "SmsConfiguration": { "SnsCallerArn": "arn:aws:iam::000000000000:role/sms-caller" } });
 
     // (case, pool configuration, the user's attributes, expected status, the attribute
     //  the code goes to or the expected error code)
@@ -423,7 +430,7 @@ async fn an_admin_reset_follows_the_pools_account_recovery_setting() {
         ),
         (
             "verified_phone_number at priority 1, with both verified",
-            verified_phone_first.clone(),
+            merged(verified_phone_first.clone(), &sends_sms),
             vec![
                 ("email", "c@example.com"),
                 ("email_verified", "true"),
@@ -432,6 +439,21 @@ async fn an_admin_reset_follows_the_pools_account_recovery_setting() {
             ],
             200,
             "phone_number",
+        ),
+        (
+            // The same ranking and the same verified number, on a pool with no
+            // SMS delivery path: the phone mechanism cannot deliver, so the
+            // verified email behind it is the destination.
+            "verified_phone_number first and verified, on a pool that sends no SMS",
+            verified_phone_first.clone(),
+            vec![
+                ("email", "i@example.com"),
+                ("email_verified", "true"),
+                ("phone_number", "+15550100009"),
+                ("phone_number_verified", "true"),
+            ],
+            200,
+            "email",
         ),
         (
             "verified_phone_number first, but only the email is verified",
@@ -446,13 +468,24 @@ async fn an_admin_reset_follows_the_pools_account_recovery_setting() {
         ),
         (
             "a pool with no email at all, falling back to the verified number",
-            json!({}),
+            sends_sms.clone(),
             vec![
                 ("phone_number", "+15550100005"),
                 ("phone_number_verified", "true"),
             ],
             200,
             "phone_number",
+        ),
+        (
+            // The same user on a pool that cannot text: nothing qualifies at all.
+            "a verified number alone, on a pool that sends no SMS",
+            json!({}),
+            vec![
+                ("phone_number", "+15550100010"),
+                ("phone_number_verified", "true"),
+            ],
+            400,
+            "InvalidParameterException",
         ),
         (
             "a pool that reserves account recovery to administrators",

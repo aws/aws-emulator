@@ -1432,6 +1432,16 @@ async fn forgot_password_follows_the_pools_account_recovery_setting() {
             ]
         }
     });
+    // The same ranking on a pool that can actually SEND a text message: an SMS
+    // reset code leaves through the Amazon SNS caller the pool's
+    // `SmsConfiguration` names, so the phone mechanism qualifies only where the
+    // pool stores one.
+    let verified_phone_first_over_sms = merged(
+        verified_phone_first.clone(),
+        &json!({
+            "SmsConfiguration": { "SnsCallerArn": "arn:aws:iam::000000000000:role/sms-caller" }
+        }),
+    );
     let admin_only = json!({
         "AccountRecoverySetting": {
             "RecoveryMechanisms": [{ "Name": "admin_only", "Priority": 1 }]
@@ -1468,7 +1478,7 @@ async fn forgot_password_follows_the_pools_account_recovery_setting() {
         ),
         (
             "verified_phone_number at priority 1, with both verified",
-            verified_phone_first.clone(),
+            verified_phone_first_over_sms,
             vec![
                 ("email", "c@example.com"),
                 ("email_verified", "true"),
@@ -1477,6 +1487,33 @@ async fn forgot_password_follows_the_pools_account_recovery_setting() {
             ],
             200,
             "phone_number",
+        ),
+        (
+            // The same ranking and the same verified number, on a pool with no
+            // SMS delivery path at all: the phone mechanism cannot deliver, so
+            // the pool falls through to the verified email behind it.
+            "verified_phone_number first and verified, on a pool that sends no SMS",
+            verified_phone_first.clone(),
+            vec![
+                ("email", "h@example.com"),
+                ("email_verified", "true"),
+                ("phone_number", "+15550100008"),
+                ("phone_number_verified", "true"),
+            ],
+            200,
+            "email",
+        ),
+        (
+            // And with the verified number as the user's ONLY address, nothing
+            // qualifies at all.
+            "a verified number alone, on a pool that sends no SMS",
+            verified_phone_first.clone(),
+            vec![
+                ("phone_number", "+15550100009"),
+                ("phone_number_verified", "true"),
+            ],
+            400,
+            "InvalidParameterException",
         ),
         (
             "verified_phone_number first, but only the email is verified",

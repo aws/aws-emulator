@@ -596,7 +596,7 @@ async fn an_sms_factor_without_an_sns_caller_is_refused_while_mfa_is_on() {
             assert_eq!(
                 payload.get("message").or_else(|| payload.get("Message")),
                 Some(&json!(
-                    "[SmsConfiguration] is a required member of [SmsMfaConfiguration]."
+                    "Invalid SMS MFA configuration given, external id and a valid caller arn are required."
                 )),
                 "case {label:?}: got {payload}"
             );

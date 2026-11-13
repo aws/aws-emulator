@@ -78,6 +78,36 @@ pub fn duplicate_recovery_mechanisms(setting: &AccountRecoverySettingType) -> bo
     })
 }
 
+/// The message a user-pool write is refused with when its
+/// `AccountRecoverySetting` combines `admin_only` with another recovery
+/// mechanism ([`admin_only_recovery_combined`]). Fixed text, naming neither the
+/// mechanisms nor the pool.
+pub const ADMIN_ONLY_RECOVERY_COMBINED_MESSAGE: &str =
+    "Invalid account recovery setting parameter. Account Recovery Setting cannot use \
+     admin_only setting with any other recovery mechanisms.";
+
+/// Whether `setting`'s `RecoveryMechanisms` name `admin_only` BESIDE another
+/// mechanism.
+///
+/// "The `admin_only` option prevents self-service account recovery"
+/// (`RecoveryOptionType` in this service's model), so it is not one mechanism
+/// among others that a reset message could fall back to: it says the pool sends
+/// no such message at all. A configuration that lists it together with a
+/// mechanism that DOES deliver one claims both at once, which is no configuration
+/// a pool can apply, so a request carrying it is refused rather than stored —
+/// exactly as a configuration that ranks one mechanism twice is
+/// ([`duplicate_recovery_mechanisms`]).
+#[must_use]
+pub fn admin_only_recovery_combined(setting: &AccountRecoverySettingType) -> bool {
+    let Some(mechanisms) = setting.recovery_mechanisms.as_deref() else {
+        return false;
+    };
+    mechanisms.len() > 1
+        && mechanisms
+            .iter()
+            .any(|mechanism| mechanism.name == RECOVERY_ADMIN_ONLY)
+}
+
 /// The service principal a user pool sends SMS messages as: Amazon Cognito
 /// assumes the role an `SmsConfiguration` names, so that role's trust policy has
 /// to admit this principal.
@@ -90,35 +120,106 @@ const SMS_CALLER_SERVICE_PRINCIPAL: &str = "cognito-idp.amazonaws.com";
 pub const SMS_ROLE_TRUST_RELATIONSHIP_MESSAGE: &str =
     "Role does not have a trust relationship allowing Cognito to assume the role";
 
-/// Whether IAM answered that the role `sms_configuration` names is one Amazon
-/// Cognito cannot assume.
+/// The condition key the assume Amazon Cognito makes presents the external id
+/// under: "if you provide an `ExternalId`, your Amazon Cognito user pool includes
+/// it in the request to assume your IAM role. You can configure the role trust
+/// policy to require that Amazon Cognito, and any principal, provide the
+/// `ExternalID`" (`SmsConfigurationType.ExternalId` in this service's model).
+const EXTERNAL_ID_CONDITION_KEY: &str = "sts:ExternalId";
+
+/// The Amazon SNS caller role `sms_configuration` names, when it names one: the
+/// `SnsCallerArn` it carries, and `None` where that is absent or the member's own
+/// empty default (`OptionalArnType` with `@default ""`).
+#[must_use]
+pub fn sns_caller_role_arn(sms_configuration: Option<&SmsConfigurationType>) -> Option<&str> {
+    sms_configuration
+        .and_then(|sms| sms.sns_caller_arn.as_deref())
+        .filter(|role_arn| !role_arn.is_empty())
+}
+
+/// Whether `sms_configuration` names a caller an SMS message can be sent through
+/// at all.
+///
+/// A text message leaves a user pool through the caller its SMS configuration
+/// names, and there are two of them: the Amazon SNS caller role
+/// ([`sns_caller_role_arn`]) and the Amazon Web Services End User Messaging
+/// configuration — "in a user pool, provide either the Amazon SNS configuration
+/// (`SnsCallerArn`) or this configuration, but not both"
+/// (`SmsConfigurationType.EumsSms` in this service's model). A configuration that
+/// carries neither names nobody to send through, exactly as a request or a pool
+/// that carries no `SmsConfiguration` at all.
+///
+/// The ONE reading of that question, so the MFA factor's precondition
+/// (`SetUserPoolMfaConfig`) and the pool's own SMS delivery path
+/// ([`UserPool::delivers_sms`]) cannot answer it differently.
+#[must_use]
+pub fn names_an_sms_caller(sms_configuration: Option<&SmsConfigurationType>) -> bool {
+    sns_caller_role_arn(sms_configuration).is_some()
+        || sms_configuration.is_some_and(|sms| sms.eums_sms.is_some())
+}
+
+/// Whether the Amazon SNS caller `sms_configuration` names is one Amazon Cognito
+/// cannot assume.
 ///
 /// "To send SMS messages with Amazon SNS in the Amazon Web Services Region that
 /// you want, the Amazon Cognito user pool uses an Identity and Access Management
-/// (IAM) role in your Amazon Web Services account" (`SmsConfigurationType` in
-/// this service's model) — so the pool only sends SMS at all if it can assume
-/// that role, and a configuration naming a role whose trust policy withholds
-/// this principal configures a delivery path that cannot work.
+/// (IAM) role in your Amazon Web Services account" — `SnsCallerArn` being "the
+/// ARN of the IAM role in your Amazon Web Services account that Amazon Cognito
+/// will use to send SMS messages" (`SmsConfigurationType` in this service's
+/// model). The pool sends SMS at all only if it can take that role on, and the
+/// configuration is checked by making that assume rather than by storing a
+/// delivery path that could never send. Three answers make it impossible:
 ///
-/// The reading is the tree's one reading of a caller-supplied role
-/// (`service_common::iam_role::held_role_is_unassumable`), the variant that
-/// refuses only what a STORED trust document withholds: an SMS caller role is
-/// routinely provisioned out of band, so a role this emulator's IAM holds
-/// nothing under is not evidence about the role the caller named. Await it with
-/// no state guard held.
+/// * the value does not NAME an IAM role of this account — it is not an IAM role
+///   ARN at all, or it names another account, whose roles this account cannot
+///   hand to Amazon Cognito ([`service_common::iam_role::role_name`]);
+/// * this account's IAM answers that it holds no role under that name, so there
+///   is no role to assume;
+/// * it holds the role and the trust policy it carries does not grant the assume:
+///   the principal is not admitted, or the assume this configuration would
+///   make — which presents the `ExternalId` it carries under
+///   [`EXTERNAL_ID_CONDITION_KEY`] — is not one the grant's conditions cover.
+///
+/// The reading is the tree's one reading of a caller-supplied role for ONE assume
+/// (`service_common::iam_role::role_assume_is_unauthorized_through`), so the
+/// trust document is evaluated where every other service's is. Nothing is refused
+/// on an answer this emulator could not read, or where there is no IAM to ask at
+/// all: a refusal has to be grounded in what IAM said. Await it with no state
+/// guard held.
 pub async fn sms_caller_role_is_unassumable(
     ctx: &::smithy_server_runtime::OperationContext<'_>,
     region: &str,
     sms_configuration: Option<&SmsConfigurationType>,
 ) -> bool {
-    let Some(role_arn) = sms_configuration.and_then(|sms| sms.sns_caller_arn.as_deref()) else {
+    // An Amazon SNS caller is what this reading is about: a configuration that
+    // names none asks for no assume, and neither does one that delivers through
+    // End User Messaging instead ([`names_an_sms_caller`]).
+    let Some(role_arn) = sns_caller_role_arn(sms_configuration) else {
         return false;
     };
-    ::service_common::iam_role::held_role_is_unassumable(
-        ctx,
+    if ::service_common::iam_role::role_name(role_arn).is_none() {
+        return true;
+    }
+    // The keys the assume Amazon Cognito would make carries. Nothing is stated
+    // for a key the configuration says nothing about, so a trust policy that
+    // narrows the grant to an external id this configuration does not present
+    // is a grant this assume cannot be shown to satisfy.
+    let context: Vec<(String, String)> = sms_configuration
+        .and_then(|sms| sms.external_id.as_deref())
+        .filter(|external_id| !external_id.is_empty())
+        .map(|external_id| {
+            vec![(
+                EXTERNAL_ID_CONDITION_KEY.to_string(),
+                external_id.to_string(),
+            )]
+        })
+        .unwrap_or_default();
+    ::service_common::iam_role::role_assume_is_unauthorized_through(
+        ctx.callback(),
         region,
         role_arn,
         SMS_CALLER_SERVICE_PRINCIPAL,
+        &context,
     )
     .await
 }

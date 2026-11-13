@@ -277,15 +277,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         // SMS codes are delivered through the Amazon SNS caller that
         // `SmsConfiguration` names, so a pool that offers SMS as an MFA factor needs
-        // one: configuring `SmsMfaConfiguration` without it while MFA is on or
-        // optional is refused rather than stored as a factor nothing could deliver.
+        // one: configuring `SmsMfaConfiguration` without a caller to send through —
+        // no `SmsConfiguration` at all, or one that names no caller — while MFA is on
+        // or optional is refused rather than stored as a factor nothing could deliver.
         // Asked AFTER the lookup, so a request that names no pool is a 404 whatever
         // else it carries.
         if mfa_configuration != crate::state::MFA_OFF
             && input
                 .sms_mfa_configuration
                 .as_ref()
-                .is_some_and(|sms| sms.sms_configuration.is_none())
+                .is_some_and(|sms| {
+                    !crate::state::names_an_sms_caller(sms.sms_configuration.as_ref())
+                })
         {
             return Err(sms_configuration_required());
         }
@@ -377,9 +380,20 @@ fn enables_an_mfa_factor(
         || software_token.is_some_and(|software_token| software_token.enabled)
 }
 
+/// The message this operation's `InvalidParameterException` carries for an SMS
+/// MFA factor configured with no Amazon SNS caller to send through
+/// ([`crate::state::names_an_sms_caller`], the one reading of that question this
+/// service shares with the pool's own SMS delivery path).
+///
+/// Fixed text for this error class: it names the two values an Amazon SNS
+/// delivery path is made of rather than the pool or the member the request left
+/// out, so every such request is refused with the same sentence.
+const SMS_MFA_CONFIGURATION_INCOMPLETE_MESSAGE: &str =
+    "Invalid SMS MFA configuration given, external id and a valid caller arn are required.";
+
 /// The refusal for an SMS MFA factor with no Amazon SNS caller configuration.
 fn sms_configuration_required() -> SetUserPoolMfaConfigError {
-    invalid_parameter("[SmsConfiguration] is a required member of [SmsMfaConfiguration].".to_string())
+    invalid_parameter(SMS_MFA_CONFIGURATION_INCOMPLETE_MESSAGE.to_string())
 }
 
 /// This operation's `InvalidParameterException`, carrying `message`.

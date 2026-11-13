@@ -1039,11 +1039,27 @@ impl UserPool {
             .mfa_setting_list
             .iter()
             .any(|setting| setting == SMS_MFA_SETTING);
+        // A mechanism qualifies only while this pool can SEND the message it
+        // delivers over. An SMS message is sent through the Amazon SNS caller the
+        // pool's `SmsConfiguration` names — "user pool configuration for delivery
+        // of SMS messages with Amazon Simple Notification Service"
+        // (`SmsConfigurationType` in this service's model) — so a pool that
+        // stores none has no SMS delivery path at all, and the mechanism that
+        // texts a reset code does not qualify however verified the user's number
+        // is. The pool then falls through to the next mechanism by priority,
+        // exactly as it does for a number that is this user's second sign-in
+        // factor, and a user with no other qualifying mechanism has no
+        // destination at all. It is the same coupling a pool that verifies
+        // `phone_number` itself is held to
+        // ([`crate::state::sms_configuration_missing_for_auto_verification`]),
+        // asked here because no configuration forbids naming the mechanism
+        // without the delivery path.
+        let delivers_sms = self.delivers_sms();
         mechanisms
             .iter()
             .filter_map(|(_, name)| recovered_attribute(name))
             .filter(|attribute| {
-                !(sms_mfa_activated && *attribute == SMS_RECOVERED_ATTRIBUTE)
+                *attribute != SMS_RECOVERED_ATTRIBUTE || (delivers_sms && !sms_mfa_activated)
             })
             .find_map(|attribute| {
                 user.verified_destination_of(attribute)
@@ -1053,6 +1069,18 @@ impl UserPool {
                     })
             })
             .unwrap_or(RecoveryDestination::None)
+    }
+
+    /// Whether this pool can send an SMS message at all.
+    ///
+    /// A text message leaves the pool through the caller its `SmsConfiguration`
+    /// names — the Amazon SNS caller role or the Amazon Web Services End User
+    /// Messaging configuration — which is the ONE reading of that question
+    /// ([`names_an_sms_caller`]). A pool whose configuration names neither, and a
+    /// pool that stores no configuration at all, have nobody to send through, so
+    /// nothing they would deliver by SMS can be delivered.
+    pub fn delivers_sms(&self) -> bool {
+        names_an_sms_caller(self.sms_configuration.as_ref())
     }
 
     /// Whether `factor` is a first authentication factor this pool admits:

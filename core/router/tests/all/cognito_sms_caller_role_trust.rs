@@ -18,9 +18,12 @@
 //! names, whether it names several, whether the grant is an `Allow`, which action
 //! it names) and along the operation that writes the configuration —
 //! `CreateUserPool`, `UpdateUserPool` and `SetUserPoolMfaConfig` all carry an
-//! `SmsConfiguration`. A role ARN this account's IAM holds nothing under is no
-//! evidence of a withheld trust — an SMS caller role is routinely provisioned out
-//! of band — so such a write goes ahead.
+//! `SmsConfiguration`. The second suite is the other half of the same rule: the
+//! check is the ASSUME, so an `SnsCallerArn` this account's IAM holds no role for
+//! is a role Amazon Cognito cannot take on either, and such a write is refused
+//! with the same error — which is what the recorded wire corpus shows AWS doing
+//! for a configuration naming a role that was never created
+//! (`cognito-idp-acr-traj-enable-phone-recovery-update-mistakes#task#5`).
 
 use std::sync::Arc;
 
@@ -405,12 +408,16 @@ async fn a_pool_write_refuses_an_sms_caller_role_whose_trust_policy_withholds_co
     }
 }
 
-/// RULE (the complement): an `SnsCallerArn` this account's IAM store holds no role
-/// for is not evidence that the trust is missing — the role may live in another
-/// account, or in an IAM this emulator was never told about — so the write goes
-/// ahead.
+/// RULE (the other half): the check is the ASSUME Amazon Cognito would make, so an
+/// `SnsCallerArn` this account cannot hand it a role for is refused with the same
+/// error — IAM answering that it holds no role under that name leaves nothing to
+/// assume, and a value naming another account's role is no role of this account to
+/// begin with (`SnsCallerArn` is "the ARN of the IAM role in your Amazon Web
+/// Services account", `SmsConfigurationType` in Cognito's model). The recorded
+/// corpus pins it: AWS refuses such a write with
+/// `InvalidSmsRoleTrustRelationshipException`.
 #[tokio::test]
-async fn a_pool_write_accepts_an_sms_caller_arn_the_iam_store_does_not_hold() {
+async fn a_pool_write_refuses_an_sms_caller_arn_this_account_holds_no_role_for() {
     let router = router();
 
     // The rows differ along the shape of the unheld ARN: this account's own
@@ -430,19 +437,56 @@ async fn a_pool_write_accepts_an_sms_caller_arn_the_iam_store_does_not_hold() {
     .iter()
     .enumerate()
     {
-        let created = ok(
+        let pool_name = format!("sms-role-unheld-{index}");
+        let (status, payload) = cognito(
             &router,
             "CreateUserPool",
             &json!({
-                "PoolName": format!("sms-role-unheld-{index}"),
+                "PoolName": pool_name,
                 "SmsConfiguration": { "SnsCallerArn": role_arn }
             }),
         )
         .await;
-        assert_eq!(
-            created["UserPool"]["SmsConfiguration"]["SnsCallerArn"].as_str(),
-            Some(*role_arn),
-            "case {case:?}: the pool stores the SNS caller it was created with, got {created}"
+        assert_trust_refusal(case, "CreateUserPool", status, &payload);
+        let listed = ok(&router, "ListUserPools", &json!({ "MaxResults": 60 })).await;
+        let named = listed["UserPools"]
+            .as_array()
+            .expect("a listing of pools")
+            .iter()
+            .any(|entry| entry["Name"] == json!(pool_name));
+        assert!(
+            !named,
+            "case {case:?}: a refused create stores no pool, got {listed}"
+        );
+    }
+}
+
+/// RULE (the complement): a pool write that configures no Amazon SNS caller at all
+/// asks for no assume, so it is served whatever this account's IAM holds — the
+/// member's own default is the empty string.
+#[tokio::test]
+async fn a_pool_write_that_names_no_sms_caller_is_served() {
+    let router = router();
+
+    for (index, (case, sms_configuration)) in [
+        ("no SmsConfiguration at all", Value::Null),
+        ("an SmsConfiguration that names no caller", json!({})),
+        (
+            "an SmsConfiguration carrying the member's empty default",
+            json!({ "SnsCallerArn": "" }),
+        ),
+    ]
+    .iter()
+    .enumerate()
+    {
+        let mut body = json!({ "PoolName": format!("sms-role-absent-{index}") });
+        if !sms_configuration.is_null() {
+            body["SmsConfiguration"] = sms_configuration.clone();
+        }
+        let created = ok(&router, "CreateUserPool", &body).await;
+        assert!(
+            created["UserPool"]["Id"].is_string(),
+            "case {case:?}: the pool must be created, got {created}"
         );
     }
 }

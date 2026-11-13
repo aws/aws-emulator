@@ -330,6 +330,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 crate::state::DUPLICATE_RECOVERY_MECHANISMS_MESSAGE.to_string(),
             ));
         }
+        if crate::state::admin_only_recovery_combined(&account_recovery_setting) {
+            return Err(invalid_parameter(
+                crate::state::ADMIN_ONLY_RECOVERY_COMBINED_MESSAGE.to_string(),
+            ));
+        }
         if crate::state::sms_configuration_missing_for_auto_verification(
             &auto_verified_attributes,
             input.sms_configuration.as_ref(),
