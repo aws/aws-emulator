@@ -1,15 +1,18 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op ListProjectPolicies
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `ListProjectPolicies`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`ListProjectPolicies::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! ## What this operation does here
+//!
+//! It reports the project policies attached to a project of this service's store — exactly
+//! the records `PutProjectPolicy` wrote on it, one `MaxResults`-sized page at a time — and
+//! reports nothing for a project that has none, which is the answer a refused attach leaves
+//! behind.
+//!
+//! A policy is a child of its project (`crate::state::Project::policies`), so the project is
+//! resolved by ARN first and an ARN that names no project of this account names nothing to
+//! list. The page order is the project's own key order over the policy names, so it is
+//! total and a page resumes exactly where the previous one ended.
 //!
 //! ## Shape of an operation
 //!
@@ -169,18 +172,62 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `ListProjectPolicies` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(ListProjectPoliciesErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("ListProjectPolicies"))
+        let _ = ctx;
+        let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
+            ListProjectPoliciesErrorModeled::InternalServerError(
+                crate::state::modeled_error::store_unavailable(),
+            )
+        })?;
+        let state = state.lock();
+
+        // The policies belong to the project, so an ARN that names no project of this
+        // account names nothing to list.
+        let project = state.project_by_arn(&input.project_arn).ok_or_else(|| {
+            ListProjectPoliciesErrorModeled::ResourceNotFoundException(
+                crate::state::modeled_error::resource_arn_not_found(&input.project_arn),
+            )
+        })?;
+
+        // A token this list did not mint names no position in it.
+        let start_at = match input.next_token.as_deref() {
+            None | Some("") => None,
+            Some(token) => Some(
+                crate::state::decode_cursor(
+                    crate::state::project_policies::POLICIES_CURSOR_SCOPE,
+                    token,
+                )
+                .ok_or_else(|| {
+                    ListProjectPoliciesErrorModeled::InvalidPaginationTokenException(
+                        crate::state::modeled_error::invalid_pagination_token(),
+                    )
+                })?,
+            ),
+        };
+
+        let page_size = crate::state::project_policies::policies_page_size(input.max_results);
+        let mut remaining = project
+            .policies
+            .iter()
+            .filter(|(policy_name, _)| start_at.as_ref().is_none_or(|from| *policy_name >= from));
+        let project_policies: Vec<ProjectPolicy> = remaining
+            .by_ref()
+            .take(page_size)
+            .map(|(_, policy)| policy.modeled(&project.arn))
+            .collect();
+
+        // A cursor is minted only when a policy is left over past this page, and it names
+        // the position that policy occupies, so the next page starts exactly where this one
+        // ended.
+        let next_token = remaining.next().map(|(policy_name, _)| {
+            crate::state::encode_cursor(
+                crate::state::project_policies::POLICIES_CURSOR_SCOPE,
+                policy_name,
+            )
+        });
+
+        Ok(ListProjectPoliciesOutput {
+            project_policies: Some(project_policies),
+            next_token,
+        })
     }
 }

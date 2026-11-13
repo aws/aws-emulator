@@ -33,6 +33,8 @@ mod image_content_refusal;
 mod label_detection;
 #[path = "all/photographic_enrolment.rs"]
 mod photographic_enrolment;
+#[path = "all/project_policies.rs"]
+mod project_policies;
 #[path = "all/projects.rs"]
 mod projects;
 #[path = "all/protective_equipment.rs"]

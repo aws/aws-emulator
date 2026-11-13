@@ -75,6 +75,7 @@ pub mod idempotency;
 pub mod image_source;
 pub mod label_detection;
 pub mod modeled_error;
+pub mod project_policies;
 pub mod video_jobs;
 pub mod video_source;
 
@@ -371,6 +372,52 @@ pub struct Project {
     /// project's: a tag set belongs to the resource it was attached to, whatever kind of
     /// resource that is.
     pub tags: BTreeMap<String, String>,
+    /// The model versions this project manages, keyed by their `VersionName` — "Models and
+    /// adapters are managed as part of a Rekognition project"
+    /// (`smithy_query(query="operation",operation="CreateProjectVersion")`), so a version is
+    /// a child of the project that holds it and goes when the project goes.
+    ///
+    /// A project created now manages none: a version is recorded by the operations that
+    /// create one (`CreateProjectVersion`, `CopyProjectVersion`), each of which is an
+    /// unimplemented 501 until it is written. What reads this map is the resource check a
+    /// project policy's document is held to — see [`project_policies`].
+    pub versions: BTreeMap<String, ProjectVersion>,
+    /// The project policies attached to this project, keyed by their `PolicyName` — the
+    /// project's identity for a policy, since "you can attach multiple project policies to
+    /// a project" and a policy is updated by naming it again
+    /// (`smithy_query(query="operation",operation="PutProjectPolicy")`). A `BTreeMap` so
+    /// `ListProjectPolicies`' order, and therefore its pagination, is deterministic;
+    /// bounded by [`project_policies::MAX_POLICIES_PER_PROJECT`].
+    pub policies: BTreeMap<String, project_policies::ProjectPolicyRecord>,
+}
+
+/// One model version of a project: the name it was created under and the ARN this service
+/// minted for it.
+///
+/// A version is what a project policy grants copying of, so what this record has to answer
+/// is whether an ARN names a version this project holds. Everything a version reports about
+/// its TRAINING belongs to the operations that create and describe one, each of which is an
+/// unimplemented 501 until it is written; this record carries what identifies the version
+/// and nothing a trainer would have had to measure.
+#[derive(Debug, Clone)]
+pub struct ProjectVersion {
+    /// `CreateProjectVersion.VersionName` — the project's key for the version.
+    pub name: String,
+    /// The ARN this service minted for the version; what every operation ON a version, and
+    /// every policy document that grants on one, names it by.
+    pub arn: String,
+    pub creation_timestamp: SystemTime,
+}
+
+impl ProjectVersion {
+    /// A version as the operation that creates one records it.
+    pub fn new(name: String, arn: String, creation_timestamp: SystemTime) -> Self {
+        Self {
+            name,
+            arn,
+            creation_timestamp,
+        }
+    }
 }
 
 impl Project {
@@ -392,7 +439,17 @@ impl Project {
             feature,
             auto_update,
             tags,
+            versions: BTreeMap::new(),
+            policies: BTreeMap::new(),
         }
+    }
+
+    /// Whether `arn` names a model version this project holds, in either form of the ARN
+    /// (see [`arn_names`]).
+    pub fn has_version_arn(&self, arn: &str) -> bool {
+        self.versions
+            .values()
+            .any(|version| arn_names(&version.arn, arn))
     }
 
     /// This project as the modelled `ProjectDescription`.
@@ -459,6 +516,24 @@ impl ComAmazonawsRekognitionRekognitionserviceState {
             .values()
             .find(|project| arn_names(&project.arn, resource_arn))
             .map(|project| &project.tags)
+    }
+
+    /// The project `project_arn` names, in either form of its ARN (see [`arn_names`]), or
+    /// `None` when this store holds no such project.
+    ///
+    /// Every operation ON a project names it by ARN while the store keys a project by its
+    /// name, so the resolution lives here once rather than in each of those handlers.
+    pub fn project_by_arn(&self, project_arn: &str) -> Option<&Project> {
+        self.projects
+            .values()
+            .find(|project| arn_names(&project.arn, project_arn))
+    }
+
+    /// The same resolution, for the operations that CHANGE the project.
+    pub fn project_by_arn_mut(&mut self, project_arn: &str) -> Option<&mut Project> {
+        self.projects
+            .values_mut()
+            .find(|project| arn_names(&project.arn, project_arn))
     }
 
     /// The same resolution, for the operations that CHANGE the resource's tags.
@@ -586,6 +661,32 @@ pub fn project_arn(region: &str, project_name: &str, creation_timestamp: SystemT
         ARN_NAMESPACE,
         region,
         &format!("project/{project_name}/{version}"),
+    )
+}
+
+/// The ARN of a model version named `version_name` of the project named `project_name` in
+/// `region`, created at `creation_timestamp`:
+/// `arn:aws:rekognition:<region>:<account>:project/<ProjectName>/version/<VersionName>/<version>`.
+///
+/// The form is the one `ProjectVersionArn`'s pattern requires — `project\/[a-zA-Z0-9_.\-]{1,255}\/version\/[a-zA-Z0-9_.\-]{1,255}\/[0-9]+$`
+/// (`smithy_query(query="operation",operation="CreateProjectVersion")`) — with the trailing
+/// numeric segment the version's creation instant in milliseconds, for the same reason
+/// [`project_arn`]'s is: it is derived from the record the service wrote and stays that
+/// version's ARN for as long as the version lives.
+pub fn project_version_arn(
+    region: &str,
+    project_name: &str,
+    version_name: &str,
+    creation_timestamp: SystemTime,
+) -> String {
+    let version = creation_timestamp
+        .duration_since(UNIX_EPOCH)
+        .map(|since| since.as_millis())
+        .unwrap_or_default();
+    ::engine::emulator_arn(
+        ARN_NAMESPACE,
+        region,
+        &format!("project/{project_name}/version/{version_name}/{version}"),
     )
 }
 
@@ -776,6 +877,18 @@ pub fn new_image_id() -> String {
 /// names a job for correlation and is not a secret.
 pub fn new_job_id() -> String {
     ::hex::encode(mint_digest("job"))
+}
+
+/// A fresh `PolicyRevisionId` for a project policy being written.
+///
+/// The model constrains it to `length 0..64` and `pattern ^[0-9A-Fa-f]+$`
+/// (`smithy_query(query="shape",shape="ProjectPolicyRevisionId")`), and the revision
+/// Rekognition assigns a project policy is a 32-character hexadecimal token, so this
+/// renders half the mint digest as hex. It is unique for the same reason [`mint_digest`] is,
+/// which is what lets a write that names a stale revision be told from one that names the
+/// current one. It identifies a revision of a policy and is not a secret.
+pub fn new_project_policy_revision_id() -> String {
+    ::hex::encode(&mint_digest("project-policy-revision")[..16])
 }
 
 /// This service's store in the shared engine: call it with a handler's `&*self.engine`.

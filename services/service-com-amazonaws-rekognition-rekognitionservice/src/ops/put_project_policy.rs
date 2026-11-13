@@ -1,15 +1,25 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op PutProjectPolicy
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `PutProjectPolicy`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`PutProjectPolicy::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! ## What this operation does here
+//!
+//! It attaches a project policy to a project of this service's store, or rewrites the one
+//! the named policy already is, and answers with the revision it assigned the write.
+//!
+//! A project policy is a resource policy whose statements grant copying a MODEL VERSION of
+//! the project the policy is attached to, so a document is acceptable only when it is a
+//! policy and every resource it names is a model version that project holds; either way of
+//! failing that is the modelled `MalformedPolicyDocumentException`. The rule, the two
+//! wordings and the stored record all live in [`crate::state::project_policies`], so
+//! `ListProjectPolicies` and the operations that take a document later agree with this one.
+//!
+//! A `PolicyRevisionId` is what makes a write an UPDATE: "You can also update an existing
+//! project policy by specifying the policy revision ID of the existing policy". A write that
+//! names no revision therefore attaches a new policy and collides
+//! (`ResourceAlreadyExistsException`) with a name the project already uses, and a write that
+//! names one is refused (`InvalidPolicyRevisionIdException`) unless it is the revision the
+//! named policy currently carries.
 //!
 //! ## Shape of an operation
 //!
@@ -118,6 +128,10 @@
 #[allow(unused_imports)]
 use super::types::*;
 
+// Every modelled error this handler answers with is built through this trait, so each
+// one carries its `Code` member beside its `Message`.
+use crate::state::modeled_error::ModeledError;
+
 // `#[operation_error]` below expands to an invocation of the LOCAL declarative
 // `smithy!` macro, which this line is what emits into the module. Without it the
 // expansion fails with `cannot find macro 'smithy' in this scope` and the
@@ -196,18 +210,123 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `PutProjectPolicy` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(PutProjectPolicyErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("PutProjectPolicy"))
+        let _ = ctx;
+        let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
+            PutProjectPolicyErrorModeled::InternalServerError(
+                crate::state::modeled_error::store_unavailable(),
+            )
+        })?;
+        let mut state = state.lock();
+
+        // The policy is attached TO a project, so an ARN that names no project of this
+        // account names nothing to attach to.
+        let project = state
+            .project_by_arn_mut(&input.project_arn)
+            .ok_or_else(|| {
+                PutProjectPolicyErrorModeled::ResourceNotFoundException(
+                    crate::state::modeled_error::resource_arn_not_found(&input.project_arn),
+                )
+            })?;
+
+        // The document has to be a policy, and every resource its statements name has to be
+        // a model version this project holds; both failures are the modelled
+        // `MalformedPolicyDocumentException`, worded apart on the wire.
+        crate::state::project_policies::validate_document_for(&input.policy_document, project)
+            .map_err(|defect| match defect {
+                crate::state::project_policies::DocumentDefect::NotAPolicy => {
+                    PutProjectPolicyErrorModeled::MalformedPolicyDocumentException(
+                        crate::state::modeled_error::malformed_policy_document(),
+                    )
+                }
+                crate::state::project_policies::DocumentDefect::ResourceDoesNotExist => {
+                    PutProjectPolicyErrorModeled::MalformedPolicyDocumentException(
+                        crate::state::modeled_error::invalid_policy_resource(),
+                    )
+                }
+            })?;
+
+        // A revision id is what asks for an UPDATE of the policy the name already names.
+        // `ProjectPolicyRevisionId` is `length 0..64` while its pattern needs at least one
+        // hexadecimal digit, so the empty value is refused at the boundary; a value that
+        // carries no revision asks for an attach exactly as naming none does.
+        let requested_revision = input
+            .policy_revision_id
+            .as_deref()
+            .filter(|revision| !revision.is_empty());
+        let attaching = match requested_revision {
+            // No revision named: this is an attach, and a name the project already uses is
+            // taken rather than silently replaced.
+            None => {
+                if project.policies.contains_key(&input.policy_name) {
+                    return Err(PutProjectPolicyErrorModeled::ResourceAlreadyExistsException(
+                        crate::state::modeled_error::project_policy_already_exists(
+                            &input.policy_name,
+                        ),
+                    )
+                    .into());
+                }
+                true
+            }
+            // A revision named: it has to be the one the named policy currently carries,
+            // which also refuses a revision named for a policy that does not exist yet.
+            Some(revision) => {
+                if !crate::state::project_policies::names_current_revision(
+                    &project.policies,
+                    &input.policy_name,
+                    revision,
+                ) {
+                    return Err(
+                        PutProjectPolicyErrorModeled::InvalidPolicyRevisionIdException(
+                            crate::state::modeled_error::invalid_policy_revision_id(),
+                        )
+                        .into(),
+                    );
+                }
+                false
+            }
+        };
+
+        // The store is held in memory, so one project holds a bounded number of policies:
+        // past it an attach is refused rather than allowed to grow the process without
+        // limit. An update replaces a policy already counted, so only an attach is bounded,
+        // and the check precedes the write, so a refused request stores nothing.
+        if attaching
+            && project.policies.len() >= crate::state::project_policies::MAX_POLICIES_PER_PROJECT
+        {
+            return Err(PutProjectPolicyErrorModeled::LimitExceededException(
+                LimitExceededException::with_message(format!(
+                    "The maximum number of project policies ({}) has been reached for this project",
+                    crate::state::project_policies::MAX_POLICIES_PER_PROJECT
+                )),
+            )
+            .into());
+        }
+
+        // Every write assigns a fresh revision, which is what the answer carries and what
+        // the next update of this policy has to name.
+        let revision_id = crate::state::new_project_policy_revision_id();
+        let written_at = ::std::time::SystemTime::now();
+        match project.policies.get_mut(&input.policy_name) {
+            Some(policy) => policy.update(
+                input.policy_document,
+                revision_id.clone(),
+                written_at,
+            ),
+            None => {
+                project.policies.insert(
+                    input.policy_name.clone(),
+                    crate::state::project_policies::ProjectPolicyRecord::new(
+                        input.policy_name,
+                        input.policy_document,
+                        revision_id.clone(),
+                        written_at,
+                    ),
+                );
+            }
+        }
+
+        Ok(PutProjectPolicyOutput {
+            policy_revision_id: Some(revision_id),
+        })
     }
 }

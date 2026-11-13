@@ -145,8 +145,10 @@ pub fn invalid_pagination_token() -> InvalidPaginationTokenException {
 }
 
 /// A resource ARN no live resource of this store carries, as the tagging operations word
-/// it: the request's own ARN between two pieces of fixed text. One wording for all three,
-/// since they resolve the resource the same way.
+/// it: the request's own ARN between two pieces of fixed text. One wording for every
+/// operation that is given a resource by ARN — the three tagging ones and the operations on
+/// a project, which name it by `ProjectArn` — since they all resolve the resource the same
+/// way and all report the same thing: the ARN you named is not one of this account's.
 pub fn resource_arn_not_found(resource_arn: &str) -> ResourceNotFoundException {
     ResourceNotFoundException::with_message(format!("The resource {resource_arn} does not exist"))
 }
@@ -194,4 +196,55 @@ pub const IDEMPOTENT_PARAMETER_MISMATCH_MESSAGE: &str = "Service Unavailable";
 /// committed; one wording for every operation that takes one, since the rule is one.
 pub fn idempotent_parameter_mismatch() -> IdempotentParameterMismatchException {
     IdempotentParameterMismatchException::with_message(IDEMPOTENT_PARAMETER_MISMATCH_MESSAGE)
+}
+
+/// The fixed text a project policy document that is not a policy at all is refused with.
+///
+/// It is the `Message` a recorded AWS `PutProjectPolicy` refusal of an unparseable document
+/// carries verbatim, and it interpolates nothing: neither the document nor where it stopped
+/// being a policy, both of which the caller sent.
+pub const MALFORMED_POLICY_MESSAGE: &str = "Request contains a malformed policy.";
+
+/// The fixed text a project policy document whose resources do not resolve is refused with
+/// — recorded, like [`MALFORMED_POLICY_MESSAGE`], and interpolating nothing either: it names
+/// neither which resource nor what it should have been.
+pub const INVALID_POLICY_RESOURCE_MESSAGE: &str =
+    "Request contains an invalid resource in the provided policy.";
+
+/// A project policy document that is not a policy: it does not parse as JSON, or what it
+/// parses to is not a statement naming the resources it grants on.
+pub fn malformed_policy_document() -> MalformedPolicyDocumentException {
+    MalformedPolicyDocumentException::with_message(MALFORMED_POLICY_MESSAGE)
+}
+
+/// A project policy document that is a policy, but names a resource that is not a model
+/// version of the project the policy would be attached to.
+pub fn invalid_policy_resource() -> MalformedPolicyDocumentException {
+    MalformedPolicyDocumentException::with_message(INVALID_POLICY_RESOURCE_MESSAGE)
+}
+
+/// The fixed text a write that does not name the policy's current revision is refused with:
+/// the sentence the exception shape itself words that class with
+/// (`smithy_query(query="doc",shape="InvalidPolicyRevisionIdException")`). It interpolates
+/// nothing — in particular not the current revision, which a caller holding a stale one is
+/// not told by the refusal.
+pub const INVALID_POLICY_REVISION_ID_MESSAGE: &str =
+    "The supplied revision id for the project policy is invalid.";
+
+/// A `PolicyRevisionId` that is not the revision the named policy currently carries.
+pub fn invalid_policy_revision_id() -> InvalidPolicyRevisionIdException {
+    InvalidPolicyRevisionIdException::with_message(INVALID_POLICY_REVISION_ID_MESSAGE)
+}
+
+/// A `PolicyName` the project already has a policy under, on a write that did not name a
+/// revision to replace: attaching under a name that is taken is a collision, and updating
+/// the policy that holds the name is what naming its revision asks for.
+///
+/// Worded the way this service words the same class for a name a create repeats ("The
+/// project name: … already exists", `CreateProject`), with the request's own policy name
+/// between two pieces of fixed text.
+pub fn project_policy_already_exists(policy_name: &str) -> ResourceAlreadyExistsException {
+    ResourceAlreadyExistsException::with_message(format!(
+        "The project policy: {policy_name} already exists"
+    ))
 }
