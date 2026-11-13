@@ -318,8 +318,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             );
         }
 
-        // The instant the configuration was created. It is also its last write until an
-        // update replaces it, so `dateUpdated` reports the same instant.
+        // The instant the configuration was created. An update is what records a
+        // last-updated instant, and no update has run, so the record carries none.
         let created_at = crate::state::iso8601(::std::time::SystemTime::now());
         let request_id = crate::state::new_request_id();
         let client_token = input.client_token.clone();
@@ -332,8 +332,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 description: input.description,
                 distributions: input.distributions,
                 tags: input.tags.map(crate::state::into_ordered_tags),
-                date_created: created_at.clone(),
-                date_updated: created_at,
+                date_created: created_at,
+                date_updated: None,
             },
             &client_token,
             fingerprint,

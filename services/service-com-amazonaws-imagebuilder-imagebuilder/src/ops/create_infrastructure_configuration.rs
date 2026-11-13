@@ -22,9 +22,12 @@
 //!   `IdempotentParameterMismatchException`;
 //! * `dryRun` validates the request and then answers `DryRunOperationException`,
 //!   having stored nothing;
-//! * `terminateInstanceOnFailure` and `terminateInstanceOnCompletion` each default to
-//!   true, and the stored configuration carries that default so every later read
-//!   reports it.
+//! * `terminateInstanceOnFailure` defaults to true, and the stored configuration carries
+//!   that default so every later read reports it, while
+//!   `terminateInstanceOnCompletion` is stored only when the request supplies it and a
+//!   read of a configuration nothing set it on reports no value for it;
+//! * `dateUpdated` records the last UPDATE of the configuration, so a create stores none
+//!   and a read reports none until an update has run.
 //!
 //! ## Shape of an operation
 //!
@@ -427,8 +430,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             );
         }
 
-        // The instant the configuration was created. It is also its last write until
-        // an update replaces it, so `dateUpdated` reports the same instant.
+        // The instant the configuration was created. An update is what records a
+        // last-updated instant, and no update has run, so the record carries none.
         let created_at = crate::state::iso8601(::std::time::SystemTime::now());
         let request_id = crate::state::new_request_id();
         let client_token = input.client_token.clone();
@@ -445,23 +448,24 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 subnet_id: input.subnet_id,
                 logging: input.logging,
                 key_pair: input.key_pair,
-                // Each of these two documents the value the service applies when the
-                // request omits it, so the STORED configuration carries that value and
-                // every later read reports it rather than nothing.
+                // `terminateInstanceOnFailure` documents the value the service applies
+                // when the request omits it, so the STORED configuration carries that
+                // value and every later read reports it rather than nothing. Its sibling
+                // is NOT written: the service records no value of its own for
+                // `terminateInstanceOnCompletion`, so a configuration no request set it
+                // on holds none and a read reports none.
                 terminate_instance_on_failure: input
                     .terminate_instance_on_failure
                     .unwrap_or(crate::state::DEFAULT_TERMINATE_INSTANCE_ON_FAILURE),
-                terminate_instance_on_completion: input
-                    .terminate_instance_on_completion
-                    .unwrap_or(crate::state::DEFAULT_TERMINATE_INSTANCE_ON_COMPLETION),
+                terminate_instance_on_completion: input.terminate_instance_on_completion,
                 sns_topic_arn: input.sns_topic_arn,
                 resource_tags: input.resource_tags.map(crate::state::into_ordered_tags),
                 instance_metadata_options: input.instance_metadata_options,
                 tags: input.tags.map(crate::state::into_ordered_tags),
                 placement: input.placement,
                 parent_instance: input.parent_instance,
-                date_created: created_at.clone(),
-                date_updated: created_at,
+                date_created: created_at,
+                date_updated: None,
             },
             &client_token,
             fingerprint,

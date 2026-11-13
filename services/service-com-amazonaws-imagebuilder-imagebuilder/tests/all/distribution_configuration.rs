@@ -443,14 +443,24 @@ async fn a_created_configuration_is_reported_back_member_for_member() {
             "case {:?}: expected timeoutMinutes {TIMEOUT_MINUTES}, got {timeout:?}",
             row.case
         );
-        for member in ["dateCreated", "dateUpdated"] {
-            let stamp = stored.get(member).and_then(Value::as_str).unwrap_or_default();
-            assert!(
-                stamp.len() >= 20 && stamp.ends_with('Z') && stamp.contains('T'),
-                "case {:?}: expected {member} to be an ISO 8601 UTC instant, got {stamp:?}",
-                row.case
-            );
-        }
+        let stamp = stored
+            .get("dateCreated")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        assert!(
+            stamp.len() >= 20 && stamp.ends_with('Z') && stamp.contains('T'),
+            "case {:?}: expected dateCreated to be an ISO 8601 UTC instant, got {stamp:?}",
+            row.case
+        );
+        // `dateUpdated` reports when an update last replaced the configuration, and no
+        // update has run, so the read reports no such member.
+        assert_eq!(
+            stored.get("dateUpdated"),
+            None,
+            "case {:?}: expected no dateUpdated before any update, got {:?}",
+            row.case,
+            stored.get("dateUpdated")
+        );
         // A configuration no create tagged carries no tags, which is an empty map rather
         // than an absent member.
         if !body.as_object().is_some_and(|body| body.contains_key("tags")) {

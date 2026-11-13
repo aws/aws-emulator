@@ -439,8 +439,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 execution_role: input.execution_role,
                 workflows: input.workflows,
                 logging_configuration: input.logging_configuration,
-                date_created: stored_at.clone(),
-                date_updated: stored_at,
+                date_created: stored_at,
+                // An update is what records a last-updated instant, and no update has
+                // run, so the record carries none.
+                date_updated: None,
             },
             &client_token,
             fingerprint,

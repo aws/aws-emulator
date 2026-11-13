@@ -41,6 +41,8 @@ mod image_pipeline_execution;
 mod infrastructure_configuration;
 #[path = "all/infrastructure_configuration_listing.rs"]
 mod infrastructure_configuration_listing;
+#[path = "all/infrastructure_configuration_update.rs"]
+mod infrastructure_configuration_update;
 #[path = "all/parameter_value_refusals.rs"]
 mod parameter_value_refusals;
 #[path = "all/resource_not_found.rs"]

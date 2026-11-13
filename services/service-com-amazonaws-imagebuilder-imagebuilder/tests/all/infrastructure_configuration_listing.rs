@@ -677,13 +677,17 @@ async fn the_listing_reports_the_stored_configurations_of_its_own_region() {
             "case \"the first summary\": expected {member} {expected}, got {first}"
         );
     }
-    for member in ["dateCreated", "dateUpdated"] {
-        assert!(
-            first[member].as_str().is_some_and(|at| !at.is_empty()),
-            "case \"the first summary\": expected {member} to report when it was written, got \
-             {first}"
-        );
-    }
+    assert!(
+        first["dateCreated"].as_str().is_some_and(|at| !at.is_empty()),
+        "case \"the first summary\": expected dateCreated to report when it was written, got \
+         {first}"
+    );
+    // A summary reports the same stored record a read does, so a configuration no update
+    // has replaced carries no `dateUpdated` here either.
+    assert!(
+        first.get("dateUpdated").is_none(),
+        "case \"the first summary\": expected no dateUpdated before any update, got {first}"
+    );
 
     // The other Region reports its own configuration and none of this one's.
     let (status, other) = list_in(&router, OTHER_REGION, &json!({})).await;

@@ -1,15 +1,36 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op UpdateInfrastructureConfiguration
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `UpdateInfrastructureConfiguration`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`UpdateInfrastructureConfiguration::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! REPLACES the stored infrastructure configuration the request's ARN names, so a later
+//! `GetInfrastructureConfiguration` reports what this request stored.
+//!
+//! The rules it follows, each from the modelled documentation quoted beside it:
+//!
+//! * "This operation doesn't support selective updates. The request replaces the
+//!   configuration, so include every setting that you want to keep. Omitted optional
+//!   properties are cleared" — so the stored record is rebuilt from this request, not
+//!   merged into. What it keeps is what an update request cannot carry: the name the ARN
+//!   was derived from, the resource's own tags (`TagResource` owns those) and the instant
+//!   it was created;
+//! * every setting it carries is stored AS SUBMITTED. The instance types, the subnet and
+//!   the security groups are declarative references with no existence constraint in the
+//!   model and no modelled "not found" error for them — Image Builder resolves them when a
+//!   build launches an instance — so a syntactically valid identifier that names nothing
+//!   is stored and read back verbatim;
+//! * an ARN this Region holds no configuration under is reported absent with
+//!   `ResourceNotFoundException` (widened in through `extra_errors` below);
+//! * naming a `subnetId` without any `securityGroupIds` fails the request;
+//! * the four reserved `resourceTags` keys may not be assigned;
+//! * `instanceProfileName` "must exist in your account", so it is RESOLVED against IAM
+//!   ([`crate::state::instance_profile_named`]) and a name that account holds no profile
+//!   under is refused as that parameter's value, with nothing written;
+//! * `clientToken` is an idempotency token: a retry carrying it answers with the ORIGINAL
+//!   response, and the same token carrying different settings is
+//!   `IdempotentParameterMismatchException`. Its receipts are the update's own, so a token
+//!   spent on the create does not answer for an update;
+//! * the replaced configuration records WHEN it was replaced, which is the `dateUpdated`
+//!   every later read reports.
 //!
 //! ## Shape of an operation
 //!
@@ -155,6 +176,10 @@
 //!   processed the request. Retrying the request may succeed.
 //! * `ServiceUnavailableException` (HTTP 503) — The service is unable to process your request
 //!   at this time.
+//! * `ResourceNotFoundException` (HTTP 404) — widened in through `extra_errors` (see below):
+//!   "At least one of the resources referenced by your request does not exist."
+//! * `InvalidParameterValueException` (HTTP 400) — widened in through `extra_errors` (see
+//!   below): "The value that you provided for the specified parameter is invalid."
 
 #[allow(unused_imports)]
 use super::types::*;
@@ -170,15 +195,34 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-imagebuilder-imagebuild
 // here — hence the `UpdateInfrastructureConfigurationError` alias below. An operation that models no errors
 // generates an UNINHABITED enum here, which is correct and expected: there is nothing
 // to construct until the model says otherwise.
-#[smithy_macros::operation_error("com.amazonaws.imagebuilder#UpdateInfrastructureConfiguration")]
+//
+// Two shapes are widened in through `extra_errors`, each one the SERVICE models and this
+// operation's own error list omits:
+//
+// * `ResourceNotFoundException` (HTTP 404, "At least one of the resources referenced by
+//   your request does not exist"), for the reason `GetInfrastructureConfiguration` widens
+//   it in: `infrastructureConfigurationArn` names a configuration that may not exist, and
+//   an ARN that names none is reported MISSING rather than dressed up as an invalid
+//   request, which is a different claim a client branches on;
+// * `InvalidParameterValueException` (HTTP 400, "The value that you provided for the
+//   specified parameter is invalid"), for the reason
+//   `CreateInfrastructureConfiguration` widens it in: it is the class Image Builder
+//   refuses a parameter of this request with, which is what an `instanceProfileName`
+//   naming no instance profile of this account is.
+#[smithy_macros::operation_error(
+    "com.amazonaws.imagebuilder#UpdateInfrastructureConfiguration",
+    extra_errors = ["ResourceNotFoundException", "InvalidParameterValueException"]
+)]
 #[derive(Debug)]
 pub enum UpdateInfrastructureConfigurationErrorModeled {
     CallRateLimitExceededException(CallRateLimitExceededException),
     ClientException(ClientException),
     ForbiddenException(ForbiddenException),
     IdempotentParameterMismatchException(IdempotentParameterMismatchException),
+    InvalidParameterValueException(InvalidParameterValueException),
     InvalidRequestException(InvalidRequestException),
     ResourceInUseException(ResourceInUseException),
+    ResourceNotFoundException(ResourceNotFoundException),
     ServiceException(ServiceException),
     ServiceUnavailableException(ServiceUnavailableException),
 }
@@ -234,18 +278,188 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `UpdateInfrastructureConfiguration` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(UpdateInfrastructureConfigurationErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("UpdateInfrastructureConfiguration"))
+        // Every modelled constraint on this input — the ARN pattern, the string lengths,
+        // the tag-key pattern that already refuses the `aws:` namespace, the 1..30 map
+        // bound — has been refused by the centralized walk before this body runs, so what
+        // is checked here is only what the model cannot say.
+        let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
+            UpdateInfrastructureConfigurationErrorModeled::ServiceException(ServiceException {
+                message: Some(crate::state::store_unavailable_message()),
+            })
+        })?;
+
+        let region = crate::state::request_region(ctx.parts());
+
+        // `subnetId`'s own rule: "If you specify subnetId, you must also specify one or
+        // more security group IDs in securityGroupIds. Otherwise, the request fails." An
+        // empty list specifies none of them, so it fails the same way an absent member
+        // does.
+        if input.subnet_id.is_some()
+            && input
+                .security_group_ids
+                .as_ref()
+                .is_none_or(|ids| ids.is_empty())
+        {
+            return Err(
+                UpdateInfrastructureConfigurationErrorModeled::InvalidRequestException(
+                    InvalidRequestException {
+                        message: Some(crate::state::subnet_without_security_group_message()),
+                    },
+                )
+                .into(),
+            );
+        }
+
+        // The reserved metadata-tag keys `resourceTags` documents. Checked before
+        // anything is written, so a refused update leaves the stored configuration as it
+        // was.
+        if let Some(reserved) = input.resource_tags.as_ref().and_then(|tags| {
+            crate::state::RESERVED_RESOURCE_TAG_KEYS
+                .iter()
+                .find(|key| tags.contains_key(**key))
+        }) {
+            return Err(
+                UpdateInfrastructureConfigurationErrorModeled::InvalidRequestException(
+                    InvalidRequestException {
+                        message: Some(crate::state::reserved_resource_tag_key_message(reserved)),
+                    },
+                )
+                .into(),
+            );
+        }
+
+        // The configuration this request names has to exist to be replaced. Checked under
+        // its own short-lived guard, before the IAM hop below, so an ARN naming nothing is
+        // reported missing rather than refused for a parameter of a configuration that is
+        // not there; the write below re-reads it under the guard that performs the
+        // replacement.
+        if state
+            .lock()
+            .infrastructure_configuration(&input.infrastructure_configuration_arn, &region)
+            .is_none()
+        {
+            return Err(not_found(&input.infrastructure_configuration_arn));
+        }
+
+        // `instanceProfileName` names an IAM resource of this account, and "The instance
+        // profile must exist in your account". The model constrains only the SHAPE of the
+        // name, so whether a profile exists under it is resolved against IAM itself,
+        // BEFORE anything is written. A lookup NOTHING answered establishes nothing and
+        // refuses nothing (see [`crate::state::instance_profile_named`]).
+        if crate::state::instance_profile_named(ctx, &input.instance_profile_name).await
+            == crate::state::InstanceProfileLookup::Absent
+        {
+            return Err(
+                UpdateInfrastructureConfigurationErrorModeled::InvalidParameterValueException(
+                    InvalidParameterValueException {
+                        message: Some(crate::state::missing_instance_profile_message(
+                            crate::state::INSTANCE_PROFILE_NAME_MEMBER,
+                        )),
+                    },
+                )
+                .into(),
+            );
+        }
+
+        let fingerprint = crate::state::infrastructure_configuration_update_fingerprint(&input);
+
+        // The idempotency check, the lookup and the replacement happen under ONE lock, so
+        // concurrent updates are serialized: the configuration one of them stores is the
+        // one every later read reports.
+        let mut store = state.lock();
+
+        // "If you retry a request with the same client token, Image Builder returns the
+        // original response without running the operation again" — so a retry answers with
+        // the ORIGINAL response, down to its `requestId`, and does NOT write again. The
+        // same token carrying different settings is the modelled mismatch instead.
+        if let Some(receipt) =
+            store.infrastructure_configuration_update_receipt(&region, &input.client_token)
+        {
+            if receipt.fingerprint != fingerprint {
+                return Err(
+                    UpdateInfrastructureConfigurationErrorModeled::IdempotentParameterMismatchException(
+                        IdempotentParameterMismatchException {
+                            message: Some(crate::state::idempotent_parameter_mismatch_message()),
+                        },
+                    )
+                    .into(),
+                );
+            }
+            return Ok(UpdateInfrastructureConfigurationOutput {
+                request_id: Some(receipt.request_id.clone()),
+                client_token: Some(receipt.client_token.clone()),
+                infrastructure_configuration_arn: Some(receipt.arn.clone()),
+            });
+        }
+
+        let Some(stored) = store
+            .infrastructure_configuration(&input.infrastructure_configuration_arn, &region)
+            .cloned()
+        else {
+            return Err(not_found(&input.infrastructure_configuration_arn));
+        };
+
+        let request_id = crate::state::new_request_id();
+        let client_token = input.client_token.clone();
+        let arn = stored.arn.clone();
+
+        // The REPLACEMENT: "The request replaces the configuration, so include every
+        // setting that you want to keep. Omitted optional properties are cleared." So
+        // every setting comes from this request — a reference it names is stored as
+        // submitted, since nothing in this model resolves one at update time — and the
+        // three members an update cannot carry are the stored record's: the name the ARN
+        // was derived from, the resource's own tags, and the instant it was created.
+        store.replace_infrastructure_configuration(
+            crate::state::InfrastructureConfigurationRecord {
+                arn: arn.clone(),
+                region,
+                name: stored.name,
+                description: input.description,
+                instance_types: input.instance_types,
+                instance_profile_name: input.instance_profile_name,
+                security_group_ids: input.security_group_ids,
+                subnet_id: input.subnet_id,
+                logging: input.logging,
+                key_pair: input.key_pair,
+                // `terminateInstanceOnFailure` documents the value the service applies
+                // when a request omits it, so a cleared one is stored as that value. Its
+                // sibling carries no value of the service's own, so a request that omits
+                // it leaves the configuration with none and a read reports none.
+                terminate_instance_on_failure: input
+                    .terminate_instance_on_failure
+                    .unwrap_or(crate::state::DEFAULT_TERMINATE_INSTANCE_ON_FAILURE),
+                terminate_instance_on_completion: input.terminate_instance_on_completion,
+                sns_topic_arn: input.sns_topic_arn,
+                resource_tags: input.resource_tags.map(crate::state::into_ordered_tags),
+                instance_metadata_options: input.instance_metadata_options,
+                tags: stored.tags,
+                placement: input.placement,
+                parent_instance: input.parent_instance,
+                date_created: stored.date_created,
+                // This request IS the last update, so its instant is the one every later
+                // read reports as `dateUpdated`.
+                date_updated: Some(crate::state::iso8601(::std::time::SystemTime::now())),
+            },
+            &client_token,
+            fingerprint,
+            request_id.clone(),
+        );
+
+        Ok(UpdateInfrastructureConfigurationOutput {
+            request_id: Some(request_id),
+            client_token: Some(client_token),
+            infrastructure_configuration_arn: Some(arn),
+        })
     }
+}
+
+/// How an ARN this Region holds no configuration under is reported: the resource the
+/// request needed and the ARN it named.
+fn not_found(arn: &str) -> UpdateInfrastructureConfigurationError {
+    UpdateInfrastructureConfigurationErrorModeled::ResourceNotFoundException(
+        ResourceNotFoundException {
+            message: Some(crate::state::required_resource_not_found_message(arn)),
+        },
+    )
+    .into()
 }

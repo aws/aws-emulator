@@ -378,14 +378,24 @@ async fn a_created_configuration_is_reported_back_member_for_member() {
             "case {:?}: expected the stored arn {expected_arn:?}, got {reported_arn:?}",
             row.case
         );
-        for member in ["dateCreated", "dateUpdated"] {
-            let stamp = config.get(member).and_then(Value::as_str).unwrap_or_default();
-            assert!(
-                stamp.len() >= 20 && stamp.ends_with('Z') && stamp.contains('T'),
-                "case {:?}: expected {member} to be an ISO 8601 UTC instant, got {stamp:?}",
-                row.case
-            );
-        }
+        let stamp = config
+            .get("dateCreated")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        assert!(
+            stamp.len() >= 20 && stamp.ends_with('Z') && stamp.contains('T'),
+            "case {:?}: expected dateCreated to be an ISO 8601 UTC instant, got {stamp:?}",
+            row.case
+        );
+        // `dateUpdated` is "the date on which the infrastructure configuration was last
+        // updated", and no update has run, so the read reports no such member.
+        assert_eq!(
+            config.get("dateUpdated"),
+            None,
+            "case {:?}: expected no dateUpdated before any update, got {:?}",
+            row.case,
+            config.get("dateUpdated")
+        );
     }
 }
 
@@ -515,34 +525,46 @@ async fn a_different_name_is_a_different_configuration() {
 }
 
 #[tokio::test]
-async fn the_terminate_flags_report_the_documented_default_when_omitted() {
-    // Both members document "Defaults to true", so the stored configuration carries
-    // that value and the read reports it rather than nothing.
-    let cases: &[(&str, Value, bool, bool)] = &[
-        ("neither flag sent", json!({}), true, true),
+async fn the_terminate_flags_report_what_the_store_holds() {
+    // `terminateInstanceOnFailure` documents "Defaults to true" and the service writes
+    // that default into the stored configuration, so the read reports it however the
+    // request left it. `terminateInstanceOnCompletion` carries no value of the service's
+    // own: the store holds one only once a request supplies it, and a read of a
+    // configuration no request set it on reports no such member at all.
+    //
+    // (case, what the create carried, the reported failure flag, the reported completion
+    // flag — `None` for a member the body does not carry)
+    let cases: &[(&str, Value, bool, Option<bool>)] = &[
+        ("neither flag sent", json!({}), true, None),
         (
             "both sent true",
             json!({"terminateInstanceOnFailure": true, "terminateInstanceOnCompletion": true}),
             true,
-            true,
+            Some(true),
         ),
         (
             "both sent false",
             json!({"terminateInstanceOnFailure": false, "terminateInstanceOnCompletion": false}),
             false,
-            false,
+            Some(false),
         ),
         (
             "only failure sent false",
             json!({"terminateInstanceOnFailure": false}),
             false,
-            true,
+            None,
         ),
         (
             "only completion sent false",
             json!({"terminateInstanceOnCompletion": false}),
             true,
-            false,
+            Some(false),
+        ),
+        (
+            "only completion sent true",
+            json!({"terminateInstanceOnCompletion": true}),
+            true,
+            Some(true),
         ),
     ];
 
@@ -561,17 +583,23 @@ async fn the_terminate_flags_report_the_documented_default_when_omitted() {
 
         let (_, read) = get(&router, &arn_of(REGION, &name)).await;
         let config = configuration(case, &read);
-        for (member, expected) in [
-            ("terminateInstanceOnFailure", *on_failure),
-            ("terminateInstanceOnCompletion", *on_completion),
-        ] {
-            let actual = config.get(member).and_then(Value::as_bool);
-            assert_eq!(
-                actual,
-                Some(expected),
-                "case {case:?}: expected {member} to be {expected}, got {actual:?}"
-            );
-        }
+        let reported_failure = config
+            .get("terminateInstanceOnFailure")
+            .and_then(Value::as_bool);
+        assert_eq!(
+            reported_failure,
+            Some(*on_failure),
+            "case {case:?}: expected terminateInstanceOnFailure to be {on_failure}, got \
+             {reported_failure:?}"
+        );
+        let reported_completion = config
+            .get("terminateInstanceOnCompletion")
+            .and_then(Value::as_bool);
+        assert_eq!(
+            reported_completion, *on_completion,
+            "case {case:?}: expected terminateInstanceOnCompletion to be {on_completion:?}, got \
+             {reported_completion:?}"
+        );
     }
 }
 

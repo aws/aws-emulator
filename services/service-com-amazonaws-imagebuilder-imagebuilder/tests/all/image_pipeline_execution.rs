@@ -929,10 +929,10 @@ async fn a_created_pipeline_reads_back_with_its_defaults() {
             stored.get("dateNextRun").is_none(),
             "case {case:?}: expected no scheduled next run in {stored}"
         );
-        assert_eq!(
-            text(case, &stored, "dateUpdated"),
-            text(case, &stored, "dateCreated"),
-            "case {case:?}: expected a pipeline nothing updated to report one date twice"
+        assert!(
+            stored.get("dateUpdated").is_none(),
+            "case {case:?}: expected a pipeline nothing updated to report no dateUpdated in \
+             {stored}"
         );
     }
 }

@@ -5,7 +5,9 @@
 //! The first resource this store holds is the **infrastructure configuration**: the
 //! environment Image Builder builds and tests an image in. Every configuration is
 //! stored exactly once, keyed by its own ARN, so `CreateInfrastructureConfiguration`
-//! writes the record that `GetInfrastructureConfiguration` reads back.
+//! writes the record that `GetInfrastructureConfiguration` reads back and
+//! `UpdateInfrastructureConfiguration` REPLACES that record under the same key
+//! ([`ComAmazonawsImagebuilderImagebuilderState::replace_infrastructure_configuration`]).
 //!
 //! Two facts about that resource shape the store:
 //!
@@ -107,6 +109,10 @@ pub use instance_profile::*;
 mod waiting_workflow_steps;
 pub use waiting_workflow_steps::*;
 
+/// How an UPDATE of an infrastructure configuration replaces the stored record.
+mod infrastructure_configuration_update;
+pub use infrastructure_configuration_update::*;
+
 use crate::ops::types::{
     AdditionalInstanceConfiguration, AmiDistributionConfiguration, Component,
     ComponentConfiguration, ComponentParameterDetail,
@@ -167,6 +173,12 @@ pub const IMAGE_PIPELINE_ARN_PREFIX: &str = "image-pipeline/";
 /// never read each other's.
 pub const CREATE_INFRASTRUCTURE_CONFIGURATION_OPERATION: &str =
     "CreateInfrastructureConfiguration";
+
+/// See [`CREATE_INFRASTRUCTURE_CONFIGURATION_OPERATION`]. An update carries a
+/// `clientToken` of its own, so its receipts are filed under its own name and never read
+/// the create's: the same token may create a configuration and then update it.
+pub const UPDATE_INFRASTRUCTURE_CONFIGURATION_OPERATION: &str =
+    "UpdateInfrastructureConfiguration";
 
 /// See [`CREATE_INFRASTRUCTURE_CONFIGURATION_OPERATION`].
 pub const CREATE_DISTRIBUTION_CONFIGURATION_OPERATION: &str = "CreateDistributionConfiguration";
@@ -401,13 +413,14 @@ pub const MAX_DOCUMENT_INDENT: usize = 256;
 /// it). Chosen.
 pub const MAX_DOCUMENT_COMPACT_PER_LINE: usize = 256;
 
-/// Applied when `CreateInfrastructureConfiguration` omits
+/// Applied when a create or an update of an infrastructure configuration omits
 /// `terminateInstanceOnFailure`, whose own documentation says "Defaults to true".
+///
+/// This is the ONE flag of the pair the service itself writes into the stored
+/// configuration: `terminateInstanceOnCompletion` carries no stored value until a request
+/// supplies one, so a read of a configuration no request set it on reports nothing for it
+/// (see [`InfrastructureConfigurationRecord::terminate_instance_on_completion`]).
 pub const DEFAULT_TERMINATE_INSTANCE_ON_FAILURE: bool = true;
-
-/// Applied when `CreateInfrastructureConfiguration` omits
-/// `terminateInstanceOnCompletion`, whose own documentation says "Defaults to true".
-pub const DEFAULT_TERMINATE_INSTANCE_ON_COMPLETION: bool = true;
 
 /// The status a stored pipeline reports when the create named none, from the modelled
 /// `status` member: "The status of the image pipeline. If you don't specify a status, it
@@ -575,7 +588,12 @@ pub struct InfrastructureConfigurationRecord {
     pub logging: Option<Logging>,
     pub key_pair: Option<String>,
     pub terminate_instance_on_failure: bool,
-    pub terminate_instance_on_completion: bool,
+    /// Whether the build and test instances are terminated when image creation ends
+    /// without a failure, held only once a request supplied it: the member is nullable and
+    /// carries no modelled default, and the service writes no value of its own into the
+    /// stored configuration, so a configuration no request set it on holds none and a read
+    /// reports none.
+    pub terminate_instance_on_completion: Option<bool>,
     pub sns_topic_arn: Option<String>,
     pub resource_tags: Option<BTreeMap<String, String>>,
     pub instance_metadata_options: Option<InstanceMetadataOptions>,
@@ -584,9 +602,10 @@ pub struct InfrastructureConfigurationRecord {
     pub parent_instance: Option<ParentInstanceConfiguration>,
     /// When it was created, as the modelled string `DateTime` carries an instant.
     pub date_created: String,
-    /// When it was last written. The create IS the last write until an update
-    /// replaces it, so a freshly created configuration reports its creation instant.
-    pub date_updated: String,
+    /// When an update last replaced it — "The date on which the infrastructure
+    /// configuration was last updated" — and so `None` until one has: a create is not an
+    /// update, and a configuration nothing has updated has no last-updated date to report.
+    pub date_updated: Option<String>,
 }
 
 impl InfrastructureConfigurationRecord {
@@ -606,12 +625,12 @@ impl InfrastructureConfigurationRecord {
             terminate_instance_on_failure: Some(self.terminate_instance_on_failure),
             sns_topic_arn: self.sns_topic_arn.clone(),
             date_created: Some(self.date_created.clone()),
-            date_updated: Some(self.date_updated.clone()),
+            date_updated: self.date_updated.clone(),
             resource_tags: self.resource_tags.clone().map(into_tag_map),
             instance_metadata_options: self.instance_metadata_options.clone(),
             tags: Some(reported_tags(self.tags.as_ref())),
             placement: self.placement.clone(),
-            terminate_instance_on_completion: Some(self.terminate_instance_on_completion),
+            terminate_instance_on_completion: self.terminate_instance_on_completion,
             parent_instance: self.parent_instance.clone(),
         }
     }
@@ -627,7 +646,7 @@ impl InfrastructureConfigurationRecord {
             name: Some(self.name.clone()),
             description: self.description.clone(),
             date_created: Some(self.date_created.clone()),
-            date_updated: Some(self.date_updated.clone()),
+            date_updated: self.date_updated.clone(),
             resource_tags: self.resource_tags.clone().map(into_tag_map),
             tags: Some(reported_tags(self.tags.as_ref())),
             instance_types: self.instance_types.clone(),
@@ -681,9 +700,10 @@ pub struct DistributionConfigurationRecord {
     pub tags: Option<BTreeMap<String, String>>,
     /// When it was created, as the modelled string `DateTime` carries an instant.
     pub date_created: String,
-    /// When it was last written. The create IS the last write until an update replaces
-    /// it, so a freshly created configuration reports its creation instant.
-    pub date_updated: String,
+    /// When an update last replaced it, and so `None` until one has — for the same reason
+    /// an infrastructure configuration's is
+    /// ([`InfrastructureConfigurationRecord::date_updated`]).
+    pub date_updated: Option<String>,
 }
 
 impl DistributionConfigurationRecord {
@@ -697,7 +717,7 @@ impl DistributionConfigurationRecord {
             distributions: Some(self.distributions.clone()),
             timeout_minutes: DISTRIBUTION_TIMEOUT_MINUTES,
             date_created: Some(self.date_created.clone()),
-            date_updated: Some(self.date_updated.clone()),
+            date_updated: self.date_updated.clone(),
             tags: Some(reported_tags(self.tags.as_ref())),
         }
     }
@@ -1200,9 +1220,10 @@ pub struct ImagePipelineRecord {
     pub logging_configuration: Option<PipelineLoggingConfiguration>,
     /// When the create stored it.
     pub date_created: String,
-    /// When it was last written. A pipeline nothing has updated carries the instant it
-    /// was created.
-    pub date_updated: String,
+    /// When an update last replaced it, and so `None` until one has — for the same reason
+    /// an infrastructure configuration's is
+    /// ([`InfrastructureConfigurationRecord::date_updated`]).
+    pub date_updated: Option<String>,
 }
 
 /// What a successful create filed about the request it served, so a retry of that
@@ -1822,7 +1843,7 @@ impl ComAmazonawsImagebuilderImagebuilderState {
             schedule: record.schedule.clone(),
             status: Some(record.status.clone()),
             date_created: Some(record.date_created.clone()),
-            date_updated: Some(record.date_updated.clone()),
+            date_updated: record.date_updated.clone(),
             date_last_run: last_run.map(|run| run.date_created.clone()),
             last_run_status: last_run.map(|run| run.status_at(at).to_string()),
             // "The next date when the pipeline is scheduled to run": nothing in this
@@ -3087,65 +3108,85 @@ pub fn infrastructure_configuration_request_fingerprint(
         "terminateInstanceOnCompletion",
         flag(input.terminate_instance_on_completion),
     );
-    fields.insert(
-        "logging",
-        input.logging.as_ref().map_or_else(
-            || ABSENT.to_string(),
-            |logging| {
-                logging.s3_logs.as_ref().map_or_else(
-                    || ABSENT.to_string(),
-                    |s3| {
-                        group(&[
-                            text(s3.s3_bucket_name.as_deref()),
-                            text(s3.s3_key_prefix.as_deref()),
-                        ])
-                    },
-                )
-            },
-        ),
-    );
+    fields.insert("logging", logging_fingerprint(input.logging.as_ref()));
     fields.insert(
         "instanceMetadataOptions",
-        input.instance_metadata_options.as_ref().map_or_else(
-            || ABSENT.to_string(),
-            |options| {
-                group(&[
-                    text(options.http_tokens.as_deref()),
-                    number(options.http_put_response_hop_limit),
-                ])
-            },
-        ),
+        instance_metadata_options_fingerprint(input.instance_metadata_options.as_ref()),
     );
-    fields.insert(
-        "placement",
-        input.placement.as_ref().map_or_else(
-            || ABSENT.to_string(),
-            |placement| {
-                group(&[
-                    text(placement.availability_zone.as_deref()),
-                    text(placement.tenancy.as_deref()),
-                    text(placement.host_id.as_deref()),
-                    text(placement.host_resource_group_arn.as_deref()),
-                ])
-            },
-        ),
-    );
+    fields.insert("placement", placement_fingerprint(input.placement.as_ref()));
     fields.insert(
         "parentInstance",
-        input.parent_instance.as_ref().map_or_else(
-            || ABSENT.to_string(),
-            |parent| {
-                group(&[
-                    text(Some(parent.auto_scaling_group.name.as_str())),
-                    number(parent.auto_scaling_group.capacity_wait_timeout_seconds),
-                ])
-            },
-        ),
+        parent_instance_fingerprint(input.parent_instance.as_ref()),
     );
     fields
         .iter()
         .map(|(member, rendered)| format!("{member}={rendered};"))
         .collect()
+}
+
+/// The `logging` member of an infrastructure-configuration request, as every fingerprint
+/// over one renders it. Shared by the create's rendering and the update's
+/// ([`infrastructure_configuration_update_fingerprint`]), so one request cannot render two
+/// ways depending on which operation carried it.
+fn logging_fingerprint(logging: Option<&Logging>) -> String {
+    logging.map_or_else(
+        || ABSENT.to_string(),
+        |logging| {
+            logging.s3_logs.as_ref().map_or_else(
+                || ABSENT.to_string(),
+                |s3| {
+                    group(&[
+                        text(s3.s3_bucket_name.as_deref()),
+                        text(s3.s3_key_prefix.as_deref()),
+                    ])
+                },
+            )
+        },
+    )
+}
+
+/// The `instanceMetadataOptions` member, as every fingerprint over one renders it. See
+/// [`logging_fingerprint`].
+fn instance_metadata_options_fingerprint(options: Option<&InstanceMetadataOptions>) -> String {
+    options.map_or_else(
+        || ABSENT.to_string(),
+        |options| {
+            group(&[
+                text(options.http_tokens.as_deref()),
+                number(options.http_put_response_hop_limit),
+            ])
+        },
+    )
+}
+
+/// The `placement` member, as every fingerprint over one renders it. See
+/// [`logging_fingerprint`].
+fn placement_fingerprint(placement: Option<&Placement>) -> String {
+    placement.map_or_else(
+        || ABSENT.to_string(),
+        |placement| {
+            group(&[
+                text(placement.availability_zone.as_deref()),
+                text(placement.tenancy.as_deref()),
+                text(placement.host_id.as_deref()),
+                text(placement.host_resource_group_arn.as_deref()),
+            ])
+        },
+    )
+}
+
+/// The `parentInstance` member, as every fingerprint over one renders it. See
+/// [`logging_fingerprint`].
+fn parent_instance_fingerprint(parent: Option<&ParentInstanceConfiguration>) -> String {
+    parent.map_or_else(
+        || ABSENT.to_string(),
+        |parent| {
+            group(&[
+                text(Some(parent.auto_scaling_group.name.as_str())),
+                number(parent.auto_scaling_group.capacity_wait_timeout_seconds),
+            ])
+        },
+    )
 }
 
 /// A deterministic rendering of the creation parameters one
