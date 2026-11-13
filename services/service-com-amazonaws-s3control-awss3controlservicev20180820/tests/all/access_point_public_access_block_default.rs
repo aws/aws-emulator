@@ -662,6 +662,7 @@ async fn get_multi_region_access_point_reports_the_effective_public_access_block
     let emulator = Emulator::start();
 
     for case in multi_region_cases() {
+        emulator.provision_bucket(case.case, "reports");
         let created = call_in_region(
             &emulator.router,
             REGION,

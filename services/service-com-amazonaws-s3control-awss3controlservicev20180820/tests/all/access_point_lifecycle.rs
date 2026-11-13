@@ -248,9 +248,18 @@ impl Emulator {
     /// exists. A name the store already holds is left exactly as it is, so a
     /// suite whose rows share a bucket may ask for it once per row.
     pub(crate) fn provision_bucket(&self, case: &str, bucket: &str) {
+        self.provision_bucket_in(case, bucket, REGION);
+    }
+
+    /// [`Self::provision_bucket`], in `region`.
+    ///
+    /// A Multi-Region Access Point associates buckets in SEVERAL Regions, and
+    /// the Region a member is reported in is the bucket's own, so a suite that
+    /// drives one records each member bucket where it means it to live.
+    pub(crate) fn provision_bucket_in(&self, case: &str, bucket: &str, region: &str) {
         let state = ::service_com_amazonaws_s3_amazons3::state::service_state(&*self.engine)
             .unwrap_or_else(|| panic!("case {case:?}: the object store stands up"));
-        state.lock().create_bucket(bucket, REGION);
+        state.lock().create_bucket(bucket, region);
     }
 
     pub(crate) async fn call(

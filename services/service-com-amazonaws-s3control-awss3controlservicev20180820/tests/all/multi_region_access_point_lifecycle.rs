@@ -50,6 +50,11 @@ use service_com_amazonaws_s3control_awss3controlservicev20180820::state::{
 /// Region its request was signed for rather than a fixed one.
 const OTHER_REGION: &str = "eu-central-1";
 
+/// A request id in the shape this service mints one, that no request was ever
+/// answered with: the nil-valued UUID, whose text is `8-4-4-4-12` hex like
+/// every minted one.
+const INVENTED_REQUEST_ID: &str = "00000000-0000-4000-8000-000000000000";
+
 /// The longest name the modelled `MultiRegionAccessPointName` admits: `len
 /// 0..50` with pattern `^[a-z0-9][-a-z0-9]{1,48}[a-z0-9]$`, so 50 characters.
 const LONGEST_NAME: &str = "mrapnamemrapnamemrapnamemrapnamemrapnamemrapname50";
@@ -113,7 +118,7 @@ impl CreateCase {
         }
     }
 
-    fn request_body(&self) -> String {
+    pub(crate) fn request_body(&self) -> String {
         let mut xml = format!("<CreateMultiRegionAccessPointRequest xmlns=\"{XMLNS}\">");
         xml.push_str(&format!(
             "<ClientToken>{}</ClientToken>",
@@ -202,12 +207,19 @@ fn create_cases() -> Vec<CreateCase> {
         ),
         CreateCase {
             region: OTHER_REGION,
-            ..CreateCase::new("signed for another Region", "eu-mrap", "t-eu", &["reports-eu"])
+            ..CreateCase::new("signed for another Region", "eu-mrap", "t-eu", &["reports-frankfurt"])
         },
     ]
 }
 
 pub(crate) async fn create(emulator: &Emulator, case: &CreateCase) -> Reply {
+    // The prerequisite of every create below: a Multi-Region Access Point IS
+    // its set of associated buckets, so S3 Control carries a create out only
+    // over buckets that exist — each recorded in the Region this request's own
+    // report then names it in.
+    for (bucket, _) in &case.regions {
+        emulator.provision_bucket_in(case.case, bucket, case.region);
+    }
     call_in_region(
         &emulator.router,
         case.region,
@@ -287,7 +299,7 @@ async fn delete(
 }
 
 /// The text of the one leaf at `path`, or `None` when the answer carries none.
-fn leaf(leaves: &[Leaf], path: &str) -> Option<String> {
+pub(crate) fn leaf(leaves: &[Leaf], path: &str) -> Option<String> {
     leaves
         .iter()
         .find(|(leaf_path, _)| leaf_path == path)
@@ -354,8 +366,8 @@ fn assert_alias_shape(case: &str, alias: &str) {
 
 /// Assert that `token` is a request token ARN for `verb` in `region`: the
 /// `async-request/mrap/<verb>/<id>` resource under the emulator's canonical
-/// account, with a hex id.
-fn assert_token_shape(case: &str, token: &str, region: &str, verb: &str) {
+/// account, with a UUID id.
+pub(crate) fn assert_token_shape(case: &str, token: &str, region: &str, verb: &str) {
     let prefix = format!(
         "arn:aws:s3:{region}:{}:async-request/mrap/{verb}/",
         ::emulator_server::emulator_account_id()
@@ -363,9 +375,29 @@ fn assert_token_shape(case: &str, token: &str, region: &str, verb: &str) {
     let id = token.strip_prefix(&prefix).unwrap_or_else(|| {
         panic!("case {case:?}: expected a request token starting {prefix:?}, got {token:?}")
     });
+    assert_uuid_shape(case, id, token);
+}
+
+/// The lengths of the five hyphen-separated groups of a UUID's text, in order.
+const UUID_GROUP_LENGTHS: [usize; 5] = [8, 4, 4, 4, 12];
+
+/// Assert that `id` is the text of a UUID: `8-4-4-4-12` lowercase hex, the
+/// shape every service-assigned identifier of this service carries.
+pub(crate) fn assert_uuid_shape(case: &str, id: &str, within: &str) {
+    let groups: Vec<usize> = id.split('-').map(str::len).collect();
+    assert_eq!(
+        groups,
+        UUID_GROUP_LENGTHS.to_vec(),
+        "case {case:?}: expected a UUID request id, got {id:?} in {within:?}"
+    );
     assert!(
-        !id.is_empty() && id.chars().all(|character| character.is_ascii_hexdigit()),
-        "case {case:?}: expected a hex request id, got {id:?} in {token:?}"
+        id.chars()
+            .all(|character| character == '-' || character.is_ascii_hexdigit()),
+        "case {case:?}: expected hex digits in every group, got {id:?} in {within:?}"
+    );
+    assert!(
+        id.chars().all(|character| !character.is_ascii_uppercase()),
+        "case {case:?}: expected lowercase hex, got {id:?} in {within:?}"
     );
 }
 
@@ -607,6 +639,40 @@ async fn describe_reports_the_parameters_the_request_submitted() {
             case.case,
             described.body
         );
+        // The parameters carry the public-access block in force for the access
+        // point the request asked for: the settings it supplied, or all four
+        // blocked when it supplied none — the same settings the access point's
+        // own report carries, so the two cannot disagree.
+        let submitted_block = [
+            "BlockPublicAcls",
+            "IgnorePublicAcls",
+            "BlockPublicPolicy",
+            "RestrictPublicBuckets",
+        ]
+        .iter()
+        .map(|member| {
+            leaf(
+                &leaves,
+                &format!(
+                    "AsyncOperation/RequestParameters/\
+                     CreateMultiRegionAccessPointRequest/PublicAccessBlock/{member}"
+                ),
+            )
+        })
+        .collect::<Option<Vec<String>>>();
+        assert_eq!(
+            submitted_block,
+            Some(
+                case.public_access_block
+                    .unwrap_or([true, true, true, true])
+                    .map(|setting| setting.to_string())
+                    .to_vec()
+            ),
+            "case {:?}: expected the create parameters to carry the effective public-access \
+             block, got body {}",
+            case.case,
+            described.body
+        );
         assert!(
             leaf(&leaves, "AsyncOperation/CreationTime")
                 .is_some_and(|creation_time| !creation_time.is_empty()),
@@ -622,7 +688,8 @@ async fn describe_reports_the_parameters_the_request_submitted() {
 /// ACCEPTED — with a token of its own — and the conflict is the OUTCOME of that
 /// request: it settles `FAILED` carrying
 /// `MultiRegionAccessPointAlreadyOwnedByYou` in its `ErrorDetails`, exactly one
-/// access point stands under the name, and the one that was there is untouched.
+/// access point stands under the name, the one that was there is untouched, and
+/// the failed request reports no per-Region result at all.
 #[tokio::test]
 async fn a_create_under_a_name_the_account_holds_fails_the_request_it_minted() {
     let emulator = Emulator::start();
@@ -711,8 +778,8 @@ async fn a_create_under_a_name_the_account_holds_fails_the_request_it_minted() {
             .collect();
         assert_eq!(
             regional,
-            vec![ASYNC_REQUEST_FAILED.to_string(); second.regions.len()],
-            "case {:?}: expected one failed entry per associated Region, got body {}",
+            Vec::<String>::new(),
+            "case {:?}: expected a failed request to report no per-Region result, got body {}",
             second.case,
             loser.body
         );
@@ -947,9 +1014,8 @@ async fn requests_and_names_the_store_does_not_hold_are_refused() {
 
     // A token no request was ever answered with, in the form the model admits.
     let invented = format!(
-        "arn:aws:s3:{REGION}:{}:async-request/mrap/create/{}",
+        "arn:aws:s3:{REGION}:{}:async-request/mrap/create/{INVENTED_REQUEST_ID}",
         ::emulator_server::emulator_account_id(),
-        "0".repeat(32)
     );
     let described = describe(&emulator, REGION, ACCOUNT, &invented).await;
     assert_eq!(
@@ -1031,6 +1097,15 @@ async fn a_create_the_model_or_the_service_refuses_persists_nothing() {
         no_regions.status, 400,
         "expected a create naming no bucket to be refused with 400, got {} with body {}",
         no_regions.status, no_regions.body
+    );
+    assert_eq!(
+        (no_regions.code(), no_regions.text("Message")),
+        (
+            "InvalidRequest".to_string(),
+            Some("List of regions cannot be empty".to_string())
+        ),
+        "expected the empty-region-list refusal in this service's own words, got body {}",
+        no_regions.body
     );
     let read = get(&emulator, REGION, ACCOUNT, "empty-mrap").await;
     assert_eq!(

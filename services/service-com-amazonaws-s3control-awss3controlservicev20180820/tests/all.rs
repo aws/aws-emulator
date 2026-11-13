@@ -73,6 +73,8 @@ mod batch_job_terminal_status_and_report;
 mod batch_job_unconfirmed_run;
 #[path = "all/empty_body_success_status.rs"]
 mod empty_body_success_status;
+#[path = "all/multi_region_access_point_create_outcomes.rs"]
+mod multi_region_access_point_create_outcomes;
 #[path = "all/multi_region_access_point_lifecycle.rs"]
 mod multi_region_access_point_lifecycle;
 #[path = "all/multi_region_access_point_member_regions.rs"]

@@ -1002,7 +1002,17 @@ fn new_resource_uuid(sequence: u64) -> String {
     hasher.update(RandomState::new().hash_one(sequence).to_le_bytes());
     hasher.update(nanos.to_le_bytes());
     hasher.update(sequence.to_le_bytes());
-    let digest = hasher.finalize();
+    uuid_from_digest(&hasher.finalize())
+}
+
+/// The first 16 bytes of `digest` as the text of a version-4 UUID: `8-4-4-4-12`
+/// lowercase hex with the version and variant bits RFC 4122 §4.4 fixes.
+///
+/// The one place that shape is rendered, so every service-assigned identifier
+/// this crate mints in it — a resource id ([`new_resource_uuid`]) and the id of
+/// an asynchronous request ([`async_request_token_arn`]) alike — carries the
+/// same 36 characters. `digest` is a SHA-256 digest, so it is never shorter.
+fn uuid_from_digest(digest: &[u8]) -> String {
     let mut bytes = [0_u8; 16];
     bytes.copy_from_slice(&digest[..16]);
     // RFC 4122 §4.4: the version nibble is 4, and the variant's two top bits
@@ -1240,6 +1250,23 @@ impl AsyncRequestRecord {
             (true, false) => ASYNC_REQUEST_SUCCEEDED,
             (true, true) => ASYNC_REQUEST_FAILED,
         };
+        // A request whose work FAILED carried none of it out, so it reports no
+        // per-Region result at all: what became of each Region is not a
+        // question a request that was never run has an answer to, and the
+        // error details beside this list are what says why. A request still
+        // in progress, and one whose work was done, report one entry per
+        // Region the request touches, carrying that same status.
+        let regional = match status {
+            ASYNC_REQUEST_FAILED => Vec::new(),
+            _ => self
+                .regions
+                .iter()
+                .map(|region| MultiRegionAccessPointRegionalResponse {
+                    name: Some(region.clone()),
+                    request_status: Some(status.to_string()),
+                })
+                .collect(),
+        };
         AsyncOperation {
             creation_time: Some(self.creation_time),
             operation: Some(self.operation.clone()),
@@ -1248,15 +1275,7 @@ impl AsyncRequestRecord {
             request_status: Some(status.to_string()),
             response_details: Some(AsyncResponseDetails {
                 multi_region_access_point_details: Some(MultiRegionAccessPointsAsyncResponse {
-                    regions: Some(
-                        self.regions
-                            .iter()
-                            .map(|region| MultiRegionAccessPointRegionalResponse {
-                                name: Some(region.clone()),
-                                request_status: Some(status.to_string()),
-                            })
-                            .collect(),
-                    ),
+                    regions: Some(regional),
                 }),
                 // Only a request that FAILED carries error details, and only
                 // once its span has run out: before that there is no outcome to
@@ -3239,21 +3258,25 @@ pub const ASYNC_VERB_DELETE: &str = "delete";
 /// [`ASYNC_VERB_CREATE`].
 pub const ASYNC_VERB_PUT_POLICY: &str = "put-policy";
 
-/// How many hex characters of the digest a request token ARN carries.
-const ASYNC_REQUEST_ID_LEN: usize = 32;
-
 /// The ARN of an asynchronous Multi-Region Access Point request: the
 /// `async-request/mrap/<verb>/<id>` resource in this service's ARN namespace
-/// (`s3`, per the model's `awsService.arnNamespace`), which satisfies the
-/// modelled `AsyncRequestTokenARN` pattern `^arn:.+$`.
+/// (`s3`, per the model's `awsService.arnNamespace`), in the Region the request
+/// was signed for — which satisfies the modelled `AsyncRequestTokenARN` pattern
+/// `^arn:.+$`.
 ///
-/// The id is a digest of the request's own identity — the verb, the account, the
-/// caller's `ClientToken` and the details it submitted — so one request has ONE
-/// token: a byte-identical retry is handed the token the first call returned,
-/// which is what an `@idempotencyToken` asks for ("guarantee that requests are
-/// unique"), and two different requests never share a token. The account segment
-/// comes from [`::emulator_server::emulator_arn`], the single source of truth
-/// for the canonical emulator account.
+/// The id is the UUID every service-assigned identifier of this service is
+/// shaped as ([`uuid_from_digest`]), carrying a digest of the request's own
+/// identity — the verb, the account, the caller's `ClientToken` and the details
+/// it submitted — so one request has ONE token: a byte-identical retry is
+/// handed the token the first call returned, which is what an
+/// `@idempotencyToken` asks for ("guarantee that requests are unique"), and two
+/// different requests never share a token. The account segment comes from
+/// [`::emulator_server::emulator_arn`], the single source of truth for the
+/// canonical emulator account.
+///
+/// The VALUE is this service's own to mint and no caller may depend on a
+/// particular one: what a token must do is name ONE request, which is what the
+/// `DescribeMultiRegionAccessPointOperation` route resolves it as.
 pub fn async_request_token_arn(
     region: &str,
     verb: &str,
@@ -3265,10 +3288,7 @@ pub fn async_request_token_arn(
 
     let digest =
         sha2::Sha256::digest(format!("{verb}\n{account_id}\n{client_token}\n{details}").as_bytes());
-    let id: String = hex::encode(digest)
-        .chars()
-        .take(ASYNC_REQUEST_ID_LEN)
-        .collect();
+    let id = uuid_from_digest(&digest);
     ::emulator_server::emulator_arn("s3", region, &format!("async-request/mrap/{verb}/{id}"))
 }
 
@@ -4144,11 +4164,106 @@ pub fn multi_region_access_point_already_owned_by_you(name: &str) -> AsyncErrorD
             "A Multi-Region Access Point with the same name already exists: {name}"
         )),
         resource: Some(name.to_string()),
-        // The request id is the one the answer to the DESCRIBE call carries,
-        // which this record is read by rather than written with.
-        request_id: None,
+        request_id: Some(async_failure_request_id()),
     }
 }
+
+/// The `RequestId` the `ErrorDetails` of an asynchronous outcome names the
+/// request that failed by.
+///
+/// The same identifier an error RESPONSE of this service names its request with
+/// ([`new_error_correlation`]), minted once — when the outcome is decided —
+/// rather than per read, so every `DescribeMultiRegionAccessPointOperation` of
+/// one token reports the one id. The VALUE is per-request and nothing may
+/// depend on a particular one; what it must do is name ONE request.
+fn async_failure_request_id() -> String {
+    new_error_correlation().0
+}
+
+/// `InvalidRequest` (HTTP 400): the create named no bucket at all, so there is
+/// nothing for the Multi-Region Access Point to associate.
+///
+/// `CreateMultiRegionAccessPointInput$Regions` is `@required`, so the request
+/// boundary finds the member's ABSENCE; a member present and EMPTY is a value
+/// the model admits and this service will not carry out, which is this one
+/// refusal. The message is the fixed sentence S3 Control answers it with.
+pub fn empty_region_list<E>() -> crate::scaffolded::Scaffolded<E> {
+    crate::scaffolded::Scaffolded::service_failure(
+        REQUEST_INVALID_CODE,
+        REQUEST_INVALID_STATUS,
+        EMPTY_REGION_LIST_MESSAGE,
+    )
+}
+
+/// The message of [`empty_region_list`]: fixed text, naming neither the member
+/// nor a bound.
+pub const EMPTY_REGION_LIST_MESSAGE: &str = "List of regions cannot be empty";
+
+/// The message S3 Control refuses a Multi-Region Access Point NAME it will not
+/// accept with, under [`REQUEST_INVALID_CODE`] and [`REQUEST_INVALID_STATUS`].
+///
+/// Fixed text, naming neither the name, the member nor the rule: the name a
+/// Multi-Region Access Point may be given is constrained by the modelled
+/// `MultiRegionAccessPointName` (len 0..50, pattern
+/// `^[a-z0-9][-a-z0-9]{1,48}[a-z0-9]$`), and every value outside it is the same
+/// refusal of the same class whatever the value — which is why the value the
+/// caller sent is not restated back to it.
+pub const INVALID_MULTI_REGION_ACCESS_POINT_NAME_MESSAGE: &str =
+    "The provided Amazon S3 MultiRegionAccessPoint name is invalid";
+
+/// The `ErrorDetails` a Multi-Region Access Point create settles with when its
+/// `Regions` list names one bucket more than once.
+///
+/// A Multi-Region Access Point associates ONE bucket per Region, so a list that
+/// names a bucket twice asks for a configuration no access point can have. The
+/// create binds no errors at all, so this is an OUTCOME of the request the
+/// token names ([`AsyncRequestRecord::failure`]), under the code this service
+/// answers a request it will not carry out with ([`REQUEST_INVALID_CODE`]).
+///
+/// `Resource` names the Multi-Region Access Point the request was about, as
+/// every outcome of these requests does — the message states the class, naming
+/// no bucket.
+pub fn duplicate_associated_bucket(name: &str) -> AsyncErrorDetails {
+    AsyncErrorDetails {
+        code: Some(REQUEST_INVALID_CODE.to_string()),
+        message: Some(DUPLICATE_ASSOCIATED_BUCKET_MESSAGE.to_string()),
+        resource: Some(name.to_string()),
+        request_id: Some(async_failure_request_id()),
+    }
+}
+
+/// The message of [`duplicate_associated_bucket`]: fixed text, naming no
+/// bucket — it states what the caller has to change about the list it sent.
+pub const DUPLICATE_ASSOCIATED_BUCKET_MESSAGE: &str =
+    "Your request includes duplicate buckets. Select a new bucket in a different Region \
+     for your Multi-Region Access Point.";
+
+/// The `ErrorDetails` a Multi-Region Access Point create settles with when a
+/// bucket it named is not held by the object store.
+///
+/// A Multi-Region Access Point IS its set of associated buckets, so a create
+/// naming a bucket that does not exist associates nothing and cannot be carried
+/// out — the same referential read `CreateAccessPoint` makes before it attaches
+/// an access point to a bucket ([`bucket_regions::bucket_exists`]), reported
+/// where this asynchronous call's one contract puts an outcome. The code and
+/// the fixed message are the ones the S3 family answers for a bucket that is
+/// not there, and `Resource` names the Multi-Region Access Point the request
+/// was about.
+pub fn associated_bucket_absent(name: &str) -> AsyncErrorDetails {
+    AsyncErrorDetails {
+        code: Some(NO_SUCH_BUCKET_CODE.to_string()),
+        message: Some(NO_SUCH_BUCKET_MESSAGE.to_string()),
+        resource: Some(name.to_string()),
+        request_id: Some(async_failure_request_id()),
+    }
+}
+
+/// The code the S3 family answers for a bucket the store does not hold.
+pub const NO_SUCH_BUCKET_CODE: &str = "NoSuchBucket";
+
+/// The message of [`associated_bucket_absent`]: the fixed sentence the S3
+/// family answers a missing bucket with, naming no bucket.
+pub const NO_SUCH_BUCKET_MESSAGE: &str = "The specified bucket does not exist.";
 
 /// `TooManyMultiRegionAccessPoints` (HTTP 400): the store already holds
 /// [`MULTI_REGION_ACCESS_POINT_QUOTA`] Multi-Region Access Points, so another

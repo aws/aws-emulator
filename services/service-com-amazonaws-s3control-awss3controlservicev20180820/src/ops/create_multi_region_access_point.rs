@@ -11,11 +11,13 @@
 //! The call is asynchronous: it returns a request token while the access point
 //! is still `CREATING`, and the clock — not a later call — is what moves it to
 //! `READY` once [`crate::state::MULTI_REGION_ACCESS_POINT_SETTLE_AFTER`] has
-//! elapsed. It binds no errors and answers nothing but that token, so a request
-//! for a name the account already holds is accepted like any other and the
-//! conflict is reported as THAT request's outcome
+//! elapsed. It binds no errors and answers nothing but that token, so every
+//! submission this service accepts is answered a token and whether the work can
+//! be carried out at all is reported as THAT request's outcome
 //! ([`crate::state::AsyncRequestRecord::failure`]) rather than as a refusal of
-//! this call.
+//! this call: a name the account already holds, a `Regions` list naming one
+//! bucket twice, and a bucket the object store does not hold alike. A request
+//! whose work will not be carried out leaves no access point behind.
 //!
 //! ## Shape of an operation
 //!
@@ -161,10 +163,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // nothing, which no Multi-Region Access Point can be. The model can only
         // say the member is present, so the refusal is here.
         if input.details.regions.is_empty() {
-            return Err(crate::scaffolded::Scaffolded::validation(
-                "Details.Regions must name at least one bucket to associate with the \
-                 Multi-Region Access Point.",
-            ));
+            return Err(crate::state::empty_region_list());
         }
 
         let Some(state) = crate::state::service_state(&*self.engine) else {
@@ -191,6 +190,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             &*self.engine,
             &input.details.regions,
             &region,
+        );
+        // Whether the buckets this request named can be associated at all,
+        // read in the same store and under the same lock order.
+        let association_failure = crate::state::bucket_regions::create_association_failure(
+            &*self.engine,
+            &input.details,
         );
 
         let mut store = state.lock();
@@ -221,22 +226,41 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let due_at = now + crate::state::MULTI_REGION_ACCESS_POINT_SETTLE_AFTER;
         let created_at = ::aws_smithy_types::DateTime::from(now);
 
-        // A name identifies ONE Multi-Region Access Point within an account, so
-        // only one of two creates under one name can be carried out. This
-        // operation answers nothing but a request token and binds no errors at
-        // all, so BOTH submissions are accepted: the conflict is the OUTCOME of
-        // the losing request, which settles `FAILED` carrying it, and the
-        // caller observes it where this operation's one contract puts it —
-        // `DescribeMultiRegionAccessPointOperation` of the token it was handed.
+        // Why this request's work will not be carried out, or `None` for one
+        // that will be. This operation answers nothing but a request token and
+        // binds no errors at all, so EVERY submission is accepted and the
+        // outcome is the OUTCOME of the request the caller was handed the token
+        // for — which it observes where this operation's one contract puts it,
+        // `DescribeMultiRegionAccessPointOperation` of that token. A name
+        // identifies ONE Multi-Region Access Point within an account, so a
+        // create under a name the account already holds is the losing request
+        // of the two.
         let access_point_key = (input.account_id.clone(), input.details.name.clone());
-        let conflict = store
-            .multi_region_access_points
-            .contains_key(&access_point_key)
-            .then(|| {
-                crate::state::multi_region_access_point_already_owned_by_you(&input.details.name)
-            });
+        let failure = association_failure.or_else(|| {
+            store
+                .multi_region_access_points
+                .contains_key(&access_point_key)
+                .then(|| {
+                    crate::state::multi_region_access_point_already_owned_by_you(
+                        &input.details.name,
+                    )
+                })
+        });
 
-        if conflict.is_none() {
+        // The public-access block settings the access point this request asks
+        // for carries: the ones it supplied, or all four blocked when it
+        // supplied none. Reported both on the access point and as the
+        // parameters of the request that asked for it, so the two cannot
+        // disagree about the settings in force.
+        let public_access_block = crate::state::effective_public_access_block(
+            input.details.public_access_block.as_ref(),
+        );
+
+        // A create whose work will not be carried out leaves NO access point
+        // behind: the resource is published only for a request that succeeds,
+        // so a later read of that name is answered the same way as a name
+        // nothing was ever created under.
+        if failure.is_none() {
             let record = crate::state::MultiRegionAccessPointRecord {
                 name: input.details.name.clone(),
                 account_id: input.account_id.clone(),
@@ -249,9 +273,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 // default, like the single-Region access points of this
                 // service: the settings the request supplied, or all four
                 // blocked when it supplied none.
-                public_access_block: crate::state::effective_public_access_block(
-                    input.details.public_access_block.as_ref(),
-                ),
+                public_access_block: public_access_block.clone(),
                 regions: regions.clone(),
                 // Every associated bucket starts out ACTIVE: the routing
                 // configuration a create leaves behind is one active route per
@@ -280,7 +302,16 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             operation: crate::state::async_operation_name("CreateMultiRegionAccessPoint"),
             creation_time: created_at,
             request_parameters: AsyncRequestParameters {
-                create_multi_region_access_point_request: Some(input.details.clone()),
+                create_multi_region_access_point_request: Some(
+                    CreateMultiRegionAccessPointInput2 {
+                        // The parameters of the request as the service holds
+                        // them: the settings in force for the access point it
+                        // asked for, which are the ones it supplied where it
+                        // supplied any.
+                        public_access_block: Some(public_access_block),
+                        ..input.details.clone()
+                    },
+                ),
                 delete_multi_region_access_point_request: None,
                 put_multi_region_access_point_policy_request: None,
             },
@@ -289,7 +320,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 .filter_map(|report| report.region.clone())
                 .collect(),
             due_at,
-            failure: conflict,
+            failure,
         };
 
         // Recording the request is what the caller is handed the token for.

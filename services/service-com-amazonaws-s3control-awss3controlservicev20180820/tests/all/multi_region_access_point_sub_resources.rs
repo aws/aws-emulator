@@ -469,7 +469,7 @@ fn create_cases() -> Vec<CreateCase> {
                 "another Region",
                 "sub-other-mrap",
                 "t-sub-other",
-                &["reports"],
+                &["reports-central"],
             )
         },
         CreateCase::new(
@@ -654,6 +654,7 @@ async fn a_policy_put_is_proposed_then_established_and_the_status_follows_it() {
         // One access point per row, so no row reads what another put.
         let name = format!("policy-mrap-{index}");
         let create_case = CreateCase::new("the access point the policy is put on", "", "", &[]);
+        emulator.provision_bucket(case, "reports");
         let created = call_in_region(
             &emulator.router,
             create_case.region,
@@ -842,7 +843,7 @@ fn unknown_tokens() -> Vec<(&'static str, String)> {
             format!(
                 "arn:aws:s3:{REGION}:{}:async-request/mrap/create/{}",
                 ::emulator_server::emulator_account_id(),
-                "0".repeat(32)
+                "00000000-0000-4000-8000-000000000000"
             ),
         ),
         ("a token that is not an ARN at all", "not-an-arn".to_string()),

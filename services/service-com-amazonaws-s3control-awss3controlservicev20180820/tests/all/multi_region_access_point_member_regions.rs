@@ -15,10 +15,11 @@
 //! report.
 //!
 //! The rows span what the rule generalises over: how many member buckets there
-//! are, how many Regions they are spread over, whether the create was signed for
-//! one of those Regions or for none of them, and a member the object store holds
-//! no bucket for — which the create's own Region answers for, since a report
-//! that named no Region would drop the member from the access point's report.
+//! are, how many Regions they are spread over, and whether the create was signed
+//! for one of those Regions or for none of them. Every member names a bucket the
+//! object store HOLDS, because a create naming one it does not hold is not
+//! carried out at all — see
+//! `crate::multi_region_access_point_create_outcomes`, which drives that rule.
 
 use std::time::Duration;
 
@@ -86,11 +87,11 @@ fn rows() -> Vec<Row> {
             signed_for: "eu-west-1",
         },
         Row {
-            case: "a member the object store holds no bucket for",
-            name: "mrap-unheld-member",
+            case: "two buckets in two Regions, neither the Region signed for",
+            name: "mrap-remote-regions",
             members: &[
-                ("mrap-held-bucket", Some("ap-northeast-1")),
-                ("mrap-unheld-bucket", None),
+                ("mrap-tokyo-bucket", Some("ap-northeast-1")),
+                ("mrap-london-bucket", Some("eu-west-2")),
             ],
             signed_for: "us-west-2",
         },

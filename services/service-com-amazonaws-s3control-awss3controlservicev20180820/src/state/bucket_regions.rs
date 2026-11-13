@@ -24,6 +24,7 @@
 use super::*;
 
 use crate::ops::types::Region;
+use std::collections::BTreeSet;
 
 /// The Region the bucket `bucket` lives in, or `None` when the object store
 /// holds no such bucket (and when this process has no object store at all).
@@ -73,4 +74,42 @@ pub fn associated_region_reports<Eng: Send + Sync + 'static>(
             bucket_account_id: member.bucket_account_id.clone(),
         })
         .collect()
+}
+
+/// Why the buckets a Multi-Region Access Point create request named cannot be
+/// associated, or `None` when every one of them can be.
+///
+/// Two rules, read in the order the request has to satisfy them — the list
+/// itself first, then the buckets it resolves to:
+///
+/// * a Multi-Region Access Point associates ONE bucket per Region, so a list
+///   naming a bucket more than once asks for a configuration no access point
+///   can have ([`duplicate_associated_bucket`]);
+/// * a Multi-Region Access Point IS its set of associated buckets, so a bucket
+///   the object store does not hold cannot be associated
+///   ([`associated_bucket_absent`]) — the same referential read
+///   `CreateAccessPoint` makes before it attaches an access point to a bucket.
+///
+/// The create binds no errors at all, so what comes back is the OUTCOME the
+/// request settles with ([`AsyncRequestRecord::failure`]) rather than a refusal
+/// of the call, and a create that cannot be carried out leaves no access point
+/// behind.
+///
+/// Takes the bucket store's lock, so it is subject to the lock order the module
+/// docs state: call it with NO guard of this service's store held.
+pub fn create_association_failure<Eng: Send + Sync + 'static>(
+    engine: &Eng,
+    details: &CreateMultiRegionAccessPointInput2,
+) -> Option<AsyncErrorDetails> {
+    let mut named: BTreeSet<&str> = BTreeSet::new();
+    for member in &details.regions {
+        if !named.insert(member.bucket.as_str()) {
+            return Some(duplicate_associated_bucket(&details.name));
+        }
+    }
+    details
+        .regions
+        .iter()
+        .any(|member| !bucket_exists(engine, &member.bucket))
+        .then(|| associated_bucket_absent(&details.name))
 }

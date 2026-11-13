@@ -148,6 +148,24 @@ const ASYNC_REQUEST_PATH: &str = "/v20180820/async-requests/mrap/";
 /// path of `DescribeMultiRegionAccessPointOperationRequest$RequestTokenARN`.
 const REQUEST_TOKEN_MEMBER: &str = "requestTokenARN";
 
+/// The path space a Multi-Region Access Point is addressed in BY NAME: every
+/// route that names one is `/v20180820/mrap/instances/{Name+}` or a
+/// sub-resource of it (`.../policy`, `.../policystatus`), so the segment after
+/// this prefix is the access point NAME (`smithy_query(query="digest")`). The
+/// prefix ends in a separator, so `GET /v20180820/mrap/instances` — the
+/// listing, which names none — is not in this space.
+const MULTI_REGION_ACCESS_POINT_PATH: &str = "/v20180820/mrap/instances/";
+
+/// The members a request states the Multi-Region Access Point NAME it is about
+/// in, spelled as the request boundary states a member path: the `Name` of the
+/// request document the asynchronous routes carry
+/// (`CreateMultiRegionAccessPointInput$Name` under `Details`, and the same of
+/// the delete and the policy put), and the `Name` label the routes that address
+/// one by name carry (`GetMultiRegionAccessPointRequest$Name`, per
+/// `smithy_query(query="operation")`). Each is a
+/// `MultiRegionAccessPointName`, so each is held to that shape's rule.
+const MULTI_REGION_ACCESS_POINT_NAME_MEMBERS: [&str; 2] = ["details.name", "name"];
+
 /// The member a create states the bucket an access point is attached to in
 /// (`CreateAccessPointRequest$Bucket`, which is `@required`, per
 /// `smithy_query(query="operation", operation="CreateAccessPoint")`), spelled as
@@ -624,6 +642,22 @@ fn refused_over_address(refusal: &str) -> bool {
         .any(|member| refused_over_member(refusal, member))
 }
 
+/// Whether `refusal` is the boundary refusing the request over the Multi-Region
+/// Access Point NAME it carried, on a path that is about one.
+///
+/// A name a Multi-Region Access Point may not be given is a request this
+/// service will not carry out, stated in its own words rather than in the
+/// framework's validation vocabulary — see
+/// [`crate::state::INVALID_MULTI_REGION_ACCESS_POINT_NAME_MESSAGE`]. The path
+/// is read as well as the member, so a request to another resource refused over
+/// a member of the same name keeps the cause its caller has to fix.
+fn refused_over_multi_region_access_point_name(path: &str, refusal: &str) -> bool {
+    (path.starts_with(ASYNC_REQUEST_PATH) || path.starts_with(MULTI_REGION_ACCESS_POINT_PATH))
+        && MULTI_REGION_ACCESS_POINT_NAME_MEMBERS
+            .iter()
+            .any(|member| refused_over_member(refusal, member))
+}
+
 /// Whether `refusal` is the boundary refusing the request because it could not
 /// READ it, rather than because a value it did read broke a rule the model
 /// states.
@@ -727,6 +761,20 @@ fn restated(req: &RtRequest, resp: &RtResponse) -> Option<RtResponse> {
             crate::state::NO_SUCH_ASYNC_REQUEST_STATUS,
             crate::state::NO_SUCH_ASYNC_REQUEST_CODE,
             crate::state::NO_SUCH_ASYNC_REQUEST_MESSAGE,
+            &[],
+        ));
+    }
+    // A request about a Multi-Region Access Point whose NAME the boundary
+    // refused: the name a Multi-Region Access Point may be given is a rule of
+    // this service's own, so the refusal states it in this service's words and
+    // under the code a client branches on, rather than restating the value and
+    // the pattern back to the caller that sent them.
+    if refused_over_multi_region_access_point_name(path, refusal) {
+        return Some(error_response(
+            Envelope::of(path),
+            crate::state::REQUEST_INVALID_STATUS,
+            crate::state::REQUEST_INVALID_CODE,
+            crate::state::INVALID_MULTI_REGION_ACCESS_POINT_NAME_MESSAGE,
             &[],
         ));
     }
