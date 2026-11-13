@@ -79,6 +79,8 @@ mod pending_team_update;
 mod policy_attachment_status;
 #[path = "all/policy_catalog.rs"]
 mod policy_catalog;
+#[path = "all/policy_document_bytes_and_millisecond_instants.rs"]
+mod policy_document_bytes_and_millisecond_instants;
 #[path = "all/policy_version_detail.rs"]
 mod policy_version_detail;
 #[path = "all/policy_versions.rs"]

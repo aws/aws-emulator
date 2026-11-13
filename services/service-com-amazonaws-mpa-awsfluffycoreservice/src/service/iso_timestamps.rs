@@ -3,9 +3,10 @@
 //! How this service's `restJson1` responses carry a TIMESTAMP.
 //!
 //! RULE: a timestamp member whose model declares `@timestampFormat("date-time")` goes
-//! onto the wire as an RFC 3339 / ISO-8601 date-time STRING naming the instant
-//! (`"2025-06-17T00:00:00Z"`), never as the epoch-seconds NUMBER the protocol defaults
-//! to.
+//! onto the wire as an RFC 3339 / ISO-8601 date-time STRING naming the instant, at this
+//! service's millisecond precision — a fractional-second field of exactly three digits,
+//! present whatever the instant is (`"2025-06-17T00:00:00.000Z"`) — never as the
+//! epoch-seconds NUMBER the protocol defaults to and never with the field elided.
 //!
 //! The rule is the whole service's, not one shape's. This model declares exactly ONE
 //! timestamp shape, `com.amazonaws.mpa#IsoTimestamp`, and it carries
@@ -48,14 +49,43 @@ use aws_smithy_schema_server::RestJsonServerProtocol;
 use aws_smithy_types::date_time::Format;
 use aws_smithy_types::{BigDecimal, BigInteger, DateTime, Document};
 
+/// Digits in the fractional-second field of every date-time this service writes: this
+/// service reports an instant at MILLISECOND precision, so the field is always present and
+/// always this wide, whatever the instant's own sub-second value is — a whole second is
+/// `...T00:00:00.000Z`, not `...T00:00:00Z`.
+const FRACTIONAL_SECOND_DIGITS: usize = 3;
+
 /// The date-time text an instant is reported as: RFC 3339 in UTC, which is what Smithy's
-/// `date-time` format is and what [`Format::DateTime`] renders.
+/// `date-time` format is and what [`Format::DateTime`] renders — with the fractional-second
+/// field normalised to [`FRACTIONAL_SECOND_DIGITS`].
 ///
 /// An instant with no date-time rendering at all (one outside the range the formatter can
 /// express) keeps the protocol's own number rather than being given a fabricated string —
 /// see [`IsoTimestampSerializer::write_timestamp`].
 fn date_time_text(value: &DateTime) -> Option<String> {
-    value.fmt(Format::DateTime).ok()
+    let rendered = value.fmt(Format::DateTime).ok()?;
+    Some(with_fixed_fractional_seconds(&rendered))
+}
+
+/// `rendered`, an RFC 3339 UTC date-time, with exactly [`FRACTIONAL_SECOND_DIGITS`]
+/// fractional-second digits: [`Format::DateTime`] elides the field whenever its digits are
+/// all zeros and writes as many digits as the instant happens to carry otherwise, so the
+/// field is padded when it is shorter and cut when it is longer (a finer instant is
+/// reported to the precision this service reports, never rounded up into another second).
+///
+/// Text the formatter did not shape as a `Z`-terminated date-time is handed back as it
+/// came: nothing is appended to a string whose seconds field cannot be located.
+fn with_fixed_fractional_seconds(rendered: &str) -> String {
+    let Some(instant) = rendered.strip_suffix('Z') else {
+        return rendered.to_string();
+    };
+    let (seconds, fraction) = instant.split_once('.').unwrap_or((instant, ""));
+    let digits: String = fraction
+        .chars()
+        .chain(std::iter::repeat('0'))
+        .take(FRACTIONAL_SECOND_DIGITS)
+        .collect();
+    format!("{seconds}.{digits}Z")
 }
 
 /// One output shape, serialized with every timestamp rendered as date-time text.
@@ -262,24 +292,39 @@ impl ServerProtocol for IsoTimestampRestJson {
 mod tests {
     use super::date_time_text;
     use aws_smithy_types::DateTime;
+    use std::time::{Duration, SystemTime};
 
-    /// RULE: an instant is reported as an RFC 3339 UTC date-time string. The rows span
-    /// what the rendering generalises over: the epoch itself, a whole second, an instant
-    /// carrying sub-second digits, and one before the epoch.
+    /// RULE: an instant is reported as an RFC 3339 UTC date-time string whose
+    /// fractional-second field is always present and always three digits wide. The rows
+    /// span what the rendering generalises over: the epoch itself, a whole second, a
+    /// sub-second value needing no padding, ones needing one and two zeros of padding, the
+    /// largest millisecond value, a value finer than a millisecond, and an instant before
+    /// the epoch.
     #[test]
-    fn an_instant_renders_as_an_rfc3339_date_time() {
-        let rows: [(f64, &str); 4] = [
-            (0.0, "1970-01-01T00:00:00Z"),
-            (1_750_118_400.0, "2025-06-17T00:00:00Z"),
-            (1_750_118_400.5, "2025-06-17T00:00:00.5Z"),
-            (-1.0, "1969-12-31T23:59:59Z"),
+    fn an_instant_renders_as_an_rfc3339_date_time_with_milliseconds() {
+        let rows: [(i64, u32, &str); 9] = [
+            (0, 0, "1970-01-01T00:00:00.000Z"),
+            (1_750_118_400, 0, "2025-06-17T00:00:00.000Z"),
+            (1_750_118_400, 500_000_000, "2025-06-17T00:00:00.500Z"),
+            (1_750_118_400, 123_000_000, "2025-06-17T00:00:00.123Z"),
+            (1_750_118_400, 50_000_000, "2025-06-17T00:00:00.050Z"),
+            (1_750_118_400, 7_000_000, "2025-06-17T00:00:00.007Z"),
+            (1_750_118_400, 999_000_000, "2025-06-17T00:00:00.999Z"),
+            // Finer than a millisecond: reported at this service's precision.
+            (1_750_118_400, 123_456_789, "2025-06-17T00:00:00.123Z"),
+            (-1, 0, "1969-12-31T23:59:59.000Z"),
         ];
-        for (seconds, expected) in rows {
-            let rendered = date_time_text(&DateTime::from_secs_f64(seconds));
+        for (seconds, nanos, expected) in rows {
+            let instant = if seconds < 0 {
+                SystemTime::UNIX_EPOCH - Duration::new(seconds.unsigned_abs(), 0)
+            } else {
+                SystemTime::UNIX_EPOCH + Duration::new(seconds.unsigned_abs(), nanos)
+            };
+            let rendered = date_time_text(&DateTime::from(instant));
             assert_eq!(
                 rendered.as_deref(),
                 Some(expected),
-                "case {seconds}: expected {expected:?}, got {rendered:?}"
+                "case ({seconds}, {nanos}): expected {expected:?}, got {rendered:?}"
             );
         }
     }

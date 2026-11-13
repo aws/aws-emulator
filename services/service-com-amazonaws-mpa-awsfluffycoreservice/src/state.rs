@@ -2873,7 +2873,8 @@ struct SeededPolicy {
     policy_type: PolicyType,
     /// Status of the published version, from `PolicyStatus`' own tokens.
     status: PolicyStatus,
-    /// The published version's document, as `PolicyVersion$Document` reports it.
+    /// The published version's document, as `PolicyVersion$Document` reports it:
+    /// published text, handed to a reader unchanged (whitespace included).
     document: &'static str,
     /// Epoch seconds of the instant the catalog records as the published version's
     /// creation — and, since nothing updates a published version, as its last update
@@ -2908,22 +2909,44 @@ impl SeededPolicy {
 /// The document the published vault-protection policy's one version carries: approval
 /// sessions for the protected operation alone.
 ///
-/// A managed policy's document is the CATALOG's, not a value this service derives per
-/// read, so it is held here as the entry's own data: it grants the two session actions a
-/// team's approvers exercise — and no other action, never a service-wide wildcard —
-/// scoped by the condition keys this service's own model defines for them
-/// (`mpa:RequestedOperation`, the operation that needs the team's approval, and
-/// `mpa:ProtectedResourceAccount`, the account owning the resource it targets) and only
-/// for a request the protected service makes on the caller's behalf
-/// (`aws:ViaAWSService`, a boolean key, hence IAM's `Bool` operator).
-const VAULT_PROTECTION_POLICY_DOCUMENT: &str = concat!(
-    r#"{"Version":"2012-10-17","Statement":[{"Sid":"AWSBackupLAGVaultProtection","#,
-    r#""Effect":"Allow","Action":["mpa:StartSession","mpa:CancelSession"],"#,
-    r#""Resource":"*","Condition":{"StringEquals":{"#,
-    r#""mpa:RequestedOperation":"backup:DisassociateRecoveryPoint","#,
-    r#""mpa:ProtectedResourceAccount":"${aws:PrincipalAccount}"},"#,
-    r#""Bool":{"aws:ViaAWSService":"true"}}}]}"#,
-);
+/// A managed policy's document is the CATALOG's own PUBLISHED TEXT — not a value this
+/// service derives per read and not a document this crate reflows — so it is held here
+/// verbatim, byte for byte as the catalog publishes it: the same `Sid`, the same
+/// `Principal` element, the same member order and the same layout (two-space indentation,
+/// one member per line, a trailing newline). A reader hands this string on unchanged, so a
+/// byte-level consumer (a hash, a signature, a diff against the published policy) sees
+/// what it would see from the published catalog.
+///
+/// What it says: the two session actions a team's approvers exercise — and no other
+/// action, never a service-wide wildcard — are allowed to any principal, scoped by the
+/// condition keys this service's own model defines for them (`mpa:RequestedOperation`, the
+/// operation that needs the team's approval, and `mpa:ProtectedResourceAccount`, the
+/// account owning the resource it targets) and only for a request the protected service
+/// makes on the caller's behalf (`aws:ViaAWSService`, a boolean key, hence IAM's `Bool`
+/// operator).
+///
+/// The literal is laid out at column zero because its OWN indentation is part of the
+/// published text.
+const VAULT_PROTECTION_POLICY_DOCUMENT: &str = r#"{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "VaultOwnerPermissions",
+      "Effect": "Allow",
+      "Principal": { "AWS": "*" },
+      "Resource": "*",
+      "Action": [ "mpa:StartSession", "mpa:CancelSession" ],
+      "Condition": {
+        "StringEquals": {
+          "mpa:RequestedOperation": "backup:RevokeRestoreAccessBackupVault",
+          "mpa:ProtectedResourceAccount": "${aws:PrincipalAccount}"
+        },
+        "Bool": { "aws:ViaAWSService": "true" }
+      }
+    }
+  ]
+}
+"#;
 
 /// The policies this store holds when it is first touched: the catalog this service
 /// publishes.
