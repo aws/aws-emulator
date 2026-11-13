@@ -23,10 +23,15 @@
 //! below is installed through IAM's wire path, never by reaching into state.
 //!
 //! The rows span what the rule generalises over: which principal the document admits, how
-//! the action and the principal are written (one string, a list, a wildcard), the effect
-//! (an `Allow`, an explicit `Deny`), whether the document is readable as a policy at all,
-//! the case and the path the request writes the role name with, and a name IAM holds no
-//! role under.
+//! the action and the principal are written (one string, a list, a wildcard, a prefix
+//! wildcard, another case), which principal KIND names it (a service principal, an account
+//! one), how the document carries its statements (a list, a single object), the effect
+//! (an `Allow`, an explicit `Deny`, a `Deny` beside an `Allow`), whether the document is
+//! readable as a policy at all, the case and the path the request writes the role name
+//! with, and a name IAM holds no role under.
+//!
+//! A refused call writes NOTHING, so it reserves nothing either: the name it carried is
+//! still free once the role is repaired.
 
 use std::sync::Arc;
 
@@ -297,6 +302,73 @@ fn rows() -> Vec<Row> {
             served: false,
         },
         Row {
+            // IAM compares an action and a service principal case-insensitively, so the
+            // same grant written in another case is the same grant.
+            case: "a role whose grant names the action and the principal in another case",
+            created: Some((
+                "rh-case",
+                trust_policy("Allow", "\"STS:AssumeRole\"", "\"ResilienceHub.AmazonAWS.com\""),
+            )),
+            named: "rh-case".to_string(),
+            served: true,
+        },
+        Row {
+            case: "a role whose grant names the action by a prefix wildcard",
+            created: Some((
+                "rh-prefix",
+                trust_policy("Allow", "\"sts:Assume*\"", "\"resiliencehub.amazonaws.com\""),
+            )),
+            named: "rh-prefix".to_string(),
+            served: true,
+        },
+        Row {
+            // A policy's `Statement` is "one statement or a list of them", so a document
+            // carrying its one statement as an object states the same grant.
+            case: "a role whose document carries its one statement as an object",
+            created: Some((
+                "rh-one-statement",
+                "{\"Version\":\"2012-10-17\",\"Statement\":{\"Effect\":\"Allow\",\
+                 \"Principal\":{\"Service\":\"resiliencehub.amazonaws.com\"},\
+                 \"Action\":\"sts:AssumeRole\"}}"
+                    .to_string(),
+            )),
+            named: "rh-one-statement".to_string(),
+            served: true,
+        },
+        Row {
+            // An explicit `Deny` is final: no `Allow` in the same document puts the grant
+            // back.
+            case: "a role denying this service the assume beside an allow of it",
+            created: Some((
+                "rh-allow-and-deny",
+                "{\"Version\":\"2012-10-17\",\"Statement\":[\
+                 {\"Effect\":\"Allow\",\
+                 \"Principal\":{\"Service\":\"resiliencehub.amazonaws.com\"},\
+                 \"Action\":\"sts:AssumeRole\"},\
+                 {\"Effect\":\"Deny\",\
+                 \"Principal\":{\"Service\":\"resiliencehub.amazonaws.com\"},\
+                 \"Action\":\"sts:AssumeRole\"}]}"
+                    .to_string(),
+            )),
+            named: "rh-allow-and-deny".to_string(),
+            served: false,
+        },
+        Row {
+            // The gate asks whether a SERVICE principal may assume the role, so a trust
+            // relationship with the account's own identities is not one this service can
+            // act on.
+            case: "a role trusting an account principal rather than a service",
+            created: Some((
+                "rh-account-principal",
+                "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\
+                 \"Principal\":{\"AWS\":\"arn:aws:iam::000000000000:root\"},\
+                 \"Action\":\"sts:AssumeRole\"}]}"
+                    .to_string(),
+            )),
+            named: "rh-account-principal".to_string(),
+            served: false,
+        },
+        Row {
             case: "a role whose grant is for another action",
             created: Some((
                 "rh-other-action",
@@ -531,6 +603,69 @@ async fn an_update_onto_an_unassumable_invoker_role_changes_nothing() {
             );
         }
     }
+}
+
+/// A refused call writes NOTHING, so it reserves nothing either: the name it carried is
+/// still free, and the very same request — same name, same role — is served once the role's
+/// trust policy is repaired, rather than meeting the duplicate-name conflict.
+#[tokio::test]
+async fn a_refused_create_reserves_neither_the_name_nor_the_token() {
+    let router = emulator();
+    let role = "rh-unreserved";
+    install_role(
+        &router,
+        role,
+        &trust_policy("Allow", "\"sts:AssumeRole\"", "\"lambda.amazonaws.com\""),
+    )
+    .await;
+
+    // Each attempt carries the SAME name and the SAME idempotency token, so what the second
+    // one meets is the gate's verdict and nothing a refused first attempt left behind.
+    let name = "unreserved-service";
+    let request = json!({
+        "name": name,
+        "regions": [REGION],
+        "permissionModel": {"invokerRoleName": role},
+        "clientToken": "unreserved-token",
+    });
+    let (status, body) = v2(&router, "/v2/create-service", Some(request.clone())).await;
+    assert_eq!(
+        (status, error_code(&body).as_str(), error_message(&body)),
+        (400, VALIDATION, refusal(role)),
+        "the role as created trusts another service: got {status} {body:?}"
+    );
+
+    iam(
+        &router,
+        "UpdateAssumeRolePolicy",
+        &[("RoleName", role), ("PolicyDocument", &admitting())],
+    )
+    .await;
+
+    let (status, body) = v2(&router, "/v2/create-service", Some(request)).await;
+    assert_eq!(
+        status, 200,
+        "the identical request must be served once the role is repaired, got {status} {body:?}"
+    );
+    let arn = body["service"]["serviceArn"]
+        .as_str()
+        .unwrap_or_else(|| panic!("no serviceArn in {body:?}"))
+        .to_string();
+    let listed = service_names(&router).await;
+    assert_eq!(
+        listed.iter().filter(|listed| *listed == name).count(),
+        1,
+        "exactly one service must stand under {name:?}, got {listed:?}"
+    );
+    let (read_status, read) = get_service(&router, &arn).await;
+    assert_eq!(
+        (
+            read_status,
+            read["service"]["permissionModel"]["invokerRoleName"].as_str()
+        ),
+        (200, Some(role)),
+        "the stored service must echo the invoker role, got {read_status} {read:?}"
+    );
 }
 
 /// A document the records hold that cannot be read as a policy at all shows no grant this
