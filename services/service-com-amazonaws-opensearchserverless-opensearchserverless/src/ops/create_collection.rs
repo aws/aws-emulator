@@ -250,7 +250,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // the collection the first call created, which is already published at an address a
         // client may be dialling, and opening a second one would move it.
         if stored.created {
-            crate::state::collection_plane::publish(&*self.engine, &state, &stored.id).await;
+            crate::state::collection_plane::publish(
+                ::std::sync::Arc::clone(&self.engine),
+                &state,
+                &stored.id,
+            )
+            .await;
         }
         Ok(CreateCollectionOutput {
             create_collection_detail: Some(stored.detail),

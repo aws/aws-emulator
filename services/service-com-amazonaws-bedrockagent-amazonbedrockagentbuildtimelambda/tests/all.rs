@@ -61,6 +61,8 @@ mod knowledge_base_document_listing;
 mod knowledge_base_documents;
 #[path = "all/knowledge_base_lifecycle.rs"]
 mod knowledge_base_lifecycle;
+#[path = "all/knowledge_base_role_and_vector_store_access.rs"]
+mod knowledge_base_role_and_vector_store_access;
 #[path = "all/knowledge_base_listing.rs"]
 mod knowledge_base_listing;
 #[path = "all/managed_connector_defaults.rs"]

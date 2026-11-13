@@ -7,10 +7,14 @@
 //! the same knowledge base.
 //!
 //! What the request binds the knowledge base to is resolved BEFORE anything is
-//! written: the `embeddingModelArn` has to name a model whose published output
-//! is an embedding, and the index its `storageConfiguration` names has to be an
-//! index of the named vector bucket whose dimension that model's vectors fit.
-//! Each refusal leaves no knowledge base behind (`crate::state::vector_store`).
+//! written: the `roleArn` has to name a role Amazon Bedrock can assume, the
+//! `embeddingModelArn` has to name a model whose published output is an
+//! embedding, and the index its `storageConfiguration` names has to be a vector
+//! store the knowledge base can reach — an index of the named vector bucket
+//! whose dimension that model's vectors fit, or an OpenSearch Serverless index
+//! the role is granted access to. Each refusal leaves no knowledge base behind
+//! (`crate::state::service_role`, `crate::state::vector_store`,
+//! `crate::state::opensearch_serverless_store`).
 //!
 //! ## Shape of an operation
 //!
@@ -197,6 +201,23 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .into());
         };
 
+        // Amazon Bedrock ACTS AS the role the request names — it reads the data
+        // sources and writes the vector store as that role — so a role it cannot
+        // assume is resolved first, before anything else the request names is
+        // looked at and before any record is written
+        // (`crate::state::service_role`).
+        if let Some(message) =
+            crate::state::unassumable_role_message(&*self.engine, &input.role_arn)
+        {
+            return Err(CreateKnowledgeBaseErrorModeled::ValidationException(
+                ValidationException {
+                    message: Some(message),
+                    field_list: None,
+                },
+            )
+            .into());
+        }
+
         // `knowledgeBaseConfiguration.type` is a discriminator: it names which
         // sibling member carries that kind's details, and a self-managed VECTOR
         // knowledge base additionally needs the vector store this operation
@@ -250,6 +271,26 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             return Err(CreateKnowledgeBaseErrorModeled::ValidationException(
                 ValidationException {
                     message: Some(problem.message()),
+                    field_list: None,
+                },
+            )
+            .into());
+        }
+
+        // An OpenSearch Serverless vector store is resolved on the same terms,
+        // against the policies of the collection that owns it: the knowledge
+        // base reads and writes its index AS the role the request names, so a
+        // role that collection's data access policies grant nothing to cannot
+        // serve the knowledge base at all
+        // (`crate::state::opensearch_serverless_store`).
+        if let Some(message) = crate::state::opensearch_serverless_access_problem(
+            &*self.engine,
+            &input.role_arn,
+            input.storage_configuration.as_ref(),
+        ) {
+            return Err(CreateKnowledgeBaseErrorModeled::ValidationException(
+                ValidationException {
+                    message: Some(message),
                     field_list: None,
                 },
             )

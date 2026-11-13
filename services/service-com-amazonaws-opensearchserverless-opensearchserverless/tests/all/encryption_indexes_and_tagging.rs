@@ -190,6 +190,52 @@ pub(crate) async fn active_collection(router: &MultiServiceRouter, name: &str) -
     await_status(router, &id, "ACTIVE").await
 }
 
+/// The `network` security policy every collection of one emulator is reached through.
+pub(crate) const NETWORK_POLICY_NAME: &str = "net-every-collection";
+
+/// A `network` security policy document: one rule about the collections `resources` names,
+/// with public access.
+///
+/// The shape is the one AWS's "Network access for Amazon OpenSearch Serverless" documents:
+/// `Rules` of `ResourceType` `collection` over `collection/<name>` patterns, beside
+/// `AllowFromPublic`.
+pub(crate) fn network_policy(resources: &[&str]) -> Value {
+    json!({
+        "Rules": [{ "ResourceType": "collection", "Resource": resources }],
+        "AllowFromPublic": true,
+    })
+}
+
+/// Admit traffic to the endpoints of every collection of this emulator, which is what AWS
+/// requires before a collection's endpoint answers anything: "you must have at least one
+/// network policy that applies to a collection in order to access its endpoint". Idempotent,
+/// so a suite that creates several collections calls it per collection.
+pub(crate) async fn allow_network_access(router: &MultiServiceRouter) {
+    let (status, _, _) = call(
+        router,
+        "GetSecurityPolicy",
+        json!({ "type": "network", "name": NETWORK_POLICY_NAME }),
+    )
+    .await;
+    if status == 200 {
+        return;
+    }
+    create_policy(
+        router,
+        "network",
+        NETWORK_POLICY_NAME,
+        network_policy(&["collection/*"]),
+    )
+    .await;
+}
+
+/// [`active_collection`], with the network policy that makes its endpoints REACHABLE: the
+/// collection a data-plane suite addresses.
+pub(crate) async fn reachable_collection(router: &MultiServiceRouter, name: &str) -> Value {
+    allow_network_access(router).await;
+    active_collection(router, name).await
+}
+
 /// An encryption policy document: one rule about the collections `resources` names, with
 /// the key the policy assigns (a `KmsARN`, or the AWS-owned key).
 ///

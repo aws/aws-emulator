@@ -34,6 +34,15 @@ service-com-amazonaws-s3-amazons3 = { workspace = true }
 # The published foundation-model catalog, which is what says whether the ARN a
 # knowledge base names as its embedding model is an embedding model at all.
 service-com-amazonaws-bedrock-amazonbedrockcontrolplaneservice = { workspace = true }
+# The account's IAM records: a knowledge base ACTS AS the role its `roleArn` names, so the
+# role's trust policy is resolved against the records `iam:CreateRole` wrote
+# (`src/state/service_role.rs`).
+service-com-amazonaws-iam-awsidentitymanagementv20100508 = { workspace = true }
+# The OpenSearch Serverless collection an `OPENSEARCH_SERVERLESS` storage configuration
+# names: whether the knowledge base's role may reach the vector index is decided by that
+# collection's own data access policies, in the service that owns them
+# (`src/state/opensearch_serverless_store.rs`).
+service-com-amazonaws-opensearchserverless-opensearchserverless = { workspace = true }
 
 [build-dependencies]
 emulator-core-build-support = { workspace = true }

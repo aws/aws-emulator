@@ -22,7 +22,7 @@ use serde_json::{json, Value};
 use smithy_server_runtime::MultiServiceRouter;
 
 use crate::collection_lifecycle::{call, emulator, text};
-use crate::encryption_indexes_and_tagging::active_collection;
+use crate::encryption_indexes_and_tagging::reachable_collection;
 
 /// This service's SigV4 signing name, which is the name a client signs a request to a
 /// collection's endpoint with (`smithy_query(query="service_info")` -> `sigv4Name`).
@@ -175,7 +175,7 @@ async fn create_index(
 #[tokio::test]
 async fn an_index_created_at_the_published_endpoint_is_held_by_the_collection() {
     let router = emulator();
-    let collection = active_collection(&router, "data-plane-index-create").await;
+    let collection = reachable_collection(&router, "data-plane-index-create").await;
     let host = endpoint_host(&collection, "collectionEndpoint");
     let id = text(&collection, "id");
 
@@ -306,7 +306,7 @@ async fn an_index_created_at_the_published_endpoint_is_held_by_the_collection() 
 async fn every_published_address_of_a_collection_reaches_its_data_plane() {
     let router = emulator();
     let name = "data-plane-addressing";
-    let collection = active_collection(&router, name).await;
+    let collection = reachable_collection(&router, name).await;
     let id = text(&collection, "id");
     let endpoint = endpoint_host(&collection, "collectionEndpoint");
     let dashboards = endpoint_host(&collection, "dashboardEndpoint");
@@ -382,7 +382,7 @@ async fn every_published_address_of_a_collection_reaches_its_data_plane() {
 #[tokio::test]
 async fn a_document_written_at_the_endpoint_is_read_counted_and_searched_back() {
     let router = emulator();
-    let collection = active_collection(&router, "data-plane-documents").await;
+    let collection = reachable_collection(&router, "data-plane-documents").await;
     let host = endpoint_host(&collection, "collectionEndpoint");
     let index = "chunks";
     create_index(
@@ -733,7 +733,7 @@ async fn a_document_written_at_the_endpoint_is_read_counted_and_searched_back() 
 #[tokio::test]
 async fn a_bulk_body_performs_each_action_it_carries() {
     let router = emulator();
-    let collection = active_collection(&router, "data-plane-bulk").await;
+    let collection = reachable_collection(&router, "data-plane-bulk").await;
     let host = endpoint_host(&collection, "collectionEndpoint");
     create_index(&router, &host, "bulked", None, "the bulk target").await;
 
@@ -810,7 +810,7 @@ async fn a_bulk_body_performs_each_action_it_carries() {
 #[tokio::test]
 async fn the_data_plane_refuses_what_the_engine_refuses() {
     let router = emulator();
-    let collection = active_collection(&router, "data-plane-refusals").await;
+    let collection = reachable_collection(&router, "data-plane-refusals").await;
     let host = endpoint_host(&collection, "collectionEndpoint");
     create_index(&router, &host, "present", None, "the refusal target").await;
     create_index(
@@ -1157,7 +1157,7 @@ async fn the_data_plane_refuses_what_the_engine_refuses() {
 #[tokio::test]
 async fn a_read_that_names_no_index_covers_every_index_of_the_collection() {
     let router = emulator();
-    let collection = active_collection(&router, "data-plane-collection-wide").await;
+    let collection = reachable_collection(&router, "data-plane-collection-wide").await;
     let host = endpoint_host(&collection, "collectionEndpoint");
 
     // Two indexes, each holding one document, so a collection-wide read has to reach both.
@@ -1228,7 +1228,7 @@ async fn a_read_that_names_no_index_covers_every_index_of_the_collection() {
 #[tokio::test]
 async fn the_banner_names_the_collection_it_is_served_for() {
     let router = emulator();
-    let collection = active_collection(&router, "data-plane-banner").await;
+    let collection = reachable_collection(&router, "data-plane-banner").await;
     let host = endpoint_host(&collection, "collectionEndpoint");
 
     let (status, answer) = send(&router, &host, "GET", "/", None).await;

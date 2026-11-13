@@ -37,6 +37,8 @@ mod client_error_status;
 mod client_token_scope;
 #[path = "all/collection_data_plane.rs"]
 mod collection_data_plane;
+#[path = "all/collection_endpoint_authorization.rs"]
+mod collection_endpoint_authorization;
 #[path = "all/collection_group_capacity.rs"]
 mod collection_group_capacity;
 #[path = "all/collection_group_collection_count.rs"]

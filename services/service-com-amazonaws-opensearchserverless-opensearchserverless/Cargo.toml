@@ -42,6 +42,13 @@ service-common = { path = "../common" }
 # an endpoint is minted. Only the generated client is needed — the emulator supplies
 # the transport.
 aws-sdk-ec2 = { version = "1", default-features = false }
+# The account's own identity records, which is what a data access policy's `Principal`
+# names: the collection data plane resolves the access key id a request signed with to the
+# IAM user that holds it, or to the role session this emulator's STS minted it for
+# (`src/service/collection_rest/authorization.rs`). Each service's OWN accessor is called,
+# so this plane reads the very records `iam:CreateAccessKey` and `sts:AssumeRole` wrote.
+service-com-amazonaws-iam-awsidentitymanagementv20100508 = { workspace = true }
+service-com-amazonaws-sts-awssecuritytokenservicev20110615 = { workspace = true }
 
 [build-dependencies]
 emulator-core-build-support = { workspace = true }

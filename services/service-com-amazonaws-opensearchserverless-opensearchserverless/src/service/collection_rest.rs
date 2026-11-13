@@ -77,6 +77,7 @@ use ::service_common::data_plane_addressing::{
 
 use crate::state::{self, CollectionRecord};
 
+mod authorization;
 mod documents;
 mod indexes;
 mod search;
@@ -368,19 +369,22 @@ pub fn serve<Eng: Send + Sync + 'static>(engine: &Eng, req: &RtRequest) -> RtRes
     let Some(state) = state::service_state(engine) else {
         return unavailable();
     };
-    serve_collection(
-        &state,
-        &resolved.collection_id,
-        // The method of a runtime-API request arrives as a string.
-        req.method(),
-        &resolved.request_path,
-        &addressed.query,
-        // The router hands this seam a request whose body it has already buffered (it
-        // reads the body itself to resolve a routing key), so an absent one is an empty
-        // body rather than a stream this plane declined to read.
-        req.body().bytes().unwrap_or_default(),
+    // Who the request speaks for, resolved against the account's identity records BEFORE
+    // this service's own store is locked, so no two service stores are ever held at once.
+    let caller = authorization::caller(engine, req.headers().get("authorization"));
+    // The method of a runtime-API request arrives as a string; the router hands this seam a
+    // request whose body it has already buffered (it reads the body itself to resolve a
+    // routing key), so an absent one is an empty body rather than a stream this plane
+    // declined to read.
+    let method = req.method().to_ascii_uppercase();
+    let request = Request {
+        method: &method,
+        path: &resolved.request_path,
+        query: &addressed.query,
+        body: req.body().bytes().unwrap_or_default(),
         received,
-    )
+    };
+    serve_collection(&state, &resolved.collection_id, &request, &caller)
 }
 
 /// Answer a request that arrived on the LISTENER one collection is published on
@@ -390,7 +394,8 @@ pub fn serve<Eng: Send + Sync + 'static>(engine: &Eng, req: &RtRequest) -> RtRes
 /// The same function serves it as serves the front door's path-style addressing
 /// ([`serve_collection`]), so the two addressings of one collection cannot diverge in what
 /// they answer.
-pub fn serve_published(
+pub fn serve_published<Eng: Send + Sync + 'static>(
+    engine: &Eng,
     state: &::engine::ServiceState<
         state::ComAmazonawsOpensearchserverlessOpensearchserverlessState,
     >,
@@ -398,15 +403,22 @@ pub fn serve_published(
     req: &::http::Request<Vec<u8>>,
 ) -> ::http::Response<Vec<u8>> {
     let received = Instant::now();
-    as_http(serve_collection(
-        state,
-        collection_id,
-        req.method().as_str(),
-        req.uri().path(),
-        req.uri().query().unwrap_or_default(),
-        req.body(),
+    // As at the front door: resolved BEFORE this service's store is locked.
+    let caller = authorization::caller(
+        engine,
+        req.headers()
+            .get("authorization")
+            .and_then(|value| value.to_str().ok()),
+    );
+    let method = req.method().as_str().to_ascii_uppercase();
+    let request = Request {
+        method: &method,
+        path: req.uri().path(),
+        query: req.uri().query().unwrap_or_default(),
+        body: req.body(),
         received,
-    ))
+    };
+    as_http(serve_collection(state, collection_id, &request, &caller))
 }
 
 /// Answer one request out of the collection `collection_id` names — the one reading of this
@@ -424,37 +436,26 @@ fn serve_collection(
         state::ComAmazonawsOpensearchserverlessOpensearchserverlessState,
     >,
     collection_id: &str,
-    method: &str,
-    path: &str,
-    query: &str,
-    body: &[u8],
-    received: Instant,
+    request: &Request<'_>,
+    caller: &authorization::Caller,
 ) -> RtResponse {
-    if body.len() > MAX_REQUEST_BODY_BYTES {
+    if request.body.len() > MAX_REQUEST_BODY_BYTES {
         return error(
             413,
             ILLEGAL_ARGUMENT_EXCEPTION,
             &format!(
                 "entity content is too long [{}] for the configured buffer limit \
                  [{MAX_REQUEST_BODY_BYTES}]",
-                body.len()
+                request.body.len()
             ),
         );
     }
-    let method = method.to_ascii_uppercase();
-    let request = Request {
-        method: &method,
-        path,
-        query,
-        body,
-        received,
-    };
     let mut store = state.lock();
     // The read materialises the transitions the clock has already made due, which this
     // request neither starts nor changes: a collection whose create has settled is ACTIVE
     // here, and one whose accepted deletion has been purged is gone.
     store.settle_due_transitions();
-    let Some(collection) = store.collections.get_mut(collection_id) else {
+    let Some(collection) = store.collections.get(collection_id) else {
         return unavailable();
     };
     // A collection serves its data plane once it is "ready to use"
@@ -463,7 +464,18 @@ fn serve_collection(
     if collection.status != state::COLLECTION_ACTIVE {
         return unavailable();
     }
-    serve_resolved(collection, &request)
+    // What the collection's OWN policies say about this request: whether its endpoint is
+    // reachable at all, and whether the principal it is signed by may perform what it asks
+    // ([`authorization`]). Decided before anything is read or written, and from the
+    // policies as they read at this instant.
+    let collection_name = collection.name.clone();
+    if let Some(refused) = authorization::refusal(&store, &collection_name, caller, request) {
+        return refused;
+    }
+    let Some(collection) = store.collections.get_mut(collection_id) else {
+        return unavailable();
+    };
+    serve_resolved(collection, request)
 }
 
 /// One answer of this surface as a plain HTTP response, which is what a core HTTP listener

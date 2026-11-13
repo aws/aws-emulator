@@ -87,7 +87,7 @@ impl std::fmt::Debug for CollectionPlane {
 /// record keeps the addresses the create wrote, which are the ones
 /// [`super::announced_endpoints`] announces.
 pub async fn publish<Eng: Send + Sync + 'static>(
-    engine: &Eng,
+    engine: ::std::sync::Arc<Eng>,
     state: &::engine::ServiceState<ServiceState>,
     collection_id: &str,
 ) {
@@ -122,12 +122,13 @@ pub async fn publish<Eng: Send + Sync + 'static>(
 /// leaves the collection reporting the addresses the create wrote rather than taking the
 /// request down with it.
 async fn open<Eng: Send + Sync + 'static>(
-    engine: &Eng,
+    engine: ::std::sync::Arc<Eng>,
     state: &::engine::ServiceState<ServiceState>,
     collection_id: &str,
 ) -> Option<CollectionPlane> {
-    let listeners = shared_engine(engine)?.listeners();
+    let listeners = shared_engine(&*engine)?.listeners();
     let handler = CollectionRestServer {
+        engine,
         state: state.clone(),
         collection_id: collection_id.to_string(),
     };
@@ -178,20 +179,32 @@ fn shared_engine<Eng: Send + Sync + 'static>(engine: &Eng) -> Option<&::engine::
 
 /// Serves ONE collection's published address. The core runs the browser checks and owns
 /// CORS; this answers the OpenSearch REST request out of the collection's own records.
-struct CollectionRestServer {
+///
+/// The shared engine is held beside the store because the collection's own policies decide
+/// what this address answers: WHO a request speaks for is a question about the account's
+/// identity records, which live in that engine beside this service's own store
+/// (`crate::service::collection_rest::serve_published`).
+struct CollectionRestServer<Eng> {
+    engine: ::std::sync::Arc<Eng>,
     state: ::engine::ServiceState<ServiceState>,
     collection_id: String,
 }
 
-impl ::emulator_server::HttpHandler for CollectionRestServer {
+impl<Eng: Send + Sync + 'static> ::emulator_server::HttpHandler for CollectionRestServer<Eng> {
     fn handle(
         &self,
         req: ::http::Request<Vec<u8>>,
     ) -> Pin<Box<dyn Future<Output = ::http::Response<Vec<u8>>> + Send>> {
+        let engine = ::std::sync::Arc::clone(&self.engine);
         let state = self.state.clone();
         let collection_id = self.collection_id.clone();
         Box::pin(async move {
-            crate::service::collection_rest::serve_published(&state, &collection_id, &req)
+            crate::service::collection_rest::serve_published(
+                &*engine,
+                &state,
+                &collection_id,
+                &req,
+            )
         })
     }
 }

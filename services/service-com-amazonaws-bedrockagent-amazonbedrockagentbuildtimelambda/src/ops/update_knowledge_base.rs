@@ -183,6 +183,22 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .into());
         };
 
+        // Amazon Bedrock ACTS AS the role the request names, so an update that
+        // would leave the knowledge base under a role it cannot assume is
+        // refused — the same gate `CreateKnowledgeBase` applies to the same
+        // member, since this operation re-sends it (`crate::state::service_role`).
+        if let Some(message) =
+            crate::state::unassumable_role_message(&*self.engine, &input.role_arn)
+        {
+            return Err(UpdateKnowledgeBaseErrorModeled::ValidationException(
+                ValidationException {
+                    message: Some(message),
+                    field_list: None,
+                },
+            )
+            .into());
+        }
+
         // `knowledgeBaseConfiguration.type` is a discriminator: it names which
         // sibling member carries that kind's details, and a self-managed VECTOR
         // knowledge base additionally needs the vector store in
@@ -223,10 +239,28 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .into());
         }
 
+        // An OpenSearch Serverless vector store is resolved against the policies
+        // of the collection that owns it, as at the create: this operation
+        // re-sends the storage configuration AND the role, so the pair it would
+        // leave behind has to be one the knowledge base can reach
+        // (`crate::state::opensearch_serverless_store`).
+        if let Some(message) = crate::state::opensearch_serverless_access_problem(
+            &*self.engine,
+            &input.role_arn,
+            input.storage_configuration.as_ref(),
+        ) {
+            return Err(UpdateKnowledgeBaseErrorModeled::ValidationException(
+                ValidationException {
+                    message: Some(message),
+                    field_list: None,
+                },
+            )
+            .into());
+        }
+
         let now = ::std::time::SystemTime::now();
         let mut state = state.lock();
         state.materialise_due_transitions(now);
-
         // A knowledge base a delete has already been accepted for serves no
         // update: it is on its way out of the store, so it answers what it will
         // answer once the removal has happened.

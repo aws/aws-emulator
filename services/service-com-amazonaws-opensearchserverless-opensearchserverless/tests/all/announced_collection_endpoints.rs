@@ -125,6 +125,11 @@ async fn active_collection_at(
     name: &str,
     kind: &str,
 ) -> Value {
+    // A collection's endpoints answer only through a `network` security policy that names
+    // it — AWS's "Network access for Amazon OpenSearch Serverless": "you must have at least
+    // one network policy that applies to a collection in order to access its endpoint" — so
+    // the suite admits traffic to every collection of this emulator first.
+    admit_network_access(router, host).await;
     let (status, created) = call_at(
         router,
         host,
@@ -138,6 +143,44 @@ async fn active_collection_at(
     );
     let id = text(&created, "createCollectionDetail.id");
     await_active(router, host, &id).await
+}
+
+/// Admit traffic to the endpoints of every collection of this emulator. Idempotent, so a
+/// suite that creates several collections calls it per collection.
+async fn admit_network_access(router: &MultiServiceRouter, host: &str) {
+    /// The one network policy this suite reaches its collections through.
+    const NETWORK_POLICY_NAME: &str = "net-every-collection";
+
+    let (held, _) = call_at(
+        router,
+        host,
+        "GetSecurityPolicy",
+        json!({ "type": "network", "name": NETWORK_POLICY_NAME }),
+    )
+    .await;
+    if held == 200 {
+        return;
+    }
+    let policy = json!({
+        "Rules": [{ "ResourceType": "collection", "Resource": ["collection/*"] }],
+        "AllowFromPublic": true,
+    });
+    let (status, answer) = call_at(
+        router,
+        host,
+        "CreateSecurityPolicy",
+        json!({
+            "type": "network",
+            "name": NETWORK_POLICY_NAME,
+            "policy": policy.to_string(),
+        }),
+    )
+    .await;
+    assert_eq!(
+        status, 200,
+        "case CreateSecurityPolicy(network/{NETWORK_POLICY_NAME}) at {host}: expected 200, \
+         got {status} with {answer}"
+    );
 }
 
 /// Poll `BatchGetCollection` until `id` is ACTIVE, answering the `CollectionDetail` that
@@ -219,7 +262,7 @@ fn through_endpoint(
                 .unwrap_or_default(),
         )
         .expect("a well-formed request to a collection endpoint");
-    let response = serve_published(&state, collection_id, &request);
+    let response = serve_published(&**engine, &state, collection_id, &request);
     let status = response.status().as_u16();
     let parsed: Value = serde_json::from_slice(response.body()).unwrap_or(Value::Null);
     (status, parsed)
@@ -580,6 +623,9 @@ async fn a_retried_create_keeps_the_address_the_first_call_published() {
     let host = format!("{SIGNING_NAME}.{REGION}.amazonaws.com");
     let name = "published-retried";
     let token = "published-retried-token";
+    // As for every collection this suite addresses: its endpoints answer only through a
+    // network policy that names it.
+    admit_network_access(&router, &host).await;
     let request = json!({
         "name": name,
         "type": "VECTORSEARCH",

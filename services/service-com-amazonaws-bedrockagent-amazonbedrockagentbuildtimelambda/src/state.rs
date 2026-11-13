@@ -142,9 +142,17 @@ mod ingestion;
 /// base whose vector store is not one this emulator serves.
 mod ingestion_record;
 
+/// The OpenSearch Serverless vector store a knowledge base is bound to, resolved in
+/// the service that owns that collection.
+mod opensearch_serverless_store;
+
 /// What a document pushed straight into a data source puts into the knowledge
 /// base's bound vector index, and what takes it back out again.
 mod pushed_documents;
+
+/// The service role a knowledge base acts as, resolved against the account's own
+/// IAM records.
+mod service_role;
 
 /// The vector store a knowledge base is bound to, and the embedding model that
 /// writes into it.
@@ -153,7 +161,9 @@ mod vector_store;
 pub use flow_aliases::*;
 pub use ingestion::*;
 pub use ingestion_record::*;
+pub use opensearch_serverless_store::*;
 pub use pushed_documents::*;
+pub use service_role::*;
 pub use vector_store::*;
 
 /// What an ingestion records in the bound vector index beside the vector: the published

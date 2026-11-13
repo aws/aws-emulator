@@ -22,7 +22,7 @@ use serde_json::{json, Value};
 use smithy_server_runtime::MultiServiceRouter;
 
 use crate::collection_lifecycle::{emulator, text};
-use crate::encryption_indexes_and_tagging::active_collection;
+use crate::encryption_indexes_and_tagging::reachable_collection;
 
 /// The region the collections below are created in.
 const REGION: &str = "us-east-1";
@@ -120,7 +120,7 @@ fn a_repeated_vector_search_answers_the_same_ranking_and_the_same_scores() {
         .expect("the test runtime builds");
     runtime.block_on(async {
         let router = emulator();
-        let collection = active_collection(&router, "vector-search-determinism").await;
+        let collection = reachable_collection(&router, "vector-search-determinism").await;
         let host = endpoint_host(&collection);
 
         // The documents every case indexes: vectors at known distances from the query

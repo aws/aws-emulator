@@ -42,9 +42,15 @@ pub mod announced_endpoints;
 /// The listener one collection's data plane is published on, which is the address a stock
 /// OpenSearch client is configured with.
 pub mod collection_plane;
+/// Who may act on a collection's data: the `data` access policies, and the decision one of
+/// them gives for a principal, a resource and a permission.
+pub mod data_access;
 /// The account's VPCs and subnets, which a managed VPC endpoint is placed in: facts this
 /// service RESOLVES against Amazon EC2 rather than holds.
 pub mod ec2_network;
+/// Whether a collection's endpoints are reachable at all: the `network` security policies
+/// that admit traffic to them.
+pub mod network_access;
 
 pub use announced_endpoints::AnnouncedEndpoints;
 pub use collection_plane::CollectionPlane;
