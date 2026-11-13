@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: CC0-1.0
 
-//! This front door's AUDIT leg: every call it serves is a management event of
-//! `states.amazonaws.com`, recorded in the account's event history where CloudTrail's
-//! `LookupEvents` reads it.
+//! This front door's AUDIT leg: every call it serves is recorded as an event of
+//! `states.amazonaws.com`, where CloudTrail reports it — a management event in the
+//! account's event history for the administration of its resources, and a DATA event of the
+//! machine a call ran for this service's synchronous data plane ([`super::data_events`]).
 //!
 //! Every control-plane call of an account is a management event, which makes the recording
 //! a property of SERVING a call and not of any one operation — so it is not written per
@@ -38,9 +39,9 @@
 
 use std::sync::Arc;
 
-use service_common::audited_operation::{AuditedService, AuditedTable};
+use service_common::audited_operation::{AuditedService, AuditedTable, CallKind};
 use service_common::management_events::{
-    ManagementEventLog, RecordedSession, ServedApiCall, SessionAuditDirectory,
+    AuditedResource, ManagementEventLog, RecordedSession, ServedApiCall, SessionAuditDirectory,
 };
 use smithy_server_runtime::{OperationContext, OperationRoutingTable, PreDispatchProtocol};
 
@@ -184,11 +185,21 @@ impl<Eng: Send + Sync + 'static> AuditedService for StepFunctionsAudit<Eng> {
         ::engine::emulator_account_id().to_string()
     }
 
-    // `resources` is the shared recorder's default: none. The pairs CloudTrail reports in
-    // an event's `Resources` are not this change's to invent — a record naming a resource
-    // nothing resolved would be reported to a lookup by `ResourceName` as fact — so a
-    // record of a call to this service carries the call, its parameters and its outcome,
-    // and no resource list.
+    // The pairs CloudTrail reports in an event's `Resources` are not invented here: a
+    // record naming a resource nothing resolved would be reported to a lookup by
+    // `ResourceName` as fact, so a record of a MANAGEMENT call of this service carries the
+    // call, its parameters and its outcome, and no resource list. A DATA event is the one
+    // record that must name one, because a trail's selector is what SELECTS it by resource
+    // type and ARN ([`super::data_events`]).
+    fn resources(
+        &self,
+        operation: &str,
+        request_parameters: &serde_json::Value,
+        region: &str,
+    ) -> Vec<AuditedResource> {
+        let _ = region;
+        super::data_events::data_event_resources(operation, request_parameters)
+    }
 
     fn sensitive_members(&self) -> &'static [&'static str] {
         SENSITIVE_MEMBERS
@@ -268,6 +279,11 @@ macro_rules! audited {
 /// included, since it is "used by workers to retrieve a task" and hands that task out,
 /// which no later poll can see again, and `TestState`, which "accepts the definition of a
 /// single state and executes it".
+///
+/// The CLASS per row is CloudTrail's: every row below is a management event except this
+/// service's synchronous data plane, which is served as a DATA event of the state machine it
+/// runs ([`super::data_events`]) — recorded in no event history and delivered only into the
+/// bucket of a trail whose selectors admit it.
 pub fn audited_table<Eng: Send + Sync + 'static>(engine: &Arc<Eng>) -> OperationRoutingTable {
     let recorder = Arc::new(StepFunctionsAudit::new(Arc::clone(engine)));
     let mut table = AuditedTable::new(recorder, JSON_ENVELOPE);
@@ -301,7 +317,6 @@ pub fn audited_table<Eng: Send + Sync + 'static>(engine: &Arc<Eng>) -> Operation
         send_task_heartbeat::SendTaskHeartbeat => mutates,
         send_task_success::SendTaskSuccess => mutates,
         start_execution::StartExecution => mutates,
-        start_sync_execution::StartSyncExecution => mutates,
         stop_execution::StopExecution => mutates,
         tag_resource::TagResource => mutates,
         test_state::TestState => mutates,
@@ -310,6 +325,19 @@ pub fn audited_table<Eng: Send + Sync + 'static>(engine: &Arc<Eng>) -> Operation
         update_state_machine::UpdateStateMachine => mutates,
         update_state_machine_alias::UpdateStateMachineAlias => mutates,
         validate_state_machine_definition::ValidateStateMachineDefinition => reports,
+    );
+    // This service's synchronous DATA plane: the call that runs a state machine and answers
+    // the run's own data, which CloudTrail records as a data event of that machine rather
+    // than as a management event of the account. It is a WRITE, so its record carries
+    // `readOnly` false exactly as the asynchronous start's does; what differs is where the
+    // record goes (see [`super::data_events`]).
+    let data_events = Arc::new(super::data_events::StateMachineDataEvents::new(Arc::clone(
+        engine,
+    )));
+    table.serves_data_event(
+        crate::ops::start_sync_execution::StartSyncExecution::new(Arc::clone(engine)),
+        CallKind::Mutating,
+        &data_events,
     );
     table.finish()
 }

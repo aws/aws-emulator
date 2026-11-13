@@ -111,6 +111,14 @@ pub mod api_capacity;
 /// checked by this crate's tests.
 pub mod management_events;
 
+/// This front door's DATA leg: the calls on the CONTENTS of a state machine, which
+/// CloudTrail records as DATA events and delivers only into the bucket of a trail whose
+/// event selectors admit them.
+///
+/// Public: its catalog of the data-event operations and the resource type they name is
+/// checked by this crate's tests.
+pub mod data_events;
+
 /// Where that identity-based decision is TAKEN: in front of every modelled operation,
 /// through [`identity_authorization::IamAuthorized`].
 ///

@@ -50,6 +50,18 @@
 //! ([`crate::api_call_events`]). The record is written once and the event published from
 //! that same record, so a rule matching the fan-out sees exactly what a lookup reports.
 //!
+//! # The calls of a service's DATA plane
+//!
+//! CloudTrail classes an account's API calls in two, and the two are delivered to different
+//! readers: a management event is the control-plane call this wrapper records above, while a
+//! call on the CONTENTS of one resource is a DATA event — never event history, never the
+//! `AWS API Call via CloudTrail` channel, and delivered to a trail's bucket only while one
+//! of that trail's event selectors admits it ([`crate::data_events`]). Which class a call
+//! falls in is CloudTrail's own and is stated per operation where the table is built
+//! ([`AuditedTable::serves_data_event`]), beside that operation's read/write kind: the
+//! record itself is built from the typed call by the same code either way, so the two
+//! classes cannot report one call's parameters, identity or outcome differently.
+//!
 //! # What is NOT recorded
 //!
 //! A call the scaffold refused as not implemented ([`NOT_IMPLEMENTED_SHAPE_NAME`]) was
@@ -283,6 +295,25 @@ impl CallKind {
     }
 }
 
+/// Which CLASS of CloudTrail event a served call is, which is what decides WHERE its record
+/// goes — the one difference between the two rows an audited table can hold.
+///
+/// It is not a property of the wrapper: an account's API calls are classed by CloudTrail
+/// itself, and the two classes are delivered to different readers
+/// ([`crate::management_events`], [`crate::data_events`]), so the class is stated per
+/// operation where the table is built, beside that operation's read/write kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RecordedAs {
+    /// A MANAGEMENT event: the control-plane call of a service, recorded in event history
+    /// where `LookupEvents` reports it, published onto the default event bus, and written
+    /// into every logging trail's bucket.
+    Management,
+    /// A DATA event: a call on the CONTENTS of one resource, written into the bucket of each
+    /// trail whose event selectors admit it and nowhere else — never event history, and
+    /// never the `AWS API Call via CloudTrail` channel.
+    Data,
+}
+
 /// One modelled operation served audited.
 ///
 /// Built by [`AuditedTable::serve`]; there is no reason to name this type elsewhere.
@@ -293,6 +324,9 @@ pub struct AuditedOperation<O, S> {
     service: Arc<S>,
     /// What this operation's own semantics make of the call.
     kind: CallKind,
+    /// Which class of event CloudTrail records this operation's calls as, and so which
+    /// reader the record the handler holds is held for.
+    recorded_as: RecordedAs,
     /// The protocol envelope the framework renders a pre-dispatch failure of this
     /// operation in — the same value the generated shim passes.
     pre_dispatch: PreDispatchProtocol<'static>,
@@ -321,8 +355,14 @@ impl<O: Operation, S: AuditedService> Operation for AuditedOperation<O, S> {
             // Held, not written: the record names the request by the id the caller is
             // answered under, and the response that states it does not exist yet. This is
             // the LAST thing this handler does, with nothing awaited after it, which is
-            // what `PENDING_RECORD` relies on.
-            hold_record(call);
+            // what `PENDING_RECORD` relies on — and what the data-event slot relies on in
+            // exactly the same way.
+            match self.recorded_as {
+                RecordedAs::Management => hold_record(call),
+                RecordedAs::Data => {
+                    crate::data_events::hold_data_event(call, ::std::time::SystemTime::now())
+                }
+            }
         }
         outcome
     }
@@ -354,9 +394,12 @@ impl<O: Operation, S: AuditedService> AuditedOperation<O, S> {
         }
         let region = self.service.region(ctx);
         // "responseElements" is what the call ANSWERED with, which a reporting call has
-        // nothing of: CloudTrail records a read with a null `responseElements`.
-        let response_elements = match (self.kind, outcome.as_ref().ok()) {
-            (CallKind::Mutating, Some(output)) => {
+        // nothing of: CloudTrail records a read with a null `responseElements`. Neither does
+        // a DATA event carry one: what such a call answers IS the contents of the resource
+        // it acted on, and CloudTrail logs the call on those contents rather than the data
+        // itself — the same reason the payload a data call carried is withheld.
+        let response_elements = match (self.recorded_as, self.kind, outcome.as_ref().ok()) {
+            (RecordedAs::Management, CallKind::Mutating, Some(output)) => {
                 Some(recorded_shape(output, O::OUTPUT_SCHEMA, self.withheld()))
             }
             _ => None,
@@ -534,7 +577,7 @@ impl<S: AuditedService> AuditedTable<S> {
         operation: O,
         kind: CallKind,
     ) -> &mut Self {
-        let audited = self.audited(operation, kind);
+        let audited = self.audited(operation, kind, RecordedAs::Management);
         self.file(O::NAME, audited);
         self
     }
@@ -563,22 +606,25 @@ impl<S: AuditedService> AuditedTable<S> {
         O: Operation + ErasedOperation,
         W: ErasedOperation + 'static,
     {
-        let audited = self.audited(operation, kind);
+        let audited = self.audited(operation, kind, RecordedAs::Management);
         let wrapped = wrap(audited, self.pre_dispatch);
         self.file(O::NAME, wrapped);
         self
     }
 
-    /// `operation` as a call of `kind`, recording into this table's service.
+    /// `operation` as a call of `kind` of the event class `recorded_as`, recording into this
+    /// table's service.
     fn audited<O: Operation + ErasedOperation>(
         &self,
         operation: O,
         kind: CallKind,
+        recorded_as: RecordedAs,
     ) -> AuditedOperation<O, S> {
         AuditedOperation {
             operation,
             service: Arc::clone(&self.service),
             kind,
+            recorded_as,
             pre_dispatch: self.pre_dispatch,
         }
     }
@@ -604,6 +650,41 @@ impl<S: AuditedService> AuditedTable<S> {
     /// Serve `operation` audited as a MUTATING call ([`CallKind::Mutating`]).
     pub fn mutates<O: Operation + ErasedOperation>(&mut self, operation: O) -> &mut Self {
         self.serve(operation, CallKind::Mutating)
+    }
+
+    /// Serve `operation` as a DATA event of the resource it acts on, as a call of `kind`:
+    /// the record is built from the operation's own input and outcome exactly as every other
+    /// row's is, and DELIVERED through `delivery` instead of being recorded in event history
+    /// ([`crate::data_events`]).
+    ///
+    /// The row is filed behind [`crate::data_events::DeliveringDataEvents`] rather than
+    /// behind [`RecordedCall`], which is the whole difference: a data event is not event
+    /// history and is not published onto the default bus, so the only sink for it is the
+    /// bucket of each trail whose event selectors admit it.
+    ///
+    /// The operation is still SERVED by this table, because CloudTrail's classification of a
+    /// call says nothing about who serves it: a service with a data plane serves its data
+    /// calls and its control-plane calls through one front door, and this is the row that
+    /// keeps the class of each one stated in one place.
+    pub fn serves_data_event<O, D>(
+        &mut self,
+        operation: O,
+        kind: CallKind,
+        delivery: &Arc<D>,
+    ) -> &mut Self
+    where
+        O: Operation + ErasedOperation,
+        D: crate::data_events::DataEventDelivery,
+    {
+        let audited = self.audited(operation, kind, RecordedAs::Data);
+        self.table.add_operation(
+            O::NAME,
+            Box::new(crate::data_events::DeliveringDataEvents::new(
+                audited,
+                Arc::clone(delivery),
+            )),
+        );
+        self
     }
 
     /// The table, for the service to hold and route from.

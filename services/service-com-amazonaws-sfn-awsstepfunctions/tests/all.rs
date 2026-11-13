@@ -239,6 +239,11 @@ mod states_metric_families;
 mod stuck_state_cause;
 #[path = "all/sync_execution.rs"]
 mod sync_execution;
+// `sync_execution_data_events` pins the CLASS of a synchronous run: CloudTrail records it as a
+// DATA event of the state machine it ran, delivered only into the bucket of a trail whose
+// selectors admit it and never into the account's event history.
+#[path = "all/sync_execution_data_events.rs"]
+mod sync_execution_data_events;
 #[path = "all/sync_execution_qualified_arn.rs"]
 mod sync_execution_qualified_arn;
 #[path = "all/sync_service_integration.rs"]

@@ -135,6 +135,14 @@ service-com-amazonaws-sts-awssecuritytokenservicev20110615 = { workspace = true 
 # on the one engine the test router builds: the publish is really recorded by SNS's own
 # handler and really delivered to the queue subscribed to the topic.
 service-com-amazonaws-sns-amazonsimplenotificationservice = { workspace = true }
+# Lists and READS the log files a logging trail delivered for this service's DATA events
+# (`tests/all/sync_execution_data_events.rs`), through Amazon S3's own API over the same
+# in-process callback the delivery writes through: a delivered object counts only if the
+# object store answers with it. Only the generated client is needed — the emulator supplies
+# the transport.
+aws-sdk-s3 = { version = "1", default-features = false }
+# Gunzips one of those delivered log files, which is a gzip stream.
+flate2 = "1"
 
 [lints]
 workspace = true
