@@ -211,16 +211,16 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         // A supplied version must be the one the replicator is actually at; a
         // stale one means the caller is deleting a replicator it has not seen the
-        // latest state of.
+        // latest state of. Refused in the service's one fixed sentence for that
+        // condition, which carries no version value.
         if let Some(requested) = input.current_version.as_deref() {
             if requested != replicator.current_version {
                 return Err(DeleteReplicatorErrorModeled::BadRequestException(
                     BadRequestException {
-                        invalid_parameter: Some("currentVersion".to_string()),
-                        message: Some(format!(
-                            "The replicator's current version is {}, not {requested}.",
-                            replicator.current_version
-                        )),
+                        invalid_parameter: Some(crate::state::CURRENT_VERSION_MEMBER.to_string()),
+                        message: Some(
+                            crate::state::REPLICATOR_VERSION_NOT_CURRENT_MESSAGE.to_string(),
+                        ),
                     },
                 )
                 .into());

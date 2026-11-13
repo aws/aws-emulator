@@ -63,6 +63,15 @@ pub const KAFKA_VERSION_VARIANT_TIERED: &str = "tiered";
 /// a version -> status map, and a walk of the listing's pages reproduces it row
 /// for row — a version's second, other-status row included.
 ///
+/// Those rows are published in ONE order: the LAST row published for a version
+/// carries the status the service offers that version under
+/// ([`kafka_version_status`]), so the catalog's final word about a version agrees
+/// with the gates that accept it — a client reducing the published rows to one
+/// status per version (a version has one lifecycle status) reads the version the
+/// way a create naming it is answered. A version whose offering row came last
+/// here would otherwise be published as deprecated while every create naming it
+/// is accepted.
+///
 /// Everything that asks a QUESTION about a version — rather than publishing the
 /// catalog — reads these rows through [`kafka_version_status`] (the status a
 /// version is offered under: a version the catalog publishes an `ACTIVE` row for
@@ -103,15 +112,18 @@ pub const KAFKA_VERSION_CATALOG: &[KafkaVersionEntry] = &[
     KafkaVersionEntry { version: "3.8.x", status: KAFKA_VERSION_ACTIVE },
     KafkaVersionEntry { version: "3.8.x.kraft", status: KAFKA_VERSION_ACTIVE },
     KafkaVersionEntry { version: "3.8.link", status: KAFKA_VERSION_DEPRECATED },
+    // The deprecation row of a version the catalog also publishes as offered,
+    // ahead of the row offering it and beside it: the LAST row the catalog
+    // publishes for a version carries the status the service offers that version
+    // under, and the rows of one version stay together, so the published order is
+    // still ascending by release with a release's base version ahead of the
+    // variant lines built on it.
+    KafkaVersionEntry { version: "3.9.x", status: KAFKA_VERSION_DEPRECATED },
     KafkaVersionEntry { version: "3.9.x", status: KAFKA_VERSION_ACTIVE },
     KafkaVersionEntry { version: "3.9.x.kraft", status: KAFKA_VERSION_ACTIVE },
-    // The deprecation row of a version the catalog also publishes as offered
-    // above: both rows are published, in this order.
-    KafkaVersionEntry { version: "3.9.x", status: KAFKA_VERSION_DEPRECATED },
     KafkaVersionEntry { version: "4.0.x.kraft", status: KAFKA_VERSION_ACTIVE },
     KafkaVersionEntry { version: "4.1.x.kraft", status: KAFKA_VERSION_ACTIVE },
-    // The same for the newest release, whose deprecation row the catalog
-    // publishes AHEAD of the row offering it.
+    // The same for the newest release.
     KafkaVersionEntry { version: "4.2.x.kraft", status: KAFKA_VERSION_DEPRECATED },
     KafkaVersionEntry { version: "4.2.x.kraft", status: KAFKA_VERSION_ACTIVE },
 ];
@@ -299,7 +311,10 @@ pub fn kafka_version_index(version: &str) -> Option<usize> {
 /// are moved off it, and the service goes on accepting the version for as long as
 /// it publishes an `ACTIVE` row for it. So this answers the version's lifecycle
 /// question — a create may name it and an upgrade may target it — rather than
-/// reporting whichever row comes first or last.
+/// reporting whichever row comes first or last. The catalog publishes the rows so
+/// that its LAST row for a version carries exactly this status
+/// ([`KAFKA_VERSION_CATALOG`]), which is what makes the published catalog and this
+/// answer agree.
 pub fn kafka_version_status(version: &str) -> Option<&'static str> {
     let mut published: Option<&'static str> = None;
     for entry in KAFKA_VERSION_CATALOG

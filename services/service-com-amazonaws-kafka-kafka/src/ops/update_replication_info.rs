@@ -11,10 +11,11 @@
 //! the shape of the quoted `CurrentVersion`
 //! ([`crate::state::is_current_version_token`]) — so a malformed request is
 //! answered about the request even when the ARN it carries names nothing. Only
-//! then is the replicator resolved (`NotFoundException`), gated on the state a
-//! change is accepted from
-//! ([`crate::state::REPLICATOR_STATES_AN_UPDATE_IS_ACCEPTED_FROM`]), and asked for
-//! the replication the aliases address and the version it is at.
+//! then is the replicator resolved (`NotFoundException`), asked whether it is at
+//! the version the request quotes — a PARAMETER fault, which is why it is answered
+//! ahead of the state gate — then gated on the state a change is accepted from
+//! ([`crate::state::REPLICATOR_STATES_AN_UPDATE_IS_ACCEPTED_FROM`]) and asked for
+//! the replication the aliases address.
 //!
 //! ## Shape of an operation
 //!
@@ -299,6 +300,26 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 .into(),
             );
         };
+        // A quoted version must be the one the replicator is actually at; a stale
+        // one means the caller is changing a configuration it has not seen the
+        // latest of. Asked BEFORE the state gate below, because MSK answers it as
+        // a PARAMETER fault (the sentence names the member) rather than as a
+        // refusal about the resource's state: two callers racing with one version
+        // are told their version is stale, not that the replicator the winner just
+        // moved is no longer accepting changes. The sentence is the service's own
+        // fixed one, so neither the stored version nor the submitted one reaches
+        // the caller.
+        if input.current_version != replicator.current_version {
+            return Err(
+                UpdateReplicationInfoErrorModeled::BadRequestException(BadRequestException {
+                    invalid_parameter: Some(crate::state::CURRENT_VERSION_MEMBER.to_string()),
+                    message: Some(
+                        crate::state::REPLICATOR_VERSION_NOT_CURRENT_MESSAGE.to_string(),
+                    ),
+                })
+                .into(),
+            );
+        }
         // A replicator accepts a change to its replication configuration only
         // while it is replicating: in every other state it is being set up,
         // rolling one out or being taken out, and MSK refuses the call rather than
@@ -316,12 +337,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             )
             .into());
         }
-        // WHICH replication the call changes is settled before the version it
-        // quotes: a request whose pair of cluster aliases addresses no configured
-        // replication asks to change something the replicator does not have,
-        // whatever version it quotes.
+        // WHICH replication the call changes is settled last: a request whose pair
+        // of cluster aliases addresses no configured replication asks to change
+        // something the replicator does not have.
         let addressed = replicator.replication_index_of(&source, &target);
-        let stored_version = replicator.current_version.clone();
 
         let Some(index) = addressed else {
             return Err(
@@ -334,22 +353,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 .into(),
             );
         };
-
-        // A quoted version must be the one the replicator is actually at; a stale
-        // one means the caller is changing a configuration it has not seen the
-        // latest of.
-        if input.current_version != stored_version {
-            return Err(
-                UpdateReplicationInfoErrorModeled::BadRequestException(BadRequestException {
-                    invalid_parameter: Some("currentVersion".to_string()),
-                    message: Some(format!(
-                        "The replicator's current version is {stored_version}, not {}.",
-                        input.current_version
-                    )),
-                })
-                .into(),
-            );
-        }
 
         // The write counterpart of the lookup above, scoped to the same region,
         // so the record changed here is the one just resolved.

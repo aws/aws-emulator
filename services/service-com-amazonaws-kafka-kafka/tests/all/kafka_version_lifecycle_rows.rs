@@ -114,7 +114,8 @@ async fn a_version_published_under_two_statuses_is_served_on_both_rows() {
     // Hand-written from the catalog Amazon MSK publishes (the Developer Guide's
     // "Supported Apache Kafka versions" list, and the rows the service itself
     // publishes). The table spans the multiplicities a published version comes in
-    // — one offered row, one deprecated row, two rows in either order — across the
+    // — one offered row, one deprecated row, two rows (the offering one last) —
+    // across the
     // version spellings the catalog uses, and includes versions neither this rule
     // nor its report was derived from (`2.3.1`, `3.7.x.kraft`).
     let expected: &[(&str, &[&str])] = &[
@@ -122,7 +123,7 @@ async fn a_version_published_under_two_statuses_is_served_on_both_rows() {
         ("3.6.0", &["ACTIVE"]),
         ("3.7.x.kraft", &["ACTIVE"]),
         ("3.8.link", &["DEPRECATED"]),
-        ("3.9.x", &["ACTIVE", "DEPRECATED"]),
+        ("3.9.x", &["DEPRECATED", "ACTIVE"]),
         ("4.2.x.kraft", &["DEPRECATED", "ACTIVE"]),
     ];
     for (version, statuses) in expected {

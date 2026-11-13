@@ -64,6 +64,58 @@ pub fn invalid_cluster_state_for_vpc_connection_message() -> String {
     )
 }
 
+/// The message Amazon MSK refuses a VPC connection whose `ClientSubnets` does not
+/// span as many subnets as the TARGET CLUSTER's own client subnets with.
+///
+/// Fixed text in full: neither the counts, nor the subnet ids of either side, nor
+/// the cluster reach the sentence. The member at fault travels in the refusal's
+/// `invalidParameter`.
+pub const CLIENT_SUBNET_COUNT_MESSAGE: &str =
+    "Specify the same number of client subnets as cluster subnets.";
+
+/// The subnets the CLUSTER itself is placed in — what a VPC connection's
+/// `ClientSubnets` is sized against.
+///
+/// A provisioned cluster names them on its broker node group
+/// (`BrokerNodeGroupInfo$ClientSubnets`); a serverless one names them on the VPC
+/// configurations its clients reach it through (`VpcConfig$SubnetIds`), which is
+/// the same fact for a cluster that has no broker node group of its own. One
+/// derivation, so the gate below asks one question of either kind of cluster.
+pub fn cluster_client_subnets(cluster: &Cluster) -> Vec<&str> {
+    if !cluster.broker_node_group_info.client_subnets.is_empty() {
+        return cluster
+            .broker_node_group_info
+            .client_subnets
+            .iter()
+            .map(String::as_str)
+            .collect();
+    }
+    cluster
+        .serverless
+        .as_ref()
+        .map(|serverless| {
+            serverless
+                .vpc_configs
+                .iter()
+                .flat_map(|config| config.subnet_ids.iter().map(String::as_str))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Whether a VPC connection reaching `cluster` from `client_subnets` is placed
+/// the way Amazon MSK places one: ONE elastic network interface per Availability
+/// Zone the cluster has brokers in, so the connection spans exactly as many client
+/// subnets as the cluster itself does ([`CLIENT_SUBNET_COUNT_MESSAGE`]).
+///
+/// Asked of the stored cluster and the request alone. A cluster whose record names
+/// no client subnet at all ([`cluster_client_subnets`]) sizes nothing, so such a
+/// cluster admits any non-empty list rather than refusing every one of them.
+pub fn client_subnet_count_matches(cluster: &Cluster, client_subnets: &[String]) -> bool {
+    let placed = cluster_client_subnets(cluster).len();
+    placed == 0 || placed == client_subnets.len()
+}
+
 /// Whether the cluster turns the client-authentication scheme `authentication`
 /// names on, so a VPC connection asking for that scheme has something to
 /// authenticate against.

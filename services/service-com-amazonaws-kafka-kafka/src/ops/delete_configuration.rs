@@ -209,7 +209,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // configuration cannot go: deleting it would leave that cluster naming a
         // configuration nothing holds. Refused before the deletion is accepted,
         // so a refused delete leaves the configuration exactly as it was.
-        let holders = state.clusters_using_configuration(&region, &input.arn);
+        let holders = state.clusters_using_configuration(&region, &input.arn, now);
         if !holders.is_empty() {
             return Err(
                 DeleteConfigurationErrorModeled::BadRequestException(BadRequestException {

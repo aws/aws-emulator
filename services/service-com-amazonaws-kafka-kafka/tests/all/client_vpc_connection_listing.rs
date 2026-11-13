@@ -148,21 +148,26 @@ async fn the_listing_reports_the_stored_record_of_every_connection_of_the_cluste
     let target = emulator.vpc_connection_target("client-listed").await;
 
     // The rows differ along everything the rule generalises over: the
-    // authentication type, the EC2 id form, the subnet and security-group
-    // count, and the tag count.
+    // authentication type, the EC2 id form, the subnet ORDER, the security-group
+    // count, and the tag count. The subnet COUNT is not free: a connection spans
+    // as many client subnets as its target cluster.
     let mut rows = vec![
         ConnectionRequest::to(&target),
         ConnectionRequest {
             authentication: "TLS",
             vpc_id: "vpc-0123456789abcdef0",
-            client_subnets: vec!["subnet-0123456789abcdef0", "subnet-0a1b2c3e"],
+            client_subnets: vec![
+                "subnet-0123456789abcdef0",
+                "subnet-0a1b2c3e",
+                "subnet-0a1b2c3f",
+            ],
             security_groups: vec!["sg-0a1b2c3d", "sg-0a1b2c3e"],
             tags: vec![("env", "test"), ("tier", "gold")],
             ..ConnectionRequest::to(&target)
         },
         ConnectionRequest {
             authentication: "SASL_SCRAM",
-            client_subnets: vec!["subnet-0a1b2c3f"],
+            client_subnets: vec!["subnet-0a1b2c3f", "subnet-0a1b2c3e", "subnet-0a1b2c3d"],
             tags: vec![("only", "one")],
             ..ConnectionRequest::to(&target)
         },
@@ -322,16 +327,17 @@ async fn the_listing_pages_every_connection_exactly_once() {
         let other = emulator.vpc_connection_target("client-paged-other").await;
         let mut created = BTreeSet::new();
         for index in 0..count {
-            // The rows differ in authentication type and subnet count, so
-            // paging is not keyed to one shape of connection.
+            // The rows differ in authentication type and in the ORDER of the
+            // subnets, so paging is not keyed to one shape of connection. Every
+            // row spans as many client subnets as the target cluster.
             let authentication = VPC_CONNECTION_AUTHENTICATION_TYPES
                 [index % VPC_CONNECTION_AUTHENTICATION_TYPES.len()];
             let request = ConnectionRequest {
                 authentication,
                 client_subnets: if index % 2 == 0 {
-                    vec!["subnet-0a1b2c3d"]
+                    vec!["subnet-0a1b2c3d", "subnet-0a1b2c3e", "subnet-0a1b2c3f"]
                 } else {
-                    vec!["subnet-0a1b2c3d", "subnet-0a1b2c3e"]
+                    vec!["subnet-0a1b2c3f", "subnet-0a1b2c3e", "subnet-0a1b2c3d"]
                 },
                 ..ConnectionRequest::to(&target)
             };
@@ -425,7 +431,7 @@ async fn the_listing_reports_the_state_the_clock_owes() {
         ConnectionRequest::to(&target),
         ConnectionRequest {
             authentication: "TLS",
-            client_subnets: vec!["subnet-0a1b2c3d", "subnet-0a1b2c3e"],
+            client_subnets: vec!["subnet-0a1b2c3e", "subnet-0a1b2c3d", "subnet-0a1b2c3f"],
             tags: vec![("k", "v")],
             ..ConnectionRequest::to(&target)
         },

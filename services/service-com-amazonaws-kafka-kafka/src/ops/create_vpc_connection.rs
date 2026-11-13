@@ -18,7 +18,10 @@
 //! reported as such whatever else the request carried.
 //!
 //! `ClientSubnets` names the subnets the connection's elastic network interfaces
-//! are created in. Those subnets are EC2's, not this service's, so they are
+//! are created in — one per Availability Zone the cluster has brokers in, so the
+//! list spans as many subnets as the cluster's own
+//! ([`crate::state::vpc_connection_admission::client_subnet_count_matches`]).
+//! Those subnets are EC2's, not this service's, so what the list names is
 //! resolved against the account's EC2 inventory
 //! ([`crate::state::network::placement_subnet_refusal`]) before any ARN is minted:
 //! a subnet the account does not have is a `BadRequestException` and no connection
@@ -226,7 +229,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     crate::state::UNRESOLVED_REFERENCE_MESSAGE.to_string(),
                 ));
             };
-            cluster_admits_connection(Self::NAME, cluster, &input.authentication)?;
+            cluster_admits_connection(
+                Self::NAME,
+                cluster,
+                &input.authentication,
+                &input.client_subnets,
+            )?;
             (cluster.arn.clone(), cluster.name.clone())
         };
 
@@ -292,9 +300,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // changed while the subnets were resolved. So the connection is registered
         // only against a cluster that admits it at the instant it is registered.
         match state.settled_cluster_in(&region, &cluster_arn, now) {
-            Some(cluster) => {
-                cluster_admits_connection(Self::NAME, cluster, &input.authentication)?
-            }
+            Some(cluster) => cluster_admits_connection(
+                Self::NAME,
+                cluster,
+                &input.authentication,
+                &input.client_subnets,
+            )?,
             None => {
                 return Err(bad_request(
                     crate::state::TARGET_CLUSTER_ARN_MEMBER,
@@ -386,7 +397,8 @@ fn bad_request(parameter: &str, message: String) -> CreateVpcConnectionError {
 /// client authentication the connection asks for — with the scheme checked
 /// against the published set in between, since a scheme this service does not
 /// publish is a bad parameter rather than something a cluster can be asked
-/// about.
+/// about — and last the placement, which is sized against the cluster's own
+/// client subnets.
 ///
 /// A function of the STORED record and the request alone: it writes nothing, so
 /// it is taken on the cluster as the first lock saw it and again on the cluster
@@ -395,6 +407,7 @@ fn cluster_admits_connection(
     operation: &str,
     cluster: &crate::state::Cluster,
     authentication: &str,
+    client_subnets: &[String],
 ) -> Result<(), CreateVpcConnectionError> {
     // An explicit deny refuses the call ahead of every precondition below: a
     // caller told its permissions are the problem must not also learn how the
@@ -431,6 +444,22 @@ fn cluster_admits_connection(
             crate::state::vpc_connection_admission::client_authentication_not_enabled_message(
                 authentication,
             ),
+        ));
+    }
+
+    // And the PLACEMENT the connection asks for: MSK puts one elastic network
+    // interface per Availability Zone the cluster has brokers in, so a connection
+    // spans exactly as many client subnets as the cluster itself does. A function
+    // of the stored cluster and the request, so it is asked here with the
+    // cluster's other preconditions and before anything is resolved against
+    // another service's inventory.
+    if !crate::state::vpc_connection_admission::client_subnet_count_matches(
+        cluster,
+        client_subnets,
+    ) {
+        return Err(bad_request(
+            "ClientSubnets",
+            crate::state::vpc_connection_admission::CLIENT_SUBNET_COUNT_MESSAGE.to_string(),
         ));
     }
     Ok(())

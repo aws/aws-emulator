@@ -89,7 +89,7 @@ impl Reply {
 
 impl Emulator {
     pub fn new() -> Self {
-        Self::mounting(false)
+        Self::mounting(false, false)
     }
 
     /// The same emulator with AWS SECRETS MANAGER mounted beside this service on the
@@ -101,10 +101,21 @@ impl Emulator {
     /// be there to be asked, and mints every secret it names through that service's own
     /// `CreateSecret` ([`Emulator::secrets_manager`]).
     pub fn with_secrets_manager() -> Self {
-        Self::mounting(true)
+        Self::mounting(true, false)
     }
 
-    fn mounting(secrets_manager: bool) -> Self {
+    /// The same emulator with AWS IAM mounted beside this service on the SAME engine,
+    /// as the production router mounts them.
+    ///
+    /// A role PASSED to this service is a role MSK then assumes, and the roles of the
+    /// account are IAM's: whether one exists is resolved by ASKING IAM, so a suite about
+    /// that rule needs the service that OWNS the roles to be there to be asked
+    /// ([`given_iam_role`] puts a role in it, as `iam:CreateRole` does).
+    pub fn with_iam() -> Self {
+        Self::mounting(false, true)
+    }
+
+    fn mounting(secrets_manager: bool, iam_service: bool) -> Self {
         let engine: Arc<engine::InMemoryEngine> = Arc::new(engine::InMemoryEngine::new());
         let mut router = MultiServiceRouter::new();
         // Signature verification is the core's business, not this suite's: the
@@ -114,6 +125,13 @@ impl Emulator {
         if secrets_manager {
             router.register_service(
                 service_com_amazonaws_secretsmanager_secretsmanager::EmulatedService::new(
+                    Arc::clone(&engine),
+                ),
+            );
+        }
+        if iam_service {
+            router.register_service(
+                service_com_amazonaws_iam_awsidentitymanagementv20100508::EmulatedService::new(
                     Arc::clone(&engine),
                 ),
             );
@@ -1270,12 +1288,17 @@ impl ConnectionRequest {
     /// A minimal, valid request against the cluster `cluster` names. The EC2 ids
     /// are in their 8-hex-digit form; a row that exercises the 17-digit one says
     /// so.
+    ///
+    /// The subnet list spans as many subnets as [`ClusterRequest::named`] places
+    /// its cluster in, because a VPC connection is placed one interface per
+    /// Availability Zone the cluster has brokers in: a list of another length is
+    /// what a suite about THAT rule submits.
     pub fn to(cluster: &str) -> Self {
         Self {
             target_cluster_arn: cluster.to_string(),
             authentication: "SASL_IAM",
             vpc_id: "vpc-0a1b2c3d",
-            client_subnets: vec!["subnet-0a1b2c3d"],
+            client_subnets: vec!["subnet-0a1b2c3d", "subnet-0a1b2c3e", "subnet-0a1b2c3f"],
             security_groups: vec!["sg-0a1b2c3d"],
             tags: Vec::new(),
         }
@@ -1408,27 +1431,8 @@ pub fn given_assumed_role_session(
     session: &str,
     access_key_id: &str,
 ) -> String {
-    let role_arn = format!("arn:aws:iam::{ACCOUNT}:role/{role}");
+    let role_arn = given_iam_role(engine, role);
     let session_arn = format!("arn:aws:sts::{ACCOUNT}:assumed-role/{role}/{session}");
-    let iam_store =
-        iam::service_state(&**engine).expect("the in-memory engine carries IAM's store");
-    iam_store.lock().roles.insert(
-        iam::name_key(role),
-        ::service_com_amazonaws_iam_awsidentitymanagementv20100508::ops::types::Role {
-            path: "/".to_string(),
-            role_name: role.to_string(),
-            role_id: ::service_common::caller_principal::aws_unique_id("AROA", &role_arn),
-            arn: role_arn.clone(),
-            create_date: ::aws_smithy_types::DateTime::from_secs(0),
-            assume_role_policy_document: None,
-            description: None,
-            max_session_duration: None,
-            permissions_boundary: None,
-            tags: None,
-            role_last_used: None,
-            source_role_template: None,
-        },
-    );
     let vend = sts::NewSession {
         role_arn: Some(role_arn.clone()),
         ..sts::NewSession::new(
@@ -1448,6 +1452,59 @@ pub fn given_assumed_role_session(
         .insert(vend.into_session(access_key_id, SystemTime::now()))
         .expect("the session registry has room for one session");
     session_arn
+}
+
+/// Put the role `role` in the account, as `iam:CreateRole` does — written through
+/// IAM's OWN store accessor on the SAME engine this service is mounted on, which is
+/// where a question about one of the account's roles is answered. `trust` is the
+/// role's assume-role policy document, `None` for a role that carries none. Hands
+/// back the role's ARN.
+pub fn given_iam_role_trusting(
+    engine: &Arc<engine::InMemoryEngine>,
+    role: &str,
+    trust: Option<&str>,
+) -> String {
+    let role_arn = format!("arn:aws:iam::{ACCOUNT}:role/{role}");
+    let iam_store =
+        iam::service_state(&**engine).expect("the in-memory engine carries IAM's store");
+    iam_store.lock().roles.insert(
+        iam::name_key(role),
+        ::service_com_amazonaws_iam_awsidentitymanagementv20100508::ops::types::Role {
+            path: "/".to_string(),
+            role_name: role.to_string(),
+            role_id: ::service_common::caller_principal::aws_unique_id("AROA", &role_arn),
+            arn: role_arn.clone(),
+            create_date: ::aws_smithy_types::DateTime::from_secs(0),
+            assume_role_policy_document: trust.map(ToString::to_string),
+            description: None,
+            max_session_duration: None,
+            permissions_boundary: None,
+            tags: None,
+            role_last_used: None,
+            source_role_template: None,
+        },
+    );
+    role_arn
+}
+
+/// The same role, carrying no assume-role policy document — what a suite that only
+/// needs the account to HOLD the role asks for.
+pub fn given_iam_role(engine: &Arc<engine::InMemoryEngine>, role: &str) -> String {
+    given_iam_role_trusting(engine, role, None)
+}
+
+/// A trust policy that lets `principal` assume the role it is attached to, in the
+/// shape `iam:CreateRole` takes one.
+pub fn trust_policy_for(principal: &str) -> String {
+    json!({
+        "Version": "2012-10-17",
+        "Statement": [{
+            "Effect": "Allow",
+            "Principal": { "Service": principal },
+            "Action": "sts:AssumeRole",
+        }],
+    })
+    .to_string()
 }
 
 /// Attach `document` to `role` as its inline policy, replacing whatever it carried

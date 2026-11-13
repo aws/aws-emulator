@@ -18,7 +18,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde_json::Value;
 
 use crate::kafka_harness::{
-    kafka_version_line as line, kafka_version_release as release, Emulator, Reply, OTHER_LINE,
+    kafka_version_line as line, kafka_version_release as release, ClusterRequest, Emulator, Reply,
+    OTHER_LINE,
 };
 
 /// A `KafkaVersionStatus` value: a version the service still offers.
@@ -309,5 +310,73 @@ async fn the_catalog_carries_the_variant_lines_and_both_statuses() {
         listed.at("/kafkaVersions"),
         &Value::Array(entries),
         "the listing must report the same entries on a second read"
+    );
+}
+
+/// RULE: the LAST row the catalog publishes for a version carries the status the
+/// service OFFERS that version under, so the catalog's final word about a version
+/// agrees with the gate that accepts it — a client reducing the published rows to
+/// one status per version (a version has one lifecycle status) reads the version
+/// the way a create naming it is answered.
+///
+/// Checked EXHAUSTIVELY over every version the catalog publishes, against the
+/// offered set read from the WIRE: the valid-value list a create refusal carries,
+/// which is the versions the service offers for a new cluster.
+#[tokio::test]
+async fn the_last_published_row_is_the_status_the_service_offers() {
+    let emulator = Emulator::new();
+    let listed = list_versions(&emulator).await;
+    let mut last_row: BTreeMap<String, String> = BTreeMap::new();
+    for entry in listed
+        .at("/kafkaVersions")
+        .as_array()
+        .unwrap_or_else(|| panic!("expected a kafkaVersions list, got {}", listed.body))
+    {
+        let version = entry["version"].as_str().unwrap_or_default().to_string();
+        let status = entry["status"].as_str().unwrap_or_default().to_string();
+        last_row.insert(version, status);
+    }
+    assert!(
+        !last_row.is_empty(),
+        "the catalog must publish versions, got {}",
+        listed.body
+    );
+
+    // The offered set, as the service itself renders it: a create naming a version
+    // the catalog does not publish is refused with the versions it DOES offer.
+    let refusal = emulator
+        .create(&ClusterRequest {
+            kafka_version: "9.9.9",
+            ..ClusterRequest::named("offered-set-from-the-wire")
+        })
+        .await;
+    assert_eq!(
+        (refusal.status, refusal.error_code()),
+        (400, "BadRequestException"),
+        "a create naming an uncatalogued version must be refused, got {} {}",
+        refusal.status,
+        refusal.body
+    );
+    let message = refusal.error_message().to_string();
+    let offered: BTreeSet<&str> = message
+        .rsplit_once("Valid values: [")
+        .and_then(|(_, tail)| tail.strip_suffix(']'))
+        .unwrap_or_else(|| panic!("the refusal must carry a valid-value list, got {message:?}"))
+        .split(", ")
+        .collect();
+
+    for (version, status) in &last_row {
+        assert_eq!(
+            status == ACTIVE,
+            offered.contains(version.as_str()),
+            "case version={version:?}: the last published row says {status:?}, while the \
+             offered set is {offered:?}"
+        );
+    }
+    // Not vacuous: the catalog publishes both statuses as some version's last row.
+    assert!(
+        last_row.values().any(|status| status == ACTIVE)
+            && last_row.values().any(|status| status != ACTIVE),
+        "both lifecycle statuses must appear as a version's last row, got {last_row:?}"
     );
 }

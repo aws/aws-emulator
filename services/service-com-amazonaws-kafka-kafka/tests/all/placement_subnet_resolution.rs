@@ -27,7 +27,7 @@
 
 use serde_json::{json, Value};
 
-use crate::kafka_harness::{ClusterRequest, ConnectionRequest, Emulator};
+use crate::kafka_harness::{sleep_past_activation, ClusterRequest, ConnectionRequest, Emulator};
 
 /// Subnet ids in both of Amazon EC2's published id forms, which no subnet of the account
 /// carries while there is no EC2 to resolve them against.
@@ -141,6 +141,28 @@ async fn a_v2_create_of_either_kind_keeps_the_subnets_it_was_given() {
 const MAX_PLACEMENT_SUBNETS: usize =
     service_com_amazonaws_kafka_kafka::state::network::MAX_PLACEMENT_SUBNETS;
 
+/// Subnet ids in Amazon EC2's 8-hex form, as many as [`MAX_PLACEMENT_SUBNETS`] allows: the
+/// placement a target cluster is created with for the ceiling rows below, so a VPC
+/// connection naming the ceiling spans as many client subnets as its cluster does.
+const CEILING_SUBNETS: [&str; 16] = [
+    "subnet-000000c0",
+    "subnet-000000c1",
+    "subnet-000000c2",
+    "subnet-000000c3",
+    "subnet-000000c4",
+    "subnet-000000c5",
+    "subnet-000000c6",
+    "subnet-000000c7",
+    "subnet-000000c8",
+    "subnet-000000c9",
+    "subnet-000000ca",
+    "subnet-000000cb",
+    "subnet-000000cc",
+    "subnet-000000cd",
+    "subnet-000000ce",
+    "subnet-000000cf",
+];
+
 /// The placement list is bounded at both ends of the ceiling: a create naming exactly
 /// [`MAX_PLACEMENT_SUBNETS`] subnets is accepted and reports them all, and one naming a
 /// single subnet more is refused `BadRequestException` naming the member at fault, whether
@@ -148,7 +170,20 @@ const MAX_PLACEMENT_SUBNETS: usize =
 #[tokio::test]
 async fn a_create_may_name_at_most_the_placement_ceiling_of_subnets() {
     let emulator = Emulator::new();
-    let cluster = emulator.vpc_connection_target("ceiling-connection-target").await;
+    assert_eq!(
+        CEILING_SUBNETS.len(),
+        MAX_PLACEMENT_SUBNETS,
+        "the target cluster must be placed in exactly as many subnets as the ceiling allows"
+    );
+    // The target is placed in as many subnets as the ceiling row names, because a VPC
+    // connection spans as many client subnets as the cluster it reaches.
+    let cluster = emulator
+        .create_ok(&ClusterRequest {
+            subnets: CEILING_SUBNETS.to_vec(),
+            ..ClusterRequest::vpc_connection_target("ceiling-connection-target")
+        })
+        .await;
+    sleep_past_activation();
 
     // Distinct ids in Amazon EC2's 8-hex form, as many as the row needs.
     let ids = |count: usize| -> Vec<String> {
@@ -238,7 +273,15 @@ async fn a_create_may_name_at_most_the_placement_ceiling_of_subnets() {
 #[tokio::test]
 async fn a_vpc_connection_keeps_the_subnets_it_was_given() {
     let emulator = Emulator::new();
-    let cluster = emulator.vpc_connection_target("ungrounded-connection-target").await;
+    // Two subnets, because a connection spans as many client subnets as the cluster it
+    // reaches: the rows differ in the FORM of the ids and in which form comes first.
+    let cluster = emulator
+        .create_ok(&ClusterRequest {
+            subnets: vec![UNRESOLVED_SUBNETS[0].1, UNRESOLVED_SUBNETS[1].1],
+            ..ClusterRequest::vpc_connection_target("ungrounded-connection-target")
+        })
+        .await;
+    sleep_past_activation();
 
     for (index, (form, subnet)) in UNRESOLVED_SUBNETS.iter().enumerate() {
         let subnets = vec![*subnet, UNRESOLVED_SUBNETS[1 - index].1];

@@ -105,6 +105,8 @@ mod kafka_version_lifecycle_rows;
 mod kafka_version_update;
 #[path = "all/kafka_versions.rs"]
 mod kafka_versions;
+#[path = "all/lifecycle_sequences_settle.rs"]
+mod lifecycle_sequences_settle;
 #[path = "all/list_clusters_v2.rs"]
 mod list_clusters_v2;
 #[path = "all/monitoring_update.rs"]

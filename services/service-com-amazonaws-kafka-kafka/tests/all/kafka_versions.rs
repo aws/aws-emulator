@@ -156,7 +156,7 @@ async fn the_catalog_is_reported_with_every_version_and_its_support_status() {
     // the class rather than one example. Each row is the status SEQUENCE published
     // for that version, in published order: one status for a version published
     // once, and both lifecycle statuses for a version the catalog publishes on two
-    // rows (either order).
+    // rows, whose offering row comes last.
     let expected: &[(&str, &[&str])] = &[
         ("1.1.1", &["DEPRECATED"]),
         ("2.4.1.1", &["DEPRECATED"]),
@@ -169,7 +169,7 @@ async fn the_catalog_is_reported_with_every_version_and_its_support_status() {
         ("3.7.x", &["ACTIVE"]),
         ("3.7.x.kraft", &["ACTIVE"]),
         ("3.8.link", &["DEPRECATED"]),
-        ("3.9.x", &["ACTIVE", "DEPRECATED"]),
+        ("3.9.x", &["DEPRECATED", "ACTIVE"]),
         ("3.9.x.kraft", &["ACTIVE"]),
         ("4.0.x.kraft", &["ACTIVE"]),
         ("4.1.x.kraft", &["ACTIVE"]),

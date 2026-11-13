@@ -58,7 +58,9 @@ async fn describe_reports_exactly_what_was_created() {
 
     // The rows differ along everything the rule generalises over: every
     // authentication type the service publishes, both published EC2 id lengths,
-    // subnet and security-group count, tag count, and the target cluster.
+    // subnet ORDER, security-group count, tag count, and the target cluster. The
+    // subnet COUNT is not free: a connection spans as many client subnets as its
+    // target cluster.
     let mut rows = vec![
         ConnectionRequest::to(&target_one),
         ConnectionRequest {
@@ -76,7 +78,7 @@ async fn describe_reports_exactly_what_was_created() {
         },
         ConnectionRequest {
             authentication: "TLS",
-            client_subnets: vec!["subnet-0a1b2c3d", "subnet-0a1b2c3e"],
+            client_subnets: vec!["subnet-0a1b2c3e", "subnet-0a1b2c3d", "subnet-0a1b2c3f"],
             tags: vec![("only", "one")],
             ..ConnectionRequest::to(&target_two)
         },
@@ -423,7 +425,7 @@ async fn delete_is_observable_by_every_later_reader() {
             ConnectionRequest {
                 authentication: "TLS",
                 vpc_id: "vpc-0123456789abcdef0",
-                client_subnets: vec!["subnet-0a1b2c3d", "subnet-0a1b2c3e"],
+                client_subnets: vec!["subnet-0a1b2c3d", "subnet-0a1b2c3e", "subnet-0a1b2c3f"],
                 security_groups: vec!["sg-0a1b2c3d", "sg-0a1b2c3e"],
                 tags: vec![("env", "test")],
                 ..ConnectionRequest::to(&target)
@@ -513,7 +515,11 @@ async fn create_refuses_a_request_it_cannot_act_on() {
         (
             ConnectionRequest {
                 vpc_id: "vpc-0123456789abcdef0",
-                client_subnets: vec!["subnet-0123456789abcdef0"],
+                client_subnets: vec![
+                    "subnet-0123456789abcdef0",
+                    "subnet-0123456789abcdef1",
+                    "subnet-0123456789abcdef2",
+                ],
                 security_groups: vec!["sg-0123456789abcdef0"],
                 ..valid.clone()
             },
@@ -745,9 +751,11 @@ async fn each_connection_gets_its_own_identity() {
 async fn the_reader_keeps_the_subnets_and_the_security_groups_apart() {
     let emulator = Emulator::new();
     let target = cluster(&emulator, "disjoint-lists").await;
-    // Rows differ in how the two lists relate: different lengths either way,
-    // and equal lengths with different members — so a reader that swapped or
-    // merged them could not pass any row.
+    // Rows differ in how the two lists relate: the security-group list shorter
+    // than the subnet list, longer than it, and the same length with different
+    // members — so a reader that swapped or merged them could not pass any row.
+    // Every row names as many subnets as the target cluster, which is what a
+    // connection's placement must span.
     let rows = [
         ConnectionRequest {
             client_subnets: vec!["subnet-0a1b2c3d", "subnet-0a1b2c3e", "subnet-0a1b2c3f"],
@@ -755,13 +763,22 @@ async fn the_reader_keeps_the_subnets_and_the_security_groups_apart() {
             ..ConnectionRequest::to(&target)
         },
         ConnectionRequest {
-            client_subnets: vec!["subnet-0123456789abcdef0"],
-            security_groups: vec!["sg-0a1b2c31", "sg-0a1b2c32"],
+            client_subnets: vec![
+                "subnet-0123456789abcdef0",
+                "subnet-0123456789abcdef1",
+                "subnet-0123456789abcdef2",
+            ],
+            security_groups: vec![
+                "sg-0a1b2c31",
+                "sg-0a1b2c32",
+                "sg-0a1b2c35",
+                "sg-0a1b2c36",
+            ],
             ..ConnectionRequest::to(&target)
         },
         ConnectionRequest {
-            client_subnets: vec!["subnet-0a1b2c3e", "subnet-0a1b2c3d"],
-            security_groups: vec!["sg-0a1b2c33", "sg-0a1b2c34"],
+            client_subnets: vec!["subnet-0a1b2c3e", "subnet-0a1b2c3d", "subnet-0a1b2c3f"],
+            security_groups: vec!["sg-0a1b2c33", "sg-0a1b2c34", "sg-0a1b2c37"],
             ..ConnectionRequest::to(&target)
         },
     ];

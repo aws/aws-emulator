@@ -45,7 +45,10 @@ aws-sdk-secretsmanager = { version = "1", default-features = false }
 # `arn::region_label`: the ONE reading of a caller-supplied Region as a Region LABEL,
 # which is what the endpoint the EC2 call above is made at is built from;
 # `iam_authorization`: the shared evaluation of IAM policy documents against
-# (action, resource), which this service's authorization gate runs.
+# (action, resource), which this service's authorization gate runs; `iam_role`: the one
+# reading of an IAM role ARN, and the one in-process question about whether a role
+# PASSED to a service can be assumed, which the replicator's service-execution role is
+# resolved through.
 service-common = { path = "../common" }
 # The IAM store holds the identity-based policies of the principal a request speaks
 # for, and the STS store resolves which principal that is: the authorization gate

@@ -350,21 +350,34 @@ impl ComAmazonawsKafkaKafkaState {
     /// The ARNs of the clusters in `region` whose stored `ConfigurationInfo`
     /// names the configuration `arn`, in registry (ARN) order.
     ///
-    /// A cluster keeps the configuration it was created with, so this is the
-    /// association that decides whether a configuration is still being used:
-    /// computed from the stored clusters rather than from a counter, so a cluster
-    /// that has since left the registry stops holding its configuration down.
-    pub fn clusters_using_configuration(&self, region: &str, arn: &str) -> Vec<String> {
+    /// A cluster keeps the configuration it was created with until a
+    /// `UpdateClusterConfiguration` re-points it, so this is the association that
+    /// decides whether a configuration is still being used: computed from the
+    /// stored clusters rather than from a counter, so a cluster that has since
+    /// left the registry stops holding its configuration down.
+    ///
+    /// The transitions the clock already owed those clusters are materialised
+    /// FIRST, so a configuration a cluster has already been re-pointed away from
+    /// — the re-pointing came due at some instant whether or not anybody read
+    /// that cluster — is not reported as still in use. That write is owed at the
+    /// same instant either way, which is why a reporting call may take it.
+    pub fn clusters_using_configuration(
+        &mut self,
+        region: &str,
+        arn: &str,
+        now: SystemTime,
+    ) -> Vec<String> {
         self.clusters
-            .values()
+            .values_mut()
             .filter(|cluster| cluster.region == region)
-            .filter(|cluster| {
+            .filter_map(|cluster| {
+                cluster.settle(now);
                 cluster
                     .configuration_info
                     .as_ref()
                     .is_some_and(|info| info.arn == arn)
+                    .then(|| cluster.arn.clone())
             })
-            .map(|cluster| cluster.arn.clone())
             .collect()
     }
 

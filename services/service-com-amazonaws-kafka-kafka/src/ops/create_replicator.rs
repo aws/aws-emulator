@@ -14,7 +14,11 @@
 //! are resolved while the replicator is PROVISIONED
 //! ([`crate::state::ComAmazonawsKafkaKafkaState::replicator_provisioning_failure`]),
 //! and a setup naming an Amazon MSK cluster that does not exist converges to
-//! `FAILED` carrying the modelled `StateInfo` instead of ever replicating.
+//! `FAILED` carrying the modelled `StateInfo` instead of ever replicating. The
+//! SERVICE-EXECUTION ROLE is resolved there too
+//! ([`crate::state::service_execution_role_failure`]): MSK provisions a replicator
+//! by assuming that role, so a role the account does not hold converges the
+//! replicator to `FAILED` in the same way.
 //!
 //! The SUBNETS each `KafkaClusters` entry names
 //! (`KafkaClusterClientVpcConfig$SubnetIds`) are a different matter: the
@@ -465,9 +469,26 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // target cluster does not exist is never provisioned, so the first
         // unresolved reference is the one the caller is answered about (below, as
         // the provisioning failure the clock converges the replicator to).
-        let provisioning_failure = state
+        let cluster_failure = state
             .lock()
             .replicator_provisioning_failure(&input.kafka_clusters);
+        let provisioning_failure = match cluster_failure {
+            Some(failure) => Some(failure),
+            // MSK provisions a replicator by ASSUMING the service-execution role
+            // the create passed it, so a role this account does not hold is the
+            // same kind of failure as a cluster that does not resolve: admitted
+            // here, converged to `FAILED` by the clock. Asked after the clusters,
+            // so one setup yields one reason, and asked with no registry lock
+            // held, because it calls out over the in-process callback.
+            None => {
+                crate::state::service_execution_role_failure(
+                    ctx,
+                    &region,
+                    &input.service_execution_role_arn,
+                )
+                .await
+            }
+        };
         if provisioning_failure.is_none() {
             for cluster in &input.kafka_clusters {
                 let subnet_ids = cluster

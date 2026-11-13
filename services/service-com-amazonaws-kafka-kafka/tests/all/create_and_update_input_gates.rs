@@ -73,17 +73,24 @@ const VALUE_NOT_VALID_MESSAGE: &str = "The provided value is not valid.";
 const NOT_RUNNING_MESSAGE: &str = "Invalid parameter replicatorArn: This operation is only valid \
      for resources that are in one of the following states: [RUNNING]";
 
-/// The versions MSK offers for a NEW cluster: the `ACTIVE` entries of the catalog
-/// documented in `src/state.rs` (the Amazon MSK Developer Guide's "Supported Apache
-/// Kafka versions"), in the order it publishes them — which is the order the
-/// refusal renders them in. Read off the catalog rather than written out, so this
-/// suite cannot drift from the versions the service publishes.
+/// The versions MSK offers for a NEW cluster: the versions the catalog documented
+/// in `src/state.rs` (the Amazon MSK Developer Guide's "Supported Apache Kafka
+/// versions") publishes an `ACTIVE` row for, each named ONCE at its first published
+/// row — which is the order the refusal renders them in. Read off the catalog's own
+/// ROWS rather than through the service's offered-set helper, so this suite can
+/// still disagree with that helper, and never written out, so it cannot drift from
+/// the versions the service publishes.
 fn offered_versions() -> Vec<&'static str> {
-    KAFKA_VERSION_CATALOG
-        .iter()
-        .filter(|entry| entry.status == KAFKA_VERSION_ACTIVE)
-        .map(|entry| entry.version)
-        .collect()
+    let mut offered: Vec<&'static str> = Vec::new();
+    for entry in KAFKA_VERSION_CATALOG {
+        let offered_somewhere = KAFKA_VERSION_CATALOG
+            .iter()
+            .any(|row| row.version == entry.version && row.status == KAFKA_VERSION_ACTIVE);
+        if offered_somewhere && !offered.contains(&entry.version) {
+            offered.push(entry.version);
+        }
+    }
+    offered
 }
 
 /// The sentence MSK refuses `version` for brokers of `category` with: its fixed
@@ -621,11 +628,13 @@ async fn a_replication_update_is_accepted_only_from_an_accepting_state() {
     let (settling, source, target) = replicator(&emulator, "states").await;
 
     // CREATING: the replicator has just been created, and the clock has not yet
-    // owed it its settled state.
+    // owed it its settled state. The call quotes the version the replicator is
+    // actually at, so what refuses it is the STATE and not the version.
+    let creating_version = current_version(&emulator, &settling).await;
     let creating = update(
         &emulator,
         &settling,
-        update_body(&source, &target, "K0000000000000"),
+        update_body(&source, &target, &creating_version),
     )
     .await;
     assert_state_refusal(&creating, "CREATING");

@@ -898,6 +898,20 @@ pub const RESOURCE_NOT_FOUND_MESSAGE: &str = "The requested resource doesn\u{201
 pub const CLUSTER_VERSION_NOT_CURRENT_MESSAGE: &str =
     "The version of the cluster isn\u{2019}t current. Check the current version and try again.";
 
+/// The same condition on a REPLICATOR: the message Amazon MSK answers a
+/// replicator call whose `CurrentVersion` is not the version the replicator is
+/// actually at.
+///
+/// A CONSTANT of the service for the same reason as
+/// [`CLUSTER_VERSION_NOT_CURRENT_MESSAGE`] — neither the stored version nor the
+/// submitted one appears in it — and worded as MSK words it for this resource:
+/// the Replicator API calls the replication it runs a connector, and the sentence
+/// is prefixed with the member at fault. Shared by every operation of this
+/// service that quotes a replicator's version, so one condition gets one wording.
+pub const REPLICATOR_VERSION_NOT_CURRENT_MESSAGE: &str =
+    "Invalid parameter currentVersion: The version of the connector isn\u{2019}t current. \
+     Check the current version and try again.";
+
 /// The member a stale-version refusal names, as the request spells it on the
 /// wire (`CurrentVersion`'s `jsonName`).
 pub const CURRENT_VERSION_MEMBER: &str = "currentVersion";
@@ -1777,18 +1791,15 @@ pub fn name_already_exists(parameter: &str) -> ConflictException {
     }
 }
 
-/// How this emulator refuses a delete of a configuration a cluster still uses:
-/// one fixed sentence about the condition, in the same request-independent form
-/// as [`RESOURCE_NOT_FOUND_MESSAGE`] (the apostrophe is U+2019, as the service
-/// writes it). UNVERIFIED wording — no recording of this path was available, so
-/// unlike [`CONFIGURATION_ARN_NOT_FOUND_MESSAGE`] this is the condition stated
-/// in the service's style rather than text observed from Amazon MSK, and it is
-/// held here, in one place, to be reconciled against the real sentence once a
-/// recording of it exists. Which clusters hold the configuration is a listing
-/// the caller gets from the cluster readers, so the refusal describes the
-/// condition rather than this endpoint's registry.
+/// How Amazon MSK refuses a delete of a configuration a cluster still uses: two
+/// fixed sentences, the condition and what to do about it. Entirely fixed text —
+/// no configuration name, ARN, revision or cluster id is interpolated, so the
+/// refusal describes the condition rather than this endpoint's registry; which
+/// clusters hold the configuration is a listing the caller gets from the cluster
+/// readers.
 pub const CONFIGURATION_IN_USE_MESSAGE: &str =
-    "The configuration is in use by one or more clusters and can\u{2019}t be deleted.";
+    "Configuration is in use by one or more clusters. Dissociate the configuration from the \
+     clusters.";
 
 /// Configurations one account may hold in one region, from the Amazon MSK
 /// service quota "Number of configurations per account" (100, per Region). A
@@ -2274,6 +2285,57 @@ pub const REPLICATION_CODE_INVALID_KAFKA_CLUSTER: &str = "InvalidInput.InvalidKa
 /// variable part is the cluster ARN the request named.
 pub fn invalid_kafka_cluster_message(cluster_arn: &str) -> String {
     format!("The specified Amazon MSK Cluster does not exist. Cluster ARN: {cluster_arn}")
+}
+
+/// The `ReplicationStateInfo$Code` Amazon MSK reports for a replicator it could
+/// not provision because the service-execution role the create passed it is not a
+/// role it can assume. A fixed token, not built from the request.
+pub const REPLICATION_CODE_UNASSUMABLE_ROLE: &str = "InvalidInput.InvalidServiceExecutionRole";
+
+/// The `ReplicationStateInfo$Message` that goes with
+/// [`REPLICATION_CODE_UNASSUMABLE_ROLE`]: one fixed sentence, whose one variable
+/// part is the role ARN the request named.
+pub fn unassumable_service_execution_role_message(role_arn: &str) -> String {
+    format!("Amazon MSK could not assume the service execution role. Role ARN: {role_arn}")
+}
+
+/// The service principal Amazon MSK assumes a role AS — what a service-execution
+/// role's trust policy has to admit for MSK to be able to take it on.
+pub const KAFKA_SERVICE_PRINCIPAL: &str = "kafka.amazonaws.com";
+
+/// The provisioning failure a replicator carries when the service-execution role
+/// the create passed MSK is not one MSK can assume, or `None` when it is.
+///
+/// A replicator is provisioned by MSK ASSUMING that role, so a role it cannot take
+/// on is a replicator that never starts: the create is admitted on what the request
+/// says ([`ComAmazonawsKafkaKafkaState::replicator_provisioning_failure`] is the
+/// same rule for the clusters the setup names) and the clock converges the
+/// replicator to [`REPLICATOR_STATE_FAILED`] carrying this detail.
+///
+/// Whether the role can be assumed is IAM's answer, not this service's: the one
+/// shared reading of that question ([`::service_common::iam_role::role_is_unassumable`])
+/// asks IAM's own `GetRole` over the in-process callback and reads the trust policy
+/// the stored role carries, and it answers "assumable" for everything that is not
+/// IAM saying otherwise — so a role this emulator could not ask about fails nothing.
+pub async fn service_execution_role_failure(
+    ctx: &::smithy_server_runtime::OperationContext<'_>,
+    region: &str,
+    role_arn: &str,
+) -> Option<ReplicationStateInfo> {
+    if !::service_common::iam_role::role_is_unassumable(
+        ctx,
+        region,
+        role_arn,
+        KAFKA_SERVICE_PRINCIPAL,
+    )
+    .await
+    {
+        return None;
+    }
+    Some(ReplicationStateInfo {
+        code: Some(REPLICATION_CODE_UNASSUMABLE_ROLE.to_string()),
+        message: Some(unassumable_service_execution_role_message(role_arn)),
+    })
 }
 
 /// One Kafka cluster a replicator replicates between, under the alias the

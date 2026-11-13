@@ -55,6 +55,37 @@ const KAFKA_VERSION: &str = "3.6.0";
 /// The broker instance type every provisioned create below asks for.
 const INSTANCE_TYPE: &str = "kafka.m5.large";
 
+/// How often a wait below looks again, and how many looks it takes before it gives up: a
+/// GENEROUS budget, since what is waited for is a transition the cluster's own record
+/// already owes and the only thing a longer wait costs is a slow machine's patience.
+const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(50);
+/// See [`POLL_INTERVAL`]: 600 looks at that interval is half a minute of looking.
+const POLLS: usize = 600;
+
+/// The cluster `cluster_arn` names, read again until Amazon MSK reports it `ACTIVE` — the
+/// state the clock owes it after the create — or the budget above runs out, and answered as
+/// the LAST read either way so an assertion reports what MSK really said.
+///
+/// Waits for the CONDITION rather than for a span: Amazon MSK manages a VPC connection only
+/// from a cluster state in which the cluster HAS brokers, and when that holds is the
+/// cluster's own business rather than this suite's.
+async fn cluster_once_it_is_active(router: &MultiServiceRouter, cluster_arn: &str) -> Reply {
+    let uri = format!("/v1/clusters/{}", form_encode(cluster_arn));
+    let mut last = kafka(router, "GET", &uri, None).await;
+    for _ in 0..POLLS {
+        // A read that is not answered at all is not a transient condition — the ARN is the
+        // one the create just minted — so it is answered straight back.
+        if last.status != 200
+            || last.body.pointer("/clusterInfo/state").and_then(Value::as_str) == Some("ACTIVE")
+        {
+            return last;
+        }
+        tokio::time::sleep(POLL_INTERVAL).await;
+        last = kafka(router, "GET", &uri, None).await;
+    }
+    last
+}
+
 /// One emulator carrying Amazon EC2 and Amazon MSK over ONE shared engine, as the
 /// production router mounts them.
 fn emulator() -> MultiServiceRouter {
@@ -568,26 +599,27 @@ async fn msk_placement_subnets_resolve_against_ec2() {
     }
 
     // Amazon MSK manages a VPC connection only from a cluster state in which the cluster
-    // HAS brokers, so the connection below is made once the clock owes this cluster its
-    // `CREATING` -> `ACTIVE` transition — the span the cluster record stored.
-    std::thread::sleep(
-        service_com_amazonaws_kafka_kafka::state::CLUSTER_ACTIVATION_DELAY
-            + std::time::Duration::from_millis(250),
+    // HAS brokers, so the connection below is made once MSK itself reports this cluster
+    // `ACTIVE` ([`cluster_once_it_is_active`] waits for that condition, not for a span). It
+    // is reached from as many of EC2's subnets as the cluster itself is placed in, because
+    // MSK places one interface per Availability Zone the cluster has brokers in.
+    let settled = cluster_once_it_is_active(&router, &provisioned).await;
+    assert_eq!(
+        settled.body.pointer("/clusterInfo/state").and_then(Value::as_str),
+        Some("ACTIVE"),
+        "the cluster a VPC connection is made to must reach ACTIVE, last saw {}",
+        settled.body
     );
     let connected = kafka(
         &router,
         "POST",
         "/v1/vpc-connection",
-        Some(connection_body(
-            &provisioned,
-            &network.vpc,
-            &[network.subnets[1].clone()],
-        )),
+        Some(connection_body(&provisioned, &network.vpc, &network.subnets)),
     )
     .await;
     assert_eq!(
         connected.status, 200,
-        "case \"a VPC connection reached from one of EC2's subnets\": expected the create to \
+        "case \"a VPC connection reached from EC2's own subnets\": expected the create to \
          be accepted, got {} with {}",
         connected.status, connected.body
     );
@@ -674,7 +706,9 @@ async fn msk_placement_subnets_resolve_against_ec2() {
             ),
             method: "POST",
             uri: "/v1/vpc-connection",
-            body: connection_body(&provisioned, &network.vpc, &unknown_last),
+            // As many subnets as the target cluster is placed in, so what refuses this is
+            // the id EC2 does not hold rather than the placement's cardinality.
+            body: connection_body(&provisioned, &network.vpc, &unknown_first),
             parameter: "ClientSubnets",
             cluster_name: None,
             // `CreateVpcConnection` reads the SHAPE of each id it is given itself, so a

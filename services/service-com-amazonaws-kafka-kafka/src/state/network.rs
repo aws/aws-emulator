@@ -132,10 +132,10 @@ pub async fn placement_subnet_refusal(
                 .iter()
                 .filter_map(::aws_sdk_ec2::types::Subnet::subnet_id)
                 .collect();
-            if subnet_ids.iter().all(|id| reported.contains(&id.as_str())) {
-                return None;
+            if !subnet_ids.iter().all(|id| reported.contains(&id.as_str())) {
+                return Some(CLIENT_SUBNETS_ABSENT_MESSAGE.to_string());
             }
-            return Some(CLIENT_SUBNETS_ABSENT_MESSAGE.to_string());
+            return None;
         }
         Err(error) => error,
     };
