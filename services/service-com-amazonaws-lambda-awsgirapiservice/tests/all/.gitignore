@@ -1,0 +1,4 @@
+# Ad-hoc diagnostic probes: a `scratch_*.rs` file under `tests/all/` is a throwaway
+# used while tracing a defect, never part of the suite `tests/all.rs` declares, so it
+# stays out of the repository.
+scratch_*.rs

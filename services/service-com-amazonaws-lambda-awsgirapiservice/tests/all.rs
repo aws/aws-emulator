@@ -487,6 +487,11 @@ mod xray_daemon_datagram;
 mod execution_role_session_identity;
 #[path = "all/handler_event_publication_authorization.rs"]
 mod handler_event_publication_authorization;
+#[path = "all/invocation_environment_reuse.rs"]
+mod invocation_environment_reuse;
+// The isolation half of the execution-environment suites (see the file's own module doc).
+#[path = "all/zzprobe.rs"]
+mod zzprobe;
 // `invocation_run_capacity`, `layer_region_scope` and `update_window_outlasts_its_call`
 // each stood here a second time: concurrent changes appended an entry for a suite the
 // sorted span above already declares, which is a redefinition (`E0428`) and

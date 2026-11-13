@@ -263,70 +263,521 @@ pub fn run_against(request: &Run<'_>, clock: &Clock) -> Finished {
     // The run's own DURATION is this host's own elapsed time whatever clock bounds the run:
     // what it reports is how long the caller waited, which is not a bound.
     let started = Instant::now();
-    let capture = Arc::new(Mutex::new(Capture::new(request.budget.log_bytes)));
-    let bounds = Arc::new(Bounds::new(&request.budget, clock.clone()));
-    let completion = evaluate(request, &capture, &bounds);
-    let elapsed = started.elapsed();
+    let mut finished = match Prepared::start(request, clock) {
+        Ok(prepared) => prepared.serve_once(request, clock),
+        Err(finished) => *finished,
+    };
+    // The environment was built for this one invocation and torn down after it, so what the
+    // caller waited for is both.
+    finished.elapsed = started.elapsed();
+    finished
+}
+
+/// An execution ENVIRONMENT of one function version: the interpreter standing with that
+/// version's handler imported, ready to serve an invocation.
+///
+/// Building one is the INIT phase — the interpreter, the host surface, this emulator's
+/// runtime and the import of the handler's own module — and none of it depends on the
+/// invocation that is served in it, which is why an environment serves invocation after
+/// invocation ([`super::warm_pool`]) rather than being built for each. What one invocation
+/// brings is its own event, request, log, bounds and SDK seam, and those are bound onto the
+/// environment per invocation ([`Session`], `__lambda_bind`).
+///
+/// It is NOT `Send`: every object here belongs to the one interpreter and the one thread it
+/// was built on, so an environment is reached by handing an invocation to that thread.
+pub(super) struct Prepared {
+    /// The interpreter itself, finalized by [`Self::finalize`] and not before.
+    interpreter: Interpreter,
+    /// The invocation this environment is serving, which the host functions and the trace
+    /// hook read.
+    session: Arc<Session>,
+    /// Where the installed trace hook is held, for the life of the environment.
+    held: TraceCell,
+    /// The runtime's INVOKE entry point ([`super::bootstrap`]).
+    invoke: PyObjectRef,
+    /// The runtime's BIND entry point, which puts the next invocation's own request on the
+    /// prepared environment.
+    bind: PyObjectRef,
+    /// The log and the bounds the INITIALIZATION was spent against, until the invocation it
+    /// was built for has been served.
+    ///
+    /// That invocation keeps them: the module-level code of its own deployment package ran in
+    /// the initialization, so what that code wrote belongs in its log and what it allocated is
+    /// measured from the baseline the host took before the import ([`initialize`]). Every
+    /// later invocation brings its own, because nothing of the environment it is served in is
+    /// its doing.
+    initializing: ::std::cell::RefCell<Option<Spending>>,
+    /// What this thread had faulted in when the environment was BUILT, which is what the
+    /// environment's own growth is measured against ([`Self::grown_bytes`]).
+    faulted_at_build: u64,
+}
+
+/// What one invocation writes its log into and what it spends, which [`Session`] binds onto
+/// the environment serving it.
+type Spending = (Arc<Mutex<Capture>>, Arc<Bounds>);
+
+impl Prepared {
+    /// Build the environment and run the INIT phase in it, for `request` — the first
+    /// invocation it will serve, whose own bounds the initialization is spent against.
+    ///
+    /// `Err` carries what an initialization that failed is answered with: the error document
+    /// the runtime wrote for it, or the internal failure of an interpreter that could not be
+    /// stood up. No environment is kept in either case.
+    pub(super) fn start(request: &Run<'_>, clock: &Clock) -> Result<Self, Box<Finished>> {
+        let capture = Arc::new(Mutex::new(Capture::new(request.budget.log_bytes)));
+        let bounds = Arc::new(Bounds::new(&request.budget, clock.clone()));
+        let session = Session::new(&capture, &bounds, request.aws);
+        let input = match runtime_input(request) {
+            Ok(input) => input,
+            Err(error) => {
+                return Err(Box::new(settled(
+                    Completion::Internal(error),
+                    &bounds,
+                    &capture,
+                    Duration::ZERO,
+                )))
+            }
+        };
+        let contained = Arc::new(AtomicBool::new(false));
+        let interpreter = interpreter(&contained);
+        // A run only happens when the native surface really was narrowed to the allow-list. If
+        // it could not be, nothing is run at all: an uncontained interpreter is never handed
+        // guest code.
+        if !contained.load(Ordering::SeqCst) {
+            return Err(Box::new(settled(
+                Completion::Internal(
+                    "the interpreter's native modules could not be narrowed to the allow-list"
+                        .to_string(),
+                ),
+                &bounds,
+                &capture,
+                Duration::ZERO,
+            )));
+        }
+        // The hook the bounds are spent through, held HERE: it stays installed and answering
+        // until the interpreter has been finalized, because finalization runs the guest's own
+        // `atexit` callbacks and those frames are traced like every other guest frame.
+        let held: TraceCell = ::std::rc::Rc::new(::std::cell::RefCell::new(None));
+        // The host's own watch over the initialization, sampling the clock from OUTSIDE the
+        // guest for as long as it lasts ([`watch_run`]).
+        watch_run(&bounds);
+        let initialized = interpreter.enter(|vm| {
+            match initialize(vm, request, &input, &session, &bounds, &held) {
+                Ok(initialized) => initialized,
+                Err(exception) => {
+                    Initialized::Answered(Completion::Internal(formatted_exception(vm, &exception)))
+                }
+            }
+        });
+        match initialized {
+            Initialized::Ready(entries) => Ok(Self {
+                interpreter,
+                session,
+                held,
+                invoke: entries.invoke,
+                bind: entries.bind,
+                initializing: ::std::cell::RefCell::new(Some((capture, bounds))),
+                // Taken on the environment's OWN thread, which is the one every invocation
+                // served in it runs on: what it has faulted in beyond this is what the
+                // environment holds of the host.
+                faulted_at_build: faulted_bytes(),
+            }),
+            Initialized::Answered(completion) => {
+                // Nothing of a failed initialization is kept: the interpreter is finalized
+                // here, exactly as it is after a run.
+                interpreter.finalize(None);
+                held.borrow_mut().take();
+                Err(Box::new(settled(
+                    completion,
+                    &bounds,
+                    &capture,
+                    Duration::ZERO,
+                )))
+            }
+        }
+    }
+
+    /// Serve ONE invocation in this environment: bind what the invocation brings, then run
+    /// the handler's own phase.
+    pub(super) fn invoke(&self, request: &Run<'_>, clock: &Clock) -> Finished {
+        let ran = self.ran(request, clock);
+        let finished = settled(ran.completion, &ran.bounds, &ran.capture, ran.elapsed);
+        // The invocation is over, so the environment stops holding the seam it reached this
+        // emulator through: an environment standing idle holds no caller's credential, and
+        // the next invocation served in it brings its own.
+        self.session.release_access();
+        finished
+    }
+
+    /// Serve one invocation and tear the environment down, for a caller that keeps no
+    /// environment standing.
+    ///
+    /// The teardown happens while the invocation's own bounds are still bound, so a guest
+    /// `atexit` callback — which runs during the interpreter's finalization, after the handler
+    /// returned — is bounded exactly as the handler was, and a stop it latches is what the
+    /// invocation is answered with.
+    pub(super) fn serve_once(self, request: &Run<'_>, clock: &Clock) -> Finished {
+        let ran = self.ran(request, clock);
+        let bounds = Arc::clone(&ran.bounds);
+        let capture = Arc::clone(&ran.capture);
+        let started = Instant::now();
+        self.torn_down();
+        settled(
+            ran.completion,
+            &bounds,
+            &capture,
+            ran.elapsed.saturating_add(started.elapsed()),
+        )
+    }
+
+    /// How much memory this environment has added to its thread since it was BUILT.
+    ///
+    /// The same reading the per-run ceiling is measured with ([`Bounds::step`]), taken on the
+    /// environment's own thread: the pages this thread has faulted in, which is what the
+    /// interpreter standing in it has taken of the host. The count never falls, so what it
+    /// reports is an UPPER bound on what the environment is holding now — a page freed and
+    /// touched again is counted twice — which is the side to err on for a bound: an
+    /// environment is retired on this reading, so the reading may retire one that had given
+    /// memory back and never keeps one that has not.
+    ///
+    /// It is what bounds a STANDING environment ([`super::warm_pool`]), where a per-invocation
+    /// delta says nothing: the share of the run envelope an invocation held goes back when the
+    /// invocation is answered, and this is what the environment still holds afterwards.
+    pub(super) fn grown_bytes(&self) -> u64 {
+        faulted_bytes().saturating_sub(self.faulted_at_build)
+    }
+
+    /// Bind one invocation onto this environment and run it.
+    fn ran(&self, request: &Run<'_>, clock: &Clock) -> Ran {
+        let started = Instant::now();
+        // The invocation the environment was BUILT for keeps the log and the bounds the
+        // initialization was spent against; every later invocation brings its own, so what
+        // one run wrote and what it spent are never another run's.
+        let (capture, bounds, reused) = match self.initializing.borrow_mut().take() {
+            Some((capture, bounds)) => (capture, bounds, false),
+            None => {
+                let capture = Arc::new(Mutex::new(Capture::new(request.budget.log_bytes)));
+                let bounds = Arc::new(Bounds::new(&request.budget, clock.clone()));
+                self.session.bind(&capture, &bounds, request.aws);
+                watch_run(&bounds);
+                (capture, bounds, true)
+            }
+        };
+        let input = match invocation_input(request) {
+            Ok(input) => input,
+            Err(error) => {
+                return Ran {
+                    completion: Completion::Internal(error),
+                    bounds,
+                    capture,
+                    elapsed: started.elapsed(),
+                }
+            }
+        };
+        let completion = self.interpreter.enter(|vm| {
+            match served(vm, self, &input, request.environment, &bounds, reused) {
+                Ok(completion) => completion,
+                Err(exception) => Completion::Internal(formatted_exception(vm, &exception)),
+            }
+        });
+        Ran {
+            completion,
+            bounds,
+            capture,
+            elapsed: started.elapsed(),
+        }
+    }
+
+    /// Tear the environment down, once no further invocation will be served in it.
+    ///
+    /// The interpreter is FINALIZED rather than only dropped, which is what releases the
+    /// objects it built: an interpreter that is only dropped leaves its own reference cycles
+    /// — the module table, the code objects, the exception types — uncollected, so the
+    /// environment would hold its interpreter's memory for the life of this process. Finalizing
+    /// it is also what the language itself does at the end of a program, so a handler's
+    /// `atexit` callback runs the way it runs on the real runtime — and it runs BOUNDED: the
+    /// hook is still installed and still answering itself as each frame's local tracer, and
+    /// the bounds bound here are a span of their own rather than the spent ones of the
+    /// invocation this environment last served, so the callbacks of an environment that is
+    /// retired long after its last invocation are neither unbounded nor stopped before their
+    /// first event.
+    pub(super) fn finalize(self, budget: Budget, clock: &Clock) {
+        let capture = Arc::new(Mutex::new(Capture::new(budget.log_bytes)));
+        let bounds = Arc::new(Bounds::new(&budget, clock.clone()));
+        // No SDK seam: a callback running as the environment is torn down belongs to no
+        // invocation, so there is no caller whose identity a call could be made as.
+        self.session.bind(&capture, &bounds, None);
+        watch_run(&bounds);
+        self.torn_down();
+    }
+
+    /// Finalize the interpreter, against whatever is bound on the session.
+    fn torn_down(self) {
+        let Self {
+            interpreter,
+            session: _,
+            held,
+            invoke,
+            bind,
+            initializing: _,
+            faulted_at_build: _,
+        } = self;
+        drop(invoke);
+        drop(bind);
+        interpreter.finalize(None);
+        // Only now: the hook and this cell hold each other, so emptying it is what lets the
+        // one the environment installed go.
+        held.borrow_mut().take();
+    }
+}
+
+/// What one invocation came to, before the latch and the log are read off it ([`settled`]).
+struct Ran {
+    /// What the phases of this invocation answered.
+    completion: Completion,
+    /// The bounds it was spent against.
+    bounds: Arc<Bounds>,
+    /// The log it wrote.
+    capture: Arc<Mutex<Capture>>,
+    /// How long it took.
+    elapsed: Duration,
+}
+
+/// What an invocation brings to the environment serving it, which the host functions and the
+/// trace hook of that environment read.
+///
+/// An environment's host surface is installed ONCE, with its interpreter, and then serves
+/// invocation after invocation: every one of those functions reads the invocation being
+/// served from here rather than closing over one invocation's own values. So the log a
+/// handler writes to, the bounds its run is spent against, the SDK seam it reaches this
+/// emulator through and how many calls it has made are the invocation's own, and nothing of
+/// one invocation is readable by the next.
+pub(super) struct Session {
+    /// The invocation being served.
+    serving: Mutex<Serving>,
+    /// How many calls into this emulator the invocation being served has made.
+    calls: AtomicU64,
+}
+
+/// The invocation an environment is serving right now.
+struct Serving {
+    /// Where its output goes.
+    capture: Arc<Mutex<Capture>>,
+    /// What it may spend.
+    bounds: Arc<Bounds>,
+    /// How its handler reaches the rest of this emulator, when it was given a seam.
+    aws: Option<AwsAccess>,
+}
+
+impl Session {
+    /// The session of an environment about to serve its first invocation.
+    fn new(
+        capture: &Arc<Mutex<Capture>>,
+        bounds: &Arc<Bounds>,
+        aws: Option<&AwsAccess>,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            serving: Mutex::new(Serving {
+                capture: Arc::clone(capture),
+                bounds: Arc::clone(bounds),
+                aws: aws.cloned(),
+            }),
+            calls: AtomicU64::new(0),
+        })
+    }
+
+    /// Bind the NEXT invocation onto this environment: its own log, its own bounds, its own
+    /// seam, and a call count of its own — so no budget of the invocation before it is
+    /// carried over.
+    fn bind(
+        &self,
+        capture: &Arc<Mutex<Capture>>,
+        bounds: &Arc<Bounds>,
+        aws: Option<&AwsAccess>,
+    ) {
+        let mut serving = self.serving.lock().unwrap_or_else(PoisonError::into_inner);
+        serving.capture = Arc::clone(capture);
+        serving.bounds = Arc::clone(bounds);
+        serving.aws = aws.cloned();
+        drop(serving);
+        self.calls.store(0, Ordering::SeqCst);
+    }
+
+    /// Where the invocation being served writes its output.
+    fn capture(&self) -> Arc<Mutex<Capture>> {
+        Arc::clone(
+            &self
+                .serving
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .capture,
+        )
+    }
+
+    /// What the invocation being served may spend.
+    fn bounds(&self) -> Arc<Bounds> {
+        Arc::clone(
+            &self
+                .serving
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .bounds,
+        )
+    }
+
+    /// How the invocation being served reaches the rest of this emulator.
+    fn aws(&self) -> Option<AwsAccess> {
+        self.serving
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .aws
+            .clone()
+    }
+
+    /// Stop holding the SDK seam of the invocation just served, so an environment standing
+    /// idle holds no credential of the caller whose invocation it served.
+    fn release_access(&self) {
+        self.serving
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .aws = None;
+    }
+
+    /// Whether the invocation being served may make one more call into this emulator, which
+    /// spends one of the calls ONE invocation is allowed ([`MAX_CALLS_PER_RUN`]).
+    fn may_call(&self) -> bool {
+        self.calls.fetch_add(1, Ordering::Relaxed) < MAX_CALLS_PER_RUN as u64
+    }
+}
+
+/// How a completion is reported once the phase that produced it is over: the latched stop
+/// wins over whatever the guest answered, and the log is what the invocation itself wrote.
+fn settled(
+    completion: Completion,
+    bounds: &Arc<Bounds>,
+    capture: &Arc<Mutex<Capture>>,
+    elapsed: Duration,
+) -> Finished {
     // The stop LATCH wins over whatever the guest answered: a run whose budget was spent
     // is a stopped run even if the guest caught the exception the hook raised.
     let completion = match bounds.stopped() {
         Some(stop) => Completion::Stopped(stop),
         None => completion,
     };
-    let log = captured(&capture).text.clone();
     Finished {
         completion,
-        log,
+        log: captured(capture).text.clone(),
         elapsed,
     }
 }
 
-/// Build the interpreter, install the host surface, and drive the runtime source.
-fn evaluate(request: &Run<'_>, capture: &Arc<Mutex<Capture>>, bounds: &Arc<Bounds>) -> Completion {
-    let input = match runtime_input(request) {
-        Ok(input) => input,
-        Err(error) => return Completion::Internal(error),
+/// What building an environment came to.
+enum Initialized {
+    /// The environment is standing, with these entry points to serve invocations through.
+    Ready(Entries),
+    /// The initialization answered rather than completed, and this is what it answered.
+    Answered(Completion),
+}
+
+/// The entry points one prepared environment is driven through ([`super::bootstrap`]).
+struct Entries {
+    /// The handler's own run.
+    invoke: PyObjectRef,
+    /// Binding the next invocation's request onto the environment.
+    bind: PyObjectRef,
+}
+
+/// Install the host surface, evaluate the runtime source and run the INIT phase.
+fn initialize(
+    vm: &VirtualMachine,
+    request: &Run<'_>,
+    input: &str,
+    session: &Arc<Session>,
+    bounds: &Arc<Bounds>,
+    held: &TraceCell,
+) -> PyResult<Initialized> {
+    prepare(vm, request.environment, request.budget.recursion_limit, session)?;
+    let scope = vm.new_scope_with_builtins();
+    let code = vm
+        .compile(
+            super::bootstrap::RUNTIME_SOURCE,
+            ::rustpython_vm::compiler::Mode::Exec,
+            "<lambda-runtime>".to_owned(),
+        )
+        .map_err(|error| {
+            vm.new_runtime_error(format!("the Lambda runtime source does not compile: {error}"))
+        })?;
+    vm.run_code_obj(code, scope.clone())?;
+    let entries = Entries {
+        invoke: scope.globals.get_item("__lambda_invoke", vm)?,
+        bind: scope.globals.get_item("__lambda_bind", vm)?,
     };
-    let contained = Arc::new(AtomicBool::new(false));
-    let interpreter = interpreter(&contained);
-    // A run only happens when the native surface really was narrowed to the allow-list. If
-    // it could not be, nothing is run at all: an uncontained interpreter is never handed
-    // guest code.
-    if !contained.load(Ordering::SeqCst) {
-        return Completion::Internal(
-            "the interpreter's native modules could not be narrowed to the allow-list".to_string(),
-        );
+    let prepared = scope.globals.get_item("__lambda_prepare", vm)?;
+    install_trace_hook(vm, session, held)?;
+    // The interpreter is standing and nothing of the RUN's own code has been read yet, so
+    // this is where the memory the run itself takes is measured from. The host takes this
+    // baseline, never the guest.
+    bounds.measure_memory_from_here();
+    // The INIT phase, under the span an initialization is allowed rather than the
+    // function's `Timeout`. It answers nothing when the environment is ready, and the
+    // document of a failure that belongs to no invocation when it is not.
+    let answered = prepared.call((vm.ctx.new_str(input.to_owned()),), vm)?;
+    let answered: String = answered.try_into_value(vm)?;
+    if !answered.is_empty() {
+        return Ok(Initialized::Answered(read_completion(
+            &answered,
+            bounds.response_bytes,
+        )));
     }
-    // The hook the bounds are spent through, held HERE: it stays installed and answering
-    // until the interpreter has been finalized, because finalization runs the guest's own
-    // `atexit` callbacks and those frames are traced like every other guest frame.
-    let held: TraceCell = ::std::rc::Rc::new(::std::cell::RefCell::new(None));
-    // The host's own watch over this run, sampling the clock from OUTSIDE the guest for as
-    // long as the run lasts ([`watch_run`]).
-    watch_run(bounds);
-    let completion = interpreter.enter(|vm| {
-        match prepare(vm, request, capture, bounds)
-            .and_then(|()| drive(vm, &input, bounds, &held))
-        {
-            Ok(result) => result,
-            Err(exception) => Completion::Internal(formatted_exception(vm, &exception)),
-        }
-    });
-    // The interpreter is FINALIZED once the run is over, which is what releases the objects
-    // it built: an interpreter that is only dropped leaves its own reference cycles — the
-    // module table, the code objects, the exception types — uncollected, so each invocation
-    // would hold its interpreter's memory for the life of this process however short the run
-    // was. Finalizing it is also what the language itself does at the end of a program, so a
-    // handler's `atexit` callback runs the way it runs on the real runtime, and it runs
-    // against the SAME bounds the handler did — the hook is still installed and still
-    // answering itself as each frame's local tracer, the host watch below is still sampling
-    // the clock, and a stop already latched stays latched — so nothing of the run outlasts
-    // the run's budget.
-    interpreter.finalize(None);
-    // Only now: the hook and this cell hold each other, so emptying it is what lets the one
-    // the run installed go.
-    held.borrow_mut().take();
-    completion
+    Ok(Initialized::Ready(entries))
+}
+
+/// Serve one invocation in a prepared environment: bind its request, then run the handler.
+///
+/// The environment the invocation runs with is installed again here, because a reused
+/// environment serves an invocation whose own request and environment are its own: what the
+/// handler reads off its context and out of `os.environ` is this invocation's.
+///
+/// `reused` says whether an invocation has been served in this environment BEFORE, which
+/// decides two things about this one.
+///
+/// Its environment VARIABLES: the invocation an environment was built for has them installed
+/// by the initialization, and every later invocation's REPLACE the ones of the invocation
+/// before it, so what a handler reads out of `os.environ` is its own invocation's environment
+/// (the X-Ray trace header AWS documents as changing with each invocation included) and never
+/// a variable left behind ([`install_environment`]). What the GUEST itself left in the
+/// interpreter, its module-level objects and whatever it cached in them, does stand: that is
+/// the reuse AWS documents.
+///
+/// And its memory BASELINE: the invocation an environment was built for had it taken before
+/// the module-level code of its own package was read ([`initialize`]), because that code is
+/// its own work; every later invocation has it taken here, because the environment it is
+/// served in was built before it and memory the invocation did not allocate is not a bound it
+/// breached.
+fn served(
+    vm: &VirtualMachine,
+    prepared: &Prepared,
+    input: &str,
+    environment: &BTreeMap<String, String>,
+    bounds: &Arc<Bounds>,
+    reused: bool,
+) -> PyResult<Completion> {
+    install_environment(vm, environment, reused)?;
+    let bound = prepared.bind.call((vm.ctx.new_str(input.to_owned()),), vm)?;
+    let bound: String = bound.try_into_value(vm)?;
+    if !bound.is_empty() {
+        return Ok(read_completion(&bound, bounds.response_bytes));
+    }
+    if reused {
+        bounds.measure_memory_from_here();
+    }
+    // The INVOKE phase begins HERE, which is the handler's own run: from this instant the
+    // deadline is the function's `Timeout`, and the instant it falls at is what the handler
+    // is told it has left.
+    let deadline_epoch_ms = bounds.start();
+    let answered = prepared.invoke.call((vm.ctx.new_int(deadline_epoch_ms),), vm)?;
+    let text: String = answered.try_into_value(vm)?;
+    Ok(read_completion(&text, bounds.response_bytes))
 }
 
 /// How often the host's own watch samples a run's deadline.
@@ -439,9 +890,9 @@ fn interpreter(contained: &Arc<AtomicBool>) -> Interpreter {
 /// handler's output goes into.
 fn prepare(
     vm: &VirtualMachine,
-    request: &Run<'_>,
-    capture: &Arc<Mutex<Capture>>,
-    bounds: &Arc<Bounds>,
+    environment: &BTreeMap<String, String>,
+    recursion_limit: usize,
+    session: &Arc<Session>,
 ) -> PyResult<()> {
     let modules = vm.sys_module.as_object().get_attr("modules", vm)?;
     // Every allow-listed native module is created ONCE, here, so each is the single
@@ -460,18 +911,14 @@ fn prepare(
     // the same patched `io` and the same complete `os` every later import sees, so it can
     // hold neither an unpatched way of opening a host file nor a half-built `os`.
     install_codec_registry(vm)?;
-    install_environment(vm, request.environment)?;
+    install_environment(vm, environment, false)?;
     refuse_guest_threads(vm)?;
-    clamp_guest_sleep(vm, bounds)?;
+    clamp_guest_sleep(vm, session)?;
     // Put the host module in `sys.modules` under the name the runtime source imports it
     // by. The import machinery answers from there first, and the name is NOT in the native
     // module table ([`ALLOWED_NATIVE_MODULES`]), so there is no other module of that name
     // to be had: a guest that drops this one cannot import a second.
-    modules.set_item(
-        HOST_MODULE,
-        host_module(vm, capture, bounds, request.aws).into(),
-        vm,
-    )?;
+    modules.set_item(HOST_MODULE, host_module(vm, session).into(), vm)?;
     // A built-in module can no longer be CREATED: every one the guest can reach is the
     // patched object already in `sys.modules`, and a guest that drops one cannot build
     // itself an unpatched replacement. `is_builtin` stays, because the import system asks
@@ -501,11 +948,12 @@ fn prepare(
     vm.sys_module
         .as_object()
         .set_attr("builtin_module_names", vm.ctx.new_tuple(names), vm)?;
-    clamp_recursion(vm, request.budget.recursion_limit)
+    clamp_recursion(vm, recursion_limit)
 }
 
 /// Install the invocation's own environment into the module `os` builds `os.environ` out
-/// of.
+/// of, and — for an invocation served in an environment that is already standing — into the
+/// copy `os` built for itself.
 ///
 /// Done HERE rather than from the runtime source, so the guest's environment is the
 /// host's statement of it and no Python code of this emulator's own needs an
@@ -513,13 +961,57 @@ fn prepare(
 /// interpreter and starts EMPTY, so what a handler reads is the function's own variables
 /// and nothing of this process's environment. The entries are bytes, which is the form
 /// `os` decodes a POSIX environment from.
-fn install_environment(vm: &VirtualMachine, variables: &BTreeMap<String, String>) -> PyResult<()> {
+fn install_environment(
+    vm: &VirtualMachine,
+    variables: &BTreeMap<String, String>,
+    replacing: bool,
+) -> PyResult<()> {
     let system = vm.import("posix", 0)?;
     let environ = system.get_attr("environ", vm)?;
+    if replacing {
+        // The variables an invocation sees are exactly the ones of its own environment: a
+        // variable the invocation before it had — or one its guest code wrote itself — is not
+        // left in the mapping for this one to read, and the variable AWS documents as
+        // changing with each invocation (the X-Ray trace header) is this invocation's.
+        let _ = vm.call_method(&environ, "clear", ());
+    }
     for (name, value) in variables {
         let key: PyObjectRef = vm.ctx.new_bytes(name.as_bytes().to_vec()).into();
         let held: PyObjectRef = vm.ctx.new_bytes(value.as_bytes().to_vec()).into();
         environ.set_item(&*key, held, vm)?;
+    }
+    if replacing {
+        replace_imported_environment(vm, variables)?;
+    }
+    Ok(())
+}
+
+/// Replace the mapping `os` holds, where `os` has already been imported: what a handler
+/// reads through `os.environ` is then this invocation's own environment.
+///
+/// `os` builds `os.environ` out of the module above the first time it is imported and keeps
+/// its own copy from then on, so an environment that has already served an invocation has a
+/// copy to replace as well as the mapping it was built from. Writing through that object is
+/// what keeps the two in step: each write reaches the module above ([`super::host_posix`]'s
+/// `putenv`), and reaches nothing of this process's own environment. Nothing is imported
+/// here: an environment whose guest never imported `os` has no copy to replace.
+fn replace_imported_environment(
+    vm: &VirtualMachine,
+    variables: &BTreeMap<String, String>,
+) -> PyResult<()> {
+    let modules = vm.sys_module.as_object().get_attr("modules", vm)?;
+    let name: PyObjectRef = vm.ctx.new_str("os").into();
+    let Ok(system) = modules.get_item(&*name, vm) else {
+        return Ok(());
+    };
+    let Ok(environ) = system.get_attr("environ", vm) else {
+        return Ok(());
+    };
+    let _ = vm.call_method(&environ, "clear", ());
+    for (name, value) in variables {
+        let key: PyObjectRef = vm.ctx.new_str(name.clone()).into();
+        let held: PyObjectRef = vm.ctx.new_str(value.clone()).into();
+        let _ = environ.set_item(&*key, held, vm);
     }
     Ok(())
 }
@@ -591,11 +1083,15 @@ fn refuse_host_file_access(vm: &VirtualMachine) -> PyResult<()> {
 
 /// Replace the interpreter's own `sleep` with one clamped to what the run has left, on the
 /// single clock module `sys.modules` holds.
-fn clamp_guest_sleep(vm: &VirtualMachine, bounds: &Arc<Bounds>) -> PyResult<()> {
-    let sleep_bounds = Arc::clone(bounds);
+///
+/// The clamp reads the bounds of the invocation the environment is SERVING, so a sleep is
+/// clamped to what that invocation has left however many invocations this environment has
+/// served.
+fn clamp_guest_sleep(vm: &VirtualMachine, session: &Arc<Session>) -> PyResult<()> {
+    let sleeping = Arc::clone(session);
     let clamped = vm.new_function("sleep", move |args: FuncArgs, vm: &VirtualMachine| {
         let seconds: f64 = args.bind(vm)?;
-        bounded_sleep(&sleep_bounds, seconds);
+        bounded_sleep(&sleeping.bounds(), seconds);
         Ok::<PyObjectRef, ::rustpython_vm::builtins::PyBaseExceptionRef>(vm.ctx.none())
     });
     if let Ok(clock) = vm.import("time", 0) {
@@ -620,57 +1116,6 @@ fn bounded_sleep(bounds: &Arc<Bounds>, seconds: f64) {
 /// The longest a guest may ask to wait for in one call, before the run's own remaining
 /// time clamps it further.
 const MAX_GUEST_SLEEP_SECONDS: f64 = 3_600.0;
-
-/// Evaluate the runtime source and read its answer back, one PHASE at a time.
-///
-/// The runtime's own setup — its imports and definitions — runs FIRST, with no bound
-/// spending against it, because none of it is the caller's work. Then the two calls the
-/// runtime leaves behind ([`super::bootstrap`]) are made in turn: `__lambda_prepare` runs
-/// the INIT phase — this runtime's installation, the import of the handler's module and the
-/// resolution of its entry point — and `__lambda_invoke` runs the handler itself. The HOST
-/// decides where the boundary is: it begins the invoke phase between the two calls
-/// ([`Bounds::start`]), which is what starts the deadline the function's `Timeout` states
-/// and what the handler is told it has left. Nothing the guest can call moves it.
-fn drive(
-    vm: &VirtualMachine,
-    input: &str,
-    bounds: &Arc<Bounds>,
-    held: &TraceCell,
-) -> PyResult<Completion> {
-    let scope = vm.new_scope_with_builtins();
-    let code = vm
-        .compile(
-            super::bootstrap::RUNTIME_SOURCE,
-            ::rustpython_vm::compiler::Mode::Exec,
-            "<lambda-runtime>".to_owned(),
-        )
-        .map_err(|error| {
-            vm.new_runtime_error(format!("the Lambda runtime source does not compile: {error}"))
-        })?;
-    vm.run_code_obj(code, scope.clone())?;
-    let prepare = scope.globals.get_item("__lambda_prepare", vm)?;
-    let invoke = scope.globals.get_item("__lambda_invoke", vm)?;
-    install_trace_hook(vm, bounds, held)?;
-    // The interpreter is standing and nothing of the RUN's own code has been read yet, so
-    // this is where the memory the run itself takes is measured from. The host takes this
-    // baseline, never the guest.
-    bounds.measure_memory_from_here();
-    // The INIT phase, under the span an initialization is allowed rather than the
-    // function's `Timeout`. It answers nothing when the environment is ready, and the
-    // document of a failure that belongs to no invocation when it is not.
-    let prepared = prepare.call((vm.ctx.new_str(input),), vm)?;
-    let prepared: String = prepared.try_into_value(vm)?;
-    if !prepared.is_empty() {
-        return Ok(read_completion(&prepared, bounds.response_bytes));
-    }
-    // The INVOKE phase begins HERE, which is the handler's own run: from this instant the
-    // deadline is the function's `Timeout`, and the instant it falls at is what the handler
-    // is told it has left.
-    let deadline_epoch_ms = bounds.start();
-    let answered = invoke.call((vm.ctx.new_int(deadline_epoch_ms),), vm)?;
-    let text: String = answered.try_into_value(vm)?;
-    Ok(read_completion(&text, bounds.response_bytes))
-}
 
 /// The runtime's answer, as this module reports it.
 fn read_completion(answered: &str, response_bytes: usize) -> Completion {
@@ -748,6 +1193,34 @@ fn runtime_input(request: &Run<'_>) -> Result<String, String> {
     ::serde_json::to_string(&document).map_err(|error| error.to_string())
 }
 
+/// The document the per-invocation BIND call is handed: what ONE invocation brings to the
+/// environment serving it, and nothing of the environment itself.
+///
+/// The modules, the handler and this runtime's own libraries are the ENVIRONMENT's
+/// ([`runtime_input`]) and are not sent again: they are the same for every invocation one
+/// environment serves.
+fn invocation_input(request: &Run<'_>) -> Result<String, String> {
+    let environment: ::serde_json::Map<String, ::serde_json::Value> = request
+        .environment
+        .iter()
+        .map(|(name, value)| (name.clone(), ::serde_json::Value::String(value.clone())))
+        .collect();
+    let client_context = match request.client_context {
+        Some(text) => ::serde_json::from_str::<::serde_json::Value>(text)
+            .unwrap_or(::serde_json::Value::Null),
+        None => ::serde_json::Value::Null,
+    };
+    let document = ::serde_json::json!({
+        "environment": environment,
+        "event": request.event,
+        "requestId": request.request_id,
+        "invokedFunctionArn": request.invoked_function_arn,
+        "clientContext": client_context,
+        "tenantId": request.tenant_id,
+    });
+    ::serde_json::to_string(&document).map_err(|error| error.to_string())
+}
+
 /// The modules this RUNTIME supplies on the handler's import path, beside the deployment
 /// package's own: the AWS SDK a managed `python3.x` runtime ships
 /// ([`super::aws_sdk_guest`]).
@@ -775,22 +1248,24 @@ fn runtime_stdlib() -> ::serde_json::Map<String, ::serde_json::Value> {
 ///
 /// The hook is a HOST function, not Python: what the interpreter calls on every traced event
 /// is [`Bounds::step`] itself, reached through no name the guest can rebind — there is no
-/// module attribute, no global and no default argument between the event and the bound. A
+/// module attribute, no global and no default argument between the event and the bound. The
+/// bounds it spends are the ones of the invocation the environment is SERVING ([`Session`]),
+/// so an event of the invocation being served now is never charged to the one before it. A
 /// trace function has to answer the local tracer to use, and the local tracer is this same
-/// function, so the one it answers is read from `held` — the cell [`evaluate`] owns, which
+/// function, so the one it answers is read from `held` — the cell [`Prepared`] owns, which
 /// stays filled until the interpreter has been FINALIZED, because a guest `atexit` callback
 /// runs during finalization and its line events have to be traced too.
 fn install_trace_hook(
     vm: &VirtualMachine,
-    bounds: &Arc<Bounds>,
+    session: &Arc<Session>,
     held: &TraceCell,
 ) -> PyResult<()> {
     let answered = ::std::rc::Rc::clone(held);
-    let step_bounds = Arc::clone(bounds);
+    let stepping = Arc::clone(session);
     let hook = vm.new_function(
         "__lambda_trace",
         move |_args: FuncArgs, vm: &VirtualMachine| {
-            if let Some(stop) = step_bounds.step() {
+            if let Some(stop) = stepping.bounds().step() {
                 return Err(vm.new_runtime_error(stop.reason().to_owned()));
             }
             // The local tracer for the frame this event belongs to is this same hook, so
@@ -811,13 +1286,13 @@ fn install_trace_hook(
     Ok(())
 }
 
-/// Where the installed trace hook is held, for the life of one run.
+/// Where the installed trace hook is held, for the life of one execution environment.
 ///
 /// The hook answers ITSELF as each frame's local tracer, so this cell holds the hook and the
-/// hook holds this cell. [`evaluate`] owns it and empties it once the interpreter has been
+/// hook holds this cell. [`Prepared`] owns it and empties it once the interpreter has been
 /// finalized — not before, because a guest `atexit` callback runs during finalization and has
-/// to be traced like every other guest frame — which is what keeps one run's hook from
-/// outliving the run that installed it.
+/// to be traced like every other guest frame — which is what keeps one environment's hook from
+/// outliving the environment that installed it.
 type TraceCell = ::std::rc::Rc<::std::cell::RefCell<Option<PyObjectRef>>>;
 
 /// Clamp how deep the guest may recurse, and take away the call that would raise it.
@@ -835,20 +1310,20 @@ fn clamp_recursion(vm: &VirtualMachine, limit: usize) -> PyResult<()> {
 /// request a handler sends itself, the one URL it has signed, and what the called service's
 /// own model states about paging one operation through. Nothing else of the host is
 /// reachable from guest code, and nothing here moves a bound.
-fn host_module(
-    vm: &VirtualMachine,
-    capture: &Arc<Mutex<Capture>>,
-    bounds: &Arc<Bounds>,
-    aws: Option<&AwsAccess>,
-) -> PyRef<PyModule> {
+///
+/// Installed ONCE per execution environment, with its interpreter: every one of these
+/// functions reads the invocation being served from the environment's [`Session`], so the log
+/// it writes, the bounds it spends and the seam it reaches are the invocation's own however
+/// many invocations the environment has served.
+fn host_module(vm: &VirtualMachine, session: &Arc<Session>) -> PyRef<PyModule> {
     let module = vm.new_module(HOST_MODULE, vm.ctx.new_dict(), None);
-    let log_capture = Arc::clone(capture);
+    let logging = Arc::clone(session);
     set_function(vm, &module, "log", move |args: FuncArgs, vm: &VirtualMachine| {
         let text: String = args.bind(vm)?;
-        captured(&log_capture).write(&text);
+        captured(&logging.capture()).write(&text);
         Ok(vm.ctx.none())
     });
-    let sleep_bounds = Arc::clone(bounds);
+    let sleeping = Arc::clone(session);
     set_function(
         vm,
         &module,
@@ -857,13 +1332,13 @@ fn host_module(
             let seconds: f64 = args.bind(vm)?;
             // A sleep the guest asked for never outlasts the run: it is clamped to what
             // the run has left, so no guest call can wait past the deadline.
-            bounded_sleep(&sleep_bounds, seconds);
+            bounded_sleep(&sleeping.bounds(), seconds);
             Ok(vm.ctx.none())
         },
     );
     // Where the INIT phase ends and the handler's own run begins is the HOST's to decide,
-    // so there is no name for it on this module at all: [`drive`] makes the two calls the
-    // runtime leaves behind and begins the invoke phase between them ([`Bounds::start`]).
+    // so there is no name for it on this module at all: [`served`] binds the invocation and
+    // begins the invoke phase before calling the runtime ([`Bounds::start`]).
     // The hook that spends the step, deadline and memory budget is NOT here either: the
     // interpreter calls it directly ([`install_trace_hook`]), so there is no name on this
     // module for a guest to rebind and no way for guest code to reach the bounds at all.
@@ -872,12 +1347,7 @@ fn host_module(
     // guest decides is only which operation of which reachable service it asks for and
     // what it sends; the two bounds that are this run's — how many calls it may make and
     // how long one may take — are held here, where no guest code can reach them.
-    let access = aws.cloned();
-    let call_bounds = Arc::clone(bounds);
-    // How many calls this RUN has made, counted once for every way it can make one: an SDK
-    // call and a request the handler sends itself spend the same budget.
-    let made = Arc::new(AtomicU64::new(0));
-    let counted = Arc::clone(&made);
+    let calling = Arc::clone(session);
     set_function(
         vm,
         &module,
@@ -885,17 +1355,21 @@ fn host_module(
         move |args: FuncArgs, vm: &VirtualMachine| {
             let (service, operation, region, body): (String, String, String, String) =
                 args.bind(vm)?;
+            let call_bounds = calling.bounds();
             // A run whose budget is already spent makes no further call: the latched stop
             // is its answer, so work it starts afterwards is work nothing will report.
             if let Some(stop) = call_bounds.stopped() {
                 return Err(vm.new_runtime_error(stop.reason().to_owned()));
             }
-            if counted.fetch_add(1, Ordering::Relaxed) >= MAX_CALLS_PER_RUN as u64 {
+            // How many calls this INVOCATION has made, counted once for every way it can
+            // make one: an SDK call and a request the handler sends itself spend the same
+            // budget, and each invocation an environment serves has a budget of its own.
+            if !calling.may_call() {
                 return Err(vm.new_runtime_error(format!(
                     "one invocation may make at most {MAX_CALLS_PER_RUN} AWS SDK calls"
                 )));
             }
-            let Some(access) = access.as_ref() else {
+            let Some(access) = calling.aws() else {
                 return Ok(vm
                     .ctx
                     .new_str(refusal_answer(
@@ -918,24 +1392,22 @@ fn host_module(
     // mints it and the guest only states which endpoint and which database user it is for.
     // It counts against the same per-run budget as a call, so no run can mint tokens
     // without end.
-    let token_access = aws.cloned();
-    let token_bounds = Arc::clone(bounds);
-    let minted = Arc::clone(&made);
+    let minting = Arc::clone(session);
     set_function(
         vm,
         &module,
         "db_auth_token",
         move |args: FuncArgs, vm: &VirtualMachine| {
             let (host, port, user, region): (String, u16, String, String) = args.bind(vm)?;
-            if let Some(stop) = token_bounds.stopped() {
+            if let Some(stop) = minting.bounds().stopped() {
                 return Err(vm.new_runtime_error(stop.reason().to_owned()));
             }
-            if minted.fetch_add(1, Ordering::Relaxed) >= MAX_CALLS_PER_RUN as u64 {
+            if !minting.may_call() {
                 return Err(vm.new_runtime_error(format!(
                     "one invocation may make at most {MAX_CALLS_PER_RUN} AWS SDK calls"
                 )));
             }
-            let Some(access) = token_access.as_ref() else {
+            let Some(access) = minting.aws() else {
                 return Ok(vm
                     .ctx
                     .new_str(refusal_answer(
@@ -961,25 +1433,24 @@ fn host_module(
     // signature and the destination are all [`super::guest_http`]'s; the two bounds that
     // are this run's — the call count it shares with the SDK seam above and how long one
     // request may take — are held here, where no guest code can reach them.
-    let sending = aws.cloned();
-    let request_bounds = Arc::clone(bounds);
-    let requested = made;
+    let sending = Arc::clone(session);
     set_function(
         vm,
         &module,
         "request",
         move |args: FuncArgs, vm: &VirtualMachine| {
             let (method, url, headers, body): (String, String, String, String) = args.bind(vm)?;
+            let request_bounds = sending.bounds();
             if let Some(stop) = request_bounds.stopped() {
                 return Err(vm.new_runtime_error(stop.reason().to_owned()));
             }
-            if requested.fetch_add(1, Ordering::Relaxed) >= MAX_CALLS_PER_RUN as u64 {
+            if !sending.may_call() {
                 return Err(vm.new_runtime_error(format!(
                     "one invocation may make at most {MAX_CALLS_PER_RUN} calls into this \
                      emulator"
                 )));
             }
-            let Some(access) = sending.as_ref() else {
+            let Some(access) = sending.aws() else {
                 return Ok(vm
                     .ctx
                     .new_str(refusal_answer(
@@ -1001,7 +1472,7 @@ fn host_module(
     // the call count nor the deadline; the operation's own binding and the signature are
     // host code's ([`super::aws_api::presigned`]), so what the guest decides is only which
     // operation of which reachable service the URL names.
-    let presigning = aws.cloned();
+    let presigning = Arc::clone(session);
     set_function(
         vm,
         &module,
@@ -1014,7 +1485,7 @@ fn host_module(
                 String,
                 u64,
             ) = args.bind(vm)?;
-            let Some(access) = presigning.as_ref() else {
+            let Some(access) = presigning.aws() else {
                 return Ok(vm
                     .ctx
                     .new_str(refusal_answer(

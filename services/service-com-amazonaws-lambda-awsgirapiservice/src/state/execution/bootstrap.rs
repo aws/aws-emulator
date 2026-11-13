@@ -29,6 +29,14 @@
 //!   module and resolves its entry point, answering the empty string when the environment
 //!   is ready and an error document for an initialization that failed. None of that is the
 //!   handler's run, so none of it is bounded by the function's `Timeout`.
+//! * `__lambda_bind` — the NEXT invocation's own request, put on the prepared environment:
+//!   the event, the request id, the ARN the call addressed, the client context, the tenant
+//!   and the environment the invocation runs with. It answers the empty string when the
+//!   request is bound and an error document when it could not be. An execution environment
+//!   serves invocation after invocation, so what one invocation brings arrives here rather
+//!   than in the initialization above — and the logging handler is re-installed with this
+//!   invocation's request id, so every record a run leaves names the invocation that wrote
+//!   it.
 //! * `__lambda_invoke` — the handler's own run, which the host calls next, having begun the
 //!   invoke phase itself and passing the instant the `Timeout` is up at. It answers a JSON
 //!   document carrying what the handler returned, or the error it raised.
@@ -38,7 +46,7 @@
 //! read out of the document above rather than out of a module this source would otherwise
 //! have to reach for.
 
-/// The Python source of the runtime, evaluated once per invocation in a fresh interpreter.
+/// The Python source of the runtime, evaluated once per execution environment.
 pub(super) const RUNTIME_SOURCE: &str = r##"
 import sys
 
@@ -480,6 +488,54 @@ def _main_prepare(payload):
     return ""
 
 
+def _bind(request):
+    """Put ONE invocation's own request on the prepared environment.
+
+    An execution environment is initialized once and then serves invocation after
+    invocation, so what the handler is called with — the event, the request id, the ARN
+    the call addressed, the client context, the tenant and the environment of the
+    invocation — is bound here rather than by the initialization. The logging handler is
+    re-installed with this invocation's request id, so a record carries the invocation
+    that wrote it and not the one that happened to initialize the environment.
+    """
+    prepared = _PREPARED.get("request")
+    if prepared is None:
+        return _raised(
+            "Runtime.InternalError",
+            "the execution environment has no prepared request to bind an invocation on",
+            [],
+        )
+    for member in ("event", "requestId", "invokedFunctionArn", "clientContext", "tenantId"):
+        prepared[member] = request.get(member)
+    environment = request.get("environment")
+    if environment is not None:
+        prepared["environment"] = environment
+    _install_logging(prepared["requestId"])
+    return None
+
+
+def _main_bind(payload):
+    library = _PREPARED.get("library") or ""
+    try:
+        request = json.loads(payload)
+    except BaseException as error:
+        return json.dumps(_raised("Runtime.InternalError", str(error), []))
+    try:
+        outcome = _bind(request)
+    except BaseException as error:
+        return json.dumps(
+            _raised(
+                type(error).__name__,
+                str(error),
+                _frames(error.__traceback__, library),
+            )
+        )
+    if outcome is not None:
+        return json.dumps(outcome)
+    # Nothing to report: the invocation is bound and the host may begin the invoke phase.
+    return ""
+
+
 def _main_invoke(deadline_epoch_ms):
     library = _PREPARED.get("library") or ""
     try:
@@ -494,9 +550,11 @@ def _main_invoke(deadline_epoch_ms):
         )
 
 
-# The two functions this source leaves behind, both called by the HOST: the first runs the
-# init phase, the second the handler's own run. Nothing above has run any of the caller's
-# own code: the imports and definitions above are this runtime's own setup.
+# The three functions this source leaves behind, all called by the HOST: the first runs the
+# init phase, the second binds one invocation's own request onto the prepared environment,
+# and the third runs the handler itself. Nothing above has run any of the caller's own code:
+# the imports and definitions above are this runtime's own setup.
 __lambda_prepare = _main_prepare
+__lambda_bind = _main_bind
 __lambda_invoke = _main_invoke
 "##;

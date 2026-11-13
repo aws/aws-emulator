@@ -36,12 +36,19 @@
 //!   holding that memory is the thread's, and past that cap an invocation is refused with
 //!   the modelled throttle rather than adding another thread.
 //!
-//! Both are about the HANDLER's run, because the function's `Timeout` is: every invocation
-//! this emulator serves also INITIALIZES an execution environment of its own first — the
-//! engine is built, its runtime is installed and the handler's module is imported — and that
-//! phase has a span of its own ([`INIT_PHASE_LIMIT`]), which is waited out beside the
-//! handler's `Timeout` and charged to neither the deadline the run is stopped at nor the time
-//! the handler is told it has left.
+//! Both are about the HANDLER's run, because the function's `Timeout` is. An execution
+//! environment is INITIALIZED first — the engine is built, its runtime is installed and the
+//! handler's module is imported — and that phase has a span of its own
+//! ([`INIT_PHASE_LIMIT`]), which is waited out beside the handler's `Timeout` and charged to
+//! neither the deadline the run is stopped at nor the time the handler is told it has left.
+//!
+//! WHICH invocations pay that phase is the engine's. Under the Python interpreter an
+//! environment is initialized once per [`warm_pool::EnvironmentKey`] and then serves
+//! invocation after invocation, exactly as Lambda keeps one: the invocation that finds no
+//! environment of its own standing pays the initialization, and every invocation a standing
+//! environment serves is the handler's run alone ([`warm_pool`]). Under the node engine every
+//! invocation still initializes an environment of its own, because that runtime settles an
+//! invocation inside the context it was started in.
 //!
 //! The engines of the runs in flight hold at most [`MAX_CONCURRENT_RUN_MEMORY_MB`] of memory
 //! between them, so what the handlers of this process take of the host is bounded however
@@ -54,6 +61,11 @@
 //! modelled throttle. Every run happens on a thread of its own with no state guard of this
 //! service held, so one caller's handler cannot stall another caller's request, and the
 //! smallest share a run can hold is what bounds those threads to [`MAX_CONCURRENT_RUNS`].
+//!
+//! An execution environment that is STANDING holds its engine's memory outside that envelope,
+//! because the share a run claimed goes back when the invocation is answered: what the
+//! environments kept for the next invocation hold is bounded by the same figure again, and by
+//! their number ([`warm_pool`]).
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
@@ -74,6 +86,10 @@ pub use run_clock::Clock;
 /// The Python interpreter one invocation runs in, and everything that bounds and contains
 /// it.
 pub mod python;
+
+/// The execution ENVIRONMENTS this process keeps standing, which an invocation of an
+/// already-initialized one is served by.
+pub mod warm_pool;
 
 /// The JavaScript engine one invocation runs in, and everything that bounds and contains
 /// it.
@@ -274,10 +290,14 @@ pub const HOST_WAIT_CEILING: Duration = Duration::from_secs(30);
 /// allows a function to run before stopping it" — bounds the second of them: the INIT phase
 /// creates the execution environment, loads the runtime and runs the code outside the
 /// handler, and AWS states that phase "is limited to 10 seconds"; the INVOKE phase that
-/// follows it is the handler's own run. Every invocation this emulator serves initializes an
-/// environment of its own — the interpreter is built, the runtime is installed and the
-/// handler's module is imported for that one run — so this is the span that setup is allowed,
-/// over and above the `Timeout` the handler itself is given.
+/// follows it is the handler's own run. This is the span that setup is allowed, over and above
+/// the `Timeout` the handler itself is given.
+///
+/// It bounds ONE initialization, not every invocation: under the Python interpreter the
+/// environment is built for the invocation that finds none standing and then serves the
+/// invocations after it, each of which is the handler's run alone ([`warm_pool`]); under the
+/// node engine every invocation initializes an environment of its own and so is bounded by
+/// this span as well as by its `Timeout`.
 pub const INIT_PHASE_LIMIT: Duration = Duration::from_secs(10);
 
 /// How long after its budget is spent a run is still waited for before it is abandoned.
@@ -409,6 +429,14 @@ pub struct Invocation {
     pub runtime: Option<String>,
     /// The `Handler` of the resolved configuration.
     pub handler: Option<String>,
+    /// The REVISION the resolved configuration is at (`FunctionConfig::revision_id`), which
+    /// changes whenever the function's code or configuration does.
+    ///
+    /// It is what says WHICH execution environments may serve this invocation
+    /// ([`warm_pool::EnvironmentKey`]): an environment holds the handler module and the
+    /// environment variables of one revision, so an invocation that arrives after a change
+    /// is never served by one built before it.
+    pub code_revision: String,
     /// The function's own environment variables.
     pub variables: BTreeMap<String, String>,
     /// The function's `MemorySize`, in MB.
@@ -699,6 +727,25 @@ pub async fn run_invocation(invocation: Invocation) -> Result<Invoked, Unrunnabl
     let lifecycle = Arc::new(AtomicU8::new(RUN_RUNNING));
     let thread_lifecycle = Arc::clone(&lifecycle);
     let environment = runtime_environment(&invocation, started);
+    // WHICH execution environments this invocation may be served in: the ones built for this
+    // function version at this revision, in this Region, for this tenant and for this kind of
+    // initialization ([`warm_pool`]). An invocation that finds one of them standing is served
+    // in it and pays no initialization; one that finds none builds its own.
+    let environment_key = warm_pool::EnvironmentKey {
+        function_name: invocation.function_name.clone(),
+        executed_version: invocation.executed_version.clone(),
+        region: invocation.region.clone(),
+        code_revision: invocation.code_revision.clone(),
+        runtime: invocation.runtime.clone().unwrap_or_default(),
+        handler: handler.clone(),
+        memory_size: invocation.memory_size,
+        architecture: invocation.architecture.clone(),
+        initialization_type: invocation.initialization_type,
+        // An invocation is served only in an environment built for the tenant it names, so
+        // nothing a handler left in the interpreter for one tenant is reachable from
+        // another's invocation.
+        tenant_id: invocation.tenant_id.clone(),
+    };
     let spawned = ::std::thread::Builder::new()
         .name("lambda-invocation".to_string())
         .stack_size(RUN_STACK_BYTES)
@@ -720,18 +767,24 @@ pub async fn run_invocation(invocation: Invocation) -> Result<Invoked, Unrunnabl
             };
             let event = event_text(&invocation.payload);
             let finished = match engine {
-                Engine::Python => python::run(&python::Run {
-                    modules: &modules,
-                    handler: &handler,
-                    environment: &environment,
-                    event: event.as_deref(),
-                    request_id: &invocation.request_id,
-                    invoked_function_arn: &invocation.invoked_function_arn,
-                    client_context: invocation.client_context.as_deref(),
-                    tenant_id: invocation.tenant_id.as_deref(),
-                    budget,
-                    aws: invocation.aws.as_ref(),
-                }),
+                // The run happens in an execution environment of this function version
+                // ([`warm_pool::serve`]): the one already standing when there is one, which
+                // is what makes a warm invocation the handler's own run and nothing besides.
+                Engine::Python => warm_pool::serve(
+                    &environment_key,
+                    warm_pool::Served {
+                        modules: Arc::new(modules),
+                        handler: handler.clone(),
+                        environment,
+                        event,
+                        request_id: invocation.request_id.clone(),
+                        invoked_function_arn: invocation.invoked_function_arn.clone(),
+                        client_context: invocation.client_context.clone(),
+                        tenant_id: invocation.tenant_id.clone(),
+                        budget,
+                        aws: invocation.aws.clone(),
+                    },
+                ),
                 Engine::Node => node::run(&node::Run {
                     modules: &modules,
                     handler: &handler,
@@ -1475,6 +1528,7 @@ mod tests {
             region: "us-west-2".to_string(),
             runtime: Some("python3.12".to_string()),
             handler: Some("lambda_function.lambda_handler".to_string()),
+            code_revision: "11111111-1111-1111-1111-111111111111".to_string(),
             variables: BTreeMap::new(),
             memory_size: 256,
             timeout: 3,

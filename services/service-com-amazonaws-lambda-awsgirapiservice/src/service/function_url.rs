@@ -513,6 +513,7 @@ impl<Eng: Send + Sync + 'static> FunctionUrlPlane<Eng> {
             region: record.region.clone(),
             runtime: resolved_config.runtime.clone(),
             handler: resolved_config.handler.clone(),
+            code_revision: resolved_config.revision_id.clone(),
             variables: resolved_config.environment.clone(),
             memory_size: resolved_config.memory_size,
             timeout: resolved_config.timeout,
