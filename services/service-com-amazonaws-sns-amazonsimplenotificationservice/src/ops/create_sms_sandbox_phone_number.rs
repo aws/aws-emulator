@@ -152,6 +152,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
     /// `VerifySMSSandboxPhoneNumber` can check a caller's code against the delivered
     /// one, and `DeleteSMSSandboxPhoneNumber` can remove it.
     ///
+    /// The work of this call is to SEND an SMS message — the one-time password — so it
+    /// is answered only while the account holds an origination entity able to send one
+    /// ([`state::sms_origination`]). An account that holds none is refused with the
+    /// modelled `UserErrorException` (400 / `UserError`), and nothing is stored: a
+    /// pending number whose password was never sent could never be verified.
+    ///
     /// A number the sandbox ALREADY holds keeps the record it has — and with it the
     /// verification status it reached: the operation adds a destination number, and
     /// adding one that is already there takes nothing away. No modelled error says
@@ -192,6 +198,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .into());
         };
         let mut store = store.lock();
+
+        // The one-time password travels by SMS, so an account with nothing to send it
+        // FROM has no verification to start: the registration is refused before any
+        // record is written.
+        if !state::sms_origination::can_send_sms(store.origination_numbers.values()) {
+            return Err(CreateSMSSandboxPhoneNumberErrorModeled::UserErrorException(
+                UserErrorException {
+                    message: Some(state::sms_origination::NO_ORIGINATION_ENTITIES.to_string()),
+                },
+            )
+            .into());
+        }
 
         let held = store.sandbox_phone_numbers.contains_key(&input.phone_number);
         if !held && store.sandbox_phone_numbers.len() >= state::MAX_RECORDS_PER_STORE {

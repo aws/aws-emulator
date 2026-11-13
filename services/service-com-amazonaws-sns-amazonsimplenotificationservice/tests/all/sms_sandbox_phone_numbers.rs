@@ -21,8 +21,8 @@ use std::time::{Duration, SystemTime};
 
 use service_com_amazonaws_sns_amazonsimplenotificationservice::ops::types::S_M_S_SANDBOX_PHONE_NUMBER_VERIFICATION_STATUS_VALUES;
 use service_com_amazonaws_sns_amazonsimplenotificationservice::state::{
-    SandboxPhoneNumberRecord, INVALID_NEXT_TOKEN_REFUSAL, MAX_RECORDS_PER_STORE, PAGE_SIZE,
-    RESOURCE_DOES_NOT_EXIST, SANDBOX_NUMBER_PENDING,
+    sms_origination, OriginationNumberRecord, SandboxPhoneNumberRecord, INVALID_NEXT_TOKEN_REFUSAL,
+    MAX_RECORDS_PER_STORE, PAGE_SIZE, RESOURCE_DOES_NOT_EXIST, SANDBOX_NUMBER_PENDING,
 };
 
 use super::topics_subscriptions_publish::{text_of, Answer, Sns};
@@ -75,10 +75,35 @@ async fn list(sns: &Sns, params: &[(&str, &str)]) -> Answer {
     sns.call("ListSMSSandboxPhoneNumbers", params).await
 }
 
+/// Put one SMS-capable origination number in the account's inventory, the way the
+/// out-of-band provisioning writes it.
+///
+/// The sandbox registration SENDS a one-time password, so it is answered only for an
+/// account that holds something to send it from; every suite that registers a number
+/// gives the account one through this seam (`pub(crate)` so the sibling verification
+/// suite uses the same one), and the suites that assert the refusal leave the
+/// inventory empty.
+pub(crate) fn given_an_origination_number(sns: &Sns) {
+    let state = sns.state();
+    let mut state = state.lock();
+    state.origination_numbers.insert(
+        "+12065550199".to_string(),
+        OriginationNumberRecord {
+            phone_number: "+12065550199".to_string(),
+            status: "Active".to_string(),
+            iso2_country_code: "US".to_string(),
+            route_type: "Transactional".to_string(),
+            number_capabilities: vec![sms_origination::SMS_CAPABILITY.to_string()],
+            created_at: SystemTime::UNIX_EPOCH + Duration::from_secs(1),
+        },
+    );
+}
+
 /// Add `number` to the sandbox, asserting the call was served.
 ///
 /// `pub(crate)` so the sibling verification suite adds a number the same way.
 pub(crate) async fn add(sns: &Sns, case: &str, number: &str) -> Answer {
+    given_an_origination_number(sns);
     let answer = sns
         .call("CreateSMSSandboxPhoneNumber", &[("PhoneNumber", number)])
         .await;
@@ -440,6 +465,7 @@ async fn a_next_token_the_listing_did_not_mint_is_refused() {
 #[tokio::test]
 async fn a_number_past_the_record_ceiling_is_refused() {
     let sns = Sns::new();
+    given_an_origination_number(&sns);
     let filled: Vec<String> = (0..MAX_RECORDS_PER_STORE)
         .map(|at| format!("+1206{at:07}"))
         .collect();

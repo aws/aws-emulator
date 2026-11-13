@@ -41,12 +41,19 @@ pub mod retry_policy_bounds;
 /// What a topic configured with delivery-status feedback roles LOGS about each delivery
 /// it attempted.
 pub mod delivery_status;
+/// Whether this account holds an origination entity SNS could send an SMS message from,
+/// which every operation whose own work is to send one asks before it accepts.
+pub mod sms_origination;
 mod message_structure;
 /// The rules a topic's TAG set is held to, shared by the operations that write one.
 mod tags;
 /// What an ARN of this service names, and how a value that is not one is refused.
 mod arn_references;
+/// The order SNS reports one subscription's attributes in, and the map key that carries
+/// it.
+mod subscription_attribute_order;
 pub use arn_references::*;
+pub use subscription_attribute_order::*;
 pub use tags::*;
 /// How a message published under a `MessageStructure` is read, and which text of it one
 /// delivery protocol receives.
@@ -169,12 +176,14 @@ pub const CONFIRMATION_TOKEN_HEX_CHARS: usize = 64;
 /// The sentence a `ConfirmSubscription` carrying a token that is not the one sent to
 /// one of the topic's awaiting endpoints is refused with.
 ///
-/// `Invalid parameter:` plus the member the rejected value was carried in, as every
-/// other parameter refusal of this service is worded, and nothing else: the token is
-/// opaque and secret, so the sentence reproduces NEITHER the token the caller sent nor
-/// the one that was sent to the endpoint. The HTTP 400 and the `InvalidParameter` code
-/// are the requirement; this is SNS's wording of the reason.
-pub const INVALID_CONFIRMATION_TOKEN_REFUSAL: &str = "Invalid parameter: Token";
+/// WHOLLY FIXED text: the token is opaque and secret, so the sentence reproduces
+/// NEITHER the token the caller sent nor the one that was sent to the endpoint, and it
+/// carries no member frame either — a token that confirms nothing is not a member whose
+/// value broke a constraint, so SNS names the condition itself rather than the member it
+/// arrived in. Recorded evidence: `ConfirmSubscription` with a token that is not a
+/// confirmation token of the topic answers `400 InvalidParameter` with exactly this
+/// sentence.
+pub const INVALID_CONFIRMATION_TOKEN_REFUSAL: &str = "Invalid token";
 
 /// The attribute names SNS defines for a subscription, from the `Subscribe` /
 /// `SetSubscriptionAttributes` docs. Closed for the same two reasons as
@@ -985,6 +994,19 @@ pub struct RequestPolicy {
     pub other: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
+impl RequestPolicy {
+    /// The request policy SNS delivers an HTTP/S notification under by default: the
+    /// plain-text content type recorded AWS responses carry for both documents a request
+    /// policy appears in — a topic's `http.defaultRequestPolicy` and the `requestPolicy`
+    /// of a subscription's effective delivery policy — so the two cannot drift.
+    pub fn system_default() -> Self {
+        Self {
+            header_content_type: "text/plain; charset=UTF-8".to_string(),
+            other: std::collections::BTreeMap::new(),
+        }
+    }
+}
+
 impl HealthyRetryPolicy {
     /// SNS's own retry policy — the "account system defaults" every effective delivery
     /// policy is taken over: "the default delivery policy ... numRetries 3 ...
@@ -1016,10 +1038,7 @@ impl DeliveryPolicy {
             http: HttpDeliveryPolicy {
                 default_healthy_retry_policy: HealthyRetryPolicy::system_default(),
                 disable_subscription_overrides: false,
-                default_request_policy: RequestPolicy {
-                    header_content_type: "text/plain; charset=UTF-8".to_string(),
-                    other: std::collections::BTreeMap::new(),
-                },
+                default_request_policy: RequestPolicy::system_default(),
                 other: std::collections::BTreeMap::new(),
             },
             other: std::collections::BTreeMap::new(),
@@ -1268,6 +1287,13 @@ pub struct SubscriptionDeliveryPolicy {
     pub healthy_retry_policy: HealthyRetryPolicy,
     pub sickly_retry_policy: Option<serde_json::Value>,
     pub throttle_policy: Option<serde_json::Value>,
+    /// How SNS forms the REQUEST it delivers the notification in — the `Content-Type`
+    /// header of the POST — reported in the same place and the same order the document's
+    /// other sections are: present as the document's own section, and `null` for a
+    /// policy that states none. (A subscription's STORED policy states one only where its
+    /// owner wrote one; the EFFECTIVE policy of an HTTP/S subscription takes the topic's
+    /// default, see [`effective_subscription_delivery_policy`].)
+    pub request_policy: Option<RequestPolicy>,
     pub guaranteed: bool,
     #[serde(flatten)]
     pub other: std::collections::BTreeMap<String, serde_json::Value>,
@@ -1276,12 +1302,14 @@ pub struct SubscriptionDeliveryPolicy {
 impl SubscriptionDeliveryPolicy {
     /// The policy a subscription nobody has given one delivers under: the account system
     /// defaults ([`HealthyRetryPolicy::system_default`]), no policy of its own for an
-    /// unhealthy endpoint, no throttling and no delivery guarantee.
+    /// unhealthy endpoint, no throttling, no request policy of its own and no delivery
+    /// guarantee.
     pub fn system_default() -> Self {
         Self {
             healthy_retry_policy: HealthyRetryPolicy::system_default(),
             sickly_retry_policy: None,
             throttle_policy: None,
+            request_policy: None,
             guaranteed: false,
             other: std::collections::BTreeMap::new(),
         }
@@ -1296,6 +1324,7 @@ pub struct ConfiguredSubscriptionDeliveryPolicy {
     pub healthy_retry_policy: Option<ConfiguredRetryPolicy>,
     pub sickly_retry_policy: Option<serde_json::Value>,
     pub throttle_policy: Option<serde_json::Value>,
+    pub request_policy: Option<ConfiguredRequestPolicy>,
     pub guaranteed: Option<bool>,
     #[serde(flatten)]
     pub other: std::collections::BTreeMap<String, serde_json::Value>,
@@ -1315,6 +1344,17 @@ impl ConfiguredSubscriptionDeliveryPolicy {
         }
         if self.throttle_policy.is_some() {
             defaults.throttle_policy = self.throttle_policy;
+        }
+        if let Some(request) = self.request_policy {
+            let mut held = defaults
+                .request_policy
+                .take()
+                .unwrap_or_else(RequestPolicy::system_default);
+            if let Some(value) = request.header_content_type {
+                held.header_content_type = value;
+            }
+            held.other.extend(request.other);
+            defaults.request_policy = Some(held);
         }
         if let Some(guaranteed) = self.guaranteed {
             defaults.guaranteed = guaranteed;
@@ -1724,15 +1764,30 @@ pub fn json_object(value: &str) -> Option<serde_json::Map<String, serde_json::Va
     }
 }
 
-/// The sentence SNS refuses a `FilterPolicy` it could not parse with: the attribute
-/// and the parse that failed, which the parser's own diagnostic is appended to (see
-/// [`filter_policy_parse_refusal`]).
-pub const FILTER_POLICY_PARSE_REFUSAL: &str =
-    "Invalid parameter: Attributes Reason: FilterPolicy: failed to parse JSON.";
+/// The clause SNS opens the refusal of the attribute `name` whose document it could not
+/// parse with: `Invalid parameter:`, the attribute AS THE CALLER SPELLED IT, and the
+/// parse that failed — which the parser's own diagnostic is appended to (see
+/// [`attribute_parse_refusal`]).
+///
+/// The fault is in the named attribute's own document, so SNS names that attribute
+/// DIRECTLY: there is no `<member> Reason: ` frame here, whichever member carried the
+/// write. (That frame belongs to the refusals whose offending parameter IS the
+/// `Attributes` map — see [`AttributeMember`].) Recorded evidence:
+/// `SetSubscriptionAttributes` with a `FilterPolicy` value that is not JSON answers `400
+/// InvalidParameter` with `Invalid parameter: FilterPolicy: failed to parse JSON. ` and
+/// the parser's diagnostic, and nothing in front of the attribute name.
+pub fn attribute_parse_refusal_opening(name: &str) -> String {
+    format!("Invalid parameter: {name}: failed to parse JSON.")
+}
 
-/// The WHOLE sentence SNS refuses an unparseable `FilterPolicy` with: the leading
-/// clause ([`FILTER_POLICY_PARSE_REFUSAL`]) followed by the parser's own diagnostic of
-/// where the document stopped parsing.
+/// The WHOLE sentence SNS refuses a value of the attribute `name` that is not JSON at
+/// all with: the opening clause ([`attribute_parse_refusal_opening`]) followed by the
+/// parser's own diagnostic of where the document stopped parsing.
+///
+/// One sentence per CONDITION rather than per attribute: every attribute of a topic or a
+/// subscription whose value is a JSON document is parsed by the same parser, so a value
+/// that is not JSON is refused the same way whichever attribute carried it — only the
+/// name changes.
 ///
 /// A document that stops on an unquoted word where a value belongs is reported by
 /// naming that word, which is what lets a caller whose policy was built by templating
@@ -1742,7 +1797,7 @@ pub const FILTER_POLICY_PARSE_REFUSAL: &str =
 /// ([`::service_common::json_parse_fault`]), taken from the parse that actually ran, so
 /// the position is the parser's rather than a guess. Nothing in the sentence echoes the
 /// document back: its source is reported as redacted.
-fn filter_policy_parse_refusal(value: &str, error: &serde_json::Error) -> String {
+pub fn attribute_parse_refusal(name: &str, value: &str, error: &serde_json::Error) -> String {
     use ::service_common::json_parse_fault as fault;
 
     let diagnosis = match fault::unrecognized_token(value, error) {
@@ -1757,7 +1812,19 @@ fn filter_policy_parse_refusal(value: &str, error: &serde_json::Error) -> String
             fault::source_location(error.line(), error.column())
         ),
     };
-    format!("{FILTER_POLICY_PARSE_REFUSAL} {diagnosis}")
+    format!("{} {diagnosis}", attribute_parse_refusal_opening(name))
+}
+
+/// The sentence a value of the attribute `name` is refused with when it is not JSON at
+/// all, or `None` when it parses as JSON (whatever the document then turns out to be).
+///
+/// The gate every attribute whose value is a JSON document passes first: a value the
+/// parser could not read is a parse failure ([`attribute_parse_refusal`]), and only a
+/// document that DID parse is then judged against the shape that attribute requires.
+pub fn attribute_json_parse_refusal(name: &str, value: &str) -> Option<String> {
+    serde_json::from_str::<serde_json::Value>(value)
+        .err()
+        .map(|error| attribute_parse_refusal(name, value, &error))
 }
 
 /// The sentence SNS refuses a NESTED filter policy scoped to the message attributes
@@ -1963,7 +2030,7 @@ pub fn subscription_attribute_refusal(
             // What SNS reports when its parse of the document failed, naming the
             // attribute, the parse and where in the document it stopped — never the
             // document the caller sent.
-            Err(error) => Some(filter_policy_parse_refusal(value, &error)),
+            Err(error) => Some(attribute_parse_refusal(name, value, &error)),
             // The document parses and is an object, so what is left to judge is its
             // GRAMMAR and its size, which the matching's own reading of a policy states.
             // The reader's own sentence stands as it is; a LIMIT on the policy as a
@@ -1984,8 +2051,13 @@ pub fn subscription_attribute_refusal(
         // The SAME parse the stored, normalized document is computed with, so a
         // document the read path could not honour is never stored — then each retry
         // member against its own documented bound, and last the rules those members
-        // hold EACH OTHER to.
+        // hold EACH OTHER to. A value that is not JSON at all never reaches the
+        // document's own shape: it is the parse failure every attribute's document
+        // shares ([`attribute_json_parse_refusal`]).
         DELIVERY_POLICY_ATTRIBUTE => {
+            if let Some(refusal) = attribute_json_parse_refusal(name, value) {
+                return Some(refusal);
+            }
             match serde_json::from_str::<ConfiguredSubscriptionDeliveryPolicy>(value) {
                 Err(error) => Some(attribute_reason(format!(
                     "{name} - the value must be a delivery policy document: {error}"
@@ -2015,9 +2087,13 @@ pub fn subscription_attribute_refusal(
             },
         },
         REPLAY_POLICY_ATTRIBUTE => json_object(value).is_none().then(|| {
-            attribute_reason(format!(
-                "{name} - the value must be a replay policy document: a JSON object"
-            ))
+            // Not JSON at all is the parse failure every attribute's document shares;
+            // JSON that is no object is no replay policy.
+            attribute_json_parse_refusal(name, value).unwrap_or_else(|| {
+                attribute_reason(format!(
+                    "{name} - the value must be a replay policy document: a JSON object"
+                ))
+            })
         }),
         // "The ARN of the IAM role that has …" — only the ARN's shape is judged here;
         // whether that role exists is not this service's record to check.
@@ -2258,6 +2334,11 @@ pub fn effective_subscription_delivery_policy(
     }
     let mut effective = SubscriptionDeliveryPolicy {
         healthy_retry_policy: from_topic.http.default_healthy_retry_policy,
+        // "the effective delivery policy that takes into account the topic delivery
+        // policy": the request the notification is delivered IN is the topic's default
+        // one, so the effective policy of a subscription nobody gave a request policy
+        // states that default rather than nothing.
+        request_policy: Some(from_topic.http.default_request_policy),
         ..SubscriptionDeliveryPolicy::system_default()
     };
     if !from_topic.http.disable_subscription_overrides {

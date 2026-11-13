@@ -70,7 +70,7 @@
 
 #[allow(unused_imports)]
 use super::types::*;
-use crate::state;
+use crate::state::{self, SubscriptionAttributeName};
 use std::collections::BTreeMap;
 
 // `#[operation_error]` below expands to an invocation of the LOCAL declarative
@@ -199,52 +199,52 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // Every property SNS reports for a subscription: the ones it COMPUTES from the
         // record — the subscription's own ARN, the topic it belongs to, how and where it
         // delivers, the account that owns it and its confirmation state — beside the
-        // ones its owner set.
-        let mut attributes: BTreeMap<String, String> = BTreeMap::new();
+        // ones its owner set. Keyed by
+        // [`state::SubscriptionAttributeName`], so the entries serialize in the order SNS
+        // reports them ([`state::REPORTED_SUBSCRIPTION_ATTRIBUTE_ORDER`]) however this
+        // assembly happens to insert them.
+        let mut attributes: BTreeMap<SubscriptionAttributeName, String> = BTreeMap::new();
         attributes.insert(
-            state::SUBSCRIPTION_ARN_ATTRIBUTE.to_string(),
+            state::SUBSCRIPTION_ARN_ATTRIBUTE.into(),
             subscription.arn.clone(),
         );
         attributes.insert(
-            state::TOPIC_ARN_ATTRIBUTE.to_string(),
+            state::TOPIC_ARN_ATTRIBUTE.into(),
             subscription.topic_arn.clone(),
         );
         attributes.insert(
-            state::PROTOCOL_ATTRIBUTE.to_string(),
+            state::PROTOCOL_ATTRIBUTE.into(),
             subscription.protocol.clone(),
         );
         // The endpoint is the address the subscription was created for, reported
         // verbatim however the resource it names has fared since: a subscription
         // outlives the function or the queue at its endpoint.
         if let Some(endpoint) = &subscription.endpoint {
-            attributes.insert(state::ENDPOINT_ATTRIBUTE.to_string(), endpoint.clone());
+            attributes.insert(state::ENDPOINT_ATTRIBUTE.into(), endpoint.clone());
         }
-        attributes.insert(
-            state::OWNER_ATTRIBUTE.to_string(),
-            subscription.owner.clone(),
-        );
+        attributes.insert(state::OWNER_ATTRIBUTE.into(), subscription.owner.clone());
         // The principal whose call created the subscription, kept with the record: what a
         // client auditing who subscribed an endpoint reads.
         attributes.insert(
-            state::SUBSCRIPTION_PRINCIPAL_ATTRIBUTE.to_string(),
+            state::SUBSCRIPTION_PRINCIPAL_ATTRIBUTE.into(),
             subscription.principal.clone(),
         );
         // A subscription awaiting its subscriber's confirmation is pending, and nothing
         // has confirmed it yet; one SNS confirmed itself was confirmed by the
         // authenticated API call that created it.
         attributes.insert(
-            state::PENDING_CONFIRMATION_ATTRIBUTE.to_string(),
+            state::PENDING_CONFIRMATION_ATTRIBUTE.into(),
             state::attribute_flag(subscription.pending_confirmation),
         );
         attributes.insert(
-            state::CONFIRMATION_WAS_AUTHENTICATED_ATTRIBUTE.to_string(),
+            state::CONFIRMATION_WAS_AUTHENTICATED_ATTRIBUTE.into(),
             state::attribute_flag(!subscription.pending_confirmation),
         );
         // Raw message delivery is reported whether or not it was set: a subscription
         // whose owner has set none delivers SNS's JSON envelope, which is the
         // documented default.
         attributes.insert(
-            state::RAW_MESSAGE_DELIVERY_ATTRIBUTE.to_string(),
+            state::RAW_MESSAGE_DELIVERY_ATTRIBUTE.into(),
             subscription
                 .attributes
                 .get(state::RAW_MESSAGE_DELIVERY_ATTRIBUTE)
@@ -256,7 +256,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // for a policy it has not been given yet.
         if let Some(scope) = state::reported_filter_policy_scope(&subscription.attributes) {
             attributes.insert(
-                state::FILTER_POLICY_SCOPE_ATTRIBUTE.to_string(),
+                state::FILTER_POLICY_SCOPE_ATTRIBUTE.into(),
                 scope.to_string(),
             );
         }
@@ -267,7 +267,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // one.
         if state::DELIVERY_POLICY_PROTOCOLS.contains(&subscription.protocol.as_str()) {
             attributes.insert(
-                state::EFFECTIVE_DELIVERY_POLICY_ATTRIBUTE.to_string(),
+                state::EFFECTIVE_DELIVERY_POLICY_ATTRIBUTE.into(),
                 state::effective_subscription_delivery_policy(
                     store.topics.get(&subscription.topic_arn),
                     subscription,
@@ -282,7 +282,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             if name == state::FILTER_POLICY_SCOPE_ATTRIBUTE {
                 continue;
             }
-            attributes.insert(name.clone(), value.clone());
+            attributes.insert(name.clone().into(), value.clone());
         }
         // "ReplayStatus – Retrieves the status of the subscription message replay"
         // (`SubscribeInput$Attributes` doc): the state of the replay the subscription's
@@ -294,7 +294,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .contains_key(state::REPLAY_POLICY_ATTRIBUTE)
         {
             attributes.insert(
-                state::REPLAY_STATUS_ATTRIBUTE.to_string(),
+                state::REPLAY_STATUS_ATTRIBUTE.into(),
                 subscription
                     .replay
                     .as_ref()

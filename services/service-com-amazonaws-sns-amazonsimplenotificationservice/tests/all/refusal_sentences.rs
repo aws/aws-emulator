@@ -31,7 +31,7 @@ const SUBJECT_REFUSAL: &str = "Invalid parameter: Subject";
 /// bare word `this` at the first column of the first line. Which word and which position
 /// the diagnostic names is `filter_policy_parse_diagnostic.rs`.
 const FILTER_POLICY_PARSE_REFUSAL: &str =
-    "Invalid parameter: Attributes Reason: FilterPolicy: failed to parse JSON. \
+    "Invalid parameter: FilterPolicy: failed to parse JSON. \
      Unrecognized token 'this': was expecting (JSON String, Number, Array, Object or \
      token 'null', 'true' or 'false')\n at [Source: REDACTED \
      (`StreamReadFeature.INCLUDE_SOURCE_IN_LOCATION` disabled); line: 1, column: 1]";

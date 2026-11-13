@@ -48,7 +48,8 @@ const DELIVERY_POLICY: &str = r#"{"healthyRetryPolicy":{"numRetries":7}}"#;
 const NORMALIZED_DELIVERY_POLICY: &str = r#"{"healthyRetryPolicy":{
     "minDelayTarget":20,"maxDelayTarget":20,"numRetries":7,"numMaxDelayRetries":0,
     "numNoDelayRetries":0,"numMinDelayRetries":0,"backoffFunction":"linear"},
-    "sicklyRetryPolicy":null,"throttlePolicy":null,"guaranteed":false}"#;
+    "sicklyRetryPolicy":null,"throttlePolicy":null,"requestPolicy":null,
+    "guaranteed":false}"#;
 
 /// A delivery policy that names no retry member at all, and the document it reads back
 /// as: the member it does name is kept and the retry policy is the defaults whole.
@@ -57,7 +58,7 @@ const NORMALIZED_THROTTLE_DELIVERY_POLICY: &str = r#"{"healthyRetryPolicy":{
     "minDelayTarget":20,"maxDelayTarget":20,"numRetries":3,"numMaxDelayRetries":0,
     "numNoDelayRetries":0,"numMinDelayRetries":0,"backoffFunction":"linear"},
     "sicklyRetryPolicy":null,"throttlePolicy":{"maxReceivesPerSecond":2},
-    "guaranteed":false}"#;
+    "requestPolicy":null,"guaranteed":false}"#;
 
 /// Whether the attribute value SNS reported is the one expected: the same DOCUMENT when
 /// both are JSON, because the order a policy's members serialize in is not part of its

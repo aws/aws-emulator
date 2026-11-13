@@ -374,7 +374,12 @@ async fn subscription_attributes_are_projected_from_the_persisted_subscription()
 
         let answer = read(&sns, case, &arn).await;
         let entries = attribute_entries(&answer);
-        let keys: Vec<&str> = entries.iter().map(|(key, _)| key.as_str()).collect();
+        // WHICH attributes the map carries, named here; the SEQUENCE the entries are
+        // reported in is one rule for every subscription and is asserted by
+        // `effective_delivery_policy_entry_layout.rs`, so the rows below list the names
+        // alphabetically and compare the set.
+        let mut keys: Vec<&str> = entries.iter().map(|(key, _)| key.as_str()).collect();
+        keys.sort_unstable();
         assert_eq!(
             keys, *expected_keys,
             "case {case:?}: expected the attribute keys {expected_keys:?}, got {keys:?}"

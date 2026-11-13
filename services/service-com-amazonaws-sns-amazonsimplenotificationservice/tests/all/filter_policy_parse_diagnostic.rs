@@ -22,9 +22,11 @@
 
 use super::topics_subscriptions_publish::{attribute_map, Answer, Sns};
 
-/// The clause every refusal of an unparseable filter policy opens with.
-const LEADING_CLAUSE: &str = "Invalid parameter: Attributes Reason: FilterPolicy: failed to \
-                              parse JSON.";
+/// The clause every refusal of an unparseable filter policy opens with: the attribute
+/// the document was written to, named DIRECTLY — the fault is in that document, so SNS
+/// states no `<member> Reason: ` frame in front of it, whichever operation carried the
+/// write.
+const LEADING_CLAUSE: &str = "Invalid parameter: FilterPolicy: failed to parse JSON.";
 
 /// The WHOLE sentence a document the parse stopped on `token` at `line`:`column` is refused
 /// with.

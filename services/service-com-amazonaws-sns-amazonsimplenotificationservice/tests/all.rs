@@ -20,8 +20,14 @@ mod account_subscriptions_listing;
 #[path = "all/arn_reference_refusals.rs"]
 mod arn_reference_refusals;
 
+#[path = "all/attribute_document_parse_refusal.rs"]
+mod attribute_document_parse_refusal;
+
 #[path = "all/confirm_subscription.rs"]
 mod confirm_subscription;
+
+#[path = "all/confirm_subscription_token_refusal.rs"]
+mod confirm_subscription_token_refusal;
 
 #[path = "all/create_platform_application.rs"]
 mod create_platform_application;
@@ -43,6 +49,9 @@ mod delivery_status_logging;
 
 #[path = "all/empty_policy_attribute_value.rs"]
 mod empty_policy_attribute_value;
+
+#[path = "all/effective_delivery_policy_entry_layout.rs"]
+mod effective_delivery_policy_entry_layout;
 
 #[path = "all/error_envelope.rs"]
 mod error_envelope;
@@ -90,6 +99,9 @@ mod list_subscriptions;
 
 #[path = "all/origination_numbers_listing.rs"]
 mod origination_numbers_listing;
+
+#[path = "all/opt_out_check_reports_every_number.rs"]
+mod opt_out_check_reports_every_number;
 
 #[path = "all/phone_number_opt_in.rs"]
 mod phone_number_opt_in;
@@ -156,6 +168,9 @@ mod sms_sandbox_account_status;
 
 #[path = "all/sms_sandbox_phone_numbers.rs"]
 mod sms_sandbox_phone_numbers;
+
+#[path = "all/sms_sandbox_origination_entities.rs"]
+mod sms_sandbox_origination_entities;
 
 #[path = "all/sms_sandbox_verification.rs"]
 mod sms_sandbox_verification;

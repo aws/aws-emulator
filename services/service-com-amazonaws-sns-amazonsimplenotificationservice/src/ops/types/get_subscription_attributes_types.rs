@@ -20,11 +20,11 @@ pub struct GetSubscriptionAttributesInput {
 #[smithy_macros::smithy(shape = "com.amazonaws.sns#GetSubscriptionAttributesResponse")]
 #[derive(Debug, Clone, Default)]
 pub struct GetSubscriptionAttributesOutput {
-    /// A `BTreeMap`, so two reads of one subscription answer the same document: a
-    /// `HashMap<String, String>` would serialize the same subscription's entries in a
-    /// different order from one call to the next. SNS does not document the order it
-    /// reports a subscription's attributes in, so the one requirement this map carries
-    /// is that it is STABLE, which the key's own ordering gives it.
-    pub attributes: Option<std::collections::BTreeMap<String, String>>,
+    /// Keyed by [`crate::state::SubscriptionAttributeName`], whose ordering is the order
+    /// SNS reports a subscription's attributes in: a `BTreeMap` of it serializes the
+    /// entries in that order, where a `HashMap<String, String>` would serialize the same
+    /// subscription's entries in a different order on every call.
+    pub attributes:
+        Option<std::collections::BTreeMap<crate::state::SubscriptionAttributeName, String>>,
 }
 
