@@ -52,8 +52,6 @@ mod recorded_response_members;
 // The ONE projection of a network ACL's rule table: every reader reports the ACL's stored
 // rules egress-first by ascending rule number, each carrying the port range and the ICMP type
 // and code as present-but-empty members where the protocol has no use for them. Declared
-// beside `prefix_lists` for the reason the note above gives: the sorted neighbourhood and the
-// tail of this file are where every new ec2 suite inserts its lines.
 #[path = "all/network_acl_entry_set_projection.rs"]
 mod network_acl_entry_set_projection;
 // The MODELLED MEMBERS a successful response carries: the Region display data a zone
@@ -153,8 +151,6 @@ mod ipv6_pools;
 // What `DescribeBundleTasks` reports out of the bundle-task store: every member of a stored
 // task, the ids and the published filters that narrow the report, the bounds on a request's
 // match, the dry-run answer, and that describing writes nothing. Declared beside
-// `prefix_lists` for the reason the note above gives: the sorted neighbourhood and the tail
-// of this file are where every new ec2 suite inserts its lines.
 #[path = "all/bundle_tasks.rs"]
 mod bundle_tasks;
 // The VPC Block Public Access OPTIONS of one Region: the mode
@@ -2070,3 +2066,8 @@ mod instance_eni_and_volume_projections;
 // where every new ec2 suite lands.
 #[path = "all/launch_template_key_and_version_resolution.rs"]
 mod launch_template_key_and_version_resolution;
+// Every call this service SERVES in the account's management-event history — the refusals
+// with the fault class, the code and the message their caller saw and no response elements,
+// the successes with none of those. Declared beside `prefix_lists` for the reason the note
+#[path = "all/served_call_audit_records.rs"]
+mod served_call_audit_records;

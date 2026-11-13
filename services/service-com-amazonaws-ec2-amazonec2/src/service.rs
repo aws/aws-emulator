@@ -91,6 +91,14 @@ pub mod recorded_response_members;
 /// supports resource-level permissions.
 pub mod addressed_resources;
 
+/// This front door's AUDIT leg: every call it serves — the ones it REFUSES as much as the
+/// ones it accepts — is a management event of this service, recorded in the account's event
+/// history where CloudTrail's `LookupEvents` reads it. Written by
+/// [`FinishedEnvelope::run`], from the outcome the layer that answered the caller held, for
+/// the same reason the gates above live there: recording a call is a property of SERVING
+/// it rather than of any one operation.
+pub mod management_events;
+
 /// The `com-amazonaws-ec2-amazonec2` emulated service: the generated [`ServiceDefinition`] plus
 /// the behavioral seams this file owns.
 ///
@@ -585,6 +593,12 @@ impl ServerProtocol for Ec2QueryEnvelope {
         response
             .headers_mut()
             .insert("content-type", RESPONSE_CONTENT_TYPE);
+        // The AUDIT leg of this response: what the call ANSWERED with, as the
+        // `responseElements` of the management event this service records for it
+        // ([`management_events`]). Held here, where the built output and its schema are,
+        // and written by [`FinishedEnvelope::run`] once the response the caller gets
+        // exists — the only moment the id that record names the request by is known.
+        management_events::hold_success(output, output_schema);
         Ok(response)
     }
 
@@ -601,6 +615,12 @@ impl ServerProtocol for Ec2QueryEnvelope {
         // The media type and the envelope's own request id, neither of which the
         // framework's ec2Query error body carries; see [`stamp_envelope`].
         stamp_envelope(&mut response);
+        // The AUDIT leg of this refusal: the code and the message the CALLER is answered
+        // with, as the `errorCode` and `errorMessage` of the management event this service
+        // records for the call ([`management_events`]). Taken here rather than read back off
+        // the rendered body, so the recorded message is the one the caller received before
+        // the envelope escaped it.
+        management_events::hold_failure(error, error_schema, error_code, http_status);
         Ok(response)
     }
 }
@@ -754,44 +774,18 @@ impl<Eng: Send + Sync + 'static> ErasedOperation for FinishedEnvelope<Eng> {
         ctx: &'r smithy_server_runtime::OperationContext<'r>,
     ) -> smithy_server_runtime::BoxFuture<'r, RtResponse> {
         Box::pin(async move {
-            // The Region gate, ahead of every operation: EC2 is reached through a REGIONAL
-            // endpoint, and a Region the account has not enabled serves it nothing at all —
-            // every request to that endpoint is refused `AuthFailure` rather than answered
-            // with an empty result, which is what lets a client tell "this Region is not
-            // available to me" from "this Region is empty". It belongs here rather than in
-            // any one handler because it is a fact of the ENDPOINT the request reached, not
-            // of the operation it named ([`crate::state::region_is_enabled_for_account`]).
-            if let Some(mut response) = region_refusal(ctx) {
-                stamp_envelope(&mut response);
-                return response;
-            }
-            // The authorization gate, for the same reason: whether the caller may perform
-            // the action at all is a fact of the CREDENTIAL the request presented and the
-            // IAM policies in force on the principal it speaks for, not of the input the
-            // operation reads ([`authorization::authorize`]).
-            if let Some(mut response) = authorization_refusal(&*self.engine, svc, req, ctx) {
-                stamp_envelope(&mut response);
-                return response;
-            }
-            // The fault-injection gate, for the same reason: whether a running experiment
-            // has made this caller's calls to this operation fail is a fact of the
-            // CREDENTIAL the request presented and of the instant it arrived, not of the
-            // input the operation reads ([`injected_faults::injected_fault`]). It is asked
-            // after the gate above, so a call the caller may not make at all is refused as
-            // such and an injected fault fails a call it could otherwise have made.
-            if let Some(mut response) = injected_fault_response(&*self.engine, svc, req, ctx) {
-                stamp_envelope(&mut response);
-                return response;
-            }
-            let mut response = match modeled_operation(svc, req) {
-                Some(operation) => operation.run(svc, req, ctx).await,
-                // `override_operation` claims a request only for a routing key the table
-                // serves, so this is unreachable; a request that somehow arrives here
-                // named no operation of this service and is answered the way one that
-                // names none is, rather than with an invented envelope.
-                None => svc.definition().routing_error_response(req),
-            };
+            // Whatever this thread may still hold belongs to no call this run serves (see
+            // [`management_events`]): cleared before the slot is used, so one call's
+            // outcome can never be recorded on another call's response.
+            management_events::forget_any_unanswered();
+            let mut response = self.served(svc, req, ctx).await;
             stamp_envelope(&mut response);
+            // The AUDIT leg, after the response the caller gets has been finished and
+            // before it is answered: every call this front door serves is a management
+            // event of this service, recorded in the account's event history where
+            // CloudTrail reads it ([`management_events`]). It changes nothing about what
+            // this call answers.
+            management_events::record_served_call(&*self.engine, svc, req, ctx, &response).await;
             response
         })
     }
@@ -809,6 +803,61 @@ impl<Eng: Send + Sync + 'static> ErasedOperation for FinishedEnvelope<Eng> {
     }
 }
 
+impl<Eng: Send + Sync + 'static> FinishedEnvelope<Eng> {
+    /// The response this request is SERVED with: the gates ahead of every operation, then
+    /// the modelled operation itself, each answer finished with this service's envelope.
+    ///
+    /// Split out of [`ErasedOperation::run`] so that the one thing `run` does around it —
+    /// recording the call it served ([`management_events`]) — happens on every path out of
+    /// here, the refusals the gates answer included, rather than once per `return`.
+    async fn served(
+        &self,
+        svc: &dyn Service,
+        req: &RtRequest,
+        ctx: &smithy_server_runtime::OperationContext<'_>,
+    ) -> RtResponse {
+        // The Region gate, ahead of every operation: EC2 is reached through a REGIONAL
+        // endpoint, and a Region the account has not enabled serves it nothing at all —
+        // every request to that endpoint is refused `AuthFailure` rather than answered
+        // with an empty result, which is what lets a client tell "this Region is not
+        // available to me" from "this Region is empty". It belongs here rather than in
+        // any one handler because it is a fact of the ENDPOINT the request reached, not
+        // of the operation it named ([`crate::state::region_is_enabled_for_account`]).
+        if let Some(mut response) = region_refusal(ctx) {
+            stamp_envelope(&mut response);
+            return response;
+        }
+        // The authorization gate, for the same reason: whether the caller may perform
+        // the action at all is a fact of the CREDENTIAL the request presented and the
+        // IAM policies in force on the principal it speaks for, not of the input the
+        // operation reads ([`authorization::authorize`]).
+        if let Some(mut response) = authorization_refusal(&*self.engine, svc, req, ctx) {
+            stamp_envelope(&mut response);
+            return response;
+        }
+        // The fault-injection gate, for the same reason: whether a running experiment
+        // has made this caller's calls to this operation fail is a fact of the
+        // CREDENTIAL the request presented and of the instant it arrived, not of the
+        // input the operation reads ([`injected_faults::injected_fault`]). It is asked
+        // after the gate above, so a call the caller may not make at all is refused as
+        // such and an injected fault fails a call it could otherwise have made.
+        if let Some(mut response) = injected_fault_response(&*self.engine, svc, req, ctx) {
+            stamp_envelope(&mut response);
+            return response;
+        }
+        let mut response = match modeled_operation(svc, req) {
+            Some(operation) => operation.run(svc, req, ctx).await,
+            // `override_operation` claims a request only for a routing key the table
+            // serves, so this is unreachable; a request that somehow arrives here
+            // named no operation of this service and is answered the way one that
+            // names none is, rather than with an invented envelope.
+            None => svc.definition().routing_error_response(req),
+        };
+        stamp_envelope(&mut response);
+        response
+    }
+}
+
 /// EC2's `AuthFailure` response for a request signed for a Region this account has not
 /// enabled, or `None` when the Region it was signed for is one the account can reach.
 ///
@@ -823,14 +872,26 @@ fn region_refusal(ctx: &smithy_server_runtime::OperationContext<'_>) -> Option<R
     if crate::state::region_is_enabled_for_account(&region) {
         return None;
     }
-    Some(smithy_server_runtime::protocol_error_response_with(
+    let response = smithy_server_runtime::protocol_error_response_with(
         smithy_server_runtime::PreDispatchProtocol::Query { ec2: true },
         ProtocolError::Invalid(Vec::new()),
         Some(Refused {
             code: crate::state::AUTH_FAILURE.to_string(),
             message: crate::state::REGION_NOT_ENABLED_MESSAGE.to_string(),
         }),
-    ))
+    );
+    // The AUDIT leg of this refusal: a call refused here was still a call this account's
+    // API served, so the code and the sentence the caller is answered with are what the
+    // management event records for it ([`management_events`]). The status is read off the
+    // response rather than restated, so the audited fault class is the class of the answer
+    // the caller really got.
+    management_events::hold_refusal(
+        crate::state::AUTH_FAILURE,
+        crate::state::REGION_NOT_ENABLED_MESSAGE,
+        response.status().as_u16(),
+        false,
+    );
+    Some(response)
 }
 
 /// EC2's `UnauthorizedOperation` response for a request whose caller the IAM policies in
@@ -867,7 +928,8 @@ fn authorization_refusal<Eng: Send + Sync + 'static>(
         addressed_resources::addressed_by(req, &crate::state::request_region(ctx.parts()))
     };
     let refusal = authorization::authorize(engine, ctx, operation, &resources).err()?;
-    Some(smithy_server_runtime::protocol_error_response_with(
+    let message = refusal.message();
+    let response = smithy_server_runtime::protocol_error_response_with(
         smithy_server_runtime::PreDispatchProtocol::Query { ec2: true },
         ProtocolError::Unauthenticated {
             code: crate::state::UNAUTHORIZED_OPERATION,
@@ -875,9 +937,20 @@ fn authorization_refusal<Eng: Send + Sync + 'static>(
         },
         Some(Refused {
             code: crate::state::UNAUTHORIZED_OPERATION.to_string(),
-            message: refusal.message(),
+            message: message.clone(),
         }),
-    ))
+    );
+    // The AUDIT leg of this refusal ([`management_events`]): this is the one refusal this
+    // service's PERMISSION CHECK answers before the operation acts on the request at all,
+    // so its record carries the call and its outcome and NOT the parameters of a request
+    // that was never dispatched.
+    management_events::hold_refusal(
+        crate::state::UNAUTHORIZED_OPERATION,
+        &message,
+        response.status().as_u16(),
+        true,
+    );
+    Some(response)
 }
 
 /// The failure a RUNNING fault-injection experiment imposes on this request, or `None` when
@@ -905,6 +978,10 @@ fn injected_fault_response<Eng: Send + Sync + 'static>(
     let fault = injected_faults::injected_fault(engine, ctx, operation)?;
     let body = ::aws_smithy_schema_server::query_error_body(true, &fault.code, &fault.message);
     let status = ::aws_smithy_runtime_api::http::StatusCode::try_from(fault.status).ok()?;
+    // The AUDIT leg of this failure ([`management_events`]): a call an experiment failed is
+    // a call this account's API answered, and it is audited with the code and the message
+    // the caller saw — the fault's own.
+    management_events::hold_refusal(&fault.code, &fault.message, fault.status, false);
     Some(RtResponse::new(
         status,
         ::aws_smithy_types::body::SdkBody::from(body),

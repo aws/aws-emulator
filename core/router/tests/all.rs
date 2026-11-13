@@ -974,6 +974,11 @@ mod rds_management_events;
 // refused alike — is in CloudTrail event history.
 #[path = "all/cloudformation_management_events.rs"]
 mod cloudformation_management_events;
+// Declared beside those two, in the same quiet span and for the same reason. This one pins
+// that a REFUSED Amazon EC2 call is in CloudTrail event history, with the fault class, the
+// code and the message its caller saw and no response elements.
+#[path = "all/ec2_management_events.rs"]
+mod ec2_management_events;
 #[path = "all/rds_query_front_door.rs"]
 mod rds_query_front_door;
 #[path = "all/rds_shared_query_front_door_routing.rs"]
