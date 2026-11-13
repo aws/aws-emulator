@@ -61,6 +61,8 @@ mod gateway_mutation;
 mod gateway_rate_limit_batch;
 #[path = "all/gateway_rate_limit_creation.rs"]
 mod gateway_rate_limit_creation;
+#[path = "all/gateway_rule_creation.rs"]
+mod gateway_rule_creation;
 #[path = "all/gateway_target_deletion.rs"]
 mod gateway_target_deletion;
 #[path = "all/gateway_target_listing.rs"]

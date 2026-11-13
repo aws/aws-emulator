@@ -1,15 +1,9 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op CreateGatewayRule
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `CreateGatewayRule`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
-//!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`CreateGatewayRule::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! Implemented: creates one rule on the gateway the path names and stores it
+//! there, so the create and every later read of the rule answer from that one
+//! record.
 //!
 //! ## Shape of an operation
 //!
@@ -189,18 +183,106 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `CreateGatewayRule` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(CreateGatewayRuleErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("CreateGatewayRule"))
+        let _ = ctx;
+        let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
+            CreateGatewayRuleErrorModeled::InternalServerException(InternalServerException {
+                message: Some("the gateway store is unavailable".to_string()),
+            })
+        })?;
+        let now = ::std::time::SystemTime::now();
+        let mut store = state.lock();
+        // A gateway whose deletion the clock has already made due is gone before
+        // this call looks for it: the removal was owed at this instant whether or
+        // not anybody called.
+        store.expire_deleted_gateways_and_targets(now);
+
+        // A replayed request carrying the same `clientToken` answers with the rule
+        // that token first created, rather than adding a second one: "If this token
+        // matches a previous request, the service ignores the request, but doesn't
+        // return an error." A replay is a replay only on the gateway the first
+        // request addressed, so the token is resolved against this request's own
+        // gateway and a token presented to another gateway is served as fresh.
+        if let Some((gateway_id, rule_id)) = store.replayed_gateway_rule_result(
+            Self::NAME,
+            input.client_token.as_deref(),
+            &input.gateway_identifier,
+        ) {
+            if let Some((gateway, rule)) = store
+                .gateways
+                .get(&gateway_id)
+                .and_then(|gateway| gateway.rules.get(&rule_id).map(|rule| (gateway, rule)))
+            {
+                return Ok(rule.create_output(&gateway.gateway_arn, now));
+            }
+        }
+
+        let gateway = store.gateways.get(&input.gateway_identifier).ok_or_else(|| {
+            CreateGatewayRuleErrorModeled::ResourceNotFoundException(
+                crate::state::resource_not_found(crate::state::RESOURCE_GATEWAY),
+            )
+        })?;
+        // A rule is evaluated BY the gateway, so the gateway has to exist and not
+        // be on its way out. The one precondition every write of a gateway's
+        // configuration puts on it, decided in `crate::state` so the rule create
+        // and the rate-limit writes cannot drift: a gateway the clock is still
+        // moving through a transient status TAKES a rule, because the rule carries
+        // a clock-owed status of its own.
+        if let Some(refusal) = crate::state::refusal_for_gateway(Self::NAME, gateway, now) {
+            return Err(CreateGatewayRuleErrorModeled::ValidationException(refusal).into());
+        }
+        let gateway_id = gateway.gateway_id.clone();
+        let gateway_arn = gateway.gateway_arn.clone();
+        // The rules one gateway holds are bounded, so a caller looping on create
+        // meets the modelled quota instead of this process's memory limit.
+        if gateway.rules.len() >= crate::state::MAX_RULES_PER_GATEWAY {
+            return Err(
+                CreateGatewayRuleErrorModeled::ServiceQuotaExceededException(
+                    ServiceQuotaExceededException {
+                        message: Some(format!(
+                            "gateway {gateway_id} already holds the maximum of {} rules",
+                            crate::state::MAX_RULES_PER_GATEWAY
+                        )),
+                    },
+                )
+                .into(),
+            );
+        }
+
+        // A rule has no name, so the caller names no id either: the service mints
+        // the `ruleId` every later call addresses the rule by.
+        let rule_id = store.mint_gateway_rule_id(&gateway_id, &input.priority.to_string(), now);
+        let record = crate::state::GatewayRuleRecord::written(
+            rule_id.clone(),
+            input.priority,
+            input.conditions,
+            input.actions,
+            input.description,
+            now,
+        );
+        let output = record.create_output(&gateway_arn, now);
+        // The write, under the lock this call already holds: the gateway was
+        // resolved above, so this cannot miss — and a create must never report a
+        // success for a write that was dropped, so a miss is a server error
+        // rather than a 202 nothing stored.
+        let Some(held) = store.gateways.get_mut(&gateway_id) else {
+            return Err(
+                CreateGatewayRuleErrorModeled::InternalServerException(InternalServerException {
+                    message: Some(format!(
+                        "gateway {gateway_id} is no longer held by the gateway store"
+                    )),
+                })
+                .into(),
+            );
+        };
+        held.updated_at = now;
+        held.rules.insert(rule_id.clone(), record);
+        store.remember_gateway_client_token(
+            Self::NAME,
+            input.client_token,
+            &gateway_id,
+            Some(&rule_id),
+        );
+
+        Ok(output)
     }
 }

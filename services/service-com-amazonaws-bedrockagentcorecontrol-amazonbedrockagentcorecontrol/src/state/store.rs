@@ -176,13 +176,35 @@ impl ComAmazonawsBedrockagentcorecontrolAmazonbedrockagentcorecontrolState {
     /// `TargetId`'s pattern `^[0-9a-zA-Z]{10}$`, which \u2014 unlike a gateway id \u2014
     /// carries no name.
     pub fn mint_target_id(&mut self, gateway_id: &str, name: &str, at: SystemTime) -> String {
+        self.mint_gateway_child_id(gateway_id, name, at, suffix_for, |gateway, candidate| {
+            gateway.targets.contains_key(candidate)
+        })
+    }
+
+    /// Mint an id for a CHILD of the gateway `gateway_id` — a target, a rate
+    /// limit, a rule — that the gateway does not already hold one under.
+    ///
+    /// The shape every gateway-child mint shares, in one place so they cannot
+    /// drift: the counter is bumped on every attempt, so two children minted for
+    /// one gateway in the same instant are digested from different inputs and
+    /// cannot share an id; `derive` is the id form that child's own pattern takes,
+    /// applied over `<gatewayId>/<seed>`; and `held` says whether the gateway
+    /// already holds that candidate.
+    fn mint_gateway_child_id(
+        &mut self,
+        gateway_id: &str,
+        seed: &str,
+        at: SystemTime,
+        derive: impl Fn(&str, u64, SystemTime) -> String,
+        held: impl Fn(&GatewayRecord, &str) -> bool,
+    ) -> String {
         loop {
             self.mint_counter = self.mint_counter.wrapping_add(1);
-            let candidate = suffix_for(&format!("{gateway_id}/{name}"), self.mint_counter, at);
+            let candidate = derive(&format!("{gateway_id}/{seed}"), self.mint_counter, at);
             let taken = self
                 .gateways
                 .get(gateway_id)
-                .is_some_and(|gateway| gateway.targets.contains_key(&candidate));
+                .is_some_and(|gateway| held(gateway, &candidate));
             if !taken {
                 return candidate;
             }
@@ -1026,18 +1048,9 @@ impl ComAmazonawsBedrockagentcorecontrolAmazonbedrockagentcorecontrolState {
         taken: &BTreeSet<String>,
         at: SystemTime,
     ) -> String {
-        loop {
-            self.mint_counter = self.mint_counter.wrapping_add(1);
-            let candidate = suffix_for(&format!("{gateway_id}/{seed}"), self.mint_counter, at);
-            let held = taken.contains(&candidate)
-                || self
-                    .gateways
-                    .get(gateway_id)
-                    .is_some_and(|gateway| gateway.rate_limits.contains_key(&candidate));
-            if !held {
-                return candidate;
-            }
-        }
+        self.mint_gateway_child_id(gateway_id, seed, at, suffix_for, |gateway, candidate| {
+            taken.contains(candidate) || gateway.rate_limits.contains_key(candidate)
+        })
     }
 
     /// The (gateway, rate limit) a previous request to `operation` carrying this
@@ -1054,16 +1067,78 @@ impl ComAmazonawsBedrockagentcorecontrolAmazonbedrockagentcorecontrolState {
         &self,
         operation: &str,
         client_token: Option<&str>,
+        gateway_identifier: &str,
     ) -> Option<(String, String)> {
-        let (gateway_id, rate_limit_id) = self
+        self.replayed_gateway_child_result(
+            operation,
+            client_token,
+            gateway_identifier,
+            |gateway, rate_limit_id| gateway.rate_limits.contains_key(rate_limit_id),
+        )
+    }
+
+    /// The (gateway, child) a previous request to `operation` carrying this
+    /// `clientToken` produced, if the record is still held and the child it names
+    /// still exists — `held` says whether the gateway still holds that child.
+    ///
+    /// A replay is a replay only on the gateway the first request addressed:
+    /// `gateway_identifier` is the gateway THIS request addresses, and a token
+    /// remembered for another gateway is no replay here — answering with that
+    /// gateway's child would report a resource the addressed gateway does not
+    /// hold, and would hide the refusal an unknown gateway is owed.
+    ///
+    /// The shape every gateway-child replay shares, in one place so they cannot
+    /// drift.
+    fn replayed_gateway_child_result(
+        &self,
+        operation: &str,
+        client_token: Option<&str>,
+        gateway_identifier: &str,
+        held: impl Fn(&GatewayRecord, &str) -> bool,
+    ) -> Option<(String, String)> {
+        let (gateway_id, child_id) = self
             .gateway_idempotency
             .get(&token_key(operation, client_token?))?;
-        let rate_limit_id = rate_limit_id.as_ref()?;
+        if gateway_id != gateway_identifier {
+            return None;
+        }
+        let child_id = child_id.as_ref()?;
         let gateway = self.gateways.get(gateway_id)?;
-        gateway
-            .rate_limits
-            .contains_key(rate_limit_id)
-            .then(|| (gateway_id.clone(), rate_limit_id.clone()))
+        held(gateway, child_id).then(|| (gateway_id.clone(), child_id.clone()))
+    }
+
+    /// Mint a `ruleId` no rule of the gateway `gateway_id` holds: the UUID form
+    /// `GatewayRuleId` takes
+    /// (`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`), which
+    /// — unlike a gateway id — carries no name, because a rule has none.
+    pub fn mint_gateway_rule_id(&mut self, gateway_id: &str, seed: &str, at: SystemTime) -> String {
+        self.mint_gateway_child_id(gateway_id, seed, at, uuid_shaped, |gateway, candidate| {
+            gateway.rules.contains_key(candidate)
+        })
+    }
+
+    /// The (gateway, rule) a previous request to `operation` carrying this
+    /// `clientToken` produced, if the record is still held and what it names
+    /// still exists.
+    ///
+    /// The same idempotency record [`Self::remember_gateway_client_token`]
+    /// writes, read for a RULE rather than a target: the key carries the
+    /// operation name, so a token remembered by a rule create is never resolved
+    /// against the gateway's targets, and a record whose rule has since been
+    /// deleted is no replay at all — the next request carrying that token is
+    /// served as a fresh one.
+    pub fn replayed_gateway_rule_result(
+        &self,
+        operation: &str,
+        client_token: Option<&str>,
+        gateway_identifier: &str,
+    ) -> Option<(String, String)> {
+        self.replayed_gateway_child_result(
+            operation,
+            client_token,
+            gateway_identifier,
+            |gateway, rule_id| gateway.rules.contains_key(rule_id),
+        )
     }
 
     /// The (policy engine, policy) a previous request to `operation` carrying

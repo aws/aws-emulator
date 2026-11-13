@@ -237,22 +237,23 @@ pub fn rate_limit_sharing_dimension_keys<'a>(
     })
 }
 
-/// The refusal a write of one gateway's rate limits owes when the gateway it
-/// addresses cannot take one, or `None` when it can.
+/// The refusal a write of one gateway's configuration owes when the gateway it
+/// addresses cannot take it, or `None` when it can.
 ///
 /// A gateway whose deletion has been accepted is on its way out on the clock and
-/// takes no further configuration, so a write of its rate limits is refused with
-/// the status the caller has to wait out — worded by the one helper every gateway
-/// operation this service refuses on status shares.
+/// takes no further configuration, so a write of its rate limits or its rules is
+/// refused with the status the caller has to wait out — worded by the one helper
+/// every gateway operation this service refuses on status shares.
 ///
 /// The TRANSIENT status the clock owes a gateway a transition OUT of (`CREATING`
-/// after a create, `UPDATING` after an update) is NOT a refusal: a rate limit
-/// carries a clock-owed status of its own, so a caller configures the throttling
-/// of a gateway as soon as the gateway exists rather than waiting it out, which
-/// is what the service these operations emulate does.
+/// after a create, `UPDATING` after an update) is NOT a refusal: a rate limit and
+/// a rule each carry a clock-owed status of their own, so a caller configures a
+/// gateway as soon as the gateway exists rather than waiting it out, which is
+/// what the service these operations emulate does.
 ///
-/// Shared by every write of the set — the single create and the batch write — so
-/// the two cannot put different preconditions on the same gateway.
+/// Shared by every write of a gateway's child configuration — the single
+/// rate-limit create, the batch write and the rule create — so they cannot put
+/// different preconditions on the same gateway.
 pub fn refusal_for_gateway(
     operation: &str,
     gateway: &GatewayRecord,

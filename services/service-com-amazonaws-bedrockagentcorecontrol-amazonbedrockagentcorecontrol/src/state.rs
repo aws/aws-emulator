@@ -11,8 +11,9 @@
 //!   `ListAgentRuntimes`, `ListAgentRuntimeVersions` and every read of an
 //!   endpoint all read one store;
 //! * the gateway (`/gateways/`): one [`GatewayRecord`] per `gatewayId`, each
-//!   holding the targets configured on it ([`GatewayTargetRecord`]), because a
-//!   target is addressed only through its gateway;
+//!   holding the targets configured on it ([`GatewayTargetRecord`]) and the
+//!   rules evaluated on it ([`GatewayRuleRecord`]), because a target and a rule
+//!   are each addressed only through their gateway;
 //! * the memory (`/memories/`): one [`MemoryRecord`] per `memoryId`, holding the
 //!   configuration the caller supplied and the strategies minted for it, so
 //!   `GetMemory` and any later memory read answer from one store;
@@ -848,6 +849,15 @@ pub struct GatewayRecord {
     /// when the gateway is. Bounded by
     /// [`MAX_RATE_LIMITS_PER_GATEWAY`](gateway_rate_limits::MAX_RATE_LIMITS_PER_GATEWAY).
     pub rate_limits: BTreeMap<String, GatewayRateLimitRecord>,
+    /// Every rule configured on this gateway, keyed by `ruleId`. The key order
+    /// is the deterministic list order a rule listing pages over.
+    ///
+    /// Here rather than in a map of its own for the same reason the targets and
+    /// the rate limits are: a rule is addressed only through the gateway that
+    /// evaluates it (`/gateways/{gatewayIdentifier}/rules/{ruleId}`) and is gone
+    /// when the gateway is. Bounded by
+    /// [`MAX_RULES_PER_GATEWAY`](gateway_rules::MAX_RULES_PER_GATEWAY).
+    pub rules: BTreeMap<String, GatewayRuleRecord>,
 }
 
 impl GatewayRecord {
@@ -1819,6 +1829,11 @@ impl MemoryRecord {
 /// names `crate::state::…` for it exactly as it does for the gateway that holds
 /// the limits.
 pub mod gateway_rate_limits;
+/// One gateway's rules: the record each is stored as, the clock-owed status it
+/// reports and the envelopes every operation that reports one renders.
+/// Re-exported, so a handler names `crate::state::…` for it exactly as it does
+/// for the gateway that holds the rules.
+pub mod gateway_rules;
 /// The evaluation dataset: the record a create persists, the examples its
 /// source yields into the DRAFT working copy, the versions published from it,
 /// the schema check its examples pass, and the ARN and statuses it carries.
@@ -1886,6 +1901,7 @@ mod listings;
 pub use api_key_credential_providers::*;
 pub use datasets::*;
 pub use gateway_rate_limits::*;
+pub use gateway_rules::*;
 pub use gateway_target_synchronization::*;
 pub use listings::*;
 pub use oauth2_credential_providers::*;
@@ -3151,7 +3167,9 @@ impl ConfigurationBundleRecord {
 /// [`MAX_VERSIONS_PER_RUNTIME`] caps the versions one runtime accumulates,
 /// [`MAX_ENDPOINTS_PER_AGENT_RUNTIME`] the endpoints one runtime holds,
 /// [`MAX_GATEWAYS`] caps the gateways (and with them their 1:1 name index),
-/// [`MAX_TARGETS_PER_GATEWAY`] the targets one gateway holds, [`MAX_MEMORIES`]
+/// [`MAX_TARGETS_PER_GATEWAY`] the targets one gateway holds,
+/// [`MAX_RULES_PER_GATEWAY`](gateway_rules::MAX_RULES_PER_GATEWAY) the rules one
+/// gateway holds, [`MAX_MEMORIES`]
 /// the memories (and with them their 1:1 name index),
 /// [`MAX_STRATEGIES_PER_MEMORY`] the strategies one memory holds,
 /// [`MAX_HARNESSES`] the harnesses (and with them their 1:1 name index),

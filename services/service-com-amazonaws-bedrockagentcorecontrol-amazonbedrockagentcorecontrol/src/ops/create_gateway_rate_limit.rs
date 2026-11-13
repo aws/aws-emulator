@@ -200,10 +200,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // A replayed request carrying the same `clientToken` answers with the rate
         // limit that token first created, rather than adding a second one: "if this
         // token matches a previous request, the service ignores the request, but
-        // doesn't return an error".
-        if let Some((gateway_id, rate_limit_id)) =
-            store.replayed_gateway_rate_limit_result(Self::NAME, input.client_token.as_deref())
-        {
+        // doesn't return an error". A replay is a replay only on the gateway the
+        // first request addressed, so the token is resolved against this request's
+        // own gateway.
+        if let Some((gateway_id, rate_limit_id)) = store.replayed_gateway_rate_limit_result(
+            Self::NAME,
+            input.client_token.as_deref(),
+            &input.gateway_identifier,
+        ) {
             if let Some(record) = store
                 .gateways
                 .get(&gateway_id)

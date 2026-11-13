@@ -353,6 +353,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // A new gateway throttles nothing until a rate limit is written on
             // it (`BatchPutGatewayRateLimits`): `CreateGateway` carries none.
             rate_limits: ::std::collections::BTreeMap::new(),
+            // A new gateway evaluates no rules until one is created on it
+            // (`CreateGatewayRule`): `CreateGateway` carries none.
+            rules: ::std::collections::BTreeMap::new(),
             gateway_id: gateway_id.clone(),
         };
         let output = record.create_output(now);
