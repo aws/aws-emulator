@@ -41,6 +41,11 @@
 //! channel, which no operation of this model binds, so the rows that need a device in the
 //! fleet write that report in process — the way the device's status update writes it —
 //! and then drive every assertion through the HTTP front door.
+//!
+//! This suite owns the harness the core-device suites share (the router over one engine,
+//! the signed call, the body readers, the routes, the thing-name forms and the status
+//! report); the sibling `tests/all/client_device_disassociation.rs` drives it over the
+//! REMOVAL axis of the client-device associations.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -105,7 +110,7 @@ const REPORTED_AT_MILLIS: u64 = 1_762_000_000_123;
 /// The emulator front door with only this service mounted, over ONE shared engine —
 /// exactly how `core/router` assembles it — and that engine, through which a core
 /// device's own status report is written.
-fn emulator() -> (MultiServiceRouter, Arc<engine::InMemoryEngine>) {
+pub(crate) fn emulator() -> (MultiServiceRouter, Arc<engine::InMemoryEngine>) {
     let engine: Arc<engine::InMemoryEngine> = Arc::new(engine::InMemoryEngine::new());
     let mut router = MultiServiceRouter::new();
     router.set_request_authentication(false);
@@ -115,7 +120,7 @@ fn emulator() -> (MultiServiceRouter, Arc<engine::InMemoryEngine>) {
 
 /// Dispatch one request as an AWS SDK signs a control-plane call, and return its status
 /// and parsed JSON body (`Value::Null` for an empty body).
-async fn call(
+pub(crate) async fn call(
     router: &MultiServiceRouter,
     method: &str,
     path: &str,
@@ -151,7 +156,7 @@ async fn call(
 }
 
 /// A string member of a JSON object, or the empty string when absent.
-fn text(value: &Value, key: &str) -> String {
+pub(crate) fn text(value: &Value, key: &str) -> String {
     value
         .get(key)
         .and_then(Value::as_str)
@@ -160,7 +165,7 @@ fn text(value: &Value, key: &str) -> String {
 }
 
 /// The wire error code of a `restJson1` error body.
-fn error_code(body: &Value) -> String {
+pub(crate) fn error_code(body: &Value) -> String {
     let code = text(body, "__type");
     if code.is_empty() {
         "<no __type>".to_string()
@@ -170,7 +175,7 @@ fn error_code(body: &Value) -> String {
 }
 
 /// A list member of a JSON object, or the empty list when absent.
-fn list(value: &Value, key: &str) -> Vec<Value> {
+pub(crate) fn list(value: &Value, key: &str) -> Vec<Value> {
     value
         .get(key)
         .and_then(Value::as_array)
@@ -179,7 +184,7 @@ fn list(value: &Value, key: &str) -> Vec<Value> {
 }
 
 /// A timestamp member, as the epoch seconds a `restJson1` timestamp carries.
-fn timestamp(value: &Value, key: &str) -> f64 {
+pub(crate) fn timestamp(value: &Value, key: &str) -> f64 {
     value.get(key).and_then(Value::as_f64).unwrap_or(f64::NAN)
 }
 
@@ -187,7 +192,7 @@ fn timestamp(value: &Value, key: &str) -> f64 {
 // The routes, as an SDK addresses them
 // ---------------------------------------------------------------------------
 
-async fn get_core_device(router: &MultiServiceRouter, name: &str) -> (u16, Value) {
+pub(crate) async fn get_core_device(router: &MultiServiceRouter, name: &str) -> (u16, Value) {
     call(
         router,
         "GET",
@@ -207,7 +212,7 @@ async fn delete_core_device(router: &MultiServiceRouter, name: &str) -> (u16, Va
     .await
 }
 
-async fn list_core_devices(router: &MultiServiceRouter, query: &str) -> (u16, Value) {
+pub(crate) async fn list_core_devices(router: &MultiServiceRouter, query: &str) -> (u16, Value) {
     call(
         router,
         "GET",
@@ -217,7 +222,7 @@ async fn list_core_devices(router: &MultiServiceRouter, query: &str) -> (u16, Va
     .await
 }
 
-async fn list_client_devices(
+pub(crate) async fn list_client_devices(
     router: &MultiServiceRouter,
     name: &str,
     query: &str,
@@ -268,7 +273,7 @@ fn entries_body(client_devices: &[&str]) -> Vec<u8> {
     serde_json::to_vec(&json!({ "entries": entries })).expect("a serializable request body")
 }
 
-async fn associate(
+pub(crate) async fn associate(
     router: &MultiServiceRouter,
     name: &str,
     client_devices: &[&str],
@@ -282,7 +287,7 @@ async fn associate(
     .await
 }
 
-async fn disassociate(
+pub(crate) async fn disassociate(
     router: &MultiServiceRouter,
     name: &str,
     client_devices: &[&str],
@@ -366,7 +371,7 @@ fn reported_at_seconds() -> f64 {
 
 /// One core device's status report, as the Greengrass core software's status channel
 /// delivers one — the channel no operation of this model binds.
-struct Report {
+pub(crate) struct Report {
     name: &'static str,
     status: &'static str,
     core_version: Option<&'static str>,
@@ -380,7 +385,7 @@ struct Report {
 
 impl Report {
     /// The minimum a status update carries: the thing name and the status.
-    fn new(name: &'static str, status: &'static str) -> Self {
+    pub(crate) fn new(name: &'static str, status: &'static str) -> Self {
         Self {
             name,
             status,
@@ -396,7 +401,7 @@ impl Report {
 
 /// Deliver `report` to the fleet, the way the device's own status update writes it, and
 /// assert it was stored.
-fn report(engine: &Arc<engine::InMemoryEngine>, report: &Report) {
+pub(crate) fn report(engine: &Arc<engine::InMemoryEngine>, report: &Report) {
     let store = state::service_state(&**engine).expect("the greengrassv2 state store");
     let mut entry = CoreDeviceEntry::reported(report.name, report.status, reported_at());
     entry.core_version = report.core_version.map(str::to_string);
@@ -434,7 +439,7 @@ fn report(engine: &Arc<engine::InMemoryEngine>, report: &Report) {
 /// The FORMS a `coreDeviceThingName` can take, which none of the rules under test says
 /// anything about: the shortest and the longest the modelled `length 1..128` admits, one
 /// carrying the separators an IoT thing name may use, and one in another case.
-fn thing_name_forms() -> Vec<(&'static str, String)> {
+pub(crate) fn thing_name_forms() -> Vec<(&'static str, String)> {
     vec![
         ("an ordinary thing name", "laser-1".to_string()),
         ("the shortest name the model admits", "a".to_string()),
