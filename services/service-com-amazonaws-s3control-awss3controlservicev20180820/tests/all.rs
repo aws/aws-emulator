@@ -61,6 +61,8 @@ mod batch_job_manifest_addressing;
 mod batch_job_priority;
 #[path = "all/batch_job_refusal_words.rs"]
 mod batch_job_refusal_words;
+#[path = "all/batch_job_report_destination.rs"]
+mod batch_job_report_destination;
 #[path = "all/batch_job_role_trust.rs"]
 mod batch_job_role_trust;
 #[path = "all/batch_job_status.rs"]
