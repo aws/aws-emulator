@@ -45,8 +45,12 @@ mod infrastructure_configuration_listing;
 mod infrastructure_configuration_update;
 #[path = "all/parameter_value_refusals.rs"]
 mod parameter_value_refusals;
+#[path = "all/recipe_group_and_pipeline_listing.rs"]
+mod recipe_group_and_pipeline_listing;
 #[path = "all/resource_not_found.rs"]
 mod resource_not_found;
+#[path = "all/resource_policy_kinds.rs"]
+mod resource_policy_kinds;
 #[path = "all/resource_tags.rs"]
 mod resource_tags;
 #[path = "all/semantic_version_bounds.rs"]
@@ -55,6 +59,8 @@ mod semantic_version_bounds;
 mod state_roundtrip;
 #[path = "all/tag_resource_resource_kinds.rs"]
 mod tag_resource_resource_kinds;
+#[path = "all/tagging_not_found_class.rs"]
+mod tagging_not_found_class;
 #[path = "all/untag_resource.rs"]
 mod untag_resource;
 #[path = "all/versioned_resource_responses.rs"]
@@ -63,3 +69,5 @@ mod versioned_resource_responses;
 mod waiting_workflow_step_pages;
 #[path = "all/waiting_workflow_steps.rs"]
 mod waiting_workflow_steps;
+#[path = "all/workflow_versions.rs"]
+mod workflow_versions;

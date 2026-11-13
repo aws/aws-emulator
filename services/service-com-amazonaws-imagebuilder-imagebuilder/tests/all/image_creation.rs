@@ -932,14 +932,19 @@ async fn a_request_the_model_cannot_bound_is_refused_as_invalid() {
     let container = format!("arn:aws:imagebuilder:{REGION}:{ACCOUNT}:container-recipe/boxed/1.0.0");
     let workflow = format!("arn:aws:imagebuilder:{REGION}:{ACCOUNT}:workflow/build/flow/1.0.0");
 
-    let cases: [(&str, Value, &str); 3] = [
+    let cases: [(&str, Value, &str, &str); 3] = [
         (
             "neither recipe",
             json!({
                 "infrastructureConfigurationArn": configuration.clone(),
                 "clientToken": "no-recipe",
             }),
-            "The request must specify exactly one of imageRecipeArn and containerRecipeArn.",
+            // A request that named NONE of the two is missing a required parameter, which
+            // is a different report from one that named both.
+            "MissingParametersException",
+            "Required parameters are missing from the request: 'imageRecipeArn' or \
+             'containerRecipeArn'. Verify that you have entered all of the required \
+             parameters in your request and try again.",
         ),
         (
             "both recipes",
@@ -949,6 +954,7 @@ async fn a_request_the_model_cannot_bound_is_refused_as_invalid() {
                 "infrastructureConfigurationArn": configuration.clone(),
                 "clientToken": "both-recipes",
             }),
+            "InvalidRequestException",
             "The request must specify exactly one of imageRecipeArn and containerRecipeArn.",
         ),
         (
@@ -959,19 +965,13 @@ async fn a_request_the_model_cannot_bound_is_refused_as_invalid() {
                 "workflows": [{ "workflowArn": workflow.clone() }],
                 "clientToken": "workflows-without-role",
             }),
+            "InvalidRequestException",
             "The request must specify an executionRole when it specifies workflows.",
         ),
     ];
-    for (case, body, message) in cases {
+    for (case, body, code, message) in cases {
         let (status, answer) = create_image_with(&router, REGION, &body).await;
-        assert_refused(
-            case,
-            status,
-            &answer,
-            400,
-            "InvalidRequestException",
-            message,
-        );
+        assert_refused(case, status, &answer, 400, code, message);
     }
 
     let listed = listed_arns(

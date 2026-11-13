@@ -963,8 +963,10 @@ async fn a_create_refuses_what_it_cannot_resolve() {
             json!({}),
             Err((
                 400,
-                "InvalidRequestException",
-                "The request must specify exactly one of imageRecipeArn and containerRecipeArn."
+                "MissingParametersException",
+                "Required parameters are missing from the request: 'imageRecipeArn' or \
+                 'containerRecipeArn'. Verify that you have entered all of the required \
+                 parameters in your request and try again."
                     .to_string(),
             )),
         ),

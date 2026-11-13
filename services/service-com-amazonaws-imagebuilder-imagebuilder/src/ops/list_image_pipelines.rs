@@ -1,15 +1,16 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op ListImagePipelines
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `ListImagePipelines`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`ListImagePipelines::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! Reports the image pipelines this Region holds, one page at a time. A reporting call: it
+//! writes nothing.
+//!
+//! The listing is ordered by the pipeline's own ARN — which carries its normalized name —
+//! so one page's last entry names a stable position in it, and a `nextToken` is answered
+//! only while a pipeline this page did not carry remains. A token this store did not issue,
+//! or one issued for a different query, is refused rather than guessed at. Each filter the
+//! request carries names one member of a pipeline and the values it admits; a filter naming
+//! a member this listing does not filter on is refused rather than ignored.
 //!
 //! ## Shape of an operation
 //!
@@ -104,13 +105,23 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-imagebuilder-imagebuild
 // here — hence the `ListImagePipelinesError` alias below. An operation that models no errors
 // generates an UNINHABITED enum here, which is correct and expected: there is nothing
 // to construct until the model says otherwise.
-#[smithy_macros::operation_error("com.amazonaws.imagebuilder#ListImagePipelines")]
+// `InvalidParameterValueException` is widened in through `extra_errors`: the SERVICE models
+// that shape (a client error, `@httpError` 400 — "The value that you provided for the
+// specified parameter is invalid.") and other operations declare it, while this operation's
+// own error list does not. It is the class Image Builder refuses a parameter of this request
+// with — a `nextToken` it did not mint, and a filter naming a member this listing does not
+// filter on.
+#[smithy_macros::operation_error(
+    "com.amazonaws.imagebuilder#ListImagePipelines",
+    extra_errors = ["InvalidParameterValueException"]
+)]
 #[derive(Debug)]
 pub enum ListImagePipelinesErrorModeled {
     CallRateLimitExceededException(CallRateLimitExceededException),
     ClientException(ClientException),
     ForbiddenException(ForbiddenException),
     InvalidPaginationTokenException(InvalidPaginationTokenException),
+    InvalidParameterValueException(InvalidParameterValueException),
     InvalidRequestException(InvalidRequestException),
     ServiceException(ServiceException),
     ServiceUnavailableException(ServiceUnavailableException),
@@ -167,18 +178,138 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `ListImagePipelines` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(ListImagePipelinesErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("ListImagePipelines"))
+        // The `maxResults` 1..25 range, the filter list's 1..10 bound and the token's
+        // length have all been refused past by the centralized walk before this body runs.
+        let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
+            ListImagePipelinesErrorModeled::ServiceException(ServiceException {
+                message: Some(crate::state::store_unavailable_message()),
+            })
+        })?;
+
+        let region = crate::state::request_region(ctx.parts());
+
+        // The secret this store authenticates its page tokens under, taken off the store so
+        // a `nextToken` is minted and read back as the opaque value this store issued.
+        let page_token_key = state.lock().page_token_key;
+
+        // Each filter names one member and the values it admits. An unnamed filter, one
+        // with no values, and a name this operation does not filter on are all refused
+        // rather than ignored: a filter nothing applies would answer with pipelines the
+        // caller did not ask for.
+        for filter in input.filters.iter().flatten() {
+            let Some(name) = filter.name.as_deref() else {
+                return Err(ListImagePipelinesErrorModeled::InvalidRequestException(
+                    InvalidRequestException {
+                        message: Some(crate::state::incomplete_filter_message()),
+                    },
+                )
+                .into());
+            };
+            if filter.values.as_ref().is_none_or(|values| values.is_empty()) {
+                return Err(ListImagePipelinesErrorModeled::InvalidRequestException(
+                    InvalidRequestException {
+                        message: Some(crate::state::incomplete_filter_message()),
+                    },
+                )
+                .into());
+            }
+            if !crate::state::IMAGE_PIPELINE_FILTER_NAMES.contains(&name) {
+                return Err(
+                    ListImagePipelinesErrorModeled::InvalidParameterValueException(
+                        InvalidParameterValueException {
+                            message: Some(crate::state::unsupported_filter_message(
+                                Self::NAME,
+                                crate::state::IMAGE_PIPELINE_FILTER_NAMES,
+                            )),
+                        },
+                    )
+                    .into(),
+                );
+            }
+        }
+
+        // Which listing this page belongs to: the filters, so a token issued for one
+        // listing is refused for another.
+        let mut cursor = crate::state::PageCursor {
+            operation: crate::state::LIST_IMAGE_PIPELINES_OPERATION.to_string(),
+            region: region.clone(),
+            query: crate::state::image_pipeline_query_fingerprint(input.filters.as_deref()),
+            after: String::new(),
+        };
+        let after = match input.next_token.as_deref() {
+            None => String::new(),
+            Some(token) => match crate::state::decode_page_token(&page_token_key, token, &cursor) {
+                Some(after) => after,
+                None => {
+                    return Err(
+                        ListImagePipelinesErrorModeled::InvalidParameterValueException(
+                            InvalidParameterValueException {
+                                message: Some(crate::state::invalid_pagination_token_message()),
+                            },
+                        )
+                        .into(),
+                    )
+                }
+            },
+        };
+
+        // A page carries at most `maxResults` entries, and at most the modelled maximum
+        // when the request names none.
+        let page_size = input
+            .max_results
+            .and_then(|requested| usize::try_from(requested).ok())
+            .unwrap_or(crate::state::MAX_IMAGE_PIPELINES_PER_PAGE)
+            .clamp(1, crate::state::MAX_IMAGE_PIPELINES_PER_PAGE);
+
+        // A pure read: the guard is taken, this page is copied out as the modelled views,
+        // and nothing is written. The store is keyed by ARN, so the listing has one order
+        // and a token's position in it is stable.
+        let at = ::std::time::SystemTime::now();
+        let store = state.lock();
+        let mut matching = store
+            .image_pipelines
+            .iter()
+            .filter(|(arn, _)| arn.as_str() > after.as_str())
+            .map(|(_, record)| record)
+            .filter(|record| record.region == region)
+            .filter(|record| {
+                input.filters.iter().flatten().all(|filter| {
+                    let reported = filter
+                        .name
+                        .as_deref()
+                        .and_then(|name| record.filterable(name));
+                    filter.values.iter().flatten().any(|value| {
+                        reported.is_some_and(|reported| reported == value.as_str())
+                    })
+                })
+            });
+
+        let arns: Vec<String> = matching
+            .by_ref()
+            .take(page_size)
+            .map(|record| record.arn.clone())
+            .collect();
+        // A `nextToken` is answered only when a pipeline this page did not carry remains.
+        let remaining = matching.next().is_some();
+        // Each entry is the SAME view the pipeline's own read reports, so a listing and a
+        // read of one pipeline cannot disagree about it.
+        let page: Vec<ImagePipeline> = arns
+            .iter()
+            .filter_map(|arn| store.image_pipeline_view(arn, &region, at))
+            .collect();
+        let next_token = arns
+            .last()
+            .filter(|_| remaining)
+            .map(|last| {
+                cursor.after = last.clone();
+                crate::state::encode_page_token(&page_token_key, &cursor)
+            });
+        drop(store);
+
+        Ok(ListImagePipelinesOutput {
+            request_id: Some(crate::state::new_request_id()),
+            image_pipeline_list: Some(page),
+            next_token,
+        })
     }
 }

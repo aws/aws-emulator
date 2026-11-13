@@ -13,9 +13,15 @@
 //! referenced resource it does not hold (`ResourceNotFoundException`, HTTP 404, "At least
 //! one of the resources referenced by your request does not exist"), whose message names
 //! the kind of resource the ARN identifies and the ARN the request carried, verbatim.
-//! That is one answer for every lookup, whatever the operation does with what it finds:
-//! a read, a delete, a policy write, a tagging call, and the reference resolution of a
-//! create.
+//! That is one answer for every lookup THIS SERVICE performs, whatever the operation does
+//! with what it finds: a read, a delete, a policy write, a tagging write, and the reference
+//! resolution of a create.
+//!
+//! The TAG LISTING is the one lookup answered by another layer and so by another class: it
+//! reports an ARN that resolves to nothing as the resource-tagging layer's own
+//! `NotFoundException` (HTTP 404) with the fixed sentence "Resource was not found", which
+//! names neither the kind nor the ARN. Each row below states which of the two classes its
+//! answer carries.
 //!
 //! The rows span what the rule generalises over: which operation performs the lookup,
 //! which kind of resource the ARN names, and why the ARN resolves to nothing (never
@@ -165,6 +171,26 @@ fn assert_reported_missing(
     );
 }
 
+/// Assert `status` and the answer are the resource-tagging layer's own not-found report:
+/// HTTP 404, its own error class, and its fixed sentence — which names neither the kind of
+/// resource nor the ARN the request carried.
+fn assert_tagging_not_found(case: &str, status: u16, body: &Value) {
+    assert_eq!(
+        status, 404,
+        "case {case:?}: expected HTTP 404, got {status} with {body}"
+    );
+    let code = error_code(case, body);
+    assert_eq!(
+        code, "NotFoundException",
+        "case {case:?}: expected NotFoundException, got {code:?} with {body}"
+    );
+    let actual = error_message(case, body);
+    assert_eq!(
+        actual, "Resource was not found",
+        "case {case:?}: expected the tagging layer's fixed sentence, got {actual:?}"
+    );
+}
+
 /// Read `name` out of an answer, panicking with the case when it is absent.
 fn text(case: &str, body: &Value, name: &str) -> String {
     body.get(name)
@@ -283,6 +309,15 @@ fn configuration_arn(region: &str, normalized: &str) -> String {
     format!("arn:aws:imagebuilder:{region}:{ACCOUNT}:infrastructure-configuration/{normalized}")
 }
 
+/// Which not-found class a lookup's answer carries.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MissingReport {
+    /// This service's own modelled not-found error, naming the kind and the ARN.
+    Modelled,
+    /// The resource-tagging layer's own class, whose sentence is fixed text.
+    TaggingPlane,
+}
+
 /// One call that looks a resource up: how to send it, and the ARN plus resource-type token
 /// its answer has to report missing.
 struct Lookup {
@@ -300,6 +335,22 @@ struct Lookup {
     resource_type: &'static str,
     /// The ARN the report has to quote, verbatim as the request carried it.
     arn: String,
+    /// Which class the answer carries.
+    report: MissingReport,
+}
+
+/// Assert one lookup's answer is the not-found report its class requires.
+fn assert_lookup_missing(lookup: &Lookup, status: u16, body: &Value) {
+    match lookup.report {
+        MissingReport::Modelled => assert_reported_missing(
+            &lookup.case,
+            status,
+            body,
+            lookup.resource_type,
+            &lookup.arn,
+        ),
+        MissingReport::TaggingPlane => assert_tagging_not_found(&lookup.case, status, body),
+    }
 }
 
 /// Every operation that looks up the resource `arn` names by the member that names it.
@@ -314,6 +365,7 @@ fn lookups_of(case: &str, region: &'static str, resource_type: &'static str, arn
             region,
             resource_type,
             arn: arn.to_string(),
+            report: MissingReport::Modelled,
         });
     };
     match resource_type {
@@ -377,7 +429,8 @@ fn lookups_of(case: &str, region: &'static str, resource_type: &'static str, arn
         }
         other => panic!("case {case:?}: no lookup is declared for the resource type {other:?}"),
     }
-    // The tagging pair takes the ARN of ANY kind, in the URI path.
+    // The tagging pair takes the ARN of ANY kind, in the URI path. The LISTING is answered
+    // by the tagging layer's own class; the WRITE is this service's own lookup.
     rows.push(Lookup {
         case: format!("ListTagsForResource on {case}"),
         method: "GET",
@@ -386,6 +439,7 @@ fn lookups_of(case: &str, region: &'static str, resource_type: &'static str, arn
         region,
         resource_type,
         arn: arn.to_string(),
+        report: MissingReport::TaggingPlane,
     });
     rows.push(Lookup {
         case: format!("TagResource on {case}"),
@@ -395,6 +449,7 @@ fn lookups_of(case: &str, region: &'static str, resource_type: &'static str, arn
         region,
         resource_type,
         arn: arn.to_string(),
+        report: MissingReport::Modelled,
     });
     rows
 }
@@ -489,13 +544,7 @@ async fn an_arn_that_resolves_to_nothing_is_reported_missing_by_every_lookup() {
                 lookup.body.as_ref(),
             )
             .await;
-            assert_reported_missing(
-                &lookup.case,
-                status,
-                &body,
-                lookup.resource_type,
-                &lookup.arn,
-            );
+            assert_lookup_missing(&lookup, status, &body);
         }
     }
 
@@ -582,13 +631,7 @@ async fn a_read_or_a_repeat_delete_after_a_delete_reports_the_resource_missing()
                 lookup.body.as_ref(),
             )
             .await;
-            assert_reported_missing(
-                &lookup.case,
-                status,
-                &body,
-                lookup.resource_type,
-                &lookup.arn,
-            );
+            assert_lookup_missing(&lookup, status, &body);
         }
     }
 }
@@ -711,13 +754,7 @@ async fn the_reported_resource_type_is_the_kind_the_arn_identifies() {
             None,
         )
         .await;
-        assert_reported_missing(
-            &format!("ListTagsForResource on {case}"),
-            status,
-            &body,
-            resource_type,
-            &arn,
-        );
+        assert_tagging_not_found(&format!("ListTagsForResource on {case}"), status, &body);
 
         let (status, body) = call_in(
             &router,

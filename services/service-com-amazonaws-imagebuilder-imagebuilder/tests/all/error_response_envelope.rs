@@ -364,12 +364,15 @@ async fn every_failure_answers_the_modelled_error_and_names_the_request_it_answe
             code: RESOURCE_NOT_FOUND,
             message: Some(not_found_message("Component", &absent_component)),
         },
-        // The same lookup through a PATH label rather than a query parameter.
+        // The same lookup through a PATH label rather than a query parameter. The tag WRITE
+        // is the one of the pair this service's own lookup answers; the tag READ is
+        // answered by the resource-tagging layer in ITS own class, which
+        // `tests/all/tagging_not_found_class.rs` covers.
         Failure {
-            case: "a tag read of an image recipe nothing created".to_string(),
-            method: "GET",
+            case: "a tag write to an image recipe nothing created".to_string(),
+            method: "POST",
             uri: format!("/tags/{}", encode_label(&absent_recipe)),
-            body: None,
+            body: Some(json!({ "tags": { "Owner": "platform" } })),
             status: 404,
             code: RESOURCE_NOT_FOUND,
             message: Some(not_found_message("ImageRecipe", &absent_recipe)),

@@ -13,7 +13,9 @@
 //! `ListTagsForResource` reports exactly the tags that record then carries, whether they
 //! were written by a tagging call or by the create that made the resource. An ARN no
 //! resource of the calling Region carries names nothing to tag or report, whatever
-//! resource kind it names.
+//! resource kind it names: the WRITE reports that as this service's own modelled
+//! not-found error, and the LISTING as the resource-tagging layer's own `NotFoundException`
+//! (HTTP 404, the fixed sentence "Resource was not found").
 //!
 //! The rows span what the rule generalises over: which resource kind the ARN names, how
 //! the tags got there (a create or a tagging call), how many keys a call carries and what
@@ -591,7 +593,7 @@ async fn an_arn_this_region_holds_no_resource_under_is_reported_missing() {
 
     for (case, arn) in &cases {
         let (status, body) = list_tags(&router, arn).await;
-        assert_refused(case, status, &body, 404, "ResourceNotFoundException");
+        assert_refused(case, status, &body, 404, "NotFoundException");
 
         let (status, body) = tag_resource(&router, arn, &[("Owner", "platform")]).await;
         assert_refused(
@@ -615,7 +617,7 @@ async fn an_arn_this_region_holds_no_resource_under_is_reported_missing() {
         status,
         &body,
         404,
-        "ResourceNotFoundException",
+        "NotFoundException",
     );
 }
 

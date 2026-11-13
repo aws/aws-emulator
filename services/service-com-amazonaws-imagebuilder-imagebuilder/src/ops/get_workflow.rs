@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op GetWorkflow
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `GetWorkflow`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`GetWorkflow::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! Reports the workflow build version an ARN names. A reporting call: it writes nothing.
+//!
+//! The ARN may be a build version ARN or a version ARN whose trailing nodes are `x`
+//! wildcards (the modelled `WorkflowVersionArnOrBuildVersionArn` admits both), and a
+//! version ARN reaches the NEWEST matching build — the rule every versioned reference of
+//! this service follows. An ARN that reaches no stored workflow of the calling Region
+//! reports it missing (`ResourceNotFoundException`, widened in through `extra_errors`
+//! below).
 //!
 //! ## Shape of an operation
 //!
@@ -99,13 +99,22 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-imagebuilder-imagebuild
 // here — hence the `GetWorkflowError` alias below. An operation that models no errors
 // generates an UNINHABITED enum here, which is correct and expected: there is nothing
 // to construct until the model says otherwise.
-#[smithy_macros::operation_error("com.amazonaws.imagebuilder#GetWorkflow")]
+// `ResourceNotFoundException` is widened in through `extra_errors`: a workflow ARN is a
+// reference to a resource this service may not hold, and this model declares the shape for
+// exactly that case (`com.amazonaws.imagebuilder#ResourceNotFoundException`, HTTP 404, "At
+// least one of the resources referenced by your request does not exist.") — it is simply
+// not listed on this operation.
+#[smithy_macros::operation_error(
+    "com.amazonaws.imagebuilder#GetWorkflow",
+    extra_errors = ["ResourceNotFoundException"]
+)]
 #[derive(Debug)]
 pub enum GetWorkflowErrorModeled {
     CallRateLimitExceededException(CallRateLimitExceededException),
     ClientException(ClientException),
     ForbiddenException(ForbiddenException),
     InvalidRequestException(InvalidRequestException),
+    ResourceNotFoundException(ResourceNotFoundException),
     ServiceException(ServiceException),
     ServiceUnavailableException(ServiceUnavailableException),
 }
@@ -161,18 +170,43 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `GetWorkflow` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(GetWorkflowErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("GetWorkflow"))
+        let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
+            GetWorkflowErrorModeled::ServiceException(ServiceException {
+                message: Some(crate::state::store_unavailable_message()),
+            })
+        })?;
+
+        let region = crate::state::request_region(ctx.parts());
+
+        // A pure read: the guard is taken, the build version the reference reaches is
+        // copied out as the modelled view, and nothing is written.
+        let view = state
+            .lock()
+            .resolve_workflow(&input.workflow_build_version_arn, &region)
+            .map(crate::state::WorkflowRecord::view);
+
+        let Some(workflow) = view else {
+            return Err(GetWorkflowErrorModeled::ResourceNotFoundException(
+                ResourceNotFoundException {
+                    message: Some(crate::state::required_resource_not_found_message(
+                        &input.workflow_build_version_arn,
+                    )),
+                },
+            )
+            .into());
+        };
+
+        Ok(GetWorkflowOutput {
+            // "A set of wildcard version ARNs that always reference the latest version of
+            // the resource", derived from the stored workflow's own ARN — whose prefix
+            // carries the stage this workflow belongs to.
+            latest_version_references: workflow.arn.as_deref().and_then(|arn| {
+                let prefix = crate::state::workflow_arn_prefix(
+                    workflow.r#type.as_deref().unwrap_or_default(),
+                );
+                crate::state::latest_version_references(arn, &prefix)
+            }),
+            workflow: Some(workflow),
+        })
     }
 }

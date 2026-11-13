@@ -260,7 +260,20 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // "You must specify exactly one recipe for the pipeline, using either a
         // containerRecipeArn or an imageRecipeArn" — the model can say neither that one of
         // the two is required nor that they exclude each other, so the rule is read here.
-        if input.image_recipe_arn.is_some() == input.container_recipe_arn.is_some() {
+        // The two halves of it are DIFFERENT failures and are reported as such: a request
+        // that named NONE of the group is missing a required parameter — the class a
+        // parameter group the model cannot require is reported under
+        // (`crate::state::MISSING_PARAMETERS_CODE`), naming the members it could have
+        // carried — while a request that named BOTH carries a combination that cannot hold
+        // together, which is the modelled invalid-request class.
+        if input.image_recipe_arn.is_none() && input.container_recipe_arn.is_none() {
+            return Err(crate::scaffolded::Scaffolded::unmodeled(
+                crate::state::MISSING_PARAMETERS_CODE,
+                crate::state::MISSING_PARAMETERS_STATUS,
+                crate::state::missing_parameters_message(&crate::state::PIPELINE_RECIPE_MEMBERS),
+            ));
+        }
+        if input.image_recipe_arn.is_some() && input.container_recipe_arn.is_some() {
             return Err(CreateImagePipelineErrorModeled::InvalidRequestException(
                 InvalidRequestException {
                     message: Some(crate::state::exactly_one_recipe_message()),

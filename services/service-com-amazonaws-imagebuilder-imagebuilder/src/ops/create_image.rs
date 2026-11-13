@@ -450,17 +450,25 @@ enum NamedRecipe<'a> {
 /// "You must specify exactly one recipe for your image, using either a containerRecipeArn
 /// or an imageRecipeArn", which each of the two members repeats as "You must specify either
 /// this property or … but not both" — and the model can say neither that one of them is
-/// required nor that they exclude each other.
+/// required nor that they exclude each other. The two halves are different failures: a
+/// request naming NONE of the group is missing a required parameter
+/// ([`crate::state::MISSING_PARAMETERS_CODE`]), and one naming BOTH carries a combination
+/// that cannot hold together.
 fn named_recipe(input: &CreateImageInput) -> Result<NamedRecipe<'_>, CreateImageError> {
     match (&input.image_recipe_arn, &input.container_recipe_arn) {
         (Some(reference), None) => Ok(NamedRecipe::Image(reference)),
         (None, Some(reference)) => Ok(NamedRecipe::Container(reference)),
-        _ => Err(
-            CreateImageErrorModeled::InvalidRequestException(InvalidRequestException {
+        (None, None) => Err(crate::scaffolded::Scaffolded::unmodeled(
+            crate::state::MISSING_PARAMETERS_CODE,
+            crate::state::MISSING_PARAMETERS_STATUS,
+            crate::state::missing_parameters_message(&crate::state::PIPELINE_RECIPE_MEMBERS),
+        )),
+        (Some(_), Some(_)) => Err(CreateImageErrorModeled::InvalidRequestException(
+            InvalidRequestException {
                 message: Some(crate::state::exactly_one_recipe_message()),
-            })
-            .into(),
-        ),
+            },
+        )
+        .into()),
     }
 }
 

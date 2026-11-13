@@ -5,6 +5,14 @@
 //! Reports the tags the resource an ARN names currently carries. A reporting call: it
 //! writes nothing.
 //!
+//! An ARN that resolves to no resource of the calling Region names nothing whose tags
+//! could be reported, and the tag listing reports that as the resource-tagging layer's own
+//! not-found class rather than as this service's modelled `ResourceNotFoundException`:
+//! `crate::state::TAGGING_NOT_FOUND_CODE` with the fixed sentence
+//! `crate::state::TAGGING_NOT_FOUND_MESSAGE`, which names neither the ARN nor the kind of
+//! resource. A resource that exists and was never tagged is a DIFFERENT answer: an empty
+//! tag map.
+//!
 //! The handler below is this operation's implementation. `crate::scaffolded` remains its
 //! error channel, which is also how it refuses a request its own model has no error for.
 //!
@@ -157,14 +165,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // reported. A resource that exists and was never tagged is a DIFFERENT answer:
         // an empty tag map.
         let Some(tags) = tags else {
-            return Err(ListTagsForResourceErrorModeled::ResourceNotFoundException(
-                ResourceNotFoundException {
-                    message: Some(crate::state::required_resource_not_found_message(
-                        &input.resource_arn,
-                    )),
-                },
-            )
-            .into());
+            return Err(crate::scaffolded::Scaffolded::unmodeled(
+                crate::state::TAGGING_NOT_FOUND_CODE,
+                crate::state::TAGGING_NOT_FOUND_STATUS,
+                crate::state::TAGGING_NOT_FOUND_MESSAGE,
+            ));
         };
 
         Ok(ListTagsForResourceOutput {

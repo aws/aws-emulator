@@ -109,6 +109,18 @@ pub use instance_profile::*;
 mod waiting_workflow_steps;
 pub use waiting_workflow_steps::*;
 
+/// The refusal classes this service answers that its own model does not declare.
+mod recorded_refusals;
+pub use recorded_refusals::*;
+
+/// The workflow resources this store holds, and the versioned reference that reaches one.
+mod workflows;
+pub use workflows::*;
+
+/// What a pipeline listing asks for, and which member one of its filters selects on.
+mod image_pipeline_listing;
+pub use image_pipeline_listing::*;
+
 /// How an UPDATE of an infrastructure configuration replaces the stored record.
 mod infrastructure_configuration_update;
 pub use infrastructure_configuration_update::*;
@@ -1264,6 +1276,8 @@ pub enum TaggedResource {
     ImagePipeline,
     /// One image build version ([`IMAGE_ARN_PREFIX`]).
     Image,
+    /// One workflow build version ([`WORKFLOW_ARN_PREFIX`]).
+    Workflow,
 }
 
 /// Per-service state for com-amazonaws-imagebuilder-imagebuilder. A handler reaches it through [`service_state`].
@@ -1287,6 +1301,10 @@ pub struct ComAmazonawsImagebuilderImagebuilderState {
     /// Every stored image pipeline, keyed by its own ARN — which carries its Region and
     /// its normalized name, so one key says which pipeline name is taken where.
     pub image_pipelines: BTreeMap<String, ImagePipelineRecord>,
+    /// Every stored workflow build version, keyed by its own build version ARN — which
+    /// carries its Region, its stage, its normalized name, its version and its build
+    /// number, so one key says which name+version pair is taken for which stage where.
+    pub workflows: BTreeMap<String, WorkflowRecord>,
     /// Every stored image build version, keyed by its own build version ARN — which
     /// carries its Region, its normalized name, its version and its build number. The
     /// image-build path is what files one ([`Self::insert_image`]), together with the
@@ -1996,6 +2014,9 @@ impl ComAmazonawsImagebuilderImagebuilderState {
         if self.image(arn, request_region).is_some() {
             return Some(TaggedResource::Image);
         }
+        if self.workflow(arn, request_region).is_some() {
+            return Some(TaggedResource::Workflow);
+        }
         None
     }
 
@@ -2037,6 +2058,10 @@ impl ComAmazonawsImagebuilderImagebuilderState {
             TaggedResource::Image => {
                 self.images.get(arn).and_then(|record| record.tags.clone())
             }
+            TaggedResource::Workflow => self
+                .workflows
+                .get(arn)
+                .and_then(|record| record.tags.clone()),
         };
         Some(stored.unwrap_or_default())
     }
@@ -2072,6 +2097,9 @@ impl ComAmazonawsImagebuilderImagebuilderState {
                 .get_mut(arn)
                 .map(|record| &mut record.tags),
             TaggedResource::Image => self.images.get_mut(arn).map(|record| &mut record.tags),
+            TaggedResource::Workflow => {
+                self.workflows.get_mut(arn).map(|record| &mut record.tags)
+            }
         }
     }
 }
@@ -3870,10 +3898,11 @@ pub fn duplicate_distribution_region_message(region: &str) -> String {
 ///
 /// From the `dryRun` member's own documentation: "Validates the required permissions
 /// and request parameters without performing the operation. If validation succeeds,
-/// the operation returns a DryRunOperationException error response."
+/// the operation returns a DryRunOperationException error response." The sentence is
+/// FIXED text and names the member as the API spells it, `dryRun`.
 #[must_use]
 pub fn dry_run_message() -> String {
-    "Request would have succeeded, but DryRun flag is set.".to_string()
+    "Request would have succeeded, but dryRun flag is set.".to_string()
 }
 
 /// Why the same `clientToken` carrying different creation parameters is refused.

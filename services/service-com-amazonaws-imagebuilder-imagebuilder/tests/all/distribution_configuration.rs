@@ -810,7 +810,7 @@ async fn a_dry_run_validates_and_stores_nothing() {
         412,
         "DryRunOperationException",
     );
-    let expected = "Request would have succeeded, but DryRun flag is set.";
+    let expected = "Request would have succeeded, but dryRun flag is set.";
     let actual = error_message("a valid dry run", &answer);
     assert_eq!(
         actual, expected,

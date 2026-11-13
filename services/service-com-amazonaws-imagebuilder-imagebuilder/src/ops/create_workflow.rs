@@ -1,15 +1,22 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op CreateWorkflow
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `CreateWorkflow`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`CreateWorkflow::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! Creates one workflow build version from the YAML document the request names, which is
+//! what `GetWorkflow` then reports.
+//!
+//! The document arrives by exactly one of two routes — inline `data`, or the `uri` of an
+//! object this emulator's own Amazon S3 serves — and a request naming neither or both is
+//! refused as that combination rather than stored. A repeat of one name+version pair in one
+//! Region creates the NEXT build version of it, the rule every versioned resource of this
+//! service follows, and a workflow's stage (`type`) is part of its identity: one name may
+//! carry a build and a test workflow at once.
+//!
+//! `dryRun` is the caller asking for the validation WITHOUT the create: a request that
+//! would have succeeded is answered `DryRunOperationException` (HTTP 412) and nothing is
+//! written — not the workflow, and not the request's idempotency receipt, so the token is
+//! still free for the real request. A request that would have been refused reports that
+//! refusal instead, since the dry run reports the outcome the real create would have had.
 //!
 //! ## Shape of an operation
 //!
@@ -164,7 +171,16 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-imagebuilder-imagebuild
 // here — hence the `CreateWorkflowError` alias below. An operation that models no errors
 // generates an UNINHABITED enum here, which is correct and expected: there is nothing
 // to construct until the model says otherwise.
-#[smithy_macros::operation_error("com.amazonaws.imagebuilder#CreateWorkflow")]
+// `InvalidParameterValueException` is widened in through `extra_errors`: every create of
+// this service refuses a parameter whose value it cannot accept as that class, and this
+// model declares the shape for exactly that case
+// (`com.amazonaws.imagebuilder#InvalidParameterValueException`, HTTP 400, "The value that
+// you provided for the specified parameter is invalid.") — it is simply not listed on this
+// operation.
+#[smithy_macros::operation_error(
+    "com.amazonaws.imagebuilder#CreateWorkflow",
+    extra_errors = ["InvalidParameterValueException"]
+)]
 #[derive(Debug)]
 pub enum CreateWorkflowErrorModeled {
     CallRateLimitExceededException(CallRateLimitExceededException),
@@ -173,6 +189,7 @@ pub enum CreateWorkflowErrorModeled {
     ForbiddenException(ForbiddenException),
     IdempotentParameterMismatchException(IdempotentParameterMismatchException),
     InvalidParameterCombinationException(InvalidParameterCombinationException),
+    InvalidParameterValueException(InvalidParameterValueException),
     InvalidRequestException(InvalidRequestException),
     InvalidVersionNumberException(InvalidVersionNumberException),
     ResourceInUseException(ResourceInUseException),
@@ -232,18 +249,268 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `CreateWorkflow` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(CreateWorkflowErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("CreateWorkflow"))
+        // Every modelled constraint on this input — `name`'s pattern, the version pattern,
+        // the string lengths, the `WorkflowType` enum, the 1..50 tag bound — has been
+        // refused by the centralized walk before this body runs, so what is checked here is
+        // only what the model cannot say.
+        let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
+            CreateWorkflowErrorModeled::ServiceException(ServiceException {
+                message: Some(crate::state::store_unavailable_message()),
+            })
+        })?;
+
+        let region = crate::state::request_region(ctx.parts());
+
+        // "You must specify exactly one of the data or uri properties" (the `uri` member's
+        // own documentation) — a requirement over the two members together, which the model
+        // can state neither half of, so it is read here and refused as the parameter
+        // combination it is.
+        let document_source = match (input.data.as_deref(), input.uri.as_deref()) {
+            (Some(data), None) => DocumentSource::Inline(data),
+            (None, Some(uri)) => DocumentSource::Uri(uri),
+            _ => {
+                return Err(
+                    CreateWorkflowErrorModeled::InvalidParameterCombinationException(
+                        InvalidParameterCombinationException {
+                            message: Some(crate::state::workflow_data_or_uri_message()),
+                        },
+                    )
+                    .into(),
+                )
+            }
+        };
+
+        // The modelled version pattern admits any digits at all; the documented bound on
+        // each assigned node is read here, and a version outside it is the modelled
+        // version-number failure: "Your version number is out of bounds or does not follow
+        // the required syntax."
+        if crate::state::parse_semantic_version(&input.semantic_version).is_none() {
+            return Err(
+                CreateWorkflowErrorModeled::InvalidVersionNumberException(
+                    InvalidVersionNumberException {
+                        message: Some(crate::state::invalid_semantic_version_message(
+                            crate::state::SEMANTIC_VERSION_MEMBER,
+                        )),
+                    },
+                )
+                .into(),
+            );
+        }
+
+        let fingerprint = crate::state::workflow_request_fingerprint(&input);
+
+        // "If you retry a request with the same client token, Image Builder returns the
+        // original response without running the operation again". Answered BEFORE the
+        // document is read, and again under the lock that writes, which is what settles a
+        // token two requests carry at once.
+        if let Some(answered) = answered_before(
+            &state.lock(),
+            &region,
+            &input.r#type,
+            &input.client_token,
+            &fingerprint,
+        ) {
+            return answered;
+        }
+
+        // What the stored workflow carries. A `uri` names a document in Amazon S3, which
+        // this service fetches at create time: the bytes it was served are the workflow's
+        // own document from then on, read exactly like an inline one.
+        let (document_member, document_text) = match document_source {
+            DocumentSource::Inline(data) => {
+                (crate::state::WORKFLOW_DATA_MEMBER, data.to_string())
+            }
+            DocumentSource::Uri(uri) => match crate::state::document_at(ctx, uri).await {
+                crate::state::DocumentObject::Read(document) => {
+                    (crate::state::WORKFLOW_URI_MEMBER, document)
+                }
+                // "This must be an S3 URL (s3://bucket/key)": a value that is not one
+                // addresses no object, so it is refused for the form the member requires.
+                crate::state::DocumentObject::NotAnS3Url => {
+                    return Err(invalid_value(crate::state::workflow_uri_message()))
+                }
+                // The object store answered that it serves nothing at that address: a fact
+                // about the value `uri` carried, so the create is refused as that
+                // parameter's value and nothing is minted.
+                crate::state::DocumentObject::NotServed => {
+                    return Err(invalid_value(crate::state::workflow_uri_not_found_message()))
+                }
+                crate::state::DocumentObject::Rejected(why) => {
+                    return Err(invalid_value(crate::state::workflow_document_message(
+                        crate::state::WORKFLOW_URI_MEMBER,
+                        &why,
+                    )))
+                }
+                // Nothing answered the read, so nothing about the object is established:
+                // this is this emulator failing to reach its own object store, not a claim
+                // about the caller's `uri`.
+                crate::state::DocumentObject::Unestablished => {
+                    return Err(CreateWorkflowErrorModeled::ServiceException(
+                        ServiceException {
+                            message: Some(crate::state::component_document_unreadable_message()),
+                        },
+                    )
+                    .into())
+                }
+            },
+        };
+
+        // The document itself, read the same way whichever member carried it: what a read
+        // of this workflow reports as its parameters is derived from it here, and a document
+        // this service cannot accept is an invalid value of THAT member.
+        let parameters =
+            crate::state::parse_workflow_document(&document_text).map_err(|why| {
+                invalid_value(crate::state::workflow_document_message(
+                    document_member,
+                    &why,
+                ))
+            })?;
+
+        let normalized = crate::state::normalized_name(&input.name);
+
+        // The idempotency check, the build numbering and the insert happen under ONE lock,
+        // so two creates of the same name+version are serialized and each gets its own
+        // build number.
+        let mut store = state.lock();
+
+        if let Some(answered) = answered_before(
+            &store,
+            &region,
+            &input.r#type,
+            &input.client_token,
+            &fingerprint,
+        ) {
+            return answered;
+        }
+
+        // The store is finite: a create that would take it past this emulator's own cap is
+        // refused rather than growing it. Checked BEFORE the dry-run branch, so a dry run
+        // reports the same outcome the real create would have.
+        if store.workflow_store_is_full() {
+            return Err(
+                CreateWorkflowErrorModeled::ServiceQuotaExceededException(
+                    ServiceQuotaExceededException {
+                        message: Some(crate::state::workflow_store_full_message()),
+                    },
+                )
+                .into(),
+            );
+        }
+
+        // `dryRun`: "Validates the required permissions and request parameters without
+        // performing the operation. If validation succeeds, the operation returns a
+        // DryRunOperationException error response." Nothing has been written by here —
+        // including the request's receipt, so a dry run leaves the token free for the real
+        // request.
+        if input.dry_run {
+            return Err(
+                CreateWorkflowErrorModeled::DryRunOperationException(DryRunOperationException {
+                    message: Some(crate::state::dry_run_message()),
+                })
+                .into(),
+            );
+        }
+
+        let build_version = store.next_workflow_build_version(
+            &region,
+            &input.r#type,
+            &normalized,
+            &input.semantic_version,
+        );
+        let arn = crate::state::workflow_build_version_arn(
+            &region,
+            &input.r#type,
+            &input.name,
+            &input.semantic_version,
+            build_version,
+        );
+        let request_id = crate::state::new_request_id();
+        let client_token = input.client_token.clone();
+        let prefix = crate::state::workflow_arn_prefix(&input.r#type);
+
+        store.insert_workflow(
+            crate::state::WorkflowRecord {
+                arn: arn.clone(),
+                region,
+                name: input.name,
+                version: input.semantic_version,
+                build_version,
+                workflow_type: input.r#type,
+                description: input.description,
+                change_description: input.change_description,
+                owner: ::engine::EMULATOR_ACCOUNT_ID.to_string(),
+                // The document this workflow carries, whichever member named it: the inline
+                // text, or the snapshot the fetch above read from the object store.
+                data: Some(document_text),
+                uri: input.uri,
+                kms_key_id: input.kms_key_id,
+                parameters,
+                date_created: crate::state::iso8601(::std::time::SystemTime::now()),
+                tags: input.tags.map(crate::state::into_ordered_tags),
+            },
+            &client_token,
+            fingerprint,
+            request_id,
+        );
+
+        Ok(CreateWorkflowOutput {
+            client_token: Some(client_token),
+            workflow_build_version_arn: Some(arn.clone()),
+            // "A set of wildcard version ARNs that always reference the latest version of
+            // the resource", derived from the ARN this create minted.
+            latest_version_references: crate::state::latest_version_references(&arn, &prefix),
+        })
     }
+}
+
+/// Which of the two documented methods named this workflow's document.
+enum DocumentSource<'request> {
+    /// `data`: the YAML document content, inline in the request body.
+    Inline(&'request str),
+    /// `uri`: "the uri of a YAML workflow document file stored in Amazon S3".
+    Uri(&'request str),
+}
+
+/// The refusal a parameter whose value this service cannot accept earns: the one class
+/// every create of this service states such a value in.
+fn invalid_value(message: String) -> CreateWorkflowError {
+    CreateWorkflowErrorModeled::InvalidParameterValueException(InvalidParameterValueException {
+        message: Some(message),
+    })
+    .into()
+}
+
+/// What this request has ALREADY been answered, when its `clientToken` names a create that
+/// succeeded: the original response, or the mismatch a token carrying different creation
+/// parameters earns. `None` when the token names nothing yet, which is the request's to
+/// run.
+fn answered_before(
+    store: &crate::state::ComAmazonawsImagebuilderImagebuilderState,
+    region: &str,
+    workflow_type: &str,
+    client_token: &str,
+    fingerprint: &str,
+) -> Option<Result<CreateWorkflowOutput, CreateWorkflowError>> {
+    let receipt =
+        store.create_receipt(crate::state::CREATE_WORKFLOW_OPERATION, region, client_token)?;
+    if receipt.fingerprint != fingerprint {
+        return Some(Err(
+            CreateWorkflowErrorModeled::IdempotentParameterMismatchException(
+                IdempotentParameterMismatchException {
+                    message: Some(crate::state::idempotent_parameter_mismatch_message()),
+                },
+            )
+            .into(),
+        ));
+    }
+    Some(Ok(CreateWorkflowOutput {
+        client_token: Some(receipt.client_token.clone()),
+        workflow_build_version_arn: Some(receipt.arn.clone()),
+        // The ORIGINAL response, down to the wildcard references the resource that request
+        // created is reached by.
+        latest_version_references: crate::state::latest_version_references(
+            &receipt.arn,
+            &crate::state::workflow_arn_prefix(workflow_type),
+        ),
+    }))
 }

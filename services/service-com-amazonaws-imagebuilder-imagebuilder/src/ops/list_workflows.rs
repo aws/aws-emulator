@@ -1,15 +1,17 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op ListWorkflows
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `ListWorkflows`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`ListWorkflows::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! Reports the workflows this Region holds, one entry per workflow VERSION — or one per
+//! NAME, with every version of each aggregated (`byName`) — a page at a time. A reporting
+//! call: it writes nothing.
+//!
+//! The store holds one record per BUILD version, so the records are grouped under the ARN
+//! their entry reports and each entry is read from the NEWEST build in its group, which is
+//! the build a reference to that version or name resolves to. The grouping is ordered by
+//! that ARN, so the listing has one order and a token's position in it is stable. A token
+//! this store did not issue, or one issued for a different query, is refused rather than
+//! guessed at.
 //!
 //! ## Shape of an operation
 //!
@@ -112,13 +114,23 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-imagebuilder-imagebuild
 // here — hence the `ListWorkflowsError` alias below. An operation that models no errors
 // generates an UNINHABITED enum here, which is correct and expected: there is nothing
 // to construct until the model says otherwise.
-#[smithy_macros::operation_error("com.amazonaws.imagebuilder#ListWorkflows")]
+// `InvalidParameterValueException` is widened in through `extra_errors`: the SERVICE models
+// that shape (a client error, `@httpError` 400 — "The value that you provided for the
+// specified parameter is invalid.") and other operations declare it, while this operation's
+// own error list does not. It is the class Image Builder refuses a parameter of this request
+// with — a `nextToken` it did not mint, and a filter naming a member this listing does not
+// filter on.
+#[smithy_macros::operation_error(
+    "com.amazonaws.imagebuilder#ListWorkflows",
+    extra_errors = ["InvalidParameterValueException"]
+)]
 #[derive(Debug)]
 pub enum ListWorkflowsErrorModeled {
     CallRateLimitExceededException(CallRateLimitExceededException),
     ClientException(ClientException),
     ForbiddenException(ForbiddenException),
     InvalidPaginationTokenException(InvalidPaginationTokenException),
+    InvalidParameterValueException(InvalidParameterValueException),
     InvalidRequestException(InvalidRequestException),
     ServiceException(ServiceException),
     ServiceUnavailableException(ServiceUnavailableException),
@@ -175,18 +187,167 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `ListWorkflows` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(ListWorkflowsErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("ListWorkflows"))
+        // The `Ownership` enum, the `maxResults` 1..25 range, the filter list's 1..10 bound
+        // and the token's length have all been refused past by the centralized walk before
+        // this body runs.
+        let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
+            ListWorkflowsErrorModeled::ServiceException(ServiceException {
+                message: Some(crate::state::store_unavailable_message()),
+            })
+        })?;
+
+        let region = crate::state::request_region(ctx.parts());
+
+        // The secret this store authenticates its page tokens under, taken off the store so
+        // a `nextToken` is minted and read back as the opaque value this store issued.
+        let page_token_key = state.lock().page_token_key;
+
+        // Each filter names one member and the values it admits. An unnamed filter, one
+        // with no values, and a name this operation does not filter on are all refused
+        // rather than ignored: a filter nothing applies would answer with workflows the
+        // caller did not ask for.
+        for filter in input.filters.iter().flatten() {
+            let Some(name) = filter.name.as_deref() else {
+                return Err(ListWorkflowsErrorModeled::InvalidRequestException(
+                    InvalidRequestException {
+                        message: Some(crate::state::incomplete_filter_message()),
+                    },
+                )
+                .into());
+            };
+            if filter.values.as_ref().is_none_or(|values| values.is_empty()) {
+                return Err(ListWorkflowsErrorModeled::InvalidRequestException(
+                    InvalidRequestException {
+                        message: Some(crate::state::incomplete_filter_message()),
+                    },
+                )
+                .into());
+            }
+            if !crate::state::WORKFLOW_FILTER_NAMES.contains(&name) {
+                return Err(ListWorkflowsErrorModeled::InvalidParameterValueException(
+                    InvalidParameterValueException {
+                        message: Some(crate::state::unsupported_filter_message(
+                            Self::NAME,
+                            crate::state::WORKFLOW_FILTER_NAMES,
+                        )),
+                    },
+                )
+                .into());
+            }
+            // "You can't combine this option with the version filter" (`byName`): an entry
+            // that aggregates every version of a name cannot also stand for one version, so
+            // the pair is refused rather than answered one way or the other.
+            if input.by_name && name == crate::state::COMPONENT_VERSION_FILTER_NAME {
+                return Err(ListWorkflowsErrorModeled::InvalidRequestException(
+                    InvalidRequestException {
+                        message: Some(crate::state::by_name_with_version_filter_message()),
+                    },
+                )
+                .into());
+            }
+        }
+
+        // Which listing this page belongs to: the owner, `byName` and the filters, so a
+        // token issued for one listing is refused for another.
+        let mut cursor = crate::state::PageCursor {
+            operation: crate::state::LIST_WORKFLOWS_OPERATION.to_string(),
+            region: region.clone(),
+            query: crate::state::workflow_query_fingerprint(
+                input.owner.as_deref(),
+                input.by_name,
+                input.filters.as_deref(),
+            ),
+            after: String::new(),
+        };
+        let after = match input.next_token.as_deref() {
+            None => String::new(),
+            Some(token) => match crate::state::decode_page_token(&page_token_key, token, &cursor) {
+                Some(after) => after,
+                None => {
+                    return Err(ListWorkflowsErrorModeled::InvalidParameterValueException(
+                        InvalidParameterValueException {
+                            message: Some(crate::state::invalid_pagination_token_message()),
+                        },
+                    )
+                    .into())
+                }
+            },
+        };
+
+        // The only workflows this store holds are the ones a caller created, so a request
+        // for any other type of owner reports none of them, without walking the store at
+        // all.
+        let owned_by_caller = input
+            .owner
+            .as_deref()
+            .unwrap_or(crate::state::OWNERSHIP_SELF)
+            == crate::state::OWNERSHIP_SELF;
+        if !owned_by_caller {
+            return Ok(ListWorkflowsOutput {
+                workflow_version_list: Some(Vec::new()),
+                next_token: None,
+            });
+        }
+
+        // A page carries at most `maxResults` entries, and at most the modelled maximum
+        // when the request names none.
+        let page_size = input
+            .max_results
+            .and_then(|requested| usize::try_from(requested).ok())
+            .unwrap_or(crate::state::MAX_WORKFLOWS_PER_PAGE)
+            .clamp(1, crate::state::MAX_WORKFLOWS_PER_PAGE);
+
+        // A pure read: the guard is taken, this page is copied out as modelled entries, and
+        // nothing is written. The stored build versions are grouped under the ARN their
+        // entry reports, and the entry is read from the NEWEST build in its group.
+        let store = state.lock();
+        let mut grouped: ::std::collections::BTreeMap<String, &crate::state::WorkflowRecord> =
+            ::std::collections::BTreeMap::new();
+        for record in store.workflows.values() {
+            if record.region != region {
+                continue;
+            }
+            let admitted = input.filters.iter().flatten().all(|filter| {
+                filter.name.as_deref().is_some_and(|name| {
+                    record.admits_filter(name, filter.values.as_deref().unwrap_or_default())
+                })
+            });
+            if !admitted {
+                continue;
+            }
+            grouped
+                .entry(record.listed_arn(input.by_name))
+                .and_modify(|latest| {
+                    if record.version_order() > latest.version_order() {
+                        *latest = record;
+                    }
+                })
+                .or_insert(record);
+        }
+
+        let mut matching = grouped
+            .iter()
+            .filter(|(arn, _)| arn.as_str() > after.as_str());
+        let page: Vec<WorkflowVersion> = matching
+            .by_ref()
+            .take(page_size)
+            .map(|(_, latest)| latest.version_entry(input.by_name))
+            .collect();
+        // A `nextToken` is answered only when an entry this page did not carry remains.
+        let remaining = matching.next().is_some();
+        let next_token = page
+            .last()
+            .filter(|_| remaining)
+            .and_then(|last| last.arn.clone())
+            .map(|last| {
+                cursor.after = last;
+                crate::state::encode_page_token(&page_token_key, &cursor)
+            });
+        drop(store);
+
+        Ok(ListWorkflowsOutput {
+            workflow_version_list: Some(page),
+            next_token,
+        })
     }
 }
