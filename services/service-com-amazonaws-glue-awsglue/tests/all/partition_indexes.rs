@@ -47,7 +47,7 @@ const READS: usize = 3;
 
 /// ONE index as a read reports it: its `IndexName`, its `Keys` as (name, type) pairs in the
 /// order reported, and its `IndexStatus`.
-type ReportedIndex = (String, Vec<(String, String)>, String);
+pub(crate) type ReportedIndex = (String, Vec<(String, String)>, String);
 
 /// ONE index a row expects: its `IndexName` and its keys as (name, type) pairs.
 type ExpectedIndex = (&'static str, Vec<(&'static str, &'static str)>);
@@ -67,7 +67,10 @@ type RefusalCase = (&'static str, Value, Value, &'static str, fn(&str) -> String
 
 /// Create `database` holding `table`, whose definition declares `partition_keys` and which is
 /// registered with `indexes`, and answer the create's HTTP status and body.
-async fn create_indexed_table(
+///
+/// Shared with [`crate::partition_index_registration`], which registers indexes on the table
+/// this creates rather than with it.
+pub(crate) async fn create_indexed_table(
     router: &MultiServiceRouter,
     database: &str,
     table: &str,
@@ -98,7 +101,7 @@ async fn create_indexed_table(
 }
 
 /// One index read, answering the HTTP status and body.
-async fn get_indexes(
+pub(crate) async fn get_indexes(
     router: &MultiServiceRouter,
     database: &str,
     table: &str,
@@ -117,7 +120,7 @@ async fn get_indexes(
 
 /// The reported list as `(IndexName, [(key name, key type)], IndexStatus)` triples, in the
 /// order the answer carries them.
-fn reported(body: &Value) -> Vec<ReportedIndex> {
+pub(crate) fn reported(body: &Value) -> Vec<ReportedIndex> {
     body["PartitionIndexDescriptorList"]
         .as_array()
         .unwrap_or_else(|| panic!("the answer must carry a PartitionIndexDescriptorList: {body}"))
@@ -150,7 +153,7 @@ fn reported(body: &Value) -> Vec<ReportedIndex> {
 }
 
 /// The index names a read reports, in the order it reports them.
-fn reported_names(body: &Value) -> Vec<String> {
+pub(crate) fn reported_names(body: &Value) -> Vec<String> {
     reported(body).into_iter().map(|(name, _, _)| name).collect()
 }
 
@@ -972,6 +975,9 @@ async fn the_status_an_index_reports_is_the_one_its_due_instant_says() {
                     r#type: "string".to_string(),
                 }],
                 active_at: due_at(),
+                // An index whose build found nothing at fault is the one the clock owes
+                // ACTIVE; what a FAILED build reports is asserted by the registration suite.
+                backfill_errors: Vec::new(),
             }],
         );
 

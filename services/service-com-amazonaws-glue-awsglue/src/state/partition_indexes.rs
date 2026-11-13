@@ -9,6 +9,13 @@
 //! type ([`partition_index_store`]) — so the records one request writes are the records the
 //! next request reads.
 //!
+//! An index is registered either WITH its table (`CreateTable$PartitionIndexes`, resolved by
+//! [`resolve_indexes`]) or on a table the catalog already holds (`CreatePartitionIndex`,
+//! resolved by [`resolve_index`] and added by [`PartitionIndexStore::add`]). The second case
+//! is the one with a BACKFILL: the table already holds partitions, and the ones the index
+//! cannot cover are what its `BackfillErrors` report ([`backfill_errors`]), which is also
+//! what decides whether its build succeeds.
+//!
 //! The file sits with the rest of this service's state, beside
 //! [`crate::state::catalog_encryption`]; it is DECLARED from `src/service.rs` (hence its
 //! module path), which is the file this service owns and which is never regenerated. See the
@@ -27,7 +34,10 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::{Duration, SystemTime};
 
-use crate::ops::types::{Column, KeySchemaElement, PartitionIndex, PartitionIndexDescriptor};
+use crate::ops::types::{
+    BackfillError, Column, KeySchemaElement, PartitionIndex, PartitionIndexDescriptor,
+    PartitionValueList,
+};
 
 /// The `PartitionIndexStatus` an index is in while the service is still building it:
 /// "CREATING: The index is being created" (`PartitionIndexDescriptor$IndexStatus`). One of
@@ -37,6 +47,31 @@ pub const INDEX_STATUS_CREATING: &str = "CREATING";
 /// The `PartitionIndexStatus` the clock owes an index it has finished building: "ACTIVE: The
 /// index creation succeeds" (`PartitionIndexDescriptor$IndexStatus`).
 pub const INDEX_STATUS_ACTIVE: &str = "ACTIVE";
+
+/// The `PartitionIndexStatus` of an index whose build did not succeed: "FAILED: The index
+/// creation fails" (`PartitionIndexDescriptor$IndexStatus`). An index registered on a table
+/// whose stored partitions the index cannot cover reaches this status rather than
+/// [`INDEX_STATUS_ACTIVE`], and reports WHY in its `BackfillErrors`.
+pub const INDEX_STATUS_FAILED: &str = "FAILED";
+
+/// The `BackfillErrorCode` of a stored partition whose value for an indexed key is not a
+/// value of the type that partition key declares: of the modelled `BackfillErrorCode`
+/// values, the one for invalid partition-type data.
+pub const BACKFILL_INVALID_PARTITION_TYPE_DATA: &str = "INVALID_PARTITION_TYPE_DATA_ERROR";
+
+/// The `BackfillErrorCode` of a stored partition that carries no value at all for an indexed
+/// key: of the modelled `BackfillErrorCode` values, the one for a missing partition value.
+pub const BACKFILL_MISSING_PARTITION_VALUE: &str = "MISSING_PARTITION_VALUE_ERROR";
+
+/// How many partitions ONE `BackfillError` names.
+///
+/// CHOSEN, not documented: a backfill error "provides a limited number of partitions in the
+/// response, so that you can fix the partitions at fault and try registering the index
+/// again" (`BackfillError`), and Glue publishes no figure for that limit — so the error names
+/// the first partitions at fault in the order the table holds them and stops there. The code
+/// itself is reported whether or not the list was cut off, because it is the code that says
+/// why the build failed.
+pub const MAX_BACKFILL_ERROR_PARTITIONS: usize = 10;
 
 /// How long an index stays [`INDEX_STATUS_CREATING`] before the clock owes it
 /// [`INDEX_STATUS_ACTIVE`].
@@ -80,6 +115,23 @@ impl IndexRefusal {
     }
 }
 
+/// Why a table that is already stored cannot take ONE MORE partition index.
+///
+/// The variants are the DISTINCTION the caller sees: a name the table already holds an index
+/// under is a duplicate resource, while one index too many is a limit on the resource.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IndexRegisterRefusal {
+    /// The table already holds an index of the submitted `IndexName` — answered with
+    /// `AlreadyExistsException`.
+    AlreadyExists,
+    /// The table already holds [`MAX_INDEXES_PER_TABLE`] indexes — answered with
+    /// `ResourceNumberLimitExceededException`.
+    TooMany {
+        /// How many indexes the table holds, which is what the refusal reports.
+        held: usize,
+    },
+}
+
 /// The refusal wordings this module answers with, each built from the REQUEST and the table's
 /// own definition rather than from any one caller's values.
 pub mod messages {
@@ -116,6 +168,33 @@ pub mod messages {
              and {would_hold} were submitted"
         )
     }
+
+    /// One more index on a table that already holds as many as it can.
+    pub fn index_limit_reached(table_name: &str, held: usize) -> String {
+        format!(
+            "Table {table_name} cannot have more than {MAX_INDEXES_PER_TABLE} partition indexes, \
+             and it already holds {held}"
+        )
+    }
+
+    /// The keys a REGISTRATION on an existing table named that the table does not partition
+    /// by, as the catalog words that refusal: the fixed sentence, then the keys at fault in
+    /// the order the request named them.
+    ///
+    /// An index indexes "the name of a partition key" (`KeySchemaElement$Name`), so a key
+    /// that is not one of the table's partition columns names nothing to index — a column of
+    /// the table's `StorageDescriptor` included.
+    pub fn index_keys_not_partition_columns(keys: &[&str]) -> String {
+        format!(
+            "IndexKeys not a part of PartitionColumns. Verify the indexKeys : [{}]",
+            keys.join(", ")
+        )
+    }
+
+    /// A registration naming an index the table already holds. Like the catalog's other
+    /// duplicate-create refusals (`Table already exists.`), the name is not disclosed: the
+    /// request carries it.
+    pub const PARTITION_INDEX_ALREADY_EXISTS: &str = "Partition index already exists.";
 }
 
 /// The table one set of index records belongs to.
@@ -169,19 +248,28 @@ pub struct PartitionIndexEntry {
     /// the order the create named them: "a list of one or more keys, as `KeySchemaElement`
     /// structures, for the partition index" (`PartitionIndexDescriptor$Keys`).
     pub keys: Vec<KeySchemaElement>,
-    /// The instant from which the clock owes this index [`INDEX_STATUS_ACTIVE`]; before it,
-    /// the index is still [`INDEX_STATUS_CREATING`].
+    /// The instant from which the clock owes this index its built status; before it, the
+    /// index is still [`INDEX_STATUS_CREATING`].
     pub active_at: SystemTime,
+    /// What the BACKFILL of this index over the partitions the table already held found at
+    /// fault, computed when the index was registered ([`backfill_errors`]) — empty when every
+    /// stored partition carries a value of the declared type for each indexed key, which is
+    /// the only way the build succeeds.
+    pub backfill_errors: Vec<BackfillError>,
 }
 
 impl PartitionIndexEntry {
     /// The status this index is in at `at`: the status its create put it in while the due
-    /// instant is still ahead, the status the clock owes it from the instant it is reached.
+    /// instant is still ahead, and from the instant it is reached the status its build
+    /// earned — [`INDEX_STATUS_ACTIVE`] when the backfill found nothing at fault,
+    /// [`INDEX_STATUS_FAILED`] when it did.
     pub fn status(&self, at: SystemTime) -> &'static str {
         if at < self.active_at {
             INDEX_STATUS_CREATING
-        } else {
+        } else if self.backfill_errors.is_empty() {
             INDEX_STATUS_ACTIVE
+        } else {
+            INDEX_STATUS_FAILED
         }
     }
 
@@ -189,14 +277,17 @@ impl PartitionIndexEntry {
     ///
     /// `BackfillErrors` are "errors that can occur when registering partition indexes for an
     /// existing table" (`PartitionIndexDescriptor$BackfillErrors`) — the partitions already
-    /// stored that the index cannot cover. An index registered with its table is registered
-    /// over no partitions at all, so there is no backfill to report an error from.
+    /// stored that the index cannot cover. They are what the BUILD found, so they are
+    /// reported from the instant that build is due and not before: while the index is still
+    /// being built there is no result to report, and an index registered over no stored
+    /// partition at all has none to report ever.
     pub fn to_descriptor(&self, at: SystemTime) -> PartitionIndexDescriptor {
         PartitionIndexDescriptor {
             index_name: self.index_name.clone(),
             keys: self.keys.clone(),
             index_status: self.status(at).to_string(),
-            backfill_errors: None,
+            backfill_errors: (at >= self.active_at && !self.backfill_errors.is_empty())
+                .then(|| self.backfill_errors.clone()),
         }
     }
 }
@@ -250,6 +341,51 @@ impl PartitionIndexStore {
                 .map(|index| (index.index_name.clone(), index))
                 .collect(),
         );
+    }
+
+    /// Register ONE MORE index on a table that is already stored, or say why the table
+    /// cannot take it.
+    ///
+    /// An index is addressed by its `IndexName` within its table, so a name the table
+    /// already holds an index under is a DUPLICATE rather than an overwrite — whatever status
+    /// that index reached — and a table takes at most [`MAX_INDEXES_PER_TABLE`] of them,
+    /// counting every index it already holds. The records of any earlier table of the same
+    /// name go, exactly as [`Self::record`] drops them.
+    pub fn add(
+        &mut self,
+        table: TableIndexKey,
+        index: PartitionIndexEntry,
+    ) -> Result<(), IndexRegisterRefusal> {
+        // Decided BEFORE anything is written, so a registration the table cannot take
+        // leaves this store exactly as it was.
+        if let Some(refusal) = self.refusal_for(&table, &index.index_name) {
+            return Err(refusal);
+        }
+        self.tables
+            .retain(|held, _| !held.names_same_table(&table) || *held == table);
+        self.tables
+            .entry(table)
+            .or_default()
+            .insert(index.index_name.clone(), index);
+        Ok(())
+    }
+
+    /// Why `table` cannot take one more index named `index_name`, or `None` when it can.
+    ///
+    /// The decision [`Self::add`] makes, answered WITHOUT the record to store, so a caller
+    /// can learn a registration is refused before it does the work of building that record —
+    /// and one place decides it either way.
+    pub fn refusal_for(
+        &self,
+        table: &TableIndexKey,
+        index_name: &str,
+    ) -> Option<IndexRegisterRefusal> {
+        let held = self.tables.get(table);
+        if held.is_some_and(|held| held.contains_key(index_name)) {
+            return Some(IndexRegisterRefusal::AlreadyExists);
+        }
+        let count = held.map_or(0, BTreeMap::len);
+        (count >= MAX_INDEXES_PER_TABLE).then_some(IndexRegisterRefusal::TooMany { held: count })
     }
 
     /// Forget the records of every table in `tables`: the indexes of a table that is no
@@ -347,12 +483,7 @@ pub fn resolve_indexes(
     // The table's partition keys by name: built once, from the definition about to be stored,
     // so no key resolution walks them. The FIRST column of a name wins, as a walk looking for
     // that name would have found.
-    let mut partition_keys_by_name: HashMap<&str, &Column> = HashMap::new();
-    for column in partition_keys {
-        partition_keys_by_name
-            .entry(column.name.as_str())
-            .or_insert(column);
-    }
+    let partition_keys_by_name = partition_keys_by_name(partition_keys);
 
     let mut resolved: Vec<PartitionIndexEntry> = Vec::with_capacity(indexes.len());
     for index in indexes {
@@ -400,7 +531,250 @@ pub fn resolve_indexes(
             active_at: registered_at
                 .checked_add(PARTITION_INDEX_SETTLES_AFTER)
                 .unwrap_or(registered_at),
+            // An index registered WITH its table is registered over a table that holds no
+            // partition yet, so its build has nothing to backfill and nothing to report.
+            backfill_errors: Vec::new(),
         });
     }
     Ok(resolved)
+}
+
+/// The table's partition keys by name, so resolving a key is a lookup and not a walk.
+///
+/// The FIRST column of a name wins, as a walk looking for that name would have found.
+fn partition_keys_by_name(partition_keys: &[Column]) -> HashMap<&str, &Column> {
+    let mut by_name: HashMap<&str, &Column> = HashMap::new();
+    for column in partition_keys {
+        by_name.entry(column.name.as_str()).or_insert(column);
+    }
+    by_name
+}
+
+/// WHERE each partition key's value sits in a partition's value list, by key name: a
+/// partition states one value per partition key, "ordered in the same order as the partition
+/// keys" (`PartitionInput$Values`).
+///
+/// Built once per backfill, so finding a key's value is a lookup and not a walk. The FIRST
+/// column of a name wins, as [`partition_keys_by_name`] resolves the same name.
+fn partition_key_positions(partition_keys: &[Column]) -> HashMap<&str, usize> {
+    let mut by_name: HashMap<&str, usize> = HashMap::new();
+    for (position, column) in partition_keys.iter().enumerate() {
+        by_name.entry(column.name.as_str()).or_insert(position);
+    }
+    by_name
+}
+
+/// Resolve ONE partition index a registration submitted on a table the catalog already
+/// holds, as the record to store — or the reason the table cannot carry it.
+///
+/// The same RULE [`resolve_indexes`] applies to the indexes a table is created with, for the
+/// one index a later registration adds: every key it names has to be one of the table's own
+/// partition keys, named once, and the type the record carries for a key is the type that
+/// partition key declares. What differs is the REFUSAL the caller sees, because the catalog
+/// words a registration against an existing table's partition columns as such
+/// ([`messages::index_keys_not_partition_columns`]), naming every key at fault rather than
+/// the first one; whether the table can hold another index at all is the store's answer
+/// ([`PartitionIndexStore::add`]).
+///
+/// `registered_at` is the instant the registration is served; the record it returns is due
+/// its built status one [`PARTITION_INDEX_SETTLES_AFTER`] after it.
+///
+/// BOUNDED by the request and the table's own definition: the partition keys are indexed by
+/// name once, so every key is one lookup, and the keys the refusal names are the submitted
+/// keys themselves — linear in the request, never a product of the two lists.
+pub fn resolve_index(
+    table_name: &str,
+    index: &PartitionIndex,
+    partition_keys: &[Column],
+    registered_at: SystemTime,
+) -> Result<PartitionIndexEntry, IndexRefusal> {
+    let partition_keys_by_name = partition_keys_by_name(partition_keys);
+
+    let mut named: HashSet<&str> = HashSet::new();
+    for key in &index.keys {
+        if !named.insert(key.as_str()) {
+            return Err(IndexRefusal::Invalid(messages::key_named_twice(
+                table_name,
+                &index.index_name,
+                key,
+            )));
+        }
+    }
+    // Every key at fault, in the order the request named them: the refusal names the keys to
+    // verify, so it names all of them and not just the first.
+    let not_partition_columns: Vec<&str> = index
+        .keys
+        .iter()
+        .map(String::as_str)
+        .filter(|key| !partition_keys_by_name.contains_key(key))
+        .collect();
+    if !not_partition_columns.is_empty() {
+        return Err(IndexRefusal::Invalid(
+            messages::index_keys_not_partition_columns(&not_partition_columns),
+        ));
+    }
+
+    Ok(PartitionIndexEntry {
+        index_name: index.index_name.clone(),
+        keys: index
+            .keys
+            .iter()
+            .filter_map(|key| partition_keys_by_name.get(key.as_str()))
+            .map(|partition_key| KeySchemaElement {
+                name: partition_key.name.clone(),
+                // See [`resolve_indexes`]: a partition key that declares no type is indexed
+                // under none.
+                r#type: partition_key.r#type.clone().unwrap_or_default(),
+            })
+            .collect(),
+        // Checked, as every other due instant in this crate is.
+        active_at: registered_at
+            .checked_add(PARTITION_INDEX_SETTLES_AFTER)
+            .unwrap_or(registered_at),
+        // Filled by the caller from the partitions the table already holds
+        // ([`backfill_errors`]), which is the only thing a registration on an existing table
+        // has to backfill over.
+        backfill_errors: Vec::new(),
+    })
+}
+
+/// What the BACKFILL of one index over the partitions a table already holds finds at fault.
+///
+/// RULE: registering an index on an existing table indexes the partitions already stored, so
+/// a stored partition whose value for an indexed key is not a value of the type that
+/// partition key declares, or which carries no value for it at all, is a partition the index
+/// cannot cover — and the registration reports it, under the `BackfillErrorCode` that says
+/// which of the two it is, with the partitions at fault named by their `Values`
+/// (`BackfillError`). A table with no such partition has nothing at fault, which is what
+/// lets the build succeed.
+///
+/// `keys` are the index's resolved keys (each carrying the type its partition key declares),
+/// `partition_keys` the table's partition keys in the order a partition's values are given in
+/// ("ordered in the same order as the partition keys", `PartitionInput$Values`), and
+/// `partitions` the value lists of the partitions the table holds, in the order it holds
+/// them. One partition is reported ONCE, under the first fault found walking the index's keys
+/// in order, so a single partition cannot be counted twice.
+///
+/// BOUNDED by STORED state, not by this request: the partitions walked are the table's own,
+/// capped per table by [`crate::state::MAX_PARTITIONS_PER_TABLE`] and store-wide by
+/// [`crate::state::MAX_STORED_PARTITIONS`], and `keys` are DISTINCT partition keys of that
+/// same table ([`resolve_index`] refuses anything else), so there are no more of them than the
+/// stored definition declares. Each key's value is found by an O(1) lookup into a position
+/// map built once from that definition — never a walk per key — and at most
+/// [`MAX_BACKFILL_ERROR_PARTITIONS`] partitions are kept per code however many are at fault.
+pub fn backfill_errors<'a>(
+    keys: &[KeySchemaElement],
+    partition_keys: &[Column],
+    partitions: impl IntoIterator<Item = &'a [String]>,
+) -> Vec<BackfillError> {
+    // Which of a partition's values carries each indexed key: a partition states one value
+    // per partition key, in the partition-key order, so the key's POSITION among the table's
+    // partition keys is where its value is. Indexed by name ONCE, so resolving a key is a
+    // lookup and not a walk.
+    let positions_by_name = partition_key_positions(partition_keys);
+    let positions: Vec<Option<usize>> = keys
+        .iter()
+        .map(|key| positions_by_name.get(key.name.as_str()).copied())
+        .collect();
+
+    // Ordered by code, so a registration over the same table reports the same errors in the
+    // same order however the partitions were stored.
+    let mut at_fault: BTreeMap<&'static str, Vec<PartitionValueList>> = BTreeMap::new();
+    for values in partitions {
+        if let Some(code) = first_backfill_fault(keys, &positions, values) {
+            let reported = at_fault.entry(code).or_default();
+            if reported.len() < MAX_BACKFILL_ERROR_PARTITIONS {
+                reported.push(PartitionValueList {
+                    values: values.to_vec(),
+                });
+            }
+        }
+    }
+
+    at_fault
+        .into_iter()
+        .map(|(code, partitions)| BackfillError {
+            code: Some(code.to_string()),
+            partitions: Some(partitions),
+        })
+        .collect()
+}
+
+/// The `BackfillErrorCode` ONE stored partition is at fault under, walking the index's keys
+/// in order — or `None` when the index covers it.
+fn first_backfill_fault(
+    keys: &[KeySchemaElement],
+    positions: &[Option<usize>],
+    values: &[String],
+) -> Option<&'static str> {
+    for (key, position) in keys.iter().zip(positions) {
+        // A partition states one value per partition key of its table, so a key with no
+        // position, or a position past this partition's values, is a key this partition
+        // states no value for.
+        let value = position.and_then(|position| values.get(position));
+        match value {
+            None => return Some(BACKFILL_MISSING_PARTITION_VALUE),
+            Some(value) if value.trim().is_empty() => {
+                return Some(BACKFILL_MISSING_PARTITION_VALUE)
+            }
+            Some(value) if !is_value_of_type(value, &key.r#type) => {
+                return Some(BACKFILL_INVALID_PARTITION_TYPE_DATA)
+            }
+            Some(_) => {}
+        }
+    }
+    None
+}
+
+/// Whether `value` — a partition value, which is text — is a value OF the type a column
+/// declares.
+///
+/// `declared_type` is `Column$Type`, "the data type of the column", which a Data Catalog
+/// table states in Hive type syntax (`int`, `bigint`, `string`, `varchar(64)`,
+/// `decimal(10,2)`, `timestamp`). The parameter list of a parameterised name does not change
+/// which values the type holds here, so it is cut off before the name is matched, and the
+/// match ignores case because a declared type is client-written text.
+///
+/// A TEXT type holds every value, and so does a type nothing here defines — a complex type
+/// (`array`, `map`, `struct`, `uniontype`) or a name the catalog does not define — because
+/// nothing then contradicts the value. Every other type holds exactly the values its own
+/// spelling admits, the width of an integer type included.
+pub fn is_value_of_type(value: &str, declared_type: &str) -> bool {
+    let value = value.trim();
+    match crate::state::base_hive_type(declared_type).as_str() {
+        "boolean" => value.eq_ignore_ascii_case("true") || value.eq_ignore_ascii_case("false"),
+        "tinyint" | "byte" => value.parse::<i8>().is_ok(),
+        "smallint" | "short" => value.parse::<i16>().is_ok(),
+        "int" | "integer" => value.parse::<i32>().is_ok(),
+        "bigint" | "long" => value.parse::<i64>().is_ok(),
+        "float" | "real" => value.parse::<f32>().is_ok_and(f32::is_finite),
+        "double" => value.parse::<f64>().is_ok_and(f64::is_finite),
+        "decimal" | "numeric" => is_decimal(value),
+        "date" => is_date(value),
+        "timestamp" => crate::state::hive_instant_seconds(value).is_some(),
+        _ => true,
+    }
+}
+
+/// Whether `value` spells a fixed-point number: an optional sign, then digits with at most
+/// one point among them and at least one digit.
+fn is_decimal(value: &str) -> bool {
+    let digits = value
+        .strip_prefix('-')
+        .or_else(|| value.strip_prefix('+'))
+        .unwrap_or(value);
+    let (whole, fraction) = digits.split_once('.').unwrap_or((digits, ""));
+    !(whole.is_empty() && fraction.is_empty())
+        && whole
+            .chars()
+            .chain(fraction.chars())
+            .all(|character| character.is_ascii_digit())
+}
+
+/// Whether `value` spells a Hive DATE: `YYYY-MM-DD`, and a day the calendar holds.
+///
+/// The day itself is read by [`crate::state::hive_instant_seconds`], this crate's one reading
+/// of a Hive date or timestamp; a date states no time of day.
+fn is_date(value: &str) -> bool {
+    !value.contains(['T', ' ', ':']) && crate::state::hive_instant_seconds(value).is_some()
 }

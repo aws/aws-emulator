@@ -273,6 +273,8 @@ mod not_found_wording;
 mod mutations_are_applied;
 #[path = "all/owed_status_materialisation.rs"]
 mod owed_status_materialisation;
+#[path = "all/partition_index_registration.rs"]
+mod partition_index_registration;
 #[path = "all/partition_indexes.rs"]
 mod partition_indexes;
 #[path = "all/partition_listing.rs"]

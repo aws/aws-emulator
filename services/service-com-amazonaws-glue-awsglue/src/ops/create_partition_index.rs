@@ -1,15 +1,20 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op CreatePartitionIndex
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `CreatePartitionIndex`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`CreatePartitionIndex::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! "Creates a specified partition index in an existing table": the index is registered on a
+//! table the catalog already holds, keyed by that stored table in the single home of this
+//! resource's records ([`crate::service::partition_indexes`]), which is where
+//! `GetPartitionIndexes` reads it from and where an index registered by `CreateTable` lands
+//! too.
+//!
+//! An index indexes the table's PARTITION keys, so a key the table does not partition by is
+//! refused and nothing is stored; a name the table already holds an index under is a
+//! duplicate; and a table takes at most `MAX_INDEXES_PER_TABLE` of them. Because the table
+//! already holds partitions, the registration BACKFILLS over them: a stored partition whose
+//! value for an indexed key is not a value of that key's declared type, or which states no
+//! value for it, is reported in the index's `BackfillErrors` and is what makes its build end
+//! FAILED instead of ACTIVE.
 //!
 //! ## Shape of an operation
 //!
@@ -136,6 +141,68 @@ impl<Eng> CreatePartitionIndex<Eng> {
     }
 }
 
+/// The server error this operation answers when the engine mounted under this service keeps
+/// no state at all, so there is no catalog to register an index in.
+fn store_unavailable() -> CreatePartitionIndexError {
+    CreatePartitionIndexErrorModeled::InternalServiceException(InternalServiceException {
+        message: Some("the Glue Data Catalog store is unavailable".into()),
+    })
+    .into()
+}
+
+/// The modelled error a store refusal is answered with: a name the table already holds an
+/// index under is a duplicate resource, one index too many is a limit on the resource.
+fn register_refusal(
+    table_name: &str,
+    refusal: crate::service::partition_indexes::IndexRegisterRefusal,
+) -> CreatePartitionIndexErrorModeled {
+    match refusal {
+        crate::service::partition_indexes::IndexRegisterRefusal::AlreadyExists => {
+            CreatePartitionIndexErrorModeled::AlreadyExistsException(AlreadyExistsException {
+                message: Some(
+                    crate::service::partition_indexes::messages::PARTITION_INDEX_ALREADY_EXISTS
+                        .to_string(),
+                ),
+            })
+        }
+        crate::service::partition_indexes::IndexRegisterRefusal::TooMany { held } => {
+            CreatePartitionIndexErrorModeled::ResourceNumberLimitExceededException(
+                ResourceNumberLimitExceededException {
+                    message: Some(
+                        crate::service::partition_indexes::messages::index_limit_reached(
+                            table_name, held,
+                        ),
+                    ),
+                },
+            )
+        }
+    }
+}
+
+/// Record one REFUSED registration and answer the error it is refused with, so an attempted
+/// registration leaves one record whatever its outcome.
+///
+/// The record carries what the success record carries — the operation, the resource the
+/// request addressed and how it ended — and nothing else: the identifiers come from the
+/// request, and no value a caller sent beyond them is logged.
+fn refused(
+    input: &CreatePartitionIndexInput,
+    catalog_id: &str,
+    outcome: &str,
+    error: CreatePartitionIndexErrorModeled,
+) -> CreatePartitionIndexError {
+    ::tracing::warn!(
+        operation = "CreatePartitionIndex",
+        catalog_id = %catalog_id,
+        database = %input.database_name,
+        table = %input.table_name,
+        index = %input.partition_index.index_name,
+        outcome = %outcome,
+        "refused a Data Catalog partition index registration"
+    );
+    error.into()
+}
+
 impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_runtime::Operation
     for CreatePartitionIndex<Eng>
 {
@@ -151,20 +218,146 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
     async fn handle(
         &self,
         input: Self::Input,
-        ctx: &smithy_server_runtime::OperationContext<'_>,
+        _ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `CreatePartitionIndex` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(CreatePartitionIndexErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("CreatePartitionIndex"))
+        let Some(state) = crate::state::service_state(&*self.engine) else {
+            return Err(store_unavailable());
+        };
+        let Some(index_records) =
+            crate::service::partition_indexes::partition_index_store(&*self.engine)
+        else {
+            return Err(store_unavailable());
+        };
+
+        let catalog_id = crate::state::resolve_catalog_id(input.catalog_id.as_ref());
+        // The instant this registration is served, which the record dates its build from.
+        let registered_at = ::std::time::SystemTime::now();
+
+        // The catalog's guard is held across the whole registration, and the records' guard
+        // taken inside it — the lock order every other handler that touches both takes them
+        // in — so no reader can resolve the table between the index being accepted and the
+        // record being written.
+        let store = state.lock();
+        let Some(database) = store.database(&catalog_id, &input.database_name) else {
+            return Err(refused(
+                &input,
+                &catalog_id,
+                "database not found",
+                CreatePartitionIndexErrorModeled::EntityNotFoundException(EntityNotFoundException {
+                    message: Some(crate::state::messages::database_not_found(
+                        &input.database_name,
+                    )),
+                    from_federation_source: None,
+                }),
+            ));
+        };
+        let Some(table) = database
+            .tables
+            .get(&crate::state::fold_name(&input.table_name))
+        else {
+            return Err(refused(
+                &input,
+                &catalog_id,
+                "table not found",
+                CreatePartitionIndexErrorModeled::EntityNotFoundException(EntityNotFoundException {
+                    message: Some(crate::state::messages::table_not_found(&input.table_name)),
+                    from_federation_source: None,
+                }),
+            ));
+        };
+
+        // The index is resolved against the table's OWN partition keys, so the record carries
+        // the type the table declares for each key it indexes.
+        let partition_keys = table.partition_keys.as_deref().unwrap_or_default();
+        let mut index = match crate::service::partition_indexes::resolve_index(
+            &table.name,
+            &input.partition_index,
+            partition_keys,
+            registered_at,
+        ) {
+            Ok(index) => index,
+            // The exhaustive mapping of the refusal type this crate's two index resolvers
+            // share. `resolve_index` answers only on the index's own shape, which is
+            // `InvalidInputException`; how many indexes the table may hold is the store's
+            // answer below.
+            Err(refusal) => {
+                let message = Some(refusal.message().to_string());
+                return Err(refused(
+                    &input,
+                    &catalog_id,
+                    "invalid",
+                    match refusal {
+                        crate::service::partition_indexes::IndexRefusal::Invalid(_) => {
+                            CreatePartitionIndexErrorModeled::InvalidInputException(
+                                InvalidInputException {
+                                    message,
+                                    from_federation_source: None,
+                                },
+                            )
+                        }
+                        crate::service::partition_indexes::IndexRefusal::TooMany(_) => {
+                            CreatePartitionIndexErrorModeled::ResourceNumberLimitExceededException(
+                                ResourceNumberLimitExceededException { message },
+                            )
+                        }
+                    },
+                ));
+            }
+        };
+
+        let indexed_table = crate::service::partition_indexes::TableIndexKey::of(table);
+        let table_name = table.name.clone();
+        let database_name = database.name.clone();
+
+        // Whether the table can take this index AT ALL is decided before the backfill walks
+        // its partitions, so a registration the store refuses does no work over them however
+        // often it is re-issued.
+        if let Some(refusal) = index_records
+            .lock()
+            .refusal_for(&indexed_table, &index.index_name)
+        {
+            return Err(refused(
+                &input,
+                &catalog_id,
+                "refused",
+                register_refusal(&table_name, refusal),
+            ));
+        }
+
+        // The table already holds partitions, so this registration BACKFILLS over them: the
+        // ones the index cannot cover are what its build reports, and what makes it fail. The
+        // walk is bounded by the stored table — its partitions are capped per table and
+        // store-wide, and the index's keys are distinct partition keys of that same table.
+        index.backfill_errors = crate::service::partition_indexes::backfill_errors(
+            &index.keys,
+            partition_keys,
+            table.partitions.keys().map(Vec::as_slice),
+        );
+        let index_name = index.index_name.clone();
+        let backfill_faults = index.backfill_errors.len();
+
+        // The store decides again as it writes, so the decision is the store's own and not a
+        // claim made before it.
+        if let Err(refusal) = index_records.lock().add(indexed_table, index) {
+            return Err(refused(
+                &input,
+                &catalog_id,
+                "refused",
+                register_refusal(&table_name, refusal),
+            ));
+        }
+        drop(store);
+
+        ::tracing::info!(
+            operation = "CreatePartitionIndex",
+            catalog_id = %catalog_id,
+            database = %database_name,
+            table = %table_name,
+            index = %index_name,
+            backfill_faults,
+            "registered a Data Catalog partition index"
+        );
+
+        Ok(CreatePartitionIndexOutput {})
     }
 }

@@ -48,25 +48,17 @@ pub const COLUMN_STATISTICS_TYPE_BINARY: &str = "BINARY";
 /// Which `ColumnStatisticsType` the statistics of a column of this declared type are
 /// reported under, or `None` for a type no member of `ColumnStatisticsData` describes.
 ///
-/// `column_type` is `Column$Type`, "the data type of the column", which a Data Catalog
-/// table states in Hive type syntax — the names the catalog's own table definitions carry
-/// (`int`, `bigint`, `string`, `varchar(64)`, `decimal(10,2)`, `timestamp`). The parameter
-/// list of a parameterised name (`char`, `varchar`, `decimal`) does not change WHICH
-/// statistics the column has, so it is cut off before the name is matched, and the match
-/// ignores case because a table's declared type is client-written text.
+/// `column_type` is `Column$Type`, "the data type of the column", which a Data Catalog table
+/// states in Hive type syntax — the names the catalog's own table definitions carry (`int`,
+/// `bigint`, `string`, `varchar(64)`, `decimal(10,2)`, `timestamp`). WHICH type a declaration
+/// names is read once, by [`super::base_hive_type`], so every reader of a table's declared
+/// types agrees on it.
 ///
 /// A COMPLEX type — `array`, `map`, `struct`, `uniontype` — maps to nothing: the modelled
 /// enum has no member for one, so such a column has no column-level statistics and a run
 /// over it generates none.
 pub fn column_statistics_type_of(column_type: &str) -> Option<&'static str> {
-    let declared = column_type.trim().to_ascii_lowercase();
-    let base = declared
-        .split(['(', '<'])
-        .next()
-        .unwrap_or_default()
-        .trim()
-        .to_string();
-    match base.as_str() {
+    match super::base_hive_type(column_type).as_str() {
         "boolean" => Some(COLUMN_STATISTICS_TYPE_BOOLEAN),
         "tinyint" | "smallint" | "int" | "integer" | "bigint" | "long" => {
             Some(COLUMN_STATISTICS_TYPE_LONG)
@@ -717,25 +709,9 @@ fn two_s_complement_be(value: i128) -> Vec<u8> {
 /// The instant a date or timestamp cell names, in seconds from the epoch, or `None` for a
 /// cell that names none.
 ///
-/// Both Hive spellings are read: a date is `YYYY-MM-DD` and a timestamp is that followed
-/// by a time of day, separated by a space or by `T` and optionally carrying a fraction of
-/// a second. The reading itself is the smithy date-time parser's, over the value rewritten
-/// as the instant it names in UTC — a Hive timestamp carries no zone.
+/// Read by [`super::hive_instant_seconds`], the one reading of a Hive date or timestamp in
+/// this crate, so a cell of a table's data and a partition value of the same spelling name
+/// the same instant.
 fn parse_instant_seconds(cell: &str) -> Option<i64> {
-    let cell = cell.trim();
-    if cell.is_empty() {
-        return None;
-    }
-    let normalised = cell.replace(' ', "T");
-    let candidate = if normalised.contains('T') {
-        format!("{}Z", normalised.trim_end_matches('Z'))
-    } else {
-        format!("{normalised}T00:00:00Z")
-    };
-    ::aws_smithy_types::DateTime::from_str(
-        &candidate,
-        ::aws_smithy_types::date_time::Format::DateTime,
-    )
-    .ok()
-    .map(|instant| instant.secs())
+    super::hive_instant_seconds(cell)
 }
