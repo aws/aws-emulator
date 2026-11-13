@@ -203,18 +203,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             })?;
 
         // The reservation belongs to the function as a whole, so a qualified name names
-        // no resource whose limit can be removed — the same refusal
-        // `GetFunctionConcurrency` and `PutFunctionConcurrency` give it.
-        if let Some(qualifier) = reference
-            .qualifier
-            .as_deref()
-            .filter(|qualifier| *qualifier != crate::state::VERSION_LATEST)
-        {
-            return Err(invalid_parameter(format!(
-                "The qualifier '{qualifier}' in 'functionName' names a version or alias, and \
-                 reserved concurrency applies to the function as a whole, including all \
-                 published versions and the unpublished version"
-            )));
+        // no resource whose limit can be removed — the unpublished version included: what
+        // the sentence asks for is "either a function name or an UNQUALIFIED function ARN".
+        // The same refusal `GetFunctionConcurrency` and `PutFunctionConcurrency` give it
+        // (see [`crate::state::request_form`]).
+        if reference.qualifier.is_some() {
+            return Err(invalid_parameter(
+                crate::state::FUNCTION_ONLY_OPERATION_MESSAGE.to_string(),
+            ));
         }
 
         let now = ::std::time::SystemTime::now();

@@ -546,6 +546,12 @@ async fn a_deployed_sam_stack_holds_the_synthesized_resources_and_keeps_its_own_
         "{{{}}}",
         implicit_api_function("Hello", "Api", "/hello", "get")
     ));
+    crate::stack_resource_provisioning::stage_code_objects(
+        &router,
+        "a deployed SAM stack",
+        &template,
+    )
+    .await;
     let (code, body) = create_stack(
         &router,
         "sam-deployed",

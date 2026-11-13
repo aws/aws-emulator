@@ -408,25 +408,13 @@ pub fn function_url_marker(key: &PageTokenKey, qualifier: &str) -> String {
 /// The position `marker` names, or `None` for any value this store did not mint — a value
 /// of the wrong spelling, and one whose authenticator does not match the position it
 /// travels with.
+///
+/// A listing refuses a value this answers `None` for with the one sentence this service
+/// words for a marker it did not issue (`super::INVALID_MARKER_MESSAGE`).
 #[must_use]
 pub fn function_url_marker_cursor(key: &PageTokenKey, marker: &str) -> Option<String> {
     let token = ::hex::decode(marker).ok()?;
     key.cursor_of(&token)
-}
-
-/// What a listing refuses a `Marker` it did not issue with: the validation clause built
-/// from the request, naming the member and what the value has to be.
-///
-/// A `Marker` is "the pagination token that's returned by a previous request", so a value
-/// no page of this listing ever returned is a malformed request rather than a position
-/// holding no entries — the reading every other paginated listing of this service gives a
-/// marker that names no place in its order.
-#[must_use]
-pub fn function_url_marker_message(marker: &str) -> String {
-    format!(
-        "1 validation error detected: Value '{marker}' at 'marker' failed to satisfy \
-         constraint: Member must be the pagination token returned by a previous request"
-    )
 }
 
 #[cfg(test)]

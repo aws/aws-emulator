@@ -169,14 +169,12 @@ fn function_arn(name: &str) -> String {
     format!("arn:aws:lambda:{REGION}:{ACCOUNT}:function:{name}")
 }
 
-/// The ARN of one version of a function: the unqualified ARN for the unpublished
-/// version, and the `:<version>`-suffixed one for a published version.
+/// The ARN of one version of a function, as a LISTING entry names it: every entry of
+/// `ListVersionsByFunction` reports a version, so its ARN carries that version's label —
+/// the unpublished version included, which a read addressed to the FUNCTION reports without
+/// (`function_arn`).
 fn version_arn(name: &str, label: &str) -> String {
-    if label == LATEST {
-        function_arn(name)
-    } else {
-        format!("{}:{label}", function_arn(name))
-    }
+    format!("{}:{label}", function_arn(name))
 }
 
 /// Create a plain .zip function of `name` from `code`, asserting it was stored.
@@ -391,7 +389,6 @@ async fn list_versions_by_function_reports_every_version_from_its_own_snapshot()
             let configuration = fetched.json();
             for member in [
                 "FunctionName",
-                "FunctionArn",
                 "Version",
                 "Runtime",
                 "Role",
@@ -410,6 +407,19 @@ async fn list_versions_by_function_reports_every_version_from_its_own_snapshot()
                     "case {case} version {label}: the listed {member} must be what \
                      GetFunctionConfiguration reports ({:?}), got {:?}",
                     configuration[member], entry[member]
+                );
+            }
+            // `FunctionArn` is the one member that differs for the UNPUBLISHED version: a
+            // listing entry names a version, so it carries the version's label, while the
+            // configuration read addressed to the function reports the function's own ARN
+            // (asserted against `version_arn` above, and the same value for every
+            // published version).
+            if label != LATEST {
+                assert_eq!(
+                    entry["FunctionArn"], configuration["FunctionArn"],
+                    "case {case} version {label}: the listed FunctionArn must be what \
+                     GetFunctionConfiguration reports ({:?}), got {:?}",
+                    configuration["FunctionArn"], entry["FunctionArn"]
                 );
             }
         }
@@ -588,14 +598,29 @@ async fn list_versions_by_function_refuses_a_request_it_cannot_serve() {
             status: 404,
             error_code: "ResourceNotFoundException",
         },
-        // A qualifier in the name must name a version of the function, and this function
-        // has published none.
+        // A qualifier in the name names a version, and this operation lists the versions
+        // OF A FUNCTION, so the identifier must carry none at all — refused on the
+        // REQUEST, before any lookup, whether or not the function has that version.
         RefusalCase {
-            name: "unknown-version",
+            name: "a version number in the name",
             reference: "refusals:4",
             query: "",
-            status: 404,
-            error_code: "ResourceNotFoundException",
+            status: 400,
+            error_code: "InvalidParameterValueException",
+        },
+        RefusalCase {
+            name: "an alias in the name",
+            reference: "refusals:live",
+            query: "",
+            status: 400,
+            error_code: "InvalidParameterValueException",
+        },
+        RefusalCase {
+            name: "a version number in the name of a function that does not exist",
+            reference: "absent:4",
+            query: "",
+            status: 400,
+            error_code: "InvalidParameterValueException",
         },
         // The marker is the version label a previous page ended at, so a value that is
         // no version label names no page.

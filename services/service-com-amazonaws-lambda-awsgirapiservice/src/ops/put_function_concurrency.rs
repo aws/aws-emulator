@@ -201,17 +201,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // "Concurrency settings apply to the function as a whole, including all published
         // versions and the unpublished version", so the reservation is held by the
         // function and a name qualifying a version or an alias names no resource it can
-        // be set on.
-        if let Some(qualifier) = reference
-            .qualifier
-            .as_deref()
-            .filter(|qualifier| *qualifier != crate::state::VERSION_LATEST)
-        {
-            return Err(invalid_parameter(format!(
-                "The qualifier '{qualifier}' in 'functionName' names a version or alias, and \
-                 reserved concurrency applies to the function as a whole, including all \
-                 published versions and the unpublished version"
-            )));
+        // be set on — the unpublished version included: what the sentence asks for is
+        // "either a function name or an UNQUALIFIED function ARN". The one sentence every
+        // operation on the reservation words for a qualifier (see
+        // [`crate::state::request_form`]).
+        if reference.qualifier.is_some() {
+            return Err(invalid_parameter(
+                crate::state::FUNCTION_ONLY_OPERATION_MESSAGE.to_string(),
+            ));
         }
 
         let now = ::std::time::SystemTime::now();

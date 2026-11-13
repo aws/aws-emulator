@@ -197,14 +197,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // The marker is the version number of the last entry the previous page reported,
         // so the next page continues at the first version ordered after it in the order
         // this operation reports versions in. A value that is no version number at all
-        // names no place in that order.
+        // names no place in that order, and is refused with the one sentence this service
+        // words for a marker it did not issue (see [`crate::state::request_form`]).
         let start_after = match input.marker.as_deref() {
             Some(marker) => Some(marker.trim().parse::<i64>().map_err(|_| {
-                invalid_parameter(format!(
-                    "1 validation error detected: Value '{marker}' at 'marker' failed to \
-                     satisfy constraint: Member must be the version number of a previous \
-                     page's last entry"
-                ))
+                invalid_parameter(crate::state::INVALID_MARKER_MESSAGE.to_string())
             })?),
             None => None,
         };

@@ -36,12 +36,39 @@ use serde_json::{json, Value};
 use smithy_server_runtime::MultiServiceRouter;
 
 use crate::change_set_lifecycle::settle_the_store;
+use crate::hotswapped_function_code::package;
 use crate::stack_lifecycle::{
     acknowledging_iam, call, create_stack, describe_stack, member, router_with_engine, xml_blocks,
     xml_text, ACCOUNT_ID, REGION,
 };
+use crate::stack_resource_provisioning::s3;
 use crate::step_functions_state_machine_replacement::sfn_json;
 use service_com_amazonaws_cloudformation_cloudformation::state::{status, STACK_NAME_MAX_LEN};
+
+/// The bucket the layer declaration below names its archive in, and the key it names in it.
+const CODE_BUCKET: &str = "code-bucket";
+const LAYER_KEY: &str = "deps.zip";
+
+/// Stage the layer archive in Amazon S3, the way a client uploads it before deploying: AWS
+/// Lambda READS the archive out of the object the `Content` names, so the object has to be
+/// there and has to be a readable .zip, or the publish is refused and the stack rolls back.
+async fn stage_archive(router: &MultiServiceRouter, case: &str) {
+    let created = s3(router, "PUT", &format!("/{CODE_BUCKET}"), b"").await;
+    assert!(
+        (200..300).contains(&created.status),
+        "case {case:?}: the code bucket must be created first, got {} {}",
+        created.status,
+        created.body
+    );
+    let archive = package("python/helpers.py", "VALUE = 1\n");
+    let staged = s3(router, "PUT", &format!("/{CODE_BUCKET}/{LAYER_KEY}"), &archive).await;
+    assert!(
+        (200..300).contains(&staged.status),
+        "case {case:?}: the archive {LAYER_KEY} must be staged first, got {} {}",
+        staged.status,
+        staged.body
+    );
+}
 
 /// How many characters the unique segment of a generated identifier carries
 /// (`<stack name>-<logical id>-<unique id>`, 12 hexadecimal characters).
@@ -214,7 +241,7 @@ fn template(row: &Row) -> String {
             }),
             // No `LayerName`, so the version is published under the generated identifier.
             Kind::LayerVersion => json!({
-                "Content": {"S3Bucket": "code-bucket", "S3Key": "deps.zip"},
+                "Content": {"S3Bucket": CODE_BUCKET, "S3Key": LAYER_KEY},
                 "CompatibleRuntimes": ["python3.12"],
             }),
             // No `StateMachineName`, so the machine is created under the generated one.
@@ -261,6 +288,7 @@ async fn deployed(
     engine: &Arc<engine::InMemoryEngine>,
     row: &Row,
 ) -> Vec<(String, String)> {
+    stage_archive(router, row.case).await;
     let (code, body) =
         create_stack(router, &row.stack, &template(row), &acknowledging_iam(&[])).await;
     assert_eq!(

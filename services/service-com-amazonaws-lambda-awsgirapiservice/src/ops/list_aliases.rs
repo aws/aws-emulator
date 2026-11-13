@@ -199,16 +199,27 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         // The marker is the name of the last alias the previous page reported, so a
         // value that is no alias name at all names no place in the order aliases are
-        // reported in.
-        if let Some(marker) = input
+        // reported in — refused with the one sentence this service words for a marker it
+        // did not issue (see [`crate::state::request_form`]).
+        if input
             .marker
             .as_deref()
-            .filter(|marker| !crate::state::is_alias_name(marker))
+            .is_some_and(|marker| !crate::state::is_alias_name(marker))
         {
-            return Err(invalid_parameter(format!(
-                "1 validation error detected: Value '{marker}' at 'marker' failed to satisfy \
-                 constraint: Member must be the name of a previous page's last alias"
-            )));
+            return Err(invalid_parameter(
+                crate::state::INVALID_MARKER_MESSAGE.to_string(),
+            ));
+        }
+
+        // An alias belongs to the function rather than to one of its versions — the
+        // version it invokes is `FunctionVersion`'s to filter on — so a `FunctionName`
+        // qualified with a version or an alias names no function whose aliases to list.
+        // The value is judged as a REQUEST, before anything is looked up, so the refusal
+        // is the same whether or not the function exists.
+        if crate::state::names_a_qualifier(&input.function_name) {
+            return Err(invalid_parameter(
+                crate::state::LIST_ALIASES_QUALIFIER_MESSAGE.to_string(),
+            ));
         }
 
         let now = ::std::time::SystemTime::now();
@@ -225,20 +236,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             &region,
             now,
         ) {
-            Ok((record, version)) => {
-                // An alias belongs to the function rather than to one of its versions —
-                // the version it invokes is `FunctionVersion`'s to filter on — so a
-                // `FunctionName` qualified with a version or an alias names no function
-                // whose aliases to list.
-                if version != crate::state::VERSION_LATEST {
-                    return Err(invalid_parameter(format!(
-                        "An alias belongs to a function and invokes the version named by \
-                         'FunctionVersion', and the qualifier '{version}' in 'functionName' \
-                         names a published version or an alias"
-                    )));
-                }
-                record
-            }
+            Ok((record, _version)) => record,
             Err(crate::state::ResolveFailure::Malformed(message)) => {
                 return Err(invalid_parameter(message))
             }

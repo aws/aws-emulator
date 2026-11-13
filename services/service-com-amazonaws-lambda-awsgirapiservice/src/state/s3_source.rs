@@ -25,42 +25,38 @@
 //! socket or resolves a host. It is made with no store guard held, because it is a call out
 //! of the handler.
 //!
-//! Nothing is refused on evidence this emulator does not have, and there are two such cases:
+//! Nothing is refused on evidence this emulator does not have: an answer that identified no
+//! Amazon S3 refusal at all — no Amazon S3 mounted to ask, a hop that did not complete, a
+//! body that could not be read — shows nothing about the object, so it refuses nothing and
+//! holds no bytes.
 //!
-//! * an answer that identified no Amazon S3 refusal at all — no Amazon S3 mounted to ask, a
-//!   hop that did not complete, a body that could not be read — shows nothing about the
-//!   object;
-//! * an answer that this store holds NO SUCH BUCKET ([`UNHELD_BUCKET_CODE`]). A bucket is
-//!   named by a bare name in a namespace that spans every account ("General purpose buckets
-//!   exist in a global namespace", `CreateBucket`), so the name a package carries may well
-//!   name a bucket of another account that granted this one access — and an artifact bucket
-//!   is routinely provisioned outside the client that creates the function. A bucket this
-//!   emulator's Amazon S3 holds no record of is therefore evidence about THIS STORE and not
-//!   about the object, the same reading [`super::execution_role_is_unassumable`] takes of an
-//!   execution role this account's IAM holds nothing under.
+//! What Amazon S3 ANSWERED about the read is the authority on it, so a bucket it holds no
+//! record of, a key it has nothing under, and a read it will not serve are all refusals this
+//! service reports as its own, each relaying the code and the sentence Amazon S3 worded: the
+//! object the write named was not handed over, and the answer says why. RECORDED behaviour
+//! for the bucket case (corpus `simparity-wire-aws-v1`, fixture
+//! `lambda-lls-s3-source-publish-mistakes-then-valid-publish`, step `task#5`, where a
+//! `PublishLayerVersion` whose `Content` names a bucket that does not exist is refused
+//! `400 InvalidParameterValueException` relaying Amazon S3's own `NoSuchBucket`, with no
+//! layer version minted).
 //!
-//! What Amazon S3 answers about a bucket it DOES hold is the authority on that bucket's
-//! objects, so a key it has nothing under, and a read it will not serve, are refusals this
-//! service reports as its own. So is an object at or past the ceiling a deployment package
+//! An object it DOES hand over has to be an archive: Lambda unzips what it stores, so an
+//! object that is no readable .zip directory at all is refused too
+//! ([`COULD_NOT_UNZIP_MESSAGE`]). So is an object at or past the ceiling a deployment package
 //! may unzip to at all: an archive is never larger than its own contents, so an object as
 //! long as that ceiling is over it whatever it holds — the refusal states that a package has
 //! to be SMALLER than the ceiling — and it is refused on the length Amazon S3 reported rather
 //! than materialised to be measured.
-
-/// The error code Amazon S3 answers for a bucket it holds no record of ("The specified
-/// bucket does not exist"), which is the one refusal that is evidence about this store
-/// rather than about the object (see the module docs).
-pub const UNHELD_BUCKET_CODE: &str = "NoSuchBucket";
 
 /// What following a .zip package's Amazon S3 location established.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum S3Package {
     /// Amazon S3 handed the object over: the deployment package's own bytes.
     Read(Vec<u8>),
-    /// Amazon S3 ANSWERED, about a bucket it holds, that it will not hand the object over:
-    /// the error code it classified that refusal under and the message it worded it with.
+    /// Amazon S3 ANSWERED that it will not hand the object over: the error code it
+    /// classified that refusal under and the message it worded it with.
     Refused {
-        /// Amazon S3's own error code (`NoSuchKey`, `AccessDenied`, …).
+        /// Amazon S3's own error code (`NoSuchBucket`, `NoSuchKey`, `AccessDenied`, …).
         code: String,
         /// The sentence Amazon S3 answered with, or its code where it worded none.
         message: String,
@@ -68,8 +64,8 @@ pub enum S3Package {
     /// The object is larger than a deployment package may be at all, so it is no package
     /// Lambda would store whatever it holds (see [`read_s3_package`]).
     TooLarge,
-    /// Nothing of the kind can be shown: no Amazon S3 to ask, an answer this emulator could
-    /// not read, or a bucket this store holds no record of.
+    /// Nothing of the kind can be shown: no Amazon S3 to ask, or an answer this emulator
+    /// could not read.
     Unknown,
 }
 
@@ -125,10 +121,7 @@ pub async fn read_s3_package(
             }) else {
                 return S3Package::Unknown;
             };
-            return match &refusal {
-                S3Package::Refused { code, .. } if code == UNHELD_BUCKET_CODE => S3Package::Unknown,
-                _ => refusal,
-            };
+            return refusal;
         }
     };
     // What the answer SAYS it carries, judged before any of it is held: an archive is never
@@ -160,6 +153,23 @@ fn is_over_the_package_ceiling(length: Option<i64>) -> bool {
     length.is_some_and(|length| length >= super::CODE_SIZE_UNZIPPED_LIMIT)
 }
 
+/// The sentence Lambda refuses an archive it cannot unzip with.
+///
+/// An object Amazon S3 hands over IS the archive, and Lambda UNZIPS what it stores — that is
+/// how the expanded size it measures a package against its ceiling is read
+/// ([`super::unzipped_bytes`]) and how a layer's files reach the execution environment — so
+/// an object that is no readable .zip directory at all is no archive, whatever its bytes.
+/// The sentence carries nothing of the request: the object is the caller's own, and what is
+/// wrong with it is only that it could not be unzipped.
+///
+/// RECORDED behaviour: corpus `simparity-wire-aws-v1`, fixture
+/// `lambda-lls-s3-source-publish-mistakes-then-valid-publish`, step `task#6`, where a
+/// `PublishLayerVersion` whose `Content` names an object that is not an archive is answered
+/// `400 InvalidParameterValueException` with `message` exactly this, with no layer version
+/// minted.
+pub const COULD_NOT_UNZIP_MESSAGE: &str =
+    "Could not unzip uploaded file. Please check your file, then try to upload again.";
+
 /// The bytes the Amazon S3 location `bucket`/`key` names, for the three writes that store a
 /// package named that way.
 ///
@@ -185,9 +195,23 @@ pub async fn s3_package_bytes(
         S3Package::Read(bytes) if super::is_over_the_unzipped_limit(Some(&bytes)) => {
             Err(super::unzipped_limit_message())
         }
+        // ... and an object that is no readable .zip directory at all is no archive to
+        // measure in the first place ([`COULD_NOT_UNZIP_MESSAGE`]).
+        S3Package::Read(bytes) if !is_a_readable_archive(&bytes) => {
+            Err(COULD_NOT_UNZIP_MESSAGE.to_string())
+        }
         S3Package::Read(bytes) => Ok(Some(bytes)),
         S3Package::Refused { .. } | S3Package::TooLarge | S3Package::Unknown => Ok(None),
     }
+}
+
+/// Whether `bytes` are a .zip archive this emulator can read the directory of — which is
+/// what makes them an archive at all (see [`COULD_NOT_UNZIP_MESSAGE`]).
+///
+/// The directory alone is read: nothing is inflated, and an entry stored with a compression
+/// method this build links no decoder for does not make the archive unreadable.
+fn is_a_readable_archive(bytes: &[u8]) -> bool {
+    ::zip::ZipArchive::new(::std::io::Cursor::new(bytes)).is_ok()
 }
 
 /// An Amazon S3 client over the in-process callback into this same emulator, signing as the
@@ -251,7 +275,18 @@ mod tests {
     #[test]
     fn the_refusal_reports_the_code_and_message_amazon_s3_answered() {
         // (case, what following the reference established, the sentence it is refused with)
-        let rows: [(&str, S3Package, Option<&str>); 6] = [
+        let rows: [(&str, S3Package, Option<&str>); 7] = [
+            (
+                "a bucket Amazon S3 holds no record of",
+                S3Package::Refused {
+                    code: "NoSuchBucket".to_string(),
+                    message: "The specified bucket does not exist".to_string(),
+                },
+                Some(
+                    "Error occurred while GetObject. S3 Error Code: NoSuchBucket. S3 Error \
+                     Message: The specified bucket does not exist",
+                ),
+            ),
             (
                 "a key the bucket holds nothing under",
                 S3Package::Refused {

@@ -173,6 +173,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .and_then(|requested| usize::try_from(requested).ok())
             .map(|requested| requested.max(1));
 
+        // A configuration belongs to one function, version or alias, and this operation
+        // lists every configuration OF A FUNCTION — it takes no `Qualifier` to select one
+        // with — so a `FunctionName` qualifying a version or an alias names no function
+        // whose configurations to list. The value is judged as a REQUEST, before anything is
+        // looked up, so the refusal is the same whether or not the function exists (see
+        // [`crate::state::request_form`]).
+        if crate::state::names_a_qualifier(&input.function_name) {
+            return Err(invalid_parameter(
+                crate::state::EVENT_INVOKE_CONFIGS_QUALIFIER_MESSAGE.to_string(),
+            ));
+        }
+
         let now = ::std::time::SystemTime::now();
         let region = crate::state::request_region(ctx);
         let mut store = state.lock();
@@ -187,26 +199,17 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             &region,
             now,
         ) {
-            Ok((record, qualifier)) => {
-                // A configuration belongs to one function, version or alias, and this
-                // operation lists every configuration OF A FUNCTION — it takes no
-                // `Qualifier` to select one with — so a `FunctionName` qualifying a version
-                // or an alias names no function whose configurations to list.
-                if qualifier != crate::state::VERSION_LATEST {
-                    return Err(invalid_parameter(format!(
-                        "An asynchronous invocation configuration belongs to one function, \
-                         version or alias, and the qualifier '{qualifier}' in 'functionName' \
-                         names one of them rather than the function whose configurations are \
-                         listed"
-                    )));
-                }
-                record
-            }
+            Ok((record, _qualifier)) => record,
             Err(crate::state::ResolveFailure::Malformed(message)) => {
                 return Err(invalid_parameter(message))
             }
-            Err(crate::state::ResolveFailure::NotFound(message)) => {
-                return Err(not_found(message))
+            // The resolver's own sentence NAMES the function it resolved the request's
+            // reference to; this operation's does not (see [`FUNCTION_DOES_NOT_EXIST`]), so
+            // the 404 is re-worded here rather than carried through. A Region this endpoint
+            // does not serve is not a function it could not find: it is settled before the
+            // lookup, so it is stated as itself.
+            Err(crate::state::ResolveFailure::NotFound(_)) => {
+                return Err(unreachable_region_or_absent(&input.function_name, &region))
             }
         };
 
@@ -272,6 +275,19 @@ fn invalid_parameter(message: String) -> ListFunctionEventInvokeConfigsError {
     .into()
 }
 
+/// This operation's WHOLE sentence for a function it cannot resolve the request's
+/// `FunctionName` to.
+///
+/// It states that the function is not there and nothing of the request: not the name the
+/// caller sent, and not the ARN this service resolved it to — unlike the sentence the
+/// function operations of the earlier Lambda API dates carry, which appends that ARN
+/// (`crate::state::resolve_function`'s `Function not found: <arn>`). Recorded behaviour:
+/// corpus `simparity-wire-aws-v1`, fixture
+/// `function-event-invoke-config-qualifier-error-paths`, step `task#5`, where this operation
+/// on a function nobody created is answered `404 ResourceNotFoundException` with `Message`
+/// exactly this.
+const FUNCTION_DOES_NOT_EXIST: &str = "The function doesn't exist.";
+
 /// The modelled 404 for a function this emulator does not hold.
 fn not_found(message: String) -> ListFunctionEventInvokeConfigsError {
     ListFunctionEventInvokeConfigsErrorModeled::ResourceNotFoundException(
@@ -281,6 +297,20 @@ fn not_found(message: String) -> ListFunctionEventInvokeConfigsError {
         },
     )
     .into()
+}
+
+/// The modelled 404 for an identifier that resolved to nothing: the Region refusal when the
+/// identifier named a Region this endpoint does not serve
+/// (`crate::state::unreachable_region_message`), else this operation's own sentence for a
+/// function it does not hold.
+fn unreachable_region_or_absent(
+    function_name: &str,
+    region: &str,
+) -> ListFunctionEventInvokeConfigsError {
+    not_found(
+        crate::state::unreachable_region_message(function_name, region)
+            .unwrap_or_else(|| FUNCTION_DOES_NOT_EXIST.to_string()),
+    )
 }
 
 /// The modelled 500 for a failure of the store itself.

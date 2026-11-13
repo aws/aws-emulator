@@ -219,11 +219,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // walk.
         let start_after = match input.marker.as_deref() {
             Some(marker) => Some(marker_order(marker).ok_or_else(|| {
-                invalid_parameter(format!(
-                    "1 validation error detected: Value '{marker}' at 'marker' failed to \
-                     satisfy constraint: Member must be the function version ARN of a \
-                     previous page's last entry"
-                ))
+                invalid_parameter(crate::state::INVALID_MARKER_MESSAGE.to_string())
             })?),
             None => None,
         };

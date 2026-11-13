@@ -23,6 +23,7 @@
 //! the S3 calls as a client makes them — so what is asserted is what a client that
 //! provisions a bucket by template and then writes into it observes.
 
+use crate::hotswapped_function_code::package;
 use crate::stack_lifecycle::{
     create_stack, describe_stack, router, wait_for_the_transition, xml_text, call,
     member, REGION,
@@ -80,6 +81,60 @@ pub(crate) async fn s3(
         headers,
         body,
     }
+}
+
+/// Stage every Amazon S3 object a template names as the deployment package of a function or
+/// the content of a layer, the way `sam package` and `cdk deploy` upload them before the
+/// stack is submitted.
+///
+/// AWS Lambda READS the package out of the object the expanded `Code`/`Content` names, so the
+/// object has to be there — and has to be a readable .zip archive — or the create is refused
+/// and the stack rolls back. The locations are read off the template TEXT: every
+/// `s3://<bucket>/<key>` it carries whose key names a .zip, which is the form `CodeUri` and
+/// `ContentUri` take, so a suite stages exactly what its own template names and nothing else.
+pub(crate) async fn stage_code_objects(router: &MultiServiceRouter, case: &str, template: &str) {
+    for (bucket, key) in staged_locations(template) {
+        let created = s3(router, "PUT", &format!("/{bucket}"), b"").await;
+        assert!(
+            (200..300).contains(&created.status),
+            "case {case:?}: the bucket {bucket} must be created first, got {} {}",
+            created.status,
+            created.body
+        );
+        let archive = package("index.py", "def handler(event, context):\n    return {}\n");
+        let staged = s3(router, "PUT", &format!("/{bucket}/{key}"), &archive).await;
+        assert!(
+            (200..300).contains(&staged.status),
+            "case {case:?}: the archive {key} must be staged first, got {} {}",
+            staged.status,
+            staged.body
+        );
+    }
+}
+
+/// The `(bucket, key)` pairs [`stage_code_objects`] stages: every `s3://<bucket>/<key>` the
+/// template text carries whose key names a .zip archive.
+fn staged_locations(template: &str) -> Vec<(String, String)> {
+    let mut staged: Vec<(String, String)> = Vec::new();
+    for rest in template.split("s3://").skip(1) {
+        let location: String = rest
+            .chars()
+            .take_while(|character| {
+                !matches!(character, '"' | '\'' | ' ' | ',' | '}' | '\\' | '\n' | '\r')
+            })
+            .collect();
+        let Some((bucket, key)) = location.split_once('/') else {
+            continue;
+        };
+        if !key.ends_with(".zip") {
+            continue;
+        }
+        let pair = (bucket.to_string(), key.to_string());
+        if !staged.contains(&pair) {
+            staged.push(pair);
+        }
+    }
+    staged
 }
 
 /// `HEAD /<bucket>` — does S3 hold this bucket?

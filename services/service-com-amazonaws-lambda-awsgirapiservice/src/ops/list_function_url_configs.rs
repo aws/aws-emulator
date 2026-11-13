@@ -182,6 +182,47 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // reports are being read.
         let page_token_key = store.page_token_key;
 
+        // A function URL belongs to one qualifier of a function — its unpublished version
+        // or one of its aliases — and this operation lists every function URL OF A
+        // FUNCTION, taking no `Qualifier` to select one with, so a `FunctionName` carrying
+        // a qualifier names no function whose URLs to list. The value is judged as a
+        // REQUEST, before anything is looked up, so the refusal is the same whether or not
+        // the function exists (see [`crate::state::request_form`]).
+        if crate::state::names_a_qualifier(&input.function_name) {
+            return Err(invalid_parameter(format!(
+                "A function URL belongs to one alias or the unpublished version of a \
+                 function, and the qualifier in '{}' names one of them rather than the \
+                 function whose function URLs are listed",
+                input.function_name
+            )));
+        }
+
+        // The next page starts at the first configuration ordered after the one the
+        // previous page's marker names, so no configuration is ever reported twice. The
+        // marker is a token THIS store minted, so a value it did not issue names no
+        // position at all and is refused rather than paged from — before the function is
+        // looked up, because what is wrong is the request rather than the resource.
+        //
+        // The refusal is the MODELLED parameter error, not the boundary walk's
+        // `ValidationException`: `Marker` carries no modelled constraint for that walk to
+        // decide, so what refuses it is this service's own reading of the value — the one
+        // sentence every paginated listing of this service words for a marker it did not
+        // issue (`crate::state::INVALID_MARKER_MESSAGE`). The qualifier check above is the
+        // other case: there the value fails a rule the OPERATION declares.
+        let marker_position = match input.marker.as_deref() {
+            Some(marker) => {
+                let Some(after) =
+                    crate::state::function_url::function_url_marker_cursor(&page_token_key, marker)
+                else {
+                    return Err(invalid_parameter(
+                        crate::state::INVALID_MARKER_MESSAGE.to_string(),
+                    ));
+                };
+                Some(after)
+            }
+            None => None,
+        };
+
         // "The name or ARN of the Lambda function": the function URLs listed are those of
         // the one function the name resolves to, resolved exactly the way every other
         // operation on this service resolves a `FunctionName`.
@@ -192,26 +233,17 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             &region,
             now,
         ) {
-            Ok((record, qualifier)) => {
-                // A function URL belongs to one qualifier of a function — its unpublished
-                // version or one of its aliases — and this operation lists every function
-                // URL OF A FUNCTION, taking no `Qualifier` to select one with, so a
-                // `FunctionName` carrying a qualifier names no function whose URLs to
-                // list.
-                if qualifier != crate::state::VERSION_LATEST {
-                    return Err(invalid_parameter(format!(
-                        "A function URL belongs to one alias or the unpublished version of a \
-                         function, and the qualifier '{qualifier}' in 'functionName' names \
-                         one of them rather than the function whose function URLs are listed"
-                    )));
-                }
-                record
-            }
+            Ok((record, _qualifier)) => record,
             Err(crate::state::ResolveFailure::Malformed(message)) => {
                 return Err(invalid_parameter(message))
             }
-            Err(crate::state::ResolveFailure::NotFound(message)) => {
-                return Err(not_found(message))
+            // The resolver's own sentence NAMES the function it resolved the request's
+            // reference to; this operation's does not (see [`FUNCTION_DOES_NOT_EXIST`]), so
+            // the 404 is re-worded here rather than carried through. A Region this endpoint
+            // does not serve is not a function it could not find: it is settled before the
+            // lookup, so it is stated as itself.
+            Err(crate::state::ResolveFailure::NotFound(_)) => {
+                return Err(unreachable_region_or_absent(&input.function_name, &region))
             }
         };
 
@@ -242,32 +274,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .collect();
 
         // The next page starts at the first configuration ordered after the one the
-        // previous page's marker names, so no configuration is ever reported twice. The
-        // marker is a token THIS store minted, so a value it did not issue names no
-        // position at all and is refused rather than paged from.
-        //
-        // The refusal is the MODELLED parameter error, not the boundary walk's
-        // `ValidationException`: `Marker` carries no modelled constraint for that walk to
-        // decide, so what refuses it is this operation's own reading of the value — the
-        // same answer, over the same clause, that every other paginated listing of this
-        // service gives a marker that names no place in its order
-        // (`crate::ops::list_layer_versions`,
-        // `crate::ops::list_durable_executions_by_function`). The qualifier check above is
-        // the other case: there the value fails a pattern the MODEL declares.
-        let start = match input.marker.as_deref() {
-            Some(marker) => {
-                let Some(after) =
-                    crate::state::function_url::function_url_marker_cursor(&page_token_key, marker)
-                else {
-                    return Err(invalid_parameter(
-                        crate::state::function_url::function_url_marker_message(marker),
-                    ));
-                };
-                entries
-                    .iter()
-                    .position(|(qualifier, _)| *qualifier > after)
-                    .unwrap_or(entries.len())
-            }
+        // previous page's marker names, so no configuration is ever reported twice.
+        let start = match marker_position {
+            Some(after) => entries
+                .iter()
+                .position(|(qualifier, _)| *qualifier > after)
+                .unwrap_or(entries.len()),
             None => 0,
         };
         let page = match entries.get(start..) {
@@ -299,6 +311,18 @@ fn invalid_parameter(message: String) -> ListFunctionUrlConfigsError {
     .into()
 }
 
+/// This operation's WHOLE sentence for a function it cannot resolve the request's
+/// `FunctionName` to.
+///
+/// It states that the function is not there and nothing of the request: not the name the
+/// caller sent, and not the ARN this service resolved it to — unlike the sentence the
+/// function operations of the earlier Lambda API dates carry, which appends that ARN
+/// (`crate::state::resolve_function`'s `Function not found: <arn>`). Recorded behaviour:
+/// corpus `simparity-wire-aws-v1`, fixture `list-function-url-configs-error-paths`, step
+/// `task#5`, where this operation on a function nobody created is answered
+/// `404 ResourceNotFoundException` with `Message` exactly this.
+const FUNCTION_DOES_NOT_EXIST: &str = "Function does not exist";
+
 /// The modelled 404 for a function this emulator does not hold.
 fn not_found(message: String) -> ListFunctionUrlConfigsError {
     ListFunctionUrlConfigsErrorModeled::ResourceNotFoundException(ResourceNotFoundException {
@@ -306,4 +330,18 @@ fn not_found(message: String) -> ListFunctionUrlConfigsError {
         message: Some(message),
     })
     .into()
+}
+
+/// The modelled 404 for an identifier that resolved to nothing: the Region refusal when the
+/// identifier named a Region this endpoint does not serve
+/// (`crate::state::unreachable_region_message`), else this operation's own sentence for a
+/// function it does not hold.
+fn unreachable_region_or_absent(
+    function_name: &str,
+    region: &str,
+) -> ListFunctionUrlConfigsError {
+    not_found(
+        crate::state::unreachable_region_message(function_name, region)
+            .unwrap_or_else(|| FUNCTION_DOES_NOT_EXIST.to_string()),
+    )
 }

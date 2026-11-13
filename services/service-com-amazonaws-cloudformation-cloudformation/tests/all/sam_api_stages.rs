@@ -39,6 +39,7 @@ use crate::stack_lifecycle::{
     call, create_stack, describe_stack, kv, member, router_with_engine, xml_text,
 };
 use crate::stack_resources::wire_resources;
+use crate::stack_resource_provisioning::stage_code_objects;
 
 /// How many characters a REST API id carries, and which they may be: API Gateway assigns an
 /// api ten lowercase alphanumeric characters, the width of every identifier of the account
@@ -221,6 +222,7 @@ async fn deploy(
     engine: &Arc<engine::InMemoryEngine>,
     row: &Row,
 ) -> String {
+    stage_code_objects(router, row.case, &row.template).await;
     let (status, body) = create_stack(
         router,
         row.stack,

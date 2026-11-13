@@ -409,6 +409,8 @@ mod permission_and_policy_refusals;
 mod permission_principal_and_qualifier_rules;
 #[path = "all/policy_versions_and_resources.rs"]
 mod policy_versions_and_resources;
+#[path = "all/pre_lookup_request_validation.rs"]
+mod pre_lookup_request_validation;
 #[path = "all/probe_loader.rs"]
 mod probe_loader;
 #[path = "all/provisioned_concurrency.rs"]

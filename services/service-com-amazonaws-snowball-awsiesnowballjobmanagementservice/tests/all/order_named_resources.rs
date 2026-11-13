@@ -277,8 +277,9 @@ const PACKAGE_KEY: &str = "function.zip";
 /// `PUT /<bucket>/<key>` on the mounted Amazon S3 service: the deployment package the
 /// function below is created from, in the bucket this suite created.
 ///
-/// Nothing this suite calls reads the archive's contents — only its presence decides whether
-/// the create is served — so the bytes are a marker rather than a real .zip.
+/// AWS Lambda UNZIPS the package it stores, so the object has to be a readable .zip archive;
+/// nothing this suite calls reads its CONTENTS, so the object is the 22-byte
+/// end-of-central-directory record an archive with no entries is ([`EMPTY_ARCHIVE`]).
 async fn put_package(router: &MultiServiceRouter, bucket: &str, case: &str) {
     let (status, body) = owning_service(
         router,
@@ -286,7 +287,7 @@ async fn put_package(router: &MultiServiceRouter, bucket: &str, case: &str) {
         "PUT",
         &format!("/{bucket}/{PACKAGE_KEY}"),
         &[("content-type", "application/zip")],
-        "snowball-order-function package",
+        EMPTY_ARCHIVE,
     )
     .await;
     assert_eq!(
@@ -294,6 +295,10 @@ async fn put_package(router: &MultiServiceRouter, bucket: &str, case: &str) {
         "case {case:?}: expected PutObject to answer 200, got {status} with {body}"
     );
 }
+
+/// An EMPTY .zip archive: the end-of-central-directory record (`PK\x05\x06` and its 18
+/// remaining bytes), which is a whole archive holding no entry at all.
+const EMPTY_ARCHIVE: &str = "PK\u{5}\u{6}\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0";
 
 /// `CreateFunction` on the mounted Lambda service, answering the function ARN it minted.
 ///

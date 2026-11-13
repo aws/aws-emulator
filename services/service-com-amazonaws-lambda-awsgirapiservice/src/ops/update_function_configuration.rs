@@ -381,17 +381,20 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             )));
         }
 
-        // AWS's published Lambda quotas on `Timeout` (900 seconds) and `MemorySize`
-        // (10,240 MB) are narrower than the ranges this model declares, so an over-quota
-        // value reaches the handler and is refused here by the single rule every operation
-        // that accepts these members applies — judged on the REQUEST, before the record is
-        // read or touched, so a configuration no function could run is never applied and
-        // the refusal does not depend on what the function's state happens to be. Both
-        // clauses state a bound on the VALUE of a member, so both are answered the way the
-        // framework's own constraint walk answers one.
-        if let Some(message) =
-            crate::state::configuration_quota_refusal(input.timeout, input.memory_size)
-        {
+        // AWS's published Lambda quotas on `Timeout` (900 seconds), `MemorySize`
+        // (10,240 MB) and `EphemeralStorage.Size` (10,240 MB) are narrower than the ranges
+        // this model declares, so an over-quota value reaches the handler and is refused
+        // here by the single rule every operation that accepts these members applies —
+        // judged on the REQUEST, before the record is read or touched, so a configuration no
+        // function could run is never applied and the refusal does not depend on what the
+        // function's state happens to be. Every clause states a bound on the VALUE of a
+        // member, so all are answered the way the framework's own constraint walk answers
+        // one.
+        if let Some(message) = crate::state::configuration_quota_refusal(
+            input.timeout,
+            input.memory_size,
+            input.ephemeral_storage.as_ref(),
+        ) {
             return Err(crate::scaffolded::Scaffolded::validation(message));
         }
 
@@ -475,6 +478,22 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             ),
             None => None,
         };
+        // What the execution environment EXPANDS TO is the function's own package together
+        // with every layer mounted into it, and that sum is what the published unzipped
+        // ceiling bounds (see [`crate::state::combined_unzipped_refusal`]) — so a list this
+        // update attaches is judged against the package the function already holds, before
+        // anything is applied.
+        if let Some(layers) = layers.as_deref() {
+            let held = store
+                .functions
+                .get(&reference.name)
+                .and_then(|record| record.code.zip_bytes.clone());
+            if let Some(message) =
+                crate::state::combined_unzipped_refusal(held.as_deref(), layers)
+            {
+                return Err(invalid_parameter(message));
+            }
+        }
         // "Environment variables that are accessible from function code during
         // execution", under the same quota every operation that accepts a set of them
         // applies.
@@ -485,6 +504,20 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             ),
             None => None,
         };
+
+        // "Configuration values that override the container image Dockerfile settings":
+        // the member configures the IMAGE a function runs from, and a function deployed as
+        // a .zip archive has none, so the update is refused before anything is applied (see
+        // [`crate::state::IMAGE_CONFIG_UNSUPPORTED_FOR_ZIP_MESSAGE`]).
+        if input.image_config.is_some()
+            && store.functions.get(&reference.name).is_some_and(|record| {
+                record.config.package_type != crate::state::PACKAGE_TYPE_IMAGE
+            })
+        {
+            return Err(invalid_parameter(
+                crate::state::IMAGE_CONFIG_UNSUPPORTED_FOR_ZIP_MESSAGE.to_string(),
+            ));
+        }
 
         let record = store
             .functions

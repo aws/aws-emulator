@@ -197,9 +197,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // "A ZIP archive that contains the contents of an Lambda layer" named as "an Amazon
         // S3 location" is a reference Lambda FOLLOWS when the archive is stored, exactly as
         // a function's .zip package is (see [`crate::state::s3_source`]): an object Amazon
-        // S3 answers that it will not hand over is refused and no version is published, and
-        // the bytes it does hand over ARE the archive. A bucket this emulator's Amazon S3
-        // holds no record of shows nothing about the object and refuses nothing.
+        // S3 answers that it will not hand over — the bucket it holds no record of included
+        // — is refused and no version is published, and the bytes it does hand over ARE the
+        // archive. An answer that identified no Amazon S3 refusal at all shows nothing about
+        // the object and refuses nothing.
         if let (Some(bucket), Some(key)) = (archive.s3_bucket.clone(), archive.s3_key.clone()) {
             let version = archive.s3_object_version.clone();
             match crate::state::s3_package_bytes(ctx, &region, &bucket, &key, version.as_deref())
@@ -355,9 +356,14 @@ fn layer_archive(
         || content.s3_key.is_some()
         || content.s3_object_version.is_some();
     match (&content.zip_file, names_s3) {
+        // Both forms at once names no single archive. The sentence is AWS's fixed text for
+        // it, which names the member that WAS honoured and calls the rest "other
+        // FunctionCode parameters" — the wording the deployment-package member of a
+        // function carries, reused verbatim for a layer's content (recorded behaviour:
+        // corpus `simparity-wire-aws-v1`, fixture
+        // `lambda-lls-s3-source-publish-mistakes-then-valid-publish`, step `task#7`).
         (Some(_), true) => Err(invalid_parameter(
-            "Content must name either an Amazon S3 location or an inline ZipFile, not both"
-                .to_string(),
+            crate::state::ZIP_FILE_WITH_OTHER_MEMBERS_MESSAGE.to_string(),
         )),
         (None, false) => Err(invalid_parameter(
             "Content must name an Amazon S3 location (S3Bucket and S3Key) or an inline ZipFile"

@@ -30,6 +30,7 @@ use smithy_server_runtime::MultiServiceRouter;
 
 use crate::change_set_lifecycle::settle_the_store;
 use crate::sam_transform::sam_template;
+use crate::stack_resource_provisioning::stage_code_objects;
 use crate::stack_lifecycle::{
     call, create_stack, get_template, member, router_with_engine, xml_blocks, xml_text,
     xml_unescape, ACCOUNT_ID,
@@ -158,6 +159,7 @@ async fn deployed(
     stack: &str,
     template: &str,
 ) -> Vec<(String, String, String)> {
+    stage_code_objects(router, case, template).await;
     let (status_code, body) = create_stack(router, stack, template, &capabilities()).await;
     assert_eq!(
         status_code, 200,

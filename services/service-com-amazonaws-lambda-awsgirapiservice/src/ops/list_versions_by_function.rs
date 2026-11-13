@@ -184,17 +184,26 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         // The marker is the version label of the last entry the previous page reported,
         // so the next page starts at the first version ordered after it. A value that is
-        // no version label at all names no place in that order.
+        // no version label at all names no place in that order, and is refused with the
+        // one sentence this service words for a marker it did not issue (see
+        // [`crate::state::request_form`]).
         let start_after = match input.marker.as_deref() {
             Some(marker) => Some(version_order(marker).ok_or_else(|| {
-                invalid_parameter(format!(
-                    "1 validation error detected: Value '{marker}' at 'marker' failed to \
-                     satisfy constraint: Member must be the version label of a previous \
-                     page's last entry"
-                ))
+                invalid_parameter(crate::state::INVALID_MARKER_MESSAGE.to_string())
             })?),
             None => None,
         };
+
+        // "Returns a list of versions, with the version-specific configuration of each":
+        // the versions listed are those of ONE function, which is what the `FunctionName`
+        // names, so a name qualifying one of those versions names nothing whose versions
+        // are to be listed. The value is judged as a REQUEST, before anything is looked
+        // up, so the refusal is the same whether or not the function exists.
+        if crate::state::names_a_qualifier(&input.function_name) {
+            return Err(invalid_parameter(
+                crate::state::LIST_VERSIONS_QUALIFIER_MESSAGE.to_string(),
+            ));
+        }
 
         let now = ::std::time::SystemTime::now();
         let region = crate::state::request_region(ctx);
@@ -231,11 +240,21 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // rather than the function's current configuration. Published versions are
         // numbered upwards and the store keys them by that number, so iterating it
         // yields them in ascending order after `$LATEST`.
+        //
+        // Every entry of this listing is a VERSION, so every entry's `FunctionArn` carries
+        // the version it reports — the unpublished one included, which is the one ARN that
+        // differs from what a read of the FUNCTION reports (`crate::state::FunctionRecord`'s
+        // `versioned_arn` leaves `$LATEST` off the function's own ARN, because an
+        // unqualified read acted on the function). Recorded behaviour: corpus
+        // `simparity-wire-aws-v1`, fixture
+        // `lambda-listing-qualified-identifier-and-missing-function-errors`, step `task#7`.
         let mut entries: Vec<(String, CreateFunctionOutput)> = Vec::new();
-        entries.push((
-            crate::state::VERSION_LATEST.to_string(),
-            record.configuration(crate::state::VERSION_LATEST, &record.config),
+        let mut latest = record.configuration(crate::state::VERSION_LATEST, &record.config);
+        latest.function_arn = Some(crate::state::configured_function_arn(
+            &record.arn,
+            crate::state::VERSION_LATEST,
         ));
+        entries.push((crate::state::VERSION_LATEST.to_string(), latest));
         for published in record.versions.values() {
             let label = published.version.to_string();
             let configuration = record.configuration(&label, &published.config);

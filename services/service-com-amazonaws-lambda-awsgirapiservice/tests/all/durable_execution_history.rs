@@ -805,31 +805,31 @@ async fn the_history_refuses_a_page_it_cannot_cut() {
     let (_engine, router, arn) = seeded_history().await;
     // The rows: a page size one past each published bound of `MaxItems` (`@range(min: 0,
     // max: 1000)`), and a marker naming no event of this execution.
-    for (case, query, marker) in [
+    for (case, query, invalid_marker) in [
         (
             "one past the published maximum page size",
             "?MaxItems=1001".to_string(),
-            None,
+            false,
         ),
         (
             "one below the published minimum page size",
             "?MaxItems=-1".to_string(),
-            None,
+            false,
         ),
         (
             "a marker naming an event id the execution has not reached",
             "?Marker=99".to_string(),
-            Some("99"),
+            true,
         ),
         (
             "a marker that is not an event id at all",
             "?Marker=not-an-id".to_string(),
-            Some("not-an-id"),
+            true,
         ),
         (
             "a marker far past every event the execution could have recorded",
             format!("?Marker={}", MAX_ITEMS_MAX + 1),
-            Some("1001"),
+            true,
         ),
     ] {
         let answer = history(&router, &arn, &query).await;
@@ -845,7 +845,7 @@ async fn the_history_refuses_a_page_it_cannot_cut() {
             "case {case:?}: a refusal must report no events, got {:?}",
             events(&answer)
         );
-        if let Some(marker) = marker {
+        if invalid_marker {
             assert!(
                 answer
                     .error_code()
@@ -853,10 +853,14 @@ async fn the_history_refuses_a_page_it_cannot_cut() {
                 "case {case:?}: expected the modelled InvalidParameterValueException, got {:?}",
                 answer.error_code()
             );
-            assert!(
-                message(&answer).contains(marker),
-                "case {case:?}: expected the refusal to name the marker {marker:?} it \
-                 refused, got {:?}",
+            // A marker is a position this listing handed out, so a value it never issued
+            // is refused with the one fixed sentence this service words for that — it
+            // carries nothing of the request.
+            let expected = "Invalid marker value from user.";
+            assert_eq!(
+                message(&answer),
+                expected,
+                "case {case:?}: expected the refusal {expected:?}, got {:?}",
                 message(&answer)
             );
         }

@@ -194,13 +194,13 @@ use crate::ops::types::{
     CapacityProviderConfig, CapacityProviderPermissionsConfig, CapacityProviderScalingConfig,
     CapacityProviderTelemetryConfig, CapacityProviderVpcConfig, CodeSigningConfig,
     CodeSigningPolicies, Cors, CreateFunctionOutput, DeadLetterConfig, DurableConfig, Environment,
-    ErrorObject, Event, EventError, EventInput, EventResult, ExecutionFailedDetails,
-    ExecutionStoppedDetails, ExecutionSucceededDetails, ExecutionTimedOutDetails,
-    FileSystemConfig, FunctionScalingConfig, GetFunctionScalingConfigOutput, GetLayerVersionOutput,
-    GetProvisionedConcurrencyConfigOutput, ImageConfig, InstanceRequirements,
-    LayerVersionContentOutput, LayerVersionsListItem, LoggingConfig, PropagateTags,
-    ProvisionedConcurrencyConfigListItem, ResolvedS3Object, SelfManagedEventSource, TenancyConfig,
-    VpcConfig,
+    EphemeralStorage, ErrorObject, Event, EventError, EventInput, EventResult,
+    ExecutionFailedDetails, ExecutionStoppedDetails, ExecutionSucceededDetails,
+    ExecutionTimedOutDetails, FileSystemConfig, FunctionScalingConfig,
+    GetFunctionScalingConfigOutput, GetLayerVersionOutput, GetProvisionedConcurrencyConfigOutput,
+    ImageConfig, InstanceRequirements, LayerVersionContentOutput, LayerVersionsListItem,
+    LoggingConfig, PropagateTags, ProvisionedConcurrencyConfigListItem, ResolvedS3Object,
+    SelfManagedEventSource, TenancyConfig, VpcConfig,
 };
 
 /// The ARN namespace this service stamps into every ARN it mints
@@ -545,28 +545,29 @@ pub const MAX_MEMORY_SIZE_MB: i32 = 10_240;
 
 /// How one over-quota member is refused: the sentence it carries.
 ///
-/// Both quotas are NARROWER than the ranges this model declares (`Timeout` 1..5400,
-/// `MemorySize` 128..32768), so the request walk's boundary validator lets an over-quota
-/// value through and the handler is the only place that can refuse it: every operation
-/// that accepts either member judges it here, before anything is stored, so a
-/// configuration no function could run is never persisted and a later read never reports
-/// one.
+/// All three quotas are NARROWER than the ranges this model declares (`Timeout` 1..5400,
+/// `MemorySize` 128..32768, `EphemeralStorageSize` 512..32768), so the request walk's
+/// boundary validator lets an over-quota value through and the handler is the only place that
+/// can refuse it: every operation that accepts any of these members judges it here, before
+/// anything is stored, so a configuration no function could run is never persisted and a
+/// later read never reports one.
 ///
 /// Each member keeps the wording the service answers for its own ceiling: the `Timeout`
 /// clause quotes the rejected value and names the member path and the bound, while the
-/// `MemorySize` sentence names the member. Neither carries the `N validation error(s)
-/// detected: ` envelope the boundary walk builds when it aggregates the violations of one
-/// request, because neither of these is a bound the model declares for that walk to
-/// collect (see [`pattern_violation_message`] for the refusals that are) — but both state
-/// a bound on the VALUE of a member, so both are answered through the same channel that
-/// walk answers through: a 400 `ValidationException`
+/// `MemorySize` and `EphemeralStorage.Size` sentences name the member. None carries the
+/// `N validation error(s) detected: ` envelope the boundary walk builds when it aggregates
+/// the violations of one request, because none of these is a bound the model declares for
+/// that walk to collect (see [`pattern_violation_message`] for the refusals that are) — but
+/// all state a bound on the VALUE of a member, so all are answered through the same channel
+/// that walk answers through: a 400 `ValidationException`
 /// ([`crate::scaffolded::Scaffolded::validation`]).
 ///
-/// Answers `None` when both members are inside their quota.
+/// Answers `None` when every member named is inside its quota.
 #[must_use]
 pub fn configuration_quota_refusal(
     timeout: Option<i32>,
     memory_size: Option<i32>,
+    ephemeral_storage: Option<&EphemeralStorage>,
 ) -> Option<String> {
     if let Some(timeout) = timeout.filter(|seconds| *seconds > MAX_TIMEOUT_SECONDS) {
         return Some(format!(
@@ -578,6 +579,12 @@ pub fn configuration_quota_refusal(
         return Some(format!(
             "'MemorySize' value failed to satisfy constraint: Member must have value less \
              than or equal to {MAX_MEMORY_SIZE_MB}"
+        ));
+    }
+    if ephemeral_storage.is_some_and(|storage| storage.size > MAX_EPHEMERAL_STORAGE_MB) {
+        return Some(format!(
+            "'EphemeralStorage.Size' value failed to satisfy constraint: Member must have \
+             value less than or equal to {MAX_EPHEMERAL_STORAGE_MB}"
         ));
     }
     None
@@ -613,6 +620,14 @@ pub const SNAP_START_APPLY_ON_NONE: &str = "None";
 /// documentation states: "The default value is 512, but can be any whole number
 /// between 512 and 10,240 MB."
 pub const DEFAULT_EPHEMERAL_STORAGE_MB: i32 = 512;
+
+/// The largest `EphemeralStorage` size a function may carry, in MB, which the same member
+/// documentation states: "can be any whole number between 512 and 10,240 MB".
+///
+/// The model's `EphemeralStorageSize` range is wider (512..32768), so this is the narrower
+/// of the two and the one a request is refused against, exactly as [`MAX_MEMORY_SIZE_MB`] is
+/// for `MemorySize`.
+pub const MAX_EPHEMERAL_STORAGE_MB: i32 = 10_240;
 
 /// The default `Architectures` entry, which the model's own member documentation
 /// states: "Enter a string array with one of the valid values (arm64 or x86_64). The
@@ -4861,6 +4876,12 @@ pub use tag_key_shape::{is_shaped_tag_key, tag_key_shape_refusal};
 /// header.
 mod log_level_format;
 pub use log_level_format::{log_level_format_refusal, LOG_LEVELS_NEED_JSON_MESSAGE};
+
+/// The FORM a request has to have before anything is looked up — a `FunctionName` that
+/// names the function itself where that is all the operation addresses, and a `Marker` this
+/// service issued; see the module's own header.
+mod request_form;
+pub use request_form::*;
 
 /// WHERE a layer version's archive and a function's deployment package are downloaded
 /// from: the presigned URL a read announces for one, and the object a request to that URL

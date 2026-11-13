@@ -145,6 +145,41 @@ impl PackageCall {
     }
 }
 
+/// The refusal a request that names the inline bytes AND another package member gets.
+///
+/// "You can specify either an Amazon S3 location, or upload a layer archive directly"
+/// (`LayerVersionContentInput`; `FunctionCode` states the same of a deployment package), so
+/// the inline bytes name a WHOLE package and anything else named beside them names a second
+/// one. The sentence is fixed text naming the member that was honoured, and carries nothing
+/// of the request.
+///
+/// Recorded behaviour: corpus `simparity-wire-aws-v1`, fixture
+/// `lambda-lls-s3-source-publish-mistakes-then-valid-publish`, step `task#7`, where a
+/// `PublishLayerVersion` whose `Content` names both is answered
+/// `400 InvalidParameterValueException` with `message` exactly this — worded for
+/// "FunctionCode parameters" even for a layer's content, which is why both writes state it
+/// from here.
+pub const ZIP_FILE_WITH_OTHER_MEMBERS_MESSAGE: &str =
+    "Please do not provide other FunctionCode parameters when providing a ZipFile.";
+
+/// The refusal a request that configures a container image's ENTRY POINT on a function
+/// whose package is a .zip archive gets.
+///
+/// `ImageConfig` is "configuration values that override the container image Dockerfile
+/// settings" — `Command`, `EntryPoint` and `WorkingDirectory` — so it configures the image a
+/// function runs FROM. A function deployed as a .zip archive runs on a managed runtime and
+/// has no image to override, so the member names nothing on one, whichever write named it.
+///
+/// Recorded behaviour: corpus `simparity-wire-aws-v1`, fixture
+/// `lambda-create-function-imageconfig-on-zip-package-rejected`, step `task#4`, where a
+/// `CreateFunction` carrying `ImageConfig` with a .zip package is answered
+/// `400 InvalidParameterValueException` with `message` exactly this, and no function
+/// created. The sentence states what the FUNCTION is rather than what the call is, so both
+/// writes that accept the member state it.
+pub const IMAGE_CONFIG_UNSUPPORTED_FOR_ZIP_MESSAGE: &str =
+    "The ImageConfig parameter is not supported for functions created with deployment \
+     packages.";
+
 /// The refusal for a package member the function's package type does not use.
 ///
 /// Fixed text around two names the request and the record already carry: the member that
@@ -239,9 +274,11 @@ pub fn resolve_package_code(
             source_kms_key_arn: members.source_kms_key_arn.map(str::to_string),
             ..CodeRecord::default()
         }),
-        // Either neither form was named, or both were: the inline bytes and the S3
-        // object each name a whole package, so a request carrying members of both names
-        // no single one.
+        // The inline bytes and the S3 object each name a whole package, so a request
+        // carrying members of both names no single one
+        // ([`ZIP_FILE_WITH_OTHER_MEMBERS_MESSAGE`]).
+        (Some(_), _, _) => Err(ZIP_FILE_WITH_OTHER_MEMBERS_MESSAGE.to_string()),
+        // Neither form was named at all, so the request names no package.
         _ => Err(
             "The code must name either ZipFile or both S3Bucket and S3Key for a function \
              whose PackageType is Zip"

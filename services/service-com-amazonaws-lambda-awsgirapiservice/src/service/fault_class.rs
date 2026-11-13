@@ -113,10 +113,11 @@ struct NamesNoClass {
 /// precondition answer identically (corpus `simparity-wire-aws-v1`, fixtures
 /// `lambda-resource-policy-revision-mismatch`,
 /// `lambda-resource-policy-conditional-update-and-stale-revision` and
-/// `lambda-resource-policy-precondition-conflict`). The same shape raised by another
-/// operation of this service — the `RevisionId` precondition of `AddPermission` and
-/// `RemovePermission`, recorded WITH the member — is not matched by these rows, which is
-/// why a row names the operation as well as the shape.
+/// `lambda-resource-policy-precondition-conflict`) — and the PARAMETER refusal of
+/// `ListVersionsByFunction`. The same shape raised by another operation of this service —
+/// the `RevisionId` precondition of `AddPermission` and `RemovePermission`, recorded WITH the
+/// member, and the parameter refusal of the sibling listings, recorded with it too — is not
+/// matched by these rows, which is why a row names the operation as well as the shape.
 const NAMES_NO_CLASS: &[NamesNoClass] = &[
     NamesNoClass {
         operation: "PutResourcePolicy",
@@ -125,6 +126,18 @@ const NAMES_NO_CLASS: &[NamesNoClass] = &[
     NamesNoClass {
         operation: "DeleteResourcePolicy",
         shape: "PreconditionFailedException",
+    },
+    // The PARAMETER refusal of `ListVersionsByFunction`, recorded with its message alone
+    // (corpus `simparity-wire-aws-v1`, fixture
+    // `lambda-listing-qualified-identifier-and-missing-function-errors`, step `task#8`,
+    // where a `FunctionName` carrying a version number is answered
+    // `400 InvalidParameterValueException` with no `Type` member at all). The same shape
+    // raised by the sibling listings — `ListAliases`, `ListFunctionEventInvokeConfigs`,
+    // `ListFunctionUrlConfigs` — IS recorded with the member, which is why a row names the
+    // operation as well as the shape.
+    NamesNoClass {
+        operation: "ListVersionsByFunction",
+        shape: "InvalidParameterValueException",
     },
 ];
 

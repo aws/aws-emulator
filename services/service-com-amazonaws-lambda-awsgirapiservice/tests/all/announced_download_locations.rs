@@ -27,6 +27,7 @@
 //! surface. The Lambda-side harness (`Answer`, `json_call`, `package_bytes`) is the one
 //! `function_lifecycle.rs` publishes.
 
+use std::io::Write as _;
 use std::sync::Arc;
 
 use serde_json::{json, Value};
@@ -36,6 +37,24 @@ use crate::function_lifecycle::{
     create_active_function, json_call, make_activation_due, package_bytes, zip_file, Answer,
     ACCOUNT, REGION,
 };
+
+/// The bytes of a .zip archive holding one entry of `length` bytes — what an object read out
+/// of Amazon S3 has to be, because Lambda unzips the archive it stores.
+fn archive_bytes(length: usize) -> Vec<u8> {
+    let mut buffer = std::io::Cursor::new(Vec::new());
+    {
+        let mut writer = zip::ZipWriter::new(&mut buffer);
+        let options: zip::write::FileOptions<'_, '_, ()> = zip::write::FileOptions::default();
+        writer
+            .start_file("python/helpers.py", options)
+            .expect("a new entry");
+        writer
+            .write_all(&package_bytes(length))
+            .expect("the entry's bytes");
+        writer.finish().expect("a finished archive");
+    }
+    buffer.into_inner()
+}
 
 /// The expiry every announced location carries, in seconds: the model documents a layer
 /// archive's link as "A link to the layer archive in Amazon S3 that is valid for 10
@@ -333,7 +352,7 @@ async fn an_announced_download_location_is_presigned_on_this_emulators_own_endpo
 
     // A layer published out of an Amazon S3 object, whose SOURCE object is then deleted:
     // Lambda holds its own copy of the archive, so the announced location keeps serving it.
-    let from_s3 = package_bytes(144);
+    let from_s3 = archive_bytes(144);
     s3_ok(&router, "an S3-sourced archive", "PUT", &format!("/{SOURCE_BUCKET}"), &[]).await;
     s3_ok(
         &router,

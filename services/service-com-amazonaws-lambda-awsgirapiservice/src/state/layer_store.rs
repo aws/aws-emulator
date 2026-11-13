@@ -28,17 +28,22 @@
 //!
 //! `Layers` is "a list of function layers to add to the function's execution environment",
 //! and the execution environment it is added to runs in the function's own Region, so a
-//! layer version this Region does not hold cannot be in it. Two rules follow, and
-//! [`resolve_function_layers`] applies both wherever a function's layer list is resolved
-//! (`CreateFunction`, `UpdateFunctionConfiguration`):
+//! layer version this Region does not hold cannot be in it. Four rules follow, and
+//! [`resolve_function_layers`] applies the first three wherever a function's layer list is
+//! resolved (`CreateFunction`, `UpdateFunctionConfiguration`):
 //!
+//! * the list names no more layers than a function may reference
+//!   ([`too_many_layers_message`]);
 //! * every entry names a layer version of the FUNCTION's Region
 //!   ([`foreign_region_layers_message`]) — a layer Lambda itself provides
 //!   (`arn:<partition>:lambda:::awslayer:<name>`) belongs to no Region and is exempt;
 //! * no two entries name versions of ONE layer ([`same_layer_versions_message`]), because
-//!   the environment mounts one copy of a layer and two versions of it are two copies.
+//!   the environment mounts one copy of a layer and two versions of it are two copies;
+//! * and what the whole environment EXPANDS TO — the function's own package plus every layer
+//!   it mounts — is under the published unzipped ceiling
+//!   ([`combined_unzipped_refusal`]), which the resolved list is what makes measurable.
 //!
-//! Both are stated as the modelled `InvalidParameterValueException` by the handler that
+//! All are stated as the modelled `InvalidParameterValueException` by the handler that
 //! calls them, which is the 400 the operations declare for a member they cannot satisfy.
 
 use super::*;
@@ -170,6 +175,62 @@ fn malformed_layer_name_message(layer_name: &str) -> String {
     )
 }
 
+/// How many layers one function may reference: AWS's published Lambda quota, "Layers per
+/// function: 5" — the same quota the run-time archive cap states (`super::execution`'s
+/// `MAX_RUN_LAYER_ARCHIVES`).
+pub const MAX_FUNCTION_LAYERS: usize = 5;
+
+/// The refusal a function's `Layers` gets for naming more layers than a function may have.
+///
+/// Fixed text around the quota itself: the list as a whole is what is too long, and the
+/// caller sent every entry of it, so nothing of the request is named back.
+///
+/// Recorded behaviour: corpus `simparity-wire-aws-v1`, fixture
+/// `lambda-x2x-xlsx-layer-attach-mistakes-and-size-ceiling`, step `task#6`, where a
+/// `CreateFunction` naming more entries than the quota is answered
+/// `400 InvalidParameterValueException` with `message` exactly this — and answered it for
+/// the COUNT even though the same list breaks the one-version-per-layer rule as well, which
+/// is why the count is judged first.
+#[must_use]
+pub fn too_many_layers_message() -> String {
+    format!("Cannot reference more than {MAX_FUNCTION_LAYERS} layers.")
+}
+
+/// The refusal a function whose whole execution environment expands past the published
+/// unzipped ceiling gets, or `None` when it is under it.
+///
+/// "The unzipped deployment package size" Lambda measures against
+/// [`CODE_SIZE_UNZIPPED_LIMIT`] ("250 MB (unzipped)") is what the environment holds, which
+/// is the function's own package TOGETHER WITH every layer mounted into it — that is why a
+/// layer entry reports an `UncompressedCodeSize` of its own, "so a client can sum its layers
+/// and see how much of that limit is left". So the sum is what is judged, and either half
+/// alone being under the ceiling is not enough.
+///
+/// The sentence states the ceiling and the size the request measured to, because those are
+/// the two numbers a caller has to compare; the sizes are measured off the archives this
+/// emulator holds ([`unzipped_bytes`] and the stored layer versions' own measurements), so
+/// nothing of the request is echoed back.
+///
+/// Recorded behaviour: corpus `simparity-wire-aws-v1`, fixture
+/// `lambda-x2x-xlsx-layer-attach-mistakes-and-size-ceiling`, step `task#7`, where a
+/// `CreateFunction` whose package and layers together expand past the ceiling is answered
+/// `400 InvalidParameterValueException` with `message` of exactly this form.
+#[must_use]
+pub fn combined_unzipped_refusal(
+    code_zip_bytes: Option<&[u8]>,
+    layers: &[FunctionLayer],
+) -> Option<String> {
+    let total = layers.iter().fold(unzipped_bytes(code_zip_bytes), |sum, layer| {
+        sum.saturating_add(layer.uncompressed_code_size)
+    });
+    (total > CODE_SIZE_UNZIPPED_LIMIT).then(|| {
+        format!(
+            "Function code combined with layers exceeds the maximum allowed size of \
+             {CODE_SIZE_UNZIPPED_LIMIT} bytes. The actual size is {total} bytes."
+        )
+    })
+}
+
 /// The refusal a function's `Layers` gets for an entry naming a layer version of another
 /// Region.
 ///
@@ -204,12 +265,13 @@ pub fn same_layer_versions_message(first: &str, second: &str) -> String {
 /// `region` is the FUNCTION's Region: the one the request was made in, which is the one its
 /// ARNs carry.
 ///
-/// The error carries the message of the refusal: an entry that is not a layer version ARN,
-/// an entry naming another Region's layer ([`foreign_region_layers_message`]), two entries
-/// naming one layer ([`same_layer_versions_message`]), or an entry naming a version this
-/// Region holds no layer for. Each rule is judged over the WHOLE list before the next one
-/// is, so a list breaking two of them is refused for the first rule it breaks rather than
-/// for whichever entry happens to come first.
+/// The error carries the message of the refusal: a list longer than a function may reference
+/// ([`too_many_layers_message`]), an entry that is not a layer version ARN, an entry naming
+/// another Region's layer ([`foreign_region_layers_message`]), two entries naming one layer
+/// ([`same_layer_versions_message`]), or an entry naming a version this Region holds no layer
+/// for. Each rule is judged over the WHOLE list before the next one is, so a list breaking
+/// two of them is refused for the first rule it breaks rather than for whichever entry
+/// happens to come first.
 ///
 /// A layer Lambda itself provides belongs to no account and to no Region, so it is taken as
 /// named: this emulator holds no archive for it and therefore reports the `CodeSize`
@@ -220,6 +282,12 @@ pub fn resolve_function_layers(
     region: &str,
     layers: &[String],
 ) -> Result<Vec<FunctionLayer>, String> {
+    // How MANY layers the list names is a property of the list itself, settled before
+    // anything is read out of any entry.
+    if layers.len() > MAX_FUNCTION_LAYERS {
+        return Err(too_many_layers_message());
+    }
+
     // Every entry has to BE a layer version ARN before anything can be said about which
     // layer or which Region it names.
     let named: Vec<(&String, LayerVersionReference)> = layers

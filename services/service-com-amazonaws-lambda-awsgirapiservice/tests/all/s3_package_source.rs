@@ -8,16 +8,16 @@
 //! ("For a .zip file archive, the code property specifies the location of the .zip file",
 //! `CreateFunction`; "an Amazon S3 location", `LayerVersionContentInput`), so the object's
 //! own bytes are the package — `CodeSize` and `CodeSha256` are measured from them — and a
-//! write whose object Amazon S3 answers, about a bucket it holds, that it will not hand over
-//! is refused `InvalidParameterValueException` (HTTP 400) reporting the code and the message
-//! Amazon S3 answered, with nothing stored.** A bucket this emulator's Amazon S3 holds no
-//! record of is evidence about that store rather than about the object — a bucket name lives
-//! in a namespace that spans every account, and an artifact bucket is routinely provisioned
-//! out of band — so it refuses nothing and holds no bytes.
+//! write whose object Amazon S3 will not hand over is refused `InvalidParameterValueException`
+//! (HTTP 400) reporting the code and the message Amazon S3 answered, with nothing stored.**
+//! A bucket Amazon S3 holds no record of is one such answer (`NoSuchBucket`), and an object it
+//! DOES hand over that is no readable .zip archive at all is refused too, with the sentence
+//! Lambda words for an archive it could not unzip.
 //!
 //! The rows differ along what the rule generalises over: whether the object is there, WHICH
 //! part of the location is absent (the key, the bucket), the shape and the size of the key
-//! and of the object, and which of the three writes names the location.
+//! and of the object, whether the object is an archive, and which of the three writes names
+//! the location.
 //!
 //! Amazon S3 is mounted BESIDE Lambda on one engine, and every object read here is written
 //! through S3's own `CreateBucket`/`PutObject` — so the digest asserted is the digest of the
@@ -25,6 +25,7 @@
 //! (the `Answer` wrapper, `json_call` and `package_bytes`) is the one `function_lifecycle.rs`
 //! publishes.
 
+use std::io::Write as _;
 use std::sync::Arc;
 
 use base64::Engine as _;
@@ -44,8 +45,25 @@ const REFUSAL_STATUS: u16 = 400;
 const BUCKET: &str = "deployment-packages";
 
 /// A bucket no `CreateBucket` is made for, so this emulator's Amazon S3 holds no record of
-/// it at all.
+/// it at all and answers `NoSuchBucket` for the read.
 const UNHELD_BUCKET: &str = "packages-of-another-account";
+
+/// The bytes of a .zip archive holding one entry of `length` bytes — a real archive, which
+/// is what Lambda unzips the package it stores out of. Written in memory, so the object the
+/// bucket holds is exactly these bytes.
+fn archive_bytes(length: usize) -> Vec<u8> {
+    let mut buffer = std::io::Cursor::new(Vec::new());
+    {
+        let mut writer = zip::ZipWriter::new(&mut buffer);
+        let options: zip::write::FileOptions<'_, '_, ()> = zip::write::FileOptions::default();
+        writer.start_file("index.py", options).expect("a new entry");
+        writer
+            .write_all(&package_bytes(length))
+            .expect("the entry's bytes");
+        writer.finish().expect("a finished archive");
+    }
+    buffer.into_inner()
+}
 
 /// A SigV4 credential scope naming Amazon S3 in the SAME Region the Lambda harness signs
 /// for. The signature is never checked: the router has request authentication off.
@@ -120,6 +138,17 @@ fn no_such_key_refusal() -> String {
     refusal("NoSuchKey", "The specified key does not exist.")
 }
 
+/// The refusal for a bucket Amazon S3 holds no record of: its `NoSuchBucket` and the message
+/// it answers it with.
+fn no_such_bucket_refusal() -> String {
+    refusal("NoSuchBucket", "The specified bucket does not exist")
+}
+
+/// The sentence a write is refused with for an object that is no readable .zip archive, as
+/// AWS Lambda words it.
+const COULD_NOT_UNZIP: &str =
+    "Could not unzip uploaded file. Please check your file, then try to upload again.";
+
 /// The `message` of a wire error, under either casing the JSON envelopes use.
 fn message(answer: &Answer) -> Option<String> {
     answer.string("message").or_else(|| answer.string("Message"))
@@ -172,12 +201,15 @@ async fn get_layer_version(router: &MultiServiceRouter, name: &str, version: i64
 struct CreateRow {
     case: &'static str,
     function: &'static str,
-    /// The key the location names, and the bytes to write under it first — `None` writes
-    /// nothing, so the location names an object the bucket does not hold.
+    /// The key the location names.
     key: &'static str,
-    object: Option<usize>,
+    /// The bytes to write under that key first — `None` writes nothing, so the location
+    /// names an object the bucket does not hold.
+    object: Option<Vec<u8>>,
     /// The bucket the location names, when it is not the one this suite writes to.
     bucket: Option<&'static str>,
+    /// The sentence the write must be refused with, or `None` when it must be served.
+    refusal: Option<String>,
 }
 
 fn create_rows() -> Vec<CreateRow> {
@@ -186,22 +218,17 @@ fn create_rows() -> Vec<CreateRow> {
             case: "an object the bucket holds",
             function: "from-held-object",
             key: "worker.zip",
-            object: Some(96),
+            object: Some(archive_bytes(96)),
             bucket: None,
+            refusal: None,
         },
         CreateRow {
             case: "an object of another size, under a nested key",
             function: "from-nested-key",
             key: "builds/2026/01/worker-v2.zip",
-            object: Some(4_096),
+            object: Some(archive_bytes(4_096)),
             bucket: None,
-        },
-        CreateRow {
-            case: "an empty object, which is still an object the bucket holds",
-            function: "from-empty-object",
-            key: "empty.zip",
-            object: Some(0),
-            bucket: None,
+            refusal: None,
         },
         CreateRow {
             case: "a key the bucket holds nothing under",
@@ -209,6 +236,7 @@ fn create_rows() -> Vec<CreateRow> {
             key: "never-uploaded.zip",
             object: None,
             bucket: None,
+            refusal: Some(no_such_key_refusal()),
         },
         CreateRow {
             case: "a key of another shape the bucket holds nothing under",
@@ -216,21 +244,39 @@ fn create_rows() -> Vec<CreateRow> {
             key: "builds/2026/01/never-uploaded.zip",
             object: None,
             bucket: None,
+            refusal: Some(no_such_key_refusal()),
         },
         CreateRow {
-            case: "a bucket this store holds no record of, which shows nothing",
+            case: "a bucket Amazon S3 holds no record of",
             function: "from-unheld-bucket",
             key: "worker.zip",
             object: None,
             bucket: Some(UNHELD_BUCKET),
+            refusal: Some(no_such_bucket_refusal()),
+        },
+        CreateRow {
+            case: "an object that is no archive at all",
+            function: "from-plain-object",
+            key: "not-an-archive.zip",
+            object: Some(package_bytes(96)),
+            bucket: None,
+            refusal: Some(COULD_NOT_UNZIP.to_string()),
+        },
+        CreateRow {
+            case: "an empty object, which is no archive either",
+            function: "from-empty-object",
+            key: "empty.zip",
+            object: Some(Vec::new()),
+            bucket: None,
+            refusal: Some(COULD_NOT_UNZIP.to_string()),
         },
     ]
 }
 
 /// RULE: `CreateFunction` reads the package out of the Amazon S3 object the `Code` names —
 /// so the function's `CodeSize` and `CodeSha256` are the object's own — and is refused
-/// `InvalidParameterValueException` with what Amazon S3 answered when that bucket holds no
-/// such object, with no function created.
+/// `InvalidParameterValueException` with what Amazon S3 answered, or with the sentence for an
+/// object it cannot unzip, with no function created.
 #[tokio::test]
 async fn a_create_reads_the_package_out_of_the_object_its_code_names() {
     let engine = Arc::new(engine::InMemoryEngine::new());
@@ -238,8 +284,7 @@ async fn a_create_reads_the_package_out_of_the_object_its_code_names() {
     create_bucket(&router, "the table's bucket").await;
 
     for row in create_rows() {
-        let bytes = row.object.map(package_bytes);
-        if let Some(bytes) = &bytes {
+        if let Some(bytes) = &row.object {
             put_object(&router, row.case, row.key, bytes).await;
         }
         let created = create_function(
@@ -257,8 +302,9 @@ async fn a_create_reads_the_package_out_of_the_object_its_code_names() {
         )
         .await;
 
-        // A location the bucket holds no object under is refused, and nothing is created.
-        if row.object.is_none() && row.bucket.is_none() {
+        // An object Amazon S3 will not hand over, and one that is no archive, are each
+        // refused — and nothing is created.
+        if let Some(expected) = &row.refusal {
             assert_eq!(
                 created.status, REFUSAL_STATUS,
                 "case {:?}: expected {REFUSAL_STATUS}, got {} {}",
@@ -275,10 +321,9 @@ async fn a_create_reads_the_package_out_of_the_object_its_code_names() {
             let worded = message(&created);
             assert_eq!(
                 worded.as_deref(),
-                Some(no_such_key_refusal().as_str()),
-                "case {:?}: expected {:?}, got {worded:?}",
-                row.case,
-                no_such_key_refusal()
+                Some(expected.as_str()),
+                "case {:?}: expected {expected:?}, got {worded:?}",
+                row.case
             );
             let read = get_function(&router, row.function).await;
             assert_eq!(
@@ -299,12 +344,10 @@ async fn a_create_reads_the_package_out_of_the_object_its_code_names() {
             String::from_utf8_lossy(&created.body)
         );
         // The size and the digest the function reports are the OBJECT's, computed here from
-        // the bytes the bucket holds; a location nothing could be shown about holds no bytes,
-        // so neither is reported for it.
-        let expected_size = bytes
-            .as_ref()
-            .map_or(0, |bytes| i64::try_from(bytes.len()).unwrap_or(i64::MAX));
-        let expected_digest = bytes.as_ref().map(|bytes| digest_of(bytes));
+        // the bytes the bucket holds.
+        let bytes = row.object.clone().unwrap_or_default();
+        let expected_size = i64::try_from(bytes.len()).unwrap_or(i64::MAX);
+        let expected_digest = Some(digest_of(&bytes));
         for (surface, document) in [
             ("the create's own answer", created.json()),
             (
@@ -338,7 +381,7 @@ struct UpdateRow {
     key: &'static str,
     /// The bytes to write under that key first, or `None` for a key the bucket holds
     /// nothing under.
-    object: Option<usize>,
+    object: Option<Vec<u8>>,
 }
 
 /// RULE: `UpdateFunctionCode` follows a new Amazon S3 location the same way — the object's
@@ -350,12 +393,12 @@ async fn a_code_update_follows_the_new_location_the_same_way() {
         UpdateRow {
             case: "an object the bucket holds",
             key: "updated.zip",
-            object: Some(512),
+            object: Some(archive_bytes(512)),
         },
         UpdateRow {
             case: "an object of another size",
             key: "updated-again.zip",
-            object: Some(1_024),
+            object: Some(archive_bytes(1_024)),
         },
         UpdateRow {
             case: "a key the bucket holds nothing under",
@@ -398,7 +441,7 @@ async fn a_code_update_follows_the_new_location_the_same_way() {
         // moved into the past rather than waited out.
         make_activation_due(&engine);
 
-        let bytes = row.object.map(package_bytes);
+        let bytes = row.object.clone();
         if let Some(bytes) = &bytes {
             put_object(&router, row.case, row.key, bytes).await;
         }
@@ -453,34 +496,65 @@ async fn a_code_update_follows_the_new_location_the_same_way() {
     }
 }
 
+/// One row of the layer-publish table.
+struct PublishRow {
+    case: &'static str,
+    /// The layer the version is published under.
+    layer: &'static str,
+    /// The key the location names.
+    key: &'static str,
+    /// The bytes to write under that key first, or `None` for a key the bucket holds
+    /// nothing under.
+    object: Option<Vec<u8>>,
+    /// The sentence the publish must be refused with, or `None` when it must be served.
+    refusal: Option<String>,
+}
+
 /// RULE: `PublishLayerVersion` follows the Amazon S3 location its `Content` names the same
 /// way — the object's bytes are the archive it reports a size and a digest for, and an object
-/// the bucket does not hold is refused with no version published.
+/// the bucket does not hold, or one that is no archive at all, is refused with no version
+/// published.
 #[tokio::test]
 async fn a_layer_publish_follows_the_location_its_content_names() {
-    // (case, the layer, the key, the bytes to write under it first)
-    let rows: [(&str, &str, &str, Option<usize>); 3] = [
-        ("an object the bucket holds", "held-archive", "layer.zip", Some(256)),
-        (
-            "an object of another size, under a nested key",
-            "nested-archive",
-            "layers/deps/helpers.zip",
-            Some(2_048),
-        ),
-        (
-            "a key the bucket holds nothing under",
-            "absent-archive",
-            "never-published.zip",
-            None,
-        ),
+    let rows = vec![
+        PublishRow {
+            case: "an object the bucket holds",
+            layer: "held-archive",
+            key: "layer.zip",
+            object: Some(archive_bytes(256)),
+            refusal: None,
+        },
+        PublishRow {
+            case: "an object of another size, under a nested key",
+            layer: "nested-archive",
+            key: "layers/deps/helpers.zip",
+            object: Some(archive_bytes(2_048)),
+            refusal: None,
+        },
+        PublishRow {
+            case: "a key the bucket holds nothing under",
+            layer: "absent-archive",
+            key: "never-published.zip",
+            object: None,
+            refusal: Some(no_such_key_refusal()),
+        },
+        PublishRow {
+            case: "an object that is no archive at all",
+            layer: "plain-object",
+            key: "not-an-archive.zip",
+            object: Some(package_bytes(256)),
+            refusal: Some(COULD_NOT_UNZIP.to_string()),
+        },
     ];
 
     let engine = Arc::new(engine::InMemoryEngine::new());
     let router = emulator(&engine);
     create_bucket(&router, "the table's bucket").await;
 
-    for (case, layer, key, size) in rows {
-        let bytes = size.map(package_bytes);
+    for row in rows {
+        let (case, layer, key) = (row.case, row.layer, row.key);
+        let expected_refusal = row.refusal;
+        let bytes = row.object;
         if let Some(bytes) = &bytes {
             put_object(&router, case, key, bytes).await;
         }
@@ -491,7 +565,7 @@ async fn a_layer_publish_follows_the_location_its_content_names() {
         )
         .await;
 
-        let Some(bytes) = &bytes else {
+        if let Some(expected) = &expected_refusal {
             assert_eq!(
                 published.status, REFUSAL_STATUS,
                 "case {case:?}: expected {REFUSAL_STATUS}, got {} {}",
@@ -506,9 +580,8 @@ async fn a_layer_publish_follows_the_location_its_content_names() {
             let worded = message(&published);
             assert_eq!(
                 worded.as_deref(),
-                Some(no_such_key_refusal().as_str()),
-                "case {case:?}: expected {:?}, got {worded:?}",
-                no_such_key_refusal()
+                Some(expected.as_str()),
+                "case {case:?}: expected {expected:?}, got {worded:?}"
             );
             // Nothing was published: the layer holds no version at all.
             let listed = list_layer_versions(&router, layer).await;
@@ -521,7 +594,9 @@ async fn a_layer_publish_follows_the_location_its_content_names() {
                 String::from_utf8_lossy(&listed.body)
             );
             continue;
-        };
+        }
+        let bytes = bytes.unwrap_or_default();
+        let bytes = &bytes;
 
         assert_eq!(
             published.status, 201,

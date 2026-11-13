@@ -44,6 +44,7 @@ use crate::stack_lifecycle::{
 };
 use crate::sam_transform::sam_template;
 use crate::stack_resources::wire_resources;
+use crate::stack_resource_provisioning::stage_code_objects;
 
 /// The namespace a SAM resource type lives under: no resource of a DEPLOYED stack may
 /// carry it, because the macro consumed every such declaration.
@@ -267,6 +268,7 @@ async fn deployed_resources(
             row.case
         );
     }
+    stage_code_objects(router, row.case, &row.template).await;
     let (code, body) = create_stack(
         router,
         row.stack,

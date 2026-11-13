@@ -33,6 +33,7 @@ use smithy_server_runtime::MultiServiceRouter;
 use crate::change_set_lifecycle::settle_the_store;
 use crate::iam_identity_resources::xml_policy_document;
 use crate::sam_transform::sam_template;
+use crate::stack_resource_provisioning::stage_code_objects;
 use crate::stack_lifecycle::{
     call, create_stack, iam, kv, member, router_with_engine, xml_text, xml_texts, ACCOUNT_ID,
     REGION,
@@ -414,6 +415,7 @@ async fn deploy(
     stack: &str,
     template: &str,
 ) {
+    stage_code_objects(router, case, template).await;
     let (code, body) = create_stack(
         router,
         stack,

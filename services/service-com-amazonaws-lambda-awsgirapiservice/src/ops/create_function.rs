@@ -471,9 +471,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let timeout = input.timeout.unwrap_or(default_timeout);
         // Both clauses state a bound on the VALUE of a member, so both are answered the
         // way the framework's own constraint walk answers one.
-        if let Some(message) =
-            crate::state::configuration_quota_refusal(Some(timeout), input.memory_size)
-        {
+        if let Some(message) = crate::state::configuration_quota_refusal(
+            Some(timeout),
+            input.memory_size,
+            input.ephemeral_storage.as_ref(),
+        ) {
             return Err(crate::scaffolded::Scaffolded::validation(message));
         }
 
@@ -504,11 +506,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // "For a .zip file archive, the code property specifies the location of the .zip
         // file": a package named by an Amazon S3 location is a reference Lambda FOLLOWS when
         // the package is stored, just as an image reference above is. An object Amazon S3
-        // answers that it will not hand over is refused and nothing is created; the bytes it
-        // does hand over ARE the deployment package, so the function's `CodeSize`,
-        // `CodeSha256` and the code an invocation runs are the object's own (see
-        // [`crate::state::s3_source`]). A bucket this emulator's Amazon S3 holds no record
-        // of shows nothing about the object and refuses nothing.
+        // answers that it will not hand over — the bucket it holds no record of included —
+        // is refused and nothing is created; the bytes it does hand over ARE the deployment
+        // package, so the function's `CodeSize`, `CodeSha256` and the code an invocation
+        // runs are the object's own (see [`crate::state::s3_source`]). An answer that
+        // identified no Amazon S3 refusal at all shows nothing about the object and refuses
+        // nothing.
         if let (Some(bucket), Some(key)) = (code.s3_bucket.clone(), code.s3_key.clone()) {
             let version = code.s3_object_version.clone();
             match crate::state::s3_package_bytes(ctx, &region, &bucket, &key, version.as_deref())
@@ -609,6 +612,17 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             input.layers.as_deref().unwrap_or_default(),
         )
         .map_err(invalid_parameter)?;
+
+        // What the execution environment EXPANDS TO is the function's own package together
+        // with every layer mounted into it, and that sum is what the published unzipped
+        // ceiling bounds (see [`crate::state::combined_unzipped_refusal`]); the resolved
+        // list is what makes the layer half of it measurable, so it is judged here, with
+        // nothing yet stored.
+        if let Some(message) =
+            crate::state::combined_unzipped_refusal(code.zip_bytes.as_deref(), &layers)
+        {
+            return Err(invalid_parameter(message));
+        }
 
         // "To enable code signing for this function, specify the ARN of a code-signing
         // configuration." The association names a configuration this account already
@@ -891,6 +905,15 @@ fn package_code(
         if input.handler.is_none() {
             return Err(invalid_parameter(
                 "Handler is required if the deployment package is a .zip file archive".to_string(),
+            ));
+        }
+        // "Configuration values that override the container image Dockerfile settings":
+        // a .zip package runs on a managed runtime and has no image whose entry point
+        // could be overridden, so the member names nothing on this function (see
+        // [`crate::state::IMAGE_CONFIG_UNSUPPORTED_FOR_ZIP_MESSAGE`]).
+        if input.image_config.is_some() {
+            return Err(invalid_parameter(
+                crate::state::IMAGE_CONFIG_UNSUPPORTED_FOR_ZIP_MESSAGE.to_string(),
             ));
         }
     }

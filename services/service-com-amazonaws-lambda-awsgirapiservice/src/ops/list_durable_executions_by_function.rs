@@ -318,11 +318,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     .iter()
                     .position(|(arn, _)| arn == marker)
                     .ok_or_else(|| {
-                        invalid_parameter(format!(
-                            "1 validation error detected: Value '{marker}' at 'marker' failed \
-                             to satisfy constraint: Member must be the durable execution ARN of \
-                             a previous page's last entry"
-                        ))
+                        invalid_parameter(crate::state::INVALID_MARKER_MESSAGE.to_string())
                     })?
                     + 1
             }
