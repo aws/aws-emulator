@@ -71,6 +71,8 @@ mod bucket_logging;
 mod bucket_metadata_annotation_role_permissions;
 #[path = "all/bucket_metadata_annotation_table_update.rs"]
 mod bucket_metadata_annotation_table_update;
+#[path = "all/bucket_metadata_annotation_table_update_sequences.rs"]
+mod bucket_metadata_annotation_table_update_sequences;
 #[path = "all/bucket_metadata_configuration.rs"]
 mod bucket_metadata_configuration;
 #[path = "all/bucket_metadata_configuration_delete_scope.rs"]
