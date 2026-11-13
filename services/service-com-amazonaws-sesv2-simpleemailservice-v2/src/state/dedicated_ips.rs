@@ -94,6 +94,34 @@ pub fn dedicated_ip_pool_not_found(pool_name: &str) -> String {
     format!("The requested pool <{pool_name}> does not exist.")
 }
 
+/// Whether `scaling_mode` is a mode `PutDedicatedIpPoolScalingAttributes` can apply to a
+/// dedicated IP pool.
+///
+/// The operation "convert[s] a dedicated IP pool to a different scaling mode", and
+/// `PutDedicatedIpPoolScalingAttributesRequest$ScalingMode` notes that "changing the
+/// scaling mode from `MANAGED` to `STANDARD` is not supported" — and a pool that is
+/// already `STANDARD` is in the mode a pool starts in, so there is no pool this call
+/// could convert TO [`SCALING_MODE_STANDARD`]. The one mode it applies is therefore
+/// [`super::SCALING_MODE_MANAGED`], which is also why repeating the conversion answers
+/// the same way and changes nothing further.
+pub fn scaling_mode_can_be_applied(scaling_mode: &str) -> bool {
+    scaling_mode == super::SCALING_MODE_MANAGED
+}
+
+/// How this service words `BadRequestException` for a `ScalingMode` the request may not
+/// apply ([`scaling_mode_can_be_applied`]).
+///
+/// Wholly FIXED text that names neither the mode sent nor the pool: the parameter itself
+/// is what is being refused. It is the sentence a recorded response of the real service
+/// answers such a request with (the behavioural trace
+/// `sesv2.dedicated-ip-pool-lifecycle`, whose report is
+/// `issues/things-that-now-work/20261028T103411Z-sesv2-putdedicatedippoolscalingattributes-stub.md`),
+/// answered there for a pool the account no longer held — so the mode is judged on the
+/// request alone, before the pool it names is resolved.
+pub fn invalid_scaling_mode() -> String {
+    "The ScalingMode parameter is invalid.".to_string()
+}
+
 /// The `WarmupPercentage` a dedicated IP in a MANAGED pool reports.
 ///
 /// From `DedicatedIp$WarmupPercentage`: "-1 — Appears for IP addresses in managed

@@ -1,15 +1,10 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op PutDedicatedIpPoolScalingAttributes
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `PutDedicatedIpPoolScalingAttributes`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
-//!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`PutDedicatedIpPoolScalingAttributes::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! Converts the dedicated IP pool the request names to the managed scaling mode, which
+//! `GetDedicatedIpPool` then reports; a mode this conversion never applies is refused as
+//! a bad parameter, and a pool the account does not hold is not found. This is the ONLY
+//! file to touch for this operation.
 //!
 //! ## Shape of an operation
 //!
@@ -142,18 +137,65 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `PutDedicatedIpPoolScalingAttributes` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(PutDedicatedIpPoolScalingAttributesErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("PutDedicatedIpPoolScalingAttributes"))
+        // Request metadata is not needed: a pool is keyed by the name this request binds
+        // as its path label, within the one emulated account.
+        let _ = ctx;
+        let Some(state) = crate::state::service_state(&*self.engine) else {
+            // No store at all, which is not a modelled SES state: answer the scaffold's
+            // 501 rather than a modelled error that reads as one.
+            return Err(crate::scaffolded::Scaffolded::not_implemented(
+                "PutDedicatedIpPoolScalingAttributes without the shared emulator state",
+            ));
+        };
+
+        // `ScalingMode` is a plain string in the generated input, so the value set is the
+        // handler's to check as well: the generated const is the model's own
+        // (`smithy_query(query="shape",shape="ScalingMode")`).
+        let scaling_mode =
+            crate::state::modelled_enum_value("ScalingMode", input.scaling_mode, SCALING_MODE_VALUES)
+                .map_err(bad_request)?;
+
+        // The mode is judged on the REQUEST, before the pool it names is resolved: a mode
+        // this conversion never applies ([`crate::state::scaling_mode_can_be_applied`]) is
+        // an invalid parameter whichever pool the request named, and whether or not the
+        // account holds that pool.
+        if !crate::state::scaling_mode_can_be_applied(&scaling_mode) {
+            return Err(bad_request(crate::state::invalid_scaling_mode()));
+        }
+
+        let mut store = state.lock();
+        let Some(pool) = store.dedicated_ip_pools.get_mut(&input.pool_name) else {
+            // This call converts a pool the account holds; it creates none.
+            return Err(not_found(crate::state::dedicated_ip_pool_not_found(
+                &input.pool_name,
+            )));
+        };
+
+        // `DedicatedIpPool$ScalingMode` is the one mode a pool is in, so the converted
+        // mode REPLACES the mode the pool was in — which is also what makes repeating the
+        // conversion answer the same way and change nothing further.
+        pool.scaling_mode = scaling_mode;
+
+        // `PutDedicatedIpPoolScalingAttributesResponse` carries no members: the converted
+        // mode is read back with `GetDedicatedIpPool`.
+        Ok(PutDedicatedIpPoolScalingAttributesOutput {})
     }
+}
+
+/// `BadRequestException` ("the input you provided is invalid") in this operation's error
+/// channel, so every refusal of a bad request is stated the same way.
+fn bad_request(message: impl Into<String>) -> PutDedicatedIpPoolScalingAttributesError {
+    PutDedicatedIpPoolScalingAttributesErrorModeled::BadRequestException(BadRequestException {
+        message: Some(message.into()),
+    })
+    .into()
+}
+
+/// `NotFoundException` ("the resource you attempted to access doesn't exist") in this
+/// operation's error channel, for a pool the account does not hold.
+fn not_found(message: impl Into<String>) -> PutDedicatedIpPoolScalingAttributesError {
+    PutDedicatedIpPoolScalingAttributesErrorModeled::NotFoundException(NotFoundException {
+        message: Some(message.into()),
+    })
+    .into()
 }

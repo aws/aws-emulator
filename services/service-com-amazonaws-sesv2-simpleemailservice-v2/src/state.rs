@@ -1216,6 +1216,11 @@ pub const MAX_DEDICATED_IP_POOLS: usize = 50;
 /// of the pool" (`DedicatedIpPool$ScalingMode`'s own documentation).
 pub const SCALING_MODE_STANDARD: &str = "STANDARD";
 
+/// `ScalingMode$MANAGED`: "a dedicated IP pool where the reputation and number of IPs are
+/// automatically managed by Amazon SES" (`DedicatedIpPool$ScalingMode`'s own
+/// documentation).
+pub const SCALING_MODE_MANAGED: &str = "MANAGED";
+
 /// Per-service state for com-amazonaws-sesv2-simpleemailservice-v2. A handler reaches it through [`service_state`].
 #[derive(Debug, Default)]
 pub struct ComAmazonawsSesv2SimpleemailserviceV2State {
