@@ -171,6 +171,17 @@ pub fn multi_az_value(enabled: bool) -> String {
 pub const FAILOVER_NOT_POSSIBLE_NOW: &str =
     "You can't failover primary compute of your cluster now. Try again later.";
 
+/// Why a `PauseCluster` cannot be served as the cluster stands.
+///
+/// Recorded Amazon Redshift wording for this operation's
+/// `InvalidClusterStateFault` (awsQuery code `InvalidClusterState`): fixed text
+/// with no variable part — the refusal names neither the cluster nor the state
+/// it is in, only the state a pause is legal from. Like
+/// [`FAILOVER_NOT_POSSIBLE_NOW`] it covers every state the work cannot start
+/// from: a cluster still being provisioned, one the service is already working
+/// on, and one whose compute is already suspended.
+pub const PAUSE_REQUIRES_ACTIVE_CLUSTER: &str = "You can only pause an ACTIVE Cluster";
+
 /// Why an operation that needs a RUNNING cluster refuses one that is not
 /// available, naming the cluster and the state it is in.
 ///
@@ -591,6 +602,32 @@ pub fn cluster_db_revision(cluster: &Cluster) -> ClusterDbRevision {
         database_revision_release_date: cluster.cluster_create_time,
         revision_targets: Some(Vec::new()),
     }
+}
+
+/// Why a request to move a cluster onto another database revision is refused
+/// when the cluster runs the latest one this service publishes, naming the
+/// cluster the request asked about.
+///
+/// The fixed text is what the model states the fault is
+/// (`smithy_query(query="shape", shape="ClusterOnLatestRevisionFault")` —
+/// "Cluster is already on the latest database revision"), with the cluster it is
+/// about named in it; which revisions a cluster can be moved onto is
+/// [`cluster_db_revision`]'s `RevisionTargets`.
+pub fn cluster_on_latest_revision_message(cluster_identifier: &str) -> String {
+    format!("Cluster {cluster_identifier} is already on the latest database revision.")
+}
+
+/// Why a `RevisionTarget` that names no revision the cluster can be moved onto
+/// is refused, naming the target the request sent and the cluster it asked
+/// about.
+///
+/// A target outside [`cluster_db_revision`]'s `RevisionTargets` is a parameter
+/// value this service cannot honour, which is the `InvalidParameterValue` code
+/// Amazon Redshift answers such a request with.
+pub fn unknown_revision_target_message(cluster_identifier: &str, revision_target: &str) -> String {
+    format!(
+        "Invalid value for RevisionTarget: '{revision_target}'. Cluster {cluster_identifier} cannot be updated to that database revision."
+    )
 }
 
 /// Resolve the `ClusterType` / `NumberOfNodes` pair a request asks for, or say

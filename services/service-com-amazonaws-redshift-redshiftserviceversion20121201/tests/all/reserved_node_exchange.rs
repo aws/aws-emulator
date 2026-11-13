@@ -234,6 +234,10 @@ fn seed_ds2(emulator: &Emulator, cluster_identifier: &str) -> String {
         // A seeded cluster has had no logging enabled and no resize asked for.
         logging: Default::default(),
         resize: None,
+        // It is already serving, and no lakehouse configuration was written on
+        // it.
+        settles_to: None,
+        lakehouse_idc_application_arn: None,
     });
     store.reserved_nodes.push(state::StoredReservedNode {
         node: ReservedNode {

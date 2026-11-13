@@ -91,10 +91,14 @@ mod hsm_client_certificates;
 mod hsm_configurations;
 #[path = "all/identity_center_auth_token.rs"]
 mod identity_center_auth_token;
+#[path = "all/lakehouse_configuration.rs"]
+mod lakehouse_configuration;
 #[path = "all/maintenance_track_refusal_wording.rs"]
 mod maintenance_track_refusal_wording;
 #[path = "all/maintenance_tracks.rs"]
 mod maintenance_tracks;
+#[path = "all/modify_cluster_db_revision.rs"]
+mod modify_cluster_db_revision;
 #[path = "all/modify_cluster_parameter_group.rs"]
 mod modify_cluster_parameter_group;
 #[path = "all/modify_cluster_snapshot.rs"]
@@ -107,6 +111,8 @@ mod namespace_registration;
 mod namespace_registration_serverless;
 #[path = "all/orderable_cluster_options.rs"]
 mod orderable_cluster_options;
+#[path = "all/pause_cluster.rs"]
+mod pause_cluster;
 #[path = "all/published_catalog_fidelity.rs"]
 mod published_catalog_fidelity;
 #[path = "all/published_catalog_values.rs"]
@@ -139,6 +145,8 @@ mod reserved_nodes;
 mod reset_cluster_parameter_group;
 #[path = "all/restored_cluster_independence.rs"]
 mod restored_cluster_independence;
+#[path = "all/scheduled_actions.rs"]
+mod scheduled_actions;
 #[path = "all/snapshot_access.rs"]
 mod snapshot_access;
 #[path = "all/snapshot_access_denied.rs"]

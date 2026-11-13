@@ -792,7 +792,19 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> CreateCluster<Eng
             catalog_arn: input
                 .catalog_name
                 .as_deref()
-                .map(|name| ::engine::emulator_arn("glue", &region, &format!("catalog/{name}"))),
+                .map(|name| st::catalog_arn(name, &region)),
+            // A create that names a catalog creates a cluster REGISTERED with
+            // Amazon Redshift federated permissions: `CatalogName` is "the name
+            // of the Glue data catalog that will be associated with the cluster
+            // ENABLED WITH Amazon Redshift federated permissions", so naming one
+            // is the registration (the same registration
+            // `ModifyLakehouseConfiguration` writes afterwards, reported through
+            // the same pair of `Cluster` members). A create that names none
+            // leaves the cluster unregistered, with no status to report.
+            lakehouse_registration_status: input
+                .catalog_name
+                .is_some()
+                .then(|| st::LAKEHOUSE_REGISTRATION_REGISTERED.to_string()),
             // `Cluster$ExtraComputeForAutomaticOptimization` is modelled as a
             // string whose doc speaks in boolean words ("A boolean value that, if
             // true, …  Default: false"), so the boolean renders as `true`/`false`
@@ -828,6 +840,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> CreateCluster<Eng
             // never.
             logging: st::ClusterLogging::default(),
             resize: None,
+            // A create brings the cluster up and leaves it serving, and
+            // associates no Identity Center application with its lakehouse
+            // configuration.
+            settles_to: None,
+            lakehouse_idc_application_arn: None,
         });
 
         Ok((

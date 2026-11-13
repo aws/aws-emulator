@@ -1,15 +1,20 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op DescribeScheduledActions
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `DescribeScheduledActions`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
+//! Reports the scheduled actions of the account, read off the records this
+//! service holds: each one's target action, its schedule, the role it assumes,
+//! the window it is active in and the invocations still ahead of it (derived —
+//! see [`crate::state::StoredScheduledAction::view`]).
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`DescribeScheduledActions::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! Each member of the request NARROWS the same list — the action a
+//! `ScheduledActionName` names, the ones whose target action is of a
+//! `TargetActionType`, the ones in the state `Active` asks for, the ones whose
+//! upcoming invocations fall inside the `StartTime`/`EndTime` window, and the
+//! ones a `Filters` entry selects by cluster or by role — and the page is cut
+//! from the result by the same `Marker` / `MaxRecords` rule every paginated read
+//! of this service uses. A `ScheduledActionName` that names no action of this
+//! account is the one refusal: a read asked about ONE action reports that it
+//! cannot be found rather than an empty page.
 //!
 //! ## Shape of an operation
 //!
@@ -105,12 +110,18 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-redshift-redshiftservic
 // model declares for this operation, so the scaffold's `NotImplemented` cannot live
 // here — hence the `DescribeScheduledActionsError` alias below. An operation that models no errors
 // generates an UNINHABITED enum here, which is correct and expected: there is nothing
-// to construct until the model says otherwise.
-#[smithy_macros::operation_error("com.amazonaws.redshift#DescribeScheduledActions")]
+// to construct until the model says otherwise. The server-side fault for an
+// unreachable shared store — which this SERVICE models and this operation's own
+// error list omits entirely — is widened in through `extra_errors`.
+#[smithy_macros::operation_error(
+    "com.amazonaws.redshift#DescribeScheduledActions",
+    extra_errors = ["DependentServiceUnavailableFault"]
+)]
 #[derive(Debug)]
 pub enum DescribeScheduledActionsErrorModeled {
     ScheduledActionNotFoundFault(ScheduledActionNotFoundFault),
     UnauthorizedOperation(UnauthorizedOperation),
+    DependentServiceUnavailableFault(DependentServiceUnavailableFault),
 }
 
 /// This operation's error channel, as the generated `impl Operation` names it
@@ -159,23 +170,128 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
     const OUTPUT_SCHEMA: &'static ::aws_smithy_schema::Schema = super::types::DESCRIBE_SCHEDULED_ACTIONS_OUTPUT_SCHEMA;
     const SUCCESS_STATUS: u16 = 200u16;
 
+    /// A pure report: every value comes off the stored records, and the only
+    /// write is the store's clock-owed settle, which was due at this instant
+    /// whether or not anybody called.
     async fn handle(
         &self,
         input: Self::Input,
-        ctx: &smithy_server_runtime::OperationContext<'_>,
+        _ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `DescribeScheduledActions` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(DescribeScheduledActionsErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("DescribeScheduledActions"))
+        use crate::state as st;
+
+        let Some(state) = st::service_state(&*self.engine) else {
+            return Err(
+                DescribeScheduledActionsErrorModeled::DependentServiceUnavailableFault(
+                    DependentServiceUnavailableFault {
+                        message: Some(st::STORE_UNAVAILABLE.to_string()),
+                    },
+                )
+                .into(),
+            );
+        };
+
+        let now = ::std::time::SystemTime::now();
+        let mut store = state.lock();
+        store.settle(::std::time::Instant::now());
+
+        // A read asked about ONE action is refused when the account holds no
+        // action under that name: "the name of the scheduled action to
+        // retrieve" names a particular action, so an empty page would say the
+        // account has actions but none matching, which is a different answer.
+        if let Some(name) = input.scheduled_action_name.as_deref() {
+            if store.scheduled_action_position(name).is_none() {
+                return Err(
+                    DescribeScheduledActionsErrorModeled::ScheduledActionNotFoundFault(
+                        ScheduledActionNotFoundFault {
+                            message: Some(st::scheduled_action_not_found_message(name)),
+                        },
+                    )
+                    .into(),
+                );
+            }
+        }
+
+        let matched: Vec<&st::StoredScheduledAction> = store
+            .scheduled_actions
+            .iter()
+            .filter(|action| {
+                input
+                    .scheduled_action_name
+                    .as_deref()
+                    .is_none_or(|wanted| action.scheduled_action_name == wanted)
+                    // "The type of the scheduled actions to retrieve": which
+                    // operation the action's own target action triggers.
+                    && input.target_action_type.as_deref().is_none_or(|wanted| {
+                        st::scheduled_action_target(&action.target_action)
+                            .is_some_and(|(kind, _)| kind == wanted)
+                    })
+                    // "If true, retrieve only active scheduled actions. If
+                    // false, retrieve only disabled scheduled actions."
+                    && input.active.is_none_or(|active| {
+                        (action.state == st::SCHEDULED_ACTION_STATE_ACTIVE) == active
+                    })
+                    // "Only active scheduled actions that have invocations
+                    // after this time are retrieved", and before `EndTime`:
+                    // both bounds are about the action's own upcoming
+                    // invocations, so an action with none matches neither.
+                    && (input.start_time.is_none() && input.end_time.is_none()
+                        || action.next_invocations(now).iter().any(|at| {
+                            input.start_time.is_none_or(|from| at.secs() >= from.secs())
+                                && input.end_time.is_none_or(|to| at.secs() <= to.secs())
+                        }))
+                    && input
+                        .filters
+                        .as_deref()
+                        .unwrap_or_default()
+                        .iter()
+                        .all(|filter| filter_selects(filter, action))
+            })
+            .collect();
+
+        let (start, end, next_marker) =
+            match st::page_bounds(input.marker.as_deref(), input.max_records, matched.len()) {
+                Ok(page) => page,
+                Err(message) => {
+                    return Err(crate::scaffolded::Scaffolded::invalid_parameter_value(message))
+                }
+            };
+
+        // Only the PAGE is rendered: the invocation times of an action a later
+        // page carries are computed when that page is asked for, so one
+        // request's work is proportional to its page.
+        Ok(DescribeScheduledActionsOutput {
+            scheduled_actions: Some(
+                matched[start..end]
+                    .iter()
+                    .map(|action| action.view(now))
+                    .collect(),
+            ),
+            marker: next_marker,
+        })
     }
+}
+
+/// Whether one `Filters` entry selects `action`.
+///
+/// "Compare if the value (of type defined by `Name`) equals an item in the list
+/// of scheduled actions" (`smithy_query(query="shape",
+/// shape="ScheduledActionFilter")`), over the two elements the filter's own name
+/// enum publishes: the cluster the action's target action names
+/// (`cluster-identifier`) and the role it assumes (`iam-role`). A filter naming
+/// an element outside that enum never reaches here — the boundary validator
+/// refuses a value outside a modelled enum before this handler runs.
+fn filter_selects(
+    filter: &ScheduledActionFilter,
+    action: &crate::state::StoredScheduledAction,
+) -> bool {
+    let compared = if filter.name == crate::state::SCHEDULED_ACTION_FILTER_CLUSTER_IDENTIFIER {
+        crate::state::scheduled_action_target(&action.target_action)
+            .map(|(_, cluster)| cluster.to_string())
+    } else if filter.name == crate::state::SCHEDULED_ACTION_FILTER_IAM_ROLE {
+        Some(action.iam_role.clone())
+    } else {
+        None
+    };
+    compared.is_some_and(|value| filter.values.contains(&value))
 }

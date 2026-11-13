@@ -239,6 +239,36 @@ pub static INVALID_PARAMETER_COMBINATION_SCHEMA: Schema = Schema::new_struct(
     &[&INVALID_PARAMETER_COMBINATION_MESSAGE],
 );
 
+/// The `message` member of the synthetic `InternalFailure` error shape.
+static INTERNAL_FAILURE_MESSAGE: Schema = Schema::new_member(
+    ShapeId::from_static(
+        "smithy.framework#InternalFailure$message",
+        "smithy.framework",
+        "message",
+    ),
+    ShapeType::String,
+    "message",
+    0,
+)
+.with_xml_name("Message");
+
+/// Schema for the synthetic `InternalFailure` error shape.
+///
+/// In the `smithy.framework` namespace for the same reason as the shapes above:
+/// it is in no service model, so it must not collide with a modeled shape. It
+/// exists because `InternalFailure` is the error code Amazon Redshift answers a
+/// call to an operation it has RETIRED with — the call reaches no backend that
+/// could serve it — and the error code is what a client branches on.
+pub static INTERNAL_FAILURE_SCHEMA: Schema = Schema::new_struct(
+    ShapeId::from_static(
+        "smithy.framework#InternalFailure",
+        "smithy.framework",
+        "InternalFailure",
+    ),
+    ShapeType::Structure,
+    &[&INTERNAL_FAILURE_MESSAGE],
+);
+
 /// An operation's error channel: either the synthetic scaffold signal, or one of the
 /// operation's own modeled errors.
 #[derive(Debug)]
@@ -271,6 +301,12 @@ pub enum Scaffolded<E> {
     /// request with. The payload is the same single `message` member; only the wire
     /// code differs from [`Scaffolded::InvalidParameterValue`].
     InvalidParameterCombination(ValidationException),
+    /// The service itself could not serve the call, with HTTP 500 and the error
+    /// code `InternalFailure` — the common AWS error code, and what Amazon
+    /// Redshift answers a call to an operation it has retired with. The payload
+    /// is the same single `message` member; only the wire code and the status
+    /// differ from [`Scaffolded::InvalidParameterValue`].
+    InternalFailure(ValidationException),
 }
 
 impl<E> Scaffolded<E> {
@@ -319,6 +355,17 @@ impl<E> Scaffolded<E> {
     pub fn invalid_parameter_combination(message: impl Into<String>) -> Self {
         Self::InvalidParameterCombination(ValidationException::new(message))
     }
+
+    /// Refuse the call with HTTP 500 `InternalFailure`.
+    ///
+    /// The refusal Amazon Redshift answers a call it cannot serve AT ALL with,
+    /// whatever the request said — which is what a RETIRED operation answers,
+    /// because no backend is left behind it. Not a substitute for a modelled
+    /// fault: reach for this only where the recorded behaviour of the operation
+    /// is this code, and never to stand in for a refusal the model words.
+    pub fn internal_failure(message: impl Into<String>) -> Self {
+        Self::InternalFailure(ValidationException::new(message))
+    }
 }
 
 impl<E: std::fmt::Display> std::fmt::Display for Scaffolded<E> {
@@ -329,6 +376,7 @@ impl<E: std::fmt::Display> std::fmt::Display for Scaffolded<E> {
             Self::ValidationException(e) => write!(f, "{e}"),
             Self::InvalidParameterValue(e) => write!(f, "{e}"),
             Self::InvalidParameterCombination(e) => write!(f, "{e}"),
+            Self::InternalFailure(e) => write!(f, "{e}"),
         }
     }
 }
@@ -343,6 +391,7 @@ impl<E: std::error::Error + 'static> std::error::Error for Scaffolded<E> {
             Self::ValidationException(e) => e.source(),
             Self::InvalidParameterValue(e) => e.source(),
             Self::InvalidParameterCombination(e) => e.source(),
+            Self::InternalFailure(e) => e.source(),
         }
     }
 }
@@ -359,6 +408,7 @@ impl<E: OperationError> OperationError for Scaffolded<E> {
             Self::ValidationException(e) => e,
             Self::InvalidParameterValue(e) => e,
             Self::InvalidParameterCombination(e) => e,
+            Self::InternalFailure(e) => e,
         }
     }
 
@@ -369,6 +419,7 @@ impl<E: OperationError> OperationError for Scaffolded<E> {
             Self::ValidationException(_) => &VALIDATION_EXCEPTION_SCHEMA,
             Self::InvalidParameterValue(_) => &INVALID_PARAMETER_VALUE_SCHEMA,
             Self::InvalidParameterCombination(_) => &INVALID_PARAMETER_COMBINATION_SCHEMA,
+            Self::InternalFailure(_) => &INTERNAL_FAILURE_SCHEMA,
         }
     }
 
@@ -383,6 +434,7 @@ impl<E: OperationError> OperationError for Scaffolded<E> {
             Self::ValidationException(_) => "ValidationException",
             Self::InvalidParameterValue(_) => "InvalidParameterValue",
             Self::InvalidParameterCombination(_) => "InvalidParameterCombination",
+            Self::InternalFailure(_) => "InternalFailure",
         }
     }
 
@@ -397,6 +449,8 @@ impl<E: OperationError> OperationError for Scaffolded<E> {
             Self::ValidationException(_) => 400,
             Self::InvalidParameterValue(_) => 400,
             Self::InvalidParameterCombination(_) => 400,
+            // The status the common AWS `InternalFailure` error carries.
+            Self::InternalFailure(_) => 500,
         }
     }
 
@@ -415,6 +469,9 @@ impl<E: OperationError> OperationError for Scaffolded<E> {
             // Same reason again; `<Code>InvalidParameterCombination</Code>` comes from
             // `shape_name` above, which is already the code AWS answers with.
             Self::InvalidParameterCombination(_) => None,
+            // Same reason again; `<Code>InternalFailure</Code>` comes from
+            // `shape_name` above, which is already the code AWS answers with.
+            Self::InternalFailure(_) => None,
         }
     }
 }

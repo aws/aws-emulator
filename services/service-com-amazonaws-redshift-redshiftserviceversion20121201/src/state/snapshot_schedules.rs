@@ -139,7 +139,12 @@ pub const MAX_REPORTED_NEXT_INVOCATIONS: usize = 100;
 const RATE_EXPRESSION: &str = "rate";
 
 /// The `cron(...)` expression type: a calendar schedule.
-const CRON_EXPRESSION: &str = "cron";
+///
+/// `pub(crate)` with [`expression_body`] and [`parse_cron_body`], because the
+/// scheduled actions of [`super::scheduled_actions`] read a calendar schedule
+/// from the SAME documented AWS cron format — so there is one reading of it in
+/// this store rather than one per family.
+pub(crate) const CRON_EXPRESSION: &str = "cron";
 
 /// The units a `rate(value unit)` definition states its interval in, each
 /// paired with how long one of it lasts.
@@ -235,19 +240,23 @@ impl SnapshotScheduleDefinition {
     }
 }
 
-/// Why a definition is not one this service stores a schedule with.
+/// Why an expression is not one this service reads a schedule from, or not one
+/// it stores a schedule with.
 ///
-/// The two refusals `CreateSnapshotSchedule` models for a definition it will not
-/// take, which is why the reading of a definition answers which of them applies
-/// rather than a bare message: a definition of an expression TYPE the service
-/// does not offer is a `ScheduleDefinitionTypeUnsupportedFault`, while one of an
-/// offered type that states no schedule is an `InvalidScheduleFault`.
+/// The split both schedule families share: an expression written in a TYPE the
+/// service does not read a schedule from at all is a different refusal from one
+/// written in an offered type that states no schedule. Which fault each maps to
+/// is the OPERATION's: `CreateSnapshotSchedule` answers
+/// `ScheduleDefinitionTypeUnsupportedFault` and `InvalidScheduleFault`, while
+/// `CreateScheduledAction` answers the `InvalidParameterValue` code and
+/// `InvalidScheduleFault` (see
+/// [`super::scheduled_actions::parse_scheduled_action_schedule`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ScheduleDefinitionRefusal {
-    /// The definition is not written in an expression type this service reads a
-    /// schedule from at all.
+    /// The expression is not written in a type this service reads a schedule
+    /// from at all.
     Unsupported(String),
-    /// The definition is written in one of those types, but states no schedule
+    /// The expression is written in one of those types, but states no schedule
     /// an invocation can be computed from.
     Invalid(String),
 }
@@ -259,7 +268,7 @@ pub enum ScheduleDefinitionRefusal {
 /// The type name is matched case-insensitively, as the expression types
 /// themselves are, and the body is handed back untrimmed: each type's own
 /// reading decides what its fields are.
-fn expression_body<'a>(expression: &'a str, kind: &str) -> Option<&'a str> {
+pub(crate) fn expression_body<'a>(expression: &'a str, kind: &str) -> Option<&'a str> {
     let rest = expression.strip_suffix(')')?;
     let (named, body) = rest.split_at_checked(kind.len())?;
     if !named.eq_ignore_ascii_case(kind) {
@@ -333,10 +342,21 @@ fn parse_cron_expression(
     definition: &str,
     body: &str,
 ) -> Result<SnapshotScheduleDefinition, ScheduleDefinitionRefusal> {
-    let invalid = || ScheduleDefinitionRefusal::Invalid(invalid_schedule_message(definition));
+    let schedule = parse_cron_body(body)
+        .ok_or_else(|| ScheduleDefinitionRefusal::Invalid(invalid_schedule_message(definition)))?;
+    Ok(SnapshotScheduleDefinition::Cron(Box::new(schedule)))
+}
+
+/// The body of a `cron(...)` expression — what stands inside its brackets — as
+/// the schedule it states, and `None` when it states none.
+///
+/// A field the expression omits stands for every value of it (see
+/// [`CRON_FIELDS_MINIMUM`]), so the trailing fields are filled with the `*` that
+/// spells exactly that before the whole expression is read.
+pub(crate) fn parse_cron_body(body: &str) -> Option<::cron::Schedule> {
     let fields: Vec<&str> = body.split_whitespace().collect();
     if !(CRON_FIELDS_MINIMUM..=CRON_FIELDS_WITH_YEAR).contains(&fields.len()) {
-        return Err(invalid());
+        return None;
     }
     let stated = fields.iter().enumerate().map(|(position, field)| {
         if *field == "?" && CRON_NO_SPECIFIC_VALUE_FIELDS.contains(&position) {
@@ -347,15 +367,11 @@ fn parse_cron_expression(
     });
     let omitted = ::std::iter::repeat_n("*", CRON_FIELDS_WITH_YEAR - fields.len());
     // The `cron` grammar starts with a SECONDS field, which this format has no
-    // field for: a snapshot schedule's finest unit is the minute, so the second
-    // is a literal zero.
+    // field for: the finest unit either family schedules on is the minute, so
+    // the second is a literal zero.
     let seconds = ::std::iter::once("0");
     let normalised: Vec<&str> = seconds.chain(stated).chain(omitted).collect();
-    let schedule = normalised
-        .join(" ")
-        .parse::<::cron::Schedule>()
-        .map_err(|_| invalid())?;
-    Ok(SnapshotScheduleDefinition::Cron(Box::new(schedule)))
+    normalised.join(" ").parse::<::cron::Schedule>().ok()
 }
 
 /// Why a definition written in an expression type this service does not read a
@@ -463,14 +479,18 @@ pub fn next_invocations(
 
 /// `at` as a UTC date and time, or `None` when it is outside the range a date
 /// and time can represent.
-fn utc_datetime(at: SystemTime) -> Option<::chrono::DateTime<::chrono::Utc>> {
+///
+/// `pub(crate)` with [`system_time`], so the scheduled actions of
+/// [`super::scheduled_actions`] convert between the two clocks through the same
+/// pair.
+pub(crate) fn utc_datetime(at: SystemTime) -> Option<::chrono::DateTime<::chrono::Utc>> {
     let seconds = at.duration_since(SystemTime::UNIX_EPOCH).ok()?.as_secs();
     ::chrono::DateTime::from_timestamp(i64::try_from(seconds).ok()?, 0)
 }
 
 /// A UTC date and time as a `SystemTime`, or `None` when it is before the epoch
 /// and so outside the range this service computes in.
-fn system_time(at: ::chrono::DateTime<::chrono::Utc>) -> Option<SystemTime> {
+pub(crate) fn system_time(at: ::chrono::DateTime<::chrono::Utc>) -> Option<SystemTime> {
     let seconds = u64::try_from(at.timestamp()).ok()?;
     SystemTime::UNIX_EPOCH.checked_add(Duration::from_secs(seconds))
 }

@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op ModifyClusterDbRevision
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `ModifyClusterDbRevision`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
+//! Moves one stored cluster onto another revision of its database — or says why
+//! it cannot be moved: the cluster this account does not hold, the cluster the
+//! service is already working on, and the cluster that already runs the latest
+//! revision this service publishes a target of
+//! ([`crate::state::cluster_db_revision`]'s `RevisionTargets`).
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`ModifyClusterDbRevision::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! The cluster is resolved FIRST, before the revision the request names is
+//! looked at at all, so a client that branches on `ClusterNotFound` to decide
+//! "create it" rather than "patch it" can branch.
 //!
 //! ## Shape of an operation
 //!
@@ -88,13 +88,21 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-redshift-redshiftservic
 // here — hence the `ModifyClusterDbRevisionError` alias below. An operation that models no errors
 // generates an UNINHABITED enum here, which is correct and expected: there is nothing
 // to construct until the model says otherwise.
-#[smithy_macros::operation_error("com.amazonaws.redshift#ModifyClusterDbRevision")]
+// `DependentServiceUnavailableFault` is widened in, exactly as `ModifyCluster`
+// widens it: the model does not list it for this operation, but the service
+// declares the shape, and it is the only modelled way to say "the control-plane
+// store could not be reached".
+#[smithy_macros::operation_error(
+    "com.amazonaws.redshift#ModifyClusterDbRevision",
+    extra_errors = ["DependentServiceUnavailableFault"]
+)]
 #[derive(Debug)]
 pub enum ModifyClusterDbRevisionErrorModeled {
     ClusterNotFoundFault(ClusterNotFoundFault),
     ClusterOnLatestRevisionFault(ClusterOnLatestRevisionFault),
     InvalidClusterStateFault(InvalidClusterStateFault),
     UnsupportedOperationFault(UnsupportedOperationFault),
+    DependentServiceUnavailableFault(DependentServiceUnavailableFault),
 }
 
 /// This operation's error channel, as the generated `impl Operation` names it
@@ -146,20 +154,127 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
     async fn handle(
         &self,
         input: Self::Input,
-        ctx: &smithy_server_runtime::OperationContext<'_>,
+        _ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `ModifyClusterDbRevision` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(ModifyClusterDbRevisionErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("ModifyClusterDbRevision"))
+        // The whole write is one lock-held step and nothing is awaited while the
+        // store is locked.
+        self.modify_revision(&input)
+    }
+}
+
+impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> ModifyClusterDbRevision<Eng> {
+    /// The revision change itself: the output it reports.
+    ///
+    /// Three preconditions, in the order Amazon Redshift checks them: the
+    /// cluster has to be one this account holds, it has to be serving, and the
+    /// revision the request names has to be one the cluster can be moved onto.
+    fn modify_revision(
+        &self,
+        input: &ModifyClusterDbRevisionInput,
+    ) -> Result<ModifyClusterDbRevisionOutput, ModifyClusterDbRevisionError> {
+        use crate::state as st;
+
+        let Some(state) = st::service_state(&*self.engine) else {
+            return Err(
+                ModifyClusterDbRevisionErrorModeled::DependentServiceUnavailableFault(
+                    DependentServiceUnavailableFault {
+                        message: Some(st::STORE_UNAVAILABLE.to_string()),
+                    },
+                )
+                .into(),
+            );
+        };
+
+        let started = ::std::time::Instant::now();
+        let mut store = state.lock();
+        store.settle(started);
+
+        // The cluster is resolved BEFORE anything about the revision: "the
+        // ClusterIdentifier parameter does not refer to an existing cluster" is
+        // what a request naming one this account does not hold is answered
+        // with, whatever revision it asked for.
+        let Some(position) = store.cluster_position(&input.cluster_identifier) else {
+            return Err(ModifyClusterDbRevisionErrorModeled::ClusterNotFoundFault(
+                ClusterNotFoundFault {
+                    // No recorded refusal gives this operation a sentence of its
+                    // own, so it carries the one every other cluster-scoped
+                    // operation does — see the per-operation catalog
+                    // [`st::ClusterNotFoundWording`].
+                    message: Some(st::cluster_not_found_message(
+                        st::ClusterNotFoundWording::IdentifierThenNotFound,
+                        &input.cluster_identifier,
+                    )),
+                },
+            )
+            .into());
+        };
+        let cluster_status = store.clusters[position]
+            .cluster
+            .cluster_status
+            .clone()
+            .unwrap_or_default();
+        if cluster_status != st::STATUS_AVAILABLE {
+            return Err(
+                ModifyClusterDbRevisionErrorModeled::InvalidClusterStateFault(
+                    InvalidClusterStateFault {
+                        message: Some(st::invalid_cluster_state_message(
+                            &input.cluster_identifier,
+                            &cluster_status,
+                        )),
+                    },
+                )
+                .into(),
+            );
+        }
+
+        // Which revisions this cluster can be moved onto is the cluster's own
+        // `RevisionTargets`, read through the same rule
+        // `DescribeClusterDbRevisions` reports — "you can retrieve this value
+        // from the response to the DescribeClusterDbRevisions request" is where
+        // the request's `RevisionTarget` comes from, so the two cannot disagree.
+        let targets = st::cluster_db_revision(&store.clusters[position].cluster)
+            .revision_targets
+            .unwrap_or_default();
+        let Some(target) = targets.iter().find(|target| {
+            target.database_revision.as_deref() == Some(input.revision_target.as_str())
+        }) else {
+            // A cluster with no later revision published for it IS on its
+            // latest one, which is the fault the model words for exactly that;
+            // a cluster that has targets but not this one was asked for a
+            // revision value this service cannot honour.
+            return Err(if targets.is_empty() {
+                ModifyClusterDbRevisionErrorModeled::ClusterOnLatestRevisionFault(
+                    ClusterOnLatestRevisionFault {
+                        message: Some(st::cluster_on_latest_revision_message(
+                            &input.cluster_identifier,
+                        )),
+                    },
+                )
+                .into()
+            } else {
+                crate::scaffolded::Scaffolded::invalid_parameter_value(
+                    st::unknown_revision_target_message(
+                        &input.cluster_identifier,
+                        &input.revision_target,
+                    ),
+                )
+            });
+        };
+        let revision = target.database_revision.clone();
+
+        // The move is a change applied to a provisioned cluster, so the cluster
+        // runs the new revision from now on and is available again a span later,
+        // through the store's clock-owed settle rather than through this call.
+        let stored = &mut store.clusters[position];
+        stored.cluster.cluster_revision_number = revision;
+        stored.cluster.cluster_status = Some(st::STATUS_MODIFYING.to_string());
+        stored.cluster.cluster_availability_status =
+            Some(st::availability_status(st::STATUS_MODIFYING).to_string());
+        stored.available_at = started + st::PROVISIONING_SPAN;
+        let cluster = stored.cluster.clone();
+
+        Ok(ModifyClusterDbRevisionOutput {
+            cluster: Some(cluster),
+        })
     }
 }

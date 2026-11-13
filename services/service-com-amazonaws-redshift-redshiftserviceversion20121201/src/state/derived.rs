@@ -712,6 +712,22 @@ pub fn retired_aqua_configuration() -> AquaConfiguration {
     }
 }
 
+/// What a `ModifyAquaConfiguration` call is answered with.
+///
+/// The operation is RETIRED — "this operation is retired. Calling this operation
+/// does not change AQUA configuration. Amazon Redshift automatically determines
+/// whether to use AQUA" (`smithy_query(query="doc",
+/// operation="ModifyAquaConfiguration")`) — and the recorded Amazon Redshift
+/// answer to a call of it is the service's internal-failure refusal, carrying
+/// this sentence verbatim: there is no backend left behind the retired path, so
+/// the refusal is decided before the request is looked at and names nothing from
+/// it. The code (`InternalFailure`) and the status (500) are the common AWS
+/// ones, which the model does not list for this operation (its faults are
+/// `ClusterNotFoundFault`, `InvalidClusterStateFault` and
+/// `UnsupportedOperationFault`), so both come from the recording.
+pub const AQUA_CONFIGURATION_INTERNAL_FAILURE: &str =
+    "An internal error has occurred. Please try your query again at a later time.";
+
 /// The next UTC instant at which a cluster's weekly maintenance window opens,
 /// strictly after `after`.
 ///

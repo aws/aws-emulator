@@ -1,15 +1,16 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op ModifyScheduledAction
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `ModifyScheduledAction`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
+//! Changes one stored scheduled action: each member the request carries replaces
+//! the part of the record it names and no other, and the action is reported back
+//! as a read would report it.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`ModifyScheduledAction::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! Every precondition is checked BEFORE anything is changed, in the same order
+//! the create checks them: a `Schedule` the request carries has to be a schedule
+//! this service reads ([`crate::state::parse_scheduled_action_schedule`]), a
+//! `TargetAction` it carries has to name exactly one supported operation against
+//! a cluster this account holds, and the action itself has to be one this account
+//! holds.
 //!
 //! ## Shape of an operation
 //!
@@ -127,7 +128,14 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-redshift-redshiftservic
 // here — hence the `ModifyScheduledActionError` alias below. An operation that models no errors
 // generates an UNINHABITED enum here, which is correct and expected: there is nothing
 // to construct until the model says otherwise.
-#[smithy_macros::operation_error("com.amazonaws.redshift#ModifyScheduledAction")]
+// `DependentServiceUnavailableFault` is widened in, exactly as `ModifyCluster`
+// widens it: the model does not list it for this operation, but the service
+// declares the shape, and it is the only modelled way to say "the control-plane
+// store could not be reached".
+#[smithy_macros::operation_error(
+    "com.amazonaws.redshift#ModifyScheduledAction",
+    extra_errors = ["DependentServiceUnavailableFault"]
+)]
 #[derive(Debug)]
 pub enum ModifyScheduledActionErrorModeled {
     ClusterNotFoundFault(ClusterNotFoundFault),
@@ -137,6 +145,7 @@ pub enum ModifyScheduledActionErrorModeled {
     ScheduledActionTypeUnsupportedFault(ScheduledActionTypeUnsupportedFault),
     UnauthorizedOperation(UnauthorizedOperation),
     UnsupportedOperationFault(UnsupportedOperationFault),
+    DependentServiceUnavailableFault(DependentServiceUnavailableFault),
 }
 
 /// This operation's error channel, as the generated `impl Operation` names it
@@ -185,23 +194,152 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
     const OUTPUT_SCHEMA: &'static ::aws_smithy_schema::Schema = super::types::MODIFY_SCHEDULED_ACTION_OUTPUT_SCHEMA;
     const SUCCESS_STATUS: u16 = 200u16;
 
+    /// Change the scheduled action the request names.
+    ///
+    /// Nothing is awaited while the store is locked: every dependency this
+    /// operation resolves — the action and the cluster a new target action
+    /// names — is a record of THIS service, so the whole write is one lock-held
+    /// step.
     async fn handle(
         &self,
         input: Self::Input,
-        ctx: &smithy_server_runtime::OperationContext<'_>,
+        _ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `ModifyScheduledAction` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(ModifyScheduledActionErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("ModifyScheduledAction"))
+        use crate::state as st;
+
+        // The SCHEDULE a request carries is judged first, and on the request
+        // alone, exactly as the create judges it: the two paths cannot admit a
+        // different schedule.
+        match input
+            .schedule
+            .as_deref()
+            .map(st::parse_scheduled_action_schedule)
+        {
+            None | Some(Ok(_)) => {}
+            Some(Err(st::ScheduleDefinitionRefusal::Unsupported(message))) => {
+                return Err(crate::scaffolded::Scaffolded::invalid_parameter_value(
+                    message,
+                ))
+            }
+            Some(Err(st::ScheduleDefinitionRefusal::Invalid(message))) => {
+                return Err(ModifyScheduledActionErrorModeled::InvalidScheduleFault(
+                    InvalidScheduleFault {
+                        message: Some(message),
+                    },
+                )
+                .into())
+            }
+        }
+
+        // A new target action has to name exactly one supported operation, and
+        // the cluster it would run against is resolved below.
+        let target = match input.target_action.as_ref() {
+            None => None,
+            Some(target) => match st::scheduled_action_target(target) {
+                Some((_, cluster)) => Some(cluster.to_string()),
+                None => {
+                    return Err(
+                        ModifyScheduledActionErrorModeled::InvalidScheduledActionFault(
+                            InvalidScheduledActionFault {
+                                message: Some(st::invalid_scheduled_action_message()),
+                            },
+                        )
+                        .into(),
+                    )
+                }
+            },
+        };
+
+        let Some(state) = st::service_state(&*self.engine) else {
+            return Err(
+                ModifyScheduledActionErrorModeled::DependentServiceUnavailableFault(
+                    DependentServiceUnavailableFault {
+                        message: Some(st::STORE_UNAVAILABLE.to_string()),
+                    },
+                )
+                .into(),
+            );
+        };
+        let mut store = state.lock();
+        store.settle(::std::time::Instant::now());
+
+        if let Some(cluster_identifier) = target.as_deref() {
+            if store.cluster_position(cluster_identifier).is_none() {
+                return Err(ModifyScheduledActionErrorModeled::ClusterNotFoundFault(
+                    ClusterNotFoundFault {
+                        // No recorded refusal gives this operation a sentence of
+                        // its own, so it carries the one every other
+                        // cluster-scoped operation does — see the per-operation
+                        // catalog [`st::ClusterNotFoundWording`].
+                        message: Some(st::cluster_not_found_message(
+                            st::ClusterNotFoundWording::IdentifierThenNotFound,
+                            cluster_identifier,
+                        )),
+                    },
+                )
+                .into());
+            }
+        }
+
+        let Some(position) = store.scheduled_action_position(&input.scheduled_action_name) else {
+            return Err(
+                ModifyScheduledActionErrorModeled::ScheduledActionNotFoundFault(
+                    ScheduledActionNotFoundFault {
+                        message: Some(st::scheduled_action_not_found_message(
+                            &input.scheduled_action_name,
+                        )),
+                    },
+                )
+                .into(),
+            );
+        };
+
+        let stored = &mut store.scheduled_actions[position];
+        // Every member of this request is "a modified …" of the action, so one
+        // the request does not carry leaves that part of the record exactly as
+        // it stands.
+        if let Some(target_action) = input.target_action.clone() {
+            stored.target_action = target_action;
+        }
+        if let Some(schedule) = input.schedule.clone() {
+            stored.schedule = schedule;
+        }
+        if let Some(iam_role) = input.iam_role.clone() {
+            stored.iam_role = iam_role;
+        }
+        if input.scheduled_action_description.is_some() {
+            stored.scheduled_action_description = input.scheduled_action_description.clone();
+        }
+        if input.start_time.is_some() {
+            stored.start_time = input.start_time;
+        }
+        if input.end_time.is_some() {
+            stored.end_time = input.end_time;
+        }
+        if let Some(enable) = input.enable {
+            stored.state = if enable {
+                st::SCHEDULED_ACTION_STATE_ACTIVE
+            } else {
+                st::SCHEDULED_ACTION_STATE_DISABLED
+            }
+            .to_string();
+        }
+
+        // The modelled shape is the SAME one the create and the read report
+        // (`ScheduledAction`), generated once per operation under that
+        // operation's own name, so the one view is re-wrapped into this
+        // operation's output type rather than built a second time.
+        let view = stored.view(::std::time::SystemTime::now());
+        Ok(ModifyScheduledActionOutput {
+            scheduled_action_name: view.scheduled_action_name,
+            target_action: view.target_action,
+            schedule: view.schedule,
+            iam_role: view.iam_role,
+            scheduled_action_description: view.scheduled_action_description,
+            state: view.state,
+            next_invocations: view.next_invocations,
+            start_time: view.start_time,
+            end_time: view.end_time,
+        })
     }
 }

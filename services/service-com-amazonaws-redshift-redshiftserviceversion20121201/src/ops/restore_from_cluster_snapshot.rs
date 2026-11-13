@@ -1142,6 +1142,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> RestoreFromCluste
             // restored cluster starts where a created one does.
             logging: st::ClusterLogging::default(),
             resize: None,
+            // A restore brings the cluster up and leaves it serving, and
+            // associates no Identity Center application with its lakehouse
+            // configuration.
+            settles_to: None,
+            lakehouse_idc_application_arn: None,
         });
 
         // The snapshot this cluster was built from, as the event naming it

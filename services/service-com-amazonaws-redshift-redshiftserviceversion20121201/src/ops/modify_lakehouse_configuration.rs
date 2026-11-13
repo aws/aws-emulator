@@ -1,15 +1,27 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op ModifyLakehouseConfiguration
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `ModifyLakehouseConfiguration`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
+//! Writes one cluster's lakehouse configuration: whether the cluster is
+//! registered with Amazon Redshift federated permissions, the Glue data catalog
+//! that registration is against, and the IAM Identity Center application whose
+//! trusted identity propagation it is associated with. What is stored is what the
+//! cluster reads back — two of the three are `Cluster` members, so a
+//! `DescribeClusters` reports them (see [`crate::state::lakehouse`]).
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`ModifyLakehouseConfiguration::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! Every precondition is checked BEFORE anything is stored, and each names a
+//! different dependency so a lakehouse client can tell them apart:
+//!
+//! * the cluster has to be one this account holds, and it has to be available —
+//!   a lakehouse configuration is a configuration OF a cluster, and one the
+//!   service is still working on takes no configuration change;
+//! * an `LakehouseIdcApplicationArn` has to name an IAM Identity Center
+//!   application this account registered, resolved against the applications this
+//!   service holds — "the application you attempted to find doesn't exist" is
+//!   the fault for one it does not.
+//!
+//! A `DryRun` request "validates the request without actually modifying the
+//! lakehouse configuration", so it takes every check above and then reports the
+//! configuration the cluster carries NOW, leaving the record untouched.
 //!
 //! ## Shape of an operation
 //!
@@ -180,23 +192,145 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
     const OUTPUT_SCHEMA: &'static ::aws_smithy_schema::Schema = super::types::MODIFY_LAKEHOUSE_CONFIGURATION_OUTPUT_SCHEMA;
     const SUCCESS_STATUS: u16 = 200u16;
 
+    /// Write the lakehouse configuration the request asks for.
+    ///
+    /// Nothing is awaited while the store is locked: every dependency this
+    /// operation resolves — the cluster and the Identity Center application — is
+    /// a record of THIS service, so the whole write is one lock-held step.
     async fn handle(
         &self,
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `ModifyLakehouseConfiguration` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(ModifyLakehouseConfigurationErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("ModifyLakehouseConfiguration"))
+        use crate::state as st;
+
+        let Some(state) = st::service_state(&*self.engine) else {
+            return Err(
+                ModifyLakehouseConfigurationErrorModeled::DependentServiceUnavailableFault(
+                    DependentServiceUnavailableFault {
+                        message: Some(st::STORE_UNAVAILABLE.to_string()),
+                    },
+                )
+                .into(),
+            );
+        };
+        let region = st::request_region(ctx);
+
+        let mut store = state.lock();
+        store.settle(::std::time::Instant::now());
+
+        // The cluster first: every other member of this request describes a
+        // configuration OF it.
+        let Some(position) = store.cluster_position(&input.cluster_identifier) else {
+            return Err(
+                ModifyLakehouseConfigurationErrorModeled::ClusterNotFoundFault(
+                    ClusterNotFoundFault {
+                        // This operation's OWN sentence, as the recorded refusal
+                        // shows: fixed text with no variable part, which is the
+                        // wording the endpoint-authorization family answers too
+                        // and NOT the one a cluster read answers — see the
+                        // per-operation catalog [`st::ClusterNotFoundWording`].
+                        message: Some(st::cluster_not_found_message(
+                            st::ClusterNotFoundWording::SpecifiedIdentifierCannotBeFound,
+                            &input.cluster_identifier,
+                        )),
+                    },
+                )
+                .into(),
+            );
+        };
+        let cluster_status = store.clusters[position]
+            .cluster
+            .cluster_status
+            .clone()
+            .unwrap_or_default();
+        if cluster_status != st::STATUS_AVAILABLE {
+            return Err(
+                ModifyLakehouseConfigurationErrorModeled::InvalidClusterStateFault(
+                    InvalidClusterStateFault {
+                        message: Some(st::invalid_cluster_state_message(
+                            &input.cluster_identifier,
+                            &cluster_status,
+                        )),
+                    },
+                )
+                .into(),
+            );
+        }
+
+        // The Identity Center application the request names has to be one this
+        // account registered: the trusted identity propagation a lakehouse
+        // registration carries is propagation FROM that application, so an ARN
+        // naming none configures nothing.
+        if let Some(application_arn) = input.lakehouse_idc_application_arn.as_deref() {
+            if !store.holds_identity_center_application(application_arn) {
+                return Err(
+                    ModifyLakehouseConfigurationErrorModeled::RedshiftIdcApplicationNotExistsFault(
+                        RedshiftIdcApplicationNotExistsFault {
+                            message: Some(st::redshift_idc_application_not_exists(
+                                application_arn,
+                            )),
+                        },
+                    )
+                    .into(),
+                );
+            }
+        }
+
+        // "A boolean value that, if true, validates the request without actually
+        // modifying the lakehouse configuration": every check above has run, so
+        // the request is valid, and the configuration reported is the one the
+        // cluster carries now.
+        if input.dry_run.unwrap_or(false) {
+            return Ok(store.lakehouse_configuration(position));
+        }
+
+        let stored = &mut store.clusters[position];
+        // Each member the request carries changes the part of the configuration
+        // it names and no other, so a call that names only the Identity Center
+        // registration leaves the catalog and the registration status as they
+        // stand.
+        if let Some(registration) = input.lakehouse_registration.as_deref() {
+            stored.cluster.lakehouse_registration_status = Some(
+                if registration == st::LAKEHOUSE_REGISTER {
+                    st::LAKEHOUSE_REGISTRATION_REGISTERED
+                } else {
+                    st::LAKEHOUSE_REGISTRATION_DEREGISTERED
+                }
+                .to_string(),
+            );
+        }
+        // The catalog is a resource of Glue, named under that service's own
+        // namespace through the one rule every path that reports a `CatalogArn`
+        // uses. A registration is always AGAINST a catalog — "the Glue data
+        // catalog that will be associated with the cluster" is what the
+        // registration gives federated permissions over — so a `Register` that
+        // names none, against a cluster that carries none yet, registers against
+        // the catalog named for the cluster itself.
+        let catalog_name = input.catalog_name.clone().or_else(|| {
+            let registering = input.lakehouse_registration.as_deref() == Some(st::LAKEHOUSE_REGISTER);
+            (registering && stored.cluster.catalog_arn.is_none())
+                .then(|| stored.cluster.cluster_identifier.clone())
+                .flatten()
+        });
+        if let Some(catalog_name) = catalog_name.as_deref() {
+            stored.cluster.catalog_arn = Some(st::catalog_arn(catalog_name, &region));
+        }
+        if let Some(idc_registration) = input.lakehouse_idc_registration.as_deref() {
+            stored.lakehouse_idc_application_arn =
+                if idc_registration == st::LAKEHOUSE_IDC_ASSOCIATE {
+                    input.lakehouse_idc_application_arn.clone()
+                } else {
+                    // Disassociating leaves the cluster with no application to
+                    // propagate an identity from.
+                    None
+                };
+        } else if input.lakehouse_idc_application_arn.is_some() {
+            // An ARN named without a registration names the application the
+            // configuration is against, which is what associating it means.
+            stored.lakehouse_idc_application_arn = input.lakehouse_idc_application_arn.clone();
+        }
+
+        Ok(store.lakehouse_configuration(position))
     }
 }

@@ -1,15 +1,24 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op ModifyAquaConfiguration
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `ModifyAquaConfiguration`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
+//! The RETIRED AQUA path: every call is answered with Amazon Redshift's
+//! internal-failure refusal, and nothing about any cluster changes.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`ModifyAquaConfiguration::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! "This operation is retired. Calling this operation does not change AQUA
+//! configuration. Amazon Redshift automatically determines whether to use AQUA"
+//! — so there are two things this operation must NOT do. It must not report a
+//! success, because a 200 carrying the automatic configuration would say the
+//! retired call was served; and it must not resolve the cluster the request
+//! names, because the recorded Amazon Redshift answer to a call naming a cluster
+//! that does not exist is the same refusal as to any other call: the retired path
+//! reaches no backend that could look a cluster up. The refusal is therefore
+//! decided before the request is read at all, and carries the sentence and the
+//! code the recording shows
+//! ([`crate::state::AQUA_CONFIGURATION_INTERNAL_FAILURE`]).
+//!
+//! Which AQUA configuration a cluster reports is unaffected and belongs to the
+//! cluster: it is the automatic one every cluster carries
+//! ([`crate::state::retired_aqua_configuration`]), reported by the cluster reads.
 //!
 //! ## Shape of an operation
 //!
@@ -142,23 +151,25 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
     const OUTPUT_SCHEMA: &'static ::aws_smithy_schema::Schema = super::types::MODIFY_AQUA_CONFIGURATION_OUTPUT_SCHEMA;
     const SUCCESS_STATUS: u16 = 200u16;
 
+    /// Answer the retired call.
+    ///
+    /// Reads nothing and writes nothing: the refusal is a property of the
+    /// operation, not of the request or of any cluster, so neither the store nor
+    /// the request's own members are looked at.
     async fn handle(
         &self,
-        input: Self::Input,
-        ctx: &smithy_server_runtime::OperationContext<'_>,
+        _input: Self::Input,
+        _ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `ModifyAquaConfiguration` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(ModifyAquaConfigurationErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("ModifyAquaConfiguration"))
+        // This operation reads no record of this service and writes none: the
+        // refusal below is the operation's own, so the engine stays untouched.
+        let _ = &self.engine;
+        // The operation models no fault for "retired", so the refusal travels on
+        // the error channel's `InternalFailure` — the code and the status the
+        // recorded Amazon Redshift answer carries, and the ones a client
+        // branches on.
+        Err(crate::scaffolded::Scaffolded::internal_failure(
+            crate::state::AQUA_CONFIGURATION_INTERNAL_FAILURE,
+        ))
     }
 }

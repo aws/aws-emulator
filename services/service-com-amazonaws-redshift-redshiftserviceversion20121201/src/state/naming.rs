@@ -328,57 +328,15 @@ pub fn credential_db_user(db_user: &str, auto_create: bool) -> String {
     format!("{prefix}{db_user}")
 }
 
-/// The fewest cluster identifiers a token request may scope its token to.
-///
-/// Source: `smithy_query(query="doc", shape="GetIdentityCenterAuthTokenRequest",
-/// member="ClusterIds")` — "`ClusterIds` must contain at least 1 cluster
-/// identifier. `ClusterIds` can hold a maximum of 20 cluster identifiers." The
-/// member's list shape carries no `@length` trait, so the MAXIMUM is Amazon
-/// Redshift's number checked in the handler
-/// ([`check_token_scope_clusters`]) rather than at the boundary; the minimum is
-/// the member's own `@required` trait, which the boundary validator refuses a
-/// request without before any handler runs.
-pub const MIN_TOKEN_SCOPE_CLUSTERS: usize = 1;
-
-/// The most cluster identifiers a token request may scope its token to. See
-/// [`MIN_TOKEN_SCOPE_CLUSTERS`].
-pub const MAX_TOKEN_SCOPE_CLUSTERS: usize = 20;
-
-/// The syntax rule ONE entry of that list follows.
-///
-/// Source: the same doc as [`MIN_TOKEN_SCOPE_CLUSTERS`] — "Cluster identifiers
-/// must be 1 to 63 characters in length", "the characters accepted … are …
-/// alphanumeric characters … hyphens", "must start with a letter" and "can't end
-/// with a hyphen or contain two consecutive hyphens". The sentence
-/// [`CLUSTER_IDENTIFIER_RULE`] carries about lowercase letters is NOT among them,
-/// so an entry naming a cluster in mixed case is admitted rather than refused for
-/// its case.
-pub const TOKEN_SCOPE_CLUSTER_ID_RULE: IdentifierRule = IdentifierRule {
-    member: "ClusterIds",
-    max_len: 63,
-    lowercase_only: false,
-};
-
-/// The documented constraints on the clusters a token request scopes its token
-/// to, or why the list breaks one of them.
-///
-/// The size bound is judged before the entries, so a list that could not be a
-/// scope at all is refused for being the wrong size rather than for the first
-/// entry that also happens to be malformed.
-pub fn check_token_scope_clusters(cluster_ids: &[String]) -> Result<(), String> {
-    if cluster_ids.len() > MAX_TOKEN_SCOPE_CLUSTERS {
-        return Err(format!(
-            "Invalid value for {}: ClusterIds can hold a maximum of {MAX_TOKEN_SCOPE_CLUSTERS} cluster identifiers; the request named {}.",
-            TOKEN_SCOPE_CLUSTER_ID_RULE.member,
-            cluster_ids.len()
-        ));
-    }
-    for cluster_id in cluster_ids {
-        check_identifier(
-            TOKEN_SCOPE_CLUSTER_ID_RULE,
-            TOKEN_SCOPE_CLUSTER_ID_RULE.member,
-            cluster_id,
-        )?;
-    }
-    Ok(())
-}
+// The clusters a token request may scope its token to are documented on the
+// `ClusterIds` member itself — "`ClusterIds` must contain at least 1 cluster
+// identifier. `ClusterIds` can hold a maximum of 20 cluster identifiers",
+// "cluster identifiers must be 1 to 63 characters in length", "must start with
+// a letter" and "can't end with a hyphen or contain two consecutive hyphens"
+// (`smithy_query(query="doc", shape="GetIdentityCenterAuthTokenRequest",
+// member="ClusterIds")`) — and NO rule of this store enforces them,
+// deliberately: the operation they belong to gates on the CALLER's credential
+// type first and unconditionally, so no request this emulator serves is ever
+// judged on its scope (see `crate::ops::get_identity_center_auth_token`). The
+// minimum is in any case the member's own `@required` trait, which the boundary
+// validator refuses a request without before any handler runs.

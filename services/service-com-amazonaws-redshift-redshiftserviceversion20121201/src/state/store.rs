@@ -34,9 +34,17 @@ impl ComAmazonawsRedshiftRedshiftserviceversion20121201State {
             if in_progress && now >= stored.available_at {
                 let was_provisioning =
                     stored.cluster.cluster_status.as_deref() == Some(STATUS_CREATING);
-                stored.cluster.cluster_status = Some(STATUS_AVAILABLE.to_string());
+                // Work after which the cluster is serving again leaves it
+                // available; the one kind that does not — suspending its
+                // compute — recorded where it settles instead (see
+                // [`StoredCluster::settles_to`]).
+                let settled = stored
+                    .settles_to
+                    .take()
+                    .unwrap_or_else(|| STATUS_AVAILABLE.to_string());
                 stored.cluster.cluster_availability_status =
-                    Some(availability_status(STATUS_AVAILABLE).to_string());
+                    Some(availability_status(&settled).to_string());
+                stored.cluster.cluster_status = Some(settled);
                 // The cluster is serving, so from now on it reports the endpoint
                 // a client connects to — which it did not while it was still
                 // being provisioned. Due at this instant whether or not anybody

@@ -111,6 +111,12 @@ mod resize;
 /// The snapshot schedules an account created, and the invocation times computed
 /// from their definitions.
 mod snapshot_schedules;
+/// The scheduled actions an account created: the record each one is, the
+/// schedule expression it runs on and the invocation times computed from it.
+mod scheduled_actions;
+/// The lakehouse configuration a cluster carries, and the registration a
+/// `ModifyLakehouseConfiguration` writes onto it.
+mod lakehouse;
 /// A cluster's DATA, which lives in the SQL engine the Redshift Data API runs
 /// statements on: what a snapshot of a cluster copies and a restore writes back.
 mod cluster_data;
@@ -130,8 +136,10 @@ pub use logging::*;
 pub use naming::*;
 pub use parameters::*;
 pub use policy_resources::*;
+pub use lakehouse::*;
 pub use reserved_nodes::*;
 pub use resize::*;
+pub use scheduled_actions::*;
 pub use snapshot_schedules::*;
 pub use tags::*;
 
@@ -893,6 +901,16 @@ pub const STATUS_MODIFYING: &str = "modifying";
 pub const STATUS_REBOOTING: &str = "rebooting";
 /// `ClusterStatus` a `DeleteCluster` response reports.
 pub const STATUS_DELETING: &str = "deleting";
+/// `ClusterStatus` of a cluster whose compute has been suspended, which is where
+/// a `PauseCluster` leaves it once the pause falls due.
+///
+/// Source: `smithy_query(query="doc", shape="Cluster", member="ClusterStatus")`,
+/// which publishes `paused` among the cluster states and publishes no state for
+/// the pause being applied — so the applying state is the one the published
+/// vocabulary already has for work the service is doing to a provisioned cluster
+/// ([`STATUS_MODIFYING`]), and this is where it settles (see
+/// [`StoredCluster::settles_to`]).
+pub const STATUS_PAUSED: &str = "paused";
 
 /// Which sentence a `ClusterNotFoundFault` is worded with.
 ///
@@ -2212,6 +2230,28 @@ pub struct StoredCluster {
     /// never been changed — which is what makes `DescribeResize` answer
     /// `ResizeNotFound` for it (see [`StoredResize`]).
     pub resize: Option<StoredResize>,
+    /// Which `ClusterStatus` the clock-owed settle moves this cluster to when
+    /// [`StoredCluster::available_at`] falls due, for the work that does NOT end
+    /// with the cluster serving again.
+    ///
+    /// `None` — the usual case — is work after which the cluster is
+    /// [`STATUS_AVAILABLE`]: provisioning it, applying a change to it, restarting
+    /// it. A suspended cluster is the one exception the published status
+    /// vocabulary carries ([`STATUS_PAUSED`]): the pause a `PauseCluster` starts
+    /// is applied like any other change and the cluster is NOT available at the
+    /// end of it, so the status it settles to is recorded here rather than
+    /// assumed by
+    /// [`ComAmazonawsRedshiftRedshiftserviceversion20121201State::settle`].
+    pub settles_to: Option<String>,
+    /// The IAM Identity Center application whose trusted identity propagation
+    /// this cluster's lakehouse configuration is associated with, and `None` for
+    /// a cluster no `ModifyLakehouseConfiguration` associated one with.
+    ///
+    /// Held here rather than on [`StoredCluster::cluster`] because the `Cluster`
+    /// shape models no member for it — unlike the registration status and the
+    /// catalog of the same configuration, which ARE `Cluster` members
+    /// (`$LakehouseRegistrationStatus`, `$CatalogArn`) and so live there.
+    pub lakehouse_idc_application_arn: Option<String>,
 }
 
 impl StoredCluster {
@@ -2539,6 +2579,15 @@ pub struct ComAmazonawsRedshiftRedshiftserviceversion20121201State {
     /// reported rather than stored, so the record holds only what a create gave
     /// it (see [`StoredSnapshotSchedule`]).
     pub snapshot_schedules: Vec<StoredSnapshotSchedule>,
+    /// Every scheduled action, keyed by `ScheduledActionName`, in creation
+    /// order.
+    ///
+    /// Like [`StoredSnapshotSchedule`] this collection holds a `Stored*` wrapper
+    /// even though a scheduled action carries no status the clock moves: the
+    /// modelled `ScheduledAction` shape's `$NextInvocations` is DERIVED when the
+    /// action is reported rather than stored, so the record holds only what a
+    /// create or a modify gave it (see [`StoredScheduledAction`]).
+    pub scheduled_actions: Vec<StoredScheduledAction>,
     /// Every Query Editor (QEV2) IAM Identity Center application the account
     /// registered, keyed by `Qev2IdcApplicationArn`, in creation order.
     ///
@@ -2735,6 +2784,7 @@ impl Default for ComAmazonawsRedshiftRedshiftserviceversion20121201State {
             hsm_configurations: Vec::new(),
             snapshot_copy_grants: Vec::new(),
             snapshot_schedules: Vec::new(),
+            scheduled_actions: Vec::new(),
             qev2_idc_applications: Vec::new(),
             redshift_idc_applications: Vec::new(),
             cluster_versions: published_cluster_versions(),

@@ -3,35 +3,43 @@
 //! `GetIdentityCenterAuthToken`: the IAM Identity Center authentication token a
 //! caller asks Amazon Redshift to generate, end to end over the awsQuery wire.
 //!
-//! Two rules are under test, and each row below is one member of the class the
-//! rule generalises over rather than one recorded request:
+//! ONE rule is under test, and each row below is one member of the class it
+//! generalises over rather than one recorded request: the token this operation
+//! generates carries the identity embedded in the CALLER's credentials, this
+//! emulator attaches an IAM Identity Center identity to none of the credentials
+//! it accepts, and that gate is UNCONDITIONAL and checked BEFORE anything about
+//! the request — so every call is refused with `UnsupportedOperation` (400) and
+//! Amazon Redshift's own sentence, whatever scope it asked for and whether or not
+//! this account holds the clusters it named.
 //!
-//! 1. The clusters a request scopes its token to are judged against the
-//!    constraints the `ClusterIds` member documents — at least 1 and at most 20
-//!    identifiers, each 1 to 63 alphanumeric-or-hyphen characters starting with a
-//!    letter, ending with no hyphen and holding no two consecutive hyphens — and
-//!    a list outside them is refused with `RedshiftInvalidParameter` (400). The
-//!    class is therefore the SIZE of the list crossed with the FORM of its
-//!    entries.
-//! 2. The identity such a token carries comes from the credentials the request
-//!    was signed with, and this emulator attaches an IAM Identity Center identity
-//!    to none of the credentials it accepts, so a well-formed request is refused
-//!    with `UnsupportedOperation` (400) — whatever its scope, and whether or not
-//!    this account holds the clusters it names. The class is the scope crossed
-//!    with what the account's control plane holds.
+//! The class is therefore the whole request surface: the SIZE of the scope
+//! (including past the maximum the `ClusterIds` member documents), the FORM of
+//! its entries (including spellings that member's documented syntax does not
+//! admit) and what the account holds of them. The precedence is what the rows
+//! that break a documented constraint assert: a scope the operation would refuse
+//! as a bad parameter is answered on the CALLER instead, because the caller is
+//! judged first.
 //!
-//! Both rules together mean no call ever answers a `Token`, and no call changes
-//! anything a later caller reads — which the third case asserts by reading every
-//! cluster back after a batch of refused requests.
-
-use std::time::Duration;
+//! No call ever answers a `Token`, and no call changes anything a later caller
+//! reads — which the last case asserts by reading every cluster back after a
+//! batch of refused requests.
 
 use service_com_amazonaws_redshift_redshiftserviceversion20121201::state;
 
 use crate::cluster_lifecycle::{Answer, Emulator};
 
-/// A cluster identifier of exactly [`state::TOKEN_SCOPE_CLUSTER_ID_RULE`]'s
-/// documented maximum length, and one character past it.
+/// The most cluster identifiers the `ClusterIds` member documents, and the
+/// longest one it documents.
+///
+/// Source: `smithy_query(query="doc", shape="GetIdentityCenterAuthTokenRequest",
+/// member="ClusterIds")` — "`ClusterIds` can hold a maximum of 20 cluster
+/// identifiers", "cluster identifiers must be 1 to 63 characters in length". The
+/// numbers are the member's published bounds, which this suite uses to build a
+/// row AT each bound and one PAST it: all of them are answered on the caller.
+const DOCUMENTED_MAX_SCOPE_CLUSTERS: usize = 20;
+const DOCUMENTED_MAX_IDENTIFIER_LEN: usize = 63;
+
+/// A cluster identifier of exactly `len` characters that starts with a letter.
 fn identifier_of_length(len: usize) -> String {
     format!("c{}", "a".repeat(len - 1))
 }
@@ -68,17 +76,8 @@ fn ids(cluster_ids: &[&str]) -> Vec<String> {
     cluster_ids.iter().map(|id| (*id).to_string()).collect()
 }
 
-/// The `ClusterStatus` a `DescribeClusters` reports for one cluster, or `None`
-/// when this account holds no such cluster.
-async fn cluster_status(emulator: &Emulator, identifier: &str) -> Option<String> {
-    emulator
-        .call("DescribeClusters", &[("ClusterIdentifier", identifier)])
-        .await
-        .text("ClusterStatus")
-}
-
-/// Create one cluster and wait out the provisioning span, so the row that names
-/// a cluster of this account names one that is `available`.
+/// Create one cluster and wait for it to be serving, by POLLING the read, so the
+/// row that names a cluster of this account names one that is `available`.
 async fn create_available_cluster(emulator: &Emulator, identifier: &str) {
     let created = emulator.create_minimal(identifier).await;
     assert_eq!(
@@ -86,20 +85,21 @@ async fn create_available_cluster(emulator: &Emulator, identifier: &str) {
         "case seed cluster {identifier}: expected 200, got {} with body {}",
         created.status, created.body
     );
-    tokio::time::sleep(state::PROVISIONING_SPAN + Duration::from_millis(250)).await;
-    let settled = cluster_status(emulator, identifier).await;
-    assert_eq!(
-        settled.as_deref(),
-        Some(state::STATUS_AVAILABLE),
-        "case seed cluster {identifier}: expected it to settle available, got {settled:?}"
-    );
+    emulator
+        .poll_until(
+            &format!("seed cluster {identifier}"),
+            "DescribeClusters",
+            &[("ClusterIdentifier", identifier)],
+            |answer| answer.text("ClusterStatus").as_deref() == Some(state::STATUS_AVAILABLE),
+        )
+        .await;
 }
 
-/// RULE 2: a request whose scope satisfies every documented constraint is still
-/// refused as unsupported, because no credential this emulator accepts carries an
-/// embedded IAM Identity Center identity — so the refusal is about the CALLER and
-/// not about the clusters, and it is the same for a scope of held and unheld
-/// clusters alike.
+/// A request whose scope satisfies every documented constraint is refused as
+/// unsupported, because no credential this emulator accepts carries an embedded
+/// IAM Identity Center identity — so the refusal is about the CALLER and not
+/// about the clusters, and it is the same for a scope of held and unheld clusters
+/// alike.
 #[tokio::test]
 async fn a_caller_without_an_embedded_identity_center_identity_is_refused_as_unsupported() {
     let emulator = Emulator::new();
@@ -108,7 +108,7 @@ async fn a_caller_without_an_embedded_identity_center_identity_is_refused_as_uns
 
     // The class: how many clusters the token is scoped to, and what the account
     // holds of them. Every entry satisfies the member's documented syntax.
-    let twenty: Vec<String> = (1..=state::MAX_TOKEN_SCOPE_CLUSTERS)
+    let twenty: Vec<String> = (1..=DOCUMENTED_MAX_SCOPE_CLUSTERS)
         .map(|index| format!("warehouse-{index}"))
         .collect();
     let rows: Vec<(&str, Vec<String>)> = vec![
@@ -128,7 +128,7 @@ async fn a_caller_without_an_embedded_identity_center_identity_is_refused_as_uns
         ("the documented maximum number of clusters", twenty),
         (
             "an identifier of the documented maximum length",
-            vec![identifier_of_length(63)],
+            vec![identifier_of_length(DOCUMENTED_MAX_IDENTIFIER_LEN)],
         ),
         (
             "mixed case and digits, which this member's syntax admits",
@@ -163,73 +163,64 @@ async fn a_caller_without_an_embedded_identity_center_identity_is_refused_as_uns
     }
 }
 
-/// RULE 1: the scope is judged against the constraints its member documents
-/// BEFORE anything about the caller, so a list outside them earns the fault the
-/// operation models for a parameter it cannot honour — one row per constraint,
-/// including the published bound and the first value past it.
+/// PRECEDENCE: the caller's credential type is judged BEFORE the scope, so a
+/// request whose `ClusterIds` breaks a constraint that member documents is still
+/// answered on the caller — the same code, status and sentence as a well-formed
+/// one. One row per documented constraint, including the published bound's first
+/// value past it.
 #[tokio::test]
-async fn a_scope_outside_its_documented_constraints_is_refused_as_an_invalid_parameter() {
+async fn the_credential_gate_precedes_every_judgement_of_the_scope() {
     let emulator = Emulator::new();
     create_available_cluster(&emulator, "warehouse-one").await;
 
-    let too_many: Vec<String> = (1..=state::MAX_TOKEN_SCOPE_CLUSTERS + 1)
+    let too_many: Vec<String> = (1..=DOCUMENTED_MAX_SCOPE_CLUSTERS + 1)
         .map(|index| format!("warehouse-{index}"))
         .collect();
-    // Each row names the documented constraint it breaks and the fragment of the
-    // refusal that must name what the caller has to fix.
-    let rows: Vec<(&str, Vec<String>, &str)> = vec![
-        (
-            "more identifiers than the documented maximum",
-            too_many,
-            "maximum of 20",
-        ),
+    // Each row names the documented constraint it breaks.
+    let rows: Vec<(&str, Vec<String>)> = vec![
+        ("more identifiers than the documented maximum", too_many),
         (
             "an identifier one character past the documented maximum length",
-            vec![identifier_of_length(64)],
-            "longer than allowed",
+            vec![identifier_of_length(DOCUMENTED_MAX_IDENTIFIER_LEN + 1)],
         ),
         (
             "an identifier that does not start with a letter",
             ids(&["1warehouse"]),
-            "first character must be a letter",
         ),
         (
             "an identifier ending with a hyphen",
             ids(&["warehouse-"]),
-            "cannot end with a hyphen",
         ),
         (
             "an identifier with two consecutive hyphens",
             ids(&["ware--house"]),
-            "two consecutive hyphens",
         ),
         (
             "an identifier with a character the member does not admit",
             ids(&["ware_house"]),
-            "neither alphanumeric nor a hyphen",
         ),
         (
             "a well-formed identifier beside a malformed one",
             ids(&["warehouse-one", "ware_house"]),
-            "neither alphanumeric nor a hyphen",
         ),
     ];
 
-    for (case, cluster_ids, expected_fragment) in rows {
+    for (case, cluster_ids) in rows {
         let answered = token(&emulator, &cluster_ids).await;
         assert_eq!(
             (answered.status, answered.error_code().as_deref()),
-            (400, Some("RedshiftInvalidParameter")),
-            "case {case:?}: expected 400 RedshiftInvalidParameter, got {} / {:?} with body {}",
+            (400, Some("UnsupportedOperation")),
+            "case {case:?}: expected the caller to be judged first, so 400 UnsupportedOperation, \
+             got {} / {:?} with body {}",
             answered.status,
             answered.error_code(),
             answered.body
         );
-        let message = answered.text("Message").unwrap_or_default();
-        assert!(
-            message.contains("ClusterIds") && message.contains(expected_fragment),
-            "case {case:?}: expected a refusal naming ClusterIds and {expected_fragment:?}, \
-             got {message:?}"
+        assert_eq!(
+            answered.text("Message").as_deref(),
+            Some(state::IDENTITY_CENTER_ENHANCED_CREDENTIALS_REQUIRED),
+            "case {case:?}: expected the same sentence a well-formed scope earns, got {:?}",
+            answered.text("Message")
         );
         assert_eq!(
             answered.text("Token"),
@@ -239,10 +230,9 @@ async fn a_scope_outside_its_documented_constraints_is_refused_as_an_invalid_par
         );
     }
 
-    // The documented minimum — "ClusterIds must contain at least 1 cluster
-    // identifier" — is the member's own `@required` trait, so a request naming
-    // none never reaches the handler: the boundary validator refuses it, naming
-    // the member it is missing.
+    // The one thing judged before the caller is the BOUNDARY: "ClusterIds must
+    // contain at least 1 cluster identifier" is the member's own `@required`
+    // trait, so a request naming none never reaches the handler at all.
     let silent = token(&emulator, &[]).await;
     assert_eq!(
         (silent.status, silent.error_code().as_deref()),
@@ -291,8 +281,8 @@ async fn a_refused_request_changes_nothing_a_later_caller_reads() {
         listed(&before)
     );
 
-    // Refused for the caller (rule 2), refused for the request (rule 1), and
-    // repeated — none of which may leave a trace.
+    // Refused for the caller, refused at the boundary, and repeated — none of
+    // which may leave a trace.
     for cluster_ids in [
         ids(&["warehouse-one"]),
         ids(&["warehouse-one", "warehouse-two"]),

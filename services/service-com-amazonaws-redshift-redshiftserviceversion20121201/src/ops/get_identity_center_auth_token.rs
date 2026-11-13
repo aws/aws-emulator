@@ -6,42 +6,38 @@
 //! identity to the Amazon Redshift clusters a request scopes it to — or says why
 //! no token could be generated for this caller.
 //!
-//! Two rules decide every call, in this order:
+//! ONE rule decides every call, and it is checked BEFORE anything about the
+//! request: the identity the token would carry is a property of the CREDENTIAL
+//! the request was signed with, not of the request. "This API extracts the Amazon
+//! Web Services IAM Identity Center identity from enhanced credentials", and "if
+//! the caller is not using enhanced credentials with embedded Amazon Web Services
+//! IAM Identity Center identity, the API will return an error". Only an
+//! identity-enhanced role session carries such an identity, and a session becomes
+//! one by being minted from a trusted context assertion that Security Token
+//! Service signed. Every credential this emulator accepts is the access key it
+//! publishes at start or one its own credential store minted — a long-term key or
+//! a plain session, neither carrying an identity context — and the one call that
+//! would embed one refuses every context assertion presented to it, because this
+//! emulator issues none (see `AssumeRole` in the Security Token Service crate). So
+//! the resolution finds no identity to propagate, and the call is answered with
+//! the 400 the operation models for a caller without enhanced credentials
+//! (`UnsupportedOperationFault`), carrying
+//! [`crate::state::IDENTITY_CENTER_ENHANCED_CREDENTIALS_REQUIRED`].
 //!
-//! 1. The clusters the token would be scoped to are judged against the
-//!    constraints the `ClusterIds` member documents — how many identifiers the
-//!    list may hold and the syntax of each — which the model expresses as prose
-//!    rather than as traits, so the boundary validator passed them and
-//!    [`crate::state::check_token_scope_clusters`] is what enforces them. A list
-//!    outside them is refused with the fault this operation models for a
-//!    parameter it cannot honour (`RedshiftInvalidParameterFault`, 400).
-//! 2. The identity the token would carry is then resolved — and it is a property
-//!    of the CREDENTIAL the request was signed with, not of the request: "this
-//!    API extracts the Amazon Web Services IAM Identity Center identity from
-//!    enhanced credentials", and "if the caller is not using enhanced credentials
-//!    with embedded Amazon Web Services IAM Identity Center identity, the API
-//!    will return an error". Only an identity-enhanced role session carries such
-//!    an identity, and a session becomes one by being minted from a trusted
-//!    context assertion that Security Token Service signed. Every credential this
-//!    emulator accepts is the access key it publishes at start or one its own
-//!    credential store minted — a long-term key or a plain session, neither
-//!    carrying an identity context — and the one call that would embed one
-//!    refuses every context assertion presented to it, because this emulator
-//!    issues none (see `AssumeRole` in the Security Token Service crate). So the
-//!    resolution finds no identity to propagate, and the call is answered with
-//!    the 400 the operation models for a caller without enhanced credentials
-//!    (`UnsupportedOperationFault`), carrying
-//!    [`crate::state::IDENTITY_CENTER_ENHANCED_CREDENTIALS_REQUIRED`].
-//!
-//! Which is also why nothing here resolves the clusters the request names: the
-//! `ClusterNotFoundFault` and `InvalidClusterStateFault` this operation models are
-//! about the clusters a token is MINTED for, and no caller of this emulator gets
+//! The gate is UNCONDITIONAL and comes first, which is the precedence Amazon
+//! Redshift guarantees: a malformed `ClusterIds` entry, a well-formed one naming
+//! no cluster of the account, and one naming a cluster that is available are all
+//! answered with that same refusal. So nothing here judges the scope the request
+//! asked for, and nothing resolves the clusters it names: the
+//! `RedshiftInvalidParameterFault`, `ClusterNotFoundFault` and
+//! `InvalidClusterStateFault` this operation models are about the scope and the
+//! clusters of a token that is being MINTED, and no caller of this emulator gets
 //! that far. Answering one of them for a caller AWS refuses on its credentials
 //! would be the wrong refusal, not a closer one.
 //!
-//! The call is reporting-only: it reads the request and the caller's credential,
-//! writes nothing to this service's store, and mints no credential — a token that
-//! carries an identity nobody proved is not a credential this emulator may issue.
+//! The call is reporting-only: it reads the caller's credential, writes nothing to
+//! this service's store, and mints no credential — a token that carries an
+//! identity nobody proved is not a credential this emulator may issue.
 //!
 //! ## Shape of an operation
 //!
@@ -200,19 +196,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
     ) -> Result<Self::Output, Self::Error> {
         use crate::state as st;
 
-        // This operation reads no record of this service: both rules below are
-        // decided on the request and on the credential it was signed with, so the
-        // engine stays untouched — and nothing is written, because a call that
-        // mints no token changes nothing about the account's clusters.
+        // This operation reads no record of this service: the rule below is
+        // decided on the credential the request was signed with, so the engine
+        // stays untouched — and nothing is written, because a call that mints no
+        // token changes nothing about the account's clusters.
         let _ = &self.engine;
-
-        // "A list of cluster identifiers that the generated token can be used
-        // with": how many the list may hold and the syntax of each are documented
-        // on the member rather than modelled as traits, so they are judged here,
-        // and judged FIRST — a request that names no scope a token could be
-        // issued against is refused for the request it is, whatever credential
-        // signed it.
-        st::check_token_scope_clusters(&input.cluster_ids).map_err(invalid_parameter)?;
 
         // The identity the token would carry travels in the CREDENTIAL the
         // request was signed with (see this module's header): the emulator's
@@ -220,7 +208,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // credential it accepts, so the caller of every request reaching here is
         // not using enhanced credentials and there is no identity to propagate.
         // The call is therefore answered with the operation's own 400 rather than
-        // with a token carrying an identity nobody proved.
+        // with a token carrying an identity nobody proved — and answered BEFORE
+        // the scope the request asked for is looked at, which is the precedence
+        // the service guarantees.
         //
         // Issuing a database or cluster credential is the security-relevant event
         // of this operation, so the attempt is attributable in the emulator's log:
@@ -245,17 +235,4 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .into(),
         )
     }
-}
-
-/// The modelled refusal for a `ClusterIds` list outside the constraints its own
-/// member documents: "the request contains one or more invalid parameters … when
-/// required parameters are missing, parameter values are outside acceptable
-/// ranges, or parameter formats are incorrect"
-/// (`RedshiftInvalidParameterFault`), which is exactly the three ways
-/// [`crate::state::check_token_scope_clusters`] refuses one.
-fn invalid_parameter(why: String) -> GetIdentityCenterAuthTokenError {
-    GetIdentityCenterAuthTokenErrorModeled::RedshiftInvalidParameterFault(
-        RedshiftInvalidParameterFault { message: Some(why) },
-    )
-    .into()
 }
