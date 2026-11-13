@@ -872,6 +872,13 @@ mod delete_route;
 mod delete_security_group;
 #[path = "all/delete_vpc.rs"]
 mod delete_vpc;
+// What one bulk `DeleteVpcEndpoints` removes and what it reports per item: the endpoints its
+// ids resolve, the endpoint network interfaces that go with an interface endpoint, and the
+// `Unsuccessful` entry each id it could not delete gets. Declared HERE, in sorted position
+// inside the long-settled block rather than at the head of the file, where every new ec2
+// suite inserts its lines and merges contend.
+#[path = "all/delete_vpc_endpoints.rs"]
+mod delete_vpc_endpoints;
 #[path = "all/describe_images.rs"]
 mod describe_images;
 // What `DescribeLaunchTemplates` reports out of the launch template store: the templates a

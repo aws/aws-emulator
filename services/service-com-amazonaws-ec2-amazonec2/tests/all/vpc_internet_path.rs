@@ -1258,7 +1258,9 @@ async fn a_gateway_endpoint_routes_every_table_it_names_through_itself() {
         );
         // A second delete of the same endpoint reports it as one it could not delete rather
         // than refusing the call: "information about the VPC endpoints that were not
-        // successfully deleted".
+        // successfully deleted". The per-item code a bulk delete words that cause with is its
+        // own, asserted with the sentence beside it by
+        // [`super::delete_vpc_endpoints`].
         let again = ok(
             case,
             &router,
@@ -1268,7 +1270,7 @@ async fn a_gateway_endpoint_routes_every_table_it_names_through_itself() {
         .await;
         assert_eq!(
             elements(&again, "code"),
-            vec!["InvalidVpcEndpointId.NotFound".to_string()],
+            vec!["InvalidVpcEndpoint.NotFound".to_string()],
             "case {case:?}: expected the second delete to report the endpoint unsuccessful, got \
              {again}"
         );

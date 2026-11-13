@@ -165,8 +165,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         // Each endpoint is judged on its own and reported in `Unsuccessful` when it cannot be
         // deleted — "information about the VPC endpoints that were not successfully deleted"
-        // — so one bad id does not refuse the endpoints beside it. The code carried is the one
-        // this service answers that same cause with elsewhere.
+        // — so one bad id does not refuse the endpoints beside it. An id this account holds no
+        // endpoint for is reported with the code and the sentence a bulk delete words that
+        // cause with, which is not the one an operation resolving an endpoint as its SUBJECT
+        // refuses with (see [`state::INVALID_VPC_ENDPOINT_NOT_FOUND`]).
         let mut unsuccessful: Vec<UnsuccessfulItem> = Vec::new();
         let mut deletable: Vec<String> = Vec::new();
         for endpoint_id in &requested {
@@ -179,8 +181,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 None
             } else {
                 Some((
-                    state::INVALID_VPC_ENDPOINT_ID_NOT_FOUND,
-                    format!("The VpcEndpoint Id '{endpoint_id}' does not exist"),
+                    state::INVALID_VPC_ENDPOINT_NOT_FOUND,
+                    state::vpc_endpoint_not_owned_message(endpoint_id),
                 ))
             };
             match refusal {

@@ -2107,6 +2107,34 @@ pub const INVALID_VPC_ENDPOINT_ID_NOT_FOUND: &str = "InvalidVpcEndpointId.NotFou
 /// `InvalidVpcEndpointId.Malformed` (HTTP 400).
 pub const INVALID_VPC_ENDPOINT_ID_MALFORMED: &str = "InvalidVpcEndpointId.Malformed";
 
+/// `InvalidVpcEndpoint.NotFound`: the code the BULK delete of VPC endpoints reports an id it
+/// resolves no endpoint for with, PER ITEM in `Unsuccessful`.
+///
+/// NOT [`INVALID_VPC_ENDPOINT_ID_NOT_FOUND`], and the recorded wire corpus is why: the
+/// operations that resolve a `VpcEndpointId` as the SUBJECT of the call refuse an unknown one
+/// with that code, while `DeleteVpcEndpoints` reports it under this one, spelt for the
+/// RESOURCE rather than for its id member. A client branches on the code it is actually
+/// answered, so the two are kept apart rather than folded into one — the same way
+/// [`crate::state::INVALID_VPN_CONNECTION_ID`] and
+/// [`crate::state::INVALID_VPN_CONNECTION_ID_NOT_FOUND`] are.
+pub const INVALID_VPC_ENDPOINT_NOT_FOUND: &str = "InvalidVpcEndpoint.NotFound";
+
+/// The sentence that per-item report carries: the fixed `user ` and ` does not own a resource
+/// `, the account the lookup was made in ([`::engine::emulator_account_id`], the one account
+/// this emulator serves) and the endpoint id from the REQUEST.
+///
+/// A bulk delete says nothing about WHY an id resolved to nothing — an id of another account's
+/// endpoint and an id of an endpoint that is already gone read alike from here — so one
+/// wording covers both, which is what the recorded refusal shows. The echo is bounded by
+/// [`echoed_resource_id`], as every refusal quoting a caller-chosen id is.
+pub fn vpc_endpoint_not_owned_message(vpc_endpoint_id: &str) -> String {
+    format!(
+        "user {owner} does not own a resource {endpoint}",
+        owner = ::engine::emulator_account_id(),
+        endpoint = echoed_resource_id(vpc_endpoint_id),
+    )
+}
+
 /// `InvalidVpcEndpointServiceId.NotFound` (HTTP 400): the request named a VPC endpoint
 /// service id this account holds no endpoint service for.
 pub const INVALID_VPC_ENDPOINT_SERVICE_ID_NOT_FOUND: &str =
