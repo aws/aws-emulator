@@ -255,7 +255,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             description: input.description,
             billing_view_type: crate::state::BILLING_VIEW_TYPE_CUSTOM.to_string(),
             owner_account_id: ::engine::emulator_account_id().to_string(),
-            source_account_id: None,
             source_views: input.source_views,
             data_filter_expression: input.data_filter_expression,
             created_at,

@@ -188,9 +188,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         })?;
 
         // `sourceViewCount` is "the number of source views associated with this
-        // billing view" and `derivedViewCount` "the number of billing views that
-        // use this billing view as a source": both are derived from the stored
-        // records on every read, never kept as a copy that could go stale.
+        // billing view", `derivedViewCount` "the number of billing views that
+        // use this billing view as a source", and `sourceAccountId` "the account
+        // ID that owns the source billing view, if this is a derived billing
+        // view": all three are derived from the stored records on every read,
+        // never kept as a copy that could go stale.
         //
         // A view the service manages on the account's behalf (its default
         // PRIMARY view — see `BillingView::is_managed`) is not a resource a
@@ -211,7 +213,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 description: view.description.clone(),
                 billing_view_type: Some(view.billing_view_type.clone()),
                 owner_account_id: Some(view.owner_account_id.clone()),
-                source_account_id: view.source_account_id.clone(),
+                source_account_id: view.source_account_id().map(str::to_string),
                 data_filter_expression: view.data_filter_expression.clone(),
                 created_at: caller_created.then(|| crate::state::timestamp(view.created_at)),
                 updated_at: view.updated_at.map(crate::state::timestamp),

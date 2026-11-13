@@ -11,6 +11,9 @@
 //! The `arns` filter names resources, so each entry is resolved first: one
 //! outside the caller's account is an `AccessDeniedException` (403) and one this
 //! account stores no view under is a `ValidationException` (400).
+//! The `sourceAccountId` filter selects views by the accounts owning the billing
+//! views they draw from, so a view that draws from none — the account's default
+//! view — is selected by no value of it.
 //!
 //! ## Shape of an operation
 //!
@@ -242,7 +245,12 @@ fn matches_filters(
         }
     }
     if let Some(source_account) = &input.source_account_id {
-        if view.source_account_id.as_deref() != Some(source_account.as_str()) {
+        // "only billing views that use the specified account as a source": a
+        // view's sources are the billing views it draws from, so the accounts it
+        // uses as a source are the ones those ARNs belong to — read off the
+        // stored sources, which is also where the reported `sourceAccountId`
+        // comes from.
+        if !view.draws_from_account(source_account) {
             return Ok(false);
         }
     }
@@ -380,7 +388,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     name: Some(view.name.clone()),
                     description: view.description.clone(),
                     owner_account_id: Some(view.owner_account_id.clone()),
-                    source_account_id: view.source_account_id.clone(),
+                    source_account_id: view.source_account_id().map(str::to_string),
                     billing_view_type: Some(view.billing_view_type.clone()),
                     health_status: Some(crate::state::health_status(view)),
                 })

@@ -359,9 +359,11 @@ pub struct PreferenceEntry {
 
 /// One persisted billing view.
 ///
-/// `sourceViewCount` and `derivedViewCount` are NOT fields: the first is
-/// `source_views.len()` and the second is the number of views whose
-/// `source_views` name this one, both derived on read so neither can go stale.
+/// `sourceViewCount`, `derivedViewCount` and `sourceAccountId` are NOT fields:
+/// the first is `source_views.len()`, the second is the number of views whose
+/// `source_views` name this one, and the third is the account the view's own
+/// sources belong to ([`BillingView::source_account_id`]) — all three derived on
+/// read so none of them can go stale.
 #[derive(Debug, Clone)]
 pub struct BillingView {
     /// The ARN this view is keyed by, minted by [`ComAmazonawsBillingAwsbillingState::mint_view_arn`].
@@ -372,8 +374,6 @@ pub struct BillingView {
     pub billing_view_type: String,
     /// The 12-digit account that owns the view.
     pub owner_account_id: String,
-    /// The account owning the source view, for a derived view.
-    pub source_account_id: Option<String>,
     /// The billing-view ARNs this view draws its data from.
     pub source_views: Vec<String>,
     pub data_filter_expression: Option<Expression>,
@@ -438,6 +438,41 @@ impl BillingView {
     /// [`billing_view_not_healthy`].
     pub fn is_healthy(&self) -> bool {
         self.health_status_code == BILLING_VIEW_STATUS_HEALTHY
+    }
+
+    /// The accounts owning the billing views this one draws its data from, in
+    /// the order [`BillingView::source_views`] holds them: the account id each
+    /// source ARN embeds, skipping an ARN that embeds none.
+    pub fn source_accounts(&self) -> impl Iterator<Item = &str> {
+        self.source_views
+            .iter()
+            .filter_map(|arn| source_view_account(arn))
+    }
+
+    /// `sourceAccountId` as a read reports it — "the Amazon Web Services account
+    /// ID that owns the source billing view, if this is a derived billing view".
+    ///
+    /// A view is derived when it draws from source views, so this is the account
+    /// owning the first billing view it draws from, and `None` for a view with
+    /// no source at all. Computed from the stored sources on every read, exactly
+    /// like `sourceViewCount` and `derivedViewCount`, so it can never disagree
+    /// with the sources a caller reads back.
+    ///
+    /// The member is singular, so the documented sentence pins the answer only
+    /// for a view whose sources all belong to one account; taking the FIRST
+    /// source's account is this emulator's tie-break for a view drawing on
+    /// several accounts' views, and the filter still selects such a view for
+    /// EVERY account it draws on (see [`BillingView::draws_from_account`]).
+    pub fn source_account_id(&self) -> Option<&str> {
+        self.source_accounts().next()
+    }
+
+    /// Whether this view uses a billing view of `account_id` as a source — what
+    /// the `ListBillingViews` `sourceAccountId` filter selects on ("only billing
+    /// views that use the specified account as a source"). A view drawing from
+    /// several accounts' views uses each of them as a source.
+    pub fn draws_from_account(&self, account_id: &str) -> bool {
+        self.source_accounts().any(|account| account == account_id)
     }
 }
 
@@ -684,7 +719,6 @@ impl Default for ComAmazonawsBillingAwsbillingState {
             description: Some(primary_view_description(&owner_account_id)),
             billing_view_type: BILLING_VIEW_TYPE_PRIMARY.to_string(),
             owner_account_id,
-            source_account_id: None,
             source_views: Vec::new(),
             data_filter_expression: None,
             created_at: now,
@@ -1102,11 +1136,17 @@ pub fn is_sharing_key(feature: &str, key: &str) -> bool {
         && credit_key_parts(key).is_some_and(|(_, option)| option != CREDIT_STATUS_OPTION)
 }
 
+/// Whether `value` is an account id: exactly the 12 digits the modeled
+/// `AccountId` shape (`^[0-9]{12}$`) admits.
+pub fn is_account_id(value: &str) -> bool {
+    value.len() == ACCOUNT_ID_LEN && value.bytes().all(|byte| byte.is_ascii_digit())
+}
+
 /// The account an account-list key names: the key's last `/`-separated segment
 /// when it is a 12-digit account id (`AccountId`'s modelled `^[0-9]{12}$`).
 pub fn account_list_key_account(key: &str) -> Option<&str> {
     let last = key.split('/').next_back()?;
-    (last.len() == ACCOUNT_ID_LEN && last.bytes().all(|byte| byte.is_ascii_digit())).then_some(last)
+    is_account_id(last).then_some(last)
 }
 
 /// The billing period an instant falls in, as the modeled `BillingPeriod`
@@ -1127,6 +1167,13 @@ pub fn billing_period(at: SystemTime) -> Option<(i32, i32)> {
 /// has one.
 pub fn arn_account_id(arn: &str) -> Option<&str> {
     arn.split(':').nth(4)
+}
+
+/// The account that owns the billing view `arn` names: the account id the ARN
+/// embeds, when that segment is one (an ARN of a global, account-less resource
+/// carries an empty segment there and so names no owner).
+pub fn source_view_account(arn: &str) -> Option<&str> {
+    arn_account_id(arn).filter(|account| is_account_id(account))
 }
 
 /// Whether `arn` is scoped to the caller's own account.

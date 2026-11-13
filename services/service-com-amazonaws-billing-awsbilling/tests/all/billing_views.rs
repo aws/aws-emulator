@@ -479,8 +479,22 @@ async fn the_list_honours_each_filter() {
             vec![],
         ),
         (
-            "sourceAccountId selects nothing when no view is derived",
+            // "only billing views that use the specified account as a source":
+            // every row of `view_rows` names a source view of the caller's own
+            // account, so the caller's account selects them all — and the
+            // PRIMARY view, which draws from nothing, none of them.
+            // `source_account_id.rs` is the suite that spans this filter.
+            "sourceAccountId selects the views drawing on that account's views",
             json!({ "sourceAccountId": ACCOUNT_ID }),
+            {
+                let mut all = created_arns.clone();
+                all.sort();
+                all
+            },
+        ),
+        (
+            "sourceAccountId of an account no view draws on selects nothing",
+            json!({ "sourceAccountId": "123456789012" }),
             vec![],
         ),
         (

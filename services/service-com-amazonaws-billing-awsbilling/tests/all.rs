@@ -43,6 +43,8 @@ mod refusal_and_projection_fidelity;
 mod refusal_message_text;
 #[path = "all/rejection_fidelity.rs"]
 mod rejection_fidelity;
+#[path = "all/source_account_id.rs"]
+mod source_account_id;
 #[path = "all/source_view_disassociation.rs"]
 mod source_view_disassociation;
 #[path = "all/source_views.rs"]

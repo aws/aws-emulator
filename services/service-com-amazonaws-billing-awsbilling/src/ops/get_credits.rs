@@ -164,7 +164,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // `ValidationException` naming the member that failed.
         let now_secs = crate::state::epoch_secs(std::time::SystemTime::now());
 
-        if !is_account_id(&input.account_id) {
+        if !crate::state::is_account_id(&input.account_id) {
             return Err(field_validation_failed(
                 ACCOUNT_ID_FIELD,
                 "accountId must be a 12-digit numeric string",
@@ -254,13 +254,6 @@ const REASON_FIELD_VALIDATION_FAILED: &str = "fieldValidationFailed";
 /// not more than one year before the current date." A year is taken as 365 days.
 const MAX_START_DATE_LOOKBACK: std::time::Duration =
     std::time::Duration::from_secs(365 * 24 * 60 * 60);
-
-/// Whether `value` is an Amazon Web Services account id: exactly 12 digits, the form
-/// the modeled `AccountId` shape (`^[0-9]{12}$`) and this operation's `accountId` doc
-/// ("Must be a 12-digit numeric string") both state.
-fn is_account_id(value: &str) -> bool {
-    value.len() == 12 && value.bytes().all(|byte| byte.is_ascii_digit())
-}
 
 /// Refuse the request with the modeled 400 `ValidationException`, naming the member
 /// that failed and why, so the caller can fix the request from the error alone.
