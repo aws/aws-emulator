@@ -73,6 +73,8 @@ mod import_job_idempotent_replay;
 mod import_job_image_set_delivery;
 #[path = "all/import_job_listing.rs"]
 mod import_job_listing;
+#[path = "all/import_job_output_manifest.rs"]
+mod import_job_output_manifest;
 #[path = "all/list_element_refusal_paths.rs"]
 mod list_element_refusal_paths;
 #[path = "all/listing_filter_page_tokens.rs"]

@@ -97,6 +97,10 @@ const PART10_PREAMBLE_BYTES: usize = 128;
 /// and the pixel data it carries.
 #[derive(Debug, Clone)]
 pub struct ImportedInstance {
+    /// The key of the object this instance was read out of, when an object store named
+    /// one — which is what the job's own output manifest reports the instance's input
+    /// file as. `None` when the bytes came from somewhere that named no object.
+    pub source_key: Option<String>,
     /// The study this instance belongs to — what groups instances into image sets
     /// together with [`ImportedInstance::series_instance_uid`]. Absent when the file
     /// declared none.
@@ -118,7 +122,104 @@ pub struct ImportedImageSet {
     pub image_set_id: String,
     pub attributes: ImageSetAttributes,
     pub image_frames: HashMap<String, ImageFrame>,
+    /// The keys of the objects this image set was built from, in the order they were
+    /// read — what the job's output manifest reports as the input files that landed in
+    /// it.
+    pub source_keys: Vec<String>,
 }
+
+/// What the object store ANSWERED about an import's input prefix.
+///
+/// The outcome of the import turns on this and not on how many instances were read: an
+/// input the store says is not there, and one it says holds nothing, are both an import
+/// with nothing to import, while a prefix no object store answered about at all
+/// establishes NOTHING — neither that the input is absent nor that it is empty.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PrefixAnswer {
+    /// The store listed the prefix. [`ImportPrefixRead::objects`] is what it listed,
+    /// which may be nothing at all.
+    Listed,
+    /// The store answered that it holds no such bucket.
+    NoSuchBucket,
+    /// No answer was established: this emulator has no object store to ask, or the one it
+    /// has refused the listing.
+    #[default]
+    Unanswered,
+}
+
+/// One object an import scanned under its input prefix: its key, the DICOM instance it
+/// carried, and — when it carried none — why.
+#[derive(Debug, Clone)]
+pub struct ScannedObject {
+    pub key: String,
+    /// The instance the object carried, taken out of the read once the image sets have
+    /// been built from it ([`ImportPrefixRead::take_instances`]).
+    pub instance: Option<ImportedInstance>,
+    /// Why this object contributed no instance, when it contributed none. `None` for an
+    /// object that was read as a DICOM P10 file.
+    pub skipped: Option<&'static str>,
+}
+
+/// Everything one import established about its input prefix: what the object store
+/// answered about the prefix, and every object it scanned under it.
+#[derive(Debug, Clone, Default)]
+pub struct ImportPrefixRead {
+    pub answer: PrefixAnswer,
+    pub objects: Vec<ScannedObject>,
+}
+
+impl ImportPrefixRead {
+    /// Whether the store established that this prefix holds NOTHING to import: it said
+    /// the bucket is not there, or it listed the prefix and the listing was empty.
+    ///
+    /// False for a prefix nothing answered about ([`PrefixAnswer::Unanswered`]): a read no
+    /// object store answered establishes nothing either way.
+    pub fn holds_nothing(&self) -> bool {
+        match self.answer {
+            PrefixAnswer::NoSuchBucket => true,
+            PrefixAnswer::Listed => self.objects.is_empty(),
+            PrefixAnswer::Unanswered => false,
+        }
+    }
+
+    /// Whether the object store answered about this prefix at all — which is what makes
+    /// the import's outcome, and the job output it owes, something this service can state.
+    pub fn was_answered(&self) -> bool {
+        self.answer != PrefixAnswer::Unanswered
+    }
+
+    /// Take the instances the scanned objects carried OUT of the read, leaving behind the
+    /// record of which object carried one.
+    ///
+    /// Taken rather than cloned: an instance holds the pixel data of a whole DICOM file,
+    /// and the image sets are built from exactly these instances
+    /// ([`imported_image_sets`]), so copying them would double what one import holds in
+    /// memory.
+    pub fn take_instances(&mut self) -> Vec<ImportedInstance> {
+        self.objects
+            .iter_mut()
+            .filter_map(|object| object.instance.take())
+            .collect()
+    }
+}
+
+/// Why an object under the input prefix contributed no DICOM instance. Each is reported
+/// against that object's key in the job's own output manifest.
+mod skipped {
+    /// The object store did not serve the object, or served it without declaring how long
+    /// it is ([`super::MAX_IMPORTED_OBJECT_BYTES`]).
+    pub const UNREAD: &str = "The object could not be read from Amazon S3";
+    /// The object is past the per-object ceiling this emulator reads of one object.
+    pub const TOO_LARGE: &str = "The object is larger than this service imports";
+    /// The object's bytes are not a DICOM Part 10 file.
+    pub const NOT_PART10: &str = "The object is not a readable DICOM P10 file";
+}
+
+/// Why an object that WAS read as a DICOM P10 file still landed in no image set: the
+/// hierarchy an image set is grouped by is the study's and the series' own
+/// ([`imported_image_sets`]).
+pub const NO_STUDY_OR_SERIES: &str =
+    "The DICOM P10 file declares no study instance UID and series instance UID";
 
 /// The bucket and key prefix an `S3Uri` names (`s3://<bucket>[/<prefix>]`), or `None`
 /// when the value is not one.
@@ -149,9 +250,9 @@ pub async fn read_import_prefix(
     ctx: &::smithy_server_runtime::OperationContext<'_>,
     region: &str,
     input_s3_uri: &str,
-) -> Vec<ImportedInstance> {
+) -> ImportPrefixRead {
     let Some((bucket, prefix)) = parse_s3_uri(input_s3_uri) else {
-        return Vec::new();
+        return ImportPrefixRead::default();
     };
     let client = s3_client(ctx, region);
     let listed = client
@@ -164,22 +265,36 @@ pub async fn read_import_prefix(
     let listed = match listed {
         Ok(listed) => listed,
         Err(error) => {
-            // Either the store answered that it holds no such bucket, or this emulator
-            // has no object store to ask: neither establishes an instance, so the import
-            // reads none. The caller's own values are rendered in their escaped `Debug`
-            // form, so a bucket or prefix carrying a newline cannot forge a log line.
+            // The store answering that it holds NO SUCH BUCKET establishes that the input
+            // is not there, which is an import with nothing to import; every other
+            // failure — this emulator has no object store to ask, or the one it has
+            // refused the listing — establishes nothing at all. The caller's own values
+            // are rendered in their escaped `Debug` form, so a bucket or prefix carrying a
+            // newline cannot forge a log line.
+            let answer = if error
+                .as_service_error()
+                .is_some_and(::aws_sdk_s3::operation::list_objects_v2::ListObjectsV2Error::is_no_such_bucket)
+            {
+                PrefixAnswer::NoSuchBucket
+            } else {
+                PrefixAnswer::Unanswered
+            };
             ::tracing::debug!(
                 bucket = ?bucket,
                 prefix = ?prefix,
+                answer = ?answer,
                 error = %::aws_smithy_types::error::display::DisplayErrorContext(&error),
                 "the DICOM import prefix could not be listed from the emulator's Amazon S3"
             );
-            return Vec::new();
+            return ImportPrefixRead {
+                answer,
+                objects: Vec::new(),
+            };
         }
     };
-    let mut instances = Vec::new();
+    let mut objects: Vec<ScannedObject> = Vec::new();
     for object in listed.contents() {
-        if instances.len() >= MAX_IMPORTED_OBJECTS {
+        if objects.len() >= MAX_IMPORTED_OBJECTS {
             break;
         }
         let Some(key) = object.key() else {
@@ -194,30 +309,44 @@ pub async fn read_import_prefix(
             .and_then(|size| usize::try_from(size).ok())
             .is_some_and(|size| size > MAX_IMPORTED_OBJECT_BYTES)
         {
+            objects.push(ScannedObject {
+                key: key.to_string(),
+                instance: None,
+                skipped: Some(skipped::TOO_LARGE),
+            });
             continue;
         }
-        if let Some(instance) = read_object(&client, &bucket, key).await {
-            instances.push(instance);
-        }
+        let (instance, skipped) = match read_object(&client, &bucket, key).await {
+            Ok(instance) => (Some(instance), None),
+            Err(reason) => (None, Some(reason)),
+        };
+        objects.push(ScannedObject {
+            key: key.to_string(),
+            instance,
+            skipped,
+        });
     }
-    instances
+    ImportPrefixRead {
+        answer: PrefixAnswer::Listed,
+        objects,
+    }
 }
 
-/// One object's bytes, read and parsed, or `None` when the store did not serve it, it is
-/// larger than [`MAX_IMPORTED_OBJECT_BYTES`], it declared no length at all, or it is not a
-/// DICOM Part 10 file.
+/// One object's bytes, read and parsed, or why it contributed no instance: the store did
+/// not serve it, it is larger than [`MAX_IMPORTED_OBJECT_BYTES`], it declared no length at
+/// all, or it is not a DICOM Part 10 file.
 async fn read_object(
     client: &::aws_sdk_s3::Client,
     bucket: &str,
     key: &str,
-) -> Option<ImportedInstance> {
+) -> Result<ImportedInstance, &'static str> {
     let read = client
         .get_object()
         .bucket(bucket)
         .key(key)
         .send()
         .await
-        .ok()?;
+        .map_err(|_| skipped::UNREAD)?;
     // The ceiling against what the store SAYS the object holds, BEFORE any of it is read
     // into this process — so the bound precedes the allocation rather than following it.
     // An answer that declares no length is not read at all: the cap cannot be checked
@@ -225,17 +354,25 @@ async fn read_object(
     // this ceiling exists for.
     let declared = read
         .content_length()
-        .and_then(|length| usize::try_from(length).ok())?;
+        .and_then(|length| usize::try_from(length).ok())
+        .ok_or(skipped::UNREAD)?;
     if declared > MAX_IMPORTED_OBJECT_BYTES {
-        return None;
+        return Err(skipped::TOO_LARGE);
     }
-    let body = read.body.collect().await.ok()?.into_bytes();
+    let body = read
+        .body
+        .collect()
+        .await
+        .map_err(|_| skipped::UNREAD)?
+        .into_bytes();
     // And against what ARRIVED, so an answer whose declared length was not the truth
     // cannot get past it either.
     if body.len() > MAX_IMPORTED_OBJECT_BYTES {
-        return None;
+        return Err(skipped::TOO_LARGE);
     }
-    read_part10(&body)
+    let mut instance = read_part10(&body).ok_or(skipped::NOT_PART10)?;
+    instance.source_key = Some(key.to_string());
+    Ok(instance)
 }
 
 /// The instance a DICOM Part 10 file carries, or `None` when `bytes` are not one.
@@ -282,6 +419,8 @@ pub fn read_part10(bytes: &[u8]) -> Option<ImportedInstance> {
         .map(|bytes| bytes.to_vec())
         .filter(|bytes| !bytes.is_empty());
     Some(ImportedInstance {
+        // Filled in by the read that NAMED the object; nothing about the bytes names one.
+        source_key: None,
         study_instance_uid: tags.dicom_study_instance_uid.clone(),
         series_instance_uid: tags.dicom_series_instance_uid.clone(),
         sop_instance_uid: text(&object, tags::SOP_INSTANCE_UID),
@@ -367,6 +506,10 @@ pub fn imported_image_sets(
         tags.dicom_number_of_study_related_instances =
             instances_per_study.get(study.as_str()).copied().unwrap_or(0);
         let image_set_id = mint();
+        let source_keys: Vec<String> = grouped
+            .iter()
+            .filter_map(|instance| instance.source_key.clone())
+            .collect();
         let mut image_frames = HashMap::new();
         for instance in grouped {
             let Some(pixel_data) = instance.pixel_data.clone() else {
@@ -398,6 +541,7 @@ pub fn imported_image_sets(
                 extra_attributes: ::serde_json::Map::new(),
             },
             image_frames,
+            source_keys,
         });
     }
     imported

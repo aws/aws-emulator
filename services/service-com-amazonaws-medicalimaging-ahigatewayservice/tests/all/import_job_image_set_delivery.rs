@@ -79,6 +79,8 @@ impl Instance {
     /// This instance as the crate's own import reading holds it.
     fn imported(&self) -> ImportedInstance {
         ImportedInstance {
+            // The key of the object this instance was read out of.
+            source_key: Some(format!("in/{}.dcm", self.sop_instance_uid)),
             study_instance_uid: Some(self.study_instance_uid.to_string()),
             series_instance_uid: Some(self.series_instance_uid.to_string()),
             sop_instance_uid: Some(self.sop_instance_uid.to_string()),

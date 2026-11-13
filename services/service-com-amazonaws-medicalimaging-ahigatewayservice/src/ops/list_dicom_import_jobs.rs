@@ -205,6 +205,19 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 message: "the medical-imaging state store is unavailable".to_string(),
             })
         })?;
+        // What the clock has already made due, before this listing answers: a job's output
+        // is owed at the instant its completion falls due whether or not anybody polled,
+        // and until it is written the job keeps the non-terminal status it is in
+        // ([`crate::state::import_job_output`]). This is the same materialisation the
+        // status move itself is, made where it can be: outside the state lock, because it
+        // writes into another service.
+        crate::state::import_job_output::deliver_due_outputs(
+            &*self.engine,
+            ctx.callback(),
+            now,
+            None,
+        )
+        .await;
         let mut store = state.lock();
         store.advance_clock(now);
 
@@ -254,7 +267,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 data_access_role_arn: Some(job.data_access_role_arn.clone()),
                 ended_at: job.ended_at.map(crate::state::to_date_time),
                 submitted_at: Some(crate::state::to_date_time(job.submitted_at)),
-                message: job.message.clone(),
+                message: job.reported_message(),
             })
             .collect();
 

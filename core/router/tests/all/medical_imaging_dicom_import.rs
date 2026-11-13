@@ -1371,3 +1371,613 @@ async fn an_unassumable_data_access_role_refuses_the_import_and_creates_no_job()
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// The job output a finished import writes back
+// ---------------------------------------------------------------------------
+
+/// A bucket nothing in this suite creates: what a job pointed at a location the object
+/// store does not hold names.
+const ABSENT_BUCKET: &str = "healthimaging-import-nowhere";
+
+/// The prefix under the output bucket every row below points its job at.
+const OUTPUT_PREFIX: &str = "job-output/";
+
+/// Why a finished job carries a `message`, and the sentence it then carries.
+///
+/// The text is what AWS HealthImaging's `DICOMImportJobProperties$message` is documented
+/// to hold — "The error message thrown if an import job fails" — so what is pinned here is
+/// the sentence this emulator throws for each class of failure, with the one variable part
+/// of it taken from the request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Failure {
+    /// The import had nothing to import: the object store says the input prefix is not
+    /// there, or says it holds nothing.
+    EmptyInput,
+    /// The import could not write its results where it was asked to write them.
+    UnwritableOutput,
+}
+
+impl Failure {
+    /// The `message` a job that failed this way reports.
+    fn text(self, input_s3_uri: &str, output_s3_uri: &str) -> String {
+        match self {
+            Self::EmptyInput => format!(
+                "The import job failed because no DICOM P10 objects were found in the input \
+                 prefix {input_s3_uri}"
+            ),
+            Self::UnwritableOutput => format!(
+                "The import job failed because its results could not be written to the output \
+                 prefix {output_s3_uri}"
+            ),
+        }
+    }
+}
+
+/// What one row's job-output manifest must say about the job.
+struct ExpectedManifest {
+    /// The `code` of the job summary: whether the job imported its input.
+    code: &'static str,
+    /// How many objects the import scanned under its input prefix.
+    scanned: u64,
+    /// How many of them landed in an image set.
+    imported: u64,
+    /// How many image sets it generated.
+    image_sets: usize,
+    /// The input keys, relative to the input prefix, the SUCCESS manifest must name — in
+    /// no particular order.
+    success_files: Vec<&'static str>,
+    /// The input keys the FAILURE manifest must name.
+    failure_files: Vec<&'static str>,
+}
+
+/// One row of the job-output table: what the input prefix holds, where the results go, and
+/// what the finished job must report and have written.
+struct OutputCase {
+    case: &'static str,
+    /// The bucket the input prefix is in — one the store holds, or one it does not.
+    input_bucket: &'static str,
+    /// The input prefix, which is also what makes each row's objects its own.
+    prefix: &'static str,
+    /// The bucket the results go into — one the store holds, or one it does not.
+    output_bucket: &'static str,
+    instances: Vec<Instance>,
+    /// Objects of the prefix that are not readable DICOM files.
+    other_objects: Vec<(&'static str, Vec<u8>)>,
+    /// The terminal `jobStatus` the job must reach.
+    status: &'static str,
+    /// The failure the finished job must report, when it reports one.
+    failure: Option<Failure>,
+    /// What it must have written beneath its output folder, or `None` when it can have
+    /// written nothing at all.
+    manifest: Option<ExpectedManifest>,
+}
+
+/// The rows of the job-output table.
+///
+/// They vary what the rule generalises over: whether the input prefix holds readable DICOM
+/// files, unreadable objects, both or nothing at all; how many image sets the files
+/// describe; whether the object store holds the input location; and whether it holds the
+/// output location.
+fn output_cases() -> Vec<OutputCase> {
+    vec![
+        OutputCase {
+            case: "two files of one series",
+            input_bucket: BUCKET,
+            prefix: "output-series/",
+            output_bucket: BUCKET,
+            instances: vec![
+                Instance {
+                    key: "slice-1.dcm",
+                    transfer_syntax: EXPLICIT_VR_LE,
+                    study_uid: "1.2.826.0.1.3680043.9.7133.11.1",
+                    series_uid: "1.2.826.0.1.3680043.9.7133.11.1.1",
+                    sop_uid: "1.2.826.0.1.3680043.9.7133.11.1.1.1",
+                    patient_id: "PID-OUT-1",
+                    patient_name: "OUT^ONE",
+                    modality: "CT",
+                    study_description: Some("CHEST CT"),
+                    accession_number: Some("ACC-OUT-1"),
+                    pixel_data: Some(PIXELS_A),
+                },
+                Instance {
+                    key: "slice-2.dcm",
+                    transfer_syntax: IMPLICIT_VR_LE,
+                    study_uid: "1.2.826.0.1.3680043.9.7133.11.1",
+                    series_uid: "1.2.826.0.1.3680043.9.7133.11.1.1",
+                    sop_uid: "1.2.826.0.1.3680043.9.7133.11.1.1.2",
+                    patient_id: "PID-OUT-1",
+                    patient_name: "OUT^ONE",
+                    modality: "CT",
+                    study_description: None,
+                    accession_number: None,
+                    pixel_data: Some(PIXELS_B),
+                },
+            ],
+            other_objects: vec![],
+            status: "COMPLETED",
+            failure: None,
+            manifest: Some(ExpectedManifest {
+                code: "SUCCESS",
+                scanned: 2,
+                imported: 2,
+                image_sets: 1,
+                success_files: vec!["slice-1.dcm", "slice-2.dcm"],
+                failure_files: vec![],
+            }),
+        },
+        OutputCase {
+            case: "one file of two studies beside an object that is not DICOM",
+            input_bucket: BUCKET,
+            prefix: "output-mixed/nested/",
+            output_bucket: BUCKET,
+            instances: vec![
+                Instance {
+                    key: "a.dcm",
+                    transfer_syntax: EXPLICIT_VR_LE,
+                    study_uid: "1.2.826.0.1.3680043.9.7133.12.1",
+                    series_uid: "1.2.826.0.1.3680043.9.7133.12.1.1",
+                    sop_uid: "1.2.826.0.1.3680043.9.7133.12.1.1.1",
+                    patient_id: "PID-OUT-2",
+                    patient_name: "OUT^TWO",
+                    modality: "MR",
+                    study_description: Some("BRAIN MR"),
+                    accession_number: None,
+                    pixel_data: Some(PIXELS_A),
+                },
+                Instance {
+                    key: "b.dcm",
+                    transfer_syntax: EXPLICIT_VR_LE,
+                    study_uid: "1.2.826.0.1.3680043.9.7133.12.2",
+                    series_uid: "1.2.826.0.1.3680043.9.7133.12.2.1",
+                    sop_uid: "1.2.826.0.1.3680043.9.7133.12.2.1.1",
+                    patient_id: "PID-OUT-3",
+                    patient_name: "OUT^THREE",
+                    modality: "MR",
+                    study_description: None,
+                    accession_number: None,
+                    pixel_data: None,
+                },
+            ],
+            other_objects: vec![("notes.txt", b"these bytes are not a DICOM file".to_vec())],
+            status: "COMPLETED",
+            failure: None,
+            manifest: Some(ExpectedManifest {
+                code: "SUCCESS",
+                scanned: 3,
+                imported: 2,
+                image_sets: 2,
+                success_files: vec!["a.dcm", "b.dcm"],
+                failure_files: vec!["notes.txt"],
+            }),
+        },
+        OutputCase {
+            case: "a prefix holding nothing readable",
+            input_bucket: BUCKET,
+            prefix: "output-unreadable/",
+            output_bucket: BUCKET,
+            instances: vec![],
+            other_objects: vec![
+                ("plain.txt", b"not DICOM either".to_vec()),
+                ("cut-off.dcm", truncated_part10()),
+            ],
+            // "An import job can return a jobStatus as COMPLETED even if validation issues
+            // are discovered during the import process", and the manifests are where those
+            // per-object failures are reported.
+            status: "COMPLETED",
+            failure: None,
+            manifest: Some(ExpectedManifest {
+                code: "SUCCESS",
+                scanned: 2,
+                imported: 0,
+                image_sets: 0,
+                success_files: vec![],
+                failure_files: vec!["plain.txt", "cut-off.dcm"],
+            }),
+        },
+        OutputCase {
+            case: "an input prefix holding nothing at all",
+            input_bucket: BUCKET,
+            prefix: "output-empty/",
+            output_bucket: BUCKET,
+            instances: vec![],
+            other_objects: vec![],
+            status: "FAILED",
+            failure: Some(Failure::EmptyInput),
+            manifest: Some(ExpectedManifest {
+                code: "FAILED",
+                scanned: 0,
+                imported: 0,
+                image_sets: 0,
+                success_files: vec![],
+                failure_files: vec![],
+            }),
+        },
+        OutputCase {
+            case: "an input bucket the object store does not hold",
+            input_bucket: ABSENT_BUCKET,
+            prefix: "output-absent-input/",
+            output_bucket: BUCKET,
+            instances: vec![],
+            other_objects: vec![],
+            status: "FAILED",
+            failure: Some(Failure::EmptyInput),
+            manifest: Some(ExpectedManifest {
+                code: "FAILED",
+                scanned: 0,
+                imported: 0,
+                image_sets: 0,
+                success_files: vec![],
+                failure_files: vec![],
+            }),
+        },
+        OutputCase {
+            case: "an output bucket the object store does not hold",
+            input_bucket: BUCKET,
+            prefix: "output-absent-output/",
+            output_bucket: ABSENT_BUCKET,
+            instances: vec![Instance {
+                key: "only.dcm",
+                transfer_syntax: EXPLICIT_VR_LE,
+                study_uid: "1.2.826.0.1.3680043.9.7133.13.1",
+                series_uid: "1.2.826.0.1.3680043.9.7133.13.1.1",
+                sop_uid: "1.2.826.0.1.3680043.9.7133.13.1.1.1",
+                patient_id: "PID-OUT-4",
+                patient_name: "OUT^FOUR",
+                modality: "CT",
+                study_description: None,
+                accession_number: None,
+                pixel_data: Some(PIXELS_A),
+            }],
+            other_objects: vec![],
+            status: "FAILED",
+            failure: Some(Failure::UnwritableOutput),
+            manifest: None,
+        },
+    ]
+}
+
+/// The text of every `<name>…</name>` element of an XML body, in document order.
+fn xml_elements(body: &str, name: &str) -> Vec<String> {
+    let open = format!("<{name}>");
+    let close = format!("</{name}>");
+    let mut found = Vec::new();
+    let mut rest = body;
+    while let Some(start) = rest.find(&open) {
+        let from = start + open.len();
+        let Some(end) = rest[from..].find(&close) else {
+            break;
+        };
+        found.push(rest[from..from + end].to_string());
+        rest = &rest[from + end + close.len()..];
+    }
+    found
+}
+
+/// Every key the object store holds under `prefix` of `bucket`.
+async fn keys_under(
+    router: &MultiServiceRouter,
+    case: &str,
+    bucket: &str,
+    prefix: &str,
+) -> BTreeSet<String> {
+    let listed = s3(
+        router,
+        "GET",
+        &format!("/{bucket}?list-type=2&prefix={prefix}"),
+        &[],
+        Bytes::new(),
+    )
+    .await;
+    assert_eq!(
+        listed.status, 200,
+        "case {case:?}: ListObjectsV2({bucket}/{prefix}) must succeed, got {} with {:?}",
+        listed.status,
+        listed.text()
+    );
+    xml_elements(&listed.text(), "Key").into_iter().collect()
+}
+
+/// One object's body, which has to be there.
+async fn object_body(router: &MultiServiceRouter, case: &str, bucket: &str, key: &str) -> String {
+    let read = s3(router, "GET", &format!("/{bucket}/{key}"), &[], Bytes::new()).await;
+    assert_eq!(
+        read.status, 200,
+        "case {case:?}: GetObject({bucket}/{key}) must succeed, got {} with {:?}",
+        read.status,
+        read.text()
+    );
+    read.text()
+}
+
+/// RULE: a DICOM import job's outcome is what its INPUT established and its results are
+/// objects: a job whose input prefix the object store says is not there, or says holds
+/// nothing, reaches `FAILED` carrying the `message` the model documents for a failed
+/// import; every other job reaches `COMPLETED` and has written its output manifests
+/// beneath `<outputS3Uri>/<datastoreId>-DicomImport-<jobId>/` — the job summary of what it
+/// scanned, imported and refused, and one record per input file that landed in an image set
+/// or in none — before any read reports it finished. An object that is not a readable DICOM
+/// P10 file is one of those per-file failures and does not fail the job; a job that could
+/// not write its results reaches `FAILED` instead of reporting a success whose manifests are
+/// not there.
+#[tokio::test]
+async fn a_finished_dicom_import_writes_the_manifests_of_what_it_read() {
+    let router = emulator();
+    let created = s3(&router, "PUT", &format!("/{BUCKET}"), &[], Bytes::new()).await;
+    assert_eq!(
+        created.status, 200,
+        "setup: CreateBucket must succeed, got {} with {:?}",
+        created.status,
+        created.text()
+    );
+    let role_arn = role(&router, "healthimaging-output", HEALTHIMAGING_TRUST).await;
+    let datastore_id = active_datastore(&router, "job output", "import-output-store").await;
+
+    for (index, row) in output_cases().into_iter().enumerate() {
+        let case = row.case;
+        // Everything the input prefix holds, staged through Amazon S3's own API — in the
+        // bucket the row names, so a row naming one the store does not hold stages nothing.
+        if row.input_bucket == BUCKET {
+            for instance in &row.instances {
+                let written = s3(
+                    &router,
+                    "PUT",
+                    &format!("/{BUCKET}/{}{}", row.prefix, instance.key),
+                    &[("content-type", "application/dicom")],
+                    Bytes::from(instance.part10()),
+                )
+                .await;
+                assert_eq!(
+                    written.status, 200,
+                    "case {case:?}: PutObject({}) must succeed, got {} with {:?}",
+                    instance.key,
+                    written.status,
+                    written.text()
+                );
+            }
+            for (key, body) in &row.other_objects {
+                let written = s3(
+                    &router,
+                    "PUT",
+                    &format!("/{BUCKET}/{}{key}", row.prefix),
+                    &[("content-type", "application/octet-stream")],
+                    Bytes::from(body.clone()),
+                )
+                .await;
+                assert_eq!(
+                    written.status, 200,
+                    "case {case:?}: PutObject({key}) must succeed, got {} with {:?}",
+                    written.status,
+                    written.text()
+                );
+            }
+        }
+
+        let input_s3_uri = format!("s3://{}/{}", row.input_bucket, row.prefix);
+        let output_s3_uri = format!("s3://{}/{OUTPUT_PREFIX}", row.output_bucket);
+        let submitted = imaging_ok(
+            &router,
+            case,
+            "POST",
+            &format!("/startDICOMImportJob/datastore/{datastore_id}"),
+            Some(json!({
+                "clientToken": format!("import-output-{index}"),
+                "dataAccessRoleArn": role_arn,
+                "inputS3Uri": input_s3_uri,
+                "outputS3Uri": output_s3_uri,
+            })),
+        )
+        .await;
+        assert_eq!(
+            submitted.string(&["jobStatus"]),
+            "SUBMITTED",
+            "case {case:?}: expected SUBMITTED from the submit, got {:?}",
+            submitted.text()
+        );
+        let job_id = submitted.string(&["jobId"]);
+
+        let settled = settled_job(&router, case, &datastore_id, &job_id).await;
+        assert_eq!(
+            settled, row.status,
+            "case {case:?}: expected the import to reach {}, got {settled:?}",
+            row.status
+        );
+        let reported = imaging_ok(
+            &router,
+            case,
+            "GET",
+            &format!("/getDICOMImportJob/datastore/{datastore_id}/job/{job_id}"),
+            None,
+        )
+        .await;
+        let properties = reported.json()["jobProperties"].clone();
+        let expected_message = row
+            .failure
+            .map(|failure| failure.text(&input_s3_uri, &output_s3_uri));
+        assert_eq!(
+            properties["message"].as_str().map(str::to_string),
+            expected_message,
+            "case {case:?}: expected the finished job to report {expected_message:?} as its \
+             message, got {properties:?}"
+        );
+
+        // The job's own output folder, under the prefix the submit named.
+        let folder = format!("{OUTPUT_PREFIX}{datastore_id}-DicomImport-{job_id}/");
+        let Some(expected) = row.manifest else {
+            // There was nowhere to write: the object store still holds no such bucket, so
+            // it answers the listing of the folder with the refusal it answers any other.
+            let listed = s3(
+                &router,
+                "GET",
+                &format!("/{}?list-type=2&prefix={folder}", row.output_bucket),
+                &[],
+                Bytes::new(),
+            )
+            .await;
+            assert_eq!(
+                listed.status, 404,
+                "case {case:?}: expected the output bucket to still not be there, got {} with \
+                 {:?}",
+                listed.status,
+                listed.text()
+            );
+            continue;
+        };
+        let written = keys_under(&router, case, row.output_bucket, &folder).await;
+
+        // Exactly the objects the job had something to say in: the summary always, and a
+        // per-file manifest only where there were such files.
+        let mut expected_keys: BTreeSet<String> =
+            BTreeSet::from([format!("{folder}job-output-manifest.json")]);
+        if !expected.success_files.is_empty() {
+            expected_keys.insert(format!("{folder}SUCCESS/success.ndjson"));
+        }
+        if !expected.failure_files.is_empty() {
+            expected_keys.insert(format!("{folder}FAILURE/failure.ndjson"));
+        }
+        assert_eq!(
+            written, expected_keys,
+            "case {case:?}: expected the job output objects {expected_keys:?}, got {written:?}"
+        );
+
+        let summary_body = object_body(
+            &router,
+            case,
+            row.output_bucket,
+            &format!("{folder}job-output-manifest.json"),
+        )
+        .await;
+        let summary: Value = serde_json::from_str(&summary_body)
+            .unwrap_or_else(|error| panic!("case {case:?}: the job summary must be JSON: {error}"));
+        let summary = summary["jobSummary"].clone();
+        assert_eq!(
+            summary["jobId"].as_str(),
+            Some(job_id.as_str()),
+            "case {case:?}: expected the summary to name job {job_id}, got {summary:?}"
+        );
+        assert_eq!(
+            summary["datastoreId"].as_str(),
+            Some(datastore_id.as_str()),
+            "case {case:?}: expected the summary to name data store {datastore_id}, got \
+             {summary:?}"
+        );
+        assert_eq!(
+            summary["code"].as_str(),
+            Some(expected.code),
+            "case {case:?}: expected summary code {:?}, got {summary:?}",
+            expected.code
+        );
+        let expected_summary_message = expected_message
+            .clone()
+            .unwrap_or_else(|| "IMPORT_JOB_COMPLETED".to_string());
+        assert_eq!(
+            summary["message"].as_str(),
+            Some(expected_summary_message.as_str()),
+            "case {case:?}: expected summary message {expected_summary_message:?}, got \
+             {summary:?}"
+        );
+        for (member, expected_count) in [
+            ("numberOfScannedFiles", expected.scanned),
+            ("numberOfImportedFiles", expected.imported),
+            (
+                "numberOfFilesWithCustomerError",
+                expected.scanned - expected.imported,
+            ),
+            ("numberOfFilesWithServerError", 0),
+            (
+                "numberOfGeneratedImageSets",
+                u64::try_from(expected.image_sets).expect("a small count"),
+            ),
+        ] {
+            assert_eq!(
+                summary[member].as_u64(),
+                Some(expected_count),
+                "case {case:?}: expected {member} to be {expected_count}, got {summary:?}"
+            );
+        }
+
+        // Every image set the summary names is one the data store really holds, and it
+        // accounts for the instances that landed in it.
+        let image_sets = summary["imageSetsSummary"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        assert_eq!(
+            image_sets.len(),
+            expected.image_sets,
+            "case {case:?}: expected {} image sets in the summary, got {image_sets:?}",
+            expected.image_sets
+        );
+        let mut accounted = 0_u64;
+        for entry in &image_sets {
+            let image_set_id = entry["imageSetId"].as_str().unwrap_or_default();
+            accounted += entry["numberOfMatchedSOPInstances"].as_u64().unwrap_or(0);
+            let read = imaging_ok(
+                &router,
+                case,
+                "POST",
+                &format!("/datastore/{datastore_id}/imageSet/{image_set_id}/getImageSet"),
+                None,
+            )
+            .await;
+            assert_eq!(
+                read.string(&["imageSetId"]),
+                image_set_id,
+                "case {case:?}: expected the summary's image set {image_set_id} to be held by \
+                 the data store, got {:?}",
+                read.text()
+            );
+        }
+        assert_eq!(
+            accounted, expected.imported,
+            "case {case:?}: expected the summary's image sets to account for {} imported \
+             instances, got {accounted}",
+            expected.imported
+        );
+
+        // The per-file manifests: one JSON record per line, naming the input file each
+        // outcome is about.
+        for (key, files, name_of) in [
+            (
+                "SUCCESS/success.ndjson",
+                &expected.success_files,
+                "imageSetId",
+            ),
+            ("FAILURE/failure.ndjson", &expected.failure_files, "message"),
+        ] {
+            if files.is_empty() {
+                continue;
+            }
+            let body = object_body(&router, case, row.output_bucket, &format!("{folder}{key}")).await;
+            let records: Vec<Value> = body
+                .lines()
+                .filter(|line| !line.trim().is_empty())
+                .map(|line| {
+                    serde_json::from_str(line).unwrap_or_else(|error| {
+                        panic!("case {case:?}: every line of {key} must be JSON: {error}")
+                    })
+                })
+                .collect();
+            let named: BTreeSet<String> = records
+                .iter()
+                .map(|record| record["inputFile"].as_str().unwrap_or_default().to_string())
+                .collect();
+            let expected_files: BTreeSet<String> = files
+                .iter()
+                .map(|file| format!("{}{file}", row.prefix))
+                .collect();
+            assert_eq!(
+                named, expected_files,
+                "case {case:?}: expected {key} to name {expected_files:?}, got {named:?}"
+            );
+            for record in &records {
+                let stated = record[name_of].as_str().unwrap_or_default();
+                assert!(
+                    !stated.is_empty(),
+                    "case {case:?}: expected every record of {key} to state its {name_of}, got \
+                     {record:?}"
+                );
+            }
+        }
+    }
+}

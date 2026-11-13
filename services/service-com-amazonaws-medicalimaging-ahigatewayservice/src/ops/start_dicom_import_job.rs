@@ -8,11 +8,11 @@
 //! returns the SAME `jobId` instead of submitting a second job.
 //!
 //! The job is returned `SUBMITTED`, the status AWS HealthImaging answers with, and the
-//! clock owes its moves to `IN_PROGRESS` and then `COMPLETED` — see
+//! clock owes its moves to `IN_PROGRESS` and then to the status its outcome settles — see
 //! [`crate::state::IMPORT_JOB_IN_PROGRESS_DELAY`] and
 //! [`crate::state::IMPORT_JOB_COMPLETION_DELAY`]. Nothing here sleeps.
 //!
-//! # What the import IMPORTS
+//! # What the import IMPORTS, and what it WRITES BACK
 //!
 //! "The import job imports DICOM P10 files … found in the S3 prefix specified by the
 //! `inputS3Uri` parameter", so this call READS that prefix out of this emulator's own
@@ -24,6 +24,19 @@
 //! status, landing it `ACTIVE` / `IMPORTED`. So an attribute becomes searchable, and a
 //! frame readable, exactly when the import that produced it completed; and an image set
 //! exists only where a DICOM file really was read, never because a job was submitted.
+//!
+//! "The import job stores processing results in the file specified by the `outputS3Uri`
+//! parameter", so the job also OWES that prefix its output manifests — the record of what
+//! each object under the input prefix contributed — written beneath
+//! `<outputS3Uri>/<datastoreId>-DicomImport-<jobId>/` when the completion falls due, and
+//! before any read reports the job finished ([`crate::state::import_job_output`]).
+//!
+//! What the input read ESTABLISHED is what the job's outcome is decided from: an input the
+//! object store says is not there, or says holds nothing, is an import with nothing to
+//! import, which `FAILED` and a `message` report; an object that is not a readable DICOM
+//! P10 file is one of the individual failures the manifests carry, because "an import job
+//! can return a `jobStatus` as `COMPLETED` even if validation issues are discovered during
+//! the import process".
 //!
 //! `dataAccessRoleArn` is the role the import RUNS AS, so it is resolved against the
 //! account's IAM records before anything is written — the shared reading every service
@@ -334,9 +347,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // "The data is found in the S3 prefix specified by the inputS3Uri parameter":
         // what the import is asked to import is read HERE, through this emulator's own
         // Amazon S3, so the image sets the job goes on to materialise describe files that
-        // really exist ([`crate::state::read_import_prefix`]).
-        let instances =
-            crate::state::read_import_prefix(ctx, &region, &input.input_s3_uri).await;
+        // really exist ([`crate::state::read_import_prefix`]). What that read ESTABLISHED
+        // about the prefix is also what the job's outcome is decided from: an input the
+        // object store says is not there, or says holds nothing, is an import with nothing
+        // to import ([`crate::state::import_job_output::outcome_of`]).
+        let mut read = crate::state::read_import_prefix(ctx, &region, &input.input_s3_uri).await;
+        let instances = read.take_instances();
 
         let mut store = state.lock();
         store.advance_clock(now);
@@ -356,6 +372,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             let mut mint = || store.mint_id();
             crate::state::imported_image_sets(&instances, &mut mint)
         };
+
+        // The outcome the job is to reach, decided from what the object store ANSWERED
+        // about the input prefix rather than from how many files were readable: "an import
+        // job can return a jobStatus as COMPLETED even if validation issues are discovered
+        // during the import process", so an unreadable object is one of the individual
+        // failures the job's own manifests carry, while an input with nothing in it at all
+        // is a job that could not import.
+        let failure = crate::state::import_job_output::outcome_of(&read, &input.input_s3_uri);
 
         // The per-data-store bounds on image sets this emulator holds, counted over what
         // the store WOULD hold once the import had landed, while the request is still
@@ -395,6 +419,36 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         let job_id = store.mint_id();
         let completed_due_at = now + crate::state::IMPORT_JOB_COMPLETION_DELAY;
+        // "The import job stores processing results in the file specified by the
+        // outputS3Uri parameter": the manifests of what every object under the input
+        // prefix contributed, rendered from the read that established it and owed to the
+        // output prefix from here on. A job whose input nothing answered about owes none —
+        // nothing was established about it, so there is nothing to report — which is also
+        // why it is the only job whose terminal status the clock settles on its own.
+        let output_owed = read
+            .was_answered()
+            .then(|| {
+                crate::state::import_job_output::output_location(
+                    &input.output_s3_uri,
+                    &input.datastore_id,
+                    &job_id,
+                )
+                .map(|(bucket, key_prefix)| crate::state::import_job_output::JobOutput {
+                    state: crate::state::import_job_output::DeliveryState::Owed,
+                    region: region.clone(),
+                    bucket,
+                    key_prefix,
+                    objects: crate::state::import_job_output::job_output_objects(
+                        &input.datastore_id,
+                        &job_id,
+                        &read,
+                        &imported,
+                        failure.as_deref(),
+                    ),
+                })
+            })
+            .flatten();
+        let owes_output = output_owed.is_some();
         let job = ImportJob {
             job_id: job_id.clone(),
             job_name: input.job_name.clone(),
@@ -407,7 +461,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             import_configuration: input.import_configuration.clone(),
             submitted_at: now,
             ended_at: None,
-            message: None,
+            failure,
+            output_owed,
             in_progress_due_at: now + crate::state::IMPORT_JOB_IN_PROGRESS_DELAY,
             completed_due_at,
         };
@@ -461,6 +516,23 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 .insert(one.image_set_id.clone(), image_set);
         }
         store.remember_client_token(token_key, job_id.clone());
+        // Given up before the delivery below is armed: arming takes the same lock.
+        drop(store);
+
+        // A client that submits a job and then watches the output prefix never calls this
+        // service again, so the job's output is armed for the instant its completion falls
+        // due rather than left to a read that may never come. It claims the same delivery
+        // a read claims, so whichever gets there first makes it exactly once. A job that
+        // owes no output has nothing to arm: the clock settles it on its own.
+        if owes_output {
+            crate::state::import_job_output::deliver_when_due(
+                ::std::sync::Arc::clone(&self.engine),
+                ctx.callback().clone(),
+                input.datastore_id.clone(),
+                job_id.clone(),
+                completed_due_at,
+            );
+        }
 
         Ok(StartDICOMImportJobOutput {
             datastore_id: input.datastore_id,

@@ -3,9 +3,11 @@
 //! @op GetDICOMImportJob
 //!
 //! Reports the persisted import job's properties. A reporting operation (`@readonly`):
-//! it writes nothing of its own, and only materialises the status changes the clock
-//! already owed — the job's move to `IN_PROGRESS` and then to `COMPLETED` with its
-//! `endedAt`, so a poll loop terminates. See
+//! it writes nothing of its own, and only materialises what the clock already owed — the
+//! job's move to `IN_PROGRESS`, and the terminal status and `endedAt` its completion
+//! settles once the job output that completion owes has been written beneath its
+//! `outputS3Uri` ([`crate::state::import_job_output`]), so a poll loop terminates and the
+//! read that reports the job finished has those manifests behind it. See
 //! [`crate::state::ComAmazonawsMedicalimagingAhigatewayserviceState::advance_clock`].
 //!
 //! ---
@@ -137,6 +139,20 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 message: "the medical-imaging state store is unavailable".to_string(),
             })
         })?;
+        // What the clock has already made due, before this read answers: this job's output
+        // is owed at the instant its completion falls due whether or not anybody polled,
+        // and until it is written the job keeps the non-terminal status it is in — so a
+        // read that reports it finished has the manifests under its output prefix behind
+        // it ([`crate::state::import_job_output`]). The write goes into another service,
+        // so it is made outside the state lock; the status it settles is still the one the
+        // clock owed.
+        crate::state::import_job_output::deliver_due_outputs(
+            &*self.engine,
+            ctx.callback(),
+            now,
+            Some(&input.job_id),
+        )
+        .await;
         let mut store = state.lock();
         store.advance_clock(now);
 
@@ -167,7 +183,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 submitted_at: Some(crate::state::to_date_time(job.submitted_at)),
                 input_s3_uri: job.input_s3_uri.clone(),
                 output_s3_uri: job.output_s3_uri.clone(),
-                message: job.message.clone(),
+                message: job.reported_message(),
                 import_configuration: job.import_configuration.clone(),
             },
         })

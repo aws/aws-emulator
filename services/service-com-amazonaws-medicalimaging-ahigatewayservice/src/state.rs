@@ -18,6 +18,13 @@
 //! writes a change the clock already owed at that instant — so a read never moves a
 //! status that was not already due.
 //!
+//! One owed change cannot be made by the clock, because it is not a write into this
+//! store: the output manifests a finished DICOM import job owes the Amazon S3 prefix it
+//! was pointed at ([`import_job_output`]). Such a job carries that delivery, reaches its
+//! terminal status only once it has been made, and the delivery is made by the job's own
+//! timer or by the first job read that finds it due — the same materialisation, at the
+//! same instant, in the one place that can make it.
+//!
 //! # A data store belongs to ONE region
 //!
 //! AWS HealthImaging is a regional service: a data store exists in the region the
@@ -66,6 +73,9 @@ use crate::ops::types::{DICOMTags, ImportConfiguration};
 /// What a DICOM import READS, and the image sets it materialises from what it read.
 mod dicom_import;
 pub use dicom_import::*;
+
+/// What a DICOM import job's completion WRITES, and what its outcome is decided from.
+pub mod import_job_output;
 
 /// How long after `CreateDatastore` the data store leaves `CREATING` for `ACTIVE`.
 ///
@@ -1012,10 +1022,21 @@ pub struct ImportJob {
     pub import_configuration: Option<ImportConfiguration>,
     pub submitted_at: SystemTime,
     pub ended_at: Option<SystemTime>,
-    pub message: Option<String>,
+    /// The `message` this job's terminal status is to carry, decided when its input was
+    /// read: `None` for a job that is to COMPLETE
+    /// ([`import_job_output::outcome_of`]). Reported only once the job has FAILED
+    /// ([`ImportJob::reported_message`]), because the model documents `message` as "The
+    /// error message thrown if an import job fails".
+    pub failure: Option<String>,
+    /// The job output this job still owes the prefix it names, or `None` when it owes
+    /// none — either because the delivery has been made or because nothing was
+    /// established about its input at all. A job that owes one does not reach its
+    /// terminal status until it is delivered, so the manifests exist before any read
+    /// reports the job finished ([`import_job_output`]).
+    pub output_owed: Option<import_job_output::JobOutput>,
     /// When the job is due to leave `SUBMITTED`.
     pub in_progress_due_at: SystemTime,
-    /// When the job is due to reach `COMPLETED`.
+    /// When the job is due to reach its terminal status.
     pub completed_due_at: SystemTime,
 }
 
@@ -1028,6 +1049,16 @@ impl ImportJob {
         self.job_name.clone().unwrap_or_else(|| self.job_id.clone())
     }
 
+    /// The `message` this job reports: "The error message thrown if an import job fails"
+    /// (`smithy_query(query="shape",shape="DICOMImportJobProperties")`), so it is the
+    /// message of a job that HAS failed and nothing else — a job still running states no
+    /// outcome, and a job that completed has no error to state.
+    pub fn reported_message(&self) -> Option<String> {
+        (self.job_status == JobStatus::Failed)
+            .then(|| self.failure.clone())
+            .flatten()
+    }
+
     /// Materialise every status change the clock owed this job by `now`.
     fn advance_to(&mut self, now: SystemTime) {
         if self.job_status.is_terminal() {
@@ -1036,10 +1067,14 @@ impl ImportJob {
         if now >= self.in_progress_due_at && self.job_status == JobStatus::Submitted {
             self.job_status = JobStatus::InProgress;
         }
-        if now >= self.completed_due_at {
-            self.job_status = JobStatus::Completed;
-            // The due instant, not `now`: `endedAt` must not change between reads.
-            self.ended_at = Some(self.completed_due_at);
+        // A job that still owes its output keeps the non-terminal status it is in until
+        // that delivery is made: the clock cannot write an object into another service,
+        // and a job reported finished whose manifests are not there would be dressing
+        // absence as success. The delivery is claimed by the job's own timer or by the
+        // next read that finds it due ([`import_job_output::deliver_due_outputs`]), and
+        // the status it settles is the one the clock owed at `completed_due_at`.
+        if now >= self.completed_due_at && self.output_owed.is_none() {
+            self.settle_terminal();
         }
     }
 }
@@ -1986,6 +2021,11 @@ pub struct ComAmazonawsMedicalimagingAhigatewayserviceState {
     pub client_token_order: VecDeque<String>,
     /// Monotonic counter behind [`ComAmazonawsMedicalimagingAhigatewayserviceState::mint_id`].
     pub next_id: u64,
+    /// How many import-job output deliveries this service has in flight
+    /// ([`import_job_output::MAX_DELIVERIES_IN_FLIGHT`]). PRIVATE, and taken and given
+    /// back around one delivery, so a burst of submissions cannot leave an unbounded
+    /// number of writes outstanding.
+    deliveries_in_flight: usize,
 }
 
 impl ComAmazonawsMedicalimagingAhigatewayserviceState {

@@ -89,6 +89,9 @@ fn instance(
     pixel_data: Option<Vec<u8>>,
 ) -> ImportedInstance {
     ImportedInstance {
+        // The key of the object the instance came out of, which the grouping carries into
+        // the image set it builds so a job's output manifest can name the input file.
+        source_key: Some(format!("in/{sop}.dcm")),
         study_instance_uid: study.map(str::to_string),
         series_instance_uid: series.map(str::to_string),
         sop_instance_uid: Some(sop.to_string()),
