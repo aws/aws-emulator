@@ -461,17 +461,57 @@ pub const TERMINAL_TRANSACTION_MEMORY: Duration = TRANSACTION_MAX_LIFETIME;
 /// record is dropped first and the ones a live workflow just ended stay.
 pub const MAX_TERMINAL_TRANSACTIONS: usize = 64;
 
-/// What the service tells a caller whose `transactionId` names no transaction that is
-/// RUNNING: an id this resource could have issued and did not, one the clock rolled back,
-/// and one a previous call ended — a commit, a rollback, or a statement of its own that
-/// failed. An id that could NOT have been issued for the resource the call names is a
-/// fault of the call's own shape instead, refused before any transaction is looked up.
+/// What the service tells a caller whose `transactionId` names a transaction a previous
+/// CALL ended — a commit, a rollback, or a statement of its own that failed — one that
+/// reached the maximum lifetime a transaction may run for, and an id this resource could
+/// have issued and did not. A transaction the service abandoned for INACTIVITY carries
+/// [`TRANSACTION_IDLE_MESSAGE`] instead. An id that could NOT have been issued for the
+/// resource the call names is a fault of the call's own shape, refused before any
+/// transaction is looked up.
 ///
 /// Entirely fixed text: it carries no value from the request and none from state, so a
 /// refusal says nothing about which ids this service has issued.
 pub const TRANSACTION_NOT_RUNNING_MESSAGE: &str =
     "INVALID_ARGUMENT: Transaction error: one previous call resulted in a termination of \
      your transaction";
+
+/// What the service tells a caller whose `transactionId` names a transaction the service
+/// itself ABANDONED because no call used its id for [`TRANSACTION_IDLE_TIMEOUT`]: the
+/// transaction aged out while idle and its writes were rolled back, which is a different
+/// thing to tell a client than a transaction a previous call ended — and the only way to
+/// tell them apart, since both carry `TransactionNotFoundException`.
+///
+/// Entirely fixed text, like [`TRANSACTION_NOT_RUNNING_MESSAGE`]: it carries no value
+/// from the request and none from state.
+pub const TRANSACTION_IDLE_MESSAGE: &str =
+    "INVALID_ARGUMENT: Transaction error: transaction has been terminated due to an idleness";
+
+/// Why a transaction is no longer RUNNING — the one thing that distinguishes the refusals
+/// of its `transactionId`, which all carry `TransactionNotFoundException`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransactionEnd {
+    /// It was terminated: a commit installed its writes, a rollback discarded them, a
+    /// statement of its own failed and one of those two then ended it, or it reached the
+    /// maximum lifetime a transaction may run for. An id no transaction of this resource
+    /// ever had is answered the same way, because what the service tells a caller is only
+    /// that no transaction of that id is running.
+    Terminated,
+    /// The service ABANDONED it for inactivity: no call used its id within the window
+    /// [`TRANSACTION_IDLE_TIMEOUT`] measures, so the transaction was rolled back on its
+    /// own.
+    Idle,
+}
+
+impl TransactionEnd {
+    /// The sentence a refusal of this transaction's id carries.
+    #[must_use]
+    pub fn sentence(self) -> &'static str {
+        match self {
+            Self::Terminated => TRANSACTION_NOT_RUNNING_MESSAGE,
+            Self::Idle => TRANSACTION_IDLE_MESSAGE,
+        }
+    }
+}
 
 /// The `transactionStatus` a commit reports — the one it installed a transaction's
 /// writes with, and the one a COMMIT of a transaction that a statement of its own had
@@ -605,28 +645,54 @@ impl Cluster {
         self.databases.retain(|_, database| !database.is_empty());
     }
 
-    /// Drop every transaction the clock has already rolled back: one idle for
+    /// Roll back every transaction the clock has already ended: one idle for
     /// [`TRANSACTION_IDLE_TIMEOUT`], and one that has been open for
     /// [`TRANSACTION_MAX_LIFETIME`]. Both are owed at the instant they fall due
     /// whether or not anybody calls, so materialising them here is reporting what
-    /// the clock did, and a later call quoting that `transactionId` is answered
-    /// with `TransactionNotFoundException` the way the real service answers a
-    /// timed-out one.
+    /// the clock did, and a later call quoting that `transactionId` is answered with
+    /// `TransactionNotFoundException` — carrying the sentence for WHY the transaction
+    /// stopped running ([`TransactionEnd`]), which is what tells a client a transaction
+    /// that aged out while idle from one a previous call ended.
     ///
-    /// A transaction that ENDED is forgotten the same way once
-    /// [`TERMINAL_TRANSACTION_MEMORY`] has passed, and the oldest ended record goes
-    /// first past [`MAX_TERMINAL_TRANSACTIONS`]: a forgotten terminal id and a remembered
-    /// one are answered alike, so this changes nothing a caller can observe.
+    /// The clock's rollback is a rollback: the copy the transaction was writing into is
+    /// dropped, so none of its writes reach the committed database, and the marks its
+    /// sequences handed out are carried into that database first — for the reason
+    /// [`Database::advance_sequences`] gives, which does not depend on who ended the
+    /// transaction.
+    ///
+    /// A transaction that ended is FORGOTTEN once [`TERMINAL_TRANSACTION_MEMORY`] has
+    /// passed, and the oldest ended record goes first past
+    /// [`MAX_TERMINAL_TRANSACTIONS`]: a forgotten terminal id is answered as one the
+    /// service never issued, which is the same refusal.
     pub fn expire_timed_out_transactions(&mut self) {
+        // What each transaction the clock just ended had taken out of a sequence, by the
+        // database it was opened for: read while its copy is still here, carried over
+        // once the loop has let go of it.
+        let mut carried: Vec<(String, Vec<(String, i64)>)> = Vec::new();
+        for transaction in self.transactions.values_mut() {
+            if let Some(pending) = transaction.end_if_the_clock_has() {
+                carried.push((
+                    database_key(transaction.database.as_ref()),
+                    pending.sequence_marks(),
+                ));
+            }
+        }
+        for (database, marks) in carried {
+            // Only into a database this cluster still has: the clock's rollback creates
+            // nothing.
+            if let Some(committed) = self.databases.get(&database) {
+                committed.advance_sequences(&marks);
+            }
+        }
         self.transactions
-            .retain(|_, transaction| !transaction.timed_out());
+            .retain(|_, transaction| !transaction.is_forgotten());
         while self.terminal_transaction_count() > MAX_TERMINAL_TRANSACTIONS {
             let Some(oldest) = self
                 .transactions
                 .values()
                 .filter_map(|transaction| {
                     transaction
-                        .terminated_at
+                        .ended_at()
                         .map(|at| (at, transaction.id.clone()))
                 })
                 .min()
@@ -660,8 +726,8 @@ impl Cluster {
     /// `Err(SqlError::TransactionNotFound)` for an id this cluster has no open
     /// transaction for — one it never issued, one the clock has rolled back, and one that
     /// has ENDED (committed, rolled back, or terminated by a statement of its own that
-    /// failed). Using the id of a transaction that is no longer running it is the same
-    /// refusal however it stopped running, which is what the real service answers.
+    /// failed) — carrying WHY that transaction is no longer running, which is the one
+    /// thing the refusal of its id says about it.
     pub fn open_transaction_mut(
         &mut self,
         transaction_id: &str,
@@ -669,9 +735,9 @@ impl Cluster {
         let transaction = self
             .transactions
             .get_mut(transaction_id)
-            .ok_or(SqlError::TransactionNotFound)?;
-        if transaction.is_terminal() {
-            return Err(SqlError::TransactionNotFound);
+            .ok_or(SqlError::TransactionNotFound(TransactionEnd::Terminated))?;
+        if let Some(end) = transaction.end_cause() {
+            return Err(SqlError::TransactionNotFound(end));
         }
         Ok(transaction)
     }
@@ -681,7 +747,7 @@ impl Cluster {
     pub fn end_transaction(&mut self, transaction_id: &str) -> Result<Database, SqlError> {
         self.transactions
             .get_mut(transaction_id)
-            .ok_or(SqlError::TransactionNotFound)?
+            .ok_or(SqlError::TransactionNotFound(TransactionEnd::Terminated))?
             .end()
     }
 
@@ -1778,10 +1844,12 @@ impl Drop for Watchdog {
 ///   ignores every further command "until end of transaction block". The transaction is
 ///   still THERE: only a commit or a rollback ends it, and either one discards what it
 ///   wrote;
-/// * ENDED — a commit installed its writes, or a rollback discarded them. Its id stays
-///   with the cluster rather than vanishing from it, so a later call quoting that id is
-///   answered for a transaction that ended rather than served against a copy of the
-///   database nobody can commit any more.
+/// * ENDED — a commit installed its writes, a rollback discarded them, or the CLOCK
+///   rolled it back: the window it may sit idle in, or the lifetime it may run for,
+///   passed. Its id stays with the cluster rather than vanishing from it, so a later call
+///   quoting that id is answered for a transaction that ended — and told WHY it ended
+///   ([`TransactionEnd`]) — rather than served against a copy of the database nobody can
+///   commit any more.
 ///
 /// Its copy of the database goes when it ends, so what is remembered is the id and when it
 /// ended.
@@ -1821,8 +1889,16 @@ pub struct Transaction {
     /// Set when a statement of this transaction failed, which is what the database
     /// ignores every further command of it for. A commit or a rollback still ends it.
     aborted: bool,
-    /// When the transaction ended, and `None` while it is open or aborted.
-    terminated_at: Option<SystemTime>,
+    /// When the transaction ended and WHY, and `None` while it is open or aborted.
+    ended: Option<Ended>,
+}
+
+/// When a transaction stopped running, and why — what a refusal of its id is answered
+/// from once it is no longer running.
+#[derive(Debug, Clone, Copy)]
+struct Ended {
+    at: SystemTime,
+    cause: TransactionEnd,
 }
 
 /// One statement a transaction ran that changed its database, with the values it bound.
@@ -1870,7 +1946,7 @@ impl Transaction {
                 writes: Vec::new(),
                 based_on,
                 aborted: false,
-                terminated_at: None,
+                ended: None,
             },
         );
         Ok(id)
@@ -1881,10 +1957,20 @@ impl Transaction {
         self.last_used_at = SystemTime::now();
     }
 
-    /// Whether this transaction has ENDED — a commit installed its writes, or a rollback
-    /// discarded them.
+    /// Whether this transaction has ENDED — a commit installed its writes, a rollback
+    /// discarded them, or the clock rolled it back.
     pub fn is_terminal(&self) -> bool {
-        self.terminated_at.is_some()
+        self.ended.is_some()
+    }
+
+    /// Why this transaction is no longer running, and `None` while it still is.
+    pub fn end_cause(&self) -> Option<TransactionEnd> {
+        self.ended.map(|ended| ended.cause)
+    }
+
+    /// When this transaction stopped running, and `None` while it still is.
+    fn ended_at(&self) -> Option<SystemTime> {
+        self.ended.map(|ended| ended.at)
     }
 
     /// Whether a statement of this transaction FAILED, so the database ignores every
@@ -1902,7 +1988,9 @@ impl Transaction {
         if self.aborted {
             return Err(SqlError::Engine(postgres::transaction_aborted()));
         }
-        self.pending.as_mut().ok_or(SqlError::TransactionNotFound)
+        self.pending
+            .as_mut()
+            .ok_or(SqlError::TransactionNotFound(TransactionEnd::Terminated))
     }
 
     /// Whether this transaction's copy was built from the committed database as it is
@@ -1973,8 +2061,13 @@ impl Transaction {
     /// `Err` for one that has already ended, which is what refuses a second commit or
     /// rollback of the same id.
     pub fn end(&mut self) -> Result<Database, SqlError> {
-        let pending = self.pending.take().ok_or(SqlError::TransactionNotFound)?;
-        self.terminated_at = Some(SystemTime::now());
+        let pending = self.pending.take().ok_or_else(|| {
+            SqlError::TransactionNotFound(self.end_cause().unwrap_or(TransactionEnd::Terminated))
+        })?;
+        self.ended = Some(Ended {
+            at: SystemTime::now(),
+            cause: TransactionEnd::Terminated,
+        });
         Ok(pending)
     }
 
@@ -1988,24 +2081,53 @@ impl Transaction {
         self.aborted = true;
     }
 
-    /// Whether the clock has already timed this transaction out — an OPEN or ABORTED one
-    /// idle or old enough to be rolled back, or an ENDED one past the window a terminal id
-    /// is kept for.
-    fn timed_out(&self) -> bool {
-        match self.terminated_at {
-            Some(terminated_at) => terminated_at
-                .elapsed()
-                .is_ok_and(|since| since >= TERMINAL_TRANSACTION_MEMORY),
-            None => {
-                self.last_used_at
-                    .elapsed()
-                    .is_ok_and(|idle| idle >= TRANSACTION_IDLE_TIMEOUT)
-                    || self
-                        .created_at
-                        .elapsed()
-                        .is_ok_and(|age| age >= TRANSACTION_MAX_LIFETIME)
-            }
+    /// End this transaction if the CLOCK has already ended it, and hand back the copy of
+    /// the database it was writing into so its sequence marks can be carried over before
+    /// it is dropped. `None` for one the clock does not owe a rollback, and for one that
+    /// has already stopped running.
+    ///
+    /// Two windows end a transaction nobody ended:
+    ///
+    /// * it sat IDLE for [`TRANSACTION_IDLE_TIMEOUT`] — "a transaction times out if no
+    ///   calls use its transaction ID in three minutes", and a transaction that timed out
+    ///   "is rolled back automatically" — so its id is answered from then on as one the
+    ///   service abandoned for inactivity ([`TransactionEnd::Idle`]);
+    /// * it has been open for [`TRANSACTION_MAX_LIFETIME`] — "a transaction is terminated
+    ///   and rolled back automatically after 24 hours" — which the service words as a
+    ///   termination like any other ([`TransactionEnd::Terminated`]).
+    ///
+    /// Each is dated at the instant it FELL DUE and not at the call that noticed, so how
+    /// long a terminal record is then kept does not depend on when anybody looked.
+    fn end_if_the_clock_has(&mut self) -> Option<Database> {
+        if self.is_terminal() {
+            return None;
         }
+        let idle_since = self.last_used_at + TRANSACTION_IDLE_TIMEOUT;
+        let lifetime_since = self.created_at + TRANSACTION_MAX_LIFETIME;
+        let now = SystemTime::now();
+        let (at, cause) = if idle_since <= now {
+            (idle_since, TransactionEnd::Idle)
+        } else if lifetime_since <= now {
+            (lifetime_since, TransactionEnd::Terminated)
+        } else {
+            return None;
+        };
+        let pending = self.pending.take();
+        // The statements it wrote go with the copy they wrote into: nothing can replay
+        // them any more.
+        self.writes.clear();
+        self.ended = Some(Ended { at, cause });
+        pending
+    }
+
+    /// Whether this transaction can be FORGOTTEN: an ended one past the window a terminal
+    /// id is kept for. Its id is then answered as one of a transaction that ended all the
+    /// same, which is what a forgotten record and a remembered one have in common.
+    fn is_forgotten(&self) -> bool {
+        self.ended_at().is_some_and(|at| {
+            at.elapsed()
+                .is_ok_and(|since| since >= TERMINAL_TRANSACTION_MEMORY)
+        })
     }
 }
 
@@ -2350,8 +2472,11 @@ pub enum SqlError {
     /// The result the statement produced cannot be returned in the form the
     /// request asked for.
     UnsupportedResult(String),
-    /// The request quoted a `transactionId` no open transaction answers to.
-    TransactionNotFound,
+    /// The request quoted a `transactionId` no open transaction answers to, and WHY that
+    /// transaction is no longer running — the only thing that tells a caller a
+    /// transaction the service abandoned for inactivity from one a previous call ended,
+    /// since both are the modelled `TransactionNotFoundException`.
+    TransactionNotFound(TransactionEnd),
     /// The request itself is wrong in a way the model's own constraints do not
     /// express.
     InvalidRequest(String),
@@ -2418,7 +2543,7 @@ impl SqlError {
             | Self::UnsupportedResult(message)
             | Self::InvalidRequest(message)
             | Self::Capacity(message) => message.clone(),
-            Self::TransactionNotFound => TRANSACTION_NOT_RUNNING_MESSAGE.to_string(),
+            Self::TransactionNotFound(end) => end.sentence().to_string(),
             Self::Timeout => format!(
                 "the statement did not finish within {} seconds",
                 STATEMENT_TIME_BUDGET.as_secs()

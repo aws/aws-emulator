@@ -291,7 +291,7 @@ fn rollback(
 fn request_failed(error: crate::state::SqlError) -> RollbackTransactionError {
     let message = Some(error.message());
     match error {
-        crate::state::SqlError::TransactionNotFound => {
+        crate::state::SqlError::TransactionNotFound(_) => {
             RollbackTransactionErrorModeled::TransactionNotFoundException(
                 TransactionNotFoundException { message },
             )

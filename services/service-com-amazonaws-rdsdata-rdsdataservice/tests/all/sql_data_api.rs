@@ -8,6 +8,7 @@
 //! every table row is one input of the class the rule generalises over.
 
 use std::sync::Arc;
+use std::time::{Duration, SystemTime};
 
 use serde_json::{json, Value};
 use service_com_amazonaws_rdsdata_rdsdataservice::EmulatedService;
@@ -20,6 +21,10 @@ const SECRET_ARN: &str = "arn:aws:secretsmanager:us-east-1:000000000000:secret:d
 /// one drive the same client.
 pub(crate) struct DataApi {
     router: MultiServiceRouter,
+    /// The ONE engine the router hands every handler of this service, kept so a suite can
+    /// reach this service's own store the way a handler does — which is how a suite drives
+    /// the CLOCK a window is measured against instead of waiting for it ([`Self::age_transaction`]).
+    engine: Arc<engine::InMemoryEngine>,
 }
 
 impl DataApi {
@@ -27,8 +32,44 @@ impl DataApi {
         let engine: Arc<engine::InMemoryEngine> = Arc::new(engine::InMemoryEngine::new());
         let mut router = MultiServiceRouter::new();
         router.set_request_authentication(false);
-        router.register_service(EmulatedService::new(engine));
-        Self { router }
+        router.register_service(EmulatedService::new(Arc::clone(&engine)));
+        Self { router, engine }
+    }
+
+    /// Present the transaction `transaction_id` names as one OPENED `open_for` ago whose
+    /// id was last used `idle_for` ago, by moving the instants its windows are measured
+    /// from back by those amounts.
+    ///
+    /// The clock a suite drives: a window the service owes is reached by moving the
+    /// transaction's own instants, so nothing waits for wall-clock time to pass. Pass
+    /// `open_for` no smaller than `idle_for` — a transaction cannot have been used before
+    /// it was opened.
+    pub(crate) fn age_transaction(
+        &self,
+        transaction_id: &str,
+        open_for: Duration,
+        idle_for: Duration,
+    ) {
+        assert!(
+            open_for >= idle_for,
+            "case {transaction_id}: a transaction cannot have been used {idle_for:?} ago and \
+             opened only {open_for:?} ago"
+        );
+        let store = service_com_amazonaws_rdsdata_rdsdataservice::state::service_state(
+            &*self.engine,
+        )
+        .expect("this service's store is in the shared engine");
+        let mut state = store.lock();
+        let cluster = state
+            .cluster_mut(RESOURCE_ARN)
+            .expect("the cluster every call of this suite addresses");
+        let transaction = cluster
+            .transactions
+            .get_mut(transaction_id)
+            .unwrap_or_else(|| panic!("the cluster holds the transaction {transaction_id}"));
+        let now = SystemTime::now();
+        transaction.created_at = now - open_for;
+        transaction.last_used_at = now - idle_for;
     }
 
     /// Send one request the way an SDK client does, and read the status and body.

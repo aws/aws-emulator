@@ -21,6 +21,8 @@ mod engine_dialects;
 mod engine_release_floor;
 #[path = "all/exact_numeric_results.rs"]
 mod exact_numeric_results;
+#[path = "all/idle_transaction_expiry.rs"]
+mod idle_transaction_expiry;
 #[path = "all/json_record_values.rs"]
 mod json_record_values;
 #[path = "all/malformed_transaction_ids.rs"]

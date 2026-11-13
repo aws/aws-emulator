@@ -314,7 +314,7 @@ fn commit(
 fn request_failed(error: crate::state::SqlError) -> CommitTransactionError {
     let message = Some(error.message());
     match error {
-        crate::state::SqlError::TransactionNotFound => {
+        crate::state::SqlError::TransactionNotFound(_) => {
             CommitTransactionErrorModeled::TransactionNotFoundException(
                 TransactionNotFoundException { message },
             )

@@ -392,7 +392,7 @@ fn execute_batch(
 fn statement_failed(error: crate::state::SqlError) -> BatchExecuteStatementError {
     let message = Some(error.message());
     match error {
-        crate::state::SqlError::TransactionNotFound => {
+        crate::state::SqlError::TransactionNotFound(_) => {
             BatchExecuteStatementErrorModeled::TransactionNotFoundException(
                 TransactionNotFoundException { message },
             )

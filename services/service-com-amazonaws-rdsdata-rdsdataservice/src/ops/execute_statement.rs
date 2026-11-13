@@ -442,7 +442,7 @@ fn format_as_json(format: Option<&str>) -> bool {
 fn statement_failed(error: crate::state::SqlError) -> ExecuteStatementError {
     let message = Some(error.message());
     match error {
-        crate::state::SqlError::TransactionNotFound => {
+        crate::state::SqlError::TransactionNotFound(_) => {
             ExecuteStatementErrorModeled::TransactionNotFoundException(
                 TransactionNotFoundException { message },
             )
