@@ -25,6 +25,8 @@ mod component_listing;
 mod component_listing_wire_members;
 #[path = "all/component_policy.rs"]
 mod component_policy;
+#[path = "all/component_policy_lifecycle.rs"]
+mod component_policy_lifecycle;
 #[path = "all/distribution_configuration.rs"]
 mod distribution_configuration;
 #[path = "all/error_response_envelope.rs"]
