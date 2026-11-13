@@ -1,15 +1,8 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op DeleteDeployment
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `DeleteDeployment`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
-//!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`DeleteDeployment::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! Deletes one recorded deployment, and refuses an ACTIVE one: a deployment still being
+//! applied has to be cancelled before it can be deleted.
 //!
 //! ## Shape of an operation
 //!
@@ -174,18 +167,50 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `DeleteDeployment` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(DeleteDeploymentErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("DeleteDeployment"))
+        use crate::state as st;
+
+        let Some(state) = st::service_state(&*self.engine) else {
+            return Err(DeleteDeploymentErrorModeled::InternalServerException(
+                InternalServerException {
+                    message: "the greengrassv2 state store is unavailable".to_string(),
+                    retry_after_seconds: 1,
+                },
+            )
+            .into());
+        };
+
+        let mut store = state.lock();
+        let Some(entry) = store.deployments.get(&input.deployment_id) else {
+            return Err(DeleteDeploymentErrorModeled::ResourceNotFoundException(
+                st::deployment_not_found(&input.deployment_id),
+            )
+            .into());
+        };
+        // "To delete an active deployment, you must first cancel it": a deployment that
+        // is still being applied to its target is not deleted, and its record is left
+        // exactly as it was, so the caller can cancel it and delete it then.
+        if entry.deployment_status == st::DEPLOYMENT_STATUS_ACTIVE {
+            return Err(DeleteDeploymentErrorModeled::ValidationException(
+                st::deployment_must_be_canceled(),
+            )
+            .into());
+        }
+        // Drops the deployment and every index entry that referred to it, promoting
+        // whichever revision of that target survives it to latest for the target.
+        store.remove_deployment(&input.deployment_id);
+        drop(store);
+
+        // Audit record for a state-changing call: who asked, what changed, and how it
+        // ended. The presented access-key id is an identifier, never a secret.
+        ::tracing::info!(
+            target: "audit",
+            operation = Self::NAME,
+            outcome = "deleted",
+            principal = %::engine::extract_akid(&ctx.parts().headers),
+            resource = %input.deployment_id,
+            "deleted a deployment"
+        );
+
+        Ok(DeleteDeploymentOutput {})
     }
 }

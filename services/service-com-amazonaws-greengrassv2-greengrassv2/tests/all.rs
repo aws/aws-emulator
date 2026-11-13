@@ -25,6 +25,8 @@ mod core_device_data_plane_authorization;
 mod core_device_fleet;
 #[path = "all/deployment_cancellation.rs"]
 mod deployment_cancellation;
+#[path = "all/deployment_history_and_tag_removal.rs"]
+mod deployment_history_and_tag_removal;
 #[path = "all/not_found_refusal_class_per_route.rs"]
 mod not_found_refusal_class_per_route;
 #[path = "all/resource_tag_writes.rs"]

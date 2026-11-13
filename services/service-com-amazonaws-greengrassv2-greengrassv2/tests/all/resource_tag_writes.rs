@@ -43,6 +43,10 @@ const REGION: &str = "us-west-2";
 /// The account id every emulated ARN carries (`engine::EMULATOR_ACCOUNT_ID`).
 const ACCOUNT: &str = "000000000000";
 
+/// The status a successful tag write answers: `TagResourceResponse` declares no member,
+/// and this surface answers such a success `204 No Content`.
+const TAG_WRITE_STATUS: u16 = 204;
+
 /// The emulator front door with only this service mounted, over ONE shared engine —
 /// exactly how `core/router` assembles it.
 fn emulator() -> MultiServiceRouter {
@@ -301,14 +305,16 @@ async fn tagging_a_resource_persists_exactly_what_the_write_carried() {
             for (attempt, write) in case.writes.iter().enumerate() {
                 let (status, body) = tag(&router, &arn, &pairs(write)).await;
                 assert_eq!(
-                    status, 200,
-                    "case {:?} on {kind:?}, write {attempt}: expected 200, got {status} {body}",
+                    status, TAG_WRITE_STATUS,
+                    "case {:?} on {kind:?}, write {attempt}: expected \
+                     {TAG_WRITE_STATUS}, got {status} {body}",
                     case.label
                 );
-                // The success body is empty: the modelled output carries no member.
+                // The success carries no content at all: the modelled output declares no
+                // member, so there is nothing to parse and no body to parse it from.
                 assert!(
-                    body.as_object().is_none_or(Map::is_empty),
-                    "case {:?} on {kind:?}, write {attempt}: expected an empty body, got {body}",
+                    body.is_null() || body.as_object().is_none_or(Map::is_empty),
+                    "case {:?} on {kind:?}, write {attempt}: expected no content, got {body}",
                     case.label
                 );
             }
@@ -442,7 +448,7 @@ async fn a_resource_arn_naming_nothing_is_refused_as_the_tagging_route_words_it(
     ] {
         let (status, body) = tag(&router, &arn, &pairs(&[("probe", "x")])).await;
         assert_eq!(
-            status, 200,
+            status, TAG_WRITE_STATUS,
             "case {case:?}: the live resource must still be taggable, got {status} {body}"
         );
         let (status, listed) = list_tags(&router, &arn).await;
@@ -467,15 +473,16 @@ async fn a_resource_cannot_be_grown_past_the_tag_sets_own_bound() {
         .collect();
     let (status, body) = tag(&router, &arn, &at_the_bound).await;
     assert_eq!(
-        status, 200,
-        "case exactly {MAX_TAGS_PER_RESOURCE} tags: expected 200, got {status} {body}"
+        status, TAG_WRITE_STATUS,
+        "case exactly {MAX_TAGS_PER_RESOURCE} tags: expected {TAG_WRITE_STATUS}, \
+         got {status} {body}"
     );
 
     // Rewriting a key the resource already carries stays at the bound, so it is served.
     let (status, body) = tag(&router, &arn, &at_the_bound[..1]).await;
     assert_eq!(
-        status, 200,
-        "case rewriting a key already stored: expected 200, got {status} {body}"
+        status, TAG_WRITE_STATUS,
+        "case rewriting a key already stored: expected {TAG_WRITE_STATUS}, got {status} {body}"
     );
 
     // One key past it is refused, and the stored set is left as it was.

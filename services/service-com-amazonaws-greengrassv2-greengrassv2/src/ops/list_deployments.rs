@@ -1,15 +1,9 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op ListDeployments
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `ListDeployments`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
-//!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`ListDeployments::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! Lists the deployments this account has recorded, newest first: the latest revision of
+//! each target's deployment, or every revision when the caller asks for the whole
+//! history, narrowed to one target or one parent target and returned a page at a time.
 //!
 //! ## Shape of an operation
 //!
@@ -157,18 +151,133 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `ListDeployments` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(ListDeploymentsErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("ListDeployments"))
+        let _ = ctx;
+        use crate::state as st;
+
+        let Some(state) = st::service_state(&*self.engine) else {
+            return Err(ListDeploymentsErrorModeled::InternalServerException(
+                InternalServerException {
+                    message: "the greengrassv2 state store is unavailable".to_string(),
+                    retry_after_seconds: 1,
+                },
+            )
+            .into());
+        };
+
+        // "Default: LATEST_ONLY" (`ListDeployments$historyFilter`): a caller that names
+        // no filter is listing the current deployment of each target, not its history.
+        let history_filter = input
+            .history_filter
+            .as_deref()
+            .unwrap_or(st::HISTORY_FILTER_LATEST_ONLY);
+        if !DEPLOYMENT_HISTORY_FILTER_VALUES.contains(&history_filter) {
+            return Err(ListDeploymentsErrorModeled::ValidationException(ValidationException {
+                message: format!(
+                    "historyFilter must be one of {}; got {history_filter}.",
+                    DEPLOYMENT_HISTORY_FILTER_VALUES.join(", ")
+                ),
+                reason: Some("FIELD_VALIDATION_FAILED".to_string()),
+                fields: Some(vec![ValidationExceptionField {
+                    name: "historyFilter".to_string(),
+                    message: format!(
+                        "{history_filter} is not a DeploymentHistoryFilter value."
+                    ),
+                }]),
+            })
+            .into());
+        }
+        let latest_only = history_filter == st::HISTORY_FILTER_LATEST_ONLY;
+
+        let page_size = usize::try_from(
+            input
+                .max_results
+                .unwrap_or(st::MAX_PAGE_SIZE)
+                .clamp(1, st::MAX_PAGE_SIZE),
+        )
+        .unwrap_or(1);
+
+        let resume_at = match input.next_token.as_deref() {
+            None => None,
+            Some(token) => match st::decode_cursor(token) {
+                Some(key) => Some(key),
+                None => {
+                    return Err(ListDeploymentsErrorModeled::ValidationException(
+                        ValidationException {
+                            message: "nextToken is not a token this service issued.".to_string(),
+                            reason: Some("FIELD_VALIDATION_FAILED".to_string()),
+                            fields: Some(vec![ValidationExceptionField {
+                                name: "nextToken".to_string(),
+                                message: "the cursor could not be decoded".to_string(),
+                            }]),
+                        },
+                    )
+                    .into())
+                }
+            },
+        };
+
+        // A pure report: every member below is READ from the stored deployment, so two
+        // callers at the same instant see the same list and listing changes nothing.
+        let store = state.lock();
+
+        // A deployment history is a log, so it is reported newest first: the order queue
+        // holds every stored deployment id in creation order, and reading it backwards is
+        // that order reversed. A resumed page starts AT the cursor's own id — the ids
+        // before it in this order are the ones the earlier pages reported.
+        let mut resumed = resume_at.is_none();
+        let mut deployments: Vec<Deployment> = Vec::new();
+        let mut next_token = None;
+        for id in store.deployment_order.iter().rev() {
+            if !resumed {
+                if Some(id) == resume_at.as_ref() {
+                    resumed = true;
+                } else {
+                    continue;
+                }
+            }
+            let Some(entry) = store.deployments.get(id) else {
+                continue;
+            };
+            if latest_only && !entry.is_latest_for_target {
+                continue;
+            }
+            if input
+                .target_arn
+                .as_ref()
+                .is_some_and(|wanted| wanted != &entry.target_arn)
+            {
+                continue;
+            }
+            // A `parentTargetArn` filter selects the subdeployments OF that parent, so a
+            // deployment that names no parent is not one of them.
+            if input
+                .parent_target_arn
+                .as_ref()
+                .is_some_and(|wanted| entry.parent_target_arn.as_ref() != Some(wanted))
+            {
+                continue;
+            }
+            if deployments.len() == page_size {
+                // This deployment begins the next page, so its id is the cursor.
+                next_token = Some(st::encode_cursor(id));
+                break;
+            }
+            deployments.push(Deployment {
+                target_arn: Some(entry.target_arn.clone()),
+                revision_id: Some(entry.revision_id.clone()),
+                deployment_id: Some(entry.deployment_id.clone()),
+                deployment_name: entry.deployment_name.clone(),
+                creation_timestamp: Some(st::to_datetime(entry.creation_timestamp)),
+                deployment_status: Some(entry.deployment_status.clone()),
+                is_latest_for_target: entry.is_latest_for_target,
+                parent_target_arn: entry.parent_target_arn.clone(),
+            });
+        }
+
+        Ok(ListDeploymentsOutput {
+            deployments: Some(deployments),
+            next_token,
+        })
     }
 }
+

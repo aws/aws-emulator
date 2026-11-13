@@ -18,6 +18,10 @@
 //! `ResourceNotFoundException` (HTTP 404), and the job's lifecycle follows the
 //! deployment's: cancelling the deployment cancels the job that applies it.
 //!
+//! The same rule runs the other way at the create: a deployment's TARGET is a record of
+//! the IoT control plane, so each deployment below is preceded by the thing or thing
+//! group it targets being created there.
+//!
 //! Rows span what the rule generalises over: both target forms a deployment may name (a
 //! thing and a thing group), a deployment with and without an IoT job configuration,
 //! and — for a job this plane creates itself — both `targetSelection` values, so a job
@@ -208,6 +212,36 @@ impl Emulator {
         )
         .await
     }
+
+    /// Create the IoT thing or thing group `target_arn` names, in the plane that OWNS
+    /// that record.
+    ///
+    /// The prerequisite every deployment has, here as on AWS: `CreateDeployment`
+    /// resolves its target against the IoT control plane before it records anything, so
+    /// a target that plane holds nothing under is refused. A target an earlier row
+    /// already created answers `ResourceAlreadyExistsException`, which is the same
+    /// prerequisite met.
+    async fn ensure_target(&self, target_arn: &str) {
+        let resource = target_arn
+            .rsplit_once(':')
+            .map(|(_, resource)| resource)
+            .unwrap_or_default();
+        let (space, name) = match resource.split_once('/') {
+            Some(("thinggroup", name)) => ("/thing-groups", name),
+            Some(("thing", name)) => ("/things", name),
+            _ => panic!("setup: {target_arn:?} names no IoT thing or thing group"),
+        };
+        let created = self
+            .call(IOT, "POST", &format!("{space}/{name}"), Some(json!({})))
+            .await;
+        assert!(
+            created.status == 200 || created.error_code == "ResourceAlreadyExistsException",
+            "setup: creating the target {target_arn:?} must succeed or report it already \
+             exists, got {} {:?}",
+            created.status,
+            created.body
+        );
+    }
 }
 
 /// The ARN of a thing group, as a deployment names one.
@@ -258,6 +292,9 @@ async fn a_deployments_iot_job_is_resolvable_in_the_iot_jobs_plane() {
     ];
 
     for case in &cases {
+        // The deployment's target has to exist in the plane that owns it before the
+        // deployment can be created at all.
+        emulator.ensure_target(&case.target_arn).await;
         let mut request = json!({
             "targetArn": case.target_arn,
             "deploymentName": case.deployment_name,
@@ -377,9 +414,11 @@ async fn a_deployments_iot_job_is_resolvable_in_the_iot_jobs_plane() {
 async fn cancelling_a_deployment_cancels_the_job_that_applies_it() {
     let emulator = Emulator::new();
 
+    let target_arn = thing_group_arn("CancelledGroup");
+    emulator.ensure_target(&target_arn).await;
     let created = emulator
         .create_deployment(json!({
-            "targetArn": thing_group_arn("CancelledGroup"),
+            "targetArn": target_arn,
             "deploymentName": "to-be-cancelled",
         }))
         .await;

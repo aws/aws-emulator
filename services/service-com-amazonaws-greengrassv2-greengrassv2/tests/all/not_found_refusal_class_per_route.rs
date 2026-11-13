@@ -45,6 +45,10 @@ const REGION: &str = "us-west-2";
 /// The account id every emulated ARN carries (`engine::EMULATOR_ACCOUNT_ID`).
 const ACCOUNT: &str = "000000000000";
 
+/// The status a successful tag write answers: `TagResourceResponse` declares no member,
+/// and this surface answers such a success `204 No Content`.
+const TAG_WRITE_STATUS: u16 = 204;
+
 /// The code the id-keyed component and deployment operations model for a resource that is
 /// not there (`smithy_query(query="operation",operation="DescribeComponent,GetDeployment")`
 /// lists `ResourceNotFoundException` (HTTP 404) for both).
@@ -472,8 +476,9 @@ async fn an_absent_component_version_is_refused_in_each_route_s_own_words() {
     );
     let (status, body) = tag(&router, &live).await;
     assert_eq!(
-        status, 200,
-        "case the live component version on TagResource: expected 200, got {status} {body}"
+        status, TAG_WRITE_STATUS,
+        "case the live component version on TagResource: expected {TAG_WRITE_STATUS}, \
+         got {status} {body}"
     );
 }
 
@@ -546,8 +551,9 @@ async fn an_absent_deployment_is_refused_in_each_route_s_own_words() {
     );
     let (status, body) = tag(&router, &deployment_arn(&live)).await;
     assert_eq!(
-        status, 200,
-        "case the cancelled deployment on TagResource: expected 200, got {status} {body}"
+        status, TAG_WRITE_STATUS,
+        "case the cancelled deployment on TagResource: expected {TAG_WRITE_STATUS}, \
+         got {status} {body}"
     );
 }
 

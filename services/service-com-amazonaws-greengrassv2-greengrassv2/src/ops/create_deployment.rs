@@ -2,7 +2,10 @@
 
 //! @op CreateDeployment
 //! Records a deployment for an IoT thing or thing group, assigning it a deployment
-//! id, an IoT job, a revision number and the latest-for-target flag.
+//! id, an IoT job, a revision number and the latest-for-target flag. The target is
+//! resolved against the plane that owns it first: a thing or thing group the IoT
+//! control plane answers that it holds nothing under is refused, and nothing is
+//! recorded for it.
 //!
 //! ## Shape of an operation
 //!
@@ -206,8 +209,28 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .into());
         };
 
-        let now = ::std::time::SystemTime::now();
         let region = st::request_region(ctx.parts());
+
+        // A deployment is applied TO a target, so the target has to exist: the record
+        // belongs to the IoT control plane, which is asked about it before anything is
+        // written here — the deployment and the IoT job that applies it are both minted
+        // below, and a target that plane holds nothing for would leave both addressing a
+        // device that does not exist. A subdeployment's `parentTargetArn` names a target
+        // the same way, so it is held to the same rule. Only an ANSWER that the target is
+        // absent refuses the request; see `st::iot_target`.
+        for target_arn in [Some(&input.target_arn), input.parent_target_arn.as_ref()]
+            .into_iter()
+            .flatten()
+        {
+            if st::iot_target::target_is_absent(ctx, &region, target_arn).await {
+                return Err(
+                    CreateDeploymentErrorModeled::ValidationException(st::target_not_found())
+                        .into(),
+                );
+            }
+        }
+
+        let now = ::std::time::SystemTime::now();
         let mut store = state.lock();
         store.expire_tokens(now);
 

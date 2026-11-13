@@ -24,7 +24,12 @@ pub use paging::*;
 use crate::ops::types::{
     CloudComponentStatus, ComponentDeploymentSpecification, ComponentPlatform,
     DeploymentIoTJobConfiguration, DeploymentPolicies, ResourceNotFoundException,
+    ValidationException,
 };
+
+/// Does the IoT thing or thing group a deployment names exist? Asked of the plane that
+/// owns it.
+pub mod iot_target;
 
 /// This service's ARN namespace (`OPERATIONS.md`: ARN namespace `greengrass`).
 pub const ARN_NAMESPACE: &str = "greengrass";
@@ -91,10 +96,32 @@ pub const STATUS_MESSAGE_NONE: &str = "NONE";
 pub const SCOPE_PRIVATE: &str = "PRIVATE";
 /// `DeploymentStatus` of the deployment that is current for its target.
 pub const DEPLOYMENT_STATUS_ACTIVE: &str = "ACTIVE";
+/// What `CreateDeployment` reports for a `targetArn` whose IoT thing or thing group the
+/// plane that owns it holds nothing under: one fixed sentence that names no value of the
+/// request, so the refusal reports neither the ARN nor the name it carried.
+pub const TARGET_NOT_FOUND_MESSAGE: &str = "Invalid Input: Target not found";
+
+/// `DeploymentHistoryFilter` value that lists every revision of every deployment
+/// (`smithy_query(query="shape",shape="DeploymentHistoryFilter")`: `ALL`,
+/// `LATEST_ONLY`).
+pub const HISTORY_FILTER_ALL: &str = "ALL";
+
+/// `DeploymentHistoryFilter` value that lists only the latest revision of each
+/// deployment, which is what `ListDeployments` lists when the caller names no filter
+/// (`ListDeployments$historyFilter`: "Default: LATEST_ONLY").
+pub const HISTORY_FILTER_LATEST_ONLY: &str = "LATEST_ONLY";
+
 /// `DeploymentStatus` of a deployment whose caller cancelled it
 /// (`smithy_query(query="shape",shape="DeploymentStatus")`: `ACTIVE`, `COMPLETED`,
 /// `CANCELED`, `FAILED`, `INACTIVE`).
 pub const DEPLOYMENT_STATUS_CANCELED: &str = "CANCELED";
+
+/// `DeploymentStatus` of a revision a newer deployment to the same target replaced.
+///
+/// TERMINAL: a superseded revision is no longer being applied to its target, and a
+/// deployment never returns to `ACTIVE` from it — the target's next revision is a new
+/// deployment, not this one again.
+pub const DEPLOYMENT_STATUS_INACTIVE: &str = "INACTIVE";
 
 /// What every operation keyed by a `deploymentId` reports for an id this service holds
 /// no deployment for: one fixed sentence that names no value of the request, so the
@@ -580,11 +607,14 @@ impl ComAmazonawsGreengrassv2Greengrassv2State {
 
     /// Record a deployment as the newest revision for its target.
     ///
-    /// Demotes the deployment that held `isLatestForTarget`, trims that target's
-    /// history to [`MAX_DEPLOYMENT_REVISIONS_PER_TARGET`], and then trims the store
-    /// as a whole to [`MAX_DEPLOYMENTS`] by dropping the oldest deployment across
-    /// every target — so neither the number of revisions per target nor the number
-    /// of distinct targets, both caller-chosen, can grow the store without bound.
+    /// Supersedes the deployment that held `isLatestForTarget` — which stops being the
+    /// latest AND stops being applied, so an `ACTIVE` revision settles at
+    /// [`DEPLOYMENT_STATUS_INACTIVE`] while one already in a terminal status keeps it —
+    /// trims that target's history to [`MAX_DEPLOYMENT_REVISIONS_PER_TARGET`], and then
+    /// trims the store as a whole to [`MAX_DEPLOYMENTS`] by dropping the oldest
+    /// deployment across every target — so neither the number of revisions per target nor
+    /// the number of distinct targets, both caller-chosen, can grow the store without
+    /// bound.
     pub fn insert_deployment(&mut self, entry: DeploymentEntry) {
         let target = entry.target_arn.clone();
         let id = entry.deployment_id.clone();
@@ -595,6 +625,9 @@ impl ComAmazonawsGreengrassv2Greengrassv2State {
         {
             if let Some(superseded) = self.deployments.get_mut(&previous) {
                 superseded.is_latest_for_target = false;
+                if superseded.deployment_status == DEPLOYMENT_STATUS_ACTIVE {
+                    superseded.deployment_status = DEPLOYMENT_STATUS_INACTIVE.to_string();
+                }
             }
         }
         self.deployments.insert(id.clone(), entry);
@@ -680,6 +713,21 @@ impl ComAmazonawsGreengrassv2Greengrassv2State {
                 }
             }
         }
+    }
+
+    /// Delete the deployment `id` names, and every index entry that referred to it.
+    ///
+    /// `false` when this service holds no deployment under that id, so a caller refuses
+    /// the request rather than reporting a delete it did not make. The global order
+    /// queue is this method's to maintain (the private eviction path leaves it to its
+    /// own caller), so the id is dropped from it before the record and its indexes go.
+    pub fn remove_deployment(&mut self, id: &str) -> bool {
+        if !self.deployments.contains_key(id) {
+            return false;
+        }
+        self.deployment_order.retain(|stored| stored != id);
+        self.forget_deployment(id);
+        true
     }
 
     /// The revision number `CreateDeployment` assigns to the next deployment for
@@ -968,6 +1016,40 @@ pub fn deployment_not_found(deployment_id: &str) -> ResourceNotFoundException {
         .to_string(),
     }
 }
+
+/// What `CreateDeployment` reports for a target the plane that owns IoT things and thing
+/// groups holds nothing under.
+///
+/// The modelled `ValidationException` (HTTP 400) carrying
+/// [`TARGET_NOT_FOUND_MESSAGE`], and nothing else: the refusal is one fixed sentence, so
+/// it states no `reason` and names no field.
+pub fn target_not_found() -> ValidationException {
+    ValidationException {
+        message: TARGET_NOT_FOUND_MESSAGE.to_string(),
+        reason: None,
+        fields: None,
+    }
+}
+
+/// What `DeleteDeployment` reports for a deployment that is still being applied: the
+/// modelled `ValidationException` (HTTP 400) carrying
+/// [`DEPLOYMENT_MUST_BE_CANCELED_MESSAGE`].
+///
+/// One fixed sentence, like every other refusal on this surface: it names no value of the
+/// request, so the refusal reports neither the id nor the status.
+pub fn deployment_must_be_canceled() -> ValidationException {
+    ValidationException {
+        message: DEPLOYMENT_MUST_BE_CANCELED_MESSAGE.to_string(),
+        reason: None,
+        fields: None,
+    }
+}
+
+/// The sentence [`deployment_must_be_canceled`] carries, which is the rule the operation
+/// documents: "To delete an active deployment, you must first cancel it"
+/// (`DeleteDeployment`'s own documentation).
+const DEPLOYMENT_MUST_BE_CANCELED_MESSAGE: &str =
+    "Invalid Input: Greengrass deployment must be canceled before deletion";
 
 /// The account every resource this emulator serves belongs to, as the messages that
 /// name an account report it.

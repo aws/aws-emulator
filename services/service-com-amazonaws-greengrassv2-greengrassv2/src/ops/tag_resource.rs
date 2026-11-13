@@ -208,7 +208,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
     const NAME: &'static str = "TagResource";
     const INPUT_SCHEMA: &'static ::aws_smithy_schema::Schema = super::types::TAG_RESOURCE_INPUT_SCHEMA;
     const OUTPUT_SCHEMA: &'static ::aws_smithy_schema::Schema = super::types::TAG_RESOURCE_OUTPUT_SCHEMA;
-    const SUCCESS_STATUS: u16 = 200u16;
+    /// `TagResourceResponse` declares no member, and this surface answers such a success
+    /// `204 No Content` — the status the recorded tagging responses carry, where the
+    /// model leaves the code defaulted to 200. The BODY that goes with it is framed
+    /// service-wide (`crate::service`).
+    const SUCCESS_STATUS: u16 = ::service_common::no_content_responses::NO_CONTENT_STATUS;
 
     async fn handle(
         &self,

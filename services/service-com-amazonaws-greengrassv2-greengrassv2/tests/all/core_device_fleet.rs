@@ -81,6 +81,10 @@ const NOT_FOUND_SUFFIX: &str = "can not be found";
 /// The code a request outside a modelled enum is refused with.
 const VALIDATION_CODE: &str = "ValidationException";
 
+/// The status a successful tag write answers: `TagResourceResponse` declares no member,
+/// and this surface answers such a success `204 No Content`.
+const TAG_WRITE_STATUS: u16 = 204;
+
 /// The two `CoreDeviceStatus` values
 /// (`smithy_query(query="shape",shape="CoreDeviceStatus")`).
 const HEALTHY: &str = "HEALTHY";
@@ -989,8 +993,8 @@ async fn a_core_device_s_tags_are_written_and_read_through_the_tagging_route() {
     )
     .await;
     assert_eq!(
-        status, 200,
-        "case tagging a reported core device: expected 200, got {status} {body}"
+        status, TAG_WRITE_STATUS,
+        "case tagging a reported core device: expected {TAG_WRITE_STATUS}, got {status} {body}"
     );
 
     // The device's own reader reports the tag set written on its ARN: one resource, one
