@@ -18,7 +18,13 @@
 //!
 //! App block builders live here as well: `CreateAppBlockBuilder` writes one
 //! [`AppBlockBuilderRecord`] under the name it allocates and
-//! `DescribeAppBlockBuilders` renders the stored records back, a page at a time.
+//! `DescribeAppBlockBuilders` renders the stored records back, a page at a time. Which app
+//! blocks a builder packages applications into lives here too:
+//! `AssociateAppBlockBuilderAppBlock` writes the `(builder, app block)` edge once the app
+//! block's packaging is one a builder produces, and
+//! `DescribeAppBlockBuilderAppBlockAssociations` reports the edges of one endpoint, a page
+//! at a time. An app block a builder still holds is in use, which is what `DeleteAppBlock`
+//! refuses on.
 //!
 //! Usage reporting lives here too: it is ONE account-and-Region-wide setting, so
 //! `CreateUsageReportSubscription` writes the single [`UsageReportSubscriptionRecord`]
@@ -93,8 +99,9 @@ pub use wire_refusals::*;
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::ops::types::{
-    AccessEndpoint, AgentAccessConfig, AppBlock, AppBlockBuilder, AppBlockBuilderStateChangeReason,
-    Application, ApplicationFleetAssociation, ApplicationSettingsResponse, ComputeCapacityStatus,
+    AccessEndpoint, AgentAccessConfig, AppBlock, AppBlockBuilder,
+    AppBlockBuilderAppBlockAssociation, AppBlockBuilderStateChangeReason, Application,
+    ApplicationFleetAssociation, ApplicationSettingsResponse, ComputeCapacityStatus,
     ContentRedirection, DomainJoinInfo, ErrorDetails, Fleet, FleetError,
     LastReportGenerationExecutionError, ResourceError, S3Location, ScriptDetails, Session, Stack,
     StackError, StorageConnector, StreamingExperienceSettings, Theme, ThemeFooterLink,
@@ -1030,6 +1037,15 @@ pub fn post_setup_script_details_not_permitted_message(packaging_type: &str) -> 
     )
 }
 
+/// The sentence a request refused for attaching an app block whose packaging needs no app
+/// block builder carries.
+///
+/// AWS states the rule about the app block that was selected and echoes nothing of the
+/// request, so the sentence has no variable part.
+pub fn app_block_association_not_supported_message() -> String {
+    "The selected App block does not support the association operation".to_string()
+}
+
 /// A persisted AppStream app block — the virtual hard disk an elastic fleet's
 /// applications are served from, written by `CreateAppBlock` and rendered back by
 /// `DescribeAppBlocks`.
@@ -1518,21 +1534,65 @@ pub struct ApplicationFleetAssociationPage {
     pub next_token: Option<String>,
 }
 
-/// Encode an application/fleet association cursor: the key of the first record of the
-/// next page, hex-encoded for the same reason [`encode_cursor`] is.
-fn encode_fleet_application_cursor(key: &ApplicationFleetAssociationKey) -> String {
-    let (fleet_name, application_arn) = key;
-    encode_cursor(&format!(
-        "{fleet_name}{ASSOCIATION_CURSOR_SEPARATOR}{application_arn}"
-    ))
+/// Encode a two-part association cursor: the key of the first record of the next page,
+/// hex-encoded for the same reason [`encode_cursor`] is.
+///
+/// The one codec for every association keyed by a PAIR of names
+/// ([`ApplicationFleetAssociationKey`], [`AppBlockBuilderAppBlockAssociationKey`]), so the
+/// reads that page those edges mint and read a token the same way.
+fn encode_pair_cursor(key: &(String, String)) -> String {
+    let (first, second) = key;
+    encode_cursor(&format!("{first}{ASSOCIATION_CURSOR_SEPARATOR}{second}"))
 }
 
-/// The inverse of [`encode_fleet_application_cursor`]; `None` for a token this service
-/// did not mint.
-fn decode_fleet_application_cursor(token: &str) -> Option<ApplicationFleetAssociationKey> {
+/// The inverse of [`encode_pair_cursor`]; `None` for a token this service did not mint.
+fn decode_pair_cursor(token: &str) -> Option<(String, String)> {
     let decoded = decode_cursor(token)?;
     let mut parts = decoded.splitn(2, ASSOCIATION_CURSOR_SEPARATOR);
     Some((parts.next()?.to_string(), parts.next()?.to_string()))
+}
+
+/// The identity one app block builder/app block association is stored under:
+/// `(AppBlockBuilderName, AppBlockArn)`, the two members the modelled
+/// `AppBlockBuilderAppBlockAssociation` carries.
+pub type AppBlockBuilderAppBlockAssociationKey = (String, String);
+
+/// How many app block builder/app block associations one
+/// `DescribeAppBlockBuilderAppBlockAssociations` page carries.
+///
+/// The model caps `AppBlockBuilderAppBlockAssociationsList` at 25 members and that list is
+/// what a page of the read is rendered into, so a page holds at most 25 associations
+/// however large a `MaxResults` a request asks for.
+pub const APP_BLOCK_BUILDER_APP_BLOCK_ASSOCIATION_PAGE_SIZE: usize = 25;
+
+/// Which app block builder/app block associations a read reports: every member left `None`
+/// filters nothing, so a read asked only about a builder reports that builder's
+/// associations whichever app block is on the other side, and a read naming neither
+/// endpoint reports every association the account holds.
+#[derive(Debug)]
+pub struct AppBlockBuilderAppBlockAssociationFilter<'a> {
+    pub app_block_builder_name: Option<&'a str>,
+    pub app_block_arn: Option<&'a str>,
+}
+
+impl AppBlockBuilderAppBlockAssociationFilter<'_> {
+    /// Whether the association stored under `key` is one this read reports.
+    fn matches(&self, key: &AppBlockBuilderAppBlockAssociationKey) -> bool {
+        let (app_block_builder_name, app_block_arn) = key;
+        self.app_block_builder_name
+            .is_none_or(|asked| asked == app_block_builder_name.as_str())
+            && self
+                .app_block_arn
+                .is_none_or(|asked| asked == app_block_arn.as_str())
+    }
+}
+
+/// One page of a `DescribeAppBlockBuilderAppBlockAssociations`: the associations to
+/// render, and the opaque token that resumes after them.
+#[derive(Debug)]
+pub struct AppBlockBuilderAppBlockAssociationPage {
+    pub associations: Vec<AppBlockBuilderAppBlockAssociation>,
+    pub next_token: Option<String>,
 }
 
 /// Per-service state for com-amazonaws-appstream-photonadminproxyservice. A handler reaches it through [`service_state`].
@@ -1586,6 +1646,14 @@ pub struct ComAmazonawsAppstreamPhotonadminproxyserviceState {
     ///
     /// Bounded by [`MAX_RECORDS_PER_STORE`] like every other store a request can grow.
     pub application_fleet_associations: BTreeSet<ApplicationFleetAssociationKey>,
+    /// `(AppBlockBuilderName, AppBlockArn)` edges written by
+    /// `AssociateAppBlockBuilderAppBlock` — which app blocks a builder packages
+    /// applications into. `BTreeSet` so every page of a read walks a stable order, and so
+    /// one builder's associations form a contiguous range.
+    ///
+    /// Bounded by [`MAX_RECORDS_PER_STORE`] like every other store a request can grow.
+    pub app_block_builder_app_block_associations:
+        BTreeSet<AppBlockBuilderAppBlockAssociationKey>,
     /// The account's usage report subscription, once one has been created; `None` while
     /// usage reporting is not enabled.
     pub usage_report_subscription: Option<UsageReportSubscriptionRecord>,
@@ -1619,6 +1687,7 @@ impl Default for ComAmazonawsAppstreamPhotonadminproxyserviceState {
             images: seed_image_catalog(),
             fleet_stack_associations: BTreeSet::new(),
             application_fleet_associations: BTreeSet::new(),
+            app_block_builder_app_block_associations: BTreeSet::new(),
             usage_report_subscription: None,
             users: BTreeMap::new(),
             user_stack_associations: BTreeMap::new(),
@@ -1739,8 +1808,9 @@ impl ComAmazonawsAppstreamPhotonadminproxyserviceState {
         })
     }
 
-    /// Whether any application this account holds still names this app block as the
-    /// source of its binaries, which is what makes the app block in use.
+    /// Whether anything this account holds still names this app block — an application
+    /// whose binaries live in it, or an app block builder it is associated with — which is
+    /// what makes the app block in use.
     ///
     /// A predicate, not a list: the refusal states that the app block is in use without
     /// naming what holds it.
@@ -1748,6 +1818,10 @@ impl ComAmazonawsAppstreamPhotonadminproxyserviceState {
         self.applications
             .values()
             .any(|application| application.app_block_arn == app_block_arn)
+            || self
+                .app_block_builder_app_block_associations
+                .iter()
+                .any(|(_, arn)| arn == app_block_arn)
     }
 
     /// Whether any fleet association still names this application, which is what makes
@@ -1773,7 +1847,7 @@ impl ComAmazonawsAppstreamPhotonadminproxyserviceState {
         page_size: usize,
     ) -> Option<ApplicationFleetAssociationPage> {
         let resume_at = match next_token {
-            Some(token) => Some(decode_fleet_application_cursor(token)?),
+            Some(token) => Some(decode_pair_cursor(token)?),
             None => None,
         };
         let mut remaining = self
@@ -1791,7 +1865,47 @@ impl ComAmazonawsAppstreamPhotonadminproxyserviceState {
             })
             .collect();
         Some(ApplicationFleetAssociationPage {
-            next_token: remaining.next().map(encode_fleet_application_cursor),
+            next_token: remaining.next().map(encode_pair_cursor),
+            associations,
+        })
+    }
+
+    /// One page of the app block builder/app block associations `filter` reports: the
+    /// associations to render, and the token that resumes after them. `None` means
+    /// `next_token` is not a token this service minted.
+    ///
+    /// The edges are read straight from the stored set in key order, so a page renders
+    /// exactly the associations the store holds — there is no second lookup that could
+    /// miss one — and following the token walks every matching association exactly once
+    /// even when associations are added between calls.
+    pub fn app_block_builder_app_block_associations_page(
+        &self,
+        filter: &AppBlockBuilderAppBlockAssociationFilter<'_>,
+        next_token: Option<&str>,
+        page_size: usize,
+    ) -> Option<AppBlockBuilderAppBlockAssociationPage> {
+        let resume_at = match next_token {
+            Some(token) => Some(decode_pair_cursor(token)?),
+            None => None,
+        };
+        let mut remaining = self
+            .app_block_builder_app_block_associations
+            .iter()
+            .filter(|key| resume_at.as_ref().is_none_or(|from| *key >= from))
+            .filter(|key| filter.matches(key));
+        // A page holds at least one record, so following the token always advances.
+        let associations: Vec<AppBlockBuilderAppBlockAssociation> = remaining
+            .by_ref()
+            .take(page_size.max(1))
+            .map(
+                |(app_block_builder_name, app_block_arn)| AppBlockBuilderAppBlockAssociation {
+                    app_block_builder_name: app_block_builder_name.clone(),
+                    app_block_arn: app_block_arn.clone(),
+                },
+            )
+            .collect();
+        Some(AppBlockBuilderAppBlockAssociationPage {
+            next_token: remaining.next().map(encode_pair_cursor),
             associations,
         })
     }

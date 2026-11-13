@@ -1,15 +1,10 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op AssociateAppBlockBuilderAppBlock
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `AssociateAppBlockBuilderAppBlock`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
-//!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`AssociateAppBlockBuilderAppBlock::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! IMPLEMENTED: records the `(AppBlockBuilderName, AppBlockArn)` edge in this service's
+//! store once both endpoints exist and the app block's packaging is one an app block
+//! builder produces, and returns the modelled `AppBlockBuilderAppBlockAssociation` for
+//! that edge. `DescribeAppBlockBuilderAppBlockAssociations` reports the stored edges.
 //!
 //! ## Shape of an operation
 //!
@@ -100,9 +95,13 @@ pub enum AssociateAppBlockBuilderAppBlockErrorModeled {
 }
 
 /// This operation's error channel, as the generated `impl Operation` names it
-/// (`crate::ops::associate_app_block_builder_app_block::AssociateAppBlockBuilderAppBlockError`). Wrapping the modeled enum is what
-/// lets a scaffolded operation answer 501 for one whose model declares no errors at all.
-pub type AssociateAppBlockBuilderAppBlockError = crate::scaffolded::Scaffolded<AssociateAppBlockBuilderAppBlockErrorModeled>;
+/// (`crate::ops::associate_app_block_builder_app_block::AssociateAppBlockBuilderAppBlockError`). The
+/// modelled enum is wrapped TWICE: by the scaffold channel, and by this service's own
+/// [`crate::state::Refusable`], which is what lets the packaging gate answer
+/// `InvalidParameterValueException` — a shape this service's model declares for no
+/// operation.
+pub type AssociateAppBlockBuilderAppBlockError =
+    crate::state::Refusable<AssociateAppBlockBuilderAppBlockErrorModeled>;
 
 /// Lets `?` and `.into()` lift a modeled failure into the error channel, so an
 /// implemented handler writes `Err(SomeModeledError.into())` rather than naming the
@@ -110,7 +109,7 @@ pub type AssociateAppBlockBuilderAppBlockError = crate::scaffolded::Scaffolded<A
 /// this operation is implemented.
 impl From<AssociateAppBlockBuilderAppBlockErrorModeled> for AssociateAppBlockBuilderAppBlockError {
     fn from(modeled: AssociateAppBlockBuilderAppBlockErrorModeled) -> Self {
-        crate::scaffolded::Scaffolded::Modeled(modeled)
+        crate::state::Refusable::Channel(crate::scaffolded::Scaffolded::Modeled(modeled))
     }
 }
 
@@ -148,20 +147,95 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
     async fn handle(
         &self,
         input: Self::Input,
-        ctx: &smithy_server_runtime::OperationContext<'_>,
+        _ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `AssociateAppBlockBuilderAppBlock` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(AssociateAppBlockBuilderAppBlockErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("AssociateAppBlockBuilderAppBlock"))
+        // See `create_stack.rs` for why an engine without this service's store answers
+        // "not written for that engine" rather than a fabricated success.
+        let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
+            AssociateAppBlockBuilderAppBlockError::Channel(
+                crate::scaffolded::Scaffolded::not_implemented("AssociateAppBlockBuilderAppBlock"),
+            )
+        })?;
+        let mut state = state.lock();
+
+        // Both endpoints have to exist before anything is recorded: a builder name this
+        // account holds no builder under, and an ARN that addresses no app block of this
+        // account, each name a resource that was not found.
+        if !state
+            .app_block_builders
+            .contains_key(&input.app_block_builder_name)
+        {
+            return Err(
+                AssociateAppBlockBuilderAppBlockErrorModeled::ResourceNotFoundException(
+                    ResourceNotFoundException {
+                        message: Some(crate::state::resource_not_found_message(
+                            crate::state::APP_BLOCK_BUILDER_KIND,
+                            &input.app_block_builder_name,
+                        )),
+                    },
+                )
+                .into(),
+            );
+        }
+        let Some(app_block) = state.app_block_by_arn(&input.app_block_arn) else {
+            return Err(
+                AssociateAppBlockBuilderAppBlockErrorModeled::ResourceNotFoundException(
+                    ResourceNotFoundException {
+                        message: Some(crate::state::app_block_not_found_message(
+                            &input.app_block_arn,
+                        )),
+                    },
+                )
+                .into(),
+            );
+        };
+        let packaging_type = app_block.packaging_type.clone();
+
+        // The packaging gate: an app block builder exists to BUILD the application package
+        // of an app block whose packaging the service produces, so an app block that
+        // brings its own virtual hard disk needs no builder and supports no association at
+        // all. The refusal happens BEFORE the store is touched, so a refused pairing
+        // leaves no edge for a read to report.
+        if packaging_type != crate::state::PACKAGING_TYPE_APPSTREAM2 {
+            return Err(crate::state::WireRefusal::invalid_parameter_value(
+                crate::state::app_block_association_not_supported_message(),
+            )
+            .into());
+        }
+
+        // The store must not grow per request without a ceiling, so an edge past it is
+        // refused with the modelled error AWS uses for an account's limit. An association
+        // the store already holds inserts nothing, so it is never refused: associating the
+        // same pair again is answered with the same association.
+        let edge = (
+            input.app_block_builder_name.clone(),
+            input.app_block_arn.clone(),
+        );
+        if !state
+            .app_block_builder_app_block_associations
+            .contains(&edge)
+            && state.app_block_builder_app_block_associations.len()
+                >= crate::state::MAX_RECORDS_PER_STORE
+        {
+            return Err(
+                AssociateAppBlockBuilderAppBlockErrorModeled::LimitExceededException(
+                    LimitExceededException {
+                        message: Some(crate::state::limit_exceeded_message(
+                            "app block builder app block associations",
+                        )),
+                    },
+                )
+                .into(),
+            );
+        }
+        state.app_block_builder_app_block_associations.insert(edge);
+
+        Ok(AssociateAppBlockBuilderAppBlockOutput {
+            app_block_builder_app_block_association: Some(AppBlockBuilderAppBlockAssociation {
+                app_block_builder_name: input.app_block_builder_name,
+                app_block_arn: input.app_block_arn,
+            }),
+        })
     }
 }
+

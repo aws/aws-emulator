@@ -11,6 +11,8 @@
 // points it into `tests/all/`.
 #[path = "all/app_block_builder.rs"]
 mod app_block_builder;
+#[path = "all/app_block_builder_app_block_associations.rs"]
+mod app_block_builder_app_block_associations;
 #[path = "all/app_block_deletion.rs"]
 mod app_block_deletion;
 #[path = "all/app_blocks.rs"]
