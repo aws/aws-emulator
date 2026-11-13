@@ -506,6 +506,7 @@ use super::template::{
     ROUTE53RESOLVER_RULE_ASSOCIATION, ROUTE53_HEALTH_CHECK, ROUTE53_HOSTED_ZONE,
     ROUTE53_CIDR_COLLECTION, ROUTE53_DELEGATION_SET, ROUTE53_TRAFFIC_POLICY,
     ROUTE53_RECORD_SET, ROUTE53_RECORD_SET_GROUP,
+    S3TABLES_BUCKET_SEGMENT, S3TABLES_TABLE_BUCKET, S3TABLES_TABLE_BUCKET_ARN_ATTRIBUTE,
     S3VECTORS_BUCKET_SEGMENT, S3VECTORS_INDEX,
     S3VECTORS_VECTOR_BUCKET, SAGEMAKER_MODEL_PACKAGE_GROUP, SCHEDULER_SCHEDULE,
     SCHEDULER_SCHEDULE_GROUP, SES_CONFIGURATION_SET, SES_RECEIPT_RULE, SES_RECEIPT_RULE_SET,
@@ -666,6 +667,12 @@ pub(super) enum Provisioner {
     /// the queue-policy pair's rule ([`Provisioner::SqsQueuePolicy`]) for the service that
     /// holds a policy as a sub-resource of the bucket.
     S3BucketPolicy,
+    /// `AWS::S3Tables::TableBucket`: the table bucket Amazon S3 Tables'
+    /// `CreateTableBucket` creates under the name the template states and
+    /// `DeleteTableBucket` removes. That service keys a table bucket by its own ARN, which
+    /// is this type's physical id and what every call on one takes, so the arms address it
+    /// by that ARN rather than by the bucket's name.
+    S3TablesTableBucket,
     S3VectorsVectorBucket,
     S3VectorsIndex,
     EmrCluster,
@@ -983,6 +990,7 @@ pub(super) fn provisioner_for(resource_type: &str) -> Option<Provisioner> {
         OPENSEARCH_DOMAIN => Some(Provisioner::OpenSearchServiceDomain),
         S3_BUCKET => Some(Provisioner::S3Bucket),
         S3_BUCKET_POLICY => Some(Provisioner::S3BucketPolicy),
+        S3TABLES_TABLE_BUCKET => Some(Provisioner::S3TablesTableBucket),
         S3VECTORS_VECTOR_BUCKET => Some(Provisioner::S3VectorsVectorBucket),
         S3VECTORS_INDEX => Some(Provisioner::S3VectorsIndex),
         EMR_CLUSTER => Some(Provisioner::EmrCluster),
@@ -1176,6 +1184,12 @@ impl Provisioner {
             // `Tags`: a bucket's policy is no taggable resource, so no tags are
             // propagated to one.
             Self::S3BucketPolicy => put_bucket_policy(ctx, region, resource).await,
+            // `AWS::S3Tables::TableBucket` publishes `Tags`, and `CreateTableBucket` takes
+            // a tag MAP of its own, so a table bucket a stack creates carries the tags
+            // CloudFormation gives it beside the ones the declaration asks for.
+            Self::S3TablesTableBucket => {
+                create_table_bucket(ctx, region, resource, propagated).await
+            }
             Self::S3VectorsVectorBucket => {
                 create_vector_bucket(ctx, region, resource, propagated).await
             }
@@ -2557,6 +2571,9 @@ impl Provisioner {
             // The policy is the named BUCKET's, and only the resource's own declaration
             // says which bucket that is.
             Self::S3BucketPolicy => delete_bucket_policy(ctx, region, resource).await,
+            Self::S3TablesTableBucket => {
+                delete_table_bucket(ctx, region, physical_resource_id).await
+            }
             Self::S3VectorsVectorBucket => {
                 delete_vector_bucket(ctx, region, physical_resource_id).await
             }
@@ -3022,6 +3039,9 @@ impl Provisioner {
             // A policy resource's configuration is the document the named bucket carries
             // now, read back from Amazon S3.
             Self::S3BucketPolicy => describe_bucket_policy(ctx, region, resource).await,
+            Self::S3TablesTableBucket => {
+                describe_table_bucket(ctx, region, physical_resource_id).await
+            }
             Self::S3VectorsVectorBucket => {
                 describe_vector_bucket(ctx, region, physical_resource_id).await
             }
@@ -3473,6 +3493,9 @@ mod route53_policies;
 /// ([`super::provisioning::instance_signals`]).
 pub(super) mod compute_fleet;
 mod network_and_delivery;
+/// The Amazon S3 Tables arms: the table bucket a stack creates in that service, which is
+/// keyed by its own ARN rather than by a name.
+mod s3_table_buckets;
 mod ssm_associations;
 mod resource_groups;
 pub(super) mod elasticache_caches;
@@ -3483,6 +3506,7 @@ use ssm_associations::*;
 use resource_groups::*;
 use compute_fleet::*;
 pub(crate) use network_and_delivery::*;
+use s3_table_buckets::*;
 use platform_services::*;
 use route53_policies::*;
 pub(crate) use application_services::*;

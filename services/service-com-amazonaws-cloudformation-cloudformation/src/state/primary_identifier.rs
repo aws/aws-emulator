@@ -63,6 +63,9 @@ fn identifying_return_value(resource_type: &str) -> Option<&'static str> {
         STEP_FUNCTIONS_ACTIVITY => "Arn",
         // The CodeArtifact types, each identified by the ARN its create answers.
         CODEARTIFACT_DOMAIN | CODEARTIFACT_REPOSITORY => "Arn",
+        // The Amazon S3 Tables table bucket, identified by its own ARN — the `tableBucketARN`
+        // every operation of that service on a table bucket takes.
+        S3TABLES_TABLE_BUCKET => S3TABLES_TABLE_BUCKET_ARN_ATTRIBUTE,
         // The Amazon S3 Vectors types, each identified by its own ARN.
         S3VECTORS_VECTOR_BUCKET => "VectorBucketArn",
         S3VECTORS_INDEX => "IndexArn",

@@ -1109,6 +1109,8 @@ mod cloudformation_provisions_sfn_activities;
 mod cloudformation_provisions_sfn_state_machines;
 #[path = "all/cloudformation_provisions_s3vectors_resources.rs"]
 mod cloudformation_provisions_s3vectors_resources;
+#[path = "all/cloudformation_provisions_s3tables_table_buckets.rs"]
+mod cloudformation_provisions_s3tables_table_buckets;
 #[path = "all/cloudformation_stamps_s3vectors_stack_provenance.rs"]
 mod cloudformation_stamps_s3vectors_stack_provenance;
 #[path = "all/cloudformation_stack_event_notifications.rs"]

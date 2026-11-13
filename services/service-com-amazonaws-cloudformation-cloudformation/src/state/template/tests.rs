@@ -221,6 +221,112 @@ fn a_name_is_read_from_wherever_the_type_states_it() {
     }
 }
 
+/// Every site [`substitute_identifier`] rewrites is one [`identifier_reads`] counts, and the
+/// count is the same whichever characters the loop identifier carries.
+///
+/// The expansion budget is charged per item from that count — each read grows the instance
+/// by the item's own length — so a count that misses a site lets one submitted template
+/// materialise more bytes than the ceiling allows. The identifier is the template author's
+/// string, and the serialized spelling of one carrying `"`, `\` or a control byte differs
+/// from its spelling in the data the substitution walks, so the two halves of each pair
+/// below must agree.
+#[test]
+fn a_loop_identifier_is_counted_wherever_substitution_rewrites_it() {
+    // (case, the identifier, one output map value, the reads it holds)
+    let rows: &[(&str, &str, Value, usize)] = &[
+        (
+            "a nested key reading the identifier",
+            "N",
+            ::serde_json::json!({ "Name${N}": { "Type": "A::B::C" } }),
+            1,
+        ),
+        (
+            "an Fn::Sub template string reading it twice",
+            "N",
+            ::serde_json::json!({ "Fn::Sub": "${N}-${N}" }),
+            2,
+        ),
+        (
+            "a two-argument Fn::Sub whose variables map reads it as a Ref",
+            "N",
+            ::serde_json::json!({ "Fn::Sub": ["${Zone}-${N}", { "Zone": { "Ref": "N" } }] }),
+            2,
+        ),
+        (
+            "a single-member Ref node, replaced by the item whole",
+            "N",
+            ::serde_json::json!({ "Properties": { "Value": { "Ref": "N" } } }),
+            1,
+        ),
+        (
+            "a plain string value, which substitution does not rewrite",
+            "N",
+            ::serde_json::json!({ "Properties": { "Value": "${N}" } }),
+            0,
+        ),
+        (
+            "a list of values, each reading it",
+            "N",
+            ::serde_json::json!({ "Items": [{ "Ref": "N" }, { "Fn::Sub": "${N}" }] }),
+            2,
+        ),
+        // The same shapes under an identifier whose JSON spelling is escaped: the counts
+        // are properties of the DATA, so they do not change.
+        (
+            "a nested key read by an identifier carrying a quote",
+            "N\"q",
+            ::serde_json::json!({ "Name${N\"q}": { "Type": "A::B::C" } }),
+            1,
+        ),
+        (
+            "an Fn::Sub string read twice by an identifier carrying a backslash",
+            "N\\b",
+            ::serde_json::json!({ "Fn::Sub": "${N\\b}-${N\\b}" }),
+            2,
+        ),
+        (
+            "a Ref node naming an identifier carrying a quote",
+            "N\"q",
+            ::serde_json::json!({ "Properties": { "Value": { "Ref": "N\"q" } } }),
+            1,
+        ),
+    ];
+
+    for (case, identifier, value, expected) in rows {
+        let needle = format!("${{{identifier}}}");
+        let actual = identifier_reads(value, &needle, Some(identifier), 0);
+        assert_eq!(
+            actual, *expected,
+            "case {case:?}: expected {expected} read(s) of {needle:?}, got {actual}"
+        );
+        // The alternate `&{…}` form this service does not apply is counted the same way —
+        // it is what the expander refuses a template on — and a `Ref` node is not one of
+        // its sites, which is why that half is counted without the identifier.
+        let alternate = format!("&{{{identifier}}}");
+        let alternate_reads = identifier_reads(value, &alternate, None, 0);
+        assert_eq!(
+            alternate_reads, 0,
+            "case {case:?}: expected no read of {alternate:?} in a value that spells only \
+             {needle:?}, got {alternate_reads}"
+        );
+    }
+
+    // And the alternate form IS found where a key spells it, whatever the identifier
+    // carries: the refusal that reports it reads the same count.
+    for (case, identifier) in [
+        ("a plain identifier", "N"),
+        ("an identifier carrying a quote", "N\"q"),
+    ] {
+        let value = ::serde_json::json!({ format!("Name&{{{identifier}}}"): { "Type": "A::B::C" } });
+        let alternate = format!("&{{{identifier}}}");
+        let actual = identifier_reads(&value, &alternate, None, 0);
+        assert_eq!(
+            actual, 1,
+            "case {case:?}: expected one read of {alternate:?}, got {actual}"
+        );
+    }
+}
+
 /// [`published_attribute_names`] names exactly the attributes [`return_values`]
 /// computes, for every type either half carries: the registry's resource schema is
 /// built from the names, so a name missing from one half or invented in the other

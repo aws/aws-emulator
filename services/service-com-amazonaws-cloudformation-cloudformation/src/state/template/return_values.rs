@@ -274,6 +274,26 @@ pub(super) fn return_values(
             );
             (name.to_string(), attributes)
         }
+        // "Ref returns the table bucket ARN": this type's primary identifier is its
+        // `TableBucketARN`, which is also its one published `Fn::GetAtt` attribute — the
+        // handle every S3 Tables operation on a table bucket takes
+        // (`GetTableBucket$tableBucketARN`, an `@httpLabel` whose pattern is
+        // `…:bucket/[a-z0-9_-]{3,63}`), so the identifier this type publishes is an ARN
+        // rather than the declared name the sibling `AWS::S3::Bucket` publishes. It is the
+        // type `super::provisioning` creates in Amazon S3 Tables itself, which then answers
+        // with the bucket's own ARN — the same ARN this computes, since both are built from
+        // the one account id this emulator mints and the bucket's name, which is how S3
+        // Tables keys a table bucket (`table_bucket_arn` in that service's own state
+        // module).
+        S3TABLES_TABLE_BUCKET => {
+            let arn = ::emulator_server::emulator_arn(
+                S3TABLES_ARN_NAMESPACE,
+                region,
+                &format!("{S3TABLES_BUCKET_SEGMENT}{name}"),
+            );
+            attributes.insert(S3TABLES_TABLE_BUCKET_ARN_ATTRIBUTE.to_string(), arn.clone());
+            (arn, attributes)
+        }
         // "Ref returns the vector bucket ARN": this type's primary identifier is its
         // `VectorBucketArn`, which is also its one published `Fn::GetAtt` attribute. It is
         // the type `super::provisioning` creates in Amazon S3 Vectors itself, which then
@@ -1923,6 +1943,7 @@ pub fn published_attribute_names(resource_type: &str) -> &'static [&'static str]
             "RegionalDomainName",
             "WebsiteURL",
         ],
+        S3TABLES_TABLE_BUCKET => &[S3TABLES_TABLE_BUCKET_ARN_ATTRIBUTE],
         S3VECTORS_VECTOR_BUCKET => &["VectorBucketArn"],
         S3VECTORS_INDEX => &["IndexArn"],
         "AWS::DynamoDB::Table" => &["Arn"],
@@ -2635,6 +2656,35 @@ pub const OPENSEARCH_DOMAIN: &str = "AWS::OpenSearchService::Domain";
 /// bucket's physical resource id is the name its owning service creates it under — which
 /// is why [`naming_rules`] holds a GENERATED one to S3's bucket naming rules.
 pub const S3_BUCKET: &str = "AWS::S3::Bucket";
+
+/// The type of an Amazon S3 TABLE bucket, the third bucket variant beside `AWS::S3::Bucket`
+/// and `AWS::S3Vectors::VectorBucket`. The middle segment is that model's own sdk identity
+/// (`smithy_query(query="service_info",
+/// model_path="services/service-com-amazonaws-s3tables-s3tablebuckets/smithy-model/\
+/// com-amazonaws-s3tables-s3tablebuckets.json")` reports `sdkId: S3Tables`).
+///
+/// This type's primary identifier is its own ARN (`bucket/<name>` under the ARN namespace
+/// below), so `Ref` resolves to the ARN its owning service keys the bucket by — which is
+/// what `GetTableBucket`, `PutTableBucketPolicy` and every other S3 Tables operation on a
+/// table bucket take as `tableBucketARN`.
+pub const S3TABLES_TABLE_BUCKET: &str = "AWS::S3Tables::TableBucket";
+
+/// Amazon S3 Tables' ARN namespace, which is its model's own `awsService.arnNamespace`
+/// (`s3tables`) rather than the `S3Tables` its resource types are spelled with.
+pub const S3TABLES_ARN_NAMESPACE: &str = "s3tables";
+
+/// The segment a table bucket occupies in an Amazon S3 Tables ARN, from the
+/// `TableBucketARN` pattern that model declares
+/// (`…:s3tables:<region>:<account>:bucket/<name>`).
+///
+/// The same literal as the Amazon S3 Vectors one beside it, and a separate constant all the
+/// same: each is its own model's statement about its own ARNs, so neither follows from the
+/// other and a change to one is not a change to both.
+pub const S3TABLES_BUCKET_SEGMENT: &str = "bucket/";
+
+/// The one `Fn::GetAtt` attribute an `AWS::S3Tables::TableBucket` publishes, spelled with
+/// the upper-case `ARN` its own model spells the member with (`TableBucketARN`).
+pub const S3TABLES_TABLE_BUCKET_ARN_ATTRIBUTE: &str = "TableBucketARN";
 
 /// The types of the two Amazon S3 Vectors resources a stack creates. The middle segment is
 /// that model's own sdk identity (`smithy_query(query="service_info",

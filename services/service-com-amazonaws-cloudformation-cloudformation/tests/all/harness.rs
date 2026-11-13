@@ -42,6 +42,13 @@ pub fn router_with_engine() -> (MultiServiceRouter, Arc<engine::InMemoryEngine>)
     router.register_service(service_com_amazonaws_s3_amazons3::EmulatedService::new(
         Arc::clone(&engine),
     ));
+    // Amazon S3 Tables, for the `AWS::S3Tables::TableBucket` a stack really creates there:
+    // that service keys a table bucket by its own ARN, which is the handle the stack
+    // publishes, so a suite that deploys one reads the bucket back through S3 Tables' own
+    // wire by that ARN.
+    router.register_service(
+        service_com_amazonaws_s3tables_s3tablebuckets::EmulatedService::new(Arc::clone(&engine)),
+    );
     router.register_service(
         service_com_amazonaws_iam_awsidentitymanagementv20100508::EmulatedService::new(
             Arc::clone(&engine),

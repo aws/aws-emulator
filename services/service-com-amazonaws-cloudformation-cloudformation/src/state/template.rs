@@ -2978,6 +2978,7 @@ pub const IMPLEMENTED_RESOURCE_TYPES: &[&str] = &[
     ROUTE53_DELEGATION_SET,
     ROUTE53_TRAFFIC_POLICY,
     S3_BUCKET,
+    S3TABLES_TABLE_BUCKET,
     S3VECTORS_INDEX,
     S3VECTORS_VECTOR_BUCKET,
     // The Amazon SageMaker AI types `provisioner::sagemaker_resources` creates: each
@@ -4207,24 +4208,33 @@ fn expand_for_each(
     // Substituting an item for either grows that text by at most the item's own JSON
     // length, which is what makes the charge below cover what the copy will actually
     // materialise.
+    //
+    // The reads are counted over the output map's own DATA ([`identifier_reads`]), not over
+    // the serialized text: substitution operates on the data, while serialization escapes
+    // `"`, `\` and the control bytes — so an identifier carrying one of those has a
+    // reference spelling that never occurs literally in the serialized text, and a count
+    // taken there would be zero while every one of those reads still allocates.
     let output_text = ::serde_json::to_string(output_map).unwrap_or_default();
     let placeholder = format!("${{{identifier}}}");
+    let reads_of = |needle: &str, ref_name: Option<&str>| -> usize {
+        output_map.iter().fold(0usize, |reads, (key, value)| {
+            reads
+                .saturating_add(key.matches(needle).count())
+                .saturating_add(identifier_reads(value, needle, ref_name, depth + 1))
+        })
+    };
     // AWS's ForEach documents a second reference form, `&{Identifier}`, used where a
     // logical id has to drop the collection value's non-alphanumeric characters. This
     // service does not apply that form, and leaving it literal would emit ONE output key
     // for every item of the collection, so the stage is reported unavailable instead of
     // served with resources silently collapsed into one.
-    if output_text.contains(format!("&{{{identifier}}}").as_str()) {
+    if reads_of(format!("&{{{identifier}}}").as_str(), None) > 0 {
         return Err(format!(
             "{FOR_EACH_PREFIX}{loop_name}: the &{{{identifier}}} form of the loop reference is \
              not one this service can apply"
         ));
     }
-    let ref_node = format!("{{\"{REF_FUNCTION}\":\"{identifier}\"}}");
-    let reads = output_text
-        .matches(placeholder.as_str())
-        .count()
-        .saturating_add(output_text.matches(ref_node.as_str()).count());
+    let reads = reads_of(placeholder.as_str(), Some(identifier.as_str()));
 
     let mut entries = Vec::new();
     for item in &collection {
@@ -4264,6 +4274,69 @@ fn expand_for_each(
         entries.extend(instance);
     }
     Ok(entries)
+}
+
+/// How many times one spelling of a loop reference is read inside an output map's VALUE —
+/// the sites [`substitute_identifier`] rewrites, counted in the same shape it walks: a key
+/// of a nested map, an `Fn::Sub` template string (bare or two-argument), and a single-member
+/// `{"Ref": "<identifier>"}` node, which is replaced by the item whole and so counts once.
+///
+/// Counted over the DATA, which is what substitution allocates against. `ref_name` is the
+/// identifier whose `Ref` node that whole-node replacement belongs to, and `None` for a
+/// spelling it does not apply to. Stops at [`MAX_EXPANSION_DEPTH`], which is exactly where
+/// [`substitute_identifier`] stops rewriting.
+fn identifier_reads(
+    node: &Value,
+    needle: &str,
+    ref_name: Option<&str>,
+    depth: usize,
+) -> usize {
+    if depth > MAX_EXPANSION_DEPTH {
+        return 0;
+    }
+    match node {
+        Value::Array(items) => items.iter().fold(0usize, |reads, value| {
+            reads.saturating_add(identifier_reads(value, needle, ref_name, depth + 1))
+        }),
+        Value::Object(map) => {
+            if map.len() == 1
+                && ref_name.is_some_and(|name| {
+                    map.get(REF_FUNCTION).and_then(Value::as_str) == Some(name)
+                })
+            {
+                return 1;
+            }
+            let mut reads = 0usize;
+            for (key, value) in map {
+                reads = reads.saturating_add(key.matches(needle).count());
+                let in_value = if key == FN_SUB {
+                    match value {
+                        Value::String(text) => text.matches(needle).count(),
+                        Value::Array(items) => {
+                            let template = match items.first() {
+                                Some(Value::String(text)) => text.matches(needle).count(),
+                                _ => 0,
+                            };
+                            items.iter().skip(1).fold(template, |reads, variables| {
+                                reads.saturating_add(identifier_reads(
+                                    variables,
+                                    needle,
+                                    ref_name,
+                                    depth + 1,
+                                ))
+                            })
+                        }
+                        other => identifier_reads(other, needle, ref_name, depth + 1),
+                    }
+                } else {
+                    identifier_reads(value, needle, ref_name, depth + 1)
+                };
+                reads = reads.saturating_add(in_value);
+            }
+            reads
+        }
+        _ => 0,
+    }
 }
 
 /// Resolve one loop identifier inside an output map's value: `{"Ref": "<identifier>"}`

@@ -177,6 +177,11 @@ pub(super) fn naming_rules(resource_type: &str) -> Option<NameRules> {
         // `CreateTargetGroup.Name`: each "can have a maximum of 32 characters" (Elastic
         // Load Balancing API reference) — the ELBv2 model carries no `@length` for either.
         ELB_LOAD_BALANCER | ELB_TARGET_GROUP => rules(32, Characters::AsGenerated),
+        // Amazon S3 Tables `CreateTableBucket.name`: `TableBucketName`,
+        // `@length(min: 3, max: 63)` with pattern `^[0-9a-z-]*$` (that service's own Smithy
+        // model), which admits no upper case; that service also holds a name to beginning
+        // and ending with an alphanumeric, which is what this character set trims to.
+        S3TABLES_TABLE_BUCKET => rules(63, Characters::LowercaseAlphanumeric),
         // Amazon S3 Vectors `CreateVectorBucket.vectorBucketName` and
         // `CreateIndex.indexName`: each `@length(min: 3, max: 63)` with pattern
         // `[a-z0-9][a-z0-9-.]{1,61}[a-z0-9]` (that service's own Smithy model), which

@@ -10531,6 +10531,7 @@ dependencies = [
  "service-com-amazonaws-lambda-awsgirapiservice",
  "service-com-amazonaws-rds-amazonrdsv19",
  "service-com-amazonaws-s3-amazons3",
+ "service-com-amazonaws-s3tables-s3tablebuckets",
  "service-com-amazonaws-secretsmanager-secretsmanager",
  "service-com-amazonaws-sfn-awsstepfunctions",
  "service-com-amazonaws-sns-amazonsimplenotificationservice",

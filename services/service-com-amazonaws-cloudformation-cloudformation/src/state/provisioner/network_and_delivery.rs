@@ -1706,7 +1706,20 @@ pub(super) fn vector_index_identity(resource: &StoredResource) -> (Option<String
 /// The bucket name an Amazon S3 Vectors vector-bucket ARN carries, or `None` for anything
 /// that is not one.
 pub(super) fn vector_bucket_of(arn: &str) -> Option<String> {
-    let bucket = arn_resource(arn)?.strip_prefix(S3VECTORS_BUCKET_SEGMENT)?;
+    arn_bucket_of(arn, S3VECTORS_BUCKET_SEGMENT)
+}
+
+/// The bucket name an ARN whose resource portion is `<segment><name>` carries, or `None` for
+/// anything that is not such an ARN — a resource that does not open with that segment, an
+/// empty name, or a name that is really a path to something INSIDE the bucket (an index, a
+/// table), which names the bucket but is not its identifier.
+///
+/// The ONE reading of a bucket-segmented ARN in this provisioner, because more than one of
+/// the S3 bucket VARIANTS is keyed by one: a vector bucket's ARN and a table bucket's ARN
+/// differ only in the ARN namespace their own services publish, so the two cannot come to
+/// read one differently.
+pub(crate) fn arn_bucket_of(arn: &str, segment: &str) -> Option<String> {
+    let bucket = arn_resource(arn)?.strip_prefix(segment)?;
     (!bucket.is_empty() && !bucket.contains('/')).then(|| bucket.to_string())
 }
 
