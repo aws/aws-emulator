@@ -513,8 +513,12 @@ async fn log_format_defaults_when_the_request_omits_it_and_is_kept_when_it_does_
     ];
 
     let mut reported_formats: Vec<String> = Vec::new();
-    for (case, asked_for, expected) in &cases {
-        let mut params = cloud_watch_logs_params("VPC", &vpc_id, "/aws/vpc/flow-logs");
+    for (row, (case, asked_for, expected)) in cases.iter().enumerate() {
+        // Each row delivers to a log group of its own: one resource carries ONE flow log of
+        // the same configuration and destination, and two rows here ask for the same record
+        // format (the default, once by omission and once spelled out).
+        let log_group_name = format!("/aws/vpc/flow-logs-{row}");
+        let mut params = cloud_watch_logs_params("VPC", &vpc_id, &log_group_name);
         if let Some(log_format) = asked_for {
             params.push(param("LogFormat", log_format));
         }
@@ -779,8 +783,10 @@ async fn deleting_one_flow_log_reports_nothing_unsuccessful_and_removes_it() {
 async fn an_unknown_id_anywhere_in_the_batch_refuses_the_whole_delete() {
     let (router, _engine) = super::ec2_query::emulator();
     let vpc_id = create_vpc(&router, "10.220.0.0/16").await;
+    // Each seed delivers to its own log group: one resource carries ONE flow log of the
+    // same configuration and destination.
     let first = create_one(&router, "seed first", "VPC", &vpc_id, "batch-group").await;
-    let second = create_one(&router, "seed second", "VPC", &vpc_id, "batch-group").await;
+    let second = create_one(&router, "seed second", "VPC", &vpc_id, "second-batch-group").await;
     let stored = vec![first.clone(), second.clone()];
 
     // Each row: the ids the batch names, and the unknown ones the refusal must enumerate.
@@ -1946,8 +1952,10 @@ async fn the_flow_log_id_list_is_held_to_its_documented_bounds() {
 async fn a_repeated_id_gets_one_answer_and_a_deleted_flow_log_stays_deleted() {
     let (router, engine) = super::ec2_query::emulator();
     let vpc_id = create_vpc(&router, "10.227.0.0/16").await;
+    // Each seed delivers to its own log group: one resource carries ONE flow log of the
+    // same configuration and destination.
     let first = create_one(&router, "seed first", "VPC", &vpc_id, "set-group").await;
-    let second = create_one(&router, "seed second", "VPC", &vpc_id, "set-group").await;
+    let second = create_one(&router, "seed second", "VPC", &vpc_id, "second-set-group").await;
     let stored = vec![first.clone(), second.clone()];
 
     // One absent id named twice is ONE unknown id: the refusal counts it once and names it

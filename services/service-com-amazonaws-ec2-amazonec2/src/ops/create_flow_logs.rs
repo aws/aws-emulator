@@ -7,7 +7,9 @@
 //! and `DeleteFlowLogs` removes them. The whole `ResourceIds` batch is resolved against
 //! the store BEFORE anything is written — and before the delivery role the destination
 //! requires is asked for — so a call naming one resource the account does
-//! not hold stores nothing at all.
+//! not hold stores nothing at all. A resource the account already has a flow log of the
+//! same configuration and destination for is refused too (`FlowLogAlreadyExists`): one
+//! monitoring is turned on once.
 //!
 //! A flow log that publishes to Amazon S3 also leaves the destination bucket permitting the
 //! log delivery service to write its records there: that permission lives in the bucket's own
@@ -467,6 +469,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             return Err(state::dry_run_operation());
         }
 
+        // The token the flow logs this call stores are RECORDED UNDER, which is what the
+        // result reports: "Unique, case-sensitive identifier that you provide to ensure the
+        // idempotency of the request" (`CreateFlowLogsResult$ClientToken`). A request that
+        // provided none is answered one all the same — the service mints it
+        // ([`state::generated_client_token`]) — so every caller learns the token its flow
+        // logs answer to and can replay the call it just made instead of creating a second
+        // set. Minted after the dry run, which stores nothing and so records no token.
+        let recorded_token = input
+            .client_token
+            .clone()
+            .unwrap_or_else(state::generated_client_token);
+
         let state_handle = state::require_service_state(&*self.engine)?;
         // Everything this service's own store decides happens inside this scope, so the
         // guard is released before the delivery grants below await the service that owns the
@@ -531,7 +545,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     destination_options: destination_options.clone(),
                     tag_field_specifications: tag_field_specifications.clone(),
                     tags: tags.clone(),
-                    client_token: input.client_token.clone(),
+                    client_token: Some(recorded_token.clone()),
                     created_at,
                 })
                 .collect();
@@ -539,6 +553,16 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // gigabytes, because each record holds strings the caller chose the length of. A
             // replay stores nothing, so it is charged nothing and clears both gates.
             if replayed.is_none() {
+                // "There is an existing Flow Log with the same configuration and log
+                // destination": a monitored resource carries ONE flow log of a given
+                // capture configuration delivered to a given destination, so a create that
+                // asks for one the account already holds is refused rather than doubling
+                // it — a client's duplicate detection depends on that refusal. The whole
+                // batch is asked before anything is stored, the way an unresolvable
+                // `ResourceIds` entry refuses the whole call.
+                if store.holds_any_flow_log_like(&specs) {
+                    return Err(state::flow_log_already_exists());
+                }
                 if !store.has_flow_log_capacity_for(specs.len()) {
                     return Err(state::flow_logs_limit_exceeded(format!(
                         "This emulator holds {max} flow logs, which is as many as it stores",
@@ -600,7 +624,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         }
 
         Ok(CreateFlowLogsOutput {
-            client_token: input.client_token.clone(),
+            client_token: Some(recorded_token),
             flow_log_ids: Some(flow_log_ids),
             // "Information about the flow logs that could not be created successfully"
             // (`$Unsuccessful`): the whole batch was resolved before anything was stored,

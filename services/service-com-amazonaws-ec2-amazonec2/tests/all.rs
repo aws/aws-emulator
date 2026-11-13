@@ -2121,3 +2121,9 @@ mod capacity_reservation_fleet_previous_state;
 // refuses, in the order a dry run is answered. Declared at the tail of this file, which is
 #[path = "all/delete_network_insights_access_scope.rs"]
 mod delete_network_insights_access_scope;
+// The conflicting-state precondition `CreateFlowLogs` checks before it stores anything: a
+// create asking for a flow log the account already holds — the same configuration delivered
+// to the same destination — is refused `FlowLogAlreadyExists` and stores nothing. Declared at
+// the tail of this file, which is where every new ec2 suite lands.
+#[path = "all/flow_log_duplicate_refusal.rs"]
+mod flow_log_duplicate_refusal;

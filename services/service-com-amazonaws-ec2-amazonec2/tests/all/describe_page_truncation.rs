@@ -302,30 +302,31 @@ async fn seed_security_groups(
     (router, scope)
 }
 
-/// `DescribeFlowLogs`: `count` flow logs monitoring a VPC of this row's own, every one of
+/// `DescribeFlowLogs`: `count` flow logs, each monitoring a VPC of its own, every one of
 /// them publishing to the row's own CloudWatch Logs log group and selected by
 /// `log-group-name`.
 ///
-/// A create mints one flow log per monitored resource, so the row's set is built one call at
-/// a time on the same VPC; the log group is what gives the row a scope of its own, flow logs
-/// being an account's rather than a VPC's.
+/// A create mints one flow log per monitored resource, and one resource carries one flow log
+/// of a given configuration and destination — so the row's set is built one VPC at a time;
+/// the log group is what gives the row a scope of its own, flow logs being an account's
+/// rather than a VPC's.
 async fn seed_flow_logs(
     router: MultiServiceRouter,
     row: usize,
     count: usize,
 ) -> (MultiServiceRouter, Vec<(String, String)>) {
     let case = format!("seeding {count} flow logs");
-    let vpc_cidr = format!("10.{}.0.0/16", row + 200);
-    let vpc_id = minted(
-        &case,
-        &router,
-        "CreateVpc",
-        &[p("CidrBlock", vpc_cidr)],
-        "vpcId",
-    )
-    .await;
     let log_group_name = format!("/aws/vpc/page-row-{row}-flow-logs");
-    for _ in 0..count {
+    for index in 0..count {
+        let vpc_cidr = format!("10.{}.{index}.0/24", row + 200);
+        let vpc_id = minted(
+            &case,
+            &router,
+            "CreateVpc",
+            &[p("CidrBlock", vpc_cidr)],
+            "vpcId",
+        )
+        .await;
         // `CreateFlowLogs` answers its minted ids in a `flowLogIdSet`, whose entries are
         // `item` elements; a create that minted none would answer no `item` at all, which
         // `minted` refuses.

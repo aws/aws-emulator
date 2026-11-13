@@ -3724,6 +3724,29 @@ pub const TRANSIT_GATEWAY_MAX_AGGREGATION_INTERVAL: i32 = 60;
 /// and `VpcFlowLogId` values take).
 pub const FLOW_LOG_ID_PREFIX: &str = "fl";
 
+/// How many bytes a `ClientToken` this service mints for a `CreateFlowLogs` carries before
+/// it is written as text: an opaque value, so the only thing its width has to do is make
+/// every minted token distinct from every other one.
+const GENERATED_CLIENT_TOKEN_BYTES: usize = 32;
+
+/// The idempotency token a `CreateFlowLogs` that carried none is answered with.
+///
+/// "Unique, case-sensitive identifier that you provide to ensure the idempotency of the
+/// request" (`CreateFlowLogsRequest$ClientToken`) is answered back on the result
+/// (`CreateFlowLogsResult$ClientToken`), so a call that provided no token still learns the
+/// token its flow logs are recorded under and can replay itself with it. The value is
+/// SERVICE-generated, so it is drawn from the operating system's randomness and never from
+/// the request, a counter or a clock: two calls asking for different flow logs must not be
+/// handed the same token. Written as base64 text, which is what a token has to be to survive
+/// a form-encoded body and an XML answer unchanged.
+pub fn generated_client_token() -> String {
+    use ::base64::Engine as _;
+    use ::ssh_key::rand_core::RngCore;
+    let mut bytes = [0u8; GENERATED_CLIENT_TOKEN_BYTES];
+    ::ssh_key::rand_core::OsRng.fill_bytes(&mut bytes);
+    ::base64::engine::general_purpose::STANDARD.encode(bytes)
+}
+
 /// The `ResourceType` a `CreateFlowLogs` tag specification may name: the flow log it
 /// creates (`ResourceType` enum member `vpc-flow-log`).
 pub const RESOURCE_TYPE_VPC_FLOW_LOG: &str = "vpc-flow-log";
@@ -3798,6 +3821,11 @@ pub const INVALID_FLOW_LOG_TRANSIT_GATEWAY_ID_NOT_FOUND: &str =
 pub const INVALID_FLOW_LOG_TRANSIT_GATEWAY_ATTACHMENT_ID_NOT_FOUND: &str =
     "InvalidTransitGatewayAttachmentId.NotFound";
 
+/// EC2's error code for a `CreateFlowLogs` that asks for a flow log the account already
+/// holds — the same monitoring of the same resource, delivered to the same destination
+/// (`FlowLogAlreadyExists`).
+pub const FLOW_LOG_ALREADY_EXISTS: &str = "FlowLogAlreadyExists";
+
 /// The error code a create refuses with once the flow-log store is full, in the form EC2
 /// names every quota refusal with (`VpcLimitExceeded`, `SubnetLimitExceeded`):
 /// `<Resource>LimitExceeded`. The ceiling it reports is this store's
@@ -3828,6 +3856,20 @@ pub fn invalid_flow_log_id_not_found<E>(unknown: &[String]) -> Scaffolded<E> {
 /// [`MAX_STORED_RECORDS_PER_STORE`]: HTTP 400 [`FLOW_LOGS_LIMIT_EXCEEDED`].
 pub fn flow_logs_limit_exceeded<E>(message: impl Into<String>) -> Scaffolded<E> {
     Scaffolded::service_error(FLOW_LOGS_LIMIT_EXCEEDED, 400, message)
+}
+
+/// Refuse a `CreateFlowLogs` that asks for a flow log this account already holds: HTTP 400
+/// [`FLOW_LOG_ALREADY_EXISTS`].
+///
+/// The message carries no variable part — the refusal is about the request as a whole
+/// rather than about one member of it, so it names neither the monitored resource nor the
+/// flow log already covering it.
+pub fn flow_log_already_exists<E>() -> Scaffolded<E> {
+    Scaffolded::service_error(
+        FLOW_LOG_ALREADY_EXISTS,
+        400,
+        "Error. There is an existing Flow Log with the same configuration and log destination.",
+    )
 }
 
 /// Refuse a `CreateFlowLogs` whose `ResourceIds` names a resource of `resource_type` this
@@ -4023,6 +4065,128 @@ pub struct FlowLogSpec {
     pub created_at: SystemTime,
 }
 
+/// What makes two flow logs the SAME flow log: the resource monitored, what is captured of
+/// it and how it is recorded, and where the records are delivered.
+///
+/// Every member a request may leave out is read at the value the stored flow log carries
+/// for it, so a create that spelled out a documented default asks for the same thing as one
+/// that omitted it. Only what a flow log's own records and their delivery depend on is here:
+/// the tags and the delivery roles name no different monitoring, so a request differing in
+/// those alone asks for a flow log the account already has.
+#[derive(Debug, PartialEq, Eq, Hash)]
+struct FlowLogIdentity {
+    /// "The ID of the resource being monitored" (`FlowLog$ResourceId`).
+    resource_id: Option<String>,
+    /// "The type of traffic captured for the flow log" (`FlowLog$TrafficType`).
+    traffic_type: Option<String>,
+    /// "The type of destination for the flow log data" (`FlowLog$LogDestinationType`).
+    log_destination_type: Option<String>,
+    /// WHERE the records go ([`flow_log_destination_of`]).
+    destination: Option<String>,
+    /// "The fields to include in the flow log record" (`FlowLog$LogFormat`), defaulted.
+    log_format: String,
+    /// "The maximum interval of time … during which a flow of packets is captured and
+    /// aggregated into a flow log record" (`FlowLog$MaxAggregationInterval`).
+    max_aggregation_interval: Option<i32>,
+    /// "The format for the flow log" (`DestinationOptionsResponse$FileFormat`), defaulted.
+    file_format: String,
+    /// Whether Hive-compatible prefixes are used
+    /// (`DestinationOptionsResponse$HiveCompatiblePartitions`), defaulted.
+    hive_compatible_partitions: bool,
+    /// Whether the flow log is partitioned per hour
+    /// (`DestinationOptionsResponse$PerHourPartition`), defaulted.
+    per_hour_partition: bool,
+}
+
+impl FlowLogIdentity {
+    /// The identity of the flow log one [`FlowLogSpec`] would store.
+    fn of_spec(spec: &FlowLogSpec) -> Self {
+        let (file_format, hive_compatible_partitions, per_hour_partition) =
+            flow_log_destination_options_in_force(spec.destination_options.as_ref());
+        Self {
+            resource_id: Some(spec.resource_id.clone()),
+            traffic_type: spec.traffic_type.clone(),
+            log_destination_type: Some(spec.log_destination_type.clone()),
+            destination: flow_log_destination_of(
+                &spec.log_destination_type,
+                spec.log_destination.as_deref(),
+                spec.log_group_name.as_deref(),
+            ),
+            log_format: spec
+                .log_format
+                .clone()
+                .unwrap_or_else(|| DEFAULT_FLOW_LOG_FORMAT.to_string()),
+            max_aggregation_interval: Some(spec.max_aggregation_interval),
+            file_format,
+            hive_compatible_partitions,
+            per_hour_partition,
+        }
+    }
+
+    /// The identity of a flow log as this store reports it.
+    fn of_reported(view: &FlowLog) -> Self {
+        let (file_format, hive_compatible_partitions, per_hour_partition) =
+            flow_log_destination_options_in_force(view.destination_options.as_ref());
+        Self {
+            resource_id: view.resource_id.clone(),
+            traffic_type: view.traffic_type.clone(),
+            log_destination_type: view.log_destination_type.clone(),
+            destination: flow_log_destination_of(
+                view.log_destination_type.as_deref().unwrap_or_default(),
+                view.log_destination.as_deref(),
+                view.log_group_name.as_deref(),
+            ),
+            log_format: view
+                .log_format
+                .clone()
+                .unwrap_or_else(|| DEFAULT_FLOW_LOG_FORMAT.to_string()),
+            max_aggregation_interval: view.max_aggregation_interval,
+            file_format,
+            hive_compatible_partitions,
+            per_hour_partition,
+        }
+    }
+}
+
+/// The destination options at the values they are in force with: "The default is plain-text"
+/// (`DestinationOptionsRequest$FileFormat`), "The default is false"
+/// (`$HiveCompatiblePartitions`, `$PerHourPartition`) — so options left out and options
+/// spelled out at their own defaults are one and the same delivery.
+fn flow_log_destination_options_in_force(
+    options: Option<&DestinationOptionsResponse>,
+) -> (String, bool, bool) {
+    (
+        options
+            .and_then(|options| options.file_format.clone())
+            .unwrap_or_else(|| DEFAULT_FLOW_LOG_FILE_FORMAT.to_string()),
+        options
+            .and_then(|options| options.hive_compatible_partitions)
+            .unwrap_or(false),
+        options
+            .and_then(|options| options.per_hour_partition)
+            .unwrap_or(false),
+    )
+}
+
+/// Where a flow log's records are delivered, as the ONE value that names that destination.
+///
+/// A CloudWatch Logs destination is a log GROUP, which a request names either way: "specify
+/// the ARN of a CloudWatch Logs log group … Alternatively, use the LogGroupName parameter"
+/// (`CreateFlowLogsRequest$LogDestination`) — so the group is the destination however it was
+/// named. Every other destination type is named by its ARN alone.
+fn flow_log_destination_of(
+    log_destination_type: &str,
+    log_destination: Option<&str>,
+    log_group_name: Option<&str>,
+) -> Option<String> {
+    let named = if log_destination_type == LOG_DESTINATION_TYPE_CLOUD_WATCH_LOGS {
+        log_group_name.or_else(|| log_destination.and_then(log_group_name_in_arn))
+    } else {
+        log_destination
+    };
+    named.map(str::to_string)
+}
+
 impl ComAmazonawsEc2Amazonec2State {
     /// Whether another `count` flow logs fit inside the store's ceiling
     /// ([`MAX_STORED_RECORDS_PER_STORE`]).
@@ -4057,6 +4221,28 @@ impl ComAmazonawsEc2Amazonec2State {
             // unknown type resolves NO id, so it can only refuse, never admit.
             _ => false,
         }
+    }
+
+    /// Whether this account already holds any of the flow logs `specs` describe — the same
+    /// resource monitored the same way and delivered to the same destination
+    /// ([`FlowLogIdentity`]) — which is the question `CreateFlowLogs` asks of its WHOLE batch
+    /// before it stores anything.
+    ///
+    /// Each stored flow log's identity is read once and each spec's once, rather than once
+    /// per pair: one create may name hundreds of resources
+    /// ([`MAX_FLOW_LOG_RESOURCE_IDS`]) and the store holds up to
+    /// [`MAX_STORED_RECORDS_PER_STORE`] flow logs.
+    ///
+    /// A READ: it answers from the flow logs the store holds and writes nothing.
+    pub fn holds_any_flow_log_like(&self, specs: &[FlowLogSpec]) -> bool {
+        let held: HashSet<FlowLogIdentity> = self
+            .flow_logs
+            .values()
+            .map(|record| FlowLogIdentity::of_reported(&record.view))
+            .collect();
+        specs
+            .iter()
+            .any(|spec| held.contains(&FlowLogIdentity::of_spec(spec)))
     }
 
     /// Insert one flow log, and answer the `FlowLogId` it was given.
