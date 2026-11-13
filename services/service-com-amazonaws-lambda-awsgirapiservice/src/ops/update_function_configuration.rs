@@ -455,6 +455,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             return Err(not_found(&region, &reference.name));
         }
 
+        // The code-signing configuration this function deploys under, read BEFORE the
+        // record is taken mutably below: a deployment to a function holding an association
+        // is verified against that one configuration (see
+        // [`crate::state::untrusted_deployment_refusal`]).
+        let signing_config = store
+            .attached_code_signing_config(&reference.name)
+            .cloned();
+
         // "A list of function layers to add to the function's execution environment.
         // Specify each layer by its ARN, including the version." Each entry names a layer
         // version `PublishLayerVersion` persisted IN THIS REGION, and no two of them name
@@ -549,6 +557,26 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 "ImageConfig can only be set for a function whose PackageType is Image"
                     .to_string(),
             ));
+        }
+
+        // MOUNTING layer versions is a deployment to the function — each layer is a package
+        // of its own, unpacked into the execution environment the function runs in — so code
+        // signing covers it, which is why the model binds
+        // `CodeVerificationFailedException` to this operation at all: a function attached to
+        // a configuration whose policy is `Enforce` has layers Lambda cannot attribute to
+        // one of that configuration's allowed publishers BLOCKED, with nothing stored, and
+        // the same change lands under the `Warn` policy ([`crate::state::DeployedArtifact`]).
+        // A request that names no layers mounts none and deploys nothing.
+        if layers.as_ref().is_some_and(|layers| !layers.is_empty()) {
+            if let Some(config) = &signing_config {
+                if let Some(message) = crate::state::untrusted_deployment_refusal(
+                    config,
+                    crate::state::DeployedArtifact::Layers,
+                    &record.arn,
+                ) {
+                    return Err(code_verification_failed(message));
+                }
+            }
         }
 
         // "To connect a function to a VPC, Lambda creates an elastic network interface for
@@ -694,6 +722,19 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             record.configuration(crate::state::VERSION_LATEST, &stored),
         ))
     }
+}
+
+/// The modelled 400 Lambda BLOCKS a deployment its code-signing checks rejected with:
+/// "The code signature failed one or more of the validation checks for signature mismatch
+/// or expiry, and the code signing policy is set to ENFORCE. Lambda blocks the deployment."
+fn code_verification_failed(message: String) -> UpdateFunctionConfigurationError {
+    UpdateFunctionConfigurationErrorModeled::CodeVerificationFailedException(
+        CodeVerificationFailedException {
+            r#type: None,
+            message: Some(message),
+        },
+    )
+    .into()
 }
 
 /// The modelled 400 this operation answers a request it cannot satisfy with.

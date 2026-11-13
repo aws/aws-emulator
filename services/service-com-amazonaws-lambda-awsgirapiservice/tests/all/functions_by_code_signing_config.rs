@@ -77,11 +77,14 @@ const MAX_ITEMS_MIN: i64 = 1;
 /// See [`MAX_ITEMS_MIN`].
 const MAX_ITEMS_MAX: i64 = 10_000;
 
-/// The `CodeSigningPolicy` values the model declares, from
-/// `smithy_query(query="shape", shape="CodeSigningPolicy")` (`Warn | Enforce`): the
-/// configurations below differ along this member so that no two of them are the same
-/// record read twice.
-const POLICIES: [&str; 2] = ["Warn", "Enforce"];
+/// The `CodeSigningPolicy` the configurations below carry, from
+/// `smithy_query(query="shape", shape="CodeSigningPolicy")` (`Warn | Enforce`): the value
+/// that ADMITS a deployment whose signature checks fail. These rows deploy an unsigned
+/// package under the configuration they name, which the other value blocks outright (that
+/// enforcement is its own subject, in `code_signing_enforcement`), and the configurations
+/// still differ from one another in their allowed publishers and description, so no two of
+/// them are the same record read twice.
+const ADMITTING_POLICY: &str = "Warn";
 
 /// What a dispatched request answered.
 struct Answer {
@@ -280,7 +283,7 @@ async fn create_config(router: &MultiServiceRouter, index: usize) -> String {
         &json!({
             "AllowedPublishers": { "SigningProfileVersionArns": [signing_profile(index)] },
             "CodeSigningPolicies": {
-                "UntrustedArtifactOnDeployment": POLICIES[index % POLICIES.len()],
+                "UntrustedArtifactOnDeployment": ADMITTING_POLICY,
             },
             "Description": format!("configuration {index}"),
         }),

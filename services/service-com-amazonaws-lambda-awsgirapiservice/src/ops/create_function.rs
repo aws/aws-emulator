@@ -618,7 +618,31 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let code_signing_config_arn = match input.code_signing_config_arn.as_deref() {
             None => None,
             Some(requested) => match store.code_signing_configs.get(requested) {
-                Some(config) => Some(config.arn.clone()),
+                Some(config) => {
+                    // The deployment this create makes is CODE SIGNING's subject: a
+                    // configuration whose policy is `Enforce` has a deployment Lambda
+                    // cannot attribute to one of its allowed publishers BLOCKED, with no
+                    // function created, and the same deployment lands under the `Warn`
+                    // policy — the one reading of the policy every deployment operation
+                    // shares ([`crate::state::untrusted_deployment_refusal`]). There is no
+                    // function yet, so the refusal names the one the request asked for.
+                    if let Some(message) = crate::state::untrusted_deployment_refusal(
+                        config,
+                        crate::state::DeployedArtifact::Package(&code),
+                        &input.function_name,
+                    ) {
+                        return Err(
+                            CreateFunctionErrorModeled::CodeVerificationFailedException(
+                                CodeVerificationFailedException {
+                                    r#type: None,
+                                    message: Some(message),
+                                },
+                            )
+                            .into(),
+                        );
+                    }
+                    Some(config.arn.clone())
+                }
                 None => {
                     return Err(
                         CreateFunctionErrorModeled::CodeSigningConfigNotFoundException(

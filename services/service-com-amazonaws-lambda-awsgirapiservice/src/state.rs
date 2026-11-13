@@ -3241,7 +3241,10 @@ pub struct CodeSigningConfigRecord {
     pub id: String,
     /// The configuration's ARN.
     pub arn: String,
-    /// The description, when the caller gave one.
+    /// The description the caller gave, when any: a configuration nobody described holds
+    /// NONE, which is what the create's own echo of it reports
+    /// ([`Self::as_created`]) — while every later read of the stored configuration renders
+    /// the member, as the empty string ([`Self::to_wire`]).
     pub description: Option<String>,
     /// The signing profile version ARNs allowed to sign a package.
     pub signing_profile_version_arns: Vec<String>,
@@ -3254,13 +3257,20 @@ pub struct CodeSigningConfigRecord {
 }
 
 impl CodeSigningConfigRecord {
-    /// The `CodeSigningConfig` the wire reports, built entirely out of what is stored.
+    /// The `CodeSigningConfig` a READ of this stored configuration reports, built entirely
+    /// out of what is stored: `GetCodeSigningConfig`, `UpdateCodeSigningConfig` and every
+    /// entry of `ListCodeSigningConfigs`.
+    ///
+    /// `Description` is rendered on every one of them, as the empty string for a
+    /// configuration nobody described — the member belongs to the shape the service answers
+    /// a read with, and its own `@length 0..256` admits the empty string — rather than
+    /// appearing only once a description has been set.
     #[must_use]
     pub fn to_wire(&self) -> CodeSigningConfig {
         CodeSigningConfig {
             code_signing_config_id: self.id.clone(),
             code_signing_config_arn: self.arn.clone(),
-            description: self.description.clone(),
+            description: Some(self.description.clone().unwrap_or_default()),
             allowed_publishers: AllowedPublishers {
                 signing_profile_version_arns: self.signing_profile_version_arns.clone(),
             },
@@ -3270,6 +3280,21 @@ impl CodeSigningConfigRecord {
                 ),
             },
             last_modified: self.last_modified.clone(),
+        }
+    }
+
+    /// The `CodeSigningConfig` the CREATE answers: the same stored configuration, with
+    /// `Description` as the request DESCRIBED it — absent for a create that stated none.
+    ///
+    /// The create echoes the configuration it was asked for, and the member becomes part of
+    /// every later read of the record ([`Self::to_wire`]); the two renderings therefore
+    /// differ in exactly this member for a configuration nobody described, which is what
+    /// AWS's own answers carry, so do not unify them.
+    #[must_use]
+    pub fn as_created(&self) -> CodeSigningConfig {
+        CodeSigningConfig {
+            description: self.description.clone(),
+            ..self.to_wire()
         }
     }
 }
@@ -4842,3 +4867,11 @@ pub use log_level_format::{log_level_format_refusal, LOG_LEVELS_NEED_JSON_MESSAG
 /// names; see the module's own header.
 pub mod download_location;
 pub use download_location::*;
+
+/// What the code-signing configuration a function is attached to does to a DEPLOYMENT of a
+/// package to it; see the module's own header.
+mod code_signing;
+pub use code_signing::{
+    code_verification_failed_message, untrusted_deployment_refusal, DeployedArtifact,
+    CODE_SIGNING_POLICY_ENFORCE,
+};

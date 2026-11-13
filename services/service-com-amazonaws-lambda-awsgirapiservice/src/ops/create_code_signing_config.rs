@@ -223,7 +223,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         store.code_signing_configs.insert(arn.clone(), record);
 
         // Answered by reading the record back out of the store, so GetCodeSigningConfig
-        // reports exactly what this call persisted.
+        // reports exactly what this call persisted. The create ECHOES the configuration it
+        // was asked for, which renders `Description` only for a request that stated one
+        // (`CodeSigningConfigRecord::as_created`); every later read of the same record
+        // renders the member.
         let Some(stored) = store.code_signing_configs.get(&arn) else {
             return Err(CreateCodeSigningConfigErrorModeled::ServiceException(
                 ServiceException {
@@ -237,7 +240,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .into());
         };
         Ok(CreateCodeSigningConfigOutput {
-            code_signing_config: stored.to_wire(),
+            code_signing_config: stored.as_created(),
         })
     }
 }

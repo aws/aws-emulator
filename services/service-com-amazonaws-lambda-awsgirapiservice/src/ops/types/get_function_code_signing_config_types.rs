@@ -17,24 +17,30 @@ pub struct GetFunctionCodeSigningConfigInput {
     pub function_name: String,
 }
 
-/// `GetFunctionCodeSigningConfigResponse`: the function, and the code signing
-/// configuration it is associated with — a member that is ABSENT when it holds none.
+/// `GetFunctionCodeSigningConfigResponse`: the code signing configuration a function is
+/// associated with, and the function holding it — or NEITHER member, for a function that
+/// holds no association.
 ///
-/// Written out rather than generated from the shape because the association is optional
-/// in fact while the member carries `@required`, which the shape derive renders as a bare
-/// `String` written on every response. A function nothing has associated a configuration
-/// with has no ARN to report, and `CodeSigningConfigArn`'s own pattern
+/// Written out rather than generated from the shape because both members carry `@required`,
+/// which the shape derive renders as bare `String`s written on every response, while the
+/// association they describe is optional in fact. A function nothing has associated a
+/// configuration with has no ARN to report, and `CodeSigningConfigArn`'s own pattern
 /// (`^arn:…:code-signing-config:csc-[a-z0-9]{17}$`, from
-/// `smithy_query(query="shape", shape="CodeSigningConfigArn")`) admits no string that
-/// stands for "none" — the empty string least of all, since it satisfies the pattern no
-/// better than any other non-ARN. So "no association" is reported by leaving the member
-/// out of the body, which is what AWS answers and what every other optional member of
-/// this service reports absence with.
+/// `smithy_query(query="shape", shape="CodeSigningConfigArn")`) admits no string that stands
+/// for "none" — the empty string least of all, since it satisfies the pattern no better than
+/// any other non-ARN.
+///
+/// So the body reports the association as a WHOLE: the configuration's ARN and the function
+/// holding it for a function that holds one, and an empty body for a function that holds
+/// none, rather than a function name with no configuration beside it. That is what the
+/// service answers, and it is how every other optional member of this service reports
+/// absence.
 #[derive(Debug, Clone, Default)]
 pub struct GetFunctionCodeSigningConfigOutput {
     /// The configuration the function is associated with, or `None` when it holds none.
     pub code_signing_config_arn: Option<String>,
-    pub function_name: String,
+    /// The function holding that association — `None` exactly when there is none to report.
+    pub function_name: Option<String>,
 }
 
 #[allow(non_upper_case_globals)]
@@ -85,12 +91,16 @@ impl ::aws_smithy_schema::serde::SerializableStruct for GetFunctionCodeSigningCo
         &self,
         serializer: &mut dyn ::aws_smithy_schema::serde::ShapeSerializer,
     ) -> ::std::result::Result<(), ::aws_smithy_schema::serde::SerdeError> {
-        // Exactly as a non-`@required` member is written: the member reaches the body
-        // only when the function holds an association.
-        if let Some(arn) = self.code_signing_config_arn.as_ref() {
+        // The association is reported as a WHOLE, exactly as a single optional member is
+        // written: both members reach the body when the function holds one, and neither
+        // does when it holds none (see the struct's own documentation).
+        if let (Some(arn), Some(function_name)) = (
+            self.code_signing_config_arn.as_ref(),
+            self.function_name.as_ref(),
+        ) {
             serializer.write_string(&Self::M_CODE_SIGNING_CONFIG_ARN, arn.as_str())?;
+            serializer.write_string(&Self::M_FUNCTION_NAME, function_name.as_str())?;
         }
-        serializer.write_string(&Self::M_FUNCTION_NAME, self.function_name.as_str())?;
         Ok(())
     }
 }

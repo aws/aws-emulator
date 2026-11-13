@@ -66,11 +66,14 @@ const ROLE: &str = "arn:aws:iam::000000000000:role/service-role/lambda-exec";
 /// (`http.code: 204`).
 const REMOVED: u16 = 204;
 
-/// The `CodeSigningPolicy` values the model declares, from
-/// `smithy_query(query="shape", shape="CodeSigningPolicy")` (`Warn | Enforce`): the two
-/// configurations each row creates differ along this member so that neither is the other
-/// read twice.
-const POLICIES: [&str; 2] = ["Warn", "Enforce"];
+/// The `CodeSigningPolicy` the configurations below carry, from
+/// `smithy_query(query="shape", shape="CodeSigningPolicy")` (`Warn | Enforce`): the value
+/// that ADMITS a deployment whose signature checks fail. These rows deploy an unsigned
+/// package under the configuration they name, which the other value blocks outright (that
+/// enforcement is its own subject, in `code_signing_enforcement`), and the configurations
+/// still differ from one another in their allowed publishers and description, so neither is
+/// the other read twice.
+const ADMITTING_POLICY: &str = "Warn";
 
 /// A ceiling on how many pages one pagination walk reads, so a `NextMarker` that never
 /// terminates fails the test instead of hanging it.
@@ -200,17 +203,16 @@ async fn associate(case: &str, router: &MultiServiceRouter, reference: &str, con
 }
 
 /// The association `GetFunctionCodeSigningConfig` reports for the function `reference`
-/// addresses: the ARN it holds, or `None` when the body carries no `CodeSigningConfigArn`
-/// member because it holds none.
+/// addresses: the ARN it holds, or `None` when it holds none.
 ///
-/// The function existing is what the call reports on, so every answer is a 200 that names
-/// the function; "none" is the member's ABSENCE and never an empty or otherwise
-/// non-conforming value.
+/// The function existing is what the call reports on, so every answer is a 200; and what the
+/// body carries is the association as a WHOLE — the configuration's ARN and the function
+/// holding it for a function that holds one, and nothing at all for a function that holds
+/// none, never an empty or otherwise non-conforming value standing in for "none".
 async fn reported(
     case: &str,
     router: &MultiServiceRouter,
     reference: &str,
-    function: &str,
 ) -> Option<String> {
     let answer = get_association(router, reference).await;
     assert_eq!(
@@ -219,13 +221,6 @@ async fn reported(
         "case {case:?}: expected 200 from GetFunctionCodeSigningConfig on {reference:?}, \
          got {} {}",
         answer.status,
-        answer.text()
-    );
-    assert_eq!(
-        answer.string("FunctionName").as_deref(),
-        Some(function),
-        "case {case:?}: GetFunctionCodeSigningConfig on {reference:?} must name the \
-         function it reports on, got {}",
         answer.text()
     );
     let arn = answer.string("CodeSigningConfigArn");
@@ -240,6 +235,13 @@ async fn reported(
         answer.has("CodeSigningConfigArn"),
         arn.is_some(),
         "case {case:?}: a CodeSigningConfigArn that is present must be a string, got {}",
+        answer.text()
+    );
+    assert_eq!(
+        answer.has("FunctionName"),
+        arn.is_some(),
+        "case {case:?}: the body reports the association as a whole — the function holding \
+         it exactly when there is a configuration to report — got {}",
         answer.text()
     );
     arn
@@ -332,7 +334,7 @@ async fn create_config(router: &MultiServiceRouter, index: usize) -> String {
         &json!({
             "AllowedPublishers": { "SigningProfileVersionArns": [signing_profile(index)] },
             "CodeSigningPolicies": {
-                "UntrustedArtifactOnDeployment": POLICIES[index % POLICIES.len()],
+                "UntrustedArtifactOnDeployment": ADMITTING_POLICY,
             },
             "Description": format!("configuration {index}"),
         }),
@@ -546,7 +548,7 @@ async fn dissociating_a_code_signing_config_clears_both_sides_of_the_binding() {
         // A function nothing associated a configuration with reports none: the same 200,
         // without the member. This is the state the dissociation below puts the detached
         // function into, reached without any dissociation at all.
-        let unbound = reported(label, &router, "dissoc-unbound", "dissoc-unbound").await;
+        let unbound = reported(label, &router, "dissoc-unbound").await;
         assert_eq!(
             unbound, None,
             "case {label:?}: a function holding no configuration must report none, got \
@@ -554,7 +556,7 @@ async fn dissociating_a_code_signing_config_clears_both_sides_of_the_binding() {
         );
 
         // Before: both sides report the binding.
-        let before = reported(label, &router, &reference, &detached).await;
+        let before = reported(label, &router, &reference).await;
         assert_eq!(
             before,
             Some(config.clone()),
@@ -574,7 +576,7 @@ async fn dissociating_a_code_signing_config_clears_both_sides_of_the_binding() {
 
         // After: the function's own reader reports none, and the configuration's
         // membership no longer carries it — while every other member is still there.
-        let after = reported(label, &router, &reference, &detached).await;
+        let after = reported(label, &router, &reference).await;
         assert_eq!(
             after, None,
             "case {label:?}: {reference:?} must report no configuration after the \
@@ -604,7 +606,7 @@ async fn dissociating_a_code_signing_config_clears_both_sides_of_the_binding() {
             } else {
                 Some(config.clone())
             };
-            let held = reported(label, &router, function, function).await;
+            let held = reported(label, &router, function).await;
             assert_eq!(
                 held, expected,
                 "case {label:?}: {function:?} must report {expected:?} after the \
@@ -613,7 +615,7 @@ async fn dissociating_a_code_signing_config_clears_both_sides_of_the_binding() {
         }
 
         // Nothing else's binding moved, on either side.
-        let neighbour = reported(label, &router, "dissoc-neighbour", "dissoc-neighbour").await;
+        let neighbour = reported(label, &router, "dissoc-neighbour").await;
         assert_eq!(
             neighbour,
             Some(other.clone()),
@@ -632,7 +634,7 @@ async fn dissociating_a_code_signing_config_clears_both_sides_of_the_binding() {
         // the function to the OTHER configuration puts it in that configuration's
         // membership and leaves the first one's alone.
         associate(label, &router, &reference, &other).await;
-        let rebound = reported(label, &router, &reference, &detached).await;
+        let rebound = reported(label, &router, &reference).await;
         assert_eq!(
             rebound,
             Some(other.clone()),
@@ -679,7 +681,7 @@ async fn a_function_holding_no_config_reports_none_however_it_came_to_hold_none(
     dissociate("dissociated twice", &router, twice).await;
 
     for function in [never, once, twice] {
-        let held = reported(function, &router, function, function).await;
+        let held = reported(function, &router, function).await;
         assert_eq!(
             held, None,
             "case {function:?}: a function holding no configuration must report none, got \
@@ -691,12 +693,13 @@ async fn a_function_holding_no_config_reports_none_however_it_came_to_hold_none(
             "case {function:?}: the body must carry no CodeSigningConfigArn member, got {}",
             answer.text()
         );
-        // It is a REPORT of the function, not a refusal: the function is named and the
-        // status is the operation's own 200.
+        // It is a REPORT of the function, not a refusal: the status is the operation's own
+        // 200, and a function holding no association reports neither member of the
+        // association rather than one of them.
         assert_eq!(
-            (answer.status, answer.string("FunctionName")),
-            (200, Some(function.to_string())),
-            "case {function:?}: expected a 200 naming the function, got {} {}",
+            (answer.status, answer.has("FunctionName")),
+            (200, false),
+            "case {function:?}: expected a 200 reporting no association at all, got {} {}",
             answer.status,
             answer.text()
         );

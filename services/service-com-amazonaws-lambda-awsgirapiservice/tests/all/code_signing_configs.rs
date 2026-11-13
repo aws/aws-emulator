@@ -225,7 +225,9 @@ struct ConfigCase {
     expected_profiles: Vec<String>,
     /// The `UntrustedArtifactOnDeployment` the record must report.
     expected_policy: &'static str,
-    /// The `Description` the record must report; `None` for a request that stated none.
+    /// The `Description` the CREATE's own answer must report; `None` for a request that
+    /// stated none, whose echo carries no such member. Every later READ of the record
+    /// renders it, as the empty string — see [`read_description`].
     expected_description: Option<String>,
     /// The tags the record must then hold (they are not reported on the wire).
     expected_tags: Vec<(String, String)>,
@@ -312,14 +314,24 @@ fn config_cases() -> Vec<ConfigCase> {
     ]
 }
 
+/// The `Description` a READ of the configuration reports: the one it was described with, and
+/// the empty string for a configuration nobody described, which is the member every read of
+/// the stored record renders (the create echoes its own request instead).
+fn read_description(expected: Option<&String>) -> String {
+    expected.cloned().unwrap_or_default()
+}
+
 /// The members of an answered `CodeSigningConfig` the rule says come out of the stored
 /// record, as a comparable value.
+///
+/// `Description` is normalised to the value a READ renders, so a create's echo and a read of
+/// the same record compare equal on every member they report the same way.
 fn reported(answer: &Answer) -> Value {
     let config = answer.config();
     json!({
         "CodeSigningConfigId": config["CodeSigningConfigId"].clone(),
         "CodeSigningConfigArn": config["CodeSigningConfigArn"].clone(),
-        "Description": config["Description"].clone(),
+        "Description": json!(config["Description"].as_str().unwrap_or_default()),
         "AllowedPublishers": config["AllowedPublishers"].clone(),
         "CodeSigningPolicies": config["CodeSigningPolicies"].clone(),
         "LastModified": config["LastModified"].clone(),
@@ -420,6 +432,16 @@ async fn a_created_code_signing_config_is_persisted_and_reported() {
             "case {label:?}: expected GetCodeSigningConfig to report what the create \
              persisted, {}, got {}",
             created.text(),
+            first.text()
+        );
+        // ... and the read RENDERS `Description`, as the empty string for a configuration
+        // nobody described.
+        assert_eq!(
+            first.config_string("Description"),
+            Some(read_description(case.expected_description.as_ref())),
+            "case {label:?}: expected GetCodeSigningConfig to report the description {:?}, \
+             got {}",
+            read_description(case.expected_description.as_ref()),
             first.text()
         );
         let second = get_config(&router, &arn).await;

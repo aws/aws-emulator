@@ -107,6 +107,10 @@ use smithy_server_runtime::{
 };
 use std::sync::Arc;
 
+/// WHY a read of a function's code-signing association that finds none still answers a
+/// body, and what that answer is; see the module's own header.
+mod absent_association;
+
 /// The class of fault every error body of this service names in its `Type` member, which
 /// no raise site carries because it is a property of the failure rather than of the call.
 /// Applied to every response [`StatedPerOperation`] answers; see the module's own header.

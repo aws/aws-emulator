@@ -215,12 +215,17 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 })?;
 
         // The function exists, so this is a report of what it holds rather than a
-        // refusal: a function nothing has associated a configuration with has no ARN to
-        // report, and the member is left out of the body entirely instead of standing in
-        // a value `CodeSigningConfigArn`'s own pattern does not admit.
+        // refusal — and what it holds is ONE association, reported as a whole: a function
+        // associated with a configuration is reported by that configuration's ARN and the
+        // function holding it, and a function associated with none is reported by an empty
+        // body rather than by a name with no configuration beside it (see
+        // [`GetFunctionCodeSigningConfigOutput`]).
+        let association = record.code_signing_config_arn.clone();
         Ok(GetFunctionCodeSigningConfigOutput {
-            code_signing_config_arn: record.code_signing_config_arn.clone(),
-            function_name: record.config.name.clone(),
+            function_name: association
+                .as_ref()
+                .map(|_| record.config.name.clone()),
+            code_signing_config_arn: association,
         })
     }
 }

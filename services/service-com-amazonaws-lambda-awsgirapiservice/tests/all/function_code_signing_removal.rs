@@ -65,11 +65,14 @@ const ROLE: &str = "arn:aws:iam::000000000000:role/service-role/lambda-exec";
 /// (`http.code: 204`).
 const REMOVED: u16 = 204;
 
-/// The `CodeSigningPolicy` values the model declares, from
-/// `smithy_query(query="shape", shape="CodeSigningPolicy")` (`Warn | Enforce`): the
-/// configurations below differ along this member so that no two of them are the same
-/// record read twice.
-const POLICIES: [&str; 2] = ["Warn", "Enforce"];
+/// The `CodeSigningPolicy` the configurations below carry, from
+/// `smithy_query(query="shape", shape="CodeSigningPolicy")` (`Warn | Enforce`): the value
+/// that ADMITS a deployment whose signature checks fail. These rows deploy an unsigned
+/// package under the configuration they name, which the other value blocks outright (that
+/// enforcement is its own subject, in `code_signing_enforcement`), and the configurations
+/// still differ from one another in their allowed publishers and description, so no two of
+/// them are the same record read twice.
+const ADMITTING_POLICY: &str = "Warn";
 
 /// How many configurations each row creates, so a row naming the second or third cannot
 /// pass by reporting "the only one there is".
@@ -223,7 +226,7 @@ async fn create_config(router: &MultiServiceRouter, index: usize) -> String {
         &json!({
             "AllowedPublishers": { "SigningProfileVersionArns": [signing_profile(index)] },
             "CodeSigningPolicies": {
-                "UntrustedArtifactOnDeployment": POLICIES[index % POLICIES.len()],
+                "UntrustedArtifactOnDeployment": ADMITTING_POLICY,
             },
             "Description": format!("configuration {index}"),
         }),
@@ -505,17 +508,17 @@ async fn removing_a_functions_code_signing_configuration_leaves_it_holding_none(
             );
             // "No configuration" is the member's ABSENCE: `CodeSigningConfigArn` names a
             // configuration and its own pattern admits no string standing for none, so
-            // the body carries the member only while the function holds one — and still
-            // names the function the report is about.
+            // the body carries the member only while the function holds one — and carries
+            // nothing else, the function being named by the request's own URI.
             let raw = get_association(&router, case.function).await;
             assert_eq!(
                 (
                     raw.json().get("CodeSigningConfigArn").cloned(),
-                    raw.string("FunctionName")
+                    raw.json().get("FunctionName").cloned()
                 ),
-                (None, Some(case.function.to_string())),
-                "case {label:?}: after removal {attempt} the body must name the function \
-                 and carry no CodeSigningConfigArn member, got {}",
+                (None, None),
+                "case {label:?}: after removal {attempt} the body must carry neither a \
+                 CodeSigningConfigArn nor a FunctionName member, got {}",
                 raw.text()
             );
         }

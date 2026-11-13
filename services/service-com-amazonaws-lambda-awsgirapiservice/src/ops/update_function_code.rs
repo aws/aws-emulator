@@ -392,7 +392,27 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             _ => None,
         };
 
+        // A new CONTAINER IMAGE is FOLLOWED into the registry before the store is reached,
+        // for the same reason the Amazon S3 read above is: it is a call back into the engine,
+        // and no store guard may be held across one — a guard held across a call that
+        // re-enters this service's state would park the task that holds it. The reference
+        // comes from the request, so nothing of the record is needed to resolve it; whether
+        // it refuses this update is decided where the package is resolved below, against the
+        // package type the function was created with, so the order a client sees this
+        // operation's refusals in is unchanged.
+        let image_digest = input.image_uri.as_deref().map(|image_uri| {
+            crate::state::image_package_digest(&*self.engine, ctx, &region, image_uri)
+        });
+
         let mut store = state.lock();
+
+        // The code-signing configuration this function deploys under, read BEFORE the
+        // record is taken mutably below: a deployment to a function holding an association
+        // is verified against that one configuration (see
+        // [`crate::state::untrusted_deployment_refusal`]).
+        let signing_config = store
+            .attached_code_signing_config(&reference.name)
+            .cloned();
 
         // The storage this account already uses, measured BEFORE this call changes it
         // (`AccountUsage$TotalCodeSize` counts `$LATEST` and every published version).
@@ -486,20 +506,38 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             }
         }
 
-        // A new container image is FOLLOWED into the registry exactly as the create's was:
-        // the same rule decides whether the reference names an image of this Region's
-        // registry at all, whether the registry lets this service pull it, and pins the
-        // function to the manifest digest that registry minted for it (see
-        // [`crate::state::image_source`]).
-        if let Some(image_uri) = code.image_uri.clone() {
-            match crate::state::image_package_digest(&*self.engine, ctx, &region, &image_uri) {
-                Ok(digest) => code.resolved_image_digest = digest,
-                Err(crate::state::ImageSourceRefusal::NotUsable(message)) => {
+        // The image reference this call named, as the registry answered for it above: an
+        // image of no use to this function refuses the update with nothing changed, and one
+        // it serves pins the function to the manifest digest the registry minted for it.
+        if code.image_uri.is_some() {
+            match image_digest {
+                Some(Ok(digest)) => code.resolved_image_digest = digest,
+                Some(Err(crate::state::ImageSourceRefusal::NotUsable(message))) => {
                     return Err(invalid_parameter(message))
                 }
-                Err(crate::state::ImageSourceRefusal::NotPermitted(message)) => {
+                Some(Err(crate::state::ImageSourceRefusal::NotPermitted(message))) => {
                     return Err(crate::scaffolded::AccessDeniedException::new(message).into())
                 }
+                // Unreachable: the resolved package carries an `ImageUri` only when the
+                // request did, which is what was resolved above.
+                None => {}
+            }
+        }
+
+        // The deployment this call makes is CODE SIGNING's subject: a function attached to
+        // a configuration whose policy is `Enforce` has a deployment Lambda cannot
+        // attribute to one of that configuration's allowed publishers BLOCKED, with
+        // nothing stored, and the same deployment lands under the `Warn` policy — the one
+        // reading of the policy both deployment operations share
+        // ([`crate::state::untrusted_deployment_refusal`]). The function this deployment is
+        // of exists, so the refusal names its ARN.
+        if let Some(config) = &signing_config {
+            if let Some(message) = crate::state::untrusted_deployment_refusal(
+                config,
+                crate::state::DeployedArtifact::Package(&code),
+                &record.arn,
+            ) {
+                return Err(code_verification_failed(message));
             }
         }
 
@@ -608,6 +646,19 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 fn invalid_parameter(message: String) -> UpdateFunctionCodeError {
     UpdateFunctionCodeErrorModeled::InvalidParameterValueException(
         InvalidParameterValueException {
+            r#type: None,
+            message: Some(message),
+        },
+    )
+    .into()
+}
+
+/// The modelled 400 Lambda BLOCKS a deployment its code-signing checks rejected with:
+/// "The code signature failed one or more of the validation checks for signature mismatch
+/// or expiry, and the code signing policy is set to ENFORCE. Lambda blocks the deployment."
+fn code_verification_failed(message: String) -> UpdateFunctionCodeError {
+    UpdateFunctionCodeErrorModeled::CodeVerificationFailedException(
+        CodeVerificationFailedException {
             r#type: None,
             message: Some(message),
         },

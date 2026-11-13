@@ -1120,7 +1120,10 @@ async fn code_signing_configurations_round_trip() {
     let profile_two = "arn:aws:signer:us-east-1:000000000000:/signing-profiles/two/2";
 
     let cases = vec![
-        // No policy named: the documented default.
+        // No policy named: the documented default, and no `Description` either: the
+        // create ECHOES the configuration it was asked for, so the member is absent from
+        // its answer (a later READ of the same record renders it as the empty string,
+        // which the read-back below normalises for).
         CodeSigningCase {
             name: "default policy",
             request: json!({
@@ -1242,9 +1245,15 @@ async fn code_signing_configurations_round_trip() {
             answer.status,
             String::from_utf8_lossy(&answer.body)
         );
+        // The read reports the STORED configuration, which renders `Description` on every
+        // read — as the empty string for a row that described none — while the create
+        // echoes the members its own request carried. That one member is normalised here,
+        // and everything else must be identical.
+        let mut expected = created.clone();
+        expected["Description"] = json!(created["Description"].as_str().unwrap_or_default());
         assert_eq!(
             &answer.json()["CodeSigningConfig"],
-            created,
+            &expected,
             "case {name}: the read-back configuration must match the created one, got {:?}",
             answer.json()["CodeSigningConfig"]
         );
