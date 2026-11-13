@@ -9,8 +9,15 @@ build = "build.rs"
 [dependencies]
 engine = { workspace = true }
 # The one claim rule for a service whose SigV4 signing name is shared with another
-# emulated service (here the Payment Cryptography data plane).
+# emulated service (here the Payment Cryptography data plane), the AWS wording of a
+# boundary constraint refusal, and the renaming of the member an error body carries its
+# text in.
 service-common = { path = "../common" }
+# AWS Multi-Party Approval's approval-team registry: an `MpaTeamArn` names a team MPA's
+# own `CreateApprovalTeam` mints and nothing else, so `AssociateMpaTeam` resolves the
+# team in that store through the shared engine rather than keeping a second registry
+# here.
+service-com-amazonaws-mpa-awsfluffycoreservice = { workspace = true }
 smithy-macros = { workspace = true }
 aws-smithy-schema = { workspace = true }
 aws-smithy-schema-server = { workspace = true }

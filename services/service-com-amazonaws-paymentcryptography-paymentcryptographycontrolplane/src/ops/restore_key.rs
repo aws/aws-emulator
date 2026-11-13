@@ -4,7 +4,7 @@
 //! Cancels a scheduled deletion: takes the stored key back to `CREATE_COMPLETE` and
 //! clears its `DeletePendingTimestamp`, so a later `GetKey` reports a key that is no
 //! longer pending deletion. A key that is not waiting to be deleted has nothing to
-//! restore, which is a modelled 409.
+//! restore, which is the modelled conflict class.
 //!
 //! ## Shape of an operation
 //!

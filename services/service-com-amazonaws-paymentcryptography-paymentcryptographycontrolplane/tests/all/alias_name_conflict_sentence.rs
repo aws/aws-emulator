@@ -111,41 +111,31 @@ async fn a_taken_alias_name_is_refused_with_the_duplicate_name_sentence() {
             .unwrap_or_else(|| panic!("case {case}: CreateAlias answered no Alias: {created}"))
             .clone();
 
-        // The name is taken, so binding it to another key is refused — with the
-        // service's own sentence, the single signal a caller has for "this name is
-        // already in use".
-        let (status, parsed) = call(
-            &router,
-            "CreateAlias",
-            &json!({"AliasName": name, "KeyArn": second}),
-        )
-        .await;
-        assert_duplicate_name_refusal(&case, status, &parsed, &name);
+        // The name is taken, so a second create earns the sentence whichever key it
+        // names: the service's own documentation makes the name unique in the account and
+        // Region, so neither another key nor the one already bound may take it again.
+        for (bound_to, key_arn) in [("another key", &second), ("the same key", &first)] {
+            let (status, parsed) = call(
+                &router,
+                "CreateAlias",
+                &json!({"AliasName": name, "KeyArn": key_arn}),
+            )
+            .await;
+            assert_duplicate_name_refusal(
+                &format!("{case}, rebound to {bound_to}"),
+                status,
+                &parsed,
+                &name,
+            );
+        }
 
-        // The refused rebind changed nothing: the stored binding is still the first
+        // The refused creates changed nothing: the stored binding is still the first
         // key's.
         let after = ok_call(&router, "GetAlias", &json!({"AliasName": name})).await;
         assert_eq!(
             after.get("Alias"),
             Some(&bound),
-            "case {case}: a refused rebind must leave the stored binding alone"
-        );
-
-        // The rule does not depend on WHICH key the second request names: the repeat
-        // of the identical create earns the same sentence, because the name — not the
-        // binding — is what is already taken.
-        let (status, parsed) = call(
-            &router,
-            "CreateAlias",
-            &json!({"AliasName": name, "KeyArn": first}),
-        )
-        .await;
-        assert_duplicate_name_refusal(&format!("{case}, identical repeat"), status, &parsed, &name);
-        let after_repeat = ok_call(&router, "GetAlias", &json!({"AliasName": name})).await;
-        assert_eq!(
-            after_repeat.get("Alias"),
-            Some(&bound),
-            "case {case}: a refused repeat must leave the stored binding alone"
+            "case {case}: a refused create must leave the stored binding alone"
         );
     }
 }

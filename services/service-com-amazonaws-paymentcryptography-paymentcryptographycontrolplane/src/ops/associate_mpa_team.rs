@@ -1,15 +1,11 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op AssociateMpaTeam
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `AssociateMpaTeam`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
-//!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`AssociateMpaTeam::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! Associates a Multi-Party Approval approval team with a protected operation: records
+//! the team the operation named in [`crate::state`] and answers the stored association,
+//! so a later `GetMpaTeamAssociation` reports the same one. The team is AWS Multi-Party
+//! Approval's resource, so a request naming one that service holds no team under is
+//! refused rather than recorded.
 //!
 //! ## Shape of an operation
 //!
@@ -184,18 +180,51 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `AssociateMpaTeam` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(AssociateMpaTeamErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("AssociateMpaTeam"))
+        // `Action`'s `MpaOperation` value set, `MpaTeamArn`'s 20..2048 length and its
+        // approval-team ARN pattern, and `RequesterComment`'s 200-character maximum are
+        // all modelled, so the centralized walk has already refused anything outside them
+        // before this body runs.
+        let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
+            AssociateMpaTeamErrorModeled::InternalServerException(InternalServerException {
+                message: Some(
+                    "the payment cryptography key store is unavailable".to_string(),
+                ),
+            })
+        })?;
+
+        // The approval team is NOT this service's resource: an `MpaTeamArn` names a team
+        // AWS Multi-Party Approval mints, so whether one exists is read from that
+        // service's own store (`crate::state::approval_team_exists`) and never inferred
+        // from the ARN's text. Asked BEFORE this store's guard is taken, so the two
+        // stores are only ever locked one way round. A store that cannot be read at all
+        // answers the question not at all, which is a server fault rather than an absent
+        // team.
+        let holds_team = crate::state::approval_team_exists(&*self.engine, &input.mpa_team_arn)
+            .ok_or_else(|| {
+                AssociateMpaTeamErrorModeled::InternalServerException(InternalServerException {
+                    message: Some(
+                        "the multi-party approval team registry is unavailable".to_string(),
+                    ),
+                })
+            })?;
+        if !holds_team {
+            return Err(AssociateMpaTeamErrorModeled::ResourceNotFoundException(
+                ResourceNotFoundException {
+                    resource_id: Some(input.mpa_team_arn.clone()),
+                },
+            )
+            .into());
+        }
+
+        let now = crate::state::now();
+        let mut store = state.lock();
+        let association = store.associate_mpa_team(&input.action, &input.mpa_team_arn, now);
+        // `RequesterComment` is the comment the requester sends to the approval team with
+        // the request; no member of `MpaTeamAssociation` reports it back, so it is not
+        // stored.
+        crate::state::record_mutation(ctx.parts(), Self::NAME, &input.action);
+        Ok(AssociateMpaTeamOutput {
+            mpa_team_association: association.to_association(now),
+        })
     }
 }

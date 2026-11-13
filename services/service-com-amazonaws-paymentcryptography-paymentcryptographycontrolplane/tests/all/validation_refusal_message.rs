@@ -578,12 +578,19 @@ async fn an_answer_this_rule_does_not_own_is_left_exactly_as_its_renderer_wrote_
     }
 
     // The scaffold's own 501 is a class this model does not declare, so it keeps the member
-    // the framework wrote its text in. `UpdateAlias` is one of the operations still
-    // carrying the scaffold header (`grep '^//! SCAFFOLDED, NOT IMPLEMENTED:' src/ops/`).
+    // the framework wrote its text in. `GetResourcePolicy` is one of the operations still
+    // carrying the scaffold header (`grep '^//! SCAFFOLDED, NOT IMPLEMENTED:' src/ops/`), and
+    // the ARN below satisfies its modelled `ResourceArn` pattern so the request reaches the
+    // stub rather than the boundary.
     let (status, parsed) = call(
         &router,
-        "UpdateAlias",
-        &json!({"AliasName": "alias/well-formed"}),
+        "GetResourcePolicy",
+        &json!({
+            "ResourceArn": format!(
+                "arn:aws:payment-cryptography:us-east-1:{}:key/abcdefghij123456",
+                engine::emulator_account_id()
+            ),
+        }),
     )
     .await;
     assert_eq!(

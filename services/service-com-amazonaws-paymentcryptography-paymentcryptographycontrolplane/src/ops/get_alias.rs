@@ -2,8 +2,8 @@
 
 //! @op GetAlias
 //! Reports the alias binding `CreateAlias` stored: the alias name and the `KeyArn`
-//! it is bound to, read out of [`crate::state`]. An alias that was never created is
-//! a modelled 404.
+//! it is bound to, read out of [`crate::state`]. An alias that was never created, or one
+//! `DeleteAlias` removed, is the modelled not-found class.
 //!
 //! ## Shape of an operation
 //!

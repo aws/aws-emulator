@@ -213,7 +213,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // record is fetched by below. A key the account does not hold is reported
         // absent BEFORE the waiting period is judged: the resource's existence is the
         // first thing the caller asked about, so a request naming no key earns the
-        // 404 it has actually earned whatever `DeleteKeyInDays` says.
+        // not-found refusal it has actually earned whatever `DeleteKeyInDays` says.
         let key_arn = store
             .resolve_key_arn(&input.key_identifier)
             .ok_or_else(not_found)?;

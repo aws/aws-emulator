@@ -52,6 +52,13 @@ mod dukpt;
 mod key_export;
 /// The ASC X9.143 (TR-31) key block an exported key is wrapped in.
 mod key_block;
+/// One protected operation's Multi-Party Approval team association.
+mod mpa_association;
+
+pub use mpa_association::{
+    approval_team_exists, StoredMpaAssociation, ASSOCIATION_STATE_ACTIVE,
+    ASSOCIATION_STATE_DELETE_PENDING, ASSOCIATION_STATE_UPDATE_PENDING, MPA_ASSOCIATION_SPAN,
+};
 
 pub use key_export::{
     ExportRejection, KeyExport, WrappedKeyMaterial, KEY_CLASS_PUBLIC_KEY,
@@ -841,12 +848,12 @@ pub struct ComAmazonawsPaymentcryptographyPaymentcryptographycontrolplaneState {
     /// reason.
     ///
     /// The binding is an `Option` because an alias can outlive its binding:
-    /// `UpdateAlias` rebinds or clears one and is still 501, so `CreateAlias` — which
-    /// always stores a bound alias, because the operation's own documentation says an
-    /// alias cannot be created without a key — is today the only writer that adds an
-    /// entry. `DeleteAlias` removes one: an entry is present exactly while the alias
-    /// exists, so a name's PRESENCE here is what `CreateAlias` refuses a duplicate of
-    /// and what `GetAlias` and `ListAliases` report.
+    /// `UpdateAlias` rebinds or clears one and `DeleteAlias` removes it, while
+    /// `CreateAlias` — which always stores a bound alias, because the operation's own
+    /// documentation says an alias cannot be created without a key — is the only writer
+    /// that ADDS an entry. An entry is present exactly while the alias exists, so a
+    /// name's PRESENCE here is what `CreateAlias` refuses a duplicate of and what
+    /// `GetAlias` and `ListAliases` report.
     pub aliases: BTreeMap<String, Option<String>>,
     /// The account's default key replication regions: the regions a key created
     /// without a replication configuration of its own is replicated to.
@@ -859,6 +866,14 @@ pub struct ComAmazonawsPaymentcryptographyPaymentcryptographycontrolplaneState {
     /// The TR-34 export parameter sets `GetParametersForExport` has handed out, keyed
     /// by the export token that names each one.
     pub export_parameters: BTreeMap<String, ExportParameters>,
+    /// The Multi-Party Approval team association of each protected operation, keyed by
+    /// the modelled `Action` the association is for — so the store holds at most one per
+    /// value `MpaOperation` declares.
+    ///
+    /// `AssociateMpaTeam` records one, `DisassociateMpaTeam` asks for its teardown and
+    /// `GetMpaTeamAssociation` reports it; the clock settles each of those moves (see
+    /// [`mpa_association`]).
+    pub mpa_associations: BTreeMap<String, StoredMpaAssociation>,
     /// Mixed into generated key ids and key material, so two creates in the same
     /// nanosecond differ.
     counter: u64,
@@ -1024,6 +1039,60 @@ impl ComAmazonawsPaymentcryptographyPaymentcryptographycontrolplaneState {
     /// The account's default key replication regions, in one stable order.
     pub fn default_replication_regions(&self) -> Vec<String> {
         self.enabled_replication_regions.iter().cloned().collect()
+    }
+
+    /// The MPA team association `action` carries at `now`, after the moves the clock
+    /// owes have been materialised.
+    ///
+    /// The settling step is a change the CLOCK made due, not one the call asks for: an
+    /// association whose teardown span has elapsed was gone at that instant whether or
+    /// not anybody read it (see [`mpa_association`]).
+    pub fn mpa_association(
+        &mut self,
+        action: &str,
+        now: SystemTime,
+    ) -> Option<&StoredMpaAssociation> {
+        mpa_association::settle(&mut self.mpa_associations, now);
+        self.mpa_associations.get(action)
+    }
+
+    /// Associate `mpa_team_arn` with the protected operation `action` and answer the
+    /// stored association.
+    ///
+    /// An upsert: `AssociateMpaTeam` names the team the protected operation is to be
+    /// approved by, so a call naming another team is that association being UPDATED —
+    /// which is the state the model's `UPDATE_PENDING` describes — and the association
+    /// settles a span later either way. Whether the team exists is NOT decided here: it
+    /// is AWS Multi-Party Approval's answer ([`approval_team_exists`]), which a handler
+    /// asks before it reaches this store.
+    pub fn associate_mpa_team(
+        &mut self,
+        action: &str,
+        mpa_team_arn: &str,
+        now: SystemTime,
+    ) -> StoredMpaAssociation {
+        mpa_association::settle(&mut self.mpa_associations, now);
+        let association = StoredMpaAssociation::requested(action, mpa_team_arn, now);
+        self.mpa_associations
+            .insert(action.to_string(), association.clone());
+        association
+    }
+
+    /// Ask for the teardown of the association `action` carries and answer it in the
+    /// state that leaves it, or `None` when this store holds none.
+    ///
+    /// The record is kept until the clock completes the teardown, so a caller reading
+    /// straight after this call still sees the association in `DELETE_PENDING` and a
+    /// later one sees it gone.
+    pub fn disassociate_mpa_team(
+        &mut self,
+        action: &str,
+        now: SystemTime,
+    ) -> Option<StoredMpaAssociation> {
+        mpa_association::settle(&mut self.mpa_associations, now);
+        let association = self.mpa_associations.get_mut(action)?;
+        association.teardown_requested = Some(now);
+        Some(association.clone())
     }
 
     /// Enable `regions` as default key replication regions and answer the whole set

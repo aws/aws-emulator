@@ -1,15 +1,12 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op UpdateAlias
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `UpdateAlias`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
-//!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`UpdateAlias::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! Rebinds an existing alias: stores the `KeyArn` the request names against the alias in
+//! [`crate::state`] and answers the stored binding, so a later `GetAlias` — or a
+//! `KeyIdentifier` naming the alias — resolves to the new key. A request naming no
+//! `KeyArn` removes the binding, which is what that member's own documentation describes
+//! ("the key that you are updating or removing from the alias"), leaving the alias itself
+//! in place.
 //!
 //! ## Shape of an operation
 //!
@@ -176,18 +173,52 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `UpdateAlias` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(UpdateAliasErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("UpdateAlias"))
+        // `AliasName`'s pattern and 7..256 length, and `KeyArn`'s own pattern and
+        // 70..150 length, are modelled, so the centralized walk has already refused a
+        // malformed name or ARN before this body runs.
+        let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
+            UpdateAliasErrorModeled::InternalServerException(InternalServerException {
+                message: Some("the payment cryptography key store is unavailable".to_string()),
+            })
+        })?;
+
+        let mut store = state.lock();
+        // There is nothing to update unless the alias exists: this operation associates
+        // an EXISTING alias with a different key, and `CreateAlias` is the one that mints
+        // one.
+        if !store.aliases.contains_key(&input.alias_name) {
+            return Err(
+                UpdateAliasErrorModeled::ResourceNotFoundException(ResourceNotFoundException {
+                    resource_id: Some(input.alias_name.clone()),
+                })
+                .into(),
+            );
+        }
+        // "The alias and the Amazon Web Services Payment Cryptography key must be in the
+        // same Amazon Web Services account and Amazon Web Services Region" (this
+        // operation's own documentation), so the key named must be one this account
+        // holds; a key ARN of another account or Region resolves to nothing here, exactly
+        // as it does for every other identifier this service takes.
+        if let Some(key_arn) = &input.key_arn {
+            if !store.keys.contains_key(key_arn) {
+                return Err(UpdateAliasErrorModeled::ResourceNotFoundException(
+                    ResourceNotFoundException {
+                        resource_id: Some(key_arn.clone()),
+                    },
+                )
+                .into());
+            }
+        }
+
+        store
+            .aliases
+            .insert(input.alias_name.clone(), input.key_arn.clone());
+
+        // Answered from the binding that was just stored, not from the request.
+        let stored = store.aliases.get(&input.alias_name).cloned().flatten();
+        crate::state::record_mutation(ctx.parts(), Self::NAME, &input.alias_name);
+        Ok(UpdateAliasOutput {
+            alias: crate::state::alias(&input.alias_name, stored.as_ref()),
+        })
     }
 }

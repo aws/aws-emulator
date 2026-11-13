@@ -70,7 +70,8 @@
 //!
 //! The refusals a HANDLER words — a key that is not there, an alias name already taken, key
 //! material that cannot be exported — are not here: they are modelled errors the operations
-//! build themselves.
+//! build themselves. The STATUS each of those is answered at is this service's too, and is
+//! decided once in [`wire`].
 
 mod message_member;
 mod validation;
