@@ -193,6 +193,8 @@ mod metric_storage_resolution;
 mod metric_stream_additional_statistics;
 #[path = "all/metric_stream_delivery.rs"]
 mod metric_stream_delivery;
+#[path = "all/metric_stream_metering.rs"]
+mod metric_stream_metering;
 #[path = "all/metric_stream_otel_export.rs"]
 mod metric_stream_otel_export;
 #[path = "all/metric_stream_scope.rs"]

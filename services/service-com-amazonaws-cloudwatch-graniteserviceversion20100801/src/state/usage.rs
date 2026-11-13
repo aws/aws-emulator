@@ -16,7 +16,7 @@
 //! nothing called in a window has no datapoint in it rather than a zero.
 
 use super::{
-    ComAmazonawsCloudwatchGraniteserviceversion20100801State as State, MetricKey, StoredDatum,
+    ComAmazonawsCloudwatchGraniteserviceversion20100801State as State, MetricKey,
 };
 
 /// The namespace an Amazon Web Services service publishes its own usage metrics in, which no
@@ -51,11 +51,6 @@ const TYPE_DIMENSION: &str = "Type";
 /// The dimension naming the thing used — for an API call count, the operation called.
 const RESOURCE_DIMENSION: &str = "Resource";
 
-/// The resolution a usage datapoint is stored at: the regular one-minute resolution
-/// (`MetricDatum$StorageResolution`: "This field is optional, if you do not specify it the
-/// default of 60 is used"), so a usage count is aggregated in the minute it happened in.
-const USAGE_STORAGE_RESOLUTION: i32 = 60;
-
 /// The series one operation's call count lives in: the usage dimension set, with `operation`
 /// as the resource used.
 ///
@@ -85,37 +80,14 @@ impl State {
     /// number, which is what the unit value for "no unit" ([`super::UNIT_NONE`]) states — so
     /// a `Sum` over a window is the number of calls in it and an `Average` is 1.
     ///
-    /// The datapoints are what an alarm over this series grades, so storing one makes the
-    /// evaluation of an alarm that watches it due, exactly as an ingested datapoint does
-    /// ([`State::make_alarms_due`]): a request-rate alarm is an alarm on this series.
-    ///
-    /// A store already holding its full complement of series drops the count rather than
-    /// failing the call it is about: the telemetry is published off the answer, so it cannot
-    /// be what refuses a request the service served. The series itself grows no further than
-    /// any other: there is one per operation this service models, and each is held to the
-    /// store's own per-series datapoint cap, oldest first ([`State::append_datapoints`]).
+    /// Stored through the seam every count this service publishes about itself goes through
+    /// ([`State::append_self_metered_count`]), which is also what makes the evaluation of an
+    /// alarm watching this series due and what drops the count rather than failing the call it
+    /// is about when the store is full. The series itself grows no further than any other:
+    /// there is one per operation this service models, and each is held to the store's own
+    /// per-series datapoint cap, oldest first ([`State::append_datapoints`]).
     pub fn count_api_call(&mut self, operation: &str, now_secs: f64) {
-        let key = call_count_key(operation);
-        let datum = StoredDatum {
-            timestamp_secs: now_secs,
-            sample_count: 1.0,
-            sum: 1.0,
-            minimum: 1.0,
-            maximum: 1.0,
-            unit: None,
-            storage_resolution: USAGE_STORAGE_RESOLUTION,
-        };
-        let watched = key.clone();
-        if self.append_datapoints(key, vec![datum]).is_err() {
-            return;
-        }
-        self.make_alarms_due(
-            &[super::WrittenSeries {
-                key: watched,
-                units: vec![super::UNIT_NONE.to_string()],
-            }],
-            now_secs,
-        );
+        self.append_self_metered_count(call_count_key(operation), 1.0, now_secs);
     }
 }
 

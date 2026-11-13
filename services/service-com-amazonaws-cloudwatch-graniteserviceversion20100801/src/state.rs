@@ -2353,6 +2353,13 @@ pub const MAX_SERIES: usize = 20_000;
 /// long-running emulator's memory stays bounded while recent reads stay exact.
 pub const MAX_DATAPOINTS_PER_SERIES: usize = 50_000;
 
+/// The resolution a count this service publishes about ITSELF is stored at
+/// ([`ComAmazonawsCloudwatchGraniteserviceversion20100801State::append_self_metered_count`]):
+/// the regular one-minute resolution (`MetricDatum$StorageResolution`: "This field is optional,
+/// if you do not specify it the default of 60 is used"), so such a count is aggregated in the
+/// minute it happened in.
+pub const SELF_METERED_STORAGE_RESOLUTION: i32 = 60;
+
 /// What a read that asks for more data points than one call returns is told.
 ///
 /// "The maximum number of data points returned from a single call is 1,440. If you request
@@ -2899,6 +2906,49 @@ impl ComAmazonawsCloudwatchGraniteserviceversion20100801State {
             series.drain(..series.len() - MAX_DATAPOINTS_PER_SERIES);
         }
         Ok(())
+    }
+
+    /// Store one count this SERVICE publishes about ITSELF into the series `key` names:
+    /// `count` observations of 1, stamped `now_secs`.
+    ///
+    /// The telemetry the service meters itself with lives in the reserved namespaces no caller
+    /// may publish into (`crate::ops::put_metric_data` refuses the reserved prefix), and every
+    /// such count has the same shape: a `Sum` over a window is how much that window held, a
+    /// `SampleCount` is the same number and an `Average` is 1, published as the bare number the
+    /// unit value for "no unit" ([`UNIT_NONE`]) states. Its two publishers — the API call count
+    /// ([`usage`]) and a metric stream's own update counters
+    /// ([`metric_stream_export::metering`]) — share this one seam so they cannot disagree about
+    /// what a counted event is.
+    ///
+    /// The datapoints are what an alarm over the series grades, so storing one makes the
+    /// evaluation of an alarm watching it due, exactly as an ingested datapoint does
+    /// ([`Self::make_alarms_due`]). A store already holding its full complement of series drops
+    /// the count rather than failing the thing it is about: self-metering is published off the
+    /// answer, so it cannot be what refuses a call or withholds a record.
+    pub fn append_self_metered_count(&mut self, key: MetricKey, count: f64, now_secs: f64) {
+        if !count.is_finite() || count <= 0.0 {
+            return;
+        }
+        let datum = StoredDatum {
+            timestamp_secs: now_secs,
+            sample_count: count,
+            sum: count,
+            minimum: 1.0,
+            maximum: 1.0,
+            unit: None,
+            storage_resolution: SELF_METERED_STORAGE_RESOLUTION,
+        };
+        let watched = key.clone();
+        if self.append_datapoints(key, vec![datum]).is_err() {
+            return;
+        }
+        self.make_alarms_due(
+            &[WrittenSeries {
+                key: watched,
+                units: vec![UNIT_NONE.to_string()],
+            }],
+            now_secs,
+        );
     }
 
     /// Record an alarm history item, read back by `DescribeAlarmHistory`.

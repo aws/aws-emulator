@@ -32,8 +32,9 @@
 //! The export happens where the update does: `PutMetricData` stores the datapoints, so the
 //! records those datapoints make due are pushed from that call ([`export_published`]) and a
 //! consumer downstream of the delivery stream sees them without anybody calling CloudWatch
-//! again. The store is only READ here — the records are computed from the datapoints it already
-//! holds — so an export changes nothing a later caller sees.
+//! again. The datapoints a record reports are only READ here — a record is a reading of what the
+//! store already holds — and what the export WRITES is its own metering: the stream's own series
+//! counting the updates it streamed ([`metering`]).
 //!
 //! The delivery stream is a resource of another service, so a record reaches it the way any
 //! emulated service reaches another: an AWS SDK client over the in-process callback
@@ -53,6 +54,9 @@
 use ::serde_json::{Map, Value};
 
 use crate::ops::types::{GetMetricStreamOutput, MetricStreamFilter};
+
+/// What a stream publishes about its own export: the series counting the updates it streamed.
+pub mod metering;
 
 /// The records of a stream whose `OutputFormat` is one of the OpenTelemetry values.
 pub mod open_telemetry;
@@ -193,8 +197,10 @@ fn period_start(timestamp_secs: f64) -> f64 {
 ///
 /// The store is locked to MEASURE what the records report and released before any of them is
 /// rendered or delivered, so no document formatting happens in the critical section and one
-/// publisher's fan-out cannot block another's read. Nothing in this path writes to the store: a
-/// record is a reading of the datapoints it already holds.
+/// publisher's fan-out cannot block another's read. The datapoints a record reports are only
+/// read: a record is a reading of what the store already holds. What a delivery WRITES is the
+/// stream's own metering, counting the updates that reached the destination
+/// ([`metering::exported`]) — a stream that delivered nothing writes nothing.
 pub async fn export_published<Eng: Send + Sync + 'static>(
     engine: &Eng,
     ctx: &smithy_server_runtime::OperationContext<'_>,
@@ -218,7 +224,14 @@ pub async fn export_published<Eng: Send + Sync + 'static>(
         if records.is_empty() {
             continue;
         }
-        deliver(ctx, &export, &records).await;
+        let delivered = deliver(ctx, &export, &records).await;
+        // The stream's own counters report what it STREAMED, so they count the records the
+        // destination took and are stamped with the instant it took them.
+        let exported = metering::exported(&export.measured, delivered);
+        let now = super::now_secs();
+        state
+            .lock()
+            .meter_exported_updates(&export.stream.name, exported, now);
     }
 }
 
@@ -589,16 +602,18 @@ fn insert_number(value: &mut Map<String, Value>, member: &str, statistic: f64) {
     }
 }
 
-/// Push one stream's records into the delivery stream its `FirehoseArn` names, oldest first.
+/// Push one stream's records into the delivery stream its `FirehoseArn` names, oldest first, and
+/// answer how many of them the destination took.
 ///
 /// Every failure is LOGGED and changes nothing a caller is told: an export is asynchronous and
 /// is not part of any operation's answer, exactly as an alarm action's delivery is not
-/// ([`super::alarm_actions`]).
+/// ([`super::alarm_actions`]). What it does change is what the stream is metered for: a record
+/// the destination never took is not an update the stream streamed.
 async fn deliver(
     ctx: &smithy_server_runtime::OperationContext<'_>,
     export: &StreamExport,
     records: &[Vec<u8>],
-) {
+) -> usize {
     let Some(stream_name) = ::service_common::arn::resource_id_of_type(
         &export.firehose_arn,
         DELIVERY_STREAM_RESOURCE_TYPE,
@@ -608,7 +623,7 @@ async fn deliver(
             "this metric stream's destination names no Firehose delivery stream, so nothing \
              was exported"
         );
-        return;
+        return 0;
     };
     // The Region the destination is addressed in comes from its own ARN, which a request
     // carried, so it is held to the grammar a Region is written in before it reaches an
@@ -621,7 +636,7 @@ async fn deliver(
             "this metric stream's destination names no Region this emulator can reach, so \
              nothing was exported"
         );
-        return;
+        return 0;
     };
     // The export is the ROLE's write to make, so a role IAM answers does not allow it exports
     // nothing: a record the destination's service would have refused the call to is never
@@ -635,7 +650,7 @@ async fn deliver(
             "this metric stream names no role to put records into its destination under, so \
              nothing was exported"
         );
-        return;
+        return 0;
     };
     if ::service_common::iam_role::role_withholds_action(
         ctx,
@@ -652,12 +667,13 @@ async fn deliver(
             "this metric stream's role is not allowed to put records into its destination, \
              so nothing was exported"
         );
-        return;
+        return 0;
     }
     let client = firehose_client(ctx.callback(), region);
     // One `PutRecord` per record, awaited in turn: the destination takes the records in the
     // order they are put, which is what makes the records of one metric arrive in the order its
     // datapoints were published.
+    let mut taken = 0;
     for document in records {
         let built = ::aws_sdk_firehose::types::Record::builder()
             .data(::aws_sdk_firehose::primitives::Blob::new(document.clone()))
@@ -682,9 +698,11 @@ async fn deliver(
             // The destination answered this put a failure, so the ones after it would be
             // answered the same way: the rest of this stream's records are left for the next
             // update rather than re-asked for here.
-            return;
+            return taken;
         }
+        taken += 1;
     }
+    taken
 }
 
 /// How a failed export is worded in the warning: the SDK's own rendering of the answer the
