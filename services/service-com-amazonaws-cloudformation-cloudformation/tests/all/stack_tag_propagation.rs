@@ -102,7 +102,7 @@ async fn role_tags(router: &MultiServiceRouter, name: &str) -> (u16, BTreeMap<St
 }
 
 /// The tags Amazon S3 holds for `bucket`, with the status it answered.
-async fn bucket_tags(
+pub(crate) async fn bucket_tags(
     router: &MultiServiceRouter,
     bucket: &str,
 ) -> (u16, BTreeMap<String, String>) {
@@ -134,7 +134,10 @@ struct TagCase<'a> {
 }
 
 /// The `Tags.member.N.Key`/`Value` request members a stack-level tag list is.
-fn tag_members(tags: &[(&str, &str)]) -> Vec<(String, String)> {
+///
+/// Shared with the suite that holds the same rule across the stack OPERATIONS a resource can
+/// be provisioned by ([`crate::stack_provenance_deployment_paths`]).
+pub(crate) fn tag_members(tags: &[(&str, &str)]) -> Vec<(String, String)> {
     let mut members = Vec::new();
     for (index, (key, value)) in tags.iter().enumerate() {
         let position = index + 1;
@@ -194,7 +197,7 @@ pub(crate) fn expected_tags(
 /// AWS's rule for a caller's request, and takes one from the in-process provisioning path
 /// CloudFormation sets its own tags on — so a bucket carries the stack's own tags, whatever
 /// its own declaration asks for, and the three CloudFormation records.
-fn expected_bucket_tags(
+pub(crate) fn expected_bucket_tags(
     stack_tags: &[(&str, &str)],
     declared: &[(&str, &str)],
     stack_name: &str,

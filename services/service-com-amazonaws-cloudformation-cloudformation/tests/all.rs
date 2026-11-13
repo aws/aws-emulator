@@ -451,6 +451,8 @@ mod stack_parameter_driven_updates;
 mod stack_policy_by_reference;
 #[path = "all/stack_policy_enforcement.rs"]
 mod stack_policy_enforcement;
+#[path = "all/stack_provenance_deployment_paths.rs"]
+mod stack_provenance_deployment_paths;
 #[path = "all/stack_refactors.rs"]
 mod stack_refactors;
 #[path = "all/stack_refusal_wording.rs"]

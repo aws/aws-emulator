@@ -98,7 +98,15 @@ pub(crate) fn output_value(xml: &str, key: &str) -> String {
 }
 
 /// The `PhysicalResourceId` the stack reports for the resource `logical_id`.
-async fn physical_id(router: &MultiServiceRouter, stack: &str, logical_id: &str) -> String {
+///
+/// Shared with the suites that read a provisioned resource back through its owning service by
+/// the handle the stack publishes for it, so the "ask the stack, then call that service" step
+/// is spelled once.
+pub(crate) async fn physical_id(
+    router: &MultiServiceRouter,
+    stack: &str,
+    logical_id: &str,
+) -> String {
     let (status, body) = call(
         router,
         "DescribeStackResources",
