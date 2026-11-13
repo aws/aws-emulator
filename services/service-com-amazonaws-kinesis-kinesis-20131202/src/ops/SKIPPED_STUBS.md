@@ -19,3 +19,12 @@ union can be declared as `{Op}Output`. A `@required` union member and a
 handler returns an error, so it never has to construct a value.
 
 // SKIPPED: SubscribeToShard — unsupported shape construct: operation 'SubscribeToShard' has a @streaming event-stream output member, which needs wire framing the generator does not emit
+
+The operation above is now HAND-AUTHORED, so it is no longer unwired: it has its own file in
+`src/ops/subscribe_to_shard.rs`, the shapes its request and its event need are in
+`src/ops/types/subscribe_to_shard_types.rs`, the `vnd.amazon.eventstream` framing and the
+request reader are the shared `service_common::event_stream`, and `src/service.rs` routes a
+request to it through `Service::override_operation` — which the router consults BEFORE the
+generated routing table, whose shim for a `@streaming`-output operation declines the request.
+
+// HAND-AUTHORED: SubscribeToShard — src/ops/subscribe_to_shard.rs

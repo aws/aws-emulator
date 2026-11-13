@@ -42,6 +42,9 @@ emulator-core-build-support = { workspace = true }
 
 [dev-dependencies]
 sha2 = { workspace = true }
+# Decodes one `application/vnd.amazon.eventstream` frame, so the enhanced fan-out suite reads
+# the frames `SubscribeToShard` answers with the way an SDK's decoder does.
+aws-smithy-eventstream = "0.60"
 # The encryption suites mount the KMS service beside Kinesis on one engine, because
 # `StartStreamEncryption` resolves the `KeyId` it is given by calling it.
 service-com-amazonaws-kms-trentservice = { workspace = true }

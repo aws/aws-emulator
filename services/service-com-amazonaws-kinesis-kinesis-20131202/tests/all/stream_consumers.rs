@@ -816,8 +816,11 @@ async fn a_registration_or_a_read_naming_no_such_resource_is_refused() {
         "case {case}: a read naming an absent consumer must name it, got body {not_found}"
     );
 
-    // A read that resolves by `ConsumerARN` alone names no stream, so the refusal carries
-    // no stream clause rather than an empty one.
+    // A read that resolves by `ConsumerARN` alone still names the consumer and the stream
+    // that ARN carries: the name the consumer was registered under, the creation timestamp
+    // that tells two consumers of one name apart ("consumer ARNs contain the creation
+    // timestamp", `Consumer$ConsumerARN`), and the stream the ARN extends — rather than the
+    // ARN echoed back whole.
     let absent_arn = format!("{stream_arn}/consumer/{absent}:1");
     let (_, arn_not_found) = emulator
         .call(
@@ -827,9 +830,12 @@ async fn a_registration_or_a_read_naming_no_such_resource_is_refused() {
         .await;
     let message = error_message(&arn_not_found);
     assert!(
-        message.contains(&absent_arn) && !message.contains(" and stream "),
-        "case {case}: a read by ConsumerARN alone must name the ARN and no stream, got \
-         {message}"
+        message.contains(absent)
+            && message.contains("with creation timestamp 1")
+            && message.contains(stream_name)
+            && !message.contains(absent_arn.as_str()),
+        "case {case}: a read by ConsumerARN alone must name the consumer the ARN carries, its \
+         creation timestamp and the stream it extends, got {message}"
     );
 }
 

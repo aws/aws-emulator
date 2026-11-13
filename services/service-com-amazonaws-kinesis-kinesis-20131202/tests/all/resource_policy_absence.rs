@@ -285,7 +285,7 @@ async fn an_arn_naming_no_resource_is_still_refused() {
             "a consumer nothing registered",
             format!("{held}/consumer/never-registered:1700000000"),
             format!(
-                "Consumer {held}/consumer/never-registered:1700000000 under stream: \
+                "Consumer never-registered with creation timestamp 1700000000 under stream: \
                  policy-absence-contrast, account {} not found.",
                 account()
             ),

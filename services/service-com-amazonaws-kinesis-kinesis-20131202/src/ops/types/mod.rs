@@ -50,6 +50,7 @@ pub mod shared_types;
 pub mod split_shard_types;
 pub mod start_stream_encryption_types;
 pub mod stop_stream_encryption_types;
+pub mod subscribe_to_shard_types;
 pub mod tag_resource_types;
 pub mod untag_resource_types;
 pub mod update_account_settings_types;
@@ -132,6 +133,8 @@ pub use split_shard_types::*;
 pub use start_stream_encryption_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use stop_stream_encryption_types::*;
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use subscribe_to_shard_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use tag_resource_types::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]

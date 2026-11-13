@@ -14849,6 +14849,7 @@ dependencies = [
  "aws-emulator-smithy-schema-server",
  "aws-emulator-smithy-server-runtime",
  "aws-sdk-kms",
+ "aws-smithy-eventstream 0.60.21",
  "aws-smithy-runtime-api",
  "aws-smithy-schema 0.2.1",
  "aws-smithy-types",

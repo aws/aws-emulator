@@ -125,6 +125,37 @@ impl Emulator {
         self.call_in(REGION, operation, body).await
     }
 
+    /// Call `operation` with `body` and answer the RAW response: its status, its headers and
+    /// its body bytes.
+    ///
+    /// What [`Self::call_in`] cannot carry: a response whose body is not JSON at all. This
+    /// service's one event-stream operation answers `application/vnd.amazon.eventstream`
+    /// frames, which a case reads through the frame decoder rather than through serde_json.
+    pub(crate) async fn call_raw(
+        &self,
+        operation: &str,
+        body: &Value,
+    ) -> (u16, http::HeaderMap, Bytes) {
+        let request = http::Request::builder()
+            .method("POST")
+            .uri("/")
+            .header("content-type", "application/x-amz-json-1.1")
+            .header("x-amz-target", format!("{TARGET_PREFIX}.{operation}"))
+            .header(
+                "authorization",
+                format!(
+                    "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20260101/{REGION}/kinesis/\
+                     aws4_request, SignedHeaders=host;x-amz-target, Signature=deadbeef"
+                ),
+            )
+            .body(Bytes::from(body.to_string()))
+            .expect("build the request");
+        let response = self.router.dispatch(request).await;
+        let status = response.status().as_u16();
+        let headers = response.headers().clone();
+        (status, headers, response.into_body())
+    }
+
     /// Call `operation` in `region`, asserting a 200 and answering the body.
     pub(crate) async fn ok_in(&self, case: &str, region: &str, operation: &str, body: &Value) -> Value {
         let (status, response) = self.call_in(region, operation, body).await;

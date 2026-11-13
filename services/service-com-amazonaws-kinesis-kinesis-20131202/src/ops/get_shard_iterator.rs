@@ -234,123 +234,36 @@ fn lookup_refusal(
     }
 }
 
+/// The members a `GetShardIterator` request spells a starting position with, as its refusals
+/// name them: this operation carries them as three members of its own input.
+const POSITION_MEMBERS: crate::state::PositionMembers = crate::state::PositionMembers {
+    position_type: "ShardIteratorType",
+    sequence_number: "StartingSequenceNumber",
+    timestamp: "Timestamp",
+};
+
 /// Where in the shard the request asks to start, refusing a request whose members its own
 /// `ShardIteratorType` does not admit.
 ///
-/// Each type documents which member supplies its position — "AT_SEQUENCE_NUMBER - Start
-/// reading from the position denoted by a specific sequence number, provided in the value
-/// StartingSequenceNumber", the same for AFTER_SEQUENCE_NUMBER, and "AT_TIMESTAMP - Start
-/// reading from the position denoted by a specific time stamp, provided in the value
-/// Timestamp" — so a request that omits that member names no position, and one that carries
-/// a member its type does not read is refused rather than answered with a position it did
-/// not ask for.
-///
-/// `LATEST` is PINNED here rather than resolved when the records are read: "LATEST - Start
-/// reading just after the most recent record in the shard" names the most recent record at
-/// the instant the iterator is handed out, so a record written afterwards is read by that
-/// iterator rather than skipped by it.
+/// The rule itself is this service's one rule for naming a position in a shard
+/// ([`crate::state::requested_shard_position`]): the other reader of a shard,
+/// `SubscribeToShard`, names the same five positions with the same three members inside its
+/// `StartingPosition`. What this operation adds is the modelled error the refusal travels in
+/// — "A specified parameter exceeds its restrictions, is not supported, or can't be used".
 fn requested_position(
     input: &GetShardIteratorInput,
     shard: &crate::state::ShardRecord,
     trim_horizon: ::std::time::SystemTime,
 ) -> Result<crate::state::ShardPosition, GetShardIteratorError> {
-    let trim_horizon_millis = crate::state::epoch_millis(trim_horizon);
-    let iterator_type = input.shard_iterator_type.as_str();
-    // `ShardIteratorType` is a modelled enum, so the request walk refuses an unknown value
-    // before this handler runs; this states the same refusal for a caller that reaches the
-    // handler another way.
-    if !SHARD_ITERATOR_TYPE_VALUES.contains(&iterator_type) {
-        return Err(invalid_argument(format!(
-            "ShardIteratorType {iterator_type} is not supported; the supported values are {}",
-            SHARD_ITERATOR_TYPE_VALUES.join(" | ")
-        )));
-    }
-    let takes_sequence_number = iterator_type
-        == crate::state::SHARD_ITERATOR_TYPE_AT_SEQUENCE_NUMBER
-        || iterator_type == crate::state::SHARD_ITERATOR_TYPE_AFTER_SEQUENCE_NUMBER;
-    let takes_timestamp = iterator_type == crate::state::SHARD_ITERATOR_TYPE_AT_TIMESTAMP;
-    if input.starting_sequence_number.is_some() && !takes_sequence_number {
-        return Err(invalid_argument(format!(
-            "StartingSequenceNumber can only be used with the {} or {} shard iterator \
-             types, not with {iterator_type}",
-            crate::state::SHARD_ITERATOR_TYPE_AT_SEQUENCE_NUMBER,
-            crate::state::SHARD_ITERATOR_TYPE_AFTER_SEQUENCE_NUMBER
-        )));
-    }
-    if input.timestamp.is_some() && !takes_timestamp {
-        return Err(invalid_argument(format!(
-            "Timestamp can only be used with the {} shard iterator type, not with \
-             {iterator_type}",
-            crate::state::SHARD_ITERATOR_TYPE_AT_TIMESTAMP
-        )));
-    }
-    if takes_sequence_number {
-        let Some(sequence_number) = input.starting_sequence_number.as_deref() else {
-            return Err(invalid_argument(format!(
-                "StartingSequenceNumber is required with the {iterator_type} shard iterator \
-                 type"
-            )));
-        };
-        // A sequence number is "the identifier associated with every record ingested in the
-        // stream", and every one a shard can hold lies inside the range the shard publishes
-        // (`Shard$SequenceNumberRange`): a value outside it names a position in no shard.
-        let inside = crate::state::sequence_number_le(
-            &shard.starting_sequence_number,
-            sequence_number,
-        )
-            && shard
-                .ending_sequence_number
-                .as_deref()
-                .is_none_or(|ending| {
-                    crate::state::sequence_number_le(sequence_number, ending)
-                });
-        if !inside {
-            return Err(invalid_argument(format!(
-                "StartingSequenceNumber {sequence_number} is not a sequence number of shard \
-                 {}",
-                shard.shard_id
-            )));
-        }
-        return Ok(
-            if iterator_type == crate::state::SHARD_ITERATOR_TYPE_AT_SEQUENCE_NUMBER {
-                crate::state::ShardPosition::AtSequenceNumber(sequence_number.to_string())
-            } else {
-                crate::state::ShardPosition::AfterSequenceNumber(sequence_number.to_string())
-            },
-        );
-    }
-    if takes_timestamp {
-        let Some(at) = input.timestamp else {
-            return Err(invalid_argument(format!(
-                "Timestamp is required with the {iterator_type} shard iterator type"
-            )));
-        };
-        let Ok(millis) = at.to_millis() else {
-            return Err(invalid_argument(
-                crate::state::TIMESTAMP_NOT_AN_EPOCH_DATE_MESSAGE.to_string(),
-            ));
-        };
-        let millis = u128::try_from(millis).unwrap_or_default();
-        // "If the time stamp is older than the current trim horizon, the iterator returned
-        // is for the oldest untrimmed data record (TRIM_HORIZON)."
-        return Ok(if millis < trim_horizon_millis {
-            crate::state::ShardPosition::TrimHorizon
-        } else {
-            crate::state::ShardPosition::AtTimestamp(millis)
-        });
-    }
-    if iterator_type == crate::state::SHARD_ITERATOR_TYPE_TRIM_HORIZON {
-        return Ok(crate::state::ShardPosition::TrimHorizon);
-    }
-    // The most recent record the shard holds right now is what `LATEST` starts just after.
-    // A shard that holds none is pinned by the position itself: every record it holds when
-    // it is read arrived after this iterator was issued, so all of them are read.
-    Ok(match shard.retained(trim_horizon).next_back() {
-        Some(newest) => {
-            crate::state::ShardPosition::AfterSequenceNumber(newest.sequence_number.clone())
-        }
-        None => crate::state::ShardPosition::Latest,
-    })
+    crate::state::requested_shard_position(
+        POSITION_MEMBERS,
+        input.shard_iterator_type.as_str(),
+        input.starting_sequence_number.as_deref(),
+        input.timestamp,
+        shard,
+        trim_horizon,
+    )
+    .map_err(invalid_argument)
 }
 
 impl<Eng> GetShardIterator<Eng> {

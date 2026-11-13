@@ -64,12 +64,26 @@
 //! The refusals a HANDLER words — a stream that is not there, a shard that does not exist, a
 //! dry run — are not here: they are built by the shared helpers in [`crate::state`] so every
 //! operation states them one way.
+//!
+//! ## This service's other edited seam: the operation whose output is an event stream
+//!
+//! `SubscribeToShard`'s output member `EventStream` targets a `@streaming` union, so the
+//! generated `ErasedOperation` shim of it declines the request (it cannot drive
+//! `serialize_as_event_stream<P>` through an object-safe `run`) and the op-stub generator
+//! emitted no handler for it at all (`src/ops/SKIPPED_STUBS.md`). It is served by the
+//! hand-authored [`crate::ops::subscribe_to_shard`] behind a
+//! [`EventStreamRoute`], which [`EmulatedService::override_operation`] — the seam the router
+//! consults FIRST — hands back for it. That operation reads its own request, so it is not
+//! behind [`StatedPerOperation`]; it words a refused request through
+//! [`Service::override_refusal`] below, which is the same module and therefore the same
+//! sentence.
 
 mod submitted_batch;
 mod validation;
 
 use aws_smithy_runtime_api::http::{Request as RtRequest, Response as RtResponse};
 use aws_smithy_schema_server::ProtocolError;
+use service_common::event_stream::EventStreamRoute;
 use smithy_server_runtime::{
     http, BoxFuture, ErasedOperation, Operation, OperationContext, OperationRoutingTable, Refusal,
     Refused, ServerHttpProtocol, Service, Violation,
@@ -88,7 +102,17 @@ pub struct EmulatedService<Eng: Send + Sync + 'static> {
     /// key the protocol resolves — the key the generated table uses — and built from the SAME
     /// shared engine, so a wrapped operation reads and writes the one store.
     stated: OperationRoutingTable,
+    /// This service's one event-stream operation, `SubscribeToShard`. It is NOT in the
+    /// generated table in a servable form — the shim of an operation whose output is a
+    /// `@streaming` union declines the request — so it is held here behind an
+    /// [`EventStreamRoute`] and routed by [`EmulatedService::override_operation`], built from
+    /// the same shared engine as everything else.
+    subscribe_to_shard: EventStreamRoute<crate::ops::subscribe_to_shard::SubscribeToShard<Eng>>,
 }
+
+/// The operation this service serves as an event stream, by the key the protocol resolves.
+/// Routed by [`EmulatedService::override_operation`] rather than through the generated table.
+const SUBSCRIBE_TO_SHARD_OPERATION: &str = "SubscribeToShard";
 
 /// Wire one `crate::ops::<module>::<Operation>` per line into `table`, each wrapped in
 /// [`StatedPerOperation`] and keyed by its operation shape name — the routing key
@@ -169,6 +193,9 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
         Self {
             entry: crate::ServiceDefinition::new(Arc::clone(&engine)),
             stated,
+            subscribe_to_shard: EventStreamRoute(
+                crate::ops::subscribe_to_shard::SubscribeToShard::new(Arc::clone(&engine)),
+            ),
         }
     }
 }
@@ -305,6 +332,12 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
         // as it does in the generated table, so the router's routing-error path is
         // unchanged.
         let key = self.entry.protocol().routing_key(req).ok()?;
+        // The exception is the event-stream operation, whose generated shim in that table
+        // declines the request: it is served by its hand-authored operation, which owns the
+        // whole request-to-response step and therefore reads its own request.
+        if key == SUBSCRIBE_TO_SHARD_OPERATION {
+            return Some(&self.subscribe_to_shard as &dyn ErasedOperation);
+        }
         self.stated.get(key)
     }
 
@@ -370,7 +403,8 @@ mod tests {
 
     /// RULE applied to the whole surface: every operation the generated routing table serves
     /// is also served behind [`StatedPerOperation`], under the same key that table is keyed
-    /// by.
+    /// by — except the one whose output is an event stream, which reads its own request and
+    /// is routed by [`EmulatedService::override_operation`] instead.
     ///
     /// The names come from the MODEL rather than from a second hand list, so an operation
     /// that gains a handler and not an entry in `wrap_operations!` fails here instead of
@@ -394,7 +428,7 @@ mod tests {
             .filter_map(|(id, _)| id.rsplit('#').next())
             .collect();
         assert!(
-            operations.len() >= 44,
+            operations.len() >= 45,
             "case the model's surface: expected this service's operations, got {operations:?}"
         );
 
@@ -405,6 +439,12 @@ mod tests {
                 continue;
             }
             served += 1;
+            // The event-stream operation is served by the route `override_operation` hands
+            // back, not out of the `stated` table: it reads its own request, and words a
+            // refused one through `override_refusal` — the same module, the same sentence.
+            if operation == SUBSCRIBE_TO_SHARD_OPERATION {
+                continue;
+            }
             assert!(
                 service.stated.get(operation).is_some(),
                 "case {operation}: every operation this crate serves is served behind \
@@ -413,8 +453,8 @@ mod tests {
             );
         }
         assert_eq!(
-            served, 44,
-            "case the served surface: expected the 44 operations this crate has a handler \
+            served, 45,
+            "case the served surface: expected the 45 operations this crate has a handler \
              for, got {served}"
         );
     }

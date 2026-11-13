@@ -469,7 +469,7 @@ async fn an_absent_policy_is_refused_by_the_delete() {
             "a consumer nothing registered",
             format!("{held}/consumer/never-registered:1700000000"),
             format!(
-                "Consumer {held}/consumer/never-registered:1700000000 under stream: \
+                "Consumer never-registered with creation timestamp 1700000000 under stream: \
                  policy-absence, account {} not found.",
                 account()
             ),

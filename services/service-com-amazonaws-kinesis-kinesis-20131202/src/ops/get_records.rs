@@ -219,44 +219,6 @@ fn not_found(message: String) -> GetRecordsError {
     .into()
 }
 
-/// Where in the retained records of the shard the iterator's position starts, as an index
-/// into `retained`; the index one past the newest record when the position names nothing
-/// the shard holds yet, which is an empty page rather than a refusal ("If there are no
-/// records available in the portion of the shard that the iterator points to, GetRecords
-/// returns an empty list").
-fn start_index(
-    position: &crate::state::ShardPosition,
-    retained: &[&crate::state::DataRecord],
-) -> usize {
-    let after_the_newest = retained.len();
-    match position {
-        // "the last untrimmed record in the shard in the system, which is the oldest data
-        // record in the shard" — the first record still inside the retention window.
-        crate::state::ShardPosition::TrimHorizon => 0,
-        // "just after the most recent record in the shard", pinned when the iterator was
-        // issued: `GetShardIterator` carries this position only for a shard that held NO
-        // record then (a shard that held one is pinned to it by sequence number), so every
-        // record the shard holds now arrived after that instant and all of them are read.
-        crate::state::ShardPosition::Latest => 0,
-        crate::state::ShardPosition::AtSequenceNumber(sequence_number) => retained
-            .iter()
-            .position(|record| {
-                crate::state::sequence_number_le(sequence_number, &record.sequence_number)
-            })
-            .unwrap_or(after_the_newest),
-        crate::state::ShardPosition::AfterSequenceNumber(sequence_number) => retained
-            .iter()
-            .position(|record| {
-                !crate::state::sequence_number_le(&record.sequence_number, sequence_number)
-            })
-            .unwrap_or(after_the_newest),
-        crate::state::ShardPosition::AtTimestamp(millis) => retained
-            .iter()
-            .position(|record| crate::state::epoch_millis(record.arrived_at) >= *millis)
-            .unwrap_or(after_the_newest),
-    }
-}
-
 impl<Eng> GetRecords<Eng> {
     /// Construct the operation from the shared engine. INFALLIBLE — the engine is a
     /// construction-time dependency, so engine access is guaranteed by the time any
@@ -402,34 +364,26 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         .unwrap_or(1);
 
         // A record outside the stream's retention window is trimmed, so it is not among
-        // the records any position of this shard reads.
+        // the records any position of this shard reads. The page itself is the shared read of
+        // a shard from a position ([`crate::state::read_shard_from`]), the one
+        // `SubscribeToShard` serves its events from too: at most the records the limit
+        // admits, and "the maximum size of data that GetRecords can return is 10 MiB"
+        // (`GetRecords`) — but never short of its first record, which a caller would
+        // otherwise be unable to read at all.
         let retained: Vec<&crate::state::DataRecord> =
             shard.retained(stream.trim_horizon(now)).collect();
-        let start = start_index(&token.position, &retained);
-
-        // "The maximum size of data that GetRecords can return is 10 MiB" (`GetRecords`),
-        // so a page stops at that size — but never short of its first record, which a
-        // caller would otherwise be unable to read at all.
-        let mut records: Vec<Record> = Vec::new();
-        let mut page_bytes = 0usize;
-        for record in retained.iter().skip(start) {
-            if records.len() >= limit {
-                break;
-            }
-            // The page is measured by the DATA it answers with, which is what "the maximum
-            // size of data that GetRecords can return is 10 MiB" bounds; a record's
-            // partition key counts towards what the store holds and what a write may carry,
-            // not towards what a read returns.
-            let with_record = page_bytes.saturating_add(record.data.len());
-            if !records.is_empty() && with_record > crate::state::MAX_GET_RECORDS_BYTES {
-                break;
-            }
-            page_bytes = with_record;
-            records.push(record.to_shape());
-        }
-        // Everything up to here is what the reader has now seen: the records it was handed
-        // and, for a position that skipped past older ones, those too.
-        let seen = start.saturating_add(records.len());
+        let read = crate::state::read_shard_from(
+            &token.position,
+            &retained,
+            limit,
+            crate::state::MAX_GET_RECORDS_BYTES,
+            now,
+        );
+        let records: Vec<Record> = read
+            .records
+            .iter()
+            .map(|record| record.to_shape())
+            .collect();
 
         // "A new shard iterator is returned by every GetRecords request in
         // NextShardIterator, which you use in the ShardIterator parameter of the next
@@ -437,11 +391,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // at the position it started from when the shard held nothing to read there. "If
         // the shard has been closed, the shard iterator can't return more data and
         // GetRecords returns null in NextShardIterator."
-        let drained = seen == retained.len();
-        // The newest record this reader has seen, if it has seen any.
-        let last_seen = seen.checked_sub(1).and_then(|index| retained.get(index));
-        let next_shard_iterator = (shard.is_open() || !drained).then(|| {
-            let position = match last_seen {
+        let next_shard_iterator = (shard.is_open() || !read.drained).then(|| {
+            let position = match read.last_seen {
                 Some(record) => {
                     crate::state::ShardPosition::AfterSequenceNumber(record.sequence_number.clone())
                 }
@@ -450,38 +401,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             crate::state::ShardIteratorToken::new(stream, &shard.shard_id, position, now).encode()
         });
 
-        // "The number of milliseconds the GetRecords response is from the tip of the
-        // stream, indicating how far behind current time the consumer is. A value of zero
-        // indicates that record processing is caught up, and there are no new records to
-        // process at this moment": a reader that has drained the shard is caught up, so its
-        // lag is zero however long ago the last record arrived; a reader with records still
-        // ahead of it is behind by how long ago the newest record it HAS seen arrived — the
-        // age of the newest data it holds, measured against the clock rather than against
-        // the tip's own instant, which is what "behind current time" names. (Measuring from
-        // the first record it has NOT seen would answer almost the same number and would
-        // report a lag for a reader that is caught up with everything retained.)
-        let millis_behind_latest = if drained {
-            0
-        } else {
-            let behind_from = last_seen
-                .or_else(|| retained.first())
-                .map(|record| {
-                    crate::state::epoch_millis(now)
-                        .saturating_sub(crate::state::epoch_millis(record.arrived_at))
-                })
-                .unwrap_or_default();
-            i64::try_from(behind_from).unwrap_or(i64::MAX)
-        };
-
         Ok(GetRecordsOutput {
             records,
             next_shard_iterator,
-            millis_behind_latest: Some(millis_behind_latest),
+            millis_behind_latest: Some(read.millis_behind_latest),
             // "The list of the current shard's child shards, returned in the GetRecords
             // API's response only when the end of the current shard is reached": a shard
             // is closed by a reshard, and a reader that has drained a closed one reads on
             // from the shards that reshard produced from it.
-            child_shards: (!shard.is_open() && drained)
+            child_shards: (!shard.is_open() && read.drained)
                 .then(|| stream.child_shards_of(&shard.shard_id))
                 .filter(|children| !children.is_empty()),
         })

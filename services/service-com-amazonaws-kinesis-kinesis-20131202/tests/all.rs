@@ -49,6 +49,8 @@ mod encrypted_data_plane;
 mod encrypted_records;
 #[path = "all/encryption_key_resolution.rs"]
 mod encryption_key_resolution;
+#[path = "all/enhanced_fanout_subscriptions.rs"]
+mod enhanced_fanout_subscriptions;
 #[path = "all/enhanced_monitoring.rs"]
 mod enhanced_monitoring;
 #[path = "all/handler_refusal_wording.rs"]

@@ -20,18 +20,21 @@
 //! `ENABLED_UNTIL_EARLIEST_ALLOWED_END` -> `DISABLED` transitions decided in one place
 //! ([`Commitment::status`]).
 
-//! Three concerns of that state live in their own files beside this one, because each is a
+//! Four concerns of that state live in their own files beside this one, because each is a
 //! rule of its own that several operations consult: the per-shard WRITE quota a producer is
 //! metered by ([`write_quota`]), what KMS says about the key a stream is encrypted with
-//! ([`kms_key`]), and whether a channel's service execution role may use that key
-//! ([`channel_key_access`]).
+//! ([`kms_key`]), whether a channel's service execution role may use that key
+//! ([`channel_key_access`]), and where in a shard a reader starts and what one read of it
+//! from there delivers ([`shard_reading`]).
 
 mod channel_key_access;
 mod kms_key;
+mod shard_reading;
 mod write_quota;
 
 pub use channel_key_access::*;
 pub use kms_key::*;
+pub use shard_reading::*;
 pub use write_quota::*;
 
 use std::collections::HashMap;
@@ -163,6 +166,15 @@ pub const CONSUMER_ACTIVE: &str = "ACTIVE";
 /// activation ([`ACTIVATION_DELAY`]). The instant it falls due is stored on the record and
 /// never slept on.
 pub const CONSUMER_ACTIVATION_DELAY: Duration = ACTIVATION_DELAY;
+
+/// How long one consumer's subscription to one shard holds that shard: "If you call
+/// SubscribeToShard again with the same ConsumerARN and ShardId within 5 seconds of a
+/// successful call, you'll get a ResourceInUseException. If you call SubscribeToShard 5
+/// seconds or more after a successful call, the second call takes over the subscription and
+/// the previous connection expires or fails with a ResourceInUseException"
+/// (`SubscribeToShard`) — an AWS-documented duration, counted from the instant the stored
+/// subscription was established ([`ConsumerRecord::holds_subscription`]).
+pub const SUBSCRIPTION_TAKEOVER_WINDOW: Duration = Duration::from_secs(5);
 
 /// The most consumers one stream carries: "With On-demand Standard and Provisioned
 /// streams, you can register up to 20 consumers per stream to use Enhanced Fan-out"
@@ -901,6 +913,12 @@ pub struct ConsumerRecord {
     /// "attached to the specified data stream or consumer" (`GetResourcePolicy`), so the
     /// consumer it governs is where it is stored, and it is gone when the consumer is.
     pub policy: Option<String>,
+    /// When a `SubscribeToShard` last established a subscription of this consumer to a
+    /// shard, keyed by that shard's id — the instant a later subscription to the same shard
+    /// is judged against ([`SUBSCRIPTION_TAKEOVER_WINDOW`]). An entry the window has rolled
+    /// past is dropped as the next one is recorded ([`Self::subscribed_at`]), so what the
+    /// record holds is bounded by the shards being subscribed to right now.
+    pub subscriptions: HashMap<String, SystemTime>,
 }
 
 impl ConsumerRecord {
@@ -923,7 +941,38 @@ impl ConsumerRecord {
             // A resource-based policy is `PutResourcePolicy`'s to attach, so a consumer a
             // registration has just minted carries none.
             policy: None,
+            // A consumer a registration has just minted is subscribed to no shard: a
+            // subscription is `SubscribeToShard`'s to establish.
+            subscriptions: HashMap::new(),
         }
+    }
+
+    /// Whether this consumer still holds a subscription to `shard_id` at `now`, so a second
+    /// one is refused rather than taking it over: "If you call SubscribeToShard again with
+    /// the same ConsumerARN and ShardId within 5 seconds of a successful call, you'll get a
+    /// ResourceInUseException. If you call SubscribeToShard 5 seconds or more after a
+    /// successful call, the second call takes over the subscription"
+    /// (`SubscribeToShard`). Decided from the stored instant, so two reads at the same
+    /// instant agree.
+    pub fn holds_subscription(&self, shard_id: &str, now: SystemTime) -> bool {
+        self.subscriptions.get(shard_id).is_some_and(|established| {
+            // A subscription established at an instant later than `now` — a wall clock that
+            // moved backwards — still holds the shard.
+            !now.duration_since(*established)
+                .is_ok_and(|since| since >= SUBSCRIPTION_TAKEOVER_WINDOW)
+        })
+    }
+
+    /// Record that a subscription of this consumer to `shard_id` was established at `at`,
+    /// which is what the window above is then counted from. The entries the window has
+    /// rolled past are dropped with it, so the record holds at most the subscriptions that
+    /// are live.
+    pub fn subscribed_at(&mut self, shard_id: &str, at: SystemTime) {
+        self.subscriptions.retain(|_, established| {
+            !at.duration_since(*established)
+                .is_ok_and(|since| since >= SUBSCRIPTION_TAKEOVER_WINDOW)
+        });
+        self.subscriptions.insert(shard_id.to_string(), at);
     }
 
     /// The consumer's status at `now`: `CREATING` until the transition its registration
@@ -2770,6 +2819,23 @@ pub fn stream_not_active_message(stream_name: &str, status: &str) -> String {
     )
 }
 
+/// How an operation that needs a ready CONSUMER refuses one whose registration has not
+/// settled yet: "a consumer can't read data while in the CREATING or DELETING states"
+/// (`Consumer$ConsumerStatus`), which is the modelled "the resource is not available for this
+/// operation. For successful operation, the resource must be in the ACTIVE state"
+/// (`ResourceInUseException`).
+///
+/// The SAME sentence shape [`stream_not_active_message`] states for a stream, built from the
+/// STORED record: the consumer named by the `ConsumerName` it is registered under, the account
+/// that holds it, and the state it is in INSTEAD of `ACTIVE`.
+pub fn consumer_not_active_message(consumer_name: &str, status: &str) -> String {
+    format!(
+        "Consumer {consumer_name} under account {} not {CONSUMER_ACTIVE}, instead in state \
+         {status}",
+        ::engine::emulator_account_id()
+    )
+}
+
 /// How an operation that serves a stream while a change of it is in flight refuses one that
 /// is not ready at all: the SAME rule [`stream_not_active_message`] states
 /// (`ResourceInUseException`, "For successful operation, the resource must be in the ACTIVE
@@ -3140,18 +3206,41 @@ pub const CONSUMER_IDENTIFIER_CONFLICT_MESSAGE: &str =
 /// stream they name: the consumer at fault, then the stream and the account it was looked
 /// for under, then that it was not found.
 ///
-/// Built FROM the request and from this emulator's account, so the consumer is named the way
-/// the request named it and the stream is the one it addressed, by the NAME the addressing
-/// ARN carries ([`stream_name_in_arn`]) — a request that resolves by `ConsumerARN` alone
-/// still names a stream, since a consumer's ARN is its stream's ARN extended.
+/// Built FROM the request and from this emulator's account, so each half is named the way the
+/// request named it. The STREAM is named by the NAME the addressing ARN carries
+/// ([`stream_name_in_arn`]) — a request that resolves by `ConsumerARN` alone still names a
+/// stream, since a consumer's ARN is its stream's ARN extended. The CONSUMER is named by the
+/// name it is registered under, and by the registration instant as well where the request
+/// addressed it by an ARN that carries one ([`consumer_named_in`]), because that is what
+/// tells two consumers of one name apart: "If you delete a consumer and then create a new one
+/// with the same name, it won't have the same ARN. That's because consumer ARNs contain the
+/// creation timestamp" (`Consumer$ConsumerARN`).
 pub fn consumer_not_found_message(consumer_identifier: &str, stream_identifier: &str) -> String {
     let stream_name = stream_name_in_arn(stream_identifier)
         .or_else(|| stream_name_in_arn(consumer_identifier))
         .unwrap_or(stream_identifier);
     format!(
-        "Consumer {consumer_identifier} under stream: {stream_name}, account {} not found.",
+        "Consumer {} under stream: {stream_name}, account {} not found.",
+        consumer_named_in(consumer_identifier),
         ::engine::emulator_account_id()
     )
+}
+
+/// How a refusal names the consumer an identifier addresses: a `ConsumerARN` ends in
+/// `/consumer/<name>:<creation timestamp>` ([`consumer_arn`] builds it, and the modelled
+/// pattern requires it), and both parts of that segment name the consumer — "consumer ARNs
+/// contain the creation timestamp" (`Consumer$ConsumerARN`) — so the sentence spells them
+/// out; a `ConsumerName` carries no such segment and is the name already.
+fn consumer_named_in(identifier: &str) -> String {
+    let Some((_, segment)) = identifier.rsplit_once("/consumer/") else {
+        return identifier.to_string();
+    };
+    match segment.rsplit_once(':') {
+        Some((name, created_at)) if !name.is_empty() && !created_at.is_empty() => {
+            format!("{name} with creation timestamp {created_at}")
+        }
+        _ => segment.to_string(),
+    }
 }
 
 /// The stream's NAME as a `StreamARN` or a `ConsumerARN` carries it: the segment after
@@ -3174,6 +3263,20 @@ pub fn consumer_already_exists_message(consumer_name: &str, stream_name: &str) -
     format!(
         "Consumer {consumer_name} under stream {stream_name} already exists for account {}.",
         ::engine::emulator_account_id()
+    )
+}
+
+/// How a subscription refuses a shard this consumer already holds one to: "If you call
+/// SubscribeToShard again with the same ConsumerARN and ShardId within 5 seconds of a
+/// successful call, you'll get a ResourceInUseException" (`SubscribeToShard`), which is the
+/// modelled "resource is not available for this operation" refusal. Built FROM the request,
+/// so the consumer and the shard at fault are what name it.
+pub fn consumer_already_subscribed_message(consumer_arn: &str, shard_id: &str) -> String {
+    format!(
+        "Consumer {consumer_arn} is already subscribed to shard {shard_id}; you can call \
+         SubscribeToShard again for the same consumer and shard {} seconds or more after a \
+         successful call",
+        SUBSCRIPTION_TAKEOVER_WINDOW.as_secs()
     )
 }
 
@@ -3243,6 +3346,19 @@ pub fn stream_has_channels_message(stream_name: &str) -> String {
 /// (`…stream/<name>/consumer/<name>:[0-9]+`) ends.
 pub fn consumer_arn(stream_arn: &str, name: &str, created_at: SystemTime) -> String {
     format!("{stream_arn}/consumer/{name}:{}", epoch_seconds(created_at))
+}
+
+/// The ARN of the stream a `ConsumerARN` names: a consumer's ARN is its stream's ARN
+/// continued with `/consumer/<name>:<timestamp>` ([`consumer_arn`] builds it, and the
+/// modelled pattern
+/// `^(arn):aws.*:kinesis:.*:\d{12}:.*stream\/[a-zA-Z0-9_.-]+\/consumer\/[a-zA-Z0-9_.-]+:[0-9]+$`
+/// requires it), so the stream it addresses is everything before that segment. An identifier
+/// carrying no such segment — which that pattern admits none — names no stream, and is
+/// answered as the identifier it is.
+pub fn stream_arn_of_consumer(consumer_arn: &str) -> &str {
+    consumer_arn
+        .split_once("/consumer/")
+        .map_or(consumer_arn, |(stream_arn, _)| stream_arn)
 }
 
 /// Whole seconds since the epoch at `at`, which is the segment a [`consumer_arn`] ends
