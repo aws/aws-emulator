@@ -10,10 +10,12 @@
 //! ([`crate::service::pypi_registry`]). The PROTOCOLS differ; everything around them does
 //! not:
 //!
-//! * the two addressings a client reaches an endpoint through ([`resolve`]) — the domain's
-//!   published host, `<domain>-<account>.d.codeartifact.<region>.<suffix>`, and the same
-//!   `/<format>/<repository>/` path on the emulator's own endpoint, which is the registry
-//!   URL a client configures when it cannot resolve the published host;
+//! * the three addressings a client reaches an endpoint through ([`resolve`]) — the
+//!   domain's published host carried in the PATH, which is the address this service
+//!   ANNOUNCES ([`announced_repository_endpoint`]) because it is the one a client on this
+//!   machine can dial; that same host as the request's HOST, for a client whose DNS or
+//!   proxy for `<domain>-<account>.d.codeartifact.<region>.<suffix>` points here; and the
+//!   bare `/<format>/<repository>/` path on the emulator's own endpoint;
 //! * the credential: a bearer (or HTTP Basic) presentation of the token
 //!   `GetAuthorizationToken` minted, resolved against the tokens this service remembers
 //!   minting ([`authenticated_principal`]) — a token this service did not mint, one the
@@ -116,15 +118,24 @@ pub struct Resolved {
 /// Which repository endpoint `addressed` addresses for the package format `format`, or
 /// `None` when no endpoint of that format serves the request at all.
 ///
-/// The two addressings are the module documentation's, in that order. Each resolves only to
-/// a repository this service HOLDS, read from the one shared store, so a request keeps one
-/// claimant.
+/// The three addressings are the module documentation's, in that order. Each resolves only
+/// to a repository this service HOLDS, read from the one shared store, so a request keeps
+/// one claimant.
 pub fn resolve<Eng: Send + Sync + 'static>(
     engine: &Eng,
     addressed: &Addressed<'_>,
     format: &str,
 ) -> Option<Resolved> {
-    let (addressed_format, rest) = first_segment(addressed.path)?;
+    // The first segment is the published endpoint host when the request CARRIES that host
+    // in the path, and the format segment otherwise; the endpoint's own path is whatever
+    // follows it.
+    let (first, rest) = first_segment(addressed.path)?;
+    let named_in_path = endpoint_host_domain(first);
+    let endpoint_path = match named_in_path {
+        Some(_) => rest,
+        None => addressed.path,
+    };
+    let (addressed_format, rest) = first_segment(endpoint_path)?;
     if addressed_format != format {
         return None;
     }
@@ -134,7 +145,30 @@ pub fn resolve<Eng: Send + Sync + 'static>(
     }
     let state = service_state(engine)?;
     let store = state.lock();
-    let endpoint_prefix = format!("/{format}/{repository}");
+    let endpoint_prefix = match named_in_path {
+        Some(_) => format!("/{first}/{format}/{repository}"),
+        None => format!("/{format}/{repository}"),
+    };
+
+    // The published endpoint host CARRIED IN THE PATH, which is the addressing this service
+    // announces ([`announced_repository_endpoint`]): a client on this machine resolves none
+    // of AWS's hosts, so it reaches the emulator's own endpoint and carries in the path what
+    // it cannot carry in the host. The host names the domain and the account that owns it,
+    // so the request addresses exactly that domain's repository whichever address this
+    // process was reached at.
+    if let Some((domain, account)) = named_in_path {
+        let held = store.domain(domain, Some(account))?;
+        if !held.repositories.contains_key(repository) {
+            return None;
+        }
+        return Some(Resolved {
+            domain: held.name.clone(),
+            domain_owner: held.owner.clone(),
+            repository: repository.to_string(),
+            endpoint_prefix,
+            path: path.to_string(),
+        });
+    }
 
     // HOST-STYLE: the published endpoint host names the domain and the account that owns
     // it, so the request addresses exactly that domain's repository.
@@ -186,10 +220,15 @@ pub fn resolve<Eng: Send + Sync + 'static>(
 /// The domain and the owning account a published repository-endpoint host names, or `None`
 /// for every other host — this service's own API endpoint among them.
 ///
-/// The published form is `<domain>-<account>.d.codeartifact.<region>.<suffix>`
-/// ([`crate::state::repository_endpoint`] mints it, with `amazonaws.com` for the IPv4
-/// endpoint and `on.aws` for the dual-stack one), so the account is the last `-`-separated
-/// field of the first label and the domain is everything before it. A `DomainName` is
+/// The published form is `<domain>-<account>.d.codeartifact.<region>.<suffix>` — the host
+/// AWS itself publishes a repository endpoint at, with `amazonaws.com` for the IPv4
+/// endpoint and `on.aws` for the dual-stack one ([`crate::state::ENDPOINT_TYPE_DUALSTACK`]
+/// is the `EndpointType` that selects it). This emulator announces its OWN address instead
+/// ([`announced_repository_endpoint`]), because that is the one a client here can dial; the
+/// published form is still resolved so that an operator who points a client's DNS or proxy
+/// for it at this process reaches the repository it names. The account is the last
+/// `-`-separated field of the first label and the domain is everything before it. A
+/// `DomainName` is
 /// modelled `^[a-z][a-z0-9\-]{0,48}[a-z0-9]$` and so may itself contain `-`, which is why
 /// the split is from the RIGHT and why the account field has to be
 /// [`ACCOUNT_ID_DIGITS`] digits to be read as one.
@@ -203,6 +242,79 @@ pub fn endpoint_host_domain(host: &str) -> Option<(&str, &str)> {
     let account_shaped =
         account.len() == ACCOUNT_ID_DIGITS && account.bytes().all(|byte| byte.is_ascii_digit());
     (!domain.is_empty() && account_shaped).then_some((domain, account))
+}
+
+// ---------------------------------------------------------------------------
+// The address this service ANNOUNCES
+// ---------------------------------------------------------------------------
+
+/// The URL `GetRepositoryEndpoint` ANNOUNCES for the `format` endpoint of `repository` in
+/// the domain `domain` owned by `domain_owner`, read in `region` for the `EndpointType`
+/// `endpoint_type`.
+///
+/// A client is handed this URL to point a package manager at, so its authority has to be one
+/// THIS responder answers on: AWS's own published host
+/// (`<domain>-<account>.d.codeartifact.<region>.<suffix>`,
+/// [`crate::state::published_endpoint_host`]) resolves away from this process — to public
+/// AWS, where the domain and the repository do not exist, or, with no egress, to nothing at
+/// all. So the authority is the endpoint this emulator is reached at
+/// ([`announced_base`]), and the published host is carried in the PATH ahead of the
+/// `/<format>/<repository>/` segments AWS documents
+/// ([`crate::state::repository_endpoint_path`]) — which is the first addressing [`resolve`]
+/// serves. Every part AWS varies is therefore still in the URL, and the address is a
+/// client's to dial.
+pub fn announced_repository_endpoint(
+    ctx: &::smithy_server_runtime::OperationContext<'_>,
+    region: &str,
+    domain: &str,
+    domain_owner: &str,
+    endpoint_type: &str,
+    format: &str,
+    repository: &str,
+) -> String {
+    format!(
+        "{}/{}{}",
+        announced_base(ctx),
+        crate::state::published_endpoint_host(region, domain, domain_owner, endpoint_type),
+        crate::state::repository_endpoint_path(format, repository)
+    )
+}
+
+/// The base URL — `scheme://host[:port]`, no path — an announced endpoint is rooted on:
+/// the endpoint serving THIS request.
+///
+/// [`::smithy_server_runtime::OperationContext::endpoint`] is "the base URL a later request
+/// addresses… Callers send normally signed requests to it", so it is the authoritative
+/// answer and the one this falls back on. Ahead of it comes the emulator's own endpoint the
+/// request REALLY reached, read through the tree's one reading of that question
+/// (`service_common::data_plane_addressing::reached_emulator_endpoint`): a client configured
+/// with one local endpoint URL resolves nothing else, so it is handed back the very address
+/// it is already talking to, port included. That reading answers `None` for a host that
+/// names a service — this service's own API endpoint and every published repository-endpoint
+/// host included — and such a request is answered the address this process is served at.
+fn announced_base(ctx: &::smithy_server_runtime::OperationContext<'_>) -> String {
+    let endpoint = ctx.endpoint();
+    // Without a trailing slash, which would double the separator in front of the endpoint
+    // path appended to it.
+    let base = endpoint.as_str().trim_end_matches('/');
+    // The base's own authority, read through the same shared reading rather than a second
+    // split of a URL here; the scheme is whatever precedes it. `EndpointUrl` admits only an
+    // absolute `https` URL, so the default stands in for nothing the core reports.
+    let served = ::service_common::data_plane_addressing::url_authority(base);
+    let scheme = match base.strip_suffix(served) {
+        Some(scheme) if !scheme.is_empty() => scheme,
+        _ => "https://",
+    };
+    let authority = ::service_common::data_plane_addressing::reached_emulator_endpoint(
+        &ctx.parts().uri.to_string(),
+        ctx.parts()
+            .headers
+            .get("host")
+            .and_then(|host| host.to_str().ok()),
+    )
+    .or_else(|| ::service_common::data_plane_addressing::served_endpoint_authority(base))
+    .unwrap_or_else(|| served.to_string());
+    format!("{scheme}{authority}")
 }
 
 /// The request URI of a runtime-API request, parsed by the `http` crate.

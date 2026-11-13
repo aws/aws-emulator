@@ -162,6 +162,19 @@ pub fn emulator_with_engine() -> (MultiServiceRouter, Arc<engine::InMemoryEngine
     (router, engine)
 }
 
+/// [`emulator`], reachable at `base` — the base URL `OperationContext::endpoint` reports,
+/// which a SERVED emulator learns from its data port. For a suite about an address this
+/// service announces to a client: a router nobody served reports
+/// `smithy_server_runtime::UNSERVED_URL_BASE` instead.
+pub fn emulator_served_at(base: &str) -> MultiServiceRouter {
+    let (mut router, _engine) = emulator_with_engine();
+    router.set_url_base(
+        smithy_server_runtime::EndpointUrl::parse(base)
+            .unwrap_or_else(|| panic!("{base:?} is not an endpoint URL")),
+    );
+    router
+}
+
 /// Send one request signed for [`REGION`] and reduce the response to an [`Answer`].
 pub async fn call(
     router: &MultiServiceRouter,

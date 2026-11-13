@@ -12,11 +12,13 @@
 //! The rules under test, each over a TABLE rather than one recorded example:
 //!
 //! 1. A repository's endpoint for a package format is built from the repository's own
-//!    stored identity and the region the request addressed:
-//!    `https://<domain>-<domainOwner>.d.codeartifact.<region>.amazonaws.com/<format>/<repository>/`,
+//!    stored identity and the region the request addressed, under the base this emulator is
+//!    reached at:
+//!    `<base>/<domain>-<domainOwner>.d.codeartifact.<region>.amazonaws.com/<format>/<repository>/`,
 //!    on the `on.aws` suffix when `endpointType` is `dualstack` — so it is reported for
 //!    EVERY modelled `PackageFormat` and agrees with what `DescribeRepository` reports
-//!    about the same repository.
+//!    about the same repository. That the announced URL is an address a client can DIAL is
+//!    `tests/all/announced_repository_endpoint.rs`.
 //! 2. `endpointType` is optional and defaults to `ipv4`.
 //! 3. Reporting an endpoint resolves a resource: a domain or a repository the service
 //!    does not hold (including a domain pinned to another `domainOwner`) is
@@ -94,8 +96,11 @@ fn host_suffix(endpoint_type: &str) -> &'static str {
     }
 }
 
-/// The endpoint rule, as one string: what AWS documents for a repository addressed in
-/// `region`.
+/// The endpoint rule, as one string: what this emulator announces for a repository
+/// addressed in `region`. The authority is the base the emulator is reachable at — these
+/// suites drive an unserved router, which reports
+/// [`smithy_server_runtime::UNSERVED_URL_BASE`] — and AWS's own published host travels in
+/// the path ahead of the two documented segments.
 fn expected_endpoint(
     region: &str,
     domain: &str,
@@ -105,7 +110,8 @@ fn expected_endpoint(
     endpoint_type: &str,
 ) -> String {
     format!(
-        "https://{domain}-{owner}.d.codeartifact.{region}.{}/{format}/{repository}/",
+        "{}/{domain}-{owner}.d.codeartifact.{region}.{}/{format}/{repository}/",
+        smithy_server_runtime::UNSERVED_URL_BASE,
         host_suffix(endpoint_type)
     )
 }

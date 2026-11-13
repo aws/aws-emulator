@@ -2,13 +2,15 @@
 
 //! @op GetRepositoryEndpoint
 //!
-//! Reports the URL a repository serves ONE package format on. The endpoint is a pure
-//! projection of the repository's identity: the domain and its owning account name the
-//! host, the request's region names the regional endpoint, and the format and the
-//! repository name are its two path segments. It is computed by
-//! [`crate::state::repository_endpoint`] from the STORED repository, so a domain or a
-//! repository this service does not hold is answered with `ResourceNotFoundException`
-//! rather than with a URL. Reporting only: this operation writes nothing.
+//! Reports the URL a repository serves ONE package format on — the address a package
+//! manager is pointed at. It is a projection of the repository's identity: the domain and
+//! its owning account, the region the request addressed, the format asked for and the
+//! repository's own name; and its AUTHORITY is the endpoint THIS emulator answers on
+//! ([`crate::service::repository_data_plane::announced_repository_endpoint`]), because the
+//! host AWS publishes resolves away from this process. The identity comes from the STORED
+//! repository, so a domain or a repository this service does not hold is answered with
+//! `ResourceNotFoundException` rather than with a URL. Reporting only: this operation
+//! writes nothing.
 //!
 //! It is an AUTHORIZED read: the decision whether the caller may perform
 //! `codeartifact:GetRepositoryEndpoint` on the addressed repository is taken ahead of
@@ -260,18 +262,23 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .into());
         };
 
-        // Built from the STORED repository's own identity — its domain, that domain's
-        // owning account and its own name — so a repository's endpoint cannot drift from
-        // the record the repository operations report.
+        // The endpoint of the STORED repository: its domain, that domain's owning account
+        // and its own name are what the URL names, so a repository's endpoint cannot drift
+        // from the record the repository operations report. Its AUTHORITY is the endpoint
+        // this emulator answers on, because that is the address the client is to dial, and
+        // AWS's own published host is carried in the path beneath it.
         Ok(GetRepositoryEndpointOutput {
-            repository_endpoint: Some(crate::state::repository_endpoint(
-                &region,
-                &repository.domain_name,
-                &repository.domain_owner,
-                &input.format,
-                &repository.name,
-                endpoint_type,
-            )),
+            repository_endpoint: Some(
+                crate::service::repository_data_plane::announced_repository_endpoint(
+                    ctx,
+                    &region,
+                    &repository.domain_name,
+                    &repository.domain_owner,
+                    endpoint_type,
+                    &input.format,
+                    &repository.name,
+                ),
+            ),
         })
     }
 }
