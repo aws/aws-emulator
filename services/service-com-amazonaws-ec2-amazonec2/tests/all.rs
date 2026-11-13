@@ -15,6 +15,12 @@
 // exactly that. The lines above are the file header, which no landing edits.
 #[path = "all/prefix_lists.rs"]
 mod prefix_lists;
+// The WORDING of EC2's duplicate-resource and unreadable-id refusals: the fixed sentence of
+// each error class, with only the variable parts EC2 interpolates. Declared beside
+// `prefix_lists` for the reason the note above gives: the sorted neighbourhood and the tail
+// of this file are where every new ec2 suite inserts its lines.
+#[path = "all/conflict_and_unreadable_id_wording.rs"]
+mod conflict_and_unreadable_id_wording;
 // The `locale` an IPAM pool reports: every reader of a pool carries the modelled member, with
 // the default spelled out for a pool created without one, and a `locale` filter selects by the
 // value the body shows. Declared beside `prefix_lists` for the reason the note above gives:

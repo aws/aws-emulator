@@ -469,6 +469,15 @@ pub fn capacity_reservation_id_is_well_formed(id: &str) -> bool {
 /// Refuse a value that is not a Capacity Reservation id at all: HTTP 400
 /// [`INVALID_CAPACITY_RESERVATION_ID_MALFORMED`], worded the way AWS words a malformed id
 /// of this resource kind and built from the value the request sent.
+///
+/// This is the sentence the reservation's WRITE and usage validators answer, recorded off the
+/// 400s behind `issues/.../20261023T102725Z-ec2-getcapacityreservationusage-stub.md`,
+/// `...-ec2-movecapacityreservationinstances-stub.md` and
+/// `...-ec2-acceptcapacityreservationbillingownership-stub.md` — `ID`, and no terminating
+/// period. EC2's validators do NOT all word this id the same way, exactly as they do not all
+/// AGREE about it (see [`require_capacity_reservation_by_id_shape`] beside
+/// [`require_resolvable_capacity_reservation`]), so an operation whose own recorded sentence
+/// differs keeps that sentence where it resolves its id rather than rewording this one.
 pub fn invalid_capacity_reservation_id_malformed<E>(
     capacity_reservation_id: &str,
 ) -> crate::scaffolded::Scaffolded<E> {
@@ -878,15 +887,29 @@ pub fn capacity_reservation_cancellation_quote_id_is_well_formed(id: &str) -> bo
 }
 
 /// Refuse a value that is not a cancellation quote id at all: HTTP 400
-/// [`INVALID_CAPACITY_RESERVATION_CANCELLATION_QUOTE_ID_MALFORMED`], worded the way this
-/// service words a malformed id and built from the value the request sent.
+/// [`INVALID_CAPACITY_RESERVATION_CANCELLATION_QUOTE_ID_MALFORMED`], worded the way AWS words
+/// a malformed id of this resource kind and built from the value the request sent.
+///
+/// The resource is labelled `Cancellation Quote Id` — the quote's own two words, not the
+/// reservation's, and `Id` rather than `ID` — and the sentence terminates in a period, the
+/// way the Capacity Block offering's does
+/// ([`invalid_capacity_block_offering_id_malformed`]). Recorded off the 400 a describe of a
+/// quote id outside the issued form is answered with, which is the only authority for it:
+/// EC2 models no error shapes, and its validators word this family's sentences differently
+/// per resource (compare [`invalid_capacity_reservation_id_malformed`]).
+///
+/// The echo is cut to length by [`echoed_resource_id`], the ceiling this crate holds every
+/// repeated-back id to, so a caller-sized value cannot grow the refusal it earned.
 pub fn invalid_capacity_reservation_cancellation_quote_id_malformed<E>(
     quote_id: &str,
 ) -> crate::scaffolded::Scaffolded<E> {
     crate::scaffolded::Scaffolded::service_error(
         INVALID_CAPACITY_RESERVATION_CANCELLATION_QUOTE_ID_MALFORMED,
         400,
-        format!("Capacity Reservation cancellation quote ID '{quote_id}' is malformed"),
+        format!(
+            "Cancellation Quote Id '{echoed}' is malformed.",
+            echoed = echoed_resource_id(quote_id),
+        ),
     )
 }
 

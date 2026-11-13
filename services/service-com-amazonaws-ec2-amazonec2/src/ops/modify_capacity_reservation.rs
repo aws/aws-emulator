@@ -240,6 +240,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // `CreateCapacityReservationDateChangeQuote`, the one operation that issues one, is
         // still a scaffold — so every well-formed quote id names a quote that does not
         // exist, which is what the refusal says.
+        //
+        // The malformed sentence labels the quote the way the recorded refusal of the
+        // CANCELLATION quote labels its own
+        // ([`state::invalid_capacity_reservation_cancellation_quote_id_malformed`]): the
+        // quote's two words with `Id`, and a terminating period. A quote is a quote whichever
+        // change it priced, so the two sentences differ only in which one it is.
         if let Some(quote_id) = input.quote_id.as_deref() {
             if !state::issued_long_id_is_well_formed(
                 CAPACITY_RESERVATION_MODIFICATION_QUOTE_ID_PREFIX,
@@ -249,7 +255,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     INVALID_CAPACITY_RESERVATION_MODIFICATION_QUOTE_ID_MALFORMED,
                     400,
                     format!(
-                        "Capacity Reservation modification quote ID '{quote_id}' is malformed"
+                        "Modification Quote Id '{echoed}' is malformed.",
+                        echoed = state::echoed_resource_id(quote_id),
                     ),
                 ));
             }

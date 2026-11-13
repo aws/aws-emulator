@@ -257,7 +257,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .security_group_id_for_name(&vpc_id, group_name)
             .is_some()
         {
-            return Err(state::invalid_group_duplicate(group_name));
+            return Err(state::invalid_group_duplicate(group_name, &vpc_id));
         }
 
         // A count ceiling first, then the byte budget: a record count on its own admits

@@ -169,8 +169,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
     ) -> Result<Self::Output, Self::Error> {
         use crate::scaffolded::Scaffolded;
         use crate::state::{
-            availability_zones_in_region, capacity_reservation_is_in_region, decode_page_token,
-            encode_page_token, invalid_pagination_token_for, request_region,
+            availability_zones_in_region, capacity_reservation_id_is_well_formed,
+            capacity_reservation_is_in_region, decode_page_token, encode_page_token,
+            invalid_pagination_token_for, request_region,
             require_capacity_reservation_in_region, require_service_state, CompiledFilter,
             MatchBudget, MAX_FILTERS, MAX_FILTER_MATCH_STEPS, MAX_FILTER_VALUES,
             MAX_FILTER_VALUE_BYTES,
@@ -274,7 +275,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         // "The Capacity Reservation IDs": an id that names no reservation of the account IN
         // THIS REGION is an error, not an absent row.
+        //
+        // The id's own FORM is read here rather than left to the shared reader, because THIS
+        // operation's validator words an unreadable id its own way (see
+        // [`topology_capacity_reservation_id_malformed`]); everything past the form — the
+        // lookup and the Region narrowing — is the shared reader's, so the two describes
+        // cannot drift apart on which ids resolve.
         for capacity_reservation_id in &requested_ids {
+            if !capacity_reservation_id_is_well_formed(capacity_reservation_id) {
+                return Err(topology_capacity_reservation_id_malformed(
+                    capacity_reservation_id,
+                ));
+            }
             require_capacity_reservation_in_region(
                 &store,
                 &zones_in_region,
@@ -402,6 +414,38 @@ const NETWORK_NODE_ID_PREFIX: &str = "nn";
 /// entry must be answered by [`filter_values`]. "Filter names are case-sensitive"
 /// (`Filter$Name`), so every comparison against it is exact.
 const CAPACITY_RESERVATION_TOPOLOGY_FILTERS: [&str; 2] = ["availability-zone", "instance-type"];
+
+/// Refuse a value this operation cannot read as a Capacity Reservation id: HTTP 400
+/// [`crate::state::INVALID_CAPACITY_RESERVATION_ID_MALFORMED`], in the sentence THIS
+/// operation's validator answers.
+///
+/// EC2 words an unreadable `cr-` id differently from one operation to the next — the
+/// recorded refusals of `GetCapacityReservationUsage`,
+/// `MoveCapacityReservationInstances` and `AcceptCapacityReservationBillingOwnership`
+/// spell it `Capacity Reservation ID '<id>' is malformed`
+/// ([`crate::state::invalid_capacity_reservation_id_malformed`]), where the recorded
+/// refusal of THIS describe spells the member's words `Capacity Reservation Id` and ends
+/// the sentence with a period. That is the same per-operation disagreement the crate
+/// already carries over whether such an id is malformed at all
+/// ([`crate::state::require_capacity_reservation_by_id_shape`] beside
+/// [`crate::state::require_resolvable_capacity_reservation`]), so the sentence belongs to
+/// the operation that refuses and lives here rather than rewording the shared one.
+///
+/// The echoed value is cut to length by [`crate::state::echoed_resource_id`], the ceiling
+/// every refusal of this crate holds a repeated-back id to, so a caller-sized value cannot
+/// grow the refusal it earned.
+fn topology_capacity_reservation_id_malformed<E>(
+    capacity_reservation_id: &str,
+) -> crate::scaffolded::Scaffolded<E> {
+    crate::scaffolded::Scaffolded::service_error(
+        crate::state::INVALID_CAPACITY_RESERVATION_ID_MALFORMED,
+        400,
+        format!(
+            "Capacity Reservation Id '{echoed}' is malformed.",
+            echoed = crate::state::echoed_resource_id(capacity_reservation_id),
+        ),
+    )
+}
 
 /// The topology of one stored Capacity Reservation, as of the `state` the clock has it in.
 ///

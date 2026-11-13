@@ -1767,6 +1767,54 @@ fn envelope_child_names(case: &str, body: &str) -> Vec<String> {
         .collect()
 }
 
+/// The DIRECT children a successful `CreatePlacementGroup` envelope carries, sorted.
+///
+/// The EC2 API Reference publishes `requestId`, `return` and `placementGroup` as this
+/// operation's response elements, where `CreatePlacementGroupResult` in the Smithy model
+/// declares only `PlacementGroup`
+/// (`smithy_query(query="operation",operation="CreatePlacementGroup")`) — so the success flag
+/// comes from the ec2Query envelope, beside the group the create minted rather than instead
+/// of it.
+const CREATE_ENVELOPE_CHILDREN: [&str; 3] = ["placementGroup", "requestId", "return"];
+
+#[tokio::test]
+async fn a_successful_create_answers_the_group_beside_the_envelopes_success_flag() {
+    // One row per member of the `PlacementStrategy` catalog, so the shape of the answer is
+    // pinned across the inputs a create generalises over rather than for one strategy.
+    let router = emulator();
+    for strategy in STRATEGIES {
+        let case = format!("a {strategy} group");
+        let group_name = format!("flagged-{strategy}");
+        let body = create_ok(
+            &case,
+            &router,
+            &[param("GroupName", &group_name), param("Strategy", strategy)],
+        )
+        .await;
+
+        // Exactly one success flag, reading `true`. `envelope_children` pins the root
+        // element and its namespace on the way.
+        let flags =
+            super::ec2_query::envelope_children(&case, &body, "CreatePlacementGroup", "return");
+        assert_eq!(
+            flags,
+            vec!["true".to_string()],
+            "case {case:?}: expected exactly one <return>true</return>, got {flags:?} in {body}"
+        );
+
+        // And the flag does not displace what the create reports: the group it minted is
+        // still there, and nothing else is.
+        let mut reported = envelope_child_names(&case, &body);
+        reported.sort();
+        assert_eq!(
+            reported,
+            CREATE_ENVELOPE_CHILDREN.to_vec(),
+            "case {case:?}: expected the envelope children {CREATE_ENVELOPE_CHILDREN:?}, \
+             got {reported:?} in {body}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn a_successful_delete_answers_the_envelope_s_success_flag_and_nothing_else() {
     // The rule: a delete that happened reports the success of the call and nothing about the

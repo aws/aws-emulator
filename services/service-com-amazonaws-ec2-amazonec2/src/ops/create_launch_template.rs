@@ -315,7 +315,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 input.launch_template_data.image_id.as_deref(),
             )?;
             if store.launch_template_id_for_name(&spec.name).is_some() {
-                return Err(launch_template_name_already_exists(&spec.name));
+                return Err(launch_template_name_already_exists());
             }
             if store.launch_templates.len() >= MAX_LAUNCH_TEMPLATES {
                 return Err(launch_template_limit_exceeded(format!(

@@ -3106,11 +3106,18 @@ pub fn invalid_launch_template_name_not_found<E>() -> crate::scaffolded::Scaffol
 
 /// Refuse a create that named a launch template name this account already holds a template
 /// under: HTTP 400 `InvalidLaunchTemplateName.AlreadyExistsException`.
-pub fn launch_template_name_already_exists<E>(name: &str) -> crate::scaffolded::Scaffolded<E> {
+///
+/// The sentence is EC2's and it is FIXED: `Launch template name already in use.` carries no
+/// variable part at all — a create names ONE `LaunchTemplateName`
+/// (`CreateLaunchTemplateRequest$LaunchTemplateName`), so the value the caller must change is
+/// the one it just sent and the service does not repeat it back. Recorded off the 400 a
+/// second create under a name already taken is answered with, which is why the name is not
+/// interpolated here the way [`invalid_placement_group_duplicate`] interpolates a group's.
+pub fn launch_template_name_already_exists<E>() -> crate::scaffolded::Scaffolded<E> {
     crate::scaffolded::Scaffolded::service_error(
         INVALID_LAUNCH_TEMPLATE_NAME_ALREADY_EXISTS,
         400,
-        format!("The launch template name '{name}' is already in use"),
+        "Launch template name already in use.",
     )
 }
 

@@ -1380,11 +1380,17 @@ pub const PLACEMENT_GROUP_LIMIT_EXCEEDED: &str = "PlacementGroupLimitExceeded";
 /// Refuse a second placement group with a name the account already holds: HTTP 400
 /// [`INVALID_PLACEMENT_GROUP_DUPLICATE`]. The name "must be unique within the scope of your
 /// account for the Region" (`CreatePlacementGroupRequest$GroupName`).
+///
+/// The sentence is EC2's for this error class, naming the group by the name the request sent
+/// — the attribute a caller identifies a placement group by, since the group it collided with
+/// has no id the caller has seen — and it is a complete sentence, terminating period
+/// included, the way [`invalid_placement_group_unknown`] and
+/// [`invalid_placement_group_in_use`] are.
 pub fn invalid_placement_group_duplicate<E>(group_name: &str) -> Scaffolded<E> {
     Scaffolded::service_error(
         INVALID_PLACEMENT_GROUP_DUPLICATE,
         400,
-        format!("The placement group '{group_name}' already exists"),
+        format!("The placement group '{group_name}' already exists."),
     )
 }
 

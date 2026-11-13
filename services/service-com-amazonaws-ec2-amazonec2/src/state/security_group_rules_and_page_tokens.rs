@@ -1585,11 +1585,20 @@ pub fn is_security_group_text(text: &str) -> bool {
 
 /// Refuse a second security group with a name the VPC already holds: HTTP 400
 /// `InvalidGroup.Duplicate`.
-pub fn invalid_group_duplicate<E>(group_name: &str) -> Scaffolded<E> {
+///
+/// The group is named by the two attributes that IDENTIFY it — the name the request sent and
+/// the VPC it would have been created in — because a group's name is unique only within its
+/// VPC ("You can't have two security groups for the same VPC with the same name" —
+/// `CreateSecurityGroup`), so the name alone does not tell a caller which group it collided
+/// with. `vpc_id` is the VPC the create resolved: the one the request named, or the Region's
+/// default when it named none ("Required for a nondefault VPC" —
+/// `CreateSecurityGroupRequest$VpcId`), which is the only way the caller learns which VPC the
+/// fall-back chose. Never the colliding group's own id: the caller has not seen it.
+pub fn invalid_group_duplicate<E>(group_name: &str, vpc_id: &str) -> Scaffolded<E> {
     Scaffolded::service_error(
         INVALID_GROUP_DUPLICATE,
         400,
-        format!("The security group '{group_name}' already exists for VPC"),
+        format!("The security group '{group_name}' already exists for VPC '{vpc_id}'"),
     )
 }
 

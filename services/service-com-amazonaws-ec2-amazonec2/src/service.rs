@@ -444,9 +444,16 @@ static RETURN_MEMBER: Schema = Schema::new_member(
 /// `tags` and `securityGroupArn` — so the flag has to come from the envelope.
 /// `AssociateAddress` is the same case: it documents `requestId`, `associationId`
 /// and `return`, while `AssociateAddressResult` declares only `AssociationId`.
+/// `CreatePlacementGroup` too: it documents `requestId`, `return` and
+/// `placementGroup`, and a recorded 200 from it carries the flag beside the
+/// group, while `CreatePlacementGroupResult` declares only `PlacementGroup`.
 /// An operation that reports a created resource instead of a flag (`CreateVpc`
 /// answers `<vpc>` and no `<return>`) is deliberately absent.
-const RETURN_BESIDE_MODELLED_OUTPUT: &[&str] = &["AssociateAddress", "CreateSecurityGroup"];
+const RETURN_BESIDE_MODELLED_OUTPUT: &[&str] = &[
+    "AssociateAddress",
+    "CreatePlacementGroup",
+    "CreateSecurityGroup",
+];
 
 /// An output serialized as itself, then followed by the envelope's `<return>`
 /// success flag.
