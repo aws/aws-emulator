@@ -46,18 +46,18 @@ const ACCOUNT_KEY: &str = "AKIDSNSAUTHORIZATION";
 /// The status and wire error code SNS refuses an unauthorized call with: its
 /// `AuthorizationErrorException`, which the model binds to HTTP 403 with the awsQuery code
 /// `AuthorizationError`.
-const AUTHORIZATION_ERROR: (u16, &str) = (403, "AuthorizationError");
+pub(crate) const AUTHORIZATION_ERROR: (u16, &str) = (403, "AuthorizationError");
 
 /// The reason clause IAM states for the default deny a call with no grant anywhere falls to:
 /// within one account the permission the principal is missing is its own, so the sentence
 /// names the identity-based policies that did not grant it — the clause the recorded refusal
 /// of this service carries.
-fn no_identity_policy_allows(action: &str) -> String {
+pub(crate) fn no_identity_policy_allows(action: &str) -> String {
     format!("because no identity-based policy allows the {action} action")
 }
 
 /// The reason clause IAM states when the resource's own policy explicitly denies the call.
-const RESOURCE_POLICY_DENY: &str = "with an explicit deny in a resource-based policy";
+pub(crate) const RESOURCE_POLICY_DENY: &str = "with an explicit deny in a resource-based policy";
 
 /// The reason clause IAM states when one of the principal's own documents explicitly denies
 /// the call.
@@ -65,7 +65,7 @@ const IDENTITY_POLICY_DENY: &str = "with an explicit deny in an identity-based p
 
 /// The sentence AWS refuses an unauthorized request with, stated here independently of the
 /// crate under test.
-fn not_authorized(principal: &str, action: &str, resource: &str, reason: &str) -> String {
+pub(crate) fn not_authorized(principal: &str, action: &str, resource: &str, reason: &str) -> String {
     format!("User: {principal} is not authorized to perform: {action} on resource: {resource} {reason}")
 }
 

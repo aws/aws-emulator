@@ -475,12 +475,21 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> Subscribe<Eng> {
 
         // Authorization, before the store is consulted: AWS decides whether the caller may
         // perform the action on the topic ahead of the service resolving it, so a refused
-        // call creates no subscription.
-        if let Some(message) = crate::state::authorization::topic_refusal(
+        // call creates no subscription. The subscription the request names answers for this
+        // service's own condition keys, so a statement scoped to one protocol or one
+        // endpoint is decided against the ones this call asks for.
+        if let Some(message) = crate::state::authorization::topic_refusal_for(
             &*self.engine,
             ctx,
             crate::state::authorization::SUBSCRIBE,
             &input.topic_arn,
+            crate::state::authorization::Asked {
+                // The value SNS's own key takes is "the protocol value from a `Subscribe`
+                // request", so it is the one the REQUEST stated rather than the normalised
+                // one this handler goes on to store.
+                protocol: Some(input.protocol.as_str()),
+                endpoint: input.endpoint.as_deref(),
+            },
         ) {
             return Err(SubscribeErrorModeled::AuthorizationErrorException(
                 AuthorizationErrorException {

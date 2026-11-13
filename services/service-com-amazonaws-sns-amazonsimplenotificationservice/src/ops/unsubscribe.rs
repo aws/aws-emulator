@@ -173,6 +173,24 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
+        // Authorization, ahead of the store: AWS decides whether the caller may perform the
+        // action on the subscription's topic before the service resolves the subscription, so
+        // a refused call deletes nothing and is told it is not authorized rather than told
+        // whether the subscription exists. A value that names no subscription at all is left
+        // to the argument validation below.
+        if let Some(message) = crate::state::authorization::subscription_refusal(
+            &*self.engine,
+            ctx,
+            crate::state::authorization::UNSUBSCRIBE,
+            &input.subscription_arn,
+        ) {
+            return Err(UnsubscribeErrorModeled::AuthorizationErrorException(
+                AuthorizationErrorException {
+                    message: Some(message),
+                },
+            )
+            .into());
+        }
         let Some(store) = crate::state::service_state(&*self.engine) else {
             return Err(UnsubscribeErrorModeled::InternalErrorException(
                 InternalErrorException {

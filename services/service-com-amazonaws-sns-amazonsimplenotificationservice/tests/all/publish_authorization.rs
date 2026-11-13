@@ -177,7 +177,7 @@ pub(crate) async fn iam(emulator: &Emulator, action: &str, pairs: &[(&str, &str)
 }
 
 /// One STS call that must succeed.
-async fn sts(emulator: &Emulator, action: &str, pairs: &[(&str, &str)]) -> String {
+pub(crate) async fn sts(emulator: &Emulator, action: &str, pairs: &[(&str, &str)]) -> String {
     let (status, body) = query(
         emulator,
         "sts",
@@ -289,7 +289,10 @@ pub(crate) async fn given_user(emulator: &Emulator, name: &str) -> (String, Stri
 /// The role trusts the account's root principal, which is the spelling that admits every
 /// principal of the account — so the setup call, made with the account's own credential, may
 /// assume it.
-async fn given_assumed_role(emulator: &Emulator, name: &str) -> (String, String, String) {
+pub(crate) async fn given_assumed_role(
+    emulator: &Emulator,
+    name: &str,
+) -> (String, String, String) {
     let trust = policy(json!({
         "Effect": "Allow",
         "Principal": {"AWS": format!("arn:aws:iam::{}:root", engine::emulator_account_id())},

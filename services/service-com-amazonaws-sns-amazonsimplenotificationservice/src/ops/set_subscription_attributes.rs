@@ -168,6 +168,26 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
+        // Authorization, ahead of the write: AWS decides whether the caller may perform the
+        // action on the subscription's topic before the service writes anything, so a refused
+        // call changes no attribute. The subscription this call addresses answers for this
+        // service's own condition keys, so a statement scoped to one protocol or one endpoint
+        // is decided against the subscription's own.
+        if let Some(message) = state::authorization::subscription_refusal(
+            &*self.engine,
+            ctx,
+            state::authorization::SET_SUBSCRIPTION_ATTRIBUTES,
+            &input.subscription_arn,
+        ) {
+            return Err(
+                SetSubscriptionAttributesErrorModeled::AuthorizationErrorException(
+                    AuthorizationErrorException {
+                        message: Some(message),
+                    },
+                )
+                .into(),
+            );
+        }
         // The store's lock is taken and released by the write below; the deliveries a
         // replay that write started owes are performed afterwards, because a delivery is
         // an in-process call into another service, which must not run under this store's

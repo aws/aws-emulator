@@ -352,8 +352,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // looked at (hence `_input`) and the store is never reached, so the topic the
         // request named acquires no policy. The engine is bound only because this
         // operation owns it through the constructor seam every operation shares. The
-        // READ path (`GetDataProtectionPolicy`) is served and is not gated, so a topic
-        // that never acquired a document keeps reporting an empty one.
+        // READ path (`GetDataProtectionPolicy`) is served, this action gate being the
+        // write's alone, so a topic that never acquired a document keeps reporting an
+        // empty one to a caller its topic policy authorizes.
         let _ = &self.engine;
         Err(PutDataProtectionPolicyError::Unsupported(
             UnsupportedOperation::new(Self::NAME),

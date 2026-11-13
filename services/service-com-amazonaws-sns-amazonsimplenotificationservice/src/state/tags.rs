@@ -111,18 +111,13 @@ pub enum TagKeyOrigin {
 
 /// Where the tag keys this request names came from.
 ///
-/// Told apart by where the request CAME FROM and by nothing in it: the framework stamps a
-/// request a handler sent through its in-process callback with that chain's depth
-/// ([`::smithy_server_runtime::CallbackRecursionDepth`]), and a request that arrived from
-/// a client carries none. The stamp is a typed request extension of this process, so
-/// nothing a client can send sets it.
+/// Told apart by where the request CAME FROM and by nothing in it, through the crate's one
+/// reading of that ([`super::authorization::is_in_process_call`]): the framework stamps a
+/// request a handler sent through its in-process callback with that chain's depth, and a
+/// request that arrived from a client carries none. The stamp is a typed request extension of
+/// this process, so nothing a client can send sets it.
 pub fn tag_key_origin(ctx: &::smithy_server_runtime::OperationContext<'_>) -> TagKeyOrigin {
-    let stamped = ctx
-        .parts()
-        .extensions
-        .get::<::smithy_server_runtime::CallbackRecursionDepth>()
-        .is_some_and(|depth| depth.0 > 0);
-    if stamped {
+    if super::authorization::is_in_process_call(ctx) {
         TagKeyOrigin::Service
     } else {
         TagKeyOrigin::Caller

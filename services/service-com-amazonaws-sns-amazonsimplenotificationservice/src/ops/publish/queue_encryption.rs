@@ -15,9 +15,11 @@
 //! queue receives nothing, while the publishing call still answers with a message id — and a
 //! client that adds the grant sees the next notification arrive.
 //!
-//! The decision is KMS's OWN ([`kms_authorization::authorize_use`]) over the key record the
-//! KMS service's own handlers wrote, so `PutKeyPolicy` moves it with nothing else changed and
-//! the two services cannot disagree about what a key policy says.
+//! The decision is KMS's OWN ([`state::topic_encryption::withheld_by`], over
+//! `kms_authorization::authorize_use`) over the key record the KMS service's own handlers
+//! wrote, so `PutKeyPolicy` moves it with nothing else changed and the two services cannot
+//! disagree about what a key policy says. It is the same question the TOPIC's own key is judged
+//! by, asked for this service's principal acting for the queue.
 //!
 //! Only the PERMISSION is decided here. Everything else about the key — that it exists, that
 //! its state admits a cryptographic operation at all, that a data key can be generated under
@@ -36,16 +38,6 @@ use super::{QueueLocation, SNS_SERVICE_PRINCIPAL};
 /// write.
 pub(super) type KmsState =
     ::service_com_amazonaws_kms_trentservice::ComAmazonawsKmsTrentserviceState;
-
-/// The KMS operations sealing ONE delivered notification performs: the data key the message
-/// is encrypted under is generated, and a data key already in use is decrypted to seal
-/// another message under it — which is why the statement AWS documents for a queue
-/// subscribed to a topic grants the service principal `kms:GenerateDataKey*` and
-/// `kms:Decrypt`.
-///
-/// Spelled without this service's `kms:` namespace, which is the form
-/// [`kms_authorization::RequestedUse`] takes the operation in.
-const KEY_DELIVERY_OPERATIONS: &[&str] = &["GenerateDataKey", "Decrypt"];
 
 /// The KMS store in the SAME shared engine, which is where the key a subscribed queue is
 /// encrypted with lives. `None` means the engine carries no such store — a deployment with no
@@ -132,30 +124,16 @@ pub(super) fn withheld_by_queue_key(
     };
     let caller =
         kms_authorization::Caller::service_principal(SNS_SERVICE_PRINCIPAL, &queue.queue_arn);
-    let via_service = format!("{}.{}.amazonaws.com", super::SQS_ARN_NAMESPACE, queue.region);
+    let via_service =
+        state::topic_encryption::regional_endpoint(super::SQS_ARN_NAMESPACE, &queue.region);
     let store = kms.lock();
     let kms_store::KeyRef::Found(key) = store.resolve(&queue.region, master_key_id) else {
         return None;
     };
-    if key.key_manager != kms_store::KEY_MANAGER_CUSTOMER || !key.is_usable() {
-        return None;
-    }
-    KEY_DELIVERY_OPERATIONS
-        .iter()
-        .find_map(|operation| {
-            kms_authorization::authorize_use(
-                &caller,
-                &store,
-                &queue.region,
-                key,
-                kms_authorization::RequestedUse::through_service(operation, &via_service),
-                // No encryption context is presented, so a grant constrained to one does not
-                // permit this use: the authority it carries is not claimed rather than
-                // assumed.
-                None,
-                None,
-            )
-            .err()
-        })
+    // The crate's ONE permission question about sealing a message under a customer managed key,
+    // asked here for this service's own principal acting for the queue: which operations a seal
+    // performs, and the keys it judges none of, are held in one place, so the topic's own key
+    // and a subscribed queue's cannot drift apart.
+    state::topic_encryption::withheld_by(&caller, &store, &queue.region, key, &via_service)
         .map(|message| KeyWithheld { message })
 }

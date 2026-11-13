@@ -173,7 +173,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
     async fn handle(
         &self,
         input: Self::Input,
-        _ctx: &smithy_server_runtime::OperationContext<'_>,
+        ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
         // Argument validation, BEFORE the store is consulted: a `TopicArn` that is not
         // an ARN at all — or whose resource is no topic name, which names no topic
@@ -187,6 +187,28 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 },
             )
             .into());
+        }
+
+        // Authorization, before the store is consulted: AWS decides whether the caller may
+        // perform the action on the topic ahead of the service resolving it, so a refused
+        // call confirms nothing and is told it is not authorized rather than told whether
+        // the topic exists. A caller presenting no credential of this account's — which is
+        // how the endpoint owner follows the confirmation URL SNS sent it — is not bounded
+        // by this gate (see `crate::state::authorization`).
+        if let Some(message) = state::authorization::topic_refusal(
+            &*self.engine,
+            ctx,
+            state::authorization::CONFIRM_SUBSCRIPTION,
+            &input.topic_arn,
+        ) {
+            return Err(
+                ConfirmSubscriptionErrorModeled::AuthorizationErrorException(
+                    AuthorizationErrorException {
+                        message: Some(message),
+                    },
+                )
+                .into(),
+            );
         }
 
         let Some(store) = state::service_state(&*self.engine) else {

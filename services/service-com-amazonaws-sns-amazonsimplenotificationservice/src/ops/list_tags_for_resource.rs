@@ -172,6 +172,24 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .into());
         }
 
+        // Authorization, before the store is consulted: AWS decides whether the caller may
+        // perform the action on the topic the request addresses ahead of the service
+        // resolving it, so a refused read reports nothing about what the account holds —
+        // not even whether the topic exists.
+        if let Some(message) = state::authorization::topic_refusal(
+            &*self.engine,
+            ctx,
+            state::authorization::LIST_TAGS_FOR_RESOURCE,
+            &input.resource_arn,
+        ) {
+            return Err(ListTagsForResourceErrorModeled::AuthorizationErrorException(
+                AuthorizationErrorException {
+                    message: Some(message),
+                },
+            )
+            .into());
+        }
+
         let Some(store) = state::service_state(&*self.engine) else {
             return Err(ListTagsForResourceErrorModeled::InternalErrorException(
                 InternalErrorException {

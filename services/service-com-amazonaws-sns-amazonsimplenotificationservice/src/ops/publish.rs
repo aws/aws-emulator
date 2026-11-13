@@ -198,6 +198,11 @@ fn kms_refusal(refusal: state::topic_encryption::KeyRefusal) -> PublishError {
                 message: Some(message),
             })
         }
+        KeyRefusal::AccessDenied(message) => {
+            PublishErrorModeled::KMSAccessDeniedException(KMSAccessDeniedException {
+                message: Some(message),
+            })
+        }
     }
     .into()
 }
@@ -436,6 +441,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         if let Some(master_key_id) = master_key_id {
             if let Err(refusal) = state::topic_encryption::authorize_topic_key(
                 &*self.engine,
+                ctx,
                 &region,
                 &master_key_id,
             ) {

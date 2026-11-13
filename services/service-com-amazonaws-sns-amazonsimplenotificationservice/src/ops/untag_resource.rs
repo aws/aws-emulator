@@ -178,6 +178,24 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .into());
         }
 
+        // Authorization, before the store is consulted: AWS decides whether the caller may
+        // perform the action on the topic the request addresses ahead of the service
+        // resolving it, so a refused call removes no tag and reports nothing about what the
+        // account holds.
+        if let Some(message) = state::authorization::topic_refusal(
+            &*self.engine,
+            ctx,
+            state::authorization::UNTAG_RESOURCE,
+            &input.resource_arn,
+        ) {
+            return Err(UntagResourceErrorModeled::AuthorizationErrorException(
+                AuthorizationErrorException {
+                    message: Some(message),
+                },
+            )
+            .into());
+        }
+
         // A key in the namespace Amazon Web Services keeps for its own tags is not a
         // caller's to REMOVE either: the rule is the one every write of a topic's tag
         // set shares, and it is asked before the store is consulted.

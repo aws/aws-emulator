@@ -223,8 +223,14 @@ mod topic_encryption_key_resolved_per_publish;
 #[path = "all/topic_encryption_key_state.rs"]
 mod topic_encryption_key_state;
 
+#[path = "all/topic_key_policy_authorization.rs"]
+mod topic_key_policy_authorization;
+
 #[path = "all/topic_policy_authorization.rs"]
 mod topic_policy_authorization;
+
+#[path = "all/topic_policy_conditions.rs"]
+mod topic_policy_conditions;
 
 #[path = "all/topics_subscriptions_publish.rs"]
 mod topics_subscriptions_publish;

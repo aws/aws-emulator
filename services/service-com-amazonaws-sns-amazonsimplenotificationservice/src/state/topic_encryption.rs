@@ -25,9 +25,18 @@
 //! publishing operation's own mapping, since each models the `KMS*` family itself.
 //!
 //! Only what the KEY ITSELF says about a cryptographic use is decided here, and only where a
-//! key record says it: the state the key is in. An identifier that resolves to no key record
-//! attributes no condition to a key and so refuses nothing, and whether the key's POLICY admits
-//! the caller is a decision of its own, which this service does not make on the data plane yet.
+//! key record says it: the state the key is in, and whether the authorities in force let this
+//! publish have a data key generated under it. An identifier that resolves to no key record
+//! attributes no condition to a key and so refuses nothing.
+//!
+//! The PERMISSION is the second half: Amazon SNS generates the data key on the publishing
+//! caller's behalf, so the use is one that reaches KMS THROUGH this service, judged for the
+//! principal that signed the publish by the documents in force on it — the key's own policy
+//! and that principal's identity-based policies, which is KMS's OWN decision
+//! ([`kms_authorization::authorize_use`]) over the key record KMS's own handlers wrote. A key
+//! whose policy admits the publisher nothing seals no message, and the publish is refused
+//! rather than answered with a message id. A key Amazon Web Services MANAGES is judged on its
+//! state alone: AWS writes that key's policy for the service that owns it.
 //!
 //! When no KMS service is mounted beside this one, nothing answers for the key and the publish
 //! proceeds: a condition nobody attributed to the key never refuses a publish.
@@ -35,6 +44,7 @@
 use std::collections::HashMap;
 
 use ::service_com_amazonaws_kms_trentservice::state as kms_store;
+use ::service_com_amazonaws_kms_trentservice::state::authorization as kms_authorization;
 
 use super::KMS_MASTER_KEY_ID_ATTRIBUTE;
 
@@ -59,6 +69,9 @@ pub enum KeyRefusal {
     /// The key is in a state no cryptographic operation can use — KMS's
     /// `KMSInvalidStateException`.
     InvalidState(String),
+    /// The authorities in force do not let this publish have a data key generated under the
+    /// key — KMS's `AccessDeniedException`.
+    AccessDenied(String),
 }
 
 /// The service name KMS's own error metadata carries.
@@ -72,6 +85,35 @@ const KMS_DISABLED_CODE: &str = "DisabledException";
 
 /// KMS's own error code for a key whose state admits no cryptographic operation.
 const KMS_INVALID_STATE_CODE: &str = "KMSInvalidStateException";
+
+/// KMS's own error code for a use no document in force permits.
+const KMS_ACCESS_DENIED_CODE: &str = "AccessDeniedException";
+
+/// The KMS operations sealing ONE message under a customer managed key performs: the data key
+/// the message is encrypted under is generated, and a data key already in use is decrypted to
+/// seal another message under it — which is why the permissions AWS documents for a publisher
+/// to an encrypted topic, and for a queue subscribed to one, are `kms:GenerateDataKey*` and
+/// `kms:Decrypt`.
+///
+/// Spelled without KMS's `kms:` namespace, which is the form
+/// [`kms_authorization::RequestedUse`] takes the operation in.
+pub const SEALING_OPERATIONS: &[&str] = &["GenerateDataKey", "Decrypt"];
+
+/// The regional endpoint name of this service, which is the value of KMS's `kms:ViaService`
+/// condition key for a use of a key that reaches KMS through Amazon SNS — what a key policy
+/// written for an encrypted topic is scoped by.
+fn via_service(region: &str) -> String {
+    regional_endpoint(super::authorization::ARN_NAMESPACE, region)
+}
+
+/// The regional endpoint name of the service `namespace` names, which is the value KMS's
+/// `kms:ViaService` condition key takes for a use that reaches it through that service.
+///
+/// One spelling for the whole crate, so the topic's own key and a subscribed queue's key cannot
+/// be judged under two different forms of the same name.
+pub fn regional_endpoint(namespace: &str, region: &str) -> String {
+    format!("{namespace}.{region}.amazonaws.com")
+}
 
 /// A refusal KMS answered, as the publishing caller sees it: this service does not word these
 /// refusals itself, it relays the call that failed — so the message is KMS's own sentence
@@ -89,20 +131,24 @@ fn relayed(message: &str, code: &str) -> String {
 }
 
 /// Whether the key `master_key_id` names — the one the topic encrypts its messages with — can
-/// seal a message being published right now, judged at `region`'s endpoint.
+/// seal a message being published right now, judged at `region`'s endpoint for the principal
+/// that signed the publish.
 ///
 /// `master_key_id` is the topic's `KmsMasterKeyId` in any form KMS accepts: a key id, a key
 /// ARN, an alias or an alias ARN.
 ///
-/// `Ok(())` for a key KMS can use, and wherever nothing of the kind can be shown, so a publish
-/// is never refused on a guess: an empty identifier (no key), an engine carrying no KMS store,
-/// and an identifier that resolves to no key record this endpoint holds — which says nothing
-/// about a key, and whose resolution is a concern of its own. See the module docs for the rule.
+/// `Ok(())` for a key KMS can use and lets this caller have a data key generated under, and
+/// wherever nothing of the kind can be shown, so a publish is never refused on a guess: an
+/// empty identifier (no key), an engine carrying no KMS store, and an identifier that resolves
+/// to no key record this endpoint holds — which says nothing about a key, and whose resolution
+/// is a concern of its own. See the module docs for the rule.
 ///
 /// Call it with no store of this service locked: the KMS guard is taken here and released
-/// before it answers.
+/// before it answers, and the caller's own documents are read out of the IAM and STS stores
+/// before that guard is taken at all.
 pub fn authorize_topic_key<Eng: Send + Sync + 'static>(
     engine: &Eng,
+    ctx: &::smithy_server_runtime::OperationContext<'_>,
     region: &str,
     master_key_id: &str,
 ) -> Result<(), KeyRefusal> {
@@ -119,33 +165,40 @@ pub fn authorize_topic_key<Eng: Send + Sync + 'static>(
         );
         return Ok(());
     };
+    // Who the publish is judged for, resolved before the KMS guard is taken: the stores that
+    // answer it are other services' own.
+    let caller = kms_authorization::caller(engine, ctx);
+    let via_service = via_service(region);
     let found = {
         let mut store = kms.lock();
-        let resolved = match store.resolve(region, master_key_id) {
-            kms_store::KeyRef::Found(key) => Some(KeyCondition::of(key)),
-            // An identifier that resolves to no key record attributes no condition to a key,
-            // so it refuses nothing here: an identifier KMS cannot parse, one naming a key
-            // this endpoint does not hold, and one whose account segment names no account are
-            // all a question about the IDENTIFIER rather than about the key's state.
+        // "Amazon Web Services services use DescribeKey to create Amazon Web Services managed
+        // keys from a predefined Amazon Web Services alias with no key ID": a topic on such an
+        // alias is on the Amazon Web Services managed key it names, and the first use of it is
+        // what associates the two — so the key whose condition governs the publish exists from
+        // this publish on.
+        if !matches!(
+            store.resolve(region, master_key_id),
+            kms_store::KeyRef::Found(_)
+        ) {
+            if let Some(alias) = kms_store::alias_named_by(region, master_key_id) {
+                store.associate_predefined_aws_alias(region, &alias);
+            }
+        }
+        // An identifier that resolves to no key record attributes no condition to a key, so it
+        // refuses nothing here: an identifier KMS cannot parse, one naming a key this endpoint
+        // does not hold, and one whose account segment names no account are all a question
+        // about the IDENTIFIER rather than about the key's state.
+        match store.resolve(region, master_key_id) {
+            kms_store::KeyRef::Found(key) => Some((
+                KeyCondition::of(key),
+                withheld_by(&caller, &store, region, key, &via_service),
+            )),
             kms_store::KeyRef::NotFound
             | kms_store::KeyRef::MalformedArn
             | kms_store::KeyRef::UnauthorizedAccount => None,
-        };
-        match resolved {
-            Some(key) => Some(key),
-            // "Amazon Web Services services use DescribeKey to create Amazon Web Services
-            // managed keys from a predefined Amazon Web Services alias with no key ID": a
-            // topic on such an alias is on the Amazon Web Services managed key it names, and
-            // the first use of it is what associates the two — so the key whose condition
-            // governs the publish exists from this publish on.
-            None => kms_store::alias_named_by(region, master_key_id).and_then(|alias| {
-                store
-                    .associate_predefined_aws_alias(region, &alias)
-                    .map(KeyCondition::of)
-            }),
         }
     };
-    let Some(key) = found else {
+    let Some((key, withheld)) = found else {
         return Ok(());
     };
 
@@ -164,7 +217,58 @@ pub fn authorize_topic_key<Eng: Send + Sync + 'static>(
             KMS_INVALID_STATE_CODE,
         )));
     }
+    if let Some(message) = withheld {
+        return Err(KeyRefusal::AccessDenied(relayed(
+            &message,
+            KMS_ACCESS_DENIED_CODE,
+        )));
+    }
     Ok(())
+}
+
+/// KMS's own sentence for why the authorities in force withhold the data key a message needs
+/// from `caller`, or `None` when they permit it.
+///
+/// The decision is KMS's OWN over the key record KMS's own handlers wrote, so `PutKeyPolicy`
+/// moves it with nothing else changed and the two services cannot disagree about what a key
+/// policy says. It is taken for the use as it really reaches KMS: through the service
+/// `via_service` names, on the behalf of whoever `caller` is, under the operations sealing one
+/// message performs ([`SEALING_OPERATIONS`]) — a refusal of either withholds the message.
+///
+/// `None` for a key Amazon Web Services MANAGES: AWS writes that key's policy for the service
+/// that owns it, so nothing of this account's documents is what admits a use of it. `None` too
+/// for a key no cryptographic operation can use right now at all — that is a different failure
+/// from a permission the key withholds, and the key's own state is what reports it.
+///
+/// The ONE permission question about sealing a message under a customer managed key, so the
+/// topic's own key ([`authorize_topic_key`]) and a subscribed queue's
+/// ([`crate::ops::publish::queue_encryption`]) cannot drift on which operations a seal performs
+/// or on the keys it does not judge.
+pub fn withheld_by(
+    caller: &kms_authorization::Caller,
+    store: &kms_store::ComAmazonawsKmsTrentserviceState,
+    region: &str,
+    key: &kms_store::Cmk,
+    via_service: &str,
+) -> Option<String> {
+    if key.key_manager != kms_store::KEY_MANAGER_CUSTOMER || !key.is_usable() {
+        return None;
+    }
+    SEALING_OPERATIONS.iter().find_map(|operation| {
+        kms_authorization::authorize_use(
+            caller,
+            store,
+            region,
+            key,
+            kms_authorization::RequestedUse::through_service(operation, via_service),
+            // A sealed message carries no encryption context, so a grant constrained to one
+            // does not permit this use: the authority it carries is not claimed rather than
+            // assumed.
+            None,
+            None,
+        )
+        .err()
+    })
 }
 
 /// What the key itself says about sealing a message under it, taken out of the KMS store so

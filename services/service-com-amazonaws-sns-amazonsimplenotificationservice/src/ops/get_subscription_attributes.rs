@@ -177,6 +177,26 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             );
         }
 
+        // Authorization, before the store is consulted: AWS decides whether the caller may
+        // perform the action on the subscription's topic ahead of resolving the subscription,
+        // so a refused read reports nothing about what the account holds — not even whether
+        // the subscription exists.
+        if let Some(message) = state::authorization::subscription_refusal(
+            &*self.engine,
+            ctx,
+            state::authorization::GET_SUBSCRIPTION_ATTRIBUTES,
+            &input.subscription_arn,
+        ) {
+            return Err(
+                GetSubscriptionAttributesErrorModeled::AuthorizationErrorException(
+                    AuthorizationErrorException {
+                        message: Some(message),
+                    },
+                )
+                .into(),
+            );
+        }
+
         let Some(store) = state::service_state(&*self.engine) else {
             return Err(GetSubscriptionAttributesErrorModeled::InternalErrorException(
                 InternalErrorException {
