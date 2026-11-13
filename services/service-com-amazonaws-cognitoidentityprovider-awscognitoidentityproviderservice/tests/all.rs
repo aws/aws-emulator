@@ -233,6 +233,8 @@ mod set_user_mfa_preference;
 mod set_user_settings;
 #[path = "all/sign_in_lambda_triggers.rs"]
 mod sign_in_lambda_triggers;
+#[path = "all/sign_in_metric_reads.rs"]
+mod sign_in_metric_reads;
 #[path = "all/sign_up_client_secret.rs"]
 mod sign_up_client_secret;
 #[path = "all/state_roundtrip.rs"]
