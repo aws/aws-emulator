@@ -68,6 +68,8 @@ mod stated_enum_value_set;
 // The synthesis-task fixtures the task suites share.
 #[path = "all/support.rs"]
 mod support;
+#[path = "all/synthesis_request_rejections.rs"]
+mod synthesis_request_rejections;
 #[path = "all/synthesis_tasks.rs"]
 mod synthesis_tasks;
 #[path = "all/synthesis_task_side_effects.rs"]
