@@ -524,10 +524,16 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // two tips, so all there is to write is the reference. A destination
         // already at that commit has nothing left to do, so the store is left
         // untouched rather than restamped.
+        let mut published = Vec::new();
         if destination_tip != merge_commit_id {
             // The reference moves through the one place a branch tip moves, so
             // every OPEN pull request reading from it follows the new tip.
-            repository.set_branch_tip(&destination_branch, &merge_commit_id, now, Some(&merged_by));
+            published = repository.set_branch_tip(
+                &destination_branch,
+                &merge_commit_id,
+                now,
+                Some(&merged_by),
+            );
             // Moving a reference modifies the repository, so `lastModifiedDate`
             // moves with it, exactly as it does for a merge that writes a commit.
             repository.last_modified_date = now;
@@ -578,8 +584,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 merge_option: target.merge_option.clone(),
             }
         });
+        // What this call recorded, counted as it records it: the close always, the
+        // merge state of the target only where there is one. Publishing the COUNT this
+        // call appended keeps an earlier entry of the log out of this write's events.
+        let mut recorded = 0;
         if let Some(merged_state) = merged_state {
             pull_request.record_event(now, Some(actor.clone()), merged_state);
+            recorded += 1;
         }
         let status = pull_request.status.clone();
         pull_request.record_event(
@@ -587,9 +598,17 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             Some(actor),
             crate::state::PullRequestEventDetail::StatusChanged { status },
         );
+        recorded += 1;
 
-        Ok(MergePullRequestByFastForwardOutput {
+        let output = MergePullRequestByFastForwardOutput {
             pull_request: Some(pull_request.to_modeled()),
-        })
+        };
+        // The merge of the target and the close it caused are PUBLISHED onto the
+        // account's default event bus, in the order the log records them, together
+        // with any pull request the destination branch moved under.
+        published.extend(repository.pull_request_changes(pull_request_id, recorded));
+        drop(store);
+        crate::state::pull_request_events::publish_all_detached(published, ctx.callback());
+        Ok(output)
     }
 }

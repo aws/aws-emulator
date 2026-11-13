@@ -980,7 +980,12 @@ fn apply(repository: &mut Repository, command: &Command, at: SystemTime) {
             repository.branches.remove(&name);
         }
         Namespace::Branch => {
-            repository.set_branch_tip(&name, &command.new, at, None);
+            // The changes this records on the pull requests reading from the branch
+            // are not published: this path is served through the framework's
+            // synchronous routing hook, which is handed no callback to publish an
+            // event over, so a push records what happened and publishes nothing
+            // rather than publishing over a channel this crate does not have here.
+            let _unpublished = repository.set_branch_tip(&name, &command.new, at, None);
         }
         Namespace::Tag if deleting => {
             repository.git_tags.remove(&name);

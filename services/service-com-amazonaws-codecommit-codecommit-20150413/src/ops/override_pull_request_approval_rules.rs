@@ -344,6 +344,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             },
         );
 
+        // The change is PUBLISHED onto the account's default event bus, once this
+        // call's guard is gone.
+        let published = store.pull_request_changes(pull_request_id, 1);
+        drop(store);
+        crate::state::pull_request_events::publish_all_detached(published, ctx.callback());
         Ok(OverridePullRequestApprovalRulesOutput)
     }
 }

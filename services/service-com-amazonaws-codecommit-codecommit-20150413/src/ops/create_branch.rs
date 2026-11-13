@@ -281,7 +281,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // The reference is added through the one place a branch tip moves: a name
         // a pull request reads from can be created again after it was deleted, and
         // such a pull request follows the tip the new reference points at.
-        repository.set_branch_tip(
+        let published = repository.set_branch_tip(
             &input.branch_name,
             &input.commit_id,
             std::time::SystemTime::now(),
@@ -296,6 +296,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // update default branch operation."
         repository.last_modified_date = std::time::SystemTime::now();
 
+        // Each pull request that moved with the reference is PUBLISHED onto the
+        // account's default event bus, once this call's guard is gone.
+        drop(store);
+        crate::state::pull_request_events::publish_all_detached(published, ctx.callback());
         Ok(CreateBranchOutput)
     }
 }

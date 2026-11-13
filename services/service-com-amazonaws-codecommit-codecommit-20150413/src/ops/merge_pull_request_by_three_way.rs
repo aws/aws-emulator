@@ -953,7 +953,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // the merged content readable there by a later caller — and every OPEN
         // pull request reading from that branch follows it, through the one
         // place a branch tip moves.
-        repository.set_branch_tip(&destination_branch, &merge_commit_id, now, Some(&merged_by));
+        let mut published =
+            repository.set_branch_tip(&destination_branch, &merge_commit_id, now, Some(&merged_by));
         // The merge this call made is recorded against the pair of commits it
         // merged, so `GetMergeCommit` reports the commit this merge wrote for
         // that pair.
@@ -1010,8 +1011,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 merge_option: target.merge_option.clone(),
             }
         });
+        // What this call recorded, counted as it records it: the close always, the
+        // merge state of the target only where there is one. Publishing the COUNT this
+        // call appended keeps an earlier entry of the log out of this write's events.
+        let mut recorded = 0;
         if let Some(merged_state) = merged_state {
             pull_request.record_event(now, Some(actor.clone()), merged_state);
+            recorded += 1;
         }
         let status = pull_request.status.clone();
         pull_request.record_event(
@@ -1019,9 +1025,17 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             Some(actor),
             crate::state::PullRequestEventDetail::StatusChanged { status },
         );
+        recorded += 1;
 
-        Ok(MergePullRequestByThreeWayOutput {
+        let output = MergePullRequestByThreeWayOutput {
             pull_request: Some(pull_request.to_modeled()),
-        })
+        };
+        // The merge of the target and the close it caused are PUBLISHED onto the
+        // account's default event bus, in the order the log records them, together
+        // with any pull request the destination branch moved under.
+        published.extend(repository.pull_request_changes(pull_request_id, recorded));
+        drop(store);
+        crate::state::pull_request_events::publish_all_detached(published, ctx.callback());
+        Ok(output)
     }
 }

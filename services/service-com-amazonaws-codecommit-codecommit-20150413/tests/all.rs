@@ -173,6 +173,8 @@ mod pull_request_does_not_exist_message;
 mod pull_request_events;
 #[path = "all/pull_request_identifier_refusals.rs"]
 mod pull_request_identifier_refusals;
+#[path = "all/pull_request_lifecycle_events.rs"]
+mod pull_request_lifecycle_events;
 #[path = "all/pull_request_listing.rs"]
 mod pull_request_listing;
 #[path = "all/pull_request_lookup_precedence.rs"]

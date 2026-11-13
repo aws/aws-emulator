@@ -796,6 +796,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         record.record_event(now, Some(actor), created_event);
         let response = created(&record);
         repository.pull_requests.insert(pull_request_id, record);
+        // Opening a pull request is PUBLISHED onto the account's default event bus,
+        // so a rule matching this repository's pull-request events delivers it to
+        // that rule's targets. Rendered from the stored pull request, published
+        // once the guard is gone.
+        let published = repository.pull_request_changes(pull_request_id, 1);
+        drop(store);
+        crate::state::pull_request_events::publish_all_detached(published, ctx.callback());
         Ok(response)
     }
 }

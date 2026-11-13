@@ -461,12 +461,16 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // moves to it, through the one place a branch tip moves, so every OPEN pull
         // request reading from it follows the new tip; the commits earlier than it
         // keep the file.
-        repository.set_branch_tip(&input.branch_name, &commit_id, now, Some(&actor));
+        let published = repository.set_branch_tip(&input.branch_name, &commit_id, now, Some(&actor));
         repository.last_modified_date = now;
         // Keep the history bounded: the oldest commits no ref reaches are dropped
         // here, together with every git object no remaining ref reaches.
         repository.prune_history();
 
+        // Each pull request that moved with the branch is PUBLISHED onto the
+        // account's default event bus, once this call's guard is gone.
+        drop(store);
+        crate::state::pull_request_events::publish_all_detached(published, ctx.callback());
         Ok(DeleteFileOutput {
             commit_id,
             blob_id: removed.blob_id,

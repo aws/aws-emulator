@@ -827,7 +827,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // which is what makes the merged content readable there by a later caller
         // — through the one place a branch tip moves, so every OPEN pull request
         // reading from it follows the new tip.
-        repository.set_branch_tip(&target, &commit_id, now, Some(&actor));
+        let published = repository.set_branch_tip(&target, &commit_id, now, Some(&actor));
         // The merge this call made is recorded against the pair of commits it
         // merged, so `GetMergeCommit` reports the commit this merge wrote for
         // that pair.
@@ -840,6 +840,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // here, together with every git object no remaining ref reaches.
         repository.prune_history();
 
+        // Each pull request that moved with the reference is PUBLISHED onto the
+        // account's default event bus, once this call's guard is gone.
+        drop(store);
+        crate::state::pull_request_events::publish_all_detached(published, ctx.callback());
         Ok(MergeBranchesByThreeWayOutput {
             commit_id: Some(commit_id),
             tree_id: Some(tree_id),

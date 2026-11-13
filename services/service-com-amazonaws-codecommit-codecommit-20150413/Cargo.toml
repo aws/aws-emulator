@@ -25,6 +25,11 @@ service-com-amazonaws-iam-awsidentitymanagementv20100508 = { workspace = true }
 # reading of a listener's published `host:port` and of a connection whose encryption is
 # negotiated in band, which the announced git address is served through.
 service-common = { path = "../common" }
+# The AWS SDK for EventBridge, driven over the in-process callback: the entry type a
+# pull request's lifecycle change is published as, onto the account's default event bus
+# (`src/state/pull_request_events.rs`). Only the generated client is needed — the
+# emulator supplies the transport.
+aws-sdk-eventbridge = { version = "1", default-features = false }
 smithy-macros = { workspace = true }
 aws-smithy-schema = { workspace = true }
 aws-smithy-schema-server = { workspace = true }
@@ -33,7 +38,7 @@ emulator-server = { workspace = true }
 emulator-telemetry = { workspace = true }
 aws-smithy-runtime-api = { workspace = true }
 aws-smithy-types = { workspace = true }
-tokio = { workspace = true, features = ["sync", "time"] }
+tokio = { workspace = true, features = ["rt", "sync", "time"] }
 bytes = { workspace = true }
 http = { workspace = true }
 # Speaks HTTP/1.1 on the raw connection the core hands the listener the announced clone
@@ -72,6 +77,11 @@ emulator-core-build-support = { workspace = true }
 # Dials the announced clone URL in this process, exactly as a git client handed that
 # URL does: tokio's socket and byte-stream halves carry the HTTP exchange on it.
 tokio = { workspace = true, features = ["io-util", "net", "sync", "time"] }
+# Mounted BESIDE this one in `tests/all/`: EventBridge and Amazon SQS, which carry the
+# pull-request lifecycle events a rule delivers to its target. DEV-ONLY for the event
+# path — `src/` reaches EventBridge through the SDK client above.
+service-com-amazonaws-eventbridge-awsevents = { workspace = true }
+service-com-amazonaws-sqs-amazonsqs = { workspace = true }
 
 [lints]
 workspace = true

@@ -355,6 +355,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // last user or system activity on the pull request" onto this call.
         pull_request.record_event(now, Some(actor), event);
 
+        // The change is PUBLISHED onto the account's default event bus, once this
+        // call's guard is gone.
+        let published = store.pull_request_changes(pull_request_id, 1);
+        drop(store);
+        crate::state::pull_request_events::publish_all_detached(published, ctx.callback());
         Ok(CreatePullRequestApprovalRuleOutput { approval_rule })
     }
 }

@@ -317,6 +317,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // the request is accepted and changes NOTHING — no event, because the log
         // records only changes that happened, and so no move of "the day and time of
         // the last user or system activity on the pull request" either.
+        let mut recorded = 0;
         if pull_request.approval_state_of(&reviewer) != requested {
             // A state for a reviewer the pull request holds none for yet is what
             // grows what it stores, so it is refused past the bound this emulator
@@ -351,8 +352,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     approval_status: requested.to_string(),
                 },
             );
+            recorded = 1;
         }
 
+        // A state that moved is PUBLISHED onto the account's default event bus; a
+        // call that changed nothing recorded nothing and so publishes nothing.
+        let published = store.pull_request_changes(pull_request_id, recorded);
+        drop(store);
+        crate::state::pull_request_events::publish_all_detached(published, ctx.callback());
         Ok(UpdatePullRequestApprovalStateOutput)
     }
 }

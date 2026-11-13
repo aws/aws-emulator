@@ -221,6 +221,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // happened, and so no move of "the day and time of the last user or system
         // activity on the pull request" either. Every other move is a reopen, which
         // the status admits no transition for.
+        let mut recorded = 0;
         if pull_request.status != requested {
             if requested != crate::state::PULL_REQUEST_STATUS_CLOSED {
                 return Err(
@@ -245,10 +246,17 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 Some(actor),
                 crate::state::PullRequestEventDetail::StatusChanged { status },
             );
+            recorded = 1;
         }
 
-        Ok(UpdatePullRequestStatusOutput {
+        let output = UpdatePullRequestStatusOutput {
             pull_request: pull_request.to_modeled(),
-        })
+        };
+        // A status that moved is PUBLISHED onto the account's default event bus; a
+        // call that changed nothing recorded nothing and so publishes nothing.
+        let published = store.pull_request_changes(pull_request_id, recorded);
+        drop(store);
+        crate::state::pull_request_events::publish_all_detached(published, ctx.callback());
+        Ok(output)
     }
 }

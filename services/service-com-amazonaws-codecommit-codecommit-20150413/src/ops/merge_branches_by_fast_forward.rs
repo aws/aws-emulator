@@ -406,6 +406,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // left to do — the source is already merged, the same request repeated, or a
         // source that IS the destination — so the store is left untouched rather
         // than restamped.
+        let mut published = Vec::new();
         if target_tip != merged_commit_id {
             let repository = store
                 .repositories
@@ -416,7 +417,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // The reference moves through the one place a branch tip moves, so
             // every OPEN pull request reading from it follows the new tip.
             let now = std::time::SystemTime::now();
-            repository.set_branch_tip(
+            published = repository.set_branch_tip(
                 &target,
                 &merged_commit_id,
                 now,
@@ -428,6 +429,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             repository.last_modified_date = now;
         }
 
+        // Each pull request that moved with the reference is PUBLISHED onto the
+        // account's default event bus, once this call's guard is gone.
+        drop(store);
+        crate::state::pull_request_events::publish_all_detached(published, ctx.callback());
         // A fast-forward writes no commit: the merge IS one of the two tips, and the
         // tree it reports is that commit's tree.
         Ok(MergeBranchesByFastForwardOutput {

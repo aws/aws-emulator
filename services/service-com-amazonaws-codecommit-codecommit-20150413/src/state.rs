@@ -24,6 +24,8 @@ pub mod git_endpoint;
 pub mod git_object;
 pub mod merge;
 mod merge_record;
+/// The EventBridge envelope a recorded change to a pull request is published as.
+pub mod pull_request_events;
 mod repository;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
