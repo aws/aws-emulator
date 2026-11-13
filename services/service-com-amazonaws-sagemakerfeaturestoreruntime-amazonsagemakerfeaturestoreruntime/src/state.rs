@@ -16,8 +16,9 @@
 //! are bounded by a maximum count: [`MAX_FEATURE_GROUPS`] groups, each holding at most
 //! [`MAX_RECORDS_PER_GROUP`] records, each holding at most [`MAX_FEATURES_PER_RECORD`]
 //! feature values. A write past any of the three is refused (the handler answers the
-//! modelled `ServiceUnavailable`) rather than growing without limit, and a record
-//! carrying a `TtlDuration` is additionally evicted once its expiry is due.
+//! modelled `ServiceUnavailable`) rather than growing without limit, and a record written
+//! under a TTL — the one its own write named, or the default its feature group configures
+//! ([`effective_ttl_seconds`]) — is additionally evicted once its expiry is due.
 //!
 //! The group's OFFLINE store is not held here at all: it is a location in Amazon S3 the
 //! control plane configured, which each ingestion REPLICATES one object into
@@ -257,17 +258,19 @@ pub struct StoredRecord {
     pub features: Vec<StoredFeatureValue>,
     /// The record's event time, exactly as the event-time feature carried it.
     pub event_time: Option<String>,
-    /// `EventTime + TtlDuration`, as an ISO-8601 string; absent when the record was
-    /// written with no `TtlDuration` or with no parsable event time.
+    /// `EventTime + TtlDuration`, as an ISO-8601 string; absent when the record is under
+    /// no TTL at all ([`effective_ttl_seconds`]) or carries no parsable event time.
     pub expires_at: Option<String>,
     /// The same instant as [`Self::expires_at`] in epoch seconds, for the expiry
     /// comparison, so no handler re-parses the string.
     pub expires_at_secs: Option<f64>,
-    /// The record-level `TtlDuration` in SECONDS, kept so a later call that moves the
-    /// record's `EventTime` can re-derive `ExpiresAt = EventTime + TtlDuration` from the
-    /// duration the record was written with. `UpdateRecord` documents exactly that: "If
-    /// you omit this parameter, the record's existing TTL setting remains unchanged",
-    /// and the setting is the DURATION, not the instant it happened to fall due at.
+    /// The record's `TtlDuration` in SECONDS — the duration the write that stored it was
+    /// under, which is its own when it named one and otherwise its feature group's
+    /// default ([`effective_ttl_seconds`]) — kept so a later call that moves the record's
+    /// `EventTime` can re-derive `ExpiresAt = EventTime + TtlDuration` from it.
+    /// `UpdateRecord` documents exactly that: "If you omit this parameter, the record's
+    /// existing TTL setting remains unchanged", and the setting is the DURATION, not the
+    /// instant it happened to fall due at.
     pub ttl_secs: Option<f64>,
     /// Set by `DeleteRecord` in `SoftDelete` mode: the record keeps its place in the
     /// store but is no longer retrievable by `GetRecord` or `BatchGetRecord`.
@@ -366,7 +369,9 @@ impl PreparedRecord {
 ///
 /// The two names the record is read through are the group's own, as the control plane
 /// recorded them — its `RecordIdentifierFeatureName` and its `EventTimeFeatureName` —
-/// never the order or the names of the features one request happens to post. `Err` is
+/// never the order or the names of the features one request happens to post. The TTL the
+/// record is stored under is the group's too whenever the write names none
+/// ([`effective_ttl_seconds`]). `Err` is
 /// the refusal message for a record this data plane cannot read: a caller answers it
 /// with its modelled `ValidationError`, or — in a batch — as that entry's own error.
 pub fn prepare_record(
@@ -429,10 +434,10 @@ pub fn prepare_record(
         None => None,
     };
 
-    // The write's TTL, in seconds: `ExpiresAt = EventTime + TtlDuration`, per the
+    // The write's own TTL, in seconds: `ExpiresAt = EventTime + TtlDuration`, per the
     // `TtlDuration` shape's doc. The unit is a modelled enum, refused at the boundary,
     // so a value outside it only reaches here if the walk let it through.
-    let ttl_secs = match ttl_duration {
+    let record_ttl_secs = match ttl_duration {
         None => None,
         Some(ttl) => match ttl_seconds(ttl) {
             Some(secs) => Some(secs),
@@ -446,13 +451,15 @@ pub fn prepare_record(
         },
     };
 
+    // The TTL the record is stored under: its own when the write named one, and otherwise
+    // the default the feature group configures ([`effective_ttl_seconds`]).
     let mut stored = StoredRecord {
         identifier,
         features: record.iter().map(StoredFeatureValue::from).collect(),
         event_time,
         expires_at: None,
         expires_at_secs: None,
-        ttl_secs,
+        ttl_secs: effective_ttl_seconds(definition, record_ttl_secs),
         soft_deleted: false,
     };
     stored.recompute_expiry();
@@ -562,6 +569,25 @@ pub fn parse_event_time_secs(event_time: &str) -> Option<f64> {
 /// timestamp can state), which no event time plus a modelled `TtlDuration` reaches.
 pub fn iso8601(secs: f64) -> Result<String, aws_smithy_types::date_time::DateTimeFormatError> {
     DateTime::from_secs_f64(secs).fmt(Format::DateTime)
+}
+
+/// The TTL a record of feature group `definition` is under, in seconds: the duration the
+/// write states (`record_ttl_secs`) when it states one, and otherwise the DEFAULT the
+/// group's `OnlineStoreConfig.TtlDuration` configures, as the control plane recorded it.
+/// `None` when neither is set, and the record then has no expiry at all.
+///
+/// "A record level TtlDuration is set when specifying the TtlDuration parameter using the
+/// PutRecord API call. If the input TtlDuration is null or unspecified, TtlDuration is set
+/// to the default feature group level TtlDuration. A record level TtlDuration supersedes
+/// the group level TtlDuration" (`PutRecord`): the precedence is the same wherever a write
+/// of this data plane settles a record's TTL, so it is stated once here — a whole-record
+/// ingestion reads it through [`prepare_record`] and a partial update through its own
+/// merge, and the two cannot disagree about which duration a record ends up under.
+pub fn effective_ttl_seconds(
+    definition: &::service_common::feature_store_groups::FeatureGroupRecord,
+    record_ttl_secs: Option<f64>,
+) -> Option<f64> {
+    record_ttl_secs.or(definition.default_ttl_seconds)
 }
 
 /// `value` of the `TtlDurationUnit` `unit`, in seconds, or `None` when the unit is not

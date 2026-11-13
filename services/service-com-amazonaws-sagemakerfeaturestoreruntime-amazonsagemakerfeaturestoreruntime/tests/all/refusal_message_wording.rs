@@ -49,6 +49,16 @@ const EVENT_TIME_FEATURE: &str = "event_time";
 const SEEDED_EVENT_TIME: &str = "2026-10-23T18:20:13Z";
 const SEEDED_EVENT_SECS: f64 = 1_792_779_613.0;
 
+/// Now, in the epoch-seconds spelling an event-time feature takes, for a seed that must
+/// outlive a feature group's default TTL.
+fn now_epoch_seconds() -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("a clock after the epoch")
+        .as_secs();
+    format!("{now}")
+}
+
 /// The account id every ARN this emulator mints carries (`engine::EMULATOR_ACCOUNT_ID`).
 const ACCOUNT: &str = "000000000000";
 
@@ -671,12 +681,19 @@ async fn an_update_under_a_ttl_requires_an_event_time_and_states_the_whole_rule(
     for (case, default_ttl, ttl_duration, with_event_time, expected_status) in rows {
         let emulator = Emulator::new();
         emulator.create_feature_group(GROUP, default_ttl);
-        emulator.put_record("rec-ttl", SEEDED_EVENT_TIME).await;
+        // The seeded record's event time is NOW, in the epoch-seconds spelling an
+        // event-time feature also takes: a record of a group with a default TTL is
+        // ingested under that TTL, so a record seeded at a fixed past instant would
+        // already be hard-deleted before the update under test reached it. What each row
+        // asserts is the update's own verdict, so the seed only has to leave the record
+        // standing.
+        let seeded_event_time = now_epoch_seconds();
+        emulator.put_record("rec-ttl", &seeded_event_time).await;
         let before = emulator.record_pairs("rec-ttl").await;
 
         let mut features = vec![feature("feature_a", "applied")];
         if with_event_time {
-            features.push(feature(EVENT_TIME_FEATURE, SEEDED_EVENT_TIME));
+            features.push(feature(EVENT_TIME_FEATURE, &seeded_event_time));
         }
         let mut body = json!({
             "RecordIdentifierValueAsString": "rec-ttl",

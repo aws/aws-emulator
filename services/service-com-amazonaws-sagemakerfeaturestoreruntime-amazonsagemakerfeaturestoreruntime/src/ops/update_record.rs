@@ -16,7 +16,9 @@
 //! `ConflictException` (409) leaving the record untouched, while an omitted `EventTime`
 //! keeps the stored one. A `TtlDuration` replaces the record's TTL duration, from which
 //! `ExpiresAt = EventTime + TtlDuration` is re-derived; an omitted one leaves the
-//! record's TTL setting as it stands. Because that expiry is derived from the event time,
+//! record's TTL setting as it stands, and a record under no TTL setting of its own is
+//! under the default its feature group's `OnlineStoreConfig` configures. Because that
+//! expiry is derived from the event time,
 //! an update made under a TTL — the request's own `TtlDuration`, or the default one the
 //! feature group's `OnlineStoreConfig` configures — must carry an `EventTime`, and one
 //! that does not is refused with `ValidationError` (400).
@@ -456,12 +458,16 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         }
         // "If you omit this parameter, the record's existing TTL setting remains
         // unchanged" (`TtlDuration`), so a request that names one replaces the record's
-        // duration and one that does not keeps it — and `ExpiresAt` is re-derived from
-        // the duration and the record's event time either way, because an update may
-        // have moved that event time.
-        if let Some(secs) = ttl_secs {
-            updated.ttl_secs = Some(secs);
-        }
+        // duration and one that does not keeps it — and where neither the request nor the
+        // record states a duration, the record is under the DEFAULT its feature group
+        // configures, the same precedence an ingestion settles a record's TTL by
+        // (`crate::state::effective_ttl_seconds`). `ExpiresAt` is re-derived from the
+        // duration and the record's event time either way, because an update may have
+        // moved that event time.
+        updated.ttl_secs = crate::state::effective_ttl_seconds(
+            &definition,
+            ttl_secs.or(updated.ttl_secs),
+        );
         updated.recompute_expiry();
 
         // The record already exists, so this over-writes it rather than growing the

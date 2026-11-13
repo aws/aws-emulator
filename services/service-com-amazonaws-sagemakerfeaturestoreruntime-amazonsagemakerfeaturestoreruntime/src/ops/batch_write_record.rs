@@ -15,7 +15,8 @@
 //! name would carry. An entry the emulator's bounded store has no room for is reported in
 //! `UnprocessedEntries`, which the model documents as the entries that "can be retried".
 //! The request-level `TtlDuration` applies to every entry that names none of its own, and
-//! an entry's own `TtlDuration` overrides it.
+//! an entry's own `TtlDuration` overrides it; an entry under neither is stored under the
+//! default TTL its feature group's `OnlineStoreConfig` configures.
 //!
 //! Authorization of the CALLER is not emulated, so the modelled `AccessForbidden` is
 //! unreachable, and so is `ResourceNotFound`: a write names no record that has to exist

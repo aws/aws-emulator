@@ -10,8 +10,9 @@
 //! values — the record's identifier is the value of the group's own
 //! `RecordIdentifierFeatureName` — ; it is skipped when the posted record is historic
 //! (its event time is not later than the stored record's) or when `TargetStores` names
-//! only the OfflineStore, and it carries `ExpiresAt = EventTime + TtlDuration` when the
-//! caller asked for a TTL. The offline write is made for a group the control plane gave an
+//! only the OfflineStore, and it carries `ExpiresAt = EventTime + TtlDuration` under the
+//! TTL the request names — or, where it names none, under the default the feature group's
+//! `OnlineStoreConfig` configures. The offline write is made for a group the control plane gave an
 //! `OfflineStoreConfig`, under that group's own `RoleArn`, whether or not the online store
 //! took the record.
 //!

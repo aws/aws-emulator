@@ -13,6 +13,8 @@
 // points it into `tests/all/`.
 #[path = "all/batch_write_record_bulk_ingestion.rs"]
 mod batch_write_record_bulk_ingestion;
+#[path = "all/feature_group_default_ttl.rs"]
+mod feature_group_default_ttl;
 #[path = "all/feature_group_name_validation.rs"]
 mod feature_group_name_validation;
 #[path = "all/feature_group_resolution.rs"]
