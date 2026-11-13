@@ -16,7 +16,10 @@
 //!   the check is taken under the SAME state lock as the insert, so a second
 //!   create for a pair the bundle already holds is refused with the modelled
 //!   `ValidationException` and concurrent racers for one pair produce exactly
-//!   one winner.
+//!   one winner. The refusal names what the request REPEATS: the OAuth2 client
+//!   id it registers, when the held authorization is registered with that very
+//!   client id, and the tenant it names otherwise (see
+//!   [`crate::state::duplicate_authorization_refusal`]);
 //!
 //! `app` is a third: the model types it as a plain `String255`, so the wire
 //! schema bounds its LENGTH only, while the set of applications the service
@@ -290,6 +293,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // (see [`crate::state::render_credential`]), so the stored fingerprint
         // keeps no credential material.
         let rendered_credential = crate::state::render_credential(&input.credential);
+        // WHICH OAuth2 client id the request registers this authorization with,
+        // as the digest the store keeps of it (`None` for a credential that
+        // carries no client id) — both the uniqueness rule below and the record
+        // written at the end of this handler are decided by it.
+        let client_id_digest = crate::state::render_client_id(&input.credential);
         // A tag list is a map of key-value pairs, so the list this request
         // carried is collapsed onto one entry per key BEFORE it is stored or
         // fingerprinted (see [`crate::state::tag_set`]).
@@ -349,18 +357,19 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // token, or the loser of a race — is refused with the modelled
         // `ValidationException` (HTTP 400): the request cannot succeed as
         // written while the first authorization stands, which is a fault of the
-        // request rather than a conflict that settles on its own (see
-        // [`crate::state::app_authorization_already_exists`]).
-        if store
-            .app_bundles
-            .get(&bundle_key)
-            .and_then(|bundle| {
-                bundle.authorization_for(&input.app, &input.tenant.tenant_identifier)
-            })
-            .is_some()
-        {
+        // request rather than a conflict that settles on its own. WHICH sentence
+        // it carries is what the request repeats — the client id it registers,
+        // or the tenant it names (see
+        // [`crate::state::duplicate_authorization_refusal`]).
+        if let Some(held) = store.app_bundles.get(&bundle_key).and_then(|bundle| {
+            bundle.authorization_for(&input.app, &input.tenant.tenant_identifier)
+        }) {
             return Err(CreateAppAuthorizationErrorModeled::ValidationException(
-                crate::state::app_authorization_already_exists(),
+                crate::state::duplicate_authorization_refusal(
+                    held,
+                    client_id_digest.as_deref(),
+                    crate::state::app_authorization_already_exists(),
+                ),
             )
             .into());
         }
@@ -414,6 +423,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             tenant_display_name: input.tenant.tenant_display_name,
             auth_type: input.auth_type,
             credential_kind: credential_kind.to_string(),
+            client_id_digest,
             // The initial state the model documents: "PendingConnect: The app
             // authorization is created but not yet connected."
             status: crate::state::APP_AUTHORIZATION_STATUS_PENDING_CONNECT.to_string(),

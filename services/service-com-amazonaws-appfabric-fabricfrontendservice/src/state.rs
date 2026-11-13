@@ -451,6 +451,18 @@ pub struct AppAuthorizationRecord {
     /// The union member the caller set on `credential` (`oauth2Credential` or
     /// `apiKeyCredential`) — never the secret inside it.
     pub credential_kind: String,
+    /// WHICH OAuth2 client id this authorization is registered with, as the
+    /// one-way digest [`render_client_id`] reduces it to — `None` for an
+    /// authorization whose credential carries no client id at all.
+    ///
+    /// Kept because the refusal a duplicate call is answered with is selected
+    /// over it (see [`duplicate_authorization_refusal`]): which sentence names
+    /// what the request repeats cannot be decided without remembering WHICH
+    /// client id each record is registered with. The digest is enough to decide
+    /// it, and no credential material can be read back out of what is stored —
+    /// the same reason a [`request_fingerprint`] keeps a [`render_credential`]
+    /// digest rather than the credential.
+    pub client_id_digest: Option<String>,
     /// The `AppAuthorizationStatus` the last call that moved this authorization
     /// wrote. What a read REPORTS is [`AppAuthorizationRecord::status_at`],
     /// which also accounts for a handshake outcome the clock owes but no call
@@ -557,6 +569,20 @@ impl AppAuthorizationRecord {
     /// `authType` is spelled cannot leave one caller matching and another not.
     pub fn is_oauth2(&self) -> bool {
         self.auth_type == AUTH_TYPE_OAUTH2
+    }
+
+    /// Whether this authorization is REGISTERED with the OAuth2 client id
+    /// `supplied_digest` names — a DIGEST as [`render_client_id`] reduces a
+    /// credential to, never the client id itself.
+    ///
+    /// A credential that carries no client id (an API key) registers none, so it
+    /// matches no record: `None` on either side is not a match, and only two
+    /// equal digests are.
+    pub fn registered_with_client_id(&self, supplied_digest: Option<&str>) -> bool {
+        match (self.client_id_digest.as_deref(), supplied_digest) {
+            (Some(stored), Some(supplied)) => stored == supplied,
+            _ => false,
+        }
     }
 
     /// The modelled `Tenant` this authorization was created for.
@@ -1638,6 +1664,29 @@ pub fn render_credential(credential: &Credential) -> String {
     ::hex::encode(::sha2::Digest::finalize(digest))
 }
 
+/// The one-way digest of the OAuth2 CLIENT ID a credential carries, and `None`
+/// for a credential that carries none (an API key).
+///
+/// It is what [`duplicate_authorization_refusal`] decides which sentence a
+/// refused duplicate carries by: two credentials naming one client id digest
+/// alike however their secrets differ — the secret is deliberately NOT part of
+/// it, because rotating a secret does not make a new registration — while the
+/// client id itself cannot be read back out of what is stored, for the reason
+/// [`render_credential`] gives. The member name goes into the digest with the
+/// value, so no other rendering this module hashes can collide with it.
+pub fn render_client_id(credential: &Credential) -> Option<String> {
+    let Credential::oauth2Credential(oauth2) = credential else {
+        return None;
+    };
+    let mut material = String::new();
+    push_component(&mut material, "clientId");
+    push_component(&mut material, &oauth2.client_id);
+
+    let mut digest = <::sha2::Sha256 as ::sha2::Digest>::new();
+    ::sha2::Digest::update(&mut digest, material.as_bytes());
+    Some(::hex::encode(::sha2::Digest::finalize(digest)))
+}
+
 /// One page of a listing, and the token that asks for the page after it.
 #[derive(Debug)]
 pub struct Page<T> {
@@ -2154,6 +2203,59 @@ pub fn app_authorization_already_exists() -> ValidationException {
     precondition_not_met(
         "An AppAuthorization already exists for this tenant and this authType.".to_string(),
     )
+}
+
+/// A modelled `ValidationException` for a call refused because the OAuth2 CLIENT
+/// ID it supplied is the one the app authorization standing in its way is
+/// already registered with.
+///
+/// The client id names the caller's registration of the application with
+/// AppFabric, so a call that repeats a held registration's client id is refused
+/// for THAT — the thing the request itself carries — rather than for the record
+/// it collides with: the sentence states the scope the client id is held in (the
+/// app bundle and the application) and asks the caller to supply another. It is
+/// the VALIDATION error of the two client errors `CreateAppAuthorization`
+/// models, for the reason [`app_authorization_already_exists`] gives: the
+/// request cannot succeed as written while that registration stands. The
+/// sentence is wholly fixed text, with no part of the request or of the stored
+/// record in it (the client id a caller asked about is in its own request), so
+/// `reason` is `other` and no member is faulted — see [`precondition_not_met`].
+///
+/// The sentence states WHERE the registration it names is held — the app bundle
+/// and the application — not a uniqueness rule over that scope: a client id
+/// backs as many of an application's tenants as a caller registers
+/// authorizations for, and this refusal is reached only where the authorization
+/// standing in the call's way is registered with the very client id the request
+/// supplied.
+pub fn client_id_already_in_use() -> ValidationException {
+    precondition_not_met("ClientId is already being used for this AppBundle and App.".to_string())
+}
+
+/// WHICH sentence a call is refused with when it would leave an app bundle
+/// holding a SECOND app authorization of one application for one tenant: `held`
+/// is the authorization already standing there, `supplied_client_id` the OAuth2
+/// client id digest the call's own credential registers (see
+/// [`render_client_id`], `None` for a credential that registers none), and
+/// `otherwise` the refusal for a call that repeats only the tenant — the create
+/// path's [`app_authorization_already_exists`], the update path's
+/// [`tenant_already_authorized`].
+///
+/// AppFabric names what the REQUEST repeats. A call that supplies the very
+/// client id `held` is registered with repeats that registration, so it is
+/// refused for the client id ([`client_id_already_in_use`]) — which is what the
+/// losers of a race to register one client id are told, every one of them having
+/// sent the credential the winner registered. A call that supplies another
+/// credential, or none at all, repeats only the tenant and is refused for that.
+pub fn duplicate_authorization_refusal(
+    held: &AppAuthorizationRecord,
+    supplied_client_id: Option<&str>,
+    otherwise: ValidationException,
+) -> ValidationException {
+    if held.registered_with_client_id(supplied_client_id) {
+        client_id_already_in_use()
+    } else {
+        otherwise
+    }
 }
 
 /// A modelled `ValidationException` refusing an update that would move an app

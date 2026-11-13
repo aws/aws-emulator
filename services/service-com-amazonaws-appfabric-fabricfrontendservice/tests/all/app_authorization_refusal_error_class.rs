@@ -71,11 +71,21 @@ const APPS: &[&str] = &[
 /// the member requires ("Specify credentials that match the authorization type
 /// for your request").
 fn credential_for(auth_type: &str) -> Value {
+    credential_for_registration(auth_type, "placeholder")
+}
+
+/// The same body, for one named REGISTRATION of the application: an OAuth2
+/// client id names the caller's registration, and a duplicate create that
+/// repeats a held registration's client id is refused for that client id rather
+/// than for the tenant (`oauth2_client_id_registration` pins which sentence
+/// answers when), so a row that means to pin the per-tenant refusal supplies a
+/// registration of its own.
+fn credential_for_registration(auth_type: &str, registration: &str) -> Value {
     if auth_type == "apiKey" {
-        json!({"apiKeyCredential": {"apiKey": "placeholder-api-key"}})
+        json!({"apiKeyCredential": {"apiKey": format!("{registration}-api-key")}})
     } else {
         json!({"oauth2Credential": {
-            "clientId": "placeholder-client-id",
+            "clientId": format!("{registration}-client-id"),
             "clientSecret": "placeholder-client-secret",
         }})
     }
@@ -109,6 +119,20 @@ async fn create_authorization(
     auth_type: &str,
     tenant: &str,
 ) -> Answer {
+    create_authorization_registered_with(emulator, bundle, app, auth_type, tenant, "placeholder")
+        .await
+}
+
+/// The same call, for one named registration of the application — see
+/// [`credential_for_registration`].
+async fn create_authorization_registered_with(
+    emulator: &Emulator,
+    bundle: &str,
+    app: &str,
+    auth_type: &str,
+    tenant: &str,
+    registration: &str,
+) -> Answer {
     emulator
         .call(
             "POST",
@@ -116,7 +140,7 @@ async fn create_authorization(
             Some(json!({
                 "app": app,
                 "authType": auth_type,
-                "credential": credential_for(auth_type),
+                "credential": credential_for_registration(auth_type, registration),
                 "tenant": {
                     "tenantIdentifier": tenant,
                     "tenantDisplayName": format!("{tenant} display"),
@@ -193,7 +217,10 @@ async fn held_authorizations(emulator: &Emulator, bundle: &str) -> Vec<String> {
 ///
 /// The table spans the application (names the model documents), both `AuthType`
 /// values and tenant identifiers of several forms, because none of them may
-/// change which error class answers.
+/// change which error class answers. Every second create supplies a
+/// REGISTRATION of its own, so what it repeats is the tenant alone: a create
+/// that repeats the held registration's own client id is refused for that
+/// instead, which `oauth2_client_id_registration` pins.
 #[tokio::test]
 async fn a_second_authorization_for_a_held_pair_is_the_modelled_validation_refusal() {
     let tenants = [
@@ -223,7 +250,10 @@ async fn a_second_authorization_for_a_held_pair_is_the_modelled_validation_refus
                 .unwrap_or_default()
                 .to_string();
 
-            let refused = create_authorization(&emulator, &bundle, app, auth_type, tenant).await;
+            let refused = create_authorization_registered_with(
+                &emulator, &bundle, app, auth_type, tenant, "another",
+            )
+            .await;
             assert_eq!(
                 refused.status, 400,
                 "case {case:?}: expected HTTP 400 from the second create, got {} with body {}",

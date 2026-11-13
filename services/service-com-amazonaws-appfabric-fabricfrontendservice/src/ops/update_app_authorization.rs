@@ -246,15 +246,34 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             }
         }
 
+        // WHICH OAuth2 client id the supplied credential registers this
+        // authorization with, as the digest the store keeps of it — `None` when
+        // the call supplies no credential, and `Some(None)` for a credential
+        // kind that registers no client id at all.
+        let client_id_digest = input.credential.as_ref().map(crate::state::render_client_id);
+
         // At most ONE authorization per (bundle, app, tenant) triple, so a
         // tenant another authorization of this bundle already holds for the same
         // application is refused. Finding THIS authorization under the pair is
-        // not a collision: re-stating its own tenant changes nothing.
+        // not a collision: re-stating its own tenant changes nothing. The
+        // refusal names what the request repeats, the create path's rule
+        // applied to this call's own members: the client id it registers, when
+        // the authorization standing in the way is registered with that very
+        // client id, and the tenant it supplied otherwise. What the REQUEST
+        // carries is what it is judged on, so a call that supplies no
+        // credential repeats no registration and is refused for the tenant even
+        // where the record it moves happens to hold the same client id: the
+        // sentence states what the caller has to change, and that call's own
+        // members name only the tenant.
         if let Some(tenant) = input.tenant.as_ref() {
             if let Some(held) = bundle.authorization_for(&app, &tenant.tenant_identifier) {
                 if held.id != id {
                     return Err(UpdateAppAuthorizationErrorModeled::ValidationException(
-                        crate::state::tenant_already_authorized(&app),
+                        crate::state::duplicate_authorization_refusal(
+                            held,
+                            client_id_digest.as_ref().and_then(Option::as_deref),
+                            crate::state::tenant_already_authorized(&app),
+                        ),
                     )
                     .into());
                 }
@@ -301,6 +320,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         };
         if let Some(kind) = credential_kind {
             record.credential_kind = kind.to_string();
+        }
+        // The credential the call supplied replaces the one the record was
+        // registered with, so WHICH client id it now holds is replaced with it —
+        // including with `None`, for a credential kind that carries none.
+        if let Some(digest) = client_id_digest {
+            record.client_id_digest = digest;
         }
         if let Some(tenant) = input.tenant {
             record.tenant_identifier = tenant.tenant_identifier;
