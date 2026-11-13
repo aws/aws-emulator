@@ -17,6 +17,12 @@
 // else appends to.
 #[path = "all/cloudformation_fifo_resource_generated_names.rs"]
 mod cloudformation_fifo_resource_generated_names;
+// Declared here, in this same head region, for the reason the entry above records: a stack
+// that declares a private container registry and the task definition running an image out of
+// it is only deployed if CloudFormation, Amazon ECR and Amazon ECS all agree, so no single
+// crate's test target can read both halves back.
+#[path = "all/cloudformation_registry_backed_task_definition.rs"]
+mod cloudformation_registry_backed_task_definition;
 // Declared in this same head region, for the reason the entry above records: the
 // delivery-status record a stack-deployed SNS feedback role leaves for a delivery spans
 // CloudFormation, IAM, Amazon SNS, Amazon SQS and CloudWatch Logs at once, so no single
@@ -30,23 +36,6 @@ mod cloudformation_sns_delivery_status_logging;
 #[path = "all/events_replay_redelivers_the_archived_window.rs"]
 mod events_replay_redelivers_the_archived_window;
 // Declared here, in this same head region, for the reason the entry above records: the
-// "an EventBridge rule runs a Fargate task" estate deployed in one stack spans
-// CloudFormation, Amazon S3, CloudWatch Logs, Amazon EC2, IAM, Amazon ECS and Amazon
-// EventBridge at once, so no single service crate's test target can deploy it.
-#[path = "all/cloudformation_eventbridge_scheduled_fargate_estate.rs"]
-mod cloudformation_eventbridge_scheduled_fargate_estate;
-// Declared here, in this same head region, for the reason the entry above records: what a
-// stack deploys for a property written as a `{{resolve:secretsmanager:…}}` dynamic reference
-// spans CloudFormation (which resolves it), AWS Secrets Manager (which holds the secret) and
-// the service that owns the configured resource at once, so no single crate's test target can
-// ask it.
-#[path = "all/cloudformation_secretsmanager_dynamic_references.rs"]
-mod cloudformation_secretsmanager_dynamic_references;
-// reference RabbitMQ-consumer estate deployed from scratch in one stack spans CloudFormation,
-// AWS Secrets Manager, Amazon MQ, IAM and AWS Lambda at once, so no single service crate's
-// test target can deploy it.
-#[path = "all/scratch_estate.rs"]
-mod scratch_estate;
 // identifiers a stack publishes for the Amazon Cognito user pool, app client, resource server
 // and identity provider it declares are the ones that service minted or is addressed by, which
 // spans CloudFormation and Amazon Cognito user pools at once, so neither crate's own test
@@ -58,6 +47,7 @@ mod cloudformation_provisions_cognito_user_pools;
 // mount both sides of it.
 #[path = "all/workmailmessageflow_resolves_an_s3_object.rs"]
 mod workmailmessageflow_resolves_an_s3_object;
+// Declared here, in this same head region, for the reason the entry above records: what a
 // client is answered by an endpoint serving a model SageMaker trained spans IAM, Amazon S3,
 // the SageMaker control plane and the SageMaker runtime at once, so neither SageMaker
 // crate's own test target can train a model and then invoke what it deployed.
@@ -467,18 +457,12 @@ mod cognito_vended_session_is_audited;
 #[path = "all/cognito_vended_session_is_an_assumed_role_caller.rs"]
 mod cognito_vended_session_is_an_assumed_role_caller;
 // Declared beside its sibling cognito suites, at the head, for the same reason they are
-#[path = "all/cognito_vended_session_leading_keys_scoped_query.rs"]
-mod cognito_vended_session_leading_keys_scoped_query;
 #[path = "all/cognito_post_confirmation_lambda_trigger.rs"]
 mod cognito_post_confirmation_lambda_trigger;
 #[path = "all/cognito_group_role_mapping.rs"]
 mod cognito_group_role_mapping;
 #[path = "all/cognito_sms_caller_role_trust.rs"]
 mod cognito_sms_caller_role_trust;
-// here: what a bucket policy decides about a read made with credentials an identity pool
-// vended spans Amazon Cognito Identity, IAM, STS and Amazon S3 at once.
-#[path = "all/cognito_vended_session_bucket_policy.rs"]
-mod cognito_vended_session_bucket_policy;
 #[path = "all/pi_resource_metadata_reflects_rds_configuration.rs"]
 mod pi_resource_metadata_reflects_rds_configuration;
 // At the head for the reason the entries above record: the appended tail and the sorted
@@ -1577,6 +1561,7 @@ mod polly_synthesis_task_side_effects;
 // RUNNING function's own DynamoDB item call is authorized against spans IAM (the role and its
 // document), STS (the session the call is signed with), Lambda (the handler and the SDK it is
 // given) and DynamoDB (the decision) at once, so no single service crate's test target can
+// ask it.
 #[path = "all/lambda_in_function_dynamodb_authorization.rs"]
 mod lambda_in_function_dynamodb_authorization;
 // Declared here, in this same head region, for the reason the entry above records: a backup
@@ -1606,6 +1591,22 @@ mod cloudformation_rotation_schedule_rotates_its_secret;
 // destination that decides the refusal) at once.
 #[path = "all/cloudformation_rollback_deletes_the_buckets_it_created.rs"]
 mod cloudformation_rollback_deletes_the_buckets_it_created;
+// Declared in the appended tail: the IDENTITY-BASED authorization of a bucket's own lifecycle
+// — the permissions a create's headers ask for and the one a delete asks for — which spans
+// IAM (the documents), STS (the session) and Amazon S3 (the decision) at once, so no single
+// service crate's test target can see both sides.
+#[path = "all/s3_bucket_lifecycle_identity_authorization.rs"]
+mod s3_bucket_lifecycle_identity_authorization;
+// stack deploys for a property written as a `{{resolve:secretsmanager:…}}` dynamic reference
+// spans CloudFormation (which resolves it), AWS Secrets Manager (which holds the secret) and
+// the service that owns the configured resource at once, so no single crate's test target can
+#[path = "all/cloudformation_secretsmanager_dynamic_references.rs"]
+mod cloudformation_secretsmanager_dynamic_references;
+// reference RabbitMQ-consumer estate deployed from scratch in one stack spans CloudFormation,
+// AWS Secrets Manager, Amazon MQ, IAM and AWS Lambda at once, so no single service crate's
+// test target can deploy it.
+#[path = "all/scratch_estate.rs"]
+mod scratch_estate;
 // completed stack PUBLISHES for the Amazon Redshift resources it declared — an `OutputValue`
 // on every output, carrying the endpoint, port and parameter-group name Amazon Redshift
 // itself reports — which spans CloudFormation (the outputs) and Amazon Redshift (the cluster
@@ -1623,12 +1624,6 @@ mod logs_subscription_filter_role_trust;
 // can see both ends of it.
 #[path = "all/logs_subscription_filter_to_lambda.rs"]
 mod logs_subscription_filter_to_lambda;
-// Declared in the appended tail: the IDENTITY-BASED authorization of a bucket's own lifecycle
-// — the permissions a create's headers ask for and the one a delete asks for — which spans
-// IAM (the documents), STS (the session) and Amazon S3 (the decision) at once, so no single
-// service crate's test target can see both sides.
-#[path = "all/s3_bucket_lifecycle_identity_authorization.rs"]
-mod s3_bucket_lifecycle_identity_authorization;
 // Declared in the appended tail, which is where every new suite inserts its lines: the role
 // an EKS Pod Identity association binds to a service account is resolved against IAM, so
 // EKS and IAM have to be on one engine for the rule to be observable at all.
@@ -1645,6 +1640,23 @@ mod eks_nodegroup_capacity;
 // crate's test target can see both the grant and the run it admitted.
 #[path = "all/sns_lambda_qualified_endpoint_delivery.rs"]
 mod sns_lambda_qualified_endpoint_delivery;
+// Declared in the appended tail, beside the suites above: the Resource Groups group a
+// CloudFormation stack declares spans CloudFormation (the deployment and its outputs) and
+// Resource Groups (the group, its query and its tags) at once, so neither crate's own test
+// target can see both ends of it.
+#[path = "all/cloudformation_provisions_resource_groups.rs"]
+mod cloudformation_provisions_resource_groups;
+// "an EventBridge rule runs a Fargate task" estate deployed in one stack spans
+// CloudFormation, Amazon S3, CloudWatch Logs, Amazon EC2, IAM, Amazon ECS and Amazon
+// EventBridge at once, so no single service crate's test target can deploy it.
+#[path = "all/cloudformation_eventbridge_scheduled_fargate_estate.rs"]
+mod cloudformation_eventbridge_scheduled_fargate_estate;
+#[path = "all/cognito_vended_session_leading_keys_scoped_query.rs"]
+mod cognito_vended_session_leading_keys_scoped_query;
+// here: what a bucket policy decides about a read made with credentials an identity pool
+// vended spans Amazon Cognito Identity, IAM, STS and Amazon S3 at once.
+#[path = "all/cognito_vended_session_bucket_policy.rs"]
+mod cognito_vended_session_bucket_policy;
 // Declared in the appended tail, which is where every new suite inserts its lines: a CI
 // topology DEPLOYED BY TEMPLATE and then run — the pipeline, the build project and the two
 // service roles a stack provisions, driven to the terminal execution status the build decided
@@ -1657,25 +1669,6 @@ mod cloudformation_ci_topology_runs_its_pipeline;
 // read) and the service owning the destination that decides the refusal, so no single
 #[path = "all/cloudformation_half_made_resource_is_not_left_behind.rs"]
 mod cloudformation_half_made_resource_is_not_left_behind;
-// Declared in the appended tail: the EVENT path of an Amazon EMR cluster's lifecycle spans
-// Amazon EMR (which announces each state its cluster enters), EventBridge (which routes the
-// envelope by its content) and Amazon SQS (which holds what a rule's target received), so no
-// single service crate's test target can see both ends of it.
-#[path = "all/emr_cluster_state_change_events.rs"]
-mod emr_cluster_state_change_events;
-// Declared beside the suite above: the other half of this fix's evidence — an S3 Batch
-// Operations job settling on the assembled router with request authentication ON, where the
-// job's own run reaches Amazon S3 and IAM over the emulator's in-process callback, so no
-// single service crate's test target can see it. Named like `zz_opensearch_fgac_probe.rs`,
-// the sibling suite that drives a whole-router probe the same way.
-#[path = "all/zz_batch_job_probe.rs"]
-mod zz_batch_job_probe;
-// Declared in the appended tail, beside the suites above: the Resource Groups group a
-// CloudFormation stack declares spans CloudFormation (the deployment and its outputs) and
-// Resource Groups (the group, its query and its tags) at once, so neither crate's own test
-// target can see both ends of it.
-#[path = "all/cloudformation_provisions_resource_groups.rs"]
-mod cloudformation_provisions_resource_groups;
 // partitions of a table a running function may address under a conditioned execution-role
 // grant spans IAM (the clause), STS (the session the function's call is signed with), Lambda
 // (the handler and the SDK it is given) and DynamoDB (the decision) at once, so no single
@@ -1708,6 +1701,19 @@ mod ebs_refused_block_write_then_ec2_snapshot_completion;
 // can ask it.
 #[path = "all/lambda_in_function_sqs_authorization.rs"]
 mod lambda_in_function_sqs_authorization;
+// Declared in the appended tail: the EVENT path of an Amazon EMR cluster's lifecycle spans
+// Amazon EMR (which announces each state its cluster enters), EventBridge (which routes the
+// envelope by its content) and Amazon SQS (which holds what a rule's target received), so no
+// single service crate's test target can see both ends of it.
+#[path = "all/emr_cluster_state_change_events.rs"]
+mod emr_cluster_state_change_events;
+// Declared beside the suite above: the other half of this fix's evidence — an S3 Batch
+// Operations job settling on the assembled router with request authentication ON, where the
+// job's own run reaches Amazon S3 and IAM over the emulator's in-process callback, so no
+// single service crate's test target can see it. Named like `zz_opensearch_fgac_probe.rs`,
+// the sibling suite that drives a whole-router probe the same way.
+#[path = "all/zz_batch_job_probe.rs"]
+mod zz_batch_job_probe;
 // Declared in the appended tail, which is where every new suite inserts its lines: that the
 // network an OpenSearch Serverless managed VPC endpoint is placed in is resolved against
 // Amazon EC2, which owns the VPC and the subnets, so no endpoint is stored in a network that
