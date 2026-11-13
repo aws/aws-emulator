@@ -1,15 +1,6 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op ListThingRegistrationTaskReports
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `ListThingRegistrationTaskReports`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
-//!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`ListThingRegistrationTaskReports::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
 //!
 //! ## Shape of an operation
 //!
@@ -149,18 +140,143 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `ListThingRegistrationTaskReports` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(ListThingRegistrationTaskReportsErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("ListThingRegistrationTaskReports"))
+        // The continuation token is resolved BEFORE the store is reached: a request whose
+        // `nextToken` is not one THIS listing issued is refused whatever the store holds.
+        let scope = listing_scope(&input.task_id, &input.report_type);
+        let resume_after = match input.next_token.as_deref() {
+            Some(token) => Some(decode_next_token(token, &scope)?),
+            None => None,
+        };
+
+        let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
+            ListThingRegistrationTaskReportsErrorModeled::InternalFailureException(
+                InternalFailureException {
+                    message: Some("the IoT emulator has no state store attached".to_string()),
+                },
+            )
+        })?;
+
+        // `maxResults` is "The maximum number of results to return per request", `range
+        // 1..250`, refused outside that before this handler runs; a request that does not
+        // name it asks for every link of the report. The clamp is defensive rather than
+        // load-bearing: it keeps the page size inside the modelled range without depending on
+        // a validation performed outside this module.
+        let page_size = input
+            .max_results
+            .map_or(usize::MAX, |max| max.clamp(1, MAX_PAGE_SIZE) as usize);
+
+        // A pure read of the task store: the links are the objects of the run the task already
+        // persists, so nothing here writes and a later caller sees exactly what this one did.
+        let store = state.lock();
+        let task = store
+            .thing_registration_tasks
+            .get(&input.task_id)
+            .ok_or_else(|| {
+                // The reports of a task nobody started are no reports at all. This operation
+                // models no not-found error — its errors are `InternalFailureException`,
+                // `InvalidRequestException`, `ThrottlingException` and
+                // `UnauthorizedException` — so the miss is the modelled
+                // `InvalidRequestException` (HTTP 400) carrying this family's own fixed
+                // sentence, the one every reader of a thing-registration task states a miss
+                // with (`crate::state::not_found`).
+                ListThingRegistrationTaskReportsErrorModeled::InvalidRequestException(
+                    InvalidRequestException {
+                        message: Some(
+                            crate::state::MISSING_THING_REGISTRATION_TASK_MESSAGE.to_string(),
+                        ),
+                    },
+                )
+            })?;
+        let links = crate::state::thing_registration_reports::report_links(
+            ctx,
+            task,
+            &input.report_type,
+        );
+        drop(store);
+
+        // The resume point is the INDEX of the last link the previous page reported: a link is
+        // a presigned URL, minted per call, so its text is no identity to resume after — the
+        // object it leads to is the Nth of that report, and that is what a page boundary
+        // names.
+        let start = resume_after.map_or(0, |last| last.saturating_add(1));
+        let mut page: Vec<String> = links
+            .into_iter()
+            .skip(start)
+            // One link beyond the page: its presence is what says the listing is truncated,
+            // and nothing more than that is read.
+            .take(page_size.saturating_add(1))
+            .collect();
+        let truncated = page.len() > page_size;
+        page.truncate(page_size);
+
+        // `nextToken` is "The token to use to get the next set of results, or null if there
+        // are no additional results."
+        let next_token = if truncated {
+            page.len()
+                .checked_sub(1)
+                .map(|last| encode_next_token(&scope, start.saturating_add(last)))
+        } else {
+            None
+        };
+
+        Ok(ListThingRegistrationTaskReportsOutput {
+            resource_links: Some(page),
+            // "The type of task report" — the report this answer is about, which is the one
+            // the request asked for.
+            report_type: Some(input.report_type),
+            next_token,
+        })
     }
+}
+
+/// The ceiling `maxResults` is read under: `RegistryMaxResults`'s modelled maximum
+/// (`range 1..250`, `smithy_query(query="operation",operation="ListThingRegistrationTaskReports")`).
+const MAX_PAGE_SIZE: i32 = 250;
+
+/// The separator inside a continuation token, between the listing's scope and the resume
+/// point. A unit separator cannot occur in a `TaskId` or in a `ReportType` value, so neither
+/// half can forge the other.
+const TOKEN_SEPARATOR: char = '\u{1f}';
+
+/// What a `nextToken` of THIS listing is issued for: the task and the report type whose links
+/// are being paged. A token issued for one report does not resume another's listing.
+fn listing_scope(task_id: &str, report_type: &str) -> String {
+    format!("{report_type}{TOKEN_SEPARATOR}{task_id}")
+}
+
+/// The opaque `nextToken` that resumes `scope`'s listing after the link at index
+/// `last_index`.
+///
+/// Hex-encoded so the token is opaque to the caller. The encoding carries no integrity
+/// protection and claims none: a caller that reverses it can name any resume point of the
+/// listing it is already reading, which selects a page of that same listing and nothing else.
+fn encode_next_token(scope: &str, last_index: usize) -> String {
+    ::hex::encode(format!("{scope}{TOKEN_SEPARATOR}{last_index}"))
+}
+
+/// The index a `nextToken` resumes after, or `InvalidRequestException` (HTTP 400, "The request
+/// is not valid") when the token is not one [`encode_next_token`] issued for THIS listing.
+///
+/// Every step is fallible on purpose: the token is caller-supplied, so nothing read out of it
+/// may panic the handler. A token issued for another task or another report type is refused
+/// rather than silently resuming a different listing from the middle.
+fn decode_next_token(
+    token: &str,
+    scope: &str,
+) -> Result<usize, ListThingRegistrationTaskReportsError> {
+    let invalid = || -> ListThingRegistrationTaskReportsError {
+        ListThingRegistrationTaskReportsErrorModeled::InvalidRequestException(
+            InvalidRequestException {
+                message: Some("nextToken is not a continuation token of this listing".to_string()),
+            },
+        )
+        .into()
+    };
+    let bytes = ::hex::decode(token).map_err(|_| invalid())?;
+    let decoded = String::from_utf8(bytes).map_err(|_| invalid())?;
+    let (token_scope, resume_after) = decoded.rsplit_once(TOKEN_SEPARATOR).ok_or_else(invalid)?;
+    if token_scope != scope {
+        return Err(invalid());
+    }
+    resume_after.parse::<usize>().map_err(|_| invalid())
 }

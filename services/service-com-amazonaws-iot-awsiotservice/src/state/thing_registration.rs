@@ -134,6 +134,18 @@ pub const UNREADABLE_INPUT_FILE_MESSAGE: &str =
 pub const NON_TEXT_INPUT_FILE_MESSAGE: &str =
     "Unable to read the input file: it is not a newline delimited JSON text file.";
 
+/// What a task's `ERRORS` report states for a line that provisioned no thing because the LINE
+/// describes none: it is no JSON object of parameter values, or the thing resource of the
+/// template cannot be rendered from the values it carries (a parameter the template gives no
+/// `Default` for, or a `ThingName` the registry cannot be addressed by).
+///
+/// Fixed text about the line, with nothing of the line itself echoed into it. A line the
+/// registry REFUSED carries the registry's own reason instead
+/// ([`super::ThingRegistrationRefusal::message`]).
+pub const UNPROVISIONABLE_LINE_MESSAGE: &str =
+    "The line provisions no thing: it is not a JSON object of parameter values the thing \
+     resource of the provisioning template can be rendered from.";
+
 /// What `StartThingRegistrationTask` refuses a `roleArn` with when IAM answered that this
 /// service cannot assume it: the role is what AWS IoT reads the input file under, so a role
 /// it cannot assume is a request it cannot perform, and nothing is recorded for it.
@@ -382,14 +394,34 @@ pub struct ProvisionedThing {
     pub configuration: ThingConfiguration,
 }
 
-/// What a task's run amounted to: the counts a reader reports, and the reason the run could
-/// not be performed at all when it could not.
+/// What the run made of ONE line of the input file: which line it was, and either the thing
+/// that line provisioned or the reason it provisioned none.
+///
+/// The counts a reader of the task reports are these records counted
+/// ([`RegistrationOutcome`]), and the task's own REPORT objects are these records written out
+/// ([`super::thing_registration_reports`]) — so what the task says it provisioned and what
+/// its report lists cannot drift.
+#[derive(Debug, Clone)]
+pub struct LineReport {
+    /// Which line of the input file this is about, counted from 1 as a reader of the file
+    /// counts its lines — blank ones included, so the number addresses the line itself.
+    pub line_number: usize,
+    /// The name of the thing the line provisioned, or the reason it provisioned none.
+    pub provisioned: Result<String, String>,
+}
+
+/// What a task's run amounted to: the counts a reader reports, what the run made of each
+/// line, and the reason the run could not be performed at all when it could not.
 #[derive(Debug, Clone, Default)]
 pub struct RegistrationOutcome {
     /// "The number of things successfully provisioned."
     pub success_count: i32,
     /// "The number of things that failed to be provisioned."
     pub failure_count: i32,
+    /// What the run made of each line of the input file, in the file's own line order: the
+    /// records the task's reports are written from, and what the two counts above count. A
+    /// run that could not be performed at all made nothing of any line, so it has none.
+    pub lines: Vec<LineReport>,
     /// Why no line was provisioned, for a run that could not be performed — the task's
     /// `message`, and what makes its status [`TASK_STATUS_FAILED`].
     pub failure_message: Option<String>,
@@ -401,6 +433,7 @@ impl RegistrationOutcome {
         Self {
             success_count: 0,
             failure_count: 0,
+            lines: Vec::new(),
             failure_message: Some(reason),
         }
     }
@@ -419,7 +452,7 @@ impl RegistrationOutcome {
 pub fn planned_things(
     template: &ProvisioningTemplate,
     input_file: &[u8],
-) -> Result<Vec<Option<ProvisionedThing>>, RegistrationOutcome> {
+) -> Result<Vec<PlannedLine>, RegistrationOutcome> {
     let Ok(text) = ::std::str::from_utf8(input_file) else {
         return Err(RegistrationOutcome::unperformed(
             NON_TEXT_INPUT_FILE_MESSAGE.to_string(),
@@ -428,17 +461,34 @@ pub fn planned_things(
     // A newline delimited JSON file: every line is one device, and a blank line is no
     // device at all (a trailing newline ends the last line rather than starting an empty
     // one).
-    let lines: Vec<&str> = text
+    let lines: Vec<(usize, &str)> = text
         .lines()
-        .filter(|line| !line.trim().is_empty())
+        // ENUMERATED before the blank ones are dropped, so a row of the task's report names
+        // the line of the FILE it is about ([`PlannedLine::line_number`]).
+        .enumerate()
+        .map(|(index, line)| (index + 1, line))
+        .filter(|(_, line)| !line.trim().is_empty())
         .collect();
     if lines.len() > MAX_INPUT_FILE_LINES {
         return Err(RegistrationOutcome::unperformed(too_many_lines_message()));
     }
     Ok(lines
         .into_iter()
-        .map(|line| planned_thing(template, line))
+        .map(|(line_number, line)| PlannedLine {
+            line_number,
+            thing: planned_thing(template, line),
+        })
         .collect())
+}
+
+/// One line of the input file, and the thing it provisions: `None` for a line that provisions
+/// nothing, which the task counts as a failure and reports as one rather than refusing.
+#[derive(Debug, Clone)]
+pub struct PlannedLine {
+    /// Which line of the input file this is, counted from 1 — see [`LineReport::line_number`].
+    pub line_number: usize,
+    /// The thing the line provisions, or `None` when it describes none.
+    pub thing: Option<ProvisionedThing>,
 }
 
 /// The thing the one line `line` provisions, or `None` when it provisions none.
@@ -466,20 +516,30 @@ fn planned_thing(template: &ProvisioningTemplate, line: &str) -> Option<Provisio
 pub fn register_planned(
     store: &mut ComAmazonawsIotAwsiotserviceState,
     region: &str,
-    planned: Vec<Option<ProvisionedThing>>,
+    planned: Vec<PlannedLine>,
 ) -> RegistrationOutcome {
     let mut outcome = RegistrationOutcome::default();
-    for thing in planned {
-        let provisioned = thing.is_some_and(|thing| {
-            store
+    for line in planned {
+        // The reason a line was not provisioned is the registry's own
+        // ([`super::ThingRegistrationRefusal`]) where the write refused it, and the one fixed
+        // sentence below where the line described no thing to write at all — which is what
+        // the task's `ERRORS` report states for that line.
+        let provisioned = match line.thing {
+            None => Err(UNPROVISIONABLE_LINE_MESSAGE.to_string()),
+            Some(thing) => store
                 .register_thing(region, thing.thing_name, thing.configuration)
-                .is_ok()
-        });
-        if provisioned {
+                .map(|registered| registered.thing_name)
+                .map_err(|refusal| refusal.message()),
+        };
+        if provisioned.is_ok() {
             outcome.success_count += 1;
         } else {
             outcome.failure_count += 1;
         }
+        outcome.lines.push(LineReport {
+            line_number: line.line_number,
+            provisioned,
+        });
     }
     outcome
 }
@@ -509,6 +569,11 @@ pub struct ThingRegistrationTask {
     pub completed_at: SystemTime,
     /// What the run amounted to ([`RegistrationOutcome`]), reported from `completed_at` on.
     pub outcome: RegistrationOutcome,
+    /// Where this task's REPORT objects were written — the bucket of the emulator's own
+    /// Amazon S3 they are in and the key of each one
+    /// ([`super::thing_registration_reports::ReportObjects`]), which is what
+    /// `ListThingRegistrationTaskReports` hands back a link per.
+    pub reports: super::thing_registration_reports::ReportObjects,
 }
 
 impl ThingRegistrationTask {
@@ -532,6 +597,9 @@ impl ThingRegistrationTask {
             creation_date: started_at,
             completed_at: started_at + REGISTRATION_SPAN,
             outcome,
+            // Written by the call that performs the run, and recorded on the task once the
+            // store has taken them ([`super::thing_registration_reports::write_report_objects`]).
+            reports: super::thing_registration_reports::ReportObjects::default(),
         }
     }
 
@@ -683,7 +751,7 @@ pub async fn input_file(
 /// need a sleep implementation this client is not given. The same goes for caching the
 /// identity: the credentials the callback hands over are used directly, and they only sign
 /// this operation's in-process calls.
-fn s3_client(
+pub(super) fn s3_client(
     ctx: &::smithy_server_runtime::OperationContext<'_>,
     region: &str,
 ) -> ::aws_sdk_s3::Client {
@@ -708,11 +776,12 @@ fn s3_client(
 #[cfg(test)]
 mod tests {
     use super::{
-        planned_things, register_planned, too_many_lines_message, ProvisionedThing,
+        planned_things, register_planned, too_many_lines_message, PlannedLine, ProvisionedThing,
         ProvisioningTemplate, TemplateRejection, MAX_INPUT_FILE_LINES,
     };
     use crate::state::{
-        ComAmazonawsIotAwsiotserviceState, RegisteredThing, ThingConfiguration, MAX_THINGS,
+        ComAmazonawsIotAwsiotserviceState, RegisteredThing, ThingConfiguration,
+        ThingRegistrationRefusal, MAX_THINGS,
     };
     use ::serde_json::{json, Map, Value};
 
@@ -940,15 +1009,32 @@ mod tests {
             );
         }
 
-        let planned = vec![Some(ProvisionedThing {
-            thing_name: "past-the-ceiling".to_string(),
-            configuration: ThingConfiguration::default(),
-        })];
+        let planned = vec![PlannedLine {
+            line_number: 1,
+            thing: Some(ProvisionedThing {
+                thing_name: "past-the-ceiling".to_string(),
+                configuration: ThingConfiguration::default(),
+            }),
+        }];
         let outcome = register_planned(&mut store, "us-east-1", planned);
         assert_eq!(
             (outcome.success_count, outcome.failure_count),
             (0, 1),
             "expected the line to fail against the full registry, got {outcome:?}"
+        );
+        // What the line's failure REPORTS is the registry's own reason, which is what the
+        // task's `ERRORS` report then states for that line.
+        let reported = outcome
+            .lines
+            .first()
+            .map(|line| (line.line_number, line.provisioned.clone()));
+        assert_eq!(
+            reported,
+            Some((
+                1,
+                Err(ThingRegistrationRefusal::RegistryFull.message())
+            )),
+            "expected the line's own record of the refusal, got {reported:?}"
         );
         assert_eq!(
             store.things.len(),

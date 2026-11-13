@@ -217,46 +217,74 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         };
 
         let started_at = ::std::time::SystemTime::now();
-        let mut store = state.lock();
-        if store.thing_registration_tasks.len()
-            >= crate::state::thing_registration::MAX_THING_REGISTRATION_TASKS
-        {
-            return Err(StartThingRegistrationTaskErrorModeled::InvalidRequestException(
-                InvalidRequestException {
-                    message: Some(crate::state::thing_registration::too_many_tasks_message()),
-                },
-            )
-            .into());
+        // The registry's critical section: the ceiling, the inserts, and the task record the
+        // run amounts to. The report objects are written AFTER it, with no lock held, so
+        // nothing awaits inside it.
+        let (output, task_id, report_objects) = {
+            let mut store = state.lock();
+            if store.thing_registration_tasks.len()
+                >= crate::state::thing_registration::MAX_THING_REGISTRATION_TASKS
+            {
+                return Err(StartThingRegistrationTaskErrorModeled::InvalidRequestException(
+                    InvalidRequestException {
+                        message: Some(crate::state::thing_registration::too_many_tasks_message()),
+                    },
+                )
+                .into());
+            }
+
+            // One line of the file is one thing, provisioned into the registry `CreateThing`
+            // writes; the counts of that run are what the task then reports, and its per-line
+            // records are what its report objects hold.
+            let outcome = match planned {
+                Ok(planned) => crate::state::thing_registration::register_planned(
+                    &mut store, &region, planned,
+                ),
+                Err(unperformed) => unperformed,
+            };
+            let report_objects =
+                crate::state::thing_registration_reports::report_objects_of(&outcome);
+
+            let task = crate::state::ThingRegistrationTask::new(
+                // "The bulk thing provisioning task ID" — minted here, unique to this task,
+                // and within `TaskId`'s modelled length (a canonical UUID is 36 characters of
+                // 40).
+                crate::state::fresh_uuid(),
+                input.template_body,
+                input.input_file_bucket,
+                input.input_file_key,
+                input.role_arn,
+                started_at,
+                outcome,
+            );
+            // The response is built from the record that is about to be persisted, so what
+            // this call reports and what the next `DescribeThingRegistrationTask` reads are
+            // one value.
+            let output = StartThingRegistrationTaskOutput {
+                task_id: Some(task.task_id.clone()),
+            };
+            let task_id = task.task_id.clone();
+            store
+                .thing_registration_tasks
+                .insert(task.task_id.clone(), task);
+            (output, task_id, report_objects)
+        };
+
+        // The call that PERFORMS the run is the call that writes its report: the records above
+        // are stored as objects of the emulator's own Amazon S3, which is where a task's
+        // reports live and what `ListThingRegistrationTaskReports` hands back a link per. The
+        // task then records where they went, so a link is reported only for an object that
+        // store took.
+        let written = crate::state::thing_registration_reports::write_report_objects(
+            ctx,
+            &region,
+            &task_id,
+            report_objects,
+        )
+        .await;
+        if let Some(task) = state.lock().thing_registration_tasks.get_mut(&task_id) {
+            task.reports = written;
         }
-
-        // One line of the file is one thing, provisioned into the registry `CreateThing`
-        // writes; the counts of that run are what the task then reports.
-        let outcome = match planned {
-            Ok(planned) => crate::state::thing_registration::register_planned(
-                &mut store, &region, planned,
-            ),
-            Err(unperformed) => unperformed,
-        };
-
-        let task = crate::state::ThingRegistrationTask::new(
-            // "The bulk thing provisioning task ID" — minted here, unique to this task, and
-            // within `TaskId`'s modelled length (a canonical UUID is 36 characters of 40).
-            crate::state::fresh_uuid(),
-            input.template_body,
-            input.input_file_bucket,
-            input.input_file_key,
-            input.role_arn,
-            started_at,
-            outcome,
-        );
-        // The response is built from the record that is about to be persisted, so what this
-        // call reports and what the next `DescribeThingRegistrationTask` reads are one value.
-        let output = StartThingRegistrationTaskOutput {
-            task_id: Some(task.task_id.clone()),
-        };
-        store
-            .thing_registration_tasks
-            .insert(task.task_id.clone(), task);
         Ok(output)
     }
 }

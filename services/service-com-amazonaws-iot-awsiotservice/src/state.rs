@@ -2804,6 +2804,12 @@ pub use topic_rule_destinations::{
 pub mod thing_registration;
 pub use thing_registration::ThingRegistrationTask;
 
+// What the REPORTS of such a task hold — the objects of the emulator's own Amazon S3 the
+// run's per-line records are written into, and the link each one is reported under — lives in
+// `state/thing_registration_reports.rs`, beside the run it reports.
+pub mod thing_registration_reports;
+pub use thing_registration_reports::ReportObjects;
+
 // What an UPDATE of a thing record changes — the thing type it is associated with and
 // its attributes, under the optimistic concurrency `expectedVersion` states — lives in
 // `state/thing_update.rs`, beside the store accessor for the same reason the bulk

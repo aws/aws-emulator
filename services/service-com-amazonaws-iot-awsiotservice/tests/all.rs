@@ -19,6 +19,8 @@ mod authorization_decision;
 mod authorizer_registry;
 #[path = "all/bulk_thing_registration.rs"]
 mod bulk_thing_registration;
+#[path = "all/bulk_thing_registration_reports.rs"]
+mod bulk_thing_registration_reports;
 #[path = "all/certificate_deletion.rs"]
 mod certificate_deletion;
 #[path = "all/certificate_status_update.rs"]
