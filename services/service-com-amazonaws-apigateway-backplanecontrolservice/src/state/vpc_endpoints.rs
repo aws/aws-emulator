@@ -38,6 +38,10 @@ const VPC_ENDPOINT_ID_FILTER: &str = "vpc-endpoint-id";
 
 /// An AWS SDK client for Amazon EC2 over the in-process callback into this same emulator.
 ///
+/// This crate's ONE client for that hop: the access association source below is resolved
+/// through it, and so is the VPC endpoint a private integration's own connection reaches
+/// ([`crate::service::invoke`]), so both ask EC2 the same way.
+///
 /// `region` is the Region the caller signed for, so the question is asked in the Region the
 /// request addressed. The endpoint URL is only the address the callback's transport routes
 /// on IN PROCESS. The credentials are the callback's, which sign this in-process hop and
@@ -48,7 +52,7 @@ const VPC_ENDPOINT_ID_FILTER: &str = "vpc-endpoint-id";
 /// ([`::service_common::arn::region_label`], the one place this tree states that grammar)
 /// instead of being interpolated as given: `None` for a value that would name an authority
 /// the caller chose rather than the peer service this emulator asks.
-fn ec2(
+pub(crate) fn ec2(
     ctx: &smithy_server_runtime::OperationContext<'_>,
     region: &str,
 ) -> Option<::aws_sdk_ec2::Client> {

@@ -140,7 +140,10 @@
 //! names, carrying the headers `requestParameters` maps onto it, and handed back to
 //! [`serve_resolved`] to be served by that endpoint's own records — including its api's
 //! resource policy, which is how a REGIONAL api fronting a PRIVATE one through a VPC link is
-//! gated on the interface endpoint the `uri` names. No socket is opened and no name is
+//! gated on the interface endpoint the request ARRIVES through: the endpoint the link's own
+//! targets are the network interfaces of ([`private_delivery`]), since for a private
+//! integration "the URI is not used for routing" (`Integration$uri`). No socket is opened
+//! and no name is
 //! resolved: an address outside this emulator's own endpoints is never dialled, it is
 //! refused, and nothing is invented either — the response is the one this data plane
 //! computes for the request it passed on, whatever that is. What the onward request does NOT
@@ -252,6 +255,9 @@ pub mod execute_api_authorization;
 mod identity_source;
 pub mod lambda_proxy;
 mod onward_endpoint;
+/// Which interface VPC endpoint a request carried over a VPC link arrives at this plane
+/// through, which is what a private api's resource policy is conditioned on.
+mod private_delivery;
 pub mod sigv4_authentication;
 /// What one `Authorizer` makes of a SIMULATED request, which is what
 /// `TestInvokeAuthorizer` reports. `pub(crate)` because that operation is its one caller.
@@ -987,6 +993,15 @@ pub struct Addressed<'a> {
     /// The [`API_ID_HEADER`] the request carries, which is how a request on an endpoint's
     /// own DNS name — a host that names the ENDPOINT, not the api — names the api.
     api_id_header: Option<&'a str>,
+    /// The interface VPC endpoint this plane ITSELF delivered the request through, when it
+    /// passed it on over a private connection whose targets are that endpoint's own network
+    /// interfaces ([`private_delivery`]).
+    ///
+    /// Not read off the wire, and nothing a client can state: it is what THIS plane did with
+    /// a request it passed on, handed to the serving of the onward request as an argument
+    /// ([`serve_resolved`]), which is why a caller cannot name an endpoint its request did
+    /// not arrive through.
+    delivered_through: Option<&'a str>,
 }
 
 impl<'a> Addressed<'a> {
@@ -999,6 +1014,7 @@ impl<'a> Addressed<'a> {
                 .headers
                 .get(API_ID_HEADER)
                 .and_then(|value| value.to_str().ok()),
+            delivered_through: None,
         }
     }
 
@@ -1008,21 +1024,29 @@ impl<'a> Addressed<'a> {
             host: req.headers().get("host").or_else(|| authority_of(req.uri())),
             path: path_of(req.uri()),
             api_id_header: req.headers().get(API_ID_HEADER),
+            delivered_through: None,
         }
+    }
+
+    /// The same addressing, of a request this plane DELIVERED through `endpoint`.
+    fn delivered_through(mut self, endpoint: Option<&'a str>) -> Self {
+        self.delivered_through = endpoint;
+        self
     }
 }
 
 /// What an invoke request addresses, as this service's records resolve it: the api, the
 /// path WITHIN that api's endpoint — `/{stage}/{resource-path}`, which is what the stage
 /// and the resource are read from — and the VPC endpoint the request arrived through, when
-/// it was addressed on one's own DNS name.
+/// it was addressed on one's own DNS name or this plane delivered it through one.
 #[derive(Debug)]
 struct Resolved<'s, 'r> {
     api: &'s RestApiEntry,
     invoke_path: &'r str,
-    /// The id of the interface VPC endpoint whose endpoint-specific DNS name the request
-    /// was addressed on, or `None` on every other addressing — where the request names no
-    /// endpoint and this service claims none for it.
+    /// The id of the interface VPC endpoint the request ARRIVED through: the one this plane
+    /// delivered it through ([`Addressed::delivered_through`]), else the one whose
+    /// endpoint-specific DNS name it was addressed on. `None` on every other addressing —
+    /// where the request arrived through no endpoint this service can name.
     source_vpce: Option<&'r str>,
 }
 
@@ -1042,9 +1066,10 @@ struct Resolved<'s, 'r> {
 ///   interface VPC endpoints: the host is that ENDPOINT's own DNS name
 ///   (`{vpc-endpoint-id}.execute-api.{region}.vpce.amazonaws.com`, the name EC2 reports in
 ///   the endpoint's `DnsEntries`), which names no api at all, so the api travels in the
-///   [`API_ID_HEADER`]. This is the one addressing that tells this service WHICH endpoint a
-///   request arrived through, which is what the api's resource policy can then be
-///   conditioned on ([`super::resource_policy::SOURCE_VPCE_KEY`]);
+///   [`API_ID_HEADER`]. This is one of the two addressings that tell this service WHICH
+///   endpoint a request arrived through — the other being a request THIS plane delivered
+///   through one ([`Addressed::delivered_through`]) — which is what the api's resource policy
+///   can then be conditioned on ([`super::resource_policy::SOURCE_VPCE_KEY`]);
 /// * PREFIXED PATH-STYLE, the addressing a client reaching an EMULATOR uses: the data
 ///   plane is named by the reserved namespace segment [`EMULATOR_PATH_NAMESPACE`] and the
 ///   [`EXECUTE_API_LABEL`], then the api id, then the invoke path —
@@ -1101,14 +1126,17 @@ fn resolve<'s, 'r>(
             .map(|api| Resolved {
                 api,
                 invoke_path: addressed.path,
-                source_vpce: Some(endpoint),
+                // The endpoint this plane DELIVERED the request through is where it really
+                // arrived, whatever name it was addressed on; a request nothing delivered
+                // arrived at the endpoint whose own name it names.
+                source_vpce: addressed.delivered_through.or(Some(endpoint)),
             });
     }
     if let Some(api_id) = addressed.host.and_then(api_id_of_host) {
         return store.rest_apis.get(api_id).map(|api| Resolved {
             api,
             invoke_path: addressed.path,
-            source_vpce: None,
+            source_vpce: addressed.delivered_through,
         });
     }
     // PREFIXED PATH-STYLE: the path names this data plane before it names the api, so it is
@@ -1118,7 +1146,7 @@ fn resolve<'s, 'r>(
         return store.rest_apis.get(api_id).map(|api| Resolved {
             api,
             invoke_path,
-            source_vpce: None,
+            source_vpce: addressed.delivered_through,
         });
     }
     let (first, rest) = split_first_segment(addressed.path)?;
@@ -1139,7 +1167,7 @@ fn resolve<'s, 'r>(
         return Some(Resolved {
             api,
             invoke_path: rest,
-            source_vpce: None,
+            source_vpce: addressed.delivered_through,
         });
     }
     if host_service.is_some() {
@@ -1162,7 +1190,7 @@ fn resolve<'s, 'r>(
     holding.next().is_none().then_some(Resolved {
         api,
         invoke_path: addressed.path,
-        source_vpce: None,
+        source_vpce: addressed.delivered_through,
     })
 }
 
@@ -1376,7 +1404,7 @@ pub async fn serve<Eng: Send + Sync + 'static>(
             None => compression::compressed(
                 engine,
                 req,
-                serve_resolved(engine, req, ctx, 0, &request_id, &mut authorized).await,
+                serve_resolved(engine, req, ctx, 0, &request_id, &mut authorized, None).await,
             ),
         },
         &request_id,
@@ -1409,6 +1437,11 @@ pub async fn serve<Eng: Send + Sync + 'static>(
 ///
 /// `request_id` is the id the response this computes is reported under, which is also what
 /// the call carries as `$context.requestId`.
+///
+/// `delivered_through` is the interface VPC endpoint this plane itself delivered this request
+/// through, when it is the onward request of a private integration carried over a VPC link
+/// ([`private_delivery`]): `None` for every request that arrived from outside, which is what
+/// keeps the endpoint a call arrived through out of a caller's hands.
 fn serve_resolved<'a, 'c: 'a, Eng: Send + Sync + 'static>(
     engine: &'a Eng,
     req: &'a RtRequest,
@@ -1416,8 +1449,20 @@ fn serve_resolved<'a, 'c: 'a, Eng: Send + Sync + 'static>(
     hop: u8,
     request_id: &'a str,
     authorized: &'a mut BTreeMap<String, String>,
+    delivered_through: Option<&'a str>,
 ) -> BoxFuture<'a, RtResponse> {
-    Box::pin(async move { serving(engine, req, ctx, hop, request_id, authorized).await })
+    Box::pin(async move {
+        serving(
+            engine,
+            req,
+            ctx,
+            hop,
+            request_id,
+            authorized,
+            delivered_through,
+        )
+        .await
+    })
 }
 
 /// [`serve_resolved`]'s body, written as an ordinary `async fn` so only the recursion
@@ -1429,6 +1474,7 @@ async fn serving<Eng: Send + Sync + 'static>(
     hop: u8,
     request_id: &str,
     authorized: &mut BTreeMap<String, String>,
+    delivered_through: Option<&str>,
 ) -> RtResponse {
     let Some(state) = crate::state::service_state(engine) else {
         return refusal_response(None, API_CONFIGURATION_ERROR);
@@ -1464,7 +1510,7 @@ async fn serving<Eng: Send + Sync + 'static>(
             None => req,
         },
     };
-    let addressed = Addressed::of_request(req);
+    let addressed = Addressed::of_request(req).delivered_through(delivered_through);
     // What this request RESOLVES to: the integration that is to answer it, what VALIDATING
     // its payload needs, and what METERING it is subject to. All three are read under a
     // shared read of the store, which is RELEASED before any of them runs: validating a
@@ -1873,6 +1919,17 @@ async fn serving<Eng: Send + Sync + 'static>(
                     .as_ref()
                     .and_then(|method| method.integration.as_ref())
                     .and_then(|integration| unusable_vpc_link(&store, integration)),
+                // What that private connection TARGETS, read under the same lock and off
+                // the same resolved configuration: where those targets are an interface
+                // VPC endpoint's own network interfaces, the request this integration
+                // passes on arrives at this plane through that endpoint
+                // ([`private_delivery`]).
+                connection_load_balancers: performed_method
+                    .as_ref()
+                    .and_then(|method| method.integration.as_ref())
+                    .and_then(|integration| {
+                        private_delivery::connection_load_balancers(&store, integration)
+                    }),
                 method: performed_method,
                 call,
             };
@@ -1982,13 +2039,7 @@ async fn serving<Eng: Send + Sync + 'static>(
         .as_ref()
         .and_then(|method| method.integration.as_ref())
         .and_then(|record| {
-            passed_through(
-                record,
-                req,
-                hop,
-                &integration.call.inputs.path,
-                &integration.api_id,
-            )
+            passed_through(record, req, hop, &integration.call.inputs.path, &integration.api_id)
         });
     let served = if let Some(passed_on) = passed_on {
         if let Some(reason) = integration.unusable_connection.clone() {
@@ -2006,6 +2057,22 @@ async fn serving<Eng: Send + Sync + 'static>(
                 // A request of its own: what the endpoint it reaches publishes about ITS
                 // own authorization belongs to that request, not to this one's record.
                 let mut onward_authorized = BTreeMap::new();
+                // The VPC ENDPOINT that onward request ARRIVES through, asked for only now
+                // that there IS one to serve, and with no lock of this service held because
+                // it asks the two services that own those records ([`private_delivery`]):
+                // the request is carried over the link's own targets, since "for a private
+                // HTTP integration, the URI is not used for routing" (`Integration$uri`),
+                // so what it arrives through is what those targets are and not the host the
+                // `uri` names. It travels as an ARGUMENT rather than on the request: it is
+                // what this plane did with a request it passed on, so no caller can state
+                // it.
+                let delivered_through = private_delivery::arrival_endpoint(
+                    engine,
+                    ctx,
+                    &integration.region,
+                    integration.connection_load_balancers.as_deref(),
+                )
+                .await;
                 serve_resolved(
                     engine,
                     &onward,
@@ -2013,6 +2080,7 @@ async fn serving<Eng: Send + Sync + 'static>(
                     hop + 1,
                     &onward_id,
                     &mut onward_authorized,
+                    delivered_through.as_deref(),
                 )
                 .await
             }
@@ -2383,6 +2451,10 @@ struct ResolvedIntegration {
     /// Why the private connection the integration is carried over cannot carry this call,
     /// when it names one and it cannot ([`unusable_vpc_link`]).
     unusable_connection: Option<String>,
+    /// The load balancers that private connection targets, when it names a VPC link this
+    /// account holds: what decides which VPC ENDPOINT the request it passes on arrives
+    /// through ([`private_delivery`]).
+    connection_load_balancers: Option<Vec<String>>,
     /// What the integration reads off this method request.
     call: MethodRequest,
 }
@@ -3181,11 +3253,21 @@ fn passed_through(
     }
     let uri = integration.uri.as_deref().unwrap_or_default();
     // The endpoint the request is passed on to. A `uri` with no authority at all addresses
-    // nothing, so nothing is passed on for it; an authority that is an `execute-api`
-    // endpoint is a stage of THIS plane, which is served by re-entering it, and any other
-    // is an endpoint reached over the in-process transport.
+    // nothing, so nothing is passed on for it; an endpoint that is a stage of THIS plane is
+    // served by re-entering it, and any other is reached over the in-process transport.
+    //
+    // A stage of this plane is named in EITHER of the two addressings this plane publishes
+    // for one: the `execute-api` endpoint host AWS gives it, and the prefixed path-style
+    // address this emulator announces it at ([`announced_address`],
+    // `/_aws/execute-api/{api-id}/{stage}/…`) — which is the invoke URL a client of an
+    // emulator holds, and so the one an integration naming a stage of this plane carries.
+    // Both re-enter this plane's own serving rather than crossing the transport to come
+    // back in through the claim, which is what lets what THIS plane did with the request —
+    // the endpoint it delivered it through — travel with it as an argument rather than on
+    // the wire.
     let host = authority_of(uri)?;
-    let within_this_plane = endpoint_labels(host).is_some();
+    let within_this_plane =
+        endpoint_labels(host).is_some() || split_execute_api_prefix(path_of(uri)).is_some();
 
     // What `requestParameters` maps onto the integration request, read BEFORE anything is
     // built from it: the PATH parameters decide the address itself, so the mappings are

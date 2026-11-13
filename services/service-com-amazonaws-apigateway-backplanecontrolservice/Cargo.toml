@@ -119,9 +119,16 @@ service-com-amazonaws-iam-awsidentitymanagementv20100508 = { workspace = true }
 # and VPC endpoints are Amazon EC2's records: the identifier a create carries is resolved
 # against that service over the in-process transport before anything is stored
 # (`state::vpc_endpoints`), so this service keeps no second reading of which endpoints the
-# account has. Only the generated client is needed, as the sibling apigatewayv2 service
-# declares it for the same hop.
+# account has. The same hop resolves the endpoint a private integration's VPC link reaches,
+# and the name that endpoint publishes (`service::invoke::private_delivery`). Only the
+# generated client is needed, as the sibling apigatewayv2 service declares it for the same
+# hop.
 aws-sdk-ec2 = { version = "1", default-features = false }
+# A private integration is carried over a VPC link, and what that link's load balancers
+# forward to — the target groups and the addresses registered in them — is Elastic Load
+# Balancing's record, read from that service's own store on the one shared engine
+# (`service::invoke::private_delivery`), the same seam the WAFv2 decision above is read over.
+service-com-amazonaws-elasticloadbalancingv2-elasticloadbalancing-v10 = { workspace = true }
 # The CIVIL CALENDAR a usage plan's quota is metered on: the UTC day a metered request
 # falls on, the day a `startDate`/`endDate` names, and the first day of the metering
 # period a day belongs to (`state::usage`). The maintained date library the sibling

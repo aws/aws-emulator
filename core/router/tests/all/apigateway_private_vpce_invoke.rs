@@ -15,7 +15,11 @@
 //! (`PENDING` -> `AVAILABLE`). Behind the gate, the api's own resource policy decides the
 //! invoke: a request that arrived through the endpoint the policy's `aws:SourceVpce`
 //! condition names is served, and one that arrived through any other endpoint is refused
-//! `403` with the `execute-api:Invoke` denial and none of the body.
+//! `403` with the `execute-api:Invoke` denial and none of the body. WHICH endpoint a request
+//! arrived through is decided by the LINK it was carried over — the endpoint whose network
+//! interfaces that link's load balancer forwards to — and never by the host the integration's
+//! `uri` names, because for a private integration "the URI is not used for routing"
+//! (`Integration$uri`): the rows below spell that address both ways and expect one answer.
 //!
 //! This suite lives here rather than in one service's crate because the chain spans three
 //! services on one engine, and the gate is only observable end to end: the endpoint is
@@ -623,73 +627,109 @@ fn a_private_api_is_reached_through_the_endpoint_its_policy_names() {
             );
 
             // -----------------------------------------------------------------
-            // The REGIONAL front api that reaches the private one through the link.
+            // The REGIONAL front apis that reach the private one through the link.
+            //
+            // Three of them, differing ONLY in the host their private integration's `uri`
+            // names: the endpoint's own DNS name, the private api's own `execute-api` name,
+            // and the stage's address at the emulator's own endpoint. For such an
+            // integration "the URI is not used for routing" (`Integration$uri`) — the
+            // request is carried over the LINK, whose targets are this endpoint's own
+            // network interfaces — so each arrives through the same endpoint and the api's
+            // policy decides all three the same way.
             // -----------------------------------------------------------------
-            let front_request = serde_json::json!({
-                "name": "private-vpce-front",
-                "endpointConfiguration": { "types": ["REGIONAL"] },
-            })
-            .to_string();
-            let front_body = apigw_ok(
-                "the front api",
-                &router,
-                &runtime,
-                "POST",
-                "/restapis",
-                Some(&front_request),
-                201,
-            );
-            let front = json_member("the front api", &front_body, "id");
-            let front_root = json_member("the front api", &front_body, "rootResourceId");
-            let front_method = format!("/restapis/{front}/resources/{front_root}/methods/GET");
-            apigw_ok(
-                "the front method",
-                &router,
-                &runtime,
-                "PUT",
-                &front_method,
-                Some(&serde_json::json!({ "authorizationType": "NONE" }).to_string()),
-                201,
-            );
-            // The private api is reached on its ENDPOINT's own DNS name — the endpoint has
-            // no private hosted zone, so that name is the only one that resolves to it —
-            // and that name says which ENDPOINT, not which api, so the api travels in the
-            // header AWS documents for this addressing, mapped on by the integration.
-            let proxy_uri = format!(
-                "https://{host}/{STAGE}/{RESOURCE_PATH}",
-                host = endpoint_host(&endpoint)
-            );
-            apigw_ok(
-                "the front api's private integration",
-                &router,
-                &runtime,
-                "PUT",
-                &format!("{front_method}/integration"),
-                Some(
-                    &serde_json::json!({
-                        "type": "HTTP_PROXY",
-                        "httpMethod": "GET",
-                        "uri": proxy_uri,
-                        "connectionType": "VPC_LINK",
-                        "connectionId": link_id,
-                        "requestParameters": {
-                            "integration.request.header.x-apigw-api-id": format!("'{api}'"),
-                        },
-                    })
-                    .to_string(),
+            let front_api = |name: &str,
+                             case: &str,
+                             proxy_uri: String,
+                             uri_names_the_endpoint: bool|
+             -> String {
+                let front_body = apigw_ok(
+                    case,
+                    &router,
+                    &runtime,
+                    "POST",
+                    "/restapis",
+                    Some(
+                        &serde_json::json!({
+                            "name": name,
+                            "endpointConfiguration": { "types": ["REGIONAL"] },
+                        })
+                        .to_string(),
+                    ),
+                    201,
+                );
+                let front = json_member(case, &front_body, "id");
+                let front_root = json_member(case, &front_body, "rootResourceId");
+                let front_method = format!("/restapis/{front}/resources/{front_root}/methods/GET");
+                apigw_ok(
+                    case,
+                    &router,
+                    &runtime,
+                    "PUT",
+                    &front_method,
+                    Some(&serde_json::json!({ "authorizationType": "NONE" }).to_string()),
+                    201,
+                );
+                let mut integration = serde_json::json!({
+                    "type": "HTTP_PROXY",
+                    "httpMethod": "GET",
+                    "uri": proxy_uri,
+                    "connectionType": "VPC_LINK",
+                    "connectionId": link_id,
+                });
+                if uri_names_the_endpoint {
+                    // An endpoint's own DNS name says which ENDPOINT, not which api, so
+                    // that addressing carries the api in the header AWS documents it in,
+                    // mapped on by the integration. A `uri` naming the api needs none.
+                    integration["requestParameters"] = serde_json::json!({
+                        "integration.request.header.x-apigw-api-id": format!("'{api}'"),
+                    });
+                }
+                apigw_ok(
+                    case,
+                    &router,
+                    &runtime,
+                    "PUT",
+                    &format!("{front_method}/integration"),
+                    Some(&integration.to_string()),
+                    201,
+                );
+                apigw_ok(
+                    case,
+                    &router,
+                    &runtime,
+                    "POST",
+                    &format!("/restapis/{front}/deployments"),
+                    Some(&serde_json::json!({ "stageName": "live" }).to_string()),
+                    201,
+                );
+                format!("{front}.execute-api.{REGION}.amazonaws.com")
+            };
+            let endpoint_front_host = front_api(
+                "private-vpce-front-endpoint",
+                "the front api whose uri names the endpoint",
+                format!(
+                    "https://{host}/{STAGE}/{RESOURCE_PATH}",
+                    host = endpoint_host(&endpoint)
                 ),
-                201,
+                true,
             );
-            apigw_ok(
-                "the front api's deployment",
-                &router,
-                &runtime,
-                "POST",
-                &format!("/restapis/{front}/deployments"),
-                Some(&serde_json::json!({ "stageName": "live" }).to_string()),
-                201,
+            let api_front_host = front_api(
+                "private-vpce-front-api",
+                "the front api whose uri names the private api",
+                format!(
+                    "https://{api}.execute-api.{REGION}.amazonaws.com/{STAGE}/{RESOURCE_PATH}"
+                ),
+                false,
             );
-            let front_host = format!("{front}.execute-api.{REGION}.amazonaws.com");
+            // The third spelling of the same stage: the prefixed path-style address this
+            // emulator announces an invoke URL at, which is the address a client of an
+            // emulator holds for a stage it cannot reach by its AWS host name.
+            let emulator_front_host = front_api(
+                "private-vpce-front-emulator",
+                "the front api whose uri names the stage at the emulator's own endpoint",
+                format!("https://localhost/_aws/execute-api/{api}/{STAGE}/{RESOURCE_PATH}"),
+                false,
+            );
 
             // Rows: the endpoint the policy names, another endpoint, and the first one
             // again — the same request each time, differing only in what the policy admits.
@@ -703,9 +743,10 @@ fn a_private_api_is_reached_through_the_endpoint_its_policy_names() {
                     repin_policy(case, &router, &runtime, &api, pinned);
                 }
                 // The same outcome whether the endpoint is addressed directly or reached
-                // through the front api's private integration, which passes the request on
-                // to that same endpoint: what decides it is the endpoint the request
-                // arrived through, not who sent it.
+                // through a front api's private integration, which passes the request on
+                // over the link to that same endpoint whatever host its `uri` names: what
+                // decides it is the endpoint the request arrived through, not who sent it
+                // and not how the integration spelled the api's address.
                 let addressings = [
                     (
                         "addressed on the endpoint itself",
@@ -714,8 +755,21 @@ fn a_private_api_is_reached_through_the_endpoint_its_policy_names() {
                         vec![("x-apigw-api-id", api.as_str())],
                     ),
                     (
-                        "reached through the front api's VPC link",
-                        front_host.clone(),
+                        "reached through a VPC link whose uri names the endpoint",
+                        endpoint_front_host.clone(),
+                        "/live/".to_string(),
+                        Vec::new(),
+                    ),
+                    (
+                        "reached through a VPC link whose uri names the api",
+                        api_front_host.clone(),
+                        "/live/".to_string(),
+                        Vec::new(),
+                    ),
+                    (
+                        "reached through a VPC link whose uri names the emulator's own \
+                         invoke address",
+                        emulator_front_host.clone(),
                         "/live/".to_string(),
                         Vec::new(),
                     ),
