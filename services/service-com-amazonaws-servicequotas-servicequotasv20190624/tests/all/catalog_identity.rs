@@ -46,17 +46,30 @@ use crate::quota_workflow::{
 /// which is the point: a code in that namespace has to be attributable.
 const CITED_AWS_QUOTA_CODES: &[(&str, &str)] = &[
     ("access-analyzer", "L-1E51937C"),
+    ("access-analyzer", "L-4599575C"),
     ("access-analyzer", "L-5EFCE71D"),
     ("access-analyzer", "L-96F55078"),
     ("account-access", "L-42A1D874"),
     ("acm", "L-DD60D132"),
     ("acm-pca", "L-01B8608D"),
+    ("acm-pca", "L-4065FDCB"),
+    ("acm-pca", "L-506CC328"),
+    ("acm-pca", "L-5A3CF806"),
+    ("acm-pca", "L-773738D3"),
     ("aco-automation", "L-1501440B"),
+    ("agent-registry", "L-0CAE3C7F"),
+    ("agent-registry", "L-4BB62FF5"),
     ("agent-registry", "L-7F384C37"),
     ("aidevops", "L-4FF187E6"),
+    ("aidevops", "L-510AF4A9"),
+    ("aiops", "L-4CD81CD5"),
+    ("aiops", "L-5EC19707"),
     ("aiops", "L-EF31E0C4"),
     ("airflow", "L-52DCDA32"),
     ("airflow", "L-67D41C6B"),
+    ("airflow", "L-78AC1883"),
+    ("amplify", "L-2FC3A2FA"),
+    ("amplify", "L-A6716586"),
     ("apigateway", "L-01C8A9E0"),
     ("apigateway", "L-05295E0B"),
     ("apigateway", "L-154598D1"),
@@ -1597,7 +1610,11 @@ async fn a_minted_code_this_catalog_does_not_cite_resolves_nothing() {
     // name, which is how a lookup like the first row used to succeed.
     for (service_code, quota_code, why) in [
         ("airflow", "L-CFEFCF95", "a code no quota of this service is published under"),
-        ("access-analyzer", "L-4599575C", "an AWS code this catalog does not carry"),
+        (
+            "acm",
+            "L-12943EEB",
+            "an AWS code of this service whose quota this catalog does not carry",
+        ),
         ("monitoring", "L-1216C47A", "an EC2 code under CloudWatch"),
         ("athena", "L-00000000", "a well-formed code nothing publishes"),
     ] {
@@ -1620,7 +1637,6 @@ async fn a_minted_code_this_catalog_does_not_cite_resolves_nothing() {
     // Rows: the descriptive code of a published quota, for services whose rows carry
     // no AWS code — each resolves the quota whose name it was built from.
     for (service_code, quota_code, quota_name) in [
-        ("amplify", "AppsPerRegion", "Apps per Region"),
         ("iot", "RulesPerAccount", "Rules per account"),
         ("states", "StateMachinesPerAccount", "State machines per account"),
         // The one row whose code the SERVICE's own refusal publishes.

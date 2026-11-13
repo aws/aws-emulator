@@ -23,6 +23,11 @@ use crate::ops::types::MetricInfo;
 // per `ServiceCode`, so a service's rows and the facts behind them sit together. They read
 // the row builder and the shared `UsageMetric` / rate constructors below out of this
 // module, which is what keeps one construction of each class for the whole catalog.
+mod access_analyzer;
+mod acm;
+mod acm_pca;
+mod aco_automation;
+mod agent_registry;
 mod batch;
 mod cassandra;
 mod cloud9;
@@ -50,6 +55,11 @@ mod wafv2;
 mod workspaces;
 mod xray;
 
+pub(super) use access_analyzer::access_analyzer_quotas;
+pub(super) use acm::acm_quotas;
+pub(super) use acm_pca::acm_pca_quotas;
+pub(super) use aco_automation::aco_automation_quotas;
+pub(super) use agent_registry::agent_registry_quotas;
 pub(super) use batch::batch_quotas;
 pub(super) use cassandra::cassandra_quotas;
 pub(super) use cloud9::cloud9_quotas;

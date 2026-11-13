@@ -18,9 +18,11 @@
 //! name classes and service codes, never quota codes — so a row added to a class later is
 //! held to the same rule. The classes span a rate published with its window in its own
 //! name and no metric, a rate metered with an `AWS/Usage` call count over a one-second
-//! window, a per-operation throttle and a count of running jobs; the service codes span a
-//! display name carrying a parenthesised code, one carrying a parenthesised qualifier,
-//! plain product names, and two services this issue never cited.
+//! window, a per-operation throttle, a count of running jobs, a class whose sentence names
+//! the account and the Region, and one that names the throttled operation after its own
+//! phrase rather than before it; the service codes span a display name carrying a
+//! parenthesised code, one carrying a parenthesised qualifier, plain product names, and two
+//! services this issue never cited.
 //!
 //! The harness (`client`, `emulator`, `default_quotas`, `service_inventory`, `walk_pages`)
 //! is the one `quota_workflow.rs` owns.
@@ -127,6 +129,63 @@ const CLASSES: &[Class] = &[
         period: None,
         metered: false,
         usage_service: "",
+    },
+    // AWS Certificate Manager publishes a request rate per API operation, over a
+    // one-second window and metered with that operation's own call count.
+    Class {
+        service_code: "acm",
+        name_prefix: "Rate of ",
+        name_suffix: " API requests",
+        name_plane: "",
+        sentence: "The maximum number of {} API requests per second.",
+        fixed_sentence: "The maximum number of {} API requests per second.",
+        period: Some((1, "SECOND")),
+        metered: true,
+        usage_service: "Certificate Manager",
+    },
+    // AWS Private CA words its per-operation rate as the requests an account may perform
+    // in a Region each second, and publishes no metric block for it.
+    Class {
+        service_code: "acm-pca",
+        name_prefix: "Rate of ",
+        name_suffix: " requests",
+        name_plane: "",
+        sentence: "The maximum number of {} requests that can be performed in an account in \
+                   the current Region each second.",
+        fixed_sentence: "The maximum number of {} requests that can be performed in an account \
+                         in the current Region each second.",
+        period: Some((1, "SECOND")),
+        metered: false,
+        usage_service: "",
+    },
+    // AWS Compute Optimizer Automation names the throttled operation after its own
+    // phrase rather than before it.
+    Class {
+        service_code: "aco-automation",
+        name_prefix: "Throttle rate limit for ",
+        name_suffix: "",
+        name_plane: "",
+        sentence: "Maximum number of {} requests you can make per second per account in the \
+                   current region.",
+        fixed_sentence: "Maximum number of {} requests you can make per second per account in \
+                         the current region.",
+        period: Some((1, "SECOND")),
+        metered: false,
+        usage_service: "",
+    },
+    // AWS Agent Registry states the per-second window in the quota's own name and meters
+    // the operation's call count; its sentence names the account and the Region.
+    Class {
+        service_code: "agent-registry",
+        name_prefix: "",
+        name_suffix: " requests per second",
+        name_plane: "",
+        sentence: "The maximum number of {} API requests per second per account per Region",
+        fixed_sentence: "The maximum number of {} API requests per second per account per \
+                         Region",
+        period: Some((1, "SECOND")),
+        metered: true,
+        usage_service: "Agent Registry",
     },
 ];
 

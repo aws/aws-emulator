@@ -3061,39 +3061,7 @@ fn seed_quota_catalog() -> Vec<CatalogService> {
             // The display name AWS's own integrated-service inventory reports for
             // this code, which is not the console's product name.
             "Access Analyzer",
-            vec![
-                // AWS publishes this quota under a descriptive code of its own
-                // (`AnalyzersPerRegion`), which the recorded default listing for this
-                // service carries, so the code is cited here rather than left to the
-                // derivation that happens to produce the same string.
-                quota("Analyzers per Region", 1.0)
-                    .code("AnalyzersPerRegion")
-                    .fixed(),
-                quota("Archive rules per analyzer", 100.0)
-                    .code("L-1E51937C")
-                    // The `Description`s on the rows below are this catalog's own
-                    // wording, in the form AWS's published quota descriptions take
-                    // ("The maximum number of <what the quota counts>."): the
-                    // service's own published text is not among the data available
-                    // here, and no rule in the model derives one.
-                    .describe("The maximum number of archive rules per analyzer."),
-                quota("CloudTrail log files processed per policy generation", 100000.0)
-                    .code("L-5EFCE71D")
-                    .fixed()
-                    .describe(
-                        "The maximum number of CloudTrail log files that can be processed \
-                         per policy generation.",
-                    ),
-                // A quota measured in DAYS of CloudTrail history, which AWS
-                // publishes as not adjustable.
-                quota("Policy generation CloudTrail time range", 90.0)
-                    .code("L-96F55078")
-                    .fixed()
-                    .describe(
-                        "The maximum CloudTrail time range that you can select in days when \
-                         you generate a policy.",
-                    ),
-            ],
+            access_analyzer_quotas(),
         ),
         service(
             "account-access",
@@ -3108,92 +3076,82 @@ fn seed_quota_catalog() -> Vec<CatalogService> {
         service(
             "acm",
             "AWS Certificate Manager (ACM)",
-            vec![
-                // The codes AWS publishes these two under are descriptive ones of its
-                // own (`ACMCertificates`, `ImportedCertificates`), which the recorded
-                // default listing for this service carries.
-                quota("ACM certificates", 2500.0).code("ACMCertificates"),
-                quota("Imported certificates", 2500.0).code("ImportedCertificates"),
-                // An API REQUEST-RATE quota: AWS publishes these over a one-second
-                // window and measures them with the `AWS/Usage` `CallCount` metric
-                // of the API the quota throttles (see [`call_count_metric`]).
-                quota("Rate of ListAcmeDomainValidations API requests", 50.0)
-                    .code("L-DD60D132")
-                    .period(1, "SECOND")
-                    .metric(call_count_metric(
-                        "Certificate Manager",
-                        "ListAcmeDomainValidations",
-                    ))
-                    .describe(
-                        "The maximum number of ListAcmeDomainValidations API requests per \
-                         second.",
-                    ),
-            ],
+            acm_quotas(),
         ),
         service(
             "acm-pca",
             "AWS Private Certificate Authority",
-            vec![
-                quota("Certificate authorities", 200.0),
-                quota("Rate of CreateCertificateAuthority requests", 1.0)
-                    .code("L-01B8608D")
-                    .fixed()
-                    .period(1, "SECOND")
-                    .describe(
-                        "The maximum number of CreateCertificateAuthority requests that can \
-                         be performed in an account in the current Region each second.",
-                    ),
-            ],
+            acm_pca_quotas(),
         ),
         service(
             "aco-automation",
             "AWS Compute Optimizer Automation",
-            vec![quota("Throttle rate limit for ListAutomationRules", 5.0)
-                .code("L-1501440B")
-                .fixed()
-                .period(1, "SECOND")
-                .describe(
-                    "Maximum number of ListAutomationRules requests you can make per second \
-                     per account in the current region.",
-                )],
+            aco_automation_quotas(),
         ),
         service(
             "agent-registry",
             "AWS Agent Registry",
-            vec![quota("InvokeRegistryMcp requests per second", 10.0)
-                .code("L-7F384C37")
-                .unit("Count/Second")
-                .period(1, "SECOND")
-                .metric(call_count_metric("Agent Registry", "InvokeRegistryMcp"))
-                .describe("The maximum number of InvokeRegistryMcp requests per second.")],
+            agent_registry_quotas(),
         ),
         service(
             "aidevops",
             "AWS DevOps Agent",
-            vec![quota("concurrent-evaluations-per-agent-space", 1.0)
-                .code("L-4FF187E6")
-                .unit("Count")
-                .fixed()
-                .describe("Concurrent evaluations per agent space")],
+            // This service names a quota with the hyphenated slug of what it counts and
+            // describes it with that same phrase as prose, which is the form the row
+            // whose published text the recorded listing of this service states carries.
+            // The agent-space row's own text is not among the data available here — that
+            // recording shows the prose form of its slug is not the sentence the service
+            // publishes, and withholds the sentence — so that row publishes no
+            // description rather than wording of this catalog's own.
+            vec![
+                quota("agent-spaces-per-account-per-region", 100.0).code("L-510AF4A9"),
+                quota("concurrent-evaluations-per-agent-space", 1.0)
+                    .code("L-4FF187E6")
+                    .unit("Count")
+                    .fixed()
+                    .describe("Concurrent evaluations per agent space"),
+            ],
         ),
         service(
             "aiops",
             "Amazon AI Operations",
-            vec![quota("Concurrent active investigations", 2.0)
-                .code("L-EF31E0C4")
-                .fixed()
-                .metric(usage_metric(
-                    "Amazon AI Operations",
-                    &[
-                        ("Class", "None"),
-                        ("Resource", "ConcurrentActiveInvestigations"),
-                        ("Type", "Resource"),
-                    ],
-                ))
-                .describe(
-                    "The maximum number of concurrent investigations with active AI analysis \
-                     per account per region.",
-                )],
+            vec![
+                // The investigations a month may cover, which AWS publishes over a
+                // ONE-HOUR window rather than the five-minute one its resource counts
+                // are published over. The published text of this row and of the
+                // investigation-group row below is not among the data available here —
+                // the recorded listing of this service shows wording in the form of the
+                // sentences around them is not what it carries, and withholds the text —
+                // so neither publishes a description of this catalog's own.
+                quota("Monthly investigations", 150.0)
+                    .code("L-4CD81CD5")
+                    .fixed()
+                    .period(1, "HOUR")
+                    .metric(usage_metric(
+                        "Amazon AI Operations",
+                        &[
+                            ("Class", "None"),
+                            ("Resource", "MonthlyAIAssistedInvestigations"),
+                            ("Type", "Resource"),
+                        ],
+                    )),
+                quota("Investigation groups", 1.0).code("L-5EC19707").fixed(),
+                quota("Concurrent active investigations", 2.0)
+                    .code("L-EF31E0C4")
+                    .fixed()
+                    .metric(usage_metric(
+                        "Amazon AI Operations",
+                        &[
+                            ("Class", "None"),
+                            ("Resource", "ConcurrentActiveInvestigations"),
+                            ("Type", "Resource"),
+                        ],
+                    ))
+                    .describe(
+                        "The maximum number of concurrent investigations with active AI \
+                         analysis per account per region.",
+                    ),
+            ],
         ),
         service(
             "airflow",
@@ -3208,16 +3166,29 @@ fn seed_quota_catalog() -> Vec<CatalogService> {
                 quota("Web servers per environment", 5.0)
                     .code("L-52DCDA32")
                     .describe("The maximum number of web servers per environment."),
+                // The worker plane of an environment, which AWS publishes as adjustable
+                // the way the environment counts are.
+                quota("Workers per environment", 25.0)
+                    .code("L-78AC1883")
+                    .describe("The maximum number of workers per environment."),
             ],
         ),
         service(
             "amplify",
             "AWS Amplify",
             vec![
-                // Descriptive codes AWS publishes itself, as the recorded default
-                // listing for this service carries them.
-                quota("Apps per Region", 25.0).code("AppsPerRegion"),
-                quota("Branches per app", 50.0).code("BranchesPerApp"),
+                // How fast apps may be created, which AWS publishes as not adjustable.
+                quota("Maximum app creations per hour", 25.0)
+                    .code("L-2FC3A2FA")
+                    .fixed(),
+                // The branch plane of an app, RE-KEYED onto AWS's own code: the recorded
+                // default listing of this service reports the descriptive stand-in this
+                // catalog used (`BranchesPerApp`) as a surplus entry and states the code
+                // AWS publishes the quota under. The app-count row's stand-in
+                // (`AppsPerRegion`) is surplus too, and that recording states no AWS
+                // code for the quota it names, so that row is dropped rather than paired
+                // with a code this catalog would be guessing at.
+                quota("Branches per app", 50.0).code("L-A6716586"),
             ],
         ),
         service("apigateway", "Amazon API Gateway", apigateway_quotas()),
@@ -3352,6 +3323,22 @@ fn seed_quota_catalog() -> Vec<CatalogService> {
         // evidence states for it, beside the count of the account's user pools under
         // `L-66E6DF30`: each is a COUNT rather than a category rate, so neither carries
         // the one-second window or the category call count of the rates around it.
+        //
+        // And it covers six further rows, each the stand-in of a service whose recorded
+        // default-quota listing keys every row it carries on an AWS `L-` code and
+        // reports the stand-in as a surplus entry: `access-analyzer/AnalyzersPerRegion`,
+        // `acm/ACMCertificates`, `acm/ImportedCertificates`,
+        // `acm-pca/CertificateAuthorities`, `amplify/AppsPerRegion` and
+        // `amplify/BranchesPerApp`. Where that evidence states AWS's own code for the
+        // quota the row names AND the facts published under it, the row is RE-KEYED onto
+        // that code and keeps its published name and value (`amplify/L-A6716586` below);
+        // for the other five the evidence leaves the code, the published name or the
+        // value of the quota the row names withheld, and a row carries only the facts
+        // published under its OWN code, so the row is dropped rather than paired with a
+        // code or a fact this catalog would be guessing at. Each of those services keeps
+        // the rows that evidence DOES bind to a code, and the quotas of its published
+        // catalog whose name, value or rate no source available here states stay in the
+        // default-quota-set gap.
         service(
             "b2bi",
             "B2B Data Interchange",

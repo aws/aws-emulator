@@ -35,8 +35,8 @@ use crate::quota_workflow::{
 /// The rows differ along what the rule generalises over — catalog size and the KIND of
 /// quota a service publishes: a service of counted resource quotas (`kafka`), one of
 /// metered request rates (`kms`), a large catalog (`apigateway`), one whose quotas are
-/// all account-wide (`iam`), a small one (`signin`) and one published under a
-/// descriptive code (`access-analyzer`).
+/// all account-wide (`iam`), a small one (`signin`) and one whose every row is published
+/// under an AWS-minted code (`access-analyzer`).
 const LABELLED_SERVICES: &[&str] = &[
     "access-analyzer",
     "apigateway",

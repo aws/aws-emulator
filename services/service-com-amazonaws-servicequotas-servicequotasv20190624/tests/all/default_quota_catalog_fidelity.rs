@@ -76,13 +76,16 @@ fn rows() -> Vec<Row> {
             period: None,
             metric: None,
         },
+        // A quota published under a DESCRIPTIVE code — the one this catalog carries
+        // because the service's own refusal reports the limit under it, not a
+        // stand-in for an AWS code.
         Row {
-            service_code: "access-analyzer",
-            quota_code: "AnalyzersPerRegion",
-            quota_name: "Analyzers per Region",
-            value: 1.0,
+            service_code: "b2bi",
+            quota_code: "ProfilesPerAccount",
+            quota_name: "Customer profiles per account",
+            value: 5.0,
             unit: "None",
-            adjustable: false,
+            adjustable: true,
             description: None,
             period: None,
             metric: None,
@@ -324,6 +327,12 @@ const USAGE_METRIC_SERVICE_NAMES: &[(&str, &str)] = &[
 /// `src/state.rs::descriptive_quota_code`; every other row keeps the code that rule
 /// gives it.
 const SURPLUS_QUOTA_CODES: &[(&str, &str)] = &[
+    ("access-analyzer", "AnalyzersPerRegion"),
+    ("acm", "ACMCertificates"),
+    ("acm", "ImportedCertificates"),
+    ("acm-pca", "CertificateAuthorities"),
+    ("amplify", "AppsPerRegion"),
+    ("amplify", "BranchesPerApp"),
     ("autoscaling-plans", "ScalingPlansPerRegion"),
     ("batch", "ComputeEnvironments"),
     ("batch", "JobQueues"),

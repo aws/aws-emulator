@@ -101,6 +101,8 @@ mod quota_workflow;
 mod quotas_catalog;
 #[path = "all/recorded_default_catalog_rows.rs"]
 mod recorded_default_catalog_rows;
+#[path = "all/recorded_rows_access_analyzer_through_amplify.rs"]
+mod recorded_rows_access_analyzer_through_amplify;
 #[path = "all/recorded_rows_config_through_signin.rs"]
 mod recorded_rows_config_through_signin;
 #[path = "all/recorded_rows_events_through_imagebuilder.rs"]
