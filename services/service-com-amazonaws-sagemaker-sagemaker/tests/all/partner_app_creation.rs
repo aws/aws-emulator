@@ -39,7 +39,7 @@ use crate::inference_deployment_lifecycle::{
 
 /// Every member of `PartnerAppType`, from the model
 /// (`smithy_query(query="shape",shape="PartnerAppType")`).
-const PARTNER_APP_TYPES: [&str; 4] = [
+pub(crate) const PARTNER_APP_TYPES: [&str; 4] = [
     "lakera-guard",
     "comet",
     "deepchecks-llm-evaluation",
@@ -72,7 +72,7 @@ const IDC_INSTANCE_ARN: &str = "arn:aws:sso:::instance/ssoins-1234567890abcdef";
 
 /// Grant `types` to the account, as an AWS Marketplace subscription does. See this
 /// module's header: no operation of this service grants one.
-fn subscribe(emulator: &Emulator, types: &[&str]) {
+pub(crate) fn subscribe(emulator: &Emulator, types: &[&str]) {
     let state = sm::service_state(&*emulator.engine).expect("the store is on the shared engine");
     let mut store = state.lock();
     for app_type in types {
@@ -84,7 +84,7 @@ fn subscribe(emulator: &Emulator, types: &[&str]) {
 
 /// A `CreatePartnerApp` request body: the four required members, plus whatever `extras`
 /// carries.
-fn create_body(name: &str, app_type: &str, extras: &Value) -> Value {
+pub(crate) fn create_body(name: &str, app_type: &str, extras: &Value) -> Value {
     let mut body = json!({
         "Name": name,
         "Type": app_type,
@@ -116,7 +116,7 @@ async fn listed_arns(emulator: &Emulator) -> Vec<String> {
 }
 
 /// The `app-...` id an app's ARN carries.
-fn app_id_of(arn: &str) -> &str {
+pub(crate) fn app_id_of(arn: &str) -> &str {
     arn.rsplit('/').next().unwrap_or_default()
 }
 
@@ -562,10 +562,18 @@ async fn a_created_app_becomes_available_only_once_the_clock_owes_it() {
             .ok("CreatePartnerAppPresignedUrl", &json!({"Arn": arn}))
             .await;
         let url = str_field(&minted, "Url");
-        let base = sm::partner_app_base_url("us-east-1", app_id_of(&arn));
+        // The URL leads back to THIS emulator, at the session address it serves for the
+        // app (its own suite is `tests/all/presigned_session.rs`): the app's `BaseUrl` is
+        // what the READER reports, as AWS reports it, and no client of this emulator
+        // resolves that host.
+        let expected = format!(
+            "{}/_aws/sagemaker/partner-app/{}/auth?authToken=",
+            smithy_server_runtime::UNSERVED_URL_BASE,
+            app_id_of(&arn)
+        );
         assert!(
-            url.starts_with(&base) && url.contains("authToken="),
-            "case {case}: the URL must address the app itself and carry a grant, got \
+            url.starts_with(&expected),
+            "case {case}: the URL must address the app's session on this emulator, got \
              {url:?}"
         );
     }

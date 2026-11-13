@@ -11,11 +11,13 @@
 //! notebook-instance request shape comes from the suite that creates them.
 //!
 //! The tests assert the RULES over a TABLE of inputs rather than one recorded call:
-//! the `AuthorizedUrl` is the instance's own Jupyter host plus a grant token this call
-//! recorded on the instance; the URL itself is valid for the documented 5 minutes and
-//! opens a session of the requested duration (12 hours when the request names none);
-//! every call mints its own grant; only an instance actually serving Jupyter has a URL;
-//! and a name nothing created, or a session duration outside the modelled range, is
+//! the `AuthorizedUrl` addresses the session path on THIS emulator's own endpoint (never a
+//! host of AWS's own, which no client of the emulator resolves — the address and the
+//! session served at it are `tests/all/presigned_session.rs`'s subject) and carries a grant
+//! token this call recorded on the instance; the URL itself is valid for the documented 5
+//! minutes and opens a session of the requested duration (12 hours when the request names
+//! none); every call mints its own grant; only an instance actually serving Jupyter has a
+//! URL; and a name nothing created, or a session duration outside the modelled range, is
 //! refused.
 
 use std::time::Duration;
@@ -51,13 +53,15 @@ fn grants(emulator: &Emulator, name: &str) -> Vec<sm::PresignedUrlGrant> {
         .unwrap_or_default()
 }
 
-/// The `authToken` query parameter of `url`, or the empty string when it carries none.
+/// The `authToken` query parameter of `url`, DECODED — the form the grant holds, since
+/// the mint percent-encodes the token into the query.
 fn token_of(url: &str) -> String {
-    url.split("authToken=")
+    let encoded = url
+        .split("authToken=")
         .nth(1)
         .and_then(|rest| rest.split('&').next())
-        .unwrap_or_default()
-        .to_string()
+        .unwrap_or_default();
+    smithy_server_runtime::percent_decode(encoded)
 }
 
 /// `CreatePresignedNotebookInstanceUrl` for `name` in `region`, with whatever `extra`
@@ -72,10 +76,10 @@ async fn presign(emulator: &Emulator, region: &str, name: &str, extra: &Value) -
         .await
 }
 
-/// RULE: the `AuthorizedUrl` addresses the Jupyter host the instance reports and carries
-/// an opaque grant token the call recorded on that instance; the grant is valid for the
-/// documented 5 minutes and opens a session of the requested duration, defaulting to the
-/// documented 12 hours.
+/// RULE: the `AuthorizedUrl` addresses the session path on this emulator's own endpoint
+/// and carries an opaque grant token the call recorded on that instance; the grant is
+/// valid for the documented 5 minutes and opens a session of the requested duration,
+/// defaulting to the documented 12 hours.
 #[tokio::test]
 async fn a_presigned_url_addresses_the_instances_own_jupyter_host_with_a_recorded_grant() {
     // Rows differ along what the rule generalises over: whether the request names a
@@ -130,8 +134,10 @@ async fn a_presigned_url_addresses_the_instances_own_jupyter_host_with_a_recorde
         );
         let url = str_field(&minted, "AuthorizedUrl");
 
-        // The host is the instance's own `Url`, as the reader reports it — not a value
-        // rebuilt from the request in this response.
+        // The instance's own `Url` is what the READER reports, as AWS reports it; the
+        // URL a caller is told to FETCH is not built on it — no client of this emulator
+        // resolves an AWS host — so it addresses the session path on the endpoint this
+        // emulator publishes.
         let (status, described) = emulator
             .call_in(
                 region,
@@ -146,10 +152,13 @@ async fn a_presigned_url_addresses_the_instances_own_jupyter_host_with_a_recorde
             format!("{name}.notebook.{region}.sagemaker.aws"),
             "case {case}: the instance's Jupyter host, got {described:?}"
         );
+        let expected = format!(
+            "{}/_aws/sagemaker/notebook-instance/{name}/auth?authToken=",
+            smithy_server_runtime::UNSERVED_URL_BASE
+        );
         assert!(
-            url.starts_with(&format!("https://{host}/auth?authToken=")),
-            "case {case}: expected the URL to address https://{host}/auth with a token, \
-             got {url:?}"
+            url.starts_with(&expected),
+            "case {case}: expected the URL to address {expected:?}, got {url:?}"
         );
 
         // The token is a grant the instance holds, not a value invented for the response.

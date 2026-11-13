@@ -131,7 +131,7 @@ async fn a_tag_refusal_words_the_owning_resource_familys_sentence() {
             kind: "lineage-group",
             name: "absent-group",
             quoted: true,
-            entity: "Lineage group",
+            entity: "LineageGroup",
             sentence: None,
         },
         Row {

@@ -248,6 +248,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 creation_time: now,
                 last_modified_time: now,
                 created_at,
+                // Nothing has presigned a URL for an app that has just been created.
+                grants: Vec::new(),
             },
         );
         drop(store);

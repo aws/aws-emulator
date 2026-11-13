@@ -215,6 +215,8 @@ mod pipeline_lifecycle;
 mod pipeline_role_resolution;
 #[path = "all/presigned_notebook_instance_url.rs"]
 mod presigned_notebook_instance_url;
+#[path = "all/presigned_session.rs"]
+mod presigned_session;
 #[path = "all/processing_job_lifecycle.rs"]
 mod processing_job_lifecycle;
 #[path = "all/processing_job_not_found_refusals.rs"]

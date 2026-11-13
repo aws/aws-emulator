@@ -7,12 +7,17 @@
 //! shared `Emulator` harness in `inference_deployment_lifecycle`.
 //!
 //! The suites assert RULES over TABLES of inputs rather than one recorded call: the URL's
-//! form for every region and every app shape, the app's region deciding the host whatever
-//! the request signed for, the fresh token each call mints, the `ValidationException` refusal for an ARN no app was created under (the code and fixed
+//! form for every region and every app shape, the app's own opaque ARN id addressing it
+//! whatever the request signed for, the fresh token each call mints, the
+//! `ValidationException` refusal for an ARN no app was created under (the code and fixed
 //! message the recorded AWS response carries), the two validity members at and past each
 //! published bound, and that presigning changes nothing a later `DescribeMlflowApp`
 //! reports beyond the transition the clock owed anyway — and retains the minted token in
 //! nothing it reports.
+//!
+//! The published URL addresses the MLflow session on THIS emulator's own endpoint, because
+//! no client of the emulator resolves AWS's managed-UI host; the address and the session
+//! served at it are `tests/all/presigned_session.rs`'s subject.
 
 use serde_json::{json, Value};
 
@@ -21,10 +26,13 @@ use crate::inference_deployment_lifecycle::{error_code, message, str_field, Emul
 // role ARN, the ARN-parsing rule and the due span have ONE definition in this crate.
 use crate::mlflow_app_lifecycle::{minimal, mlflow_app_id, PAST_CREATED_DUE, ROLE};
 
-/// The domain SageMaker serves the managed MLflow UI on, as an MLflow tracking server's
-/// `TrackingServerUrl` spells it (`https://<server>.<region>.experiments.sagemaker.aws`)
-/// and as `ops::create_presigned_mlflow_app_url::authorized_url` builds it.
-const MLFLOW_UI_DOMAIN: &str = "experiments.sagemaker.aws";
+/// The base this emulator publishes a session address on: in-process the router is served
+/// on no port, so `ctx.endpoint()` answers
+/// [`smithy_server_runtime::UNSERVED_URL_BASE`], where a served emulator answers its data
+/// port's base.
+fn session_base() -> &'static str {
+    smithy_server_runtime::UNSERVED_URL_BASE
+}
 
 /// A loose floor on the authorization token's length: the emulator's credential store
 /// mints a session token of several hundred characters, and this suite pins only that the
@@ -42,11 +50,16 @@ async fn create_in(emulator: &Emulator, case: &str, region: &str, body: &Value) 
 }
 
 /// The `authToken` query value of a presigned MLflow URL whose host and path are the ones
-/// the rule prescribes for `arn` in `region`. Panics — with the case named — when the URL
-/// takes any other form, so every caller gets the same structural check.
-fn auth_token(case: &str, url: &str, arn: &str, region: &str) -> String {
+/// the rule prescribes for `arn`. Panics — with the case named — when the URL takes any
+/// other form, so every caller gets the same structural check.
+///
+/// `_region` is the app's own Region, which the address does not carry: the session is
+/// served at the endpoint the caller is already talking to, and the app's opaque ARN id is
+/// what identifies it there.
+fn auth_token(case: &str, url: &str, arn: &str, _region: &str) -> String {
     let expected_prefix = format!(
-        "https://{}.{region}.{MLFLOW_UI_DOMAIN}/auth?authToken=",
+        "{}/_aws/sagemaker/mlflow-app/{}/auth?authToken=",
+        session_base(),
         mlflow_app_id(arn)
     );
     let token = url.strip_prefix(&expected_prefix).unwrap_or_else(|| {
@@ -86,9 +99,9 @@ fn auth_token(case: &str, url: &str, arn: &str, region: &str) -> String {
 }
 
 /// RULE: the operation answers a presigned URL for the app the store holds under the
-/// requested ARN — `https://<the app's ARN id>.<the app's ARN region>.
-/// experiments.sagemaker.aws/auth?authToken=<a freshly minted authorization token>` —
-/// whatever the app's members and whatever region it was created in.
+/// requested ARN — the session address on this emulator's own endpoint, naming the app's
+/// own opaque ARN id and carrying a freshly minted authorization token — whatever the
+/// app's members and whatever region it was created in.
 #[tokio::test]
 async fn a_presigned_url_names_the_stored_app_its_region_and_a_minted_authorization_token() {
     // Rows differ along the axes the rule generalises over: the signed region, the app's
@@ -170,9 +183,9 @@ async fn a_presigned_url_names_the_stored_app_its_region_and_a_minted_authorizat
     }
 }
 
-/// RULE: the URL's region is the one the APP's ARN names, not the one the presign request
-/// signed for — the resource's identity decides where its UI is served, so a caller
-/// signing for another region still gets the app's own host.
+/// RULE: the URL names the APP, not the region the presign request signed for — the
+/// resource's identity decides which session the address opens, so a caller signing for
+/// another region still gets the app's own address.
 #[tokio::test]
 async fn the_url_names_the_region_of_the_app_not_the_region_the_request_signed_for() {
     let emulator = Emulator::new();
@@ -200,15 +213,16 @@ async fn the_url_names_the_region_of_the_app_not_the_region_the_request_signed_f
     }
 }
 
-/// RULE: the presigned URL can be used only once, so every call mints a FRESH
-/// authorization token — while the host it authorizes against stays the app's own,
+/// RULE: the presigned URL carries a grant of its own, so every call mints a FRESH
+/// authorization token — while the address it opens the session at stays the app's own,
 /// because it is derived from the app's ARN rather than from the call.
 #[tokio::test]
 async fn every_call_for_one_app_mints_a_fresh_token_under_the_same_host() {
     let emulator = Emulator::new();
     let arn = create_in(&emulator, "repeat", "us-east-1", &minimal("presign-repeat")).await;
     let host_and_path = format!(
-        "https://{}.us-east-1.{MLFLOW_UI_DOMAIN}/auth?authToken=",
+        "{}/_aws/sagemaker/mlflow-app/{}/auth?authToken=",
+        session_base(),
         mlflow_app_id(&arn)
     );
 
@@ -232,7 +246,8 @@ async fn every_call_for_one_app_mints_a_fresh_token_under_the_same_host() {
         let url = str_field(&parsed, "AuthorizedUrl");
         assert!(
             url.starts_with(&host_and_path),
-            "case {case:?}: expected the app's own host {host_and_path:?}, got {url:?}"
+            "case {case:?}: expected the app's own session address {host_and_path:?}, got \
+             {url:?}"
         );
         let token = auth_token(&case, &url, &arn, "us-east-1");
         assert!(

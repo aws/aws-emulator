@@ -851,18 +851,6 @@ pub fn mint_node_logical_id() -> String {
     mint_opaque_resource_id()
 }
 
-/// A fresh opaque token for a presigned-URL grant, from the same scheme as every other
-/// id here. It is an identifier inside this emulator's own store, never a credential:
-/// nothing signs with it and nothing presents it back to the emulator.
-///
-/// NOT for a presigned URL whose token is handed to the caller as a SECRET: such a token
-/// is minted through the emulator's credential store, because a service may not construct
-/// a secret itself (`CreatePresignedMlflowAppUrl` does that). This one mints the id of a
-/// grant this emulator stores and looks up again.
-pub fn mint_grant_token() -> String {
-    mint_opaque_resource_id()
-}
-
 /// `TransformJobStatus`'s members this emulator moves a transform job through (the
 /// modelled enum also carries `Completed`, `Stopping` and `Stopped`, which this slice
 /// does not reach). Named once here so no handler compares a bare string literal.
@@ -1119,6 +1107,11 @@ pub use notebook_hook_logs::*;
 /// The partner-AI-app slice: see `state/partner_app.rs`.
 pub mod partner_app;
 pub use partner_app::*;
+
+/// The presigned-session slice — where a URL this service hands a caller is addressed and
+/// what a fetch of it resolves to: see `state/presigned_session.rs`.
+pub mod presigned_session;
+pub use presigned_session::*;
 
 /// The pipeline-definition slice: see `state/pipeline_definition.rs`.
 pub mod pipeline_definition;
@@ -1637,6 +1630,12 @@ pub struct MlflowApp {
     pub creation_time: SystemTime,
     pub last_modified_time: SystemTime,
     pub created_at: SystemTime,
+    /// Every presigned-URL grant `CreatePresignedMlflowAppUrl` minted for this app whose
+    /// session could still be in use, oldest first. Same record as a notebook instance's
+    /// and a partner app's ([`PresignedUrlGrant`]), written through the crate's one
+    /// presigned-grant record ([`record_presigned_grant`]), because the three carry the
+    /// same thing: the token the published URL authenticates the session with.
+    pub grants: Vec<PresignedUrlGrant>,
 }
 
 impl MlflowApp {
@@ -1893,12 +1892,14 @@ pub struct ModelPackageGroup {
     pub resource_policy: Option<String>,
 }
 
-/// One presigned-URL grant `CreatePartnerAppPresignedUrl` minted: the opaque token the
-/// URL carries and when it stops being valid.
+/// One presigned-URL grant a presign minted: the opaque token the URL carries and when
+/// it stops being valid.
 ///
-/// The token is NOT an AWS credential — it is never presented to this emulator and
-/// nothing signs with it — so it is a stored grant id rather than a credential-store
-/// record.
+/// The token is a SECRET handed to the caller — it is presented back at the session
+/// address the URL names and matched against this record, which is what authenticates the
+/// session ([`crate::state::presigned_session`]) — so it is minted by the emulator's
+/// credential store ([`mint_session_token`]) rather than constructed in this service, and
+/// is never reported by any read of the resource it belongs to.
 #[derive(Debug, Clone)]
 pub struct PresignedUrlGrant {
     pub token: String,
@@ -3264,8 +3265,11 @@ pub const CONTEXT_ENTITY: &str = "Context";
 /// kind out of the ARN it could not resolve.
 pub const ASSOCIATION_END_ENTITY: &str = "Resource";
 
-/// The entity label [`does_not_exist`] names a lineage group by.
-pub const LINEAGE_GROUP_ENTITY: &str = "Lineage group";
+/// The entity label [`does_not_exist`] names a lineage group by — the resource TYPE name,
+/// one word, as the service spells it there (the same way
+/// [`MODEL_PACKAGE_GROUP_ENTITY`] spells its kind): `LineageGroup '<arn>' does not
+/// exist.`
+pub const LINEAGE_GROUP_ENTITY: &str = "LineageGroup";
 
 /// The entity label [`does_not_exist`] names a pipeline by.
 pub const PIPELINE_ENTITY: &str = "Pipeline";

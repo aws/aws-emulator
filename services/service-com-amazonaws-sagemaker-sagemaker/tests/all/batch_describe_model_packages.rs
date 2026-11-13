@@ -358,9 +358,11 @@ async fn a_version_is_reported_pending_until_the_clock_owes_completed() {
 }
 
 /// RULE: an ARN the account holds no versioned model package for is reported as its own
-/// `BatchDescribeModelPackageErrorMap` entry — `ErrorCode` `ValidationException` and an
-/// `ErrorResponse` naming the ARN — so the request still answers 200 and the ARNs beside
-/// it are still summarised.
+/// `BatchDescribeModelPackageErrorMap` entry, in the BATCH's error vocabulary — the fixed
+/// `ErrorCode` `EntityNotFoundError` and the fixed `ErrorResponse` `The ARN is not found.`,
+/// with nothing from the request interpolated, since the entry is already keyed by the ARN
+/// it is about — so the request still answers 200 and the ARNs beside it are still
+/// summarised.
 #[tokio::test]
 async fn an_arn_without_a_versioned_package_is_reported_per_item() {
     let emulator = Emulator::new();
@@ -414,13 +416,19 @@ async fn an_arn_without_a_versioned_package_is_reported_per_item() {
                 .unwrap_or_else(|| panic!("case {case:?}: expected an error entry for {arn} in {output}"));
             assert_eq!(
                 str_field(&entry, "ErrorCode"),
-                "ValidationException",
-                "case {case:?}: expected ValidationException for an ARN with no summary, \
-                 got {entry}"
+                "EntityNotFoundError",
+                "case {case:?}: expected the batch vocabulary's not-found code for an ARN \
+                 with no summary, got {entry}"
+            );
+            assert_eq!(
+                str_field(&entry, "ErrorResponse"),
+                "The ARN is not found.",
+                "case {case:?}: expected the fixed not-found response, got {entry}"
             );
             assert!(
-                str_field(&entry, "ErrorResponse").contains(&arn),
-                "case {case:?}: expected the error to name {arn}, got {entry}"
+                !str_field(&entry, "ErrorResponse").contains(&arn),
+                "case {case:?}: the entry is keyed by the ARN, so its text interpolates \
+                 nothing from the request, got {entry}"
             );
             assert!(
                 !summaries(&output).contains_key(&arn),

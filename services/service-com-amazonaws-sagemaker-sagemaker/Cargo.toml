@@ -28,10 +28,10 @@ tracing = { workspace = true }
 hex = { workspace = true }
 # Digest behind `state::mint_opaque_resource_id`, the one scheme every server-generated
 # id in this service is minted with (cluster/compute-quota/scheduler-config ids, EC2
-# instance ids, node logical ids, presigned-URL grant tokens).
+# instance ids, node logical ids).
 sha2 = { workspace = true }
-# RFC 3986 percent-encoding, for the authorization token a presigned MLflow URL carries
-# in a query parameter (the minted secret's alphabet includes `+` and `/`).
+# RFC 3986 percent-encoding, for the path segments and the authorization token a presigned
+# session address carries (the minted secret's alphabet includes `+` and `/`).
 percent-encoding = "2"
 # The Amazon S3 client a training job's run reads its input channels through and writes its
 # model artifact with, over the in-process callback into this same emulator (no network

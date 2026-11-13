@@ -2,12 +2,13 @@
 
 //! @op CreatePresignedNotebookInstanceUrl
 //!
-//! Mints the Jupyter URL for a notebook instance this account holds: the instance's own
-//! `Url` host with an opaque grant token this call records on the instance, valid for the
-//! documented 5 minutes, opening a session of the requested duration (12 hours by
-//! default). An instance with no running Jupyter server to connect to — one still coming
-//! up, stopping or stopped — is refused with a 400 `ValidationException`, since this
-//! operation models no error of its own.
+//! Mints the Jupyter session URL for a notebook instance this account holds: the address
+//! THIS emulator serves the session at ([`crate::state::presigned_session_url`]) with an
+//! opaque grant token this call records on the instance, valid for the documented 5
+//! minutes, opening a session of the requested duration (12 hours by default). An instance
+//! with no running Jupyter server to connect to — one still coming up, stopping or
+//! stopped — is refused with a 400 `ValidationException`, since this operation models no
+//! error of its own.
 //!
 //! ## Shape of an operation
 //!
@@ -180,6 +181,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let settled = notebook.settle_status(now);
         let arn = notebook.arn.clone();
         let status = notebook.status.clone();
+        let name = notebook.name.clone();
 
         // This URL connects its holder to the Jupyter server ON the instance, so an
         // instance serving none — one still coming up, stopping, or stopped — has no URL
@@ -198,11 +200,29 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         }
 
         // The grant is recorded ON the instance, so the URL names a token this store
-        // holds rather than one invented per response, and it addresses the instance's
-        // own Jupyter host as the create minted it.
-        let grant = notebook.grant_presigned_url(now, session_duration);
-        let authorized_url =
-            crate::state::presigned_notebook_instance_url(&notebook.url, &grant.token);
+        // holds rather than one invented per response. The token authenticates the session
+        // when it is presented back at the address below, which makes it a SECRET: it is
+        // minted by the emulator's credential store and removed from it again, never
+        // constructed here (see `crate::state::mint_session_token`). A mint that answered
+        // nothing leaves no URL to report, and this operation models no server fault, so
+        // the honest answer is "this emulator did not serve it".
+        let Some(token) = crate::state::mint_session_token(ctx.credential_store()) else {
+            return Err(crate::scaffolded::Scaffolded::not_implemented(Self::NAME));
+        };
+        let grant = notebook.grant_presigned_url(token, now, session_duration);
+        // The URL the caller opens later has to lead back to THIS emulator, on the
+        // endpoint the request arrived on: an AWS host (the instance's own `Url`, which
+        // `DescribeNotebookInstance` still reports) resolves to nothing a client of this
+        // emulator can reach, so a caller that did what this operation exists for — fetch
+        // the URL to open a notebook session — would get a name-resolution error instead
+        // of a session. `crate::service::presigned_session` serves that address.
+        let authorized_url = crate::state::presigned_session_url(
+            ctx,
+            crate::state::NOTEBOOK_INSTANCE_ARN_KIND,
+            &name,
+            &grant.token,
+            &[],
+        );
         drop(store);
 
         crate::state::record_state_change(Self::NAME, &arn, ctx);

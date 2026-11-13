@@ -240,7 +240,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         while store.partner_apps.contains_key(&app_id) {
             app_id = crate::state::mint_partner_app_id();
         }
-        let arn = crate::state::resource_arn(&region, "partner-app", &app_id);
+        let arn = crate::state::resource_arn(
+            &region,
+            crate::state::PARTNER_APP_ARN_KIND,
+            &app_id,
+        );
         let app = crate::state::PartnerApp {
             base_url: crate::state::partner_app_base_url(&region, &app_id),
             app_id: app_id.clone(),

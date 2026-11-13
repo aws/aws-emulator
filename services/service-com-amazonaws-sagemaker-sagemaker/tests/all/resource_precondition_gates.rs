@@ -279,17 +279,15 @@ async fn a_presigned_url_for_an_instance_that_does_not_exist_is_refused_by_its_a
              {minted}"
         );
         let url = str_field(&minted, "AuthorizedUrl");
+        // The URL leads back to THIS emulator (the session address, whose own suite is
+        // `tests/all/presigned_session.rs`), naming the instance it was minted for.
         assert!(
-            url.contains(&str_field(
-                &emulator
-                    .ok(
-                        "DescribeNotebookInstance",
-                        &json!({ "NotebookInstanceName": name }),
-                    )
-                    .await,
-                "Url",
+            url.starts_with(&format!(
+                "{}/_aws/sagemaker/notebook-instance/{name}/auth?authToken=",
+                smithy_server_runtime::UNSERVED_URL_BASE
             )),
-            "case {case:?}: the URL must address the instance's own Jupyter host, got {url}"
+            "case {case:?}: the URL must address this emulator's session path for the \
+             instance, got {url}"
         );
     }
 }

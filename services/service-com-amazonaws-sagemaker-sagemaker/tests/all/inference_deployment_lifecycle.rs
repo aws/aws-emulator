@@ -116,6 +116,35 @@ impl Emulator {
         );
         parsed
     }
+
+    /// Fetch one URL this emulator published, the way a browser fetches it: a plain `GET`
+    /// of the path and query the URL carries, nothing signed beyond what the URL itself
+    /// holds, and no redirect followed.
+    ///
+    /// Returns `(status, body)`. Whatever host the URL names, the request is dispatched to
+    /// this router — what is under test is the address the service published, not name
+    /// resolution. Shared with the suite that follows a published URL
+    /// (`tests/all/presigned_session.rs`).
+    pub(crate) async fn fetch(&self, url: &str) -> (u16, String) {
+        let target = match url.split_once("://") {
+            Some((_, rest)) => match rest.split_once('/') {
+                Some((_, path_and_query)) => format!("/{path_and_query}"),
+                None => "/".to_string(),
+            },
+            None => url.to_string(),
+        };
+        let request = http::Request::builder()
+            .method("GET")
+            .uri(target)
+            .body(bytes::Bytes::new())
+            .expect("a well-formed request");
+        let response = self.router.dispatch(request).await;
+        let status = response.status().as_u16();
+        (
+            status,
+            String::from_utf8_lossy(response.body()).to_string(),
+        )
+    }
 }
 
 /// The `__type` an error body carries, with any `namespace#` prefix stripped.

@@ -1584,8 +1584,8 @@ async fn attaching_a_volume_answers_one_attachment_per_volume() {
     );
 }
 
-/// RULE: a presigned URL is the app's own base URL plus a grant this call recorded on
-/// the app, and only an `Available` app has one.
+/// RULE: a presigned URL is the session address this emulator serves for the app plus a
+/// grant this call recorded on it, and only an `Available` app has one.
 #[tokio::test]
 async fn a_partner_app_presigned_url_carries_a_recorded_grant() {
     let emulator = Emulator::new();
@@ -1610,15 +1610,19 @@ async fn a_partner_app_presigned_url_carries_a_recorded_grant() {
         let minted = emulator.ok("CreatePartnerAppPresignedUrl", body).await;
         let url = str_field(&minted, "Url");
         assert!(
-            url.starts_with("https://app-ABCDEF123456."),
-            "case {label}: the URL must address the app itself, got {url:?}"
+            url.starts_with(&format!(
+                "{}/_aws/sagemaker/partner-app/app-ABCDEF123456/auth?authToken=",
+                smithy_server_runtime::UNSERVED_URL_BASE
+            )),
+            "case {label}: the URL must address the app's session on this emulator, got \
+             {url:?}"
         );
         let token = url
             .split("authToken=")
             .nth(1)
             .and_then(|rest| rest.split('&').next())
-            .unwrap_or_default()
-            .to_string();
+            .map(smithy_server_runtime::percent_decode)
+            .unwrap_or_default();
         assert!(
             !token.is_empty(),
             "case {label}: the URL must carry a grant token, got {url:?}"

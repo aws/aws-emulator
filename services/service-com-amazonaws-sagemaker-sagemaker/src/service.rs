@@ -54,6 +54,10 @@ pub(crate) mod validation;
 /// before they report anything ([`authorization::authorize`]).
 pub mod authorization;
 
+/// Serves the authenticated session a presigned URL this service handed out opens, at the
+/// address it published for it ([`presigned_session::PresignedSessionRoute`]).
+pub mod presigned_session;
+
 /// This service's own Smithy shape id, whose LOCAL name (`SageMaker`) is what an
 /// awsJson1_1 request names its target service by
 /// (`X-Amz-Target: SageMaker.<Operation>`).
@@ -70,6 +74,10 @@ const RPC_SERVICE_SHAPE_ID: &str = "com.amazonaws.sagemaker#SageMaker";
 /// router builds one shared engine and hands it to `new`.
 pub struct EmulatedService<Eng: Send + Sync + 'static> {
     entry: crate::ServiceDefinition<Eng>,
+    /// The route that serves the authenticated session a presigned URL this service
+    /// published opens. Held rather than built per request because
+    /// [`Service::override_operation`] hands the router a BORROW of it.
+    presigned_session: presigned_session::PresignedSessionRoute<Eng>,
 }
 
 impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
@@ -78,8 +86,19 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
     /// operation's behaviour lives in that operation's own `impl Operation`.
     pub fn new(engine: Arc<Eng>) -> Self {
         Self {
+            presigned_session: presigned_session::PresignedSessionRoute::new(Arc::clone(&engine)),
             entry: crate::ServiceDefinition::new(engine),
         }
+    }
+
+    /// The presigned-session route, when it is what serves this request.
+    ///
+    /// The ONE place that decision is made, so `can_handle` claims exactly the requests
+    /// `override_operation` then serves.
+    fn presigned_session_route(&self, method: &str, uri: &str) -> Option<&dyn ErasedOperation> {
+        self.presigned_session
+            .claims(method, uri)
+            .then_some(&self.presigned_session as &dyn ErasedOperation)
     }
 }
 
@@ -110,6 +129,16 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
         // posts to (the root). Each data-plane sibling's own URI path space is then
         // claimed by it alone — and a root-path request targeted at some other RPC peer
         // sharing the signing name is not claimed here either.
+        // The address a presigned URL this service published names is claimed by its PATH:
+        // such a URL is fetched by a browser, which presents no credential scope and names
+        // no route key, so nothing else would claim it (see
+        // [`presigned_session::PresignedSessionRoute`]).
+        if self
+            .presigned_session_route(parts.method.as_str(), &parts.uri.to_string())
+            .is_some()
+        {
+            return true;
+        }
         service_common::claims_request(
             parts,
             self.entry.identity().signing_name(),
@@ -126,8 +155,11 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
         // correctly; `None` (the default) lets the generated routing table resolve
         // it. `req` is the whole request, so a decision that depends on the body —
         // the `Action` form field on a query protocol, say — is reachable here.
-        let _ = req;
-        None
+        //
+        // The model binds no operation to the address a presigned URL points at — an
+        // opened session is not an API call, it is what the API's URL leads to — so that
+        // address is served here.
+        self.presigned_session_route(req.method(), req.uri())
     }
 
     fn override_refusal(&self, refusal: &Refusal) -> Option<Refused> {

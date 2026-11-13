@@ -3,7 +3,8 @@
 //! @op CreatePartnerAppPresignedUrl
 //! IMPLEMENTED: resolves the partner app the `Arn` names in `crate::state`, refuses an
 //! app that does not exist with the modelled `ResourceNotFound`, records the grant the
-//! URL carries on that app, and answers the app's own base URL with that grant. This is
+//! URL carries on that app, and answers the address THIS emulator serves that app's
+//! session at ([`crate::state::presigned_session_url`]) with that grant. This is
 //! the ONLY file to touch for this operation.
 //!
 //! ## Shape of an operation
@@ -176,30 +177,35 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             )));
         }
 
-        let grant = crate::state::PresignedUrlGrant {
-            token: crate::state::mint_grant_token(),
-            issued_at: now,
-            expires_at: now
-                + ::std::time::Duration::from_secs(u64::try_from(expires_in).unwrap_or_default()),
-            session_expires_at: now
-                + ::std::time::Duration::from_secs(
-                    u64::try_from(session_duration).unwrap_or_default(),
-                ),
+        // The grant is recorded ON the app through the crate's one presigned-grant record,
+        // so the URL names a token this store holds. The token authenticates the session
+        // when it is presented back at the address below, which makes it a SECRET: it is
+        // minted by the emulator's credential store and removed from it again, never
+        // constructed here. A mint that answered nothing leaves no URL to report.
+        let Some(token) = crate::state::mint_session_token(ctx.credential_store()) else {
+            return Err(crate::scaffolded::Scaffolded::not_implemented(Self::NAME));
         };
-        // An expiry the clock already made due releases its grant: the record is gone
-        // once the session it opened could no longer be in use.
-        app.grants
-            .retain(|held| held.session_expires_at > now);
-        app.grants.push(grant.clone());
-        if app.grants.len() > crate::state::GRANT_HISTORY_CAP {
-            let overflow = app.grants.len() - crate::state::GRANT_HISTORY_CAP;
-            app.grants.drain(..overflow);
-        }
+        let app_id = app.app_id.clone();
+        let grant = crate::state::record_presigned_grant(
+            &mut app.grants,
+            token,
+            now,
+            ::std::time::Duration::from_secs(u64::try_from(expires_in).unwrap_or_default()),
+            session_duration,
+        );
 
-        let url = format!(
-            "{}/auth?authToken={}&expiresInSeconds={expires_in}",
-            app.base_url.trim_end_matches('/'),
-            grant.token
+        // The URL the caller opens later has to lead back to THIS emulator, on the
+        // endpoint the request arrived on: the app's own `BaseUrl` host (which
+        // `DescribePartnerApp` still reports, as AWS reports it) resolves to nothing a
+        // client of this emulator can reach. `crate::service::presigned_session` serves
+        // that address, which carries the window the request asked the URL to stay valid
+        // for the way AWS's own partner-app URL does.
+        let url = crate::state::presigned_session_url(
+            ctx,
+            crate::state::PARTNER_APP_ARN_KIND,
+            &app_id,
+            &grant.token,
+            &[("expiresInSeconds", &expires_in.to_string())],
         );
         let arn = app.arn.clone();
         drop(store);

@@ -95,20 +95,32 @@ impl From<BatchDescribeModelPackageErrorModeled> for BatchDescribeModelPackageEr
     }
 }
 
-/// The `ErrorCode` a per-ARN entry of `BatchDescribeModelPackageErrorMap` carries.
+/// The `ErrorCode` and `ErrorResponse` a per-ARN entry of
+/// `BatchDescribeModelPackageErrorMap` carries for an ARN this account holds no versioned
+/// model package under.
 ///
-/// This operation models no errors of its own and never fails the whole request for one
-/// bad item: an ARN it cannot summarise is reported in that map instead. The code is the
-/// one `DescribeModelPackage` answers when asked for a package that cannot be described,
-/// so the two operations classify the same condition the same way.
-const ITEM_ERROR_CODE: &str = "ValidationException";
+/// This operation models NO errors of its own and never fails the whole request for one
+/// bad item: an ARN it cannot summarise is reported in that map instead, in the batch's
+/// own error vocabulary — which is a different vocabulary from the exceptions a
+/// single-resource call throws. Both members are FIXED text with nothing interpolated:
+/// the entry is already keyed by the ARN it is about, so the ARN is not repeated in it,
+/// and a client switching on `ErrorCode` can tell "this package is gone" from "my request
+/// was malformed".
+const ITEM_NOT_FOUND_CODE: &str = "EntityNotFoundError";
+/// See [`ITEM_NOT_FOUND_CODE`].
+const ITEM_NOT_FOUND_RESPONSE: &str = "The ARN is not found.";
 
-/// One `BatchDescribeModelPackageErrorMap` entry, with [`ITEM_ERROR_CODE`] and the
-/// description of what stopped this ARN from being summarised.
-fn item_error(error_response: String) -> BatchDescribeModelPackageError2 {
+/// One `BatchDescribeModelPackageErrorMap` entry for an ARN that names no versioned model
+/// package of this account.
+///
+/// One constructor for every way an ARN can fail to resolve to a summary — no package at
+/// all, a package of another account or Region, and a package that carries no version —
+/// because they are the same fact about the ARN the entry is keyed by: there is no
+/// versioned model package at it.
+fn item_not_found() -> BatchDescribeModelPackageError2 {
     BatchDescribeModelPackageError2 {
-        error_code: ITEM_ERROR_CODE.to_string(),
-        error_response,
+        error_code: ITEM_NOT_FOUND_CODE.to_string(),
+        error_response: ITEM_NOT_FOUND_RESPONSE.to_string(),
     }
 }
 
@@ -178,14 +190,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             let Some(package) = found else {
                 errors.insert(
                     requested.clone(),
-                    // The sentence every operation over a model package answers for this
-                    // fact, so one item error reads the way the single-package reader
-                    // does. This input is an ARN and nothing else, so the ARN the refusal
-                    // names is the one the request carried.
-                    item_error(crate::state::model_package_not_found(
-                        &crate::state::request_region(ctx),
-                        requested,
-                    )),
+                    // The batch's own error vocabulary for an ARN that resolves to no
+                    // versioned model package, which is what the entry's key already
+                    // names: fixed text, with nothing from the request interpolated.
+                    item_not_found(),
                 );
                 continue;
             };
@@ -222,14 +230,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // describes a list of versioned model packages". An unversioned package
             // carries no group, so there is no summary to report for it.
             let Some(model_package_group_name) = group_name else {
-                errors.insert(
-                    requested.clone(),
-                    item_error(format!(
-                        "Model package \"{requested}\" is not a versioned model package: \
-                         BatchDescribeModelPackage describes versions registered into a \
-                         model package group."
-                    )),
-                );
+                errors.insert(requested.clone(), item_not_found());
                 continue;
             };
 
