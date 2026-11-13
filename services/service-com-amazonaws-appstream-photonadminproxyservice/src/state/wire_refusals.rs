@@ -27,23 +27,24 @@ pub const INVALID_PARAMETER_VALUE_CODE: &str = "InvalidParameterValueException";
 /// error shape this service's model declares for a bad request carries.
 pub const INVALID_PARAMETER_VALUE_STATUS: u16 = 400;
 
-/// The `Message` member of the refused-value shape.
+/// The `message` member of the refused-value shape.
 ///
-/// Spelled `Message`: this service speaks `awsJson1_1`, whose codec takes the wire key
-/// from the member NAME, and every error shape this service's model declares carries its
-/// sentence under that capitalised key.
+/// Spelled in lower case, unlike the capitalised `Message` of every error shape this
+/// service's model DECLARES: this shape is in no model, so the sentence is carried under
+/// the key the service states a non-modelled refusal's message under, which the recorded
+/// refusal of a member value this service may not act on shows to be `message`.
 static INVALID_PARAMETER_VALUE_MESSAGE: Schema = Schema::new_member(
     ShapeId::from_static(
-        "smithy.framework#InvalidParameterValueException$Message",
+        "smithy.framework#InvalidParameterValueException$message",
         "smithy.framework",
-        "Message",
+        "message",
     ),
     ShapeType::String,
-    "Message",
+    "message",
     0,
 )
-.with_xml_name("Message")
-.with_json_name("Message");
+.with_xml_name("message")
+.with_json_name("message");
 
 /// Schema for the refused-value shape.
 ///

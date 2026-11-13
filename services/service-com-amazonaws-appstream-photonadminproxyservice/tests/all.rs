@@ -31,6 +31,8 @@ mod associated_stacks;
 mod refusal_messages;
 #[path = "all/resource_tags.rs"]
 mod resource_tags;
+#[path = "all/stack_access_endpoints.rs"]
+mod stack_access_endpoints;
 #[path = "all/stack_fleet_lifecycle.rs"]
 mod stack_fleet_lifecycle;
 #[path = "all/stack_registry.rs"]

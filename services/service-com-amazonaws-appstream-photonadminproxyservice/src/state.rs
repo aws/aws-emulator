@@ -90,11 +90,19 @@
 //! The image catalog lives here as well, in its own module: `DescribeImages` renders the
 //! [`ImageRecord`]s this store holds — the base images AWS publishes, seeded into it, and
 //! any image an operation of this API mints — a page at a time.
+//!
+//! One thing a stack's record REFERENCES rather than holds is the interface VPC endpoint
+//! each of its `AccessEndpoints` entries names, which is Amazon EC2's resource: resolving
+//! that reference against the account that owns it lives in its own module
+//! ([`access_endpoints_refusal`]), and is what every write of the reference —
+//! `CreateStack` and `UpdateStack` — asks before it stores one.
 
 mod images;
+mod vpc_access_endpoints;
 mod wire_refusals;
 
 pub use images::*;
+pub use vpc_access_endpoints::*;
 pub use wire_refusals::*;
 
 use std::collections::{BTreeMap, BTreeSet};

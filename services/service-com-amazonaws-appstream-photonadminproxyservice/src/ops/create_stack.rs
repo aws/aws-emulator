@@ -6,6 +6,13 @@
 //! answers with the same ARN, `CreatedTime` and configuration. A second create of the
 //! same `Name` answers `ResourceAlreadyExistsException` (HTTP 400).
 //!
+//! `AccessEndpoints` is the one member that REFERENCES a resource of another service — an
+//! interface VPC endpoint of the account — so each entry's `VpceId` is resolved against
+//! the service that owns it before anything is written
+//! ([`crate::state::access_endpoints_refusal`]): a create naming an endpoint the account
+//! does not have, or one that is not an endpoint to AppStream's streaming service, is
+//! refused `InvalidParameterValueException` (HTTP 400) and stores no stack.
+//!
 //! ## Shape of an operation
 //!
 //! Each operation is a struct that owns the shared engine and implements
@@ -139,9 +146,13 @@ pub enum CreateStackErrorModeled {
 }
 
 /// This operation's error channel, as the generated `impl Operation` names it
-/// (`crate::ops::create_stack::CreateStackError`). Wrapping the modeled enum is what
-/// lets a scaffolded operation answer 501 for one whose model declares no errors at all.
-pub type CreateStackError = crate::scaffolded::Scaffolded<CreateStackErrorModeled>;
+/// (`crate::ops::create_stack::CreateStackError`).
+///
+/// The modelled enum is wrapped TWICE: by the scaffold channel, and by this service's own
+/// [`crate::state::Refusable`], which is what lets a `VpceId` that references no AppStream
+/// streaming endpoint of the account answer `InvalidParameterValueException` — a shape this
+/// service's model declares for no operation.
+pub type CreateStackError = crate::state::Refusable<CreateStackErrorModeled>;
 
 /// Lets `?` and `.into()` lift a modeled failure into the error channel, so an
 /// implemented handler writes `Err(SomeModeledError.into())` rather than naming the
@@ -149,7 +160,7 @@ pub type CreateStackError = crate::scaffolded::Scaffolded<CreateStackErrorModele
 /// this operation is implemented.
 impl From<CreateStackErrorModeled> for CreateStackError {
     fn from(modeled: CreateStackErrorModeled) -> Self {
-        crate::scaffolded::Scaffolded::Modeled(modeled)
+        crate::state::Refusable::Channel(crate::scaffolded::Scaffolded::Modeled(modeled))
     }
 }
 
@@ -193,9 +204,29 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // arm is only reachable when this service is mounted on an engine that is not
         // the emulator's `InMemoryEngine`: there is no store to read or write, so the
         // honest answer is "not written for that engine", never a fabricated success.
-        let state = crate::state::service_state(&*self.engine)
-            .ok_or_else(|| crate::scaffolded::Scaffolded::not_implemented("CreateStack"))?;
+        let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
+            CreateStackError::Channel(crate::scaffolded::Scaffolded::not_implemented(
+                "CreateStack",
+            ))
+        })?;
         let region = crate::state::request_region(ctx.parts());
+
+        // The interface VPC endpoints this create references are another service's
+        // resources, so they are resolved THERE — before this service's store is taken, so
+        // no guard is held across the hop, and before any record is written, so a create
+        // this refuses leaves the registry exactly as it was. Which refusal a create that
+        // is BOTH unresolvable and already taken answers is not something the recordings
+        // show, and nothing is written either way.
+        if let Some(refusal) = crate::state::access_endpoints_refusal(
+            ctx,
+            &region,
+            input.access_endpoints.as_deref().unwrap_or_default(),
+        )
+        .await
+        {
+            return Err(refusal.into());
+        }
+
         let mut state = state.lock();
 
         if state.stacks.contains_key(&input.name) {

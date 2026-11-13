@@ -13,6 +13,13 @@
 //! never touches those endpoints themselves, so the same endpoint can be attached again
 //! by a later request.
 //!
+//! SETTING `AccessEndpoints` writes the same reference `CreateStack` writes, so it is
+//! resolved the same way, against the service that owns interface VPC endpoints
+//! ([`crate::state::access_endpoints_refusal`]): an update naming an endpoint the account
+//! does not have, or one that is not an endpoint to AppStream's streaming service, is
+//! refused `InvalidParameterValueException` (HTTP 400) and leaves the stored endpoints
+//! exactly as they were.
+//!
 //! ## Shape of an operation
 //!
 //! Each operation is a struct that owns the shared engine and implements
@@ -146,9 +153,13 @@ pub enum UpdateStackErrorModeled {
 }
 
 /// This operation's error channel, as the generated `impl Operation` names it
-/// (`crate::ops::update_stack::UpdateStackError`). Wrapping the modeled enum is what
-/// lets a scaffolded operation answer 501 for one whose model declares no errors at all.
-pub type UpdateStackError = crate::scaffolded::Scaffolded<UpdateStackErrorModeled>;
+/// (`crate::ops::update_stack::UpdateStackError`).
+///
+/// The modelled enum is wrapped TWICE: by the scaffold channel, and by this service's own
+/// [`crate::state::Refusable`], which is what lets a `VpceId` that references no AppStream
+/// streaming endpoint of the account answer `InvalidParameterValueException` — a shape this
+/// service's model declares for no operation.
+pub type UpdateStackError = crate::state::Refusable<UpdateStackErrorModeled>;
 
 /// Lets `?` and `.into()` lift a modeled failure into the error channel, so an
 /// implemented handler writes `Err(SomeModeledError.into())` rather than naming the
@@ -156,7 +167,7 @@ pub type UpdateStackError = crate::scaffolded::Scaffolded<UpdateStackErrorModele
 /// this operation is implemented.
 impl From<UpdateStackErrorModeled> for UpdateStackError {
     fn from(modeled: UpdateStackErrorModeled) -> Self {
-        crate::scaffolded::Scaffolded::Modeled(modeled)
+        crate::state::Refusable::Channel(crate::scaffolded::Scaffolded::Modeled(modeled))
     }
 }
 
@@ -194,20 +205,32 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
     async fn handle(
         &self,
         input: Self::Input,
-        _ctx: &smithy_server_runtime::OperationContext<'_>,
+        ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
         // See `create_stack.rs` for why an engine without this service's store answers
         // "not written for that engine" rather than a fabricated success.
-        let state = crate::state::service_state(&*self.engine)
-            .ok_or_else(|| crate::scaffolded::Scaffolded::not_implemented("UpdateStack"))?;
-        let mut state = state.lock();
+        let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
+            UpdateStackError::Channel(crate::scaffolded::Scaffolded::not_implemented(
+                "UpdateStack",
+            ))
+        })?;
+        let region = crate::state::request_region(ctx.parts());
+        let not_found = || {
+            UpdateStackErrorModeled::ResourceNotFoundException(ResourceNotFoundException {
+                message: Some(crate::state::resource_not_found_message(
+                    crate::state::STACK_KIND,
+                    &input.name,
+                )),
+            })
+        };
 
         let attributes_to_delete = input.attributes_to_delete.clone().unwrap_or_default();
         for attribute in &attributes_to_delete {
             if !STACK_ATTRIBUTE_VALUES.contains(&attribute.as_str()) {
                 return Err(crate::scaffolded::Scaffolded::validation(format!(
                     "AttributesToDelete contains an unknown stack attribute: {attribute}"
-                )));
+                ))
+                .into());
             }
             // Setting a field and deleting it in one request asks for two different
             // outcomes for the same field, which is an incorrect combination of
@@ -225,14 +248,31 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             }
         }
 
-        let record = state.stacks.get_mut(&input.name).ok_or_else(|| {
-            UpdateStackErrorModeled::ResourceNotFoundException(ResourceNotFoundException {
-                message: Some(crate::state::resource_not_found_message(
-                    crate::state::STACK_KIND,
-                    &input.name,
-                )),
-            })
-        })?;
+        // The stack has to exist before the reference its endpoints name is resolved, so an
+        // update of a name this account holds no stack under is still answered not-found —
+        // asked in its own critical section, because the hop below is made with no guard
+        // held (nothing may lock this store across a call into another service).
+        if !state.lock().stacks.contains_key(&input.name) {
+            return Err(not_found().into());
+        }
+
+        // The interface VPC endpoints this update would attach are another service's
+        // resources, so they are resolved THERE, before the stored record is touched: an
+        // update this refuses leaves the endpoints the stack already references in place.
+        if let Some(refusal) = crate::state::access_endpoints_refusal(
+            ctx,
+            &region,
+            input.access_endpoints.as_deref().unwrap_or_default(),
+        )
+        .await
+        {
+            return Err(refusal.into());
+        }
+
+        let mut state = state.lock();
+        // Resolved again now the guard is held: the stack above could have been deleted
+        // while the hop was in flight, and a delete that lands first wins.
+        let record = state.stacks.get_mut(&input.name).ok_or_else(not_found)?;
 
         // Computed (and refused) before anything is stored, so a request this operation
         // rejects leaves the stack exactly as it was.
