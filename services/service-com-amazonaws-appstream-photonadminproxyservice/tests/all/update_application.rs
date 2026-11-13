@@ -28,7 +28,7 @@
 
 use serde_json::{json, Value};
 
-use crate::applications::{create_app_block, expected_metadata};
+use crate::applications::{create_app_block, expected_metadata, without_icon_url};
 use crate::refusal_messages::{not_found_sentence, refusal};
 use crate::stack_fleet_lifecycle::{assert_error, Emulator};
 
@@ -83,19 +83,6 @@ fn create_request(name: &str, app_block_arn: &str) -> Value {
         "DisplayName": "Before",
         "Description": "before",
     })
-}
-
-/// The application a call reported, minus the icon URL.
-///
-/// `Application.IconURL` is a time-limited address signed per render (see
-/// `crate::applications`), so it is asserted on its own rather than compared between two
-/// calls.
-fn without_icon_url(application: &Value) -> Value {
-    let mut copy = application.clone();
-    if let Some(object) = copy.as_object_mut() {
-        object.remove("IconURL");
-    }
-    copy
 }
 
 /// The application `DescribeApplications` reports for `name`.

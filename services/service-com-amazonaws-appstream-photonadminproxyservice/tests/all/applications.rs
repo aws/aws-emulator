@@ -22,15 +22,22 @@
 //!   the `Arns` it is asked about, and `MaxResults` sizes its page: following `NextToken`
 //!   walks every stored application exactly once;
 //! * the icon URL an application reports is a time-limited address of the S3 object the
-//!   create named, signed so that it leads back to this emulator;
+//!   create named, signed so that it leads back to this emulator, and signed afresh by
+//!   every call that renders the record — so what two calls report is the same record in
+//!   every member but that URL, whatever the clock did between them;
 //! * an application reports the additional attributes that describe it in `Metadata`,
 //!   keyed by the modelled `ApplicationAttribute` names — asserted over the whole
 //!   attribute class in `tests/all/application_update.rs`.
 
+use std::time::{Duration, Instant};
+
 use serde_json::{json, Value};
+
+use smithy_server_runtime::UNSERVED_URL_BASE;
 
 use crate::refusal_messages::{already_exists_sentence, not_found_sentence, refusal};
 use crate::stack_fleet_lifecycle::{assert_error, Emulator};
+use crate::streaming_url::query_field;
 
 /// The account every emulated resource belongs to.
 const ACCOUNT: &str = engine::EMULATOR_ACCOUNT_ID;
@@ -40,6 +47,15 @@ const REGION: &str = "us-east-1";
 
 /// The app block every row of the creation table is created against.
 const APP_BLOCK: &str = "catalog-block";
+
+/// The S3 bucket every row stores its icon in.
+const ICON_BUCKET: &str = "app-icons";
+
+/// How long a case that waits for a condition waits for it before giving up, and how long
+/// it waits between looks. Generous: what is under test is the condition, never how fast
+/// the host reaches it.
+const DEADLINE: Duration = Duration::from_secs(60);
+const LOOK_AGAIN: Duration = Duration::from_millis(50);
 
 /// The resource word AWS's `CreateApplication` refusal uses for the app block an
 /// application is created against, read from the crate so the test tracks the constant
@@ -177,7 +193,7 @@ fn create_request(row: &Row, app_block_arn: &str) -> Value {
     let mut request = json!({
         "Name": row.name,
         "AppBlockArn": app_block_arn,
-        "IconS3Location": { "S3Bucket": "app-icons", "S3Key": row.icon_key },
+        "IconS3Location": { "S3Bucket": ICON_BUCKET, "S3Key": row.icon_key },
         "LaunchPath": row.launch_path,
         "Platforms": row.platforms,
         "InstanceFamilies": row.instance_families,
@@ -197,20 +213,22 @@ fn create_request(row: &Row, app_block_arn: &str) -> Value {
     request
 }
 
-/// The application a row must be reported as, given the `CreatedTime` the create stamped
-/// and the icon URL it signed.
+/// The application a row must be reported as, given the `CreatedTime` the create stamped.
+///
+/// `IconURL` is not a member of it: that URL is signed per render, so it is asserted with
+/// [`assert_icon_url`] rather than compared, and the records compared here are
+/// [`without_icon_url`].
 fn expected_application(row: &Row, app_block_arn: &str, created: &Value) -> Value {
     let mut expected = json!({
         "Arn": application_arn(row.name),
         "Name": row.name,
         "AppBlockArn": app_block_arn,
-        "IconS3Location": { "S3Bucket": "app-icons", "S3Key": row.icon_key },
+        "IconS3Location": { "S3Bucket": ICON_BUCKET, "S3Key": row.icon_key },
         "LaunchPath": row.launch_path,
         "Platforms": row.platforms,
         "InstanceFamilies": row.instance_families,
         "Enabled": true,
         "CreatedTime": created.get("CreatedTime").cloned().unwrap_or(Value::Null),
-        "IconURL": created.get("IconURL").cloned().unwrap_or(Value::Null),
     });
     if let Some(display_name) = row.display_name {
         expected["DisplayName"] = json!(display_name);
@@ -250,6 +268,96 @@ pub(crate) fn expected_metadata(
         );
     }
     Value::Object(metadata)
+}
+
+// ---------------------------------------------------------------------------
+// The icon URL, which is signed per render
+// ---------------------------------------------------------------------------
+
+/// The application a call reported, without the icon URL it carries.
+///
+/// `Application.IconURL` is a time-limited address signed against the clock of the call
+/// that renders the record (`ApplicationRecord::to_application` in `src/state.rs`), so two
+/// calls that report the same stored application hand out URLs whose signing date and
+/// signature differ as soon as a second elapses between them, while both address the same
+/// S3 object. What two calls reported is therefore compared without that member, and the
+/// member itself asserted with [`assert_icon_url`], which holds of every render whatever
+/// the clock says.
+pub(crate) fn without_icon_url(application: &Value) -> Value {
+    let mut application = application.clone();
+    if let Some(object) = application.as_object_mut() {
+        object.remove("IconURL");
+    }
+    application
+}
+
+/// Every application a call reported, each [`without_icon_url`].
+fn without_icon_urls(applications: &[Value]) -> Vec<Value> {
+    applications.iter().map(without_icon_url).collect()
+}
+
+/// Assert the icon URL `application` reports is a signed, time-limited address of the S3
+/// object it names: the rule that holds of EVERY render of the record.
+pub(crate) fn assert_icon_url(case: &str, application: &Value, bucket: &str, key: &str) {
+    let icon_url = icon_url(case, application);
+    let (address, _) = icon_url
+        .split_once('?')
+        .unwrap_or_else(|| panic!("case {case:?}: expected a signed IconURL, got {icon_url:?}"));
+
+    // The URL leads back to THIS emulator: the base the harness's router signs for, and
+    // the path of the S3 object the application names.
+    assert_eq!(
+        percent_decoded(address),
+        format!("{UNSERVED_URL_BASE}/{bucket}/{key}"),
+        "case {case:?}: the icon URL must address the stored icon of this emulator, got \
+         {icon_url:?}"
+    );
+    for field in ["X-Amz-Credential", "X-Amz-Date", "X-Amz-Signature"] {
+        assert!(
+            query_field(&icon_url, field).is_some_and(|value| !value.is_empty()),
+            "case {case:?}: the icon URL must carry a {field} so it leads back to this \
+             emulator, got {icon_url:?}"
+        );
+    }
+    assert_eq!(
+        query_field(&icon_url, "X-Amz-Expires"),
+        Some(ICON_URL_VALIDITY_SECONDS.to_string()),
+        "case {case:?}: the icon URL must be time-limited to the span the crate states, got \
+         {icon_url:?}"
+    );
+}
+
+/// The icon URL an application reports, which every render of a stored application
+/// carries.
+fn icon_url(case: &str, application: &Value) -> String {
+    application
+        .get("IconURL")
+        .and_then(Value::as_str)
+        .unwrap_or_else(|| panic!("case {case:?}: expected an IconURL, got {application}"))
+        .to_string()
+}
+
+/// The instant each reported application's icon URL was signed at, as its `X-Amz-Date`
+/// carries it: the per-render part of the record, and what tells one render's second from
+/// another's.
+fn signing_dates(case: &str, applications: &[Value]) -> Vec<String> {
+    applications
+        .iter()
+        .map(|application| {
+            let icon_url = icon_url(case, application);
+            query_field(&icon_url, "X-Amz-Date").unwrap_or_else(|| {
+                panic!("case {case:?}: expected a signed IconURL, got {icon_url:?}")
+            })
+        })
+        .collect()
+}
+
+/// `text` with its `%XX` escapes decoded, so a signed path can be compared with the bucket
+/// and key the application was created with.
+fn percent_decoded(text: &str) -> String {
+    percent_encoding::percent_decode_str(text)
+        .decode_utf8_lossy()
+        .into_owned()
 }
 
 /// The applications a `DescribeApplications` reports, and the token it carries.
@@ -302,10 +410,11 @@ async fn a_created_application_is_reported_from_the_stored_record() {
             .unwrap_or_else(|| panic!("case {case:?}: expected an Application, got {created}"))
             .clone();
         assert_eq!(
-            created,
+            without_icon_url(&created),
             expected_application(&row, &app_block_arn, &created),
             "case {case:?}: the create must report the record it persisted, got {created}"
         );
+        assert_icon_url(case, &created, ICON_BUCKET, row.icon_key);
 
         let applications = catalog(&emulator, case).await;
         assert_eq!(
@@ -315,18 +424,22 @@ async fn a_created_application_is_reported_from_the_stored_record() {
              {applications:?}"
         );
         assert_eq!(
-            applications[0], created,
+            without_icon_url(&applications[0]),
+            without_icon_url(&created),
             "case {case:?}: the read must render the same record the create returned, got {:?}",
             applications[0]
         );
+        assert_icon_url(case, &applications[0], ICON_BUCKET, row.icon_key);
 
         // Reading again reports the same application: the first read changed nothing, and
         // the creation instant belongs to the record rather than to the call that read it.
         let again = catalog(&emulator, case).await;
         assert_eq!(
-            again, applications,
+            without_icon_urls(&again),
+            without_icon_urls(&applications),
             "case {case:?}: a read must not change what a later caller sees, got {again:?}"
         );
+        assert_icon_url(case, &again[0], ICON_BUCKET, row.icon_key);
 
         // The ARN the create minted is what the read is addressed by.
         let (addressed, _) = describe(
@@ -336,10 +449,12 @@ async fn a_created_application_is_reported_from_the_stored_record() {
         )
         .await;
         assert_eq!(
-            addressed, applications,
+            without_icon_urls(&addressed),
+            without_icon_urls(&applications),
             "case {case:?}: the ARN the create reported must address that application, got \
              {addressed:?}"
         );
+        assert_icon_url(case, &addressed[0], ICON_BUCKET, row.icon_key);
     }
 }
 
@@ -352,26 +467,84 @@ async fn the_icon_url_is_a_time_limited_address_of_the_stored_icon() {
         let created = emulator
             .ok(case, "CreateApplication", create_request(&row, &app_block_arn))
             .await;
-        let icon_url = created
-            .pointer("/Application/IconURL")
-            .and_then(Value::as_str)
-            .unwrap_or_else(|| panic!("case {case:?}: expected an IconURL, got {created}"))
-            .to_string();
+        let application = created
+            .pointer("/Application")
+            .unwrap_or_else(|| panic!("case {case:?}: expected an Application, got {created}"))
+            .clone();
 
+        // The URL addresses the bucket and key the create named, is signed so that it
+        // leads back to this emulator, and is time-limited.
+        assert_icon_url(case, &application, ICON_BUCKET, row.icon_key);
+    }
+}
+
+#[tokio::test]
+async fn a_read_in_another_second_reports_the_same_stored_applications() {
+    let emulator = Emulator::new();
+    let app_block_arn = create_app_block(&emulator, "setup", APP_BLOCK).await;
+    for row in rows() {
+        emulator
+            .ok(row.case, "CreateApplication", create_request(&row, &app_block_arn))
+            .await;
+    }
+    let first = catalog(&emulator, "the first read").await;
+    assert_eq!(
+        first.len(),
+        rows().len(),
+        "case \"the first read\": every created application must be reported, got {first:?}"
+    );
+    for application in &first {
+        let name = application
+            .get("Name")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let row = rows()
+            .into_iter()
+            .find(|row| row.name == name)
+            .unwrap_or_else(|| {
+                panic!("the read must report a created application, got {name:?}")
+            });
+        assert_icon_url(row.case, application, ICON_BUCKET, row.icon_key);
+    }
+
+    // The icon URL is signed against the clock of the call that renders it, so its signing
+    // date moves on with the second hand. Look again until a read falls in another second
+    // — the condition this case needs — rather than waiting for a fixed time.
+    let case = "a read in another second";
+    let signed_first = signing_dates(case, &first);
+    let deadline = Instant::now() + DEADLINE;
+    let later = loop {
+        let later = catalog(&emulator, case).await;
+        let signed_later = signing_dates(case, &later);
+        if signed_later != signed_first {
+            break later;
+        }
         assert!(
-            icon_url.contains("app-icons"),
-            "case {case:?}: the icon URL must address the bucket the create named, got \
-             {icon_url:?}"
+            Instant::now() < deadline,
+            "case {case:?}: the icon URL must be signed against the clock of the call that \
+             renders it, still signed at {signed_later:?}"
         );
-        assert!(
-            icon_url.contains("X-Amz-Signature="),
-            "case {case:?}: the icon URL must be signed so it leads back to this emulator, \
-             got {icon_url:?}"
-        );
-        assert!(
-            icon_url.contains(&format!("X-Amz-Expires={ICON_URL_VALIDITY_SECONDS}")),
-            "case {case:?}: the icon URL must be time-limited, got {icon_url:?}"
-        );
+        tokio::time::sleep(LOOK_AGAIN).await;
+    };
+
+    // Only that URL moved: the stored record a reader reports is the same in every other
+    // member, so nothing a caller sees depends on which second the call fell in.
+    assert_eq!(
+        without_icon_urls(&later),
+        without_icon_urls(&first),
+        "case {case:?}: a later read must report the same stored applications, got {later:?}"
+    );
+    for row in rows() {
+        let application = later
+            .iter()
+            .find(|application| application.get("Name") == Some(&json!(row.name)))
+            .unwrap_or_else(|| {
+                panic!(
+                    "case {:?}: the later read must still report this application, got {later:?}",
+                    row.case
+                )
+            });
+        assert_icon_url(row.case, application, ICON_BUCKET, row.icon_key);
     }
 }
 
@@ -483,10 +656,12 @@ async fn a_second_create_of_a_name_that_exists_already_exists() {
 
         let after = catalog(&emulator, case).await;
         assert_eq!(
-            after, first,
+            without_icon_urls(&after),
+            without_icon_urls(&first),
             "case {case:?}: the refused create must leave the stored application exactly \
              as it was, got {after:?}"
         );
+        assert_icon_url(case, &after[0], ICON_BUCKET, row.icon_key);
     }
 }
 
@@ -512,7 +687,7 @@ async fn following_next_token_reports_every_application_exactly_once() {
                 json!({
                     "Name": name,
                     "AppBlockArn": app_block_arn,
-                    "IconS3Location": { "S3Bucket": "app-icons", "S3Key": "icon.png" },
+                    "IconS3Location": { "S3Bucket": ICON_BUCKET, "S3Key": "icon.png" },
                     "LaunchPath": "C:\\app.exe",
                     "Platforms": ["WINDOWS_SERVER_2019"],
                     "InstanceFamilies": ["GENERAL_PURPOSE"],

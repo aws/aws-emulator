@@ -162,7 +162,10 @@ fn streaming_request(stack: &str, fleet: &str, user: &str, extra: &Value) -> Val
 }
 
 /// The value of a query field of a URL, decoded no further than the raw text.
-fn query_field(url: &str, name: &str) -> Option<String> {
+///
+/// Shared with the other suites in this target (`tests/all/applications.rs`), so every
+/// suite reads a field of a signed URL the same way.
+pub(crate) fn query_field(url: &str, name: &str) -> Option<String> {
     url.split(['?', '&'])
         .filter_map(|item| item.split_once('='))
         .find(|(field, _)| *field == name)

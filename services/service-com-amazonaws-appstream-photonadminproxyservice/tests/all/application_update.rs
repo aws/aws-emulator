@@ -27,7 +27,7 @@
 use serde_json::{json, Value};
 
 use crate::applications::{
-    application_arn, catalog, create_app_block, describe, expected_metadata,
+    application_arn, catalog, create_app_block, describe, expected_metadata, without_icon_url,
     LAUNCH_PARAMETERS_ATTRIBUTE, WORKING_DIRECTORY_ATTRIBUTE,
 };
 use crate::stack_fleet_lifecycle::Emulator;
@@ -320,16 +320,6 @@ fn application(case: &str, operation: &str, payload: &Value) -> Value {
         .unwrap_or_else(|| {
             panic!("case {case:?}: expected an Application from {operation}, got {payload}")
         })
-}
-
-/// The application without the `IconURL` it reports: that URL is signed per render
-/// against the clock of the call that reports it, so it is asserted on its own.
-fn without_icon_url(application: &Value) -> Value {
-    let mut application = application.clone();
-    if let Some(object) = application.as_object_mut() {
-        object.remove("IconURL");
-    }
-    application
 }
 
 // ---------------------------------------------------------------------------

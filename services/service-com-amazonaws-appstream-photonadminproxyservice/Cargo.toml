@@ -29,6 +29,10 @@ http = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
 
+[dev-dependencies]
+# Percent-decoder for the tests that read back a path this emulator signed into a URL.
+percent-encoding = "2.3"
+
 [build-dependencies]
 emulator-core-build-support = { workspace = true }
 
