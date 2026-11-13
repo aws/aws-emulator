@@ -173,7 +173,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             &*self.engine,
             ctx,
             Self::NAME,
-            &crate::state::authorization::data_source_attachment_resource(ctx),
+            &crate::state::authorization::account_domain_resource(ctx),
         )
         .map_err(DescribeDataSourceAttachmentErrorModeled::AccessDeniedException)?;
 

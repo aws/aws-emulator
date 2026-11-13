@@ -130,6 +130,20 @@ impl Emulator {
         emulator
     }
 
+    /// The same emulator with the Service Quotas service mounted on the SAME shared
+    /// engine, so a suite can raise the account quota this service reads a ceiling from
+    /// through that service's OWN `RequestServiceQuotaIncrease` — the store
+    /// `GetServiceQuota` answers from — rather than by hand-writing an applied value.
+    pub(crate) fn with_service_quotas() -> Self {
+        let mut emulator = Self::new();
+        emulator.router.register_service(
+            service_com_amazonaws_servicequotas_servicequotasv20190624::EmulatedService::new(
+                std::sync::Arc::clone(&emulator.engine),
+            ),
+        );
+        emulator
+    }
+
     /// A handle onto this emulator for the AWS SDK to drive in process — the same seam a
     /// handler reaches another service through, so a suite's setup calls a mounted service
     /// exactly the way the service under test does.
@@ -316,6 +330,33 @@ impl Emulator {
                     "AWS4-HMAC-SHA256 \
                      Credential={DEFAULT_ACCESS_KEY_ID}/20260101/{REGION}/logs/aws4_request, \
                      SignedHeaders=host;x-amz-target, Signature=0"
+                ),
+            )
+            .body(Bytes::from(body.to_string()))
+            .expect("the test request is well formed");
+        self.dispatch(request).await
+    }
+
+    /// Call `operation` of the Service Quotas service mounted on the same router
+    /// ([`Emulator::with_service_quotas`]), the way an SDK drives it: `POST /` with
+    /// `X-Amz-Target: ServiceQuotasV20190624.<Op>`, signed for that service so the router
+    /// can name it and the Region it is addressed to.
+    pub(crate) async fn quotas_call(&self, operation: &str, body: Value) -> Answer {
+        let request = http::Request::builder()
+            .method("POST")
+            .uri("/")
+            .header("host", format!("servicequotas.{REGION}.amazonaws.com"))
+            .header("content-type", "application/x-amz-json-1.1")
+            .header(
+                "x-amz-target",
+                format!("ServiceQuotasV20190624.{operation}"),
+            )
+            .header(
+                "authorization",
+                format!(
+                    "AWS4-HMAC-SHA256 \
+                     Credential={DEFAULT_ACCESS_KEY_ID}/20260101/{REGION}/servicequotas/\
+                     aws4_request, SignedHeaders=host;x-amz-target, Signature=0"
                 ),
             )
             .body(Bytes::from(body.to_string()))
@@ -690,6 +731,33 @@ pub(crate) async fn settled_domain(emulator: &Emulator, name: &str) -> Value {
             std::time::Instant::now() < deadline,
             "case DescribeDomain({name:?}): the domain never reported itself settled, last \
              read {status:?}"
+        );
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
+}
+
+/// Look again until `holds` answers true, or fail the case once [`SETTLE_DEADLINE`] has
+/// passed.
+///
+/// What a case waits for is the CONDITION — the status the clock owed a record has landed,
+/// the record it owed the removal of is gone, the value an account quota is in force at has
+/// changed — never a fixed stretch of time, so the same case passes on a fast host and on a
+/// loaded one. The general form of [`settled_domain`], for every condition that is not a
+/// domain's own: a sibling suite reaches it as `super::domain_lifecycle::poll_until` rather
+/// than growing a second copy.
+pub(crate) async fn poll_until<Look, Answer>(case: &str, mut holds: Look)
+where
+    Look: FnMut() -> Answer,
+    Answer: std::future::Future<Output = bool>,
+{
+    let deadline = std::time::Instant::now() + SETTLE_DEADLINE;
+    loop {
+        if holds().await {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "case {case}: the condition the clock owes did not hold within {SETTLE_DEADLINE:?}"
         );
         tokio::time::sleep(POLL_INTERVAL).await;
     }

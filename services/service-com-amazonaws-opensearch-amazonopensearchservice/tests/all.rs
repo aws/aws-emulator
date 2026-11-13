@@ -201,6 +201,8 @@ mod missing_offering_refusals;
 mod missing_resource_refusals;
 #[path = "all/missing_resource_status.rs"]
 mod missing_resource_status;
+#[path = "all/package_and_migration_authorization.rs"]
+mod package_and_migration_authorization;
 #[path = "all/package_association_listings.rs"]
 mod package_association_listings;
 #[path = "all/package_associations.rs"]
@@ -297,6 +299,8 @@ mod vpc_endpoint_access;
 mod vpc_endpoint_access_on_absent_domain;
 #[path = "all/vpc_endpoint_access_revocation.rs"]
 mod vpc_endpoint_access_revocation;
+#[path = "all/vpc_endpoint_security_group_quota.rs"]
+mod vpc_endpoint_security_group_quota;
 #[path = "all/vpc_endpoint_transient_statuses.rs"]
 mod vpc_endpoint_transient_statuses;
 #[path = "all/vpc_endpoint_updates.rs"]
@@ -307,5 +311,7 @@ mod vpc_endpoints;
 mod vpc_endpoints_for_domain;
 #[path = "all/vpc_endpoints_for_domain_status.rs"]
 mod vpc_endpoints_for_domain_status;
+#[path = "all/warm_storage_instance_family.rs"]
+mod warm_storage_instance_family;
 #[path = "all/zz_probe.rs"]
 mod zz_probe;

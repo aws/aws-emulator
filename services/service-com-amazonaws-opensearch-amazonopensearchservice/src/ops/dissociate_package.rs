@@ -163,9 +163,24 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        let _ = ctx;
         let state =
             crate::state::service_state(&*self.engine).ok_or_else(crate::state::state_unavailable)?;
+
+        // IAM decides whether the caller may do this BEFORE the package or the domain is
+        // looked up, so a caller no identity-based policy permits is told it is not
+        // authorized rather than told anything about the resources the request names, and
+        // this call removes nothing. The resource is the ARN of the domain the request
+        // NAMES, taken from the request rather than from a stored record.
+        crate::state::authorization::authorize(
+            &*self.engine,
+            ctx,
+            Self::NAME,
+            &crate::state::domain_arn(
+                &input.domain_name,
+                &crate::state::request_region(ctx.parts()),
+            ),
+        )
+        .map_err(DissociatePackageErrorModeled::AccessDeniedException)?;
 
         let now = SystemTime::now();
         let mut store = state.lock();

@@ -118,6 +118,12 @@ handlebars = { version = "6", default-features = false }
 # topic's own subscriptions. Only the generated client is needed — the emulator supplies
 # the transport.
 aws-sdk-sns = { version = "1", default-features = false }
+# The Service Quotas store, which holds the value the account's adjustable quotas are in
+# force at: how many security groups one network interface of a VPC placement may carry is
+# the account's "Security groups per network interface" quota, so `state::vpc_network`
+# reads it in the store `service-quotas` answers `GetServiceQuota` from — the way the IAM,
+# Cognito, S3, CloudWatch Logs, KMS and Certificate Manager stores above are read.
+service-com-amazonaws-servicequotas-servicequotasv20190624 = { workspace = true }
 
 [build-dependencies]
 emulator-core-build-support = { workspace = true }

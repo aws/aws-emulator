@@ -92,7 +92,7 @@
 #[allow(unused_imports)]
 use super::types::*;
 
-use crate::state::vpc_network::{resolve_subnets, subnet_outside_vpc};
+use crate::state::vpc_network::{resolve_subnets, security_groups_refusal, subnet_outside_vpc};
 use crate::state::{
     request_region, subnet_outside_endpoint_vpc, vpc_endpoint_being_modified,
     vpc_endpoint_not_found,
@@ -186,6 +186,20 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             }
         };
 
+        // The security groups the change names have to fit on the network interface the
+        // endpoint is reached through: a list past the account's own
+        // security-groups-per-network-interface quota asks for an interface the account's
+        // network cannot carry, so it is refused and the endpoint keeps the groups it had
+        // ([`crate::state::vpc_network::security_groups_refusal`]). The quota lives in
+        // another service's store, so it is read before this one is locked: no call holds
+        // two service stores at once.
+        let security_groups_refused = security_groups_refusal(
+            &*self.engine,
+            &request_region(ctx.parts()),
+            Some(&input.vpc_options),
+            crate::state::vpc_network::VPC_ENDPOINT_PLACEMENT,
+        );
+
         let now = ::std::time::SystemTime::now();
         let mut store = state.lock();
 
@@ -231,6 +245,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 )
                 .into());
             }
+        }
+
+        // ... and so do the security groups: the refusal read above is stated here, after
+        // the endpoint has been resolved and before anything is written, so a refused
+        // change leaves the endpoint with exactly the groups it had.
+        if let Some(refusal) = security_groups_refused {
+            return Err(UpdateVpcEndpointErrorModeled::ValidationException(refusal).into());
         }
 
         endpoint.begin_update(input.vpc_options, &placements, now);

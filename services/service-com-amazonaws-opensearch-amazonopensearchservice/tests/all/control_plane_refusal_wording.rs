@@ -220,14 +220,16 @@ async fn an_application_refusal_states_the_sentence_of_the_surface_it_was_asked_
             started.body
         );
 
-        // `ListMigrations` models no not-found at all, so the same sentence travels in
-        // the client-input error it does model.
+        // `ListMigrations` states the same sentence as the other sub-APIs of an
+        // application, in the missing-resource shape they all state it with — the shape
+        // this service answers a resource that does not exist with, which its own model
+        // does not list and which is widened in for exactly this refusal.
         let listed = list_migrations(&emulator, &id, "").await;
         assert_eq!(
             (listed.status, error_code(&listed).as_str()),
-            (400, "ValidationException"),
+            (RECORDED_NOT_FOUND_STATUS, "ResourceNotFoundException"),
             "case ListMigrations for the absent application {id:?}: expected the modelled \
-             validation error, got {} with {:?}",
+             not-found, got {} with {:?}",
             listed.status,
             listed.body
         );

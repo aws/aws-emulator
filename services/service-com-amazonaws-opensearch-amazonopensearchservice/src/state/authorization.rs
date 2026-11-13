@@ -83,21 +83,38 @@ type InlinePolicies = BTreeMap<String, BTreeMap<String, iam_store::InlinePolicy>
 /// `<entity key> -> the ARNs attached to it`.
 type Attachments = BTreeMap<String, BTreeSet<String>>;
 
-/// The resource-name wildcard that stands for every domain of an account and Region in a
-/// `Resource` element — IAM's own "any run of characters" pattern.
-const EVERY_DOMAIN: &str = "*";
+/// The resource-name wildcard that stands for every resource of one type held by an
+/// account and Region in a `Resource` element — IAM's own "any run of characters"
+/// pattern.
+const EVERY_RESOURCE: &str = "*";
 
-/// The `Resource` an operation on an application's data source attachments is decided
-/// against: every domain of the account and Region the request was signed for.
+/// The `Resource` an operation that addresses no ONE domain is decided against: every
+/// domain of the account and Region the request was signed for.
 ///
-/// This service's IAM actions take a DOMAIN resource — an attachment links an application
-/// to the data a domain serves — so an operation addressed by application id is decided
-/// against the domain resource PATTERN rather than against one named domain. Built from
-/// the request, so the decision does not depend on which domains the account holds.
-pub fn data_source_attachment_resource(
-    ctx: &::smithy_server_runtime::OperationContext<'_>,
-) -> String {
-    super::domain_arn(EVERY_DOMAIN, &super::request_region(ctx.parts()))
+/// This service's IAM actions take a DOMAIN resource, so an operation addressed by
+/// something else — an application id, whose attachments link it to the data a domain
+/// serves, or a package id, whose content a domain's indexes read — is decided against the
+/// domain resource PATTERN rather than against one named domain. Built from the request,
+/// so the decision does not depend on which domains the account holds.
+pub fn account_domain_resource(ctx: &::smithy_server_runtime::OperationContext<'_>) -> String {
+    super::domain_arn(EVERY_RESOURCE, &super::request_region(ctx.parts()))
+}
+
+/// The `Resource` an operation on an OpenSearch UI APPLICATION, or on one of the saved
+/// object migration jobs that belong to one, is decided against: every application of the
+/// account and Region the request was signed for.
+///
+/// The application plane carries its own service token in an ARN
+/// ([`super::APPLICATION_ARN_NAMESPACE`]), so the resource an authorization decision about
+/// an application is taken on is an `application/` ARN under that token rather than a
+/// domain one — which is what the recorded refusal of a migration read names. Built from
+/// the request, so the decision does not depend on which applications the account holds.
+pub fn account_application_resource(ctx: &::smithy_server_runtime::OperationContext<'_>) -> String {
+    ::engine::emulator_arn(
+        super::APPLICATION_ARN_NAMESPACE,
+        &super::request_region(ctx.parts()),
+        &format!("application/{EVERY_RESOURCE}"),
+    )
 }
 
 /// Authorize this request, as [`ACTION_PREFIX`] and `operation` name the action and

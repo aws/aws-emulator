@@ -14,6 +14,10 @@
 //! ([`crate::state::migration_application_not_found`]), and one whose application holds
 //! no such job names no job ([`crate::state::migration_not_found`]).
 //!
+//! IAM's decision on the request comes before all of that
+//! ([`crate::state::authorization`]): a caller whose identity-based policies do not allow
+//! the action is told so and nothing about the job — not even whether it exists.
+//!
 //! ## Shape of an operation
 //!
 //! Each operation is a struct that owns the shared engine and implements
@@ -172,8 +176,19 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        let _ = ctx;
         let state = service_state(&*self.engine).ok_or_else(state_unavailable)?;
+
+        // IAM decides whether the caller may do this BEFORE the request's own values are
+        // judged and before the job is looked up, so a caller no identity-based policy
+        // permits is told it is not authorized rather than told anything about the
+        // migration the request names — including whether it exists.
+        crate::state::authorization::authorize(
+            &*self.engine,
+            ctx,
+            Self::NAME,
+            &crate::state::authorization::account_application_resource(ctx),
+        )
+        .map_err(GetMigrationErrorModeled::AccessDeniedException)?;
 
         // The id is judged for its SHAPE before anything is resolved: `migrationId` is a
         // plain string the model constrains not at all, and a value that cannot name an

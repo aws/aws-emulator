@@ -311,6 +311,20 @@ impl ComAmazonawsOpensearchAmazonopensearchserviceState {
             .find(|application| application.name == name)
     }
 
+    /// The application `arn` addresses, if this account holds one.
+    ///
+    /// An application's ARN is minted with the record and never changes, so it addresses
+    /// exactly one application — which is what lets a caller that holds only the ARN (the
+    /// account's default-application setting is written by ARN) resolve the application it
+    /// names. A value that is no ARN of this account's applications resolves to nothing.
+    ///
+    /// Reads ONLY.
+    pub fn application_of_arn(&self, arn: &str) -> Option<&Application> {
+        self.applications
+            .values()
+            .find(|application| application.arn == arn)
+    }
+
     /// Store `application` and hand back the stored copy, so a create answers with the
     /// record this service persisted rather than a copy beside it.
     ///

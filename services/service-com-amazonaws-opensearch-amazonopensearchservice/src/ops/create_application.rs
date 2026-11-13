@@ -14,7 +14,8 @@
 //!
 //! The application is addressed by the id the store mints for it and by the ARN built
 //! over that id under the OpenSearch user-interface plane's own service token
-//! ([`APPLICATION_ARN_NAMESPACE`]), which is not the token a domain's ARN carries.
+//! ([`crate::state::APPLICATION_ARN_NAMESPACE`]), which is not the token a domain's ARN
+//! carries.
 //!
 //! The application is minted in a transient status: it is `CREATING` the instant the
 //! call returns and the clock owes it the status provisioning leaves it in
@@ -122,33 +123,12 @@
 use super::types::*;
 
 use crate::state::{
-    application_endpoint, application_name_taken, application_quota_exceeded, datetime,
-    request_region, service_state, state_unavailable, stored_iam_identity_center_options,
-    tag_quota_exceeded_on_create, tag_set, Application, OwedStatus, APPLICATION_QUOTA,
-    APPLICATION_STATUS_ACTIVE, APPLICATION_STATUS_CREATING, PROVISIONING, TAG_QUOTA,
+    application_arn, application_endpoint, application_name_taken, application_quota_exceeded,
+    datetime, request_region, service_state, state_unavailable,
+    stored_iam_identity_center_options, tag_quota_exceeded_on_create, tag_set, Application,
+    OwedStatus, APPLICATION_QUOTA, APPLICATION_STATUS_ACTIVE, APPLICATION_STATUS_CREATING,
+    PROVISIONING, TAG_QUOTA,
 };
-
-/// The service token an OpenSearch UI application's ARN carries.
-///
-/// It is NOT the token a DOMAIN's ARN carries (the service's own `arnNamespace`,
-/// [`crate::state::ARN_NAMESPACE`]): an application is a resource of the OpenSearch
-/// user-interface plane, and the recorded wire answer for a create addresses it under
-/// that plane's name — so the two resource kinds of one service are addressed under two
-/// tokens, and the operation that mints an application states the one its resource
-/// carries.
-const APPLICATION_ARN_NAMESPACE: &str = "opensearch";
-
-/// The ARN an application is addressed by:
-/// `arn:aws:opensearch:<region>:<account-id>:application/<id>` — over the engine's one
-/// ARN builder, so only the service token and the resource are stated here: the Region
-/// is the one the request was signed for and the account is this emulator's.
-fn application_arn(id: &str, region: &str) -> String {
-    ::engine::emulator_arn(
-        APPLICATION_ARN_NAMESPACE,
-        region,
-        &format!("application/{id}"),
-    )
-}
 
 // `#[operation_error]` below expands to an invocation of the LOCAL declarative
 // `smithy!` macro, which this line is what emits into the module. Without it the

@@ -6,21 +6,26 @@
 //! Every case drives the real wire path — a `restJson1` HTTP request through the
 //! multi-service router into the mounted service — so what is asserted is what a
 //! client sees, not what a handler returns. The harness comes from
-//! [`super::domain_lifecycle`]; this suite adds no second copy of it, only the two
-//! paths it drives.
+//! [`super::domain_lifecycle`] and the applications from
+//! [`super::application_updates`]; this suite adds no second copy of either.
 //!
 //! The tests assert RULES over sets of inputs, not one recorded call:
 //!
-//! * the setting round-trips whatever ARN is written to it, over a table of ARNs
-//!   differing in partition, Region and account fields, resource form and length —
-//!   including each published length bound — with the read repeated to show it
-//!   changes nothing and the next write replacing the previous value;
+//! * the setting designates an APPLICATION, so it round-trips the ARN of any application
+//!   this account holds — over a table of applications differing in the shape and the
+//!   length of their names, each ARN the one the create minted — with the read repeated to
+//!   show it changes nothing and the next write replacing the previous value;
 //! * while nothing is default the read is refused with the modelled
 //!   `ResourceNotFoundException`, and a write either way answers with the
 //!   `applicationArn` the request named — the application the call acted on —
 //!   including the write that clears the setting;
 //! * clearing is asked for by naming the ARN in effect: a clear naming any other
 //!   application leaves the setting exactly as it was;
+//! * a well-formed ARN this account holds no application under is refused with the
+//!   modelled `ResourceNotFoundException`, naming the ARN the request carried, and the
+//!   live default is left untouched — over a table of ARNs differing in partition,
+//!   Region, account and resource form, including each published length bound and the ARN
+//!   of an application that has been taken away;
 //! * a value outside the expression the service validates an application ARN against,
 //!   and one past each published length bound, are refused with `ValidationException`
 //!   and leave the stored setting untouched — the first stated as the constraint
@@ -28,8 +33,11 @@
 
 use serde_json::{json, Value};
 
+use super::application_updates::create_application;
 use super::constraint_refusal_messages::{clause, expression, message, report};
-use super::domain_lifecycle::{error_code, Answer, Emulator, PREFIX, RECORDED_NOT_FOUND_STATUS};
+use super::domain_lifecycle::{
+    error_code, poll_until, string_member, Answer, Emulator, PREFIX, RECORDED_NOT_FOUND_STATUS,
+};
 
 /// The expression the service validates an application ARN against, as the refusal
 /// quotes it — the one the wire refusal recorded for this operation states.
@@ -67,6 +75,34 @@ async fn put_body(emulator: &Emulator, body: Value) -> Answer {
         .await
 }
 
+/// One application of this account, created through `CreateApplication`, and the ARN the
+/// create minted for it — the value the setting is written with, so the ARNs under test
+/// are the ones the service itself hands out rather than values written here.
+async fn created_application(emulator: &Emulator, name: &str) -> (String, String) {
+    let created = create_application(emulator, json!({ "name": name })).await;
+    assert_eq!(
+        created.status, 200,
+        "case CreateApplication({name:?}): expected 200, got {} with {:?}",
+        created.status, created.body
+    );
+    (
+        string_member(&created.body, "id", name),
+        string_member(&created.body, "arn", name),
+    )
+}
+
+/// `DeleteApplication`, for the row whose ARN names an application that has been taken
+/// away.
+async fn delete_application(emulator: &Emulator, id: &str) -> Answer {
+    emulator
+        .call(
+            "DELETE",
+            &format!("{PREFIX}/opensearch/application/{id}"),
+            None,
+        )
+        .await
+}
+
 /// The `applicationArn` an answer reports, with the case named on failure.
 fn reported_arn(answer: &Answer, case: &str) -> String {
     answer.body["applicationArn"]
@@ -93,18 +129,33 @@ fn longest_arn() -> String {
     format!("{prefix}{}", "a".repeat(2048 - prefix.len()))
 }
 
-/// The ARN table: one row per way one accepted ARN differs from another — the
-/// partition, whether the Region and account fields are the usual ones, the resource
-/// form (with a slash, with colons) and the length at each published bound.
-///
-/// `ARN` is `@length(min: 20, max: 2048)` with pattern `.*`, from this service's
-/// Smithy model (`smithy_query(query="operation",operation="PutDefaultApplicationSetting")`),
-/// so every row below is inside the modelled constraint and the service itself is
-/// what accepts or refuses it.
-fn arn_rows() -> Vec<String> {
+/// The names the applications of the round-trip table are created under: one row per way
+/// one application's name differs from another — the 3-character lower bound
+/// `ApplicationName` publishes, a hyphenated name, a digit-carrying one and the
+/// 30-character upper bound — so the rule is asserted over the application rather than
+/// over one ARN.
+fn application_names() -> Vec<&'static str> {
     vec![
-        // The ordinary form an application ARN takes.
-        "arn:aws:es:us-east-1:123456789012:application/abc123".to_string(),
+        "dfl",
+        "default-setting-probe",
+        "default2setting3probe4",
+        "abcdefghij-klmnopqrst-uvwxy1",
+    ]
+}
+
+/// Well-formed ARNs this account holds no application under: inside the expression the
+/// service validates an application ARN against and inside `ARN`'s published length
+/// bounds, and differing in partition, Region, account, resource form and length
+/// (including each published bound).
+///
+/// `ARN` is `@length(min: 20, max: 2048)` with pattern `.*`, from this service's Smithy
+/// model (`smithy_query(query="operation",operation="PutDefaultApplicationSetting")`), so
+/// every row is past the request boundary and what refuses it is the service resolving it
+/// against the applications this account holds.
+fn arns_naming_no_application() -> Vec<String> {
+    vec![
+        // The ordinary form an application ARN takes, for an id nothing minted.
+        "arn:aws:opensearch:us-east-1:123456789012:application/abc123".to_string(),
         // Another partition, Region and account.
         "arn:aws-cn:es:cn-north-1:210987654321:application/d4t4".to_string(),
         // A resource carrying colons AFTER its type: the resource is the ARN's last
@@ -118,11 +169,12 @@ fn arn_rows() -> Vec<String> {
 }
 
 #[tokio::test]
-async fn the_default_application_setting_round_trips_whatever_arn_is_written_to_it() {
+async fn the_default_application_setting_round_trips_the_arn_of_an_application_of_this_account() {
     let emulator = Emulator::new();
 
     let mut previous: Option<String> = None;
-    for arn in arn_rows() {
+    for name in application_names() {
+        let (_, arn) = created_application(&emulator, name).await;
         let case = format!("PutDefaultApplicationSetting({}..)", label(&arn));
 
         let written = put(&emulator, &arn, true).await;
@@ -177,9 +229,10 @@ async fn the_default_application_setting_round_trips_whatever_arn_is_written_to_
 
 #[tokio::test]
 async fn an_unset_default_application_setting_is_not_found_and_clearing_reports_the_arn() {
-    for arn in arn_rows() {
-        let case = format!("clear({}..)", label(&arn));
+    for name in application_names() {
         let emulator = Emulator::new();
+        let (_, arn) = created_application(&emulator, name).await;
+        let case = format!("clear({}..)", label(&arn));
 
         // Nothing is default yet, so the setting resolves to no resource.
         let unset = get(&emulator).await;
@@ -241,12 +294,16 @@ async fn an_unset_default_application_setting_is_not_found_and_clearing_reports_
 #[tokio::test]
 async fn clearing_an_application_that_is_not_the_default_leaves_the_setting_in_effect() {
     let emulator = Emulator::new();
-    let rows = arn_rows();
-    let in_effect = &rows[0];
+    let mut arns: Vec<String> = Vec::new();
+    for name in application_names() {
+        let (_, arn) = created_application(&emulator, name).await;
+        arns.push(arn);
+    }
+    let in_effect = arns[0].clone();
 
-    put(&emulator, in_effect, true).await;
+    put(&emulator, &in_effect, true).await;
 
-    for other in rows.iter().skip(1) {
+    for other in arns.iter().skip(1) {
         let case = format!("clear-other({}..)", label(other));
         let answer = put(&emulator, other, false).await;
         assert_eq!(
@@ -265,7 +322,7 @@ async fn clearing_an_application_that_is_not_the_default_leaves_the_setting_in_e
         );
         let read = get(&emulator).await;
         assert_eq!(
-            &reported_arn(&read, &case),
+            reported_arn(&read, &case),
             in_effect,
             "case {case}: clearing another application must leave the default alone, got {:?}",
             read.body
@@ -274,9 +331,90 @@ async fn clearing_an_application_that_is_not_the_default_leaves_the_setting_in_e
 }
 
 #[tokio::test]
+async fn an_arn_naming_no_application_of_this_account_is_refused_and_the_default_stands() {
+    let emulator = Emulator::new();
+    let (held_id, in_effect) = created_application(&emulator, "default-setting-held").await;
+    put(&emulator, &in_effect, true).await;
+
+    // The ARN of an application that has been taken away is one of the rows: the setting
+    // designates an application, so an ARN whose application is gone names none either.
+    let (removed_id, removed_arn) = created_application(&emulator, "default-setting-gone").await;
+    let dropped = delete_application(&emulator, &removed_id).await;
+    assert_eq!(
+        dropped.status, 200,
+        "case the removed application: expected 200 from DeleteApplication, got {} with {:?}",
+        dropped.status, dropped.body
+    );
+    // The removal the clock owed the record falls due on its own; the case waits for the
+    // application to be gone — read through the operation that reports one — rather than
+    // for a stretch of time.
+    poll_until("the removed application", || async {
+        emulator
+            .call(
+                "GET",
+                &format!("{PREFIX}/opensearch/application/{removed_id}"),
+                None,
+            )
+            .await
+            .status
+            != 200
+    })
+    .await;
+
+    let mut rows = arns_naming_no_application();
+    rows.push(removed_arn);
+    for arn in rows {
+        let case = format!("PutDefaultApplicationSetting({}..)", label(&arn));
+        for set_as_default in [true, false] {
+            let answer = put(&emulator, &arn, set_as_default).await;
+            assert_eq!(
+                answer.status,
+                RECORDED_NOT_FOUND_STATUS,
+                "case {case} with setAsDefault={set_as_default}: expected \
+                 {RECORDED_NOT_FOUND_STATUS}, got {} with {:?}",
+                answer.status,
+                answer.body
+            );
+            assert_eq!(
+                error_code(&answer),
+                "ResourceNotFoundException",
+                "case {case} with setAsDefault={set_as_default}: expected \
+                 ResourceNotFoundException, got {:?}",
+                answer.body
+            );
+            let expected = format!("Application not found for ARN: {arn}");
+            let stated = message(&answer, &case);
+            assert_eq!(
+                stated, expected,
+                "case {case} with setAsDefault={set_as_default}: expected {expected:?}, got \
+                 {stated:?}"
+            );
+        }
+
+        // The refused write left the live default where it was.
+        let read = get(&emulator).await;
+        assert_eq!(
+            reported_arn(&read, &case),
+            in_effect,
+            "case {case}: a refused write must leave the setting as it was, got {:?}",
+            read.body
+        );
+    }
+
+    // ... and the application this account DOES hold is still the one the setting
+    // designates, read back through its own operation.
+    let read = get(&emulator).await;
+    assert!(
+        reported_arn(&read, "the held application").ends_with(&format!("application/{held_id}")),
+        "case the held application: expected the setting to designate it, got {:?}",
+        read.body
+    );
+}
+
+#[tokio::test]
 async fn a_value_outside_the_arn_expression_is_refused_and_the_stored_setting_stands() {
     let emulator = Emulator::new();
-    let in_effect = arn_rows()[0].clone();
+    let (_, in_effect) = created_application(&emulator, "default-setting-shape").await;
     put(&emulator, &in_effect, true).await;
 
     // Inside `ARN`'s length bound (20..2048) and so past the boundary validator, yet

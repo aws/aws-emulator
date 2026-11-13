@@ -265,3 +265,83 @@ pub fn placed_vpc_options(input: VPCOptions, placements: &[SubnetPlacement]) -> 
     options.availability_zones = placed_zones(placements);
     options
 }
+
+/// The Service Quotas service code the account's Amazon VPC quotas are published under.
+const VPC_QUOTA_SERVICE_CODE: &str = "vpc";
+
+/// The `QuotaCode` of "Security groups per network interface" — "the maximum number of
+/// security groups per network interface" — in the account's Amazon VPC quotas.
+const SECURITY_GROUPS_PER_INTERFACE_QUOTA: &str = "L-2AFB9258";
+
+/// The value that quota is in force at where this emulator cannot read the account's own:
+/// an engine with no Service Quotas store mounted, or one whose catalog does not publish
+/// the row. It is AWS's published DEFAULT value for the same quota, so the ceiling is the
+/// account's wherever the account can be asked and the published default otherwise.
+const SECURITY_GROUPS_PER_INTERFACE_DEFAULT: usize = 5;
+
+/// How many security groups ONE elastic network interface of this account may carry in
+/// `region`: the value the account's "Security groups per network interface" quota is in
+/// force at.
+///
+/// The quota is the account's and ADJUSTABLE, so it is read out of the Service Quotas
+/// store — the store `service-quotas` serves `GetServiceQuota` from, where an applied
+/// increase is recorded — rather than being a number this service decides. A value below
+/// one would admit no placement at all, so the floor is one group.
+fn security_groups_per_interface<Eng: Send + Sync + 'static>(engine: &Eng, region: &str) -> usize {
+    let applied = ::service_com_amazonaws_servicequotas_servicequotasv20190624::state::service_state(
+        engine,
+    )
+    .and_then(|quotas| {
+        quotas.lock().applied_value(
+            region,
+            VPC_QUOTA_SERVICE_CODE,
+            SECURITY_GROUPS_PER_INTERFACE_QUOTA,
+            None,
+        )
+    });
+    applied
+        .filter(|value| value.is_finite() && *value >= 1.0)
+        .map_or(SECURITY_GROUPS_PER_INTERFACE_DEFAULT, |value| {
+            value as usize
+        })
+}
+
+/// Whether the security groups `options` names fit on the network interface the placement
+/// is reached through, and the refusal stating the ceiling otherwise.
+///
+/// `VPCOptions$SecurityGroupIds` carries no modelled cardinality bound, and the groups it
+/// names are attached to the elastic network interface the placement is served by — so the
+/// ceiling is the account's own "Security groups per network interface" quota
+/// ([`security_groups_per_interface`]). A request naming more groups than that asks for an
+/// interface the account's network cannot carry, so it is refused rather than stored, and
+/// the placement keeps exactly the groups it had.
+///
+/// The sentence states the limit in force and the placement the groups were named for
+/// (`placement`, one of [`VPC_ENDPOINT_PLACEMENT`] and [`DOMAIN_PLACEMENT`]): the two
+/// calls that take `VPCOptions` are about different resources, and a caller is told which
+/// one it was refused about.
+pub fn security_groups_refusal<Eng: Send + Sync + 'static>(
+    engine: &Eng,
+    region: &str,
+    options: Option<&VPCOptions>,
+    placement: &str,
+) -> Option<ValidationException> {
+    let named = options?.security_group_ids.as_ref()?.len();
+    let ceiling = security_groups_per_interface(engine, region);
+    if named <= ceiling {
+        return None;
+    }
+    Some(ValidationException {
+        message: Some(format!(
+            "You’ve exceeded the limit for security groups. You can select up to {ceiling} \
+             security groups for {placement}."
+        )),
+    })
+}
+
+/// What the refusal names an interface VPC ENDPOINT's placement as.
+pub const VPC_ENDPOINT_PLACEMENT: &str = "the VPC endpoint";
+
+/// What it names a VPC-access DOMAIN's placement as — the same statement about the same
+/// quota, for the other resource this service places in a VPC.
+pub const DOMAIN_PLACEMENT: &str = "the domain";

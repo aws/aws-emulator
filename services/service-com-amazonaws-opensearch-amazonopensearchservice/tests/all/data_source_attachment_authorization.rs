@@ -79,8 +79,11 @@ const DOMAIN: &str = "attachment-authz-src";
 
 /// Which principal a row signs as: the two forms whose identity policies this emulator
 /// reads.
+///
+/// `pub(crate)` so a sibling suite that drives the SAME two principals through another
+/// surface reaches these records rather than seeding a second copy of them.
 #[derive(Debug, Clone, Copy)]
-enum Principal {
+pub(crate) enum Principal {
     /// An assumed-role session, whose ROLE carries the policies.
     Session,
     /// An IAM user signing with its own long-term key, which carries its own.
@@ -89,7 +92,7 @@ enum Principal {
 
 impl Principal {
     /// What the case is called when an assertion fails.
-    fn case(self) -> &'static str {
+    pub(crate) fn case(self) -> &'static str {
         match self {
             Self::Session => "an assumed-role session",
             Self::User => "an IAM user's own access key",
@@ -97,7 +100,7 @@ impl Principal {
     }
 
     /// The access key id a request of this principal carries.
-    fn access_key_id(self) -> &'static str {
+    pub(crate) fn access_key_id(self) -> &'static str {
         match self {
             Self::Session => SESSION_KEY_ID,
             Self::User => USER_KEY_ID,
@@ -105,7 +108,7 @@ impl Principal {
     }
 
     /// The principal ARN this caller speaks for — what a refusal must name.
-    fn arn(self) -> String {
+    pub(crate) fn arn(self) -> String {
         let account = ::engine::emulator_account_id();
         match self {
             Self::Session => format!("arn:aws:sts::{account}:assumed-role/{ROLE}/{SESSION}"),
@@ -157,7 +160,9 @@ async fn attachment_call(
 /// records one, and the IAM user [`USER_KEY_ID`] belongs to, as `iam:CreateUser` and
 /// `iam:CreateAccessKey` record one — both in the stores those services' own handlers
 /// write.
-fn given_principals(emulator: &Emulator) {
+///
+/// `pub(crate)` for the reason [`Principal`] is.
+pub(crate) fn given_principals(emulator: &Emulator) {
     let now = SystemTime::now();
     let account = ::engine::emulator_account_id();
     let role_arn = format!("arn:aws:iam::{account}:role/{ROLE}");
@@ -209,7 +214,9 @@ fn given_principals(emulator: &Emulator) {
 /// Put `document` on the principal as its only inline identity policy — what
 /// `iam:PutRolePolicy` and `iam:PutUserPolicy` do — or take every policy off it when
 /// `None`, which `iam:DeleteRolePolicy` and `iam:DeleteUserPolicy` do.
-fn given_policy(emulator: &Emulator, principal: Principal, document: Option<&Value>) {
+///
+/// `pub(crate)` for the reason [`Principal`] is.
+pub(crate) fn given_policy(emulator: &Emulator, principal: Principal, document: Option<&Value>) {
     let iam_store = iam::service_state(&**emulator.engine()).expect("the IAM store");
     let mut store = iam_store.lock();
     let (policies, key) = match principal {

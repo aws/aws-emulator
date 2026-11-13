@@ -22,6 +22,12 @@
 //! refusal ([`crate::state::application_not_found_named`]); an application already
 //! holding [`crate::state::CAPABILITY_QUOTA`] capabilities is the modelled quota refusal.
 //!
+//! `capabilityName` names WHICH capability is being registered, and this service registers
+//! one ([`crate::state::AI_CAPABILITY_NAME`]): a name inside the modelled expression that
+//! is not that identifier is the client-input refusal
+//! ([`crate::state::capability_name_refusal`]), taken before anything is resolved, and it
+//! registers nothing.
+//!
 //! ## Shape of an operation
 //!
 //! Each operation is a struct that owns the shared engine and implements
@@ -111,8 +117,8 @@
 use super::types::*;
 
 use crate::state::{
-    application_not_found_named, capability_quota_exceeded, service_state, state_unavailable,
-    Capability, CAPABILITY_QUOTA,
+    application_not_found_named, capability_name_refusal, capability_quota_exceeded, service_state,
+    state_unavailable, Capability, CAPABILITY_QUOTA,
 };
 
 // `#[operation_error]` below expands to an invocation of the LOCAL declarative
@@ -191,6 +197,16 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
     ) -> Result<Self::Output, Self::Error> {
         let _ = ctx;
         let state = service_state(&*self.engine).ok_or_else(state_unavailable)?;
+
+        // Which capability is being registered is judged from the request ALONE, before
+        // anything is resolved: this service registers one capability
+        // ([`crate::state::AI_CAPABILITY_NAME`]), so a name inside the modelled
+        // expression that is not that identifier names a capability there is nothing to
+        // register — the client-input refusal it is, and no record is minted, so a later
+        // read of that name answers that the application holds no such capability.
+        if let Some(refusal) = capability_name_refusal(&input.capability_name) {
+            return Err(RegisterCapabilityErrorModeled::ValidationException(refusal).into());
+        }
 
         let now = ::std::time::SystemTime::now();
         let mut store = state.lock();

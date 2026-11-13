@@ -511,6 +511,15 @@ pub const DEFAULT_REGION: &str = "us-east-1";
 /// `aws.api#service` trait (`arnNamespace`/`endpointPrefix`: `es`).
 pub const ARN_NAMESPACE: &str = "es";
 
+/// The service token an OpenSearch UI APPLICATION's ARN carries.
+///
+/// It is NOT the token a DOMAIN's ARN carries ([`ARN_NAMESPACE`], the service's own
+/// `arnNamespace`): an application is a resource of the OpenSearch user-interface plane,
+/// and the recorded wire answer for a create addresses it under that plane's name — so
+/// the two resource kinds of one service are addressed under two tokens, stated once
+/// here for every path that builds or decides against an application ARN.
+pub const APPLICATION_ARN_NAMESPACE: &str = "opensearch";
+
 /// `IPAddressType`'s `dualstack` value — the other being `ipv4`
 /// (`smithy_query(query="shape",shape="IPAddressType")`). A domain set to it is
 /// reachable over IPv6 as well as IPv4, which is what gives it a second, dual-stack
@@ -1445,12 +1454,18 @@ impl Application {
     }
 }
 
-/// An application's ARN: `arn:aws:es:<region>:<account-id>:application/<id>`.
+/// An application's ARN: `arn:aws:opensearch:<region>:<account-id>:application/<id>`.
 ///
-/// The same namespace as [`domain_arn`] — one service, one `arnNamespace` — with the
-/// resource type the application is addressed as.
+/// Built over the engine's one ARN builder, so only the service token
+/// ([`APPLICATION_ARN_NAMESPACE`], the user-interface plane's rather than the domain
+/// plane's) and the resource are stated here: the Region is the one the request was
+/// signed for and the account is this emulator's.
 pub fn application_arn(id: &str, region: &str) -> String {
-    ::engine::emulator_arn(ARN_NAMESPACE, region, &format!("application/{id}"))
+    ::engine::emulator_arn(
+        APPLICATION_ARN_NAMESPACE,
+        region,
+        &format!("application/{id}"),
+    )
 }
 
 /// The URL an OpenSearch UI application is reached on: the application's own id, the
@@ -1518,6 +1533,19 @@ pub fn application_not_found() -> ResourceNotFoundException {
 pub fn application_not_found_named(id: &str) -> ResourceNotFoundException {
     ResourceNotFoundException {
         message: Some(application_not_found_message(id)),
+    }
+}
+
+/// The `ResourceNotFoundException` payload for an ARN this account holds no application
+/// under.
+///
+/// A call that addresses an application by ARN rather than by id — the account's
+/// default-application setting is written by ARN — states the miss by the value it was
+/// handed, which is what tells a caller that passed the wrong ARN which one could not be
+/// resolved.
+pub fn application_arn_not_found(arn: &str) -> ResourceNotFoundException {
+    ResourceNotFoundException {
+        message: Some(format!("Application not found for ARN: {arn}")),
     }
 }
 
@@ -2182,18 +2210,6 @@ pub fn unsupported_migration_status(value: &str) -> ValidationException {
             "status {value} is not supported. Supported values are {}.",
             MIGRATION_STATUS_VALUES.join(", ")
         )),
-    }
-}
-
-/// The same missing-application statement as [`application_not_found_named`], carried by
-/// the client-input error an operation that models NO `ResourceNotFoundException` does
-/// model.
-///
-/// One wording for "this account holds no such application" across the sub-APIs,
-/// whichever error channel the asking operation has for it.
-pub fn unknown_application_id(id: &str) -> ValidationException {
-    ValidationException {
-        message: Some(application_not_found_message(id)),
     }
 }
 

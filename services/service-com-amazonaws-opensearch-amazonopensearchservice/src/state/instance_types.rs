@@ -818,6 +818,20 @@ pub fn publishes_every_modelled_instance_type() -> bool {
         .all(|instance_type| publishes_instance_type(instance_type))
 }
 
+/// Whether the instance family of `instance_type` offers warm storage at all — the
+/// instance-type side of `InstanceTypeDetails$WarmEnabled`, which the published catalog
+/// reports off this same answer ([`instance_type_details`]).
+///
+/// UltraWarm cannot be attached to a cluster whose hot tier runs on a burstable family
+/// ([`BURSTABLE_FAMILIES`]), so the warm tier a request asks for on one of those is a
+/// topology the service does not provision ([`warm_instance_type_refusal`]). The ONE
+/// derivation of that capability, so what a create is refused on and what the catalog
+/// publishes for the same instance type cannot disagree.
+pub fn offers_warm_storage(instance_type: &str) -> bool {
+    let family = instance_family(instance_type).unwrap_or(instance_type);
+    !BURSTABLE_FAMILIES.contains(&family)
+}
+
 /// The roles an instance of `instance_type` can serve, in the order the catalog
 /// publishes them, and NO role for a type the catalog does not publish — which names
 /// no instance type, so there is no instance to serve a role.
@@ -865,7 +879,7 @@ pub fn instance_type_details(
         ),
         warm_enabled: Some(
             version.since_elasticsearch(ULTRAWARM_SINCE_ELASTICSEARCH)
-                && !BURSTABLE_FAMILIES.contains(&family),
+                && offers_warm_storage(instance_type),
         ),
         instance_role: Some(instance_role),
         availability_zones,
@@ -1495,6 +1509,33 @@ pub fn warm_storage_refusal(cluster: Option<&ClusterConfig>) -> Option<Validatio
         message: Some(
             "To use warm storage, your domain must have dedicated master nodes.".to_string(),
         ),
+    })
+}
+
+/// Whether the hot tier `cluster` runs on is an instance type warm storage is offered
+/// for, and the refusal naming the instance type otherwise.
+///
+/// Which instance families offer warm storage is published per instance type
+/// ([`offers_warm_storage`], the capability `InstanceTypeDetails$WarmEnabled` reports), so
+/// a cluster that asks for the warm tier on a hot-tier instance type that does not offer
+/// it describes a topology the service does not provision: the request is refused rather
+/// than stored, and the refusal names the instance type the request carried, which is the
+/// value the caller has to change. The link below it is [`warm_storage_refusal`] and the
+/// one above it [`cold_storage_refusal`].
+pub fn warm_instance_type_refusal(cluster: Option<&ClusterConfig>) -> Option<ValidationException> {
+    let cluster = cluster?;
+    if !cluster.warm_enabled.unwrap_or(false) {
+        return None;
+    }
+    let instance_type = cluster.instance_type.as_deref()?;
+    if offers_warm_storage(instance_type) {
+        return None;
+    }
+    Some(ValidationException {
+        message: Some(format!(
+            "Warm storage is not available for the {instance_type} instance type. Select a \
+             different instance type."
+        )),
     })
 }
 

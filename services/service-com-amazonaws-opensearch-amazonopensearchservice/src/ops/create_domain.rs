@@ -284,6 +284,21 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             Some(subnet_ids) => resolve_subnets(ctx, &region, subnet_ids).await,
         };
 
+        // A VPC-access domain is reached through network interfaces carrying the security
+        // groups the request names, so the list has to fit on one: a list past the
+        // account's own security-groups-per-network-interface quota asks for an interface
+        // the account's network cannot carry
+        // ([`crate::state::vpc_network::security_groups_refusal`]), by the same rule the
+        // endpoint paths apply. The quota lives in another service's store, so it is read
+        // before this one is locked: no call holds two service stores at once. It is
+        // stated below among the other refusals, so the order of nothing changes.
+        let security_groups_refused = crate::state::vpc_network::security_groups_refusal(
+            &*self.engine,
+            &region,
+            input.vpc_options.as_ref(),
+            crate::state::vpc_network::DOMAIN_PLACEMENT,
+        );
+
         let mut store = state.lock();
 
         // "Defaults to the latest version of OpenSearch" — a domain runs ONE engine
@@ -359,6 +374,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 input.advanced_security_options.as_ref(),
             ),
             crate::state::warm_storage_refusal(input.cluster_config.as_ref()),
+            // ... and the warm tier is offered only on hot-tier instance types that
+            // publish that capability, so a cluster asking for it on one that does not is
+            // refused rather than provisioned
+            // ([`crate::state::warm_instance_type_refusal`]), by the same rule the update
+            // path applies.
+            crate::state::warm_instance_type_refusal(input.cluster_config.as_ref()),
+            // ... and the security groups a VPC-access domain is reached through have to
+            // fit on one network interface (read above, before this store was locked).
+            security_groups_refused,
             // A performance figure the volume type does not provision describes a
             // volume the service cannot attach
             // ([`crate::service::domain_configuration::ebs_performance_refusal`]).

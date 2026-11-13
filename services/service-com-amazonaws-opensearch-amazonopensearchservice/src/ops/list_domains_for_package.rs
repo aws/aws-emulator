@@ -171,9 +171,19 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        let _ = ctx;
         let state =
             crate::state::service_state(&*self.engine).ok_or_else(crate::state::state_unavailable)?;
+
+        // IAM decides whether the caller may do this BEFORE the package is looked up, so
+        // a caller no identity-based policy permits is told it is not authorized rather
+        // than told anything about the package the request names.
+        crate::state::authorization::authorize(
+            &*self.engine,
+            ctx,
+            Self::NAME,
+            &crate::state::authorization::account_domain_resource(ctx),
+        )
+        .map_err(ListDomainsForPackageErrorModeled::AccessDeniedException)?;
 
         // `MaxResults` is `@range(max: 100)`, so a larger page size is a malformed
         // request; the boundary validator refuses it before this handler runs, and the

@@ -192,8 +192,19 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        let _ = ctx;
         let state = service_state(&*self.engine).ok_or_else(state_unavailable)?;
+
+        // IAM decides whether the caller may do this BEFORE the request's own values are
+        // judged and before the application is looked up, so a caller no identity-based
+        // policy permits is told it is not authorized rather than told anything about the
+        // application the request names, and this call starts nothing.
+        crate::state::authorization::authorize(
+            &*self.engine,
+            ctx,
+            Self::NAME,
+            &crate::state::authorization::account_application_resource(ctx),
+        )
+        .map_err(StartMigrationErrorModeled::AccessDeniedException)?;
 
         let options = input.migration_options;
 

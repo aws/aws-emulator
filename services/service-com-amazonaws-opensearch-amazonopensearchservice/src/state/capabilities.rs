@@ -185,6 +185,33 @@ impl ComAmazonawsOpensearchAmazonopensearchserviceState {
     }
 }
 
+/// The ONE capability name an application's registration may name.
+///
+/// `CapabilityName` is modelled only as a 3..30-character `^[a-zA-Z0-9-]+$` string, and
+/// the service registers exactly one kind of capability — the AI capability
+/// `RegisterCapability` is documented to enable, "for registering AI Assistant
+/// capability, use ai-capability" — so a name inside the modelled expression that is not
+/// this identifier names a capability there is nothing to register
+/// ([`capability_name_refusal`]).
+pub const AI_CAPABILITY_NAME: &str = "ai-capability";
+
+/// Whether `capability_name` names the capability this service registers
+/// ([`AI_CAPABILITY_NAME`]), and the refusal naming the rejected value otherwise.
+///
+/// The refusal is the client-input one: the value is inside every constraint the model
+/// publishes, and what it fails is the service's own rule about WHICH capability can be
+/// registered, so it names the value the request carried and the one name that is
+/// allowed. Nothing is registered for a name this refuses, so a later read of it answers
+/// [`capability_not_found`].
+pub fn capability_name_refusal(capability_name: &str) -> Option<ValidationException> {
+    (capability_name != AI_CAPABILITY_NAME).then(|| ValidationException {
+        message: Some(format!(
+            "Invalid capability name for AI Capability: {capability_name}. Only \
+             {AI_CAPABILITY_NAME} is allowed"
+        )),
+    })
+}
+
 /// The `ResourceNotFoundException` payload for an application and capability pair the
 /// application holds no registration for.
 ///

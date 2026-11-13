@@ -491,6 +491,20 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             }
         };
 
+        // The security groups a change names have to fit on the network interface a
+        // VPC-access domain is reached through: a list past the account's own
+        // security-groups-per-network-interface quota asks for an interface the account's
+        // network cannot carry ([`crate::state::vpc_network::security_groups_refusal`]).
+        // Read here, before this store is locked and before the merge consumes the
+        // request, and stated below among the other refusals, so the order of nothing
+        // changes.
+        let security_groups_refused = crate::state::vpc_network::security_groups_refusal(
+            &*self.engine,
+            &crate::state::request_region(ctx.parts()),
+            input.vpc_options.as_ref(),
+            crate::state::vpc_network::DOMAIN_PLACEMENT,
+        );
+
         let mut store = state.lock();
 
         // The merge runs on a COPY of the stored record, which is what makes a dry run
@@ -686,6 +700,16 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // the change would do, and this change cannot be applied.
         if let Some(refusal) = [
             crate::state::warm_storage_refusal(Some(&merged.cluster_config)),
+            // ... and against the warm-storage capability of the hot-tier instance type
+            // the merged cluster runs on, so a change that would leave the domain with a
+            // warm tier on an instance type that offers none is refused for the same
+            // reason the create path refuses it.
+            crate::state::warm_instance_type_refusal(Some(&merged.cluster_config)),
+            // A VPC-access domain is reached through network interfaces carrying the
+            // security groups a request names, so a change naming more groups than the
+            // account's own quota allows is refused for the same reason the create path
+            // refuses it (read above, before the merge consumed the request).
+            security_groups_refused,
             // Fine-grained access control is served by the domain's encryption and its
             // HTTPS-only endpoint, and the change is judged on the MERGED record for
             // the reason the storage rules are: a request that switches the boundary on

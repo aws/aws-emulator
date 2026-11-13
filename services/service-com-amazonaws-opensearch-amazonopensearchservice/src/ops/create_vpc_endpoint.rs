@@ -94,7 +94,9 @@
 #[allow(unused_imports)]
 use super::types::*;
 
-use crate::state::vpc_network::{placed_vpc_options, resolve_subnets, subnets_span_two_vpcs};
+use crate::state::vpc_network::{
+    placed_vpc_options, resolve_subnets, security_groups_refusal, subnets_span_two_vpcs,
+};
 use crate::state::{
     request_region, subnets_in_two_vpcs, vpc_endpoint_domain_unavailable, vpc_endpoint_host,
     OwedStatus, VpcEndpointRecord, VPC_ENDPOINT_CHANGE, VPC_ENDPOINT_QUOTA,
@@ -207,6 +209,21 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 ),
             )
             .into());
+        }
+
+        // ... and the security groups it names have to fit on the network interface the
+        // endpoint is reached through: a list past the account's own
+        // security-groups-per-network-interface quota asks for an interface the account's
+        // network cannot carry, so nothing is minted for it
+        // ([`crate::state::security_groups_refusal`]). Read before this store is locked:
+        // the quota lives in another service's store, and no call holds two at once.
+        if let Some(refusal) = security_groups_refusal(
+            &*self.engine,
+            &request_region(ctx.parts()),
+            Some(&input.vpc_options),
+            crate::state::vpc_network::VPC_ENDPOINT_PLACEMENT,
+        ) {
+            return Err(CreateVpcEndpointErrorModeled::ValidationException(refusal).into());
         }
 
         let now = ::std::time::SystemTime::now();

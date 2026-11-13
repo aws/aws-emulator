@@ -532,11 +532,13 @@ fn cases() -> Vec<Case> {
         },
         Case {
             // Warm storage is on but the record carries no count for it, so how many
-            // warm nodes there are is unknown — and an unknown node is not a node.
+            // warm nodes there are is unknown — and an unknown node is not a node. The
+            // hot tier runs on a family that offers warm storage, which is what a cluster
+            // with the warm tier on has to run on.
             case: "warm storage on with no warm count",
             domain: "nodes-warm-no-count",
             cluster: json!({
-                "InstanceType": "t3.large.search",
+                "InstanceType": "m6g.large.search",
                 "InstanceCount": 1,
                 "DedicatedMasterEnabled": true,
                 "DedicatedMasterType": "c5.large.search",
@@ -547,7 +549,7 @@ fn cases() -> Vec<Case> {
             ebs: Value::Null,
             standby_zones: 0,
             roles: vec![
-                on_instance_storage("Data", "t3.large.search", Placement::Zones(&[1])),
+                on_instance_storage("Data", "m6g.large.search", Placement::Zones(&[1])),
                 on_instance_storage("Master", "c5.large.search", Placement::Zones(&[3])),
             ],
         },

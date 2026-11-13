@@ -11,9 +11,14 @@
 //! having asked for the move.
 //!
 //! The listing is the application's, so an `applicationId` naming no application of this
-//! account has no set to report; `status` narrows it to the jobs in one published
+//! account has no set to report — the modelled missing-resource refusal, widened in
+//! through `extra_errors` below; `status` narrows it to the jobs in one published
 //! status, and `nextToken` names the job the next page starts at, so paging resumes from
 //! a place in the set rather than from an offset a later start would have shifted.
+//!
+//! IAM's decision on the request comes before all of that
+//! ([`crate::state::authorization`]): a caller whose identity-based policies do not allow
+//! the action is told so and nothing about the application.
 //!
 //! ## Shape of an operation
 //!
@@ -85,13 +90,16 @@
 //!   exception, or internal failure.
 //! * `ValidationException` (HTTP 400) — An exception for accessing or deleting a resource
 //!   that doesn't exist.
+//! * `ResourceNotFoundException` — widened in through `extra_errors` (see below): the
+//!   shape this SERVICE states a resource that does not exist with, for an
+//!   `applicationId` the account holds no application under.
 
 #[allow(unused_imports)]
 use super::types::*;
 
 use crate::state::{
-    invalid_next_token, negative_max_results, service_state, state_unavailable,
-    unknown_application_id, unsupported_migration_status, Migration, MIGRATION_STATUS_VALUES,
+    application_not_found_named, invalid_next_token, negative_max_results, service_state,
+    state_unavailable, unsupported_migration_status, Migration, MIGRATION_STATUS_VALUES,
 };
 
 // `#[operation_error]` below expands to an invocation of the LOCAL declarative
@@ -105,12 +113,23 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-opensearch-amazonopense
 // here — hence the `ListMigrationsError` alias below. An operation that models no errors
 // generates an UNINHABITED enum here, which is correct and expected: there is nothing
 // to construct until the model says otherwise.
-#[smithy_macros::operation_error("com.amazonaws.opensearch#ListMigrations")]
+//
+// `ResourceNotFoundException` is widened in through `extra_errors`: this SERVICE models
+// that shape — every other operation addressed by an application id lists it — and the
+// recorded wire answer of a listing whose `applicationId` names no application of the
+// account carries it, so the miss is stated with the same shape, code and status the rest
+// of the application surface states it with rather than with a client-input error that
+// says the value was malformed.
+#[smithy_macros::operation_error(
+    "com.amazonaws.opensearch#ListMigrations",
+    extra_errors = ["ResourceNotFoundException"]
+)]
 #[derive(Debug)]
 pub enum ListMigrationsErrorModeled {
     AccessDeniedException(AccessDeniedException),
     DisabledOperationException(DisabledOperationException),
     InternalException(InternalException),
+    ResourceNotFoundException(ResourceNotFoundException),
     ValidationException(ValidationException),
 }
 
@@ -165,8 +184,19 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        let _ = ctx;
         let state = service_state(&*self.engine).ok_or_else(state_unavailable)?;
+
+        // IAM decides whether the caller may do this BEFORE the request's own values are
+        // judged and before the application is looked up, so a caller no identity-based
+        // policy permits is told it is not authorized rather than told anything about the
+        // application the request names.
+        crate::state::authorization::authorize(
+            &*self.engine,
+            ctx,
+            Self::NAME,
+            &crate::state::authorization::account_application_resource(ctx),
+        )
+        .map_err(ListMigrationsErrorModeled::AccessDeniedException)?;
 
         // `maxResults` publishes no range at all, so the only value that is not a page
         // size is a negative one, and that is refused rather than reinterpreted. The
@@ -206,12 +236,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         store.settle_applications(now);
 
         // The jobs belong to the application they migrate into, so an id the store holds
-        // no application for has no listing to report. `ListMigrations` models no
-        // `ResourceNotFoundException`, so the missing resource is reported through the
-        // client-input error it does model.
+        // no application for has no listing to report: the miss is the modelled
+        // missing-resource refusal, naming the id the request carried, exactly as every
+        // other call addressed by an application id states it — answered on the status
+        // this service answers that shape on
+        // (`crate::scaffolded::RESOURCE_NOT_FOUND_STATUS`).
         if !store.applications.contains_key(&input.application_id) {
-            return Err(ListMigrationsErrorModeled::ValidationException(
-                unknown_application_id(&input.application_id),
+            return Err(ListMigrationsErrorModeled::ResourceNotFoundException(
+                application_not_found_named(&input.application_id),
             )
             .into());
         }

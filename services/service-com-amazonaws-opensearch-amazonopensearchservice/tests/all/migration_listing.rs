@@ -24,9 +24,10 @@
 //! * `status` selects the jobs in one published status, and the clock moving a job moves
 //!   which filter selects it — the listing materialises what the clock owes a job just as
 //!   a single read does;
-//! * a negative `maxResults`, a `status` outside the published set, a `nextToken` the
-//!   listing never issued and an `applicationId` naming no application of this account
-//!   are each refused with the modelled `ValidationException`.
+//! * a negative `maxResults`, a `status` outside the published set and a `nextToken` the
+//!   listing never issued are each refused with the modelled `ValidationException`, and an
+//!   `applicationId` naming no application of this account with the modelled
+//!   missing-resource refusal.
 
 use std::time::Duration;
 
@@ -37,7 +38,9 @@ use service_com_amazonaws_opensearch_amazonopensearchservice::state::{
 };
 
 use super::data_source_attachments::application;
-use super::domain_lifecycle::{error_code, string_member, Answer, Emulator, PREFIX};
+use super::domain_lifecycle::{
+    error_code, string_member, Answer, Emulator, PREFIX, RECORDED_NOT_FOUND_STATUS,
+};
 
 /// The ARN of the data source every job below migrates saved objects out of: the search
 /// COLLECTION shape `StartMigration` validates a source against.
@@ -390,9 +393,9 @@ async fn a_status_filter_selects_the_jobs_in_that_status() {
 }
 
 /// RULE: a request the listing cannot run — a page size that is no size, a status
-/// outside the published set, a token it never issued, or an application this account
-/// does not hold — is refused with the modelled `ValidationException`, and the listing
-/// itself is unchanged.
+/// outside the published set or a token it never issued — is refused with the modelled
+/// `ValidationException`, an application this account does not hold with the modelled
+/// missing-resource refusal, and the listing itself is unchanged.
 #[tokio::test]
 async fn a_request_the_listing_cannot_run_is_refused() {
     let emulator = Emulator::new();
@@ -443,11 +446,6 @@ async fn a_request_the_listing_cannot_run_is_refused() {
             id.clone(),
             format!("&status={MIGRATION_STATUS_FAILED}&nextToken={}", started[0]),
         ),
-        (
-            "an application this account does not hold",
-            "nosuchapplication".to_string(),
-            String::new(),
-        ),
     ];
 
     for (case, application_id, query) in rows {
@@ -457,6 +455,28 @@ async fn a_request_the_listing_cannot_run_is_refused() {
             (400, "ValidationException"),
             "case {case:?}: expected 400 ValidationException, got {} with {:?}",
             answer.status,
+            answer.body
+        );
+    }
+
+    // An application this account does not hold is a MISSING RESOURCE rather than a
+    // malformed value: the listing states it with the shape every call addressed by an
+    // application id states it with, naming the id the request carried. The rows differ
+    // in the length and the alphabet of the id.
+    for absent in ["nosuchapplication", "abc", "a1b2c3d4e5f6g7h8i9j0"] {
+        let answer = list_migrations(&emulator, absent, "").await;
+        assert_eq!(
+            (answer.status, error_code(&answer).as_str()),
+            (RECORDED_NOT_FOUND_STATUS, "ResourceNotFoundException"),
+            "case {absent:?}: expected the modelled not-found, got {} with {:?}",
+            answer.status,
+            answer.body
+        );
+        let expected = format!("Application {absent} not found");
+        assert_eq!(
+            answer.body["message"].as_str().unwrap_or_default(),
+            expected,
+            "case {absent:?}: expected {expected:?}, got {:?}",
             answer.body
         );
     }

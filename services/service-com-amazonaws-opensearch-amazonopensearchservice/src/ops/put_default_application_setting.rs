@@ -11,10 +11,12 @@
 //! no `applicationArn` at all rather than an empty one.
 //!
 //! The ARN is checked against the expression this service validates an application ARN
-//! against ([`APPLICATION_ARN_PATTERN`]) and no further: resolving it to a stored
-//! application is the application registry's job, so this operation refuses a value
-//! outside that expression — as the constraint report every other value outside its
-//! member's expression is refused with — and stores any value inside it.
+//! against ([`APPLICATION_ARN_PATTERN`]) and then RESOLVED against the applications this
+//! account holds: the setting designates one of them, so an ARN no application of this
+//! account is addressed by is the modelled missing-resource refusal
+//! ([`crate::state::application_arn_not_found`]) and the setting in effect is left exactly
+//! as it was — a value outside the expression is refused before that, as the constraint
+//! report every other value outside its member's expression is refused with.
 //!
 //! Either way the answer reports the application the call acted on: the ARN the request
 //! named.
@@ -180,6 +182,28 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         }
 
         let mut store = state.lock();
+
+        // The applications are settled first, so what follows is decided on the set this
+        // account holds at this instant: one whose deletion has fallen due is no longer
+        // held, and so is no longer an application the setting can designate.
+        store.settle_applications(::std::time::SystemTime::now());
+
+        // "Sets the default application to the application with the specified ARN": the
+        // setting designates an APPLICATION, so the ARN is resolved against the ones this
+        // account holds and an ARN that addresses none is the modelled missing-resource
+        // refusal — answered on the status this service answers that shape on
+        // (`crate::scaffolded::RESOURCE_NOT_FOUND_STATUS`). Nothing is written for such a
+        // request, so the default in effect is the one an independent
+        // `GetDefaultApplicationSetting` still reports.
+        if store.application_of_arn(&input.application_arn).is_none() {
+            return Err(
+                PutDefaultApplicationSettingErrorModeled::ResourceNotFoundException(
+                    crate::state::application_arn_not_found(&input.application_arn),
+                )
+                .into(),
+            );
+        }
+
         if input.set_as_default {
             // Setting the default replaces whatever was in effect: the setting holds
             // one ARN, so the last write wins.
