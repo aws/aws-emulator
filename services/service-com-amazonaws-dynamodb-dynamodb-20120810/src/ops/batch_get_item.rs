@@ -20,8 +20,15 @@
 //! `ConsistentRead` is honoured per table, as the capacity each table reports: a strongly
 //! consistent read costs a whole unit per 4 KB and an eventually consistent one half that
 //! ([`crate::state::read_capacity_units`]), totalled per table by
-//! [`crate::state::ReadLedger`]. Every key this emulator accepted is read, so
-//! `UnprocessedKeys` is the empty map AWS answers with rather than an absent member.
+//! [`crate::state::ReadLedger`]. What one response may CARRY is bounded on top of that:
+//! "A single operation can retrieve up to 16 MB of data [...] BatchGetItem returns a
+//! partial result if the response size limit is exceeded [...] If a partial result is
+//! returned, the operation returns a value for UnprocessedKeys"
+//! ([`crate::state::MAX_BATCH_GET_RESPONSE_BYTES`]), so a batch of large items stops on a
+//! whole-item boundary and hands the keys it did not read back in `RequestItems` form —
+//! their items untouched in storage, for the drain loop to read next time. A batch that
+//! read every key it accepted reports `UnprocessedKeys` as the empty map AWS answers
+//! with rather than an absent member.
 //!
 //! What each table's entry reports of the items it addresses is that entry's own
 //! projection — a `ProjectionExpression` with its `ExpressionAttributeNames` aliases, or
@@ -329,6 +336,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // The resolved name of the first table that ran out of read capacity, which is the
         // resource a refusal of the whole batch names.
         let mut throttled_table: Option<String> = None;
+        // What the response carries so far, and whether its budget
+        // ([`crate::state::MAX_BATCH_GET_RESPONSE_BYTES`]) has stopped the batch: the
+        // ceiling is on the WHOLE response, so it is counted across every table and, once
+        // reached, every key still to be walked is deferred rather than read — which is
+        // what makes `UnprocessedKeys` the tail of the batch a later call resumes from.
+        let mut reported_bytes: i64 = 0;
+        let mut budget_reached = false;
         let mut ledger = crate::state::ReadLedger::default();
         // One key is read at most once per TABLE, keyed by the RESOLVED name, and one
         // table is addressed at most once: "each table name or ARN can be used only
@@ -396,12 +410,45 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                         crate::state::DUPLICATE_BATCH_KEYS_MESSAGE,
                     ));
                 }
+                // Once the response has no room left, the keys still to be walked are
+                // handed back without being read at all: nothing of their items is
+                // looked at, let alone copied into a response that cannot carry them.
+                if budget_reached {
+                    withheld.push(key_map.clone());
+                    continue;
+                }
                 let item = table.items.get(&key).cloned();
                 // A key that holds no item still consumed the read it asked for, which
                 // is why the capacity is charged for every key and the list only grows
                 // for the ones that were there.
                 let size = item.as_ref().map_or(0, crate::state::item_size);
                 let units = crate::state::read_capacity_units(size, consistent_read);
+                // What this table's entry would REPORT of the item it found — its own
+                // projection applied — because the budget is on the bytes the response
+                // carries and not on what the store happens to hold behind the key.
+                let reported = crate::state::reported_item(
+                    item,
+                    projections.get(table_name).map(Vec::as_slice),
+                );
+                let reports = reported.as_ref().map_or(0, crate::state::item_size);
+                // "BatchGetItem returns a partial result if the response size limit is
+                // exceeded [...] If a partial result is returned, the operation returns a
+                // value for UnprocessedKeys. You can use this value to retry the operation
+                // starting with the next item to get" (the operation's own doc): the
+                // response stops BEFORE the first whole item that would carry it past the
+                // ceiling, so an item is deferred whole and never truncated. The deferral
+                // is about the RESPONSE's budget and not about the store or the table's
+                // capacity — the key is neither charged nor counted as read, and the item
+                // it addresses stays exactly where it is — and at least one key is always
+                // served, so a drain loop always makes progress.
+                if processed > 0
+                    && reported_bytes.saturating_add(reports)
+                        > crate::state::MAX_BATCH_GET_RESPONSE_BYTES
+                {
+                    budget_reached = true;
+                    withheld.push(key_map.clone());
+                    continue;
+                }
                 // Once this table is out of the read capacity it is provisioned for,
                 // the keys it has not reached are HANDED BACK rather than read: "if
                 // DynamoDB returns any unprocessed items, you should retry the batch
@@ -422,16 +469,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 ));
                 ledger.record(&name, units);
                 processed += 1;
-                if let Some(item) = item {
+                if let Some(item) = reported {
                     // "ProjectionExpression - One or more attributes to be retrieved from
                     // the table or index. By default, all attributes are returned"
                     // (`BatchGetItem$UnprocessedKeys`, which describes the same entry the
                     // request sent): what this table's entry asked for of the item it
                     // found, and the whole item when it asked for no projection.
-                    found.extend(crate::state::reported_item(
-                        Some(item),
-                        projections.get(table_name).map(Vec::as_slice),
-                    ));
+                    reported_bytes = reported_bytes.saturating_add(reports);
+                    found.push(item);
                 }
             }
             // "Each element in the response consists of a table name, along with a map
@@ -489,7 +534,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // "A map of tables and their respective keys that were not processed":
             // empty when every key the request addressed was read, which is what lets a
             // client's retry loop terminate, and carrying the keys a table had no
-            // capacity left for when it did not.
+            // capacity left for — or the response no room left for — when it did not.
             unprocessed_keys: Some(unprocessed),
             consumed_capacity: ledger.consumed_capacity(input.return_consumed_capacity.as_deref()),
         })

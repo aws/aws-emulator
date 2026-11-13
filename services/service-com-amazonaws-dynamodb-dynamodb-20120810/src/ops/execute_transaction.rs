@@ -303,9 +303,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         // The canonical form is built from the REQUEST's own statements — nothing of
         // what the store holds — which is what makes it comparable across the retries a
-        // `ClientRequestToken` covers.
-        let canonical =
-            crate::state::action_fingerprint(&canonical_statements(&input.transact_statements));
+        // `ClientRequestToken` covers, and it covers the WHOLE request the token stands
+        // for: the member that chooses what capacity the response reports is encoded
+        // beside the statements ([`crate::state::canonical_reporting_options`]), so a
+        // retry that changes it is the documented mismatch rather than a replay.
+        let canonical = crate::state::action_fingerprint(&format!(
+            "{}{}",
+            crate::state::canonical_reporting_options(&[input.return_consumed_capacity.as_deref()]),
+            canonical_statements(&input.transact_statements),
+        ));
         let token = input
             .client_request_token
             .as_deref()

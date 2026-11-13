@@ -25,6 +25,8 @@ mod backup_path_table_state;
 mod batch_and_transact_items;
 #[path = "all/batch_execute_statement.rs"]
 mod batch_execute_statement;
+#[path = "all/batch_get_response_budget.rs"]
+mod batch_get_response_budget;
 #[path = "all/batch_write_capacity_residue.rs"]
 mod batch_write_capacity_residue;
 #[path = "all/batch_write_provisioned_budget.rs"]
@@ -273,6 +275,8 @@ mod time_to_live;
 mod transactional_consumed_capacity_metrics;
 #[path = "all/transactional_undefined_expression_tokens.rs"]
 mod transactional_undefined_expression_tokens;
+#[path = "all/transaction_token_fingerprints.rs"]
+mod transaction_token_fingerprints;
 #[path = "all/transitional_status_span.rs"]
 mod transitional_status_span;
 #[path = "all/undefined_expression_tokens.rs"]
@@ -281,6 +285,8 @@ mod undefined_expression_tokens;
 mod unused_substitution_key_envelopes;
 #[path = "all/update_contributor_insights_writes.rs"]
 mod update_contributor_insights_writes;
+#[path = "all/update_operand_type_sets.rs"]
+mod update_operand_type_sets;
 #[path = "all/update_table_transient_status.rs"]
 mod update_table_transient_status;
 #[path = "all/validation_message_fidelity.rs"]

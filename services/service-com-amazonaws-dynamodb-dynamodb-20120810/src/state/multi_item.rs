@@ -28,6 +28,20 @@ pub const MAX_BATCH_WRITE_REQUESTS: usize = 25;
 /// doc), again counted across every table in the request.
 pub const MAX_BATCH_GET_KEYS: usize = 100;
 
+/// The most item data ONE `BatchGetItem` response carries, 16 MB: "A single operation
+/// can retrieve up to 16 MB of data, which can contain as many as 100 items.
+/// BatchGetItem returns a partial result if the response size limit is exceeded [...]
+/// If a partial result is returned, the operation returns a value for UnprocessedKeys"
+/// (the `BatchGetItem` doc). The two ceilings are independent: a batch of 100 small
+/// items is answered whole, while "if you ask to retrieve 100 items, but each
+/// individual item is 300 KB in size, the system returns 52 items (so as not to exceed
+/// the 16 MB limit)".
+///
+/// A batch that reaches it stops on a WHOLE-item boundary and hands the keys it did not
+/// read back under `UnprocessedKeys`, so no item is ever truncated and one request
+/// cannot amplify into a response no client of the real service would ever receive.
+pub const MAX_BATCH_GET_RESPONSE_BYTES: i64 = 16 * 1024 * 1024;
+
 /// How a batch that addresses one key twice is refused: AWS's FIXED sentence for that
 /// case, naming neither the key nor the table — "you cannot put and delete the same
 /// item in the same BatchWriteItem request" (the `BatchWriteItem` doc), and
@@ -887,6 +901,36 @@ pub const MAX_RECORDED_TRANSACTIONS: usize = 1024;
 pub fn action_fingerprint(canonical: &str) -> String {
     use sha2::Digest;
     hex::encode(sha2::Sha256::digest(canonical.as_bytes()))
+}
+
+/// What an omitted `Return*` member stands for: the value the service defaults it to —
+/// "If set to NONE (the default), no statistics are returned"
+/// (`TransactWriteItems$ReturnItemCollectionMetrics`), and `NONE` is likewise the
+/// `ReturnConsumedCapacity` level that reports nothing ("NONE - No ConsumedCapacity
+/// details are included in the response"). A request that omits the member and one that
+/// spells that value therefore ask for the same response.
+const DEFAULT_REPORTING_LEVEL: &str = "NONE";
+
+/// How the REPORTING options of a request are encoded into the fingerprint its
+/// `ClientRequestToken` is remembered by, in the order the caller lists them.
+///
+/// A token stands for the whole request it was first used with — it is refused when
+/// "you retried a request with a different payload but with an idempotent token that
+/// was already used" (`IdempotentParameterMismatchException`) — so every member of that
+/// payload is part of the fingerprint, the ones choosing what the response reports
+/// included: a retry under the same token that asks for a different level of
+/// `ReturnConsumedCapacity`, or that turns `ReturnItemCollectionMetrics` on, is a
+/// different request and earns [`IDEMPOTENT_PARAMETER_MISMATCH_MESSAGE`] rather than a
+/// replay. An omitted member encodes as the value it defaults to
+/// ([`DEFAULT_REPORTING_LEVEL`]), so leaving it out and spelling that value are one
+/// request.
+pub fn canonical_reporting_options(stated: &[Option<&str>]) -> String {
+    let mut text = String::new();
+    for option in stated {
+        text.push_str(option.unwrap_or(DEFAULT_REPORTING_LEVEL));
+        text.push('|');
+    }
+    text
 }
 
 /// A transaction that has already been applied under a `ClientRequestToken`.

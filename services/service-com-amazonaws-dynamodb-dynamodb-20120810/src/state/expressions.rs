@@ -1189,14 +1189,16 @@ fn too_many_actions(count: usize) -> RequestError {
 pub const INVALID_DOCUMENT_PATH_MESSAGE: &str =
     "The document path provided in the update expression is invalid for update";
 
-/// AWS's fixed text for an update action given an operand of a data type that action
-/// cannot be applied to — an `ADD` of one set type onto another, an `ADD` of anything
-/// but a number onto a number, an `ADD` or `DELETE` against an attribute that is
-/// neither a number nor a set.
+/// AWS's fixed text for an update action whose operand is a type the STORED attribute
+/// cannot be combined with — an `ADD` of one set type onto another, an `ADD` of a set
+/// onto a number, an `ADD` or `DELETE` against an attribute that is neither a number
+/// nor a set.
 ///
 /// It names NEITHER operand: the sentence AWS states for this class carries no
 /// attribute path and no `AttributeValue` type tag, so the types the request and the
-/// stored item happened to carry are not interpolated into it.
+/// stored item happened to carry are not interpolated into it. An operand the OPERATOR
+/// itself cannot take, whatever the item holds, is the refusal that names the operator
+/// and its type set instead ([`incorrect_update_operand_type_for`]).
 pub const INCORRECT_UPDATE_OPERAND_TYPE_MESSAGE: &str =
     "An operand in the update expression has an incorrect data type";
 
@@ -1204,6 +1206,129 @@ pub const INCORRECT_UPDATE_OPERAND_TYPE_MESSAGE: &str =
 /// action raises for an operand whose type it cannot be applied to.
 fn incorrect_update_operand_type() -> RequestError {
     RequestError::Validation(INCORRECT_UPDATE_OPERAND_TYPE_MESSAGE.to_string())
+}
+
+/// The member an update written as an EXPRESSION travels in, which is the member whose
+/// refusals name the operator the expression wrote.
+const UPDATE_EXPRESSION_MEMBER: &str = "UpdateExpression";
+
+/// The data type an operand-type refusal names, in the vocabulary that family of
+/// messages spells types with: the `AttributeValue` member's own documented type name —
+/// "An attribute of type String Set" (`AttributeValue$SS`) is `STRING_SET` — rather than
+/// the union member tag a type-MISMATCH clause reports
+/// ([`crate::state::attribute_value_type`]).
+fn operand_type_name(value: &AttributeValue) -> &'static str {
+    match value {
+        AttributeValue::S(_) => "STRING",
+        AttributeValue::N(_) => "NUMBER",
+        AttributeValue::B(_) => "BINARY",
+        AttributeValue::Ss(_) => "STRING_SET",
+        AttributeValue::Ns(_) => "NUMBER_SET",
+        AttributeValue::Bs(_) => "BINARY_SET",
+        AttributeValue::M(_) => "MAP",
+        AttributeValue::L(_) => "LIST",
+        AttributeValue::Null(_) => "NULL",
+        AttributeValue::Bool(_) => "BOOL",
+    }
+}
+
+/// What ONE update operator may be given as its value operand: the operator keyword a
+/// refusal names, the name AWS gives the set of types that operator takes, and which
+/// values are in it.
+///
+/// The domain is a property of the OPERATOR, not of the item: an operand outside it
+/// cannot be applied whatever the attribute holds, so it is refused naming the operator
+/// and that type set ([`ValueOperand::check`]), while an operand INSIDE the domain that
+/// does not match the type the item holds is the class refusal
+/// ([`INCORRECT_UPDATE_OPERAND_TYPE_MESSAGE`]) the two set walkers raise.
+struct ValueOperand {
+    operator: &'static str,
+    type_set: &'static str,
+    takes: fn(&AttributeValue) -> bool,
+}
+
+impl ValueOperand {
+    /// Hold one operand to this operator's domain, refusing it with the operator, its
+    /// own type and this type set's name when it is outside it.
+    fn check(&self, member: &str, value: &AttributeValue) -> Result<(), RequestError> {
+        if (self.takes)(value) {
+            return Ok(());
+        }
+        Err(incorrect_update_operand_type_for(
+            member,
+            self.operator,
+            self.type_set,
+            value,
+        ))
+    }
+}
+
+/// `ADD`'s operand domain: "The ADD action only supports Number and set data types"
+/// (`UpdateItem$UpdateExpression`), so a number or one of the three set types.
+const ADD_OPERAND: ValueOperand = ValueOperand {
+    operator: "ADD",
+    type_set: "ALLOWED_FOR_ADD_OPERAND",
+    takes: |value| {
+        matches!(
+            value,
+            AttributeValue::N(_)
+                | AttributeValue::Ns(_)
+                | AttributeValue::Ss(_)
+                | AttributeValue::Bs(_)
+        )
+    },
+};
+
+/// `DELETE`'s operand domain: "The DELETE action only supports set data types" (the same
+/// doc), so one of the three set types and nothing else.
+const DELETE_OPERAND: ValueOperand = ValueOperand {
+    operator: "DELETE",
+    type_set: "ALLOWED_FOR_DELETE_OPERAND",
+    takes: |value| {
+        matches!(
+            value,
+            AttributeValue::Ss(_) | AttributeValue::Ns(_) | AttributeValue::Bs(_)
+        )
+    },
+};
+
+/// Whether a request that states its update through `member` WRITES AN OPERATOR, which
+/// is what an operand-type refusal can name.
+///
+/// The one place that question is answered, beside the one that answers which members
+/// carry the validation envelope ([`envelopes_expression_refusals`]): an update written
+/// as an expression spells `ADD` or `DELETE`, while the legacy `AttributeUpdates` map
+/// names its action per attribute instead — so a refusal about one of its values has no
+/// operator to state and falls back to the class sentence
+/// ([`INCORRECT_UPDATE_OPERAND_TYPE_MESSAGE`]).
+fn writes_an_operator(member: &str) -> bool {
+    member == UPDATE_EXPRESSION_MEMBER
+}
+
+/// The refusal for an update operand of a type its operator cannot take at all: AWS
+/// names the OPERATOR the expression wrote, the offending operand's own type name and
+/// the name of the type set that operator allows, each read off the request, behind the
+/// expression member that carried them.
+///
+/// Stated for a member that writes an operator ([`writes_an_operator`]); the legacy map
+/// has none to name, so its values earn the class sentence above.
+fn incorrect_update_operand_type_for(
+    member: &str,
+    operator: &str,
+    type_set: &str,
+    value: &AttributeValue,
+) -> RequestError {
+    if !writes_an_operator(member) {
+        return incorrect_update_operand_type();
+    }
+    invalid_expression_member(
+        member,
+        &format!(
+            "Incorrect operand type for operator or function; operator: {operator}, operand \
+             type: {}, typeSet: {type_set}",
+            operand_type_name(value)
+        ),
+    )
 }
 
 /// AWS's fixed text for an update operand that reads an attribute the item does not
@@ -2203,7 +2328,7 @@ impl ParsedUpdate {
                 }
                 UpdateAction::Remove(path) => removals.push(path),
                 UpdateAction::Add(_, value) => {
-                    let added = apply_add(path, value, &before)?;
+                    let added = apply_add(self.member, path, value, &before)?;
                     check_attribute_value(path.attribute(), &added)?;
                     members_written =
                         check_members_written(members_written, path.attribute(), &added)?;
@@ -2212,7 +2337,7 @@ impl ParsedUpdate {
                     changed.push(path.clone());
                 }
                 UpdateAction::Delete(_, value) => {
-                    if apply_delete(path, value, &before, item)? {
+                    if apply_delete(self.member, path, value, &before, item)? {
                         changed.push(path.clone());
                     }
                 }
@@ -2286,6 +2411,7 @@ fn required_update_value(
 /// attribute"; a set is unioned; and an attribute that is not there yet starts from
 /// `0` for a number, or from the empty set, so the value itself is the result.
 fn apply_add(
+    member: &str,
     path: &DocumentPath,
     value: &AttributeValue,
     before: &Item,
@@ -2297,6 +2423,9 @@ fn apply_add(
             path.render()
         )));
     }
+    // The operand's own type is a fact of the REQUEST, so an operand outside what `ADD`
+    // takes is refused before the item is read at all.
+    ADD_OPERAND.check(member, value)?;
     match path.get(before) {
         None => match value {
             AttributeValue::N(_) | AttributeValue::Ns(_) | AttributeValue::Ss(_)
@@ -2318,6 +2447,7 @@ fn apply_add(
 /// attribute that is not there is nothing to do, the way the legacy action's doc says:
 /// "DELETE - Nothing happens; there is no attribute to delete".
 fn apply_delete(
+    member: &str,
     path: &DocumentPath,
     value: &AttributeValue,
     before: &Item,
@@ -2330,6 +2460,9 @@ fn apply_delete(
             path.render()
         )));
     }
+    // As for `ADD`: an operand `DELETE` cannot subtract is refused whatever the item
+    // holds at that path, including nothing.
+    DELETE_OPERAND.check(member, value)?;
     let Some(held) = path.get(before) else {
         return Ok(false);
     };

@@ -296,7 +296,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         for entry in &input.transact_items {
             actions.push(Requested::of(entry).map_err(lift)?);
         }
-        let canonical = crate::state::action_fingerprint(&canonical_actions(&actions));
+        // The fingerprint covers the WHOLE request a token stands for, so the members
+        // that choose what the response reports are encoded beside the actions
+        // ([`crate::state::canonical_reporting_options`]): a retry under the same token
+        // asking for different capacity or item-collection detail is a different request.
+        let canonical = crate::state::action_fingerprint(&format!(
+            "{}{}",
+            crate::state::canonical_reporting_options(&[
+                input.return_consumed_capacity.as_deref(),
+                input.return_item_collection_metrics.as_deref(),
+            ]),
+            canonical_actions(&actions),
+        ));
         let token = input
             .client_request_token
             .as_deref()

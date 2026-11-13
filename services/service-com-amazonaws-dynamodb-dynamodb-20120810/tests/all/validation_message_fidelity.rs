@@ -17,11 +17,13 @@
 //!    the `<N> validation error(s) detected: ` envelope, and the only part of the
 //!    message that varies with the request is the offending text the unparsable
 //!    clause echoes;
-//! 3. an update action given an operand whose data type it cannot be applied to is
-//!    refused with AWS's fixed text for that class, which names NEITHER the
-//!    attribute nor either type tag — whichever action, whichever pair of types,
-//!    and whether the update was written as an expression or as the legacy
-//!    `AttributeUpdates` map;
+//! 3. an update action given an operand of a type its OPERATOR takes but the type the
+//!    item holds cannot be combined with is refused with AWS's fixed text for that
+//!    class, which names NEITHER the attribute nor either type tag — whichever action,
+//!    whichever pair of types, and whether the update was written as an expression or
+//!    as the legacy `AttributeUpdates` map (an operand outside the operator's own
+//!    domain names the operator and its type set instead, which
+//!    `tests/all/update_operand_type_sets.rs` states);
 //! 4. an update operand that reads an attribute the item does not carry is refused
 //!    with AWS's fixed text for that class, which does not name the path that was
 //!    read;
@@ -306,7 +308,7 @@ async fn a_number_outside_the_documented_rules_is_stated_inside_the_envelope() {
 }
 
 // ===========================================================================
-// 3. An update operand of a type the action cannot be applied to
+// 3. An update operand whose type the STORED attribute cannot be combined with
 // ===========================================================================
 
 /// AWS's fixed text for that class, which names neither operand.
@@ -318,9 +320,14 @@ async fn an_update_operand_of_the_wrong_type_states_the_fixed_text() {
 
     // Each row: the case and the UpdateItem request. The rows span the action
     // (`ADD`, `DELETE`), the stored type the action was applied to (a set of each
-    // kind, a number, a string, a list, a map, and an attribute that is not there),
-    // the operand's own type, and the SURFACE the update was written on (the
-    // expression and the legacy `AttributeUpdates` map).
+    // kind, a number, a string, a list and a map), the operand's own type, and the
+    // SURFACE the update was written on (the expression and the legacy
+    // `AttributeUpdates` map).
+    //
+    // Every operand here is one its OPERATOR takes — a number or a set for `ADD`, a set
+    // for `DELETE` — and what refuses it is the type the item holds at that path. An
+    // operand outside the operator's own domain is refused naming the operator and its
+    // type set instead, which `tests/all/update_operand_type_sets.rs` states.
     let rows: Vec<(&str, Value)> = vec![
         (
             "an ADD of a number set onto a string set",
@@ -348,11 +355,6 @@ async fn an_update_operand_of_the_wrong_type_states_the_fixed_text() {
                    "ExpressionAttributeValues": {":v": {"SS": ["c"]}}}),
         ),
         (
-            "an ADD of a string onto a number",
-            json!({"UpdateExpression": "ADD n :v",
-                   "ExpressionAttributeValues": {":v": {"S": "c"}}}),
-        ),
-        (
             "an ADD of a number onto a string",
             json!({"UpdateExpression": "ADD s :v",
                    "ExpressionAttributeValues": {":v": {"N": "1"}}}),
@@ -366,16 +368,6 @@ async fn an_update_operand_of_the_wrong_type_states_the_fixed_text() {
             "an ADD of a number onto a map",
             json!({"UpdateExpression": "ADD m :v",
                    "ExpressionAttributeValues": {":v": {"N": "1"}}}),
-        ),
-        (
-            "an ADD of a string onto an attribute that is not there",
-            json!({"UpdateExpression": "ADD fresh :v",
-                   "ExpressionAttributeValues": {":v": {"S": "c"}}}),
-        ),
-        (
-            "an ADD of a boolean onto an attribute that is not there",
-            json!({"UpdateExpression": "ADD fresh :v",
-                   "ExpressionAttributeValues": {":v": {"BOOL": true}}}),
         ),
         (
             "a DELETE of a number set from a string set",
@@ -418,7 +410,7 @@ async fn an_update_operand_of_the_wrong_type_states_the_fixed_text() {
         );
         // The sentence is fixed: no `AttributeValue` type tag the request carried,
         // and no attribute name of it, is interpolated into the message.
-        for leaked in ["SS", "NS", "BS", "BOOL", "fresh", "Type mismatch"] {
+        for leaked in ["SS", "NS", "BS", "BOOL", "Type mismatch"] {
             assert!(
                 !stated.contains(leaked),
                 "case {case:?}: expected nothing of the request in the message, got \
