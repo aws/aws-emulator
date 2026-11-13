@@ -269,6 +269,8 @@ mod handler_query_compatible_error_code;
 mod handler_dynamodb_binary_attributes;
 #[path = "all/handler_dynamodb_resource.rs"]
 mod handler_dynamodb_resource;
+#[path = "all/handler_image_analysis_sdk.rs"]
+mod handler_image_analysis_sdk;
 #[path = "all/handler_email_sdk.rs"]
 mod handler_email_sdk;
 #[path = "all/handler_object_encryption_members.rs"]

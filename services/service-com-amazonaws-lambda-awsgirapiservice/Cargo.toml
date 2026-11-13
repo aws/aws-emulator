@@ -296,6 +296,16 @@ service-com-amazonaws-eventbridge-awsevents = { workspace = true }
 # deployed document the handler polls is served by the data plane.
 service-com-amazonaws-appconfig-amazonappconfig = { workspace = true }
 service-com-amazonaws-appconfigdata-appconfigdata = { workspace = true }
+# The image analysis service a handler's own call asks what an object holds, mounted beside
+# lambda on ONE engine: the labels a handler records are asserted against what that service
+# answers for the same image when a client calls it directly.
+service-com-amazonaws-rekognition-rekognitionservice = { workspace = true }
+# The PNG and JPEG frames that suite submits, encoded by the image library rather than written
+# out byte by byte — the two formats that service accepts.
+image = { version = "0.25", default-features = false, features = [
+    "png",
+    "jpeg",
+] }
 
 [lints]
 workspace = true

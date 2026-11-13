@@ -65,6 +65,7 @@ const MUST_REACH: &[&str] = &[
     "events",
     "logs",
     "opensearch",
+    "rekognition",
     "s3",
     "secretsmanager",
     "sesv2",
@@ -165,6 +166,11 @@ fn rows() -> Vec<Row> {
         Row {
             case: "the notification service, whose protocol is a form-encoded action",
             token: "sns",
+            reachable: true,
+        },
+        Row {
+            case: "an image analysis service, whose handler-side calls an object pipeline makes",
+            token: "rekognition",
             reachable: true,
         },
         Row {

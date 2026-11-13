@@ -652,6 +652,28 @@ pub const APIS: &[Api] = &[
         protocol: Protocol::CloudFrontRest,
         answer_model: None,
     },
+    // `services/service-com-amazonaws-rekognition-rekognitionservice/smithy-model/
+    // com-amazonaws-rekognition-rekognitionservice.json`: awsJson1_1, sigv4Name `rekognition`,
+    // endpointPrefix `rekognition`, sdkId `Rekognition`, service shape `RekognitionService`.
+    //
+    // ANALYSING THE OBJECT THAT TRIGGERED THE INVOCATION is the shape of a function an object
+    // store's event notification runs: the handler is handed the bucket and the key, asks this
+    // service what the image holds (`DetectLabels`, `DetectText`, `DetectModerationLabels`,
+    // the face and comparison operations) and records the answer somewhere a later reader
+    // addresses — so a handler that cannot reach it can record nothing about the object it was
+    // invoked for, and the pipeline behind the event never produces its row.
+    Api {
+        sdk_token: "rekognition",
+        signing_name: "rekognition",
+        endpoint_prefix: "rekognition",
+        model: Some(REKOGNITION_MODEL),
+        protocol: Protocol::AwsJson {
+            target_prefix: "RekognitionService",
+            json_version: "1.1",
+            query_compatible: false,
+        },
+        answer_model: Some(&REKOGNITION_ANSWERS),
+    },
     // `services/service-com-amazonaws-lambda-awsgirapiservice/smithy-model/
     // com-amazonaws-lambda-awsgirapiservice.json`: restJson1, sigv4Name `lambda`,
     // endpointPrefix `lambda`, sdkId `Lambda`. Its requests are bound per operation out of
@@ -815,6 +837,10 @@ pub(super) const CODEDEPLOY_MODEL: &str = include_str!(
     "../../../../service-com-amazonaws-codedeploy-codedeploy-20141006/smithy-model/\
      com-amazonaws-codedeploy-codedeploy-20141006.json"
 );
+pub(super) const REKOGNITION_MODEL: &str = include_str!(
+    "../../../../service-com-amazonaws-rekognition-rekognitionservice/smithy-model/\
+     com-amazonaws-rekognition-rekognitionservice.json"
+);
 /// THIS service's own model, read the same way as every other entry's: a call a handler makes
 /// to Lambda is bound by the model this crate is generated from, so the surface a running
 /// function reaches is the surface this emulator serves.
@@ -925,6 +951,10 @@ static CONFIG_ANSWERS: super::blob_members::ServiceModel = super::blob_members::
 };
 static CODEDEPLOY_ANSWERS: super::blob_members::ServiceModel = super::blob_members::ServiceModel {
     source: CODEDEPLOY_MODEL,
+    plan: ::std::sync::OnceLock::new(),
+};
+static REKOGNITION_ANSWERS: super::blob_members::ServiceModel = super::blob_members::ServiceModel {
+    source: REKOGNITION_MODEL,
     plan: ::std::sync::OnceLock::new(),
 };
 static LAMBDA_ANSWERS: super::blob_members::ServiceModel = super::blob_members::ServiceModel {

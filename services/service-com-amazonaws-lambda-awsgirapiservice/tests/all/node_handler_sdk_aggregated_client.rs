@@ -17,8 +17,7 @@
 //! (`require` of a CommonJS module, `import { … } from` of an ES module), whether the client is
 //! built at initialization or inside the handler, which operation is called (a write, a read,
 //! a write the service refuses), which form the call takes (awaited promise, node callback,
-//! node callback after an options object), and whether this emulator holds the called service's
-//! model at all.
+//! node callback after an options object), and whether a service answers the call at all.
 
 use std::io::Write as _;
 use std::sync::Arc;
@@ -552,18 +551,17 @@ struct Probe {
     method: &'static str,
     input: fn(&str) -> Value,
     /// What `typeof client[method]` must answer: `function` for a name that is an operation of
-    /// that service, `undefined` for a name that is not one of a service whose model this
-    /// emulator holds.
+    /// that service, `undefined` for a name that is not one.
     member: &'static str,
-    /// What the call must come to: `raised` for one the service refused and for one this
-    /// emulator makes no call for, `answered` for one it served, `no such member` for a name
+    /// What the call must come to: `raised` for one the service refused and for one no service
+    /// of this suite's router answers, `answered` for one it served, `no such member` for a name
     /// the package carries no method for.
     outcome: &'static str,
 }
 
 /// The probes, one per thing the rule generalises over: a read of a table that is there, a read
 /// of one that is not, a name that is no operation of a service whose model is held, a service
-/// this emulator holds no model for, and one whose model it holds and whose protocol is neither
+/// no emulator answers for here, and one whose model it holds and whose protocol is neither
 /// of the JSON ones.
 fn probes() -> Vec<Probe> {
     vec![
@@ -603,7 +601,10 @@ fn probes() -> Vec<Probe> {
             outcome: "no such member",
         },
         Probe {
-            case: "an image analysis of a service this emulator holds no model for",
+            // The image analysis service is mounted nowhere in this suite's router, so the
+            // call is one no service answers — which is the refusal the host reports rather
+            // than a member that is not there.
+            case: "an image analysis of a service this router mounts nothing for",
             service: "rekognition",
             exported: "Rekognition",
             method: "detectLabels",
@@ -628,9 +629,9 @@ fn probes() -> Vec<Probe> {
 
 /// Every package of the bundled SDK exports its aggregated client under the name the SDK
 /// publishes it by, and that class carries the method of each operation the called service's
-/// model states — and of the name itself for a service whose model this emulator holds none of
-/// — so a handler's call is refused by the host that decides it rather than by a member that is
-/// not there, while a name that is no operation of a modelled service stays absent.
+/// model states — so a handler's call is refused by the host or the service that decides it
+/// rather than by a member that is not there, while a name that is no operation of a modelled
+/// service stays absent.
 #[tokio::test]
 async fn an_es_module_binds_the_aggregated_client_of_every_bundled_package_by_name() {
     let router = router();

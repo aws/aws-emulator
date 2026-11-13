@@ -469,6 +469,8 @@ mod stack_owned_secret_teardown;
 mod stack_parameter_driven_updates;
 #[path = "all/stack_policy_by_reference.rs"]
 mod stack_policy_by_reference;
+#[path = "all/stack_published_table_data_plane.rs"]
+mod stack_published_table_data_plane;
 #[path = "all/stack_policy_enforcement.rs"]
 mod stack_policy_enforcement;
 #[path = "all/stack_refactors.rs"]
