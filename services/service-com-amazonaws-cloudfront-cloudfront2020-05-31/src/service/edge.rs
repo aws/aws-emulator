@@ -1254,10 +1254,14 @@ fn plan_resolved(
     } else {
         None
     };
+    // The `CloudFront-*` headers the EDGE generates for this request: their values are the
+    // edge's own wherever one of those headers is read, the cache key included
+    // ([`keyed_values`]).
+    let generated = generated_headers::Generated::of_request(req);
     let cache_key = cache_key(
         &method,
         &viewer_path,
-        &keyed_values(&keyed, &accept_encoding, addressed.query, req),
+        &keyed_values(&keyed, &accept_encoding, addressed.query, req, &generated),
     );
     // "The HTTP methods for which CloudFront caches responses": a cacheable method under
     // a caching cache policy may be answered from the cache; everything else goes to the
@@ -1403,6 +1407,13 @@ fn cache_key(method: &str, viewer_path: &str, keyed: &str) -> String {
 /// parameters in a different order are two objects. The normalized `Accept-Encoding` is
 /// keyed on last — "includes the normalized header in the cache key".
 ///
+/// A header the EDGE generates contributes the EDGE'S OWN value ([`generated_headers`]),
+/// never the one a viewer stated for it: such a header describes the viewer's CONNECTION, so
+/// the value the origin request carries for it is the value that separates one object from
+/// another — a policy keying on the forwarded scheme really does give the two schemes two
+/// entries, and a viewer that states a `CloudFront-*` header of its own keys on nothing of its
+/// own.
+///
 /// Each part is rendered under its own LENGTH, so a delimiter inside a value a viewer chose
 /// cannot make one request's parts render as another's.
 fn keyed_values(
@@ -1410,15 +1421,33 @@ fn keyed_values(
     accept_encoding: &forwarding::AcceptEncoding,
     query: &str,
     req: &RtRequest,
+    generated: &generated_headers::Generated,
 ) -> String {
     let mut parts: Vec<String> = Vec::new();
     for (name, value) in req.headers().iter() {
         let name = name.to_ascii_lowercase();
+        // A value the viewer stated for a header the edge generates is not that header's
+        // value, so it takes no part in the key; the edge's own is added below.
+        if generated_headers::is_generated(&name) {
+            continue;
+        }
+        if keyed.headers.contains_header(&name) {
+            parts.push(format!("h:{name}={value}"));
+        }
+    }
+    for (name, value) in generated.headers() {
         if keyed.headers.contains_header(&name) {
             parts.push(format!("h:{name}={value}"));
         }
     }
     for name in keyed.headers.named() {
+        // A `CloudFront-*` header is never one the VIEWER sent, so it is not keyed on as a
+        // header the viewer did not send: the two the edge generates are keyed on by their
+        // generated value above, and another member of the family contributes nothing to the
+        // key at all, as it reaches no origin request either.
+        if generated_headers::is_generated(name) {
+            continue;
+        }
         if req.headers().get(name).is_none() {
             parts.push(format!("h:{}", name.to_ascii_lowercase()));
         }

@@ -38,14 +38,14 @@ use service_com_amazonaws_cloudfront_cloudfront2020_05_31::state::PROPAGATION_DE
 use smithy_server_runtime::MultiServiceRouter;
 
 /// The Region every setup call is signed for, and the Region the origin host names.
-const REGION: &str = "us-east-1";
+pub(crate) const REGION: &str = "us-east-1";
 
 /// CloudFront's control-plane host, and the API version every route is under.
-const CLOUDFRONT_HOST: &str = "cloudfront.amazonaws.com";
-const API_VERSION: &str = "2020-05-31";
+pub(crate) const CLOUDFRONT_HOST: &str = "cloudfront.amazonaws.com";
+pub(crate) const API_VERSION: &str = "2020-05-31";
 
 /// The stage the api is deployed to, which is also the origin's `OriginPath`.
-const STAGE: &str = "live";
+pub(crate) const STAGE: &str = "live";
 
 /// The resource path of the api's one method.
 const ECHO_PATH: &str = "echo";
@@ -64,19 +64,19 @@ const QUERY_NAME: &str = "q";
 const QUERY_VALUE: &str = "alpha";
 
 /// How long to wait between polls of the clock-owed deployment, and how many polls to make.
-const POLL: Duration = Duration::from_millis(50);
-const POLLS: usize = 400;
+pub(crate) const POLL: Duration = Duration::from_millis(50);
+pub(crate) const POLLS: usize = 400;
 
 /// What one call answered.
-struct Answer {
-    status: u16,
-    headers: ::http::HeaderMap,
-    body: Bytes,
+pub(crate) struct Answer {
+    pub(crate) status: u16,
+    pub(crate) headers: ::http::HeaderMap,
+    pub(crate) body: Bytes,
 }
 
 impl Answer {
     /// A response header's value, empty when the answer carries none.
-    fn header(&self, name: &str) -> String {
+    pub(crate) fn header(&self, name: &str) -> String {
         self.headers
             .get(name)
             .and_then(|value| value.to_str().ok())
@@ -85,17 +85,17 @@ impl Answer {
     }
 
     /// The body as text.
-    fn text(&self) -> String {
+    pub(crate) fn text(&self) -> String {
         String::from_utf8_lossy(&self.body).to_string()
     }
 
     /// The body as JSON, `Null` when it is neither JSON nor present.
-    fn json(&self) -> Value {
+    pub(crate) fn json(&self) -> Value {
         serde_json::from_slice(&self.body).unwrap_or(Value::Null)
     }
 
     /// The text of `<name>…</name>` in the body, or the empty string.
-    fn element(&self, name: &str) -> String {
+    pub(crate) fn element(&self, name: &str) -> String {
         let body = self.text();
         body.split_once(&format!("<{name}>"))
             .and_then(|(_before, rest)| rest.split_once(&format!("</{name}>")))
@@ -107,7 +107,7 @@ impl Answer {
 /// off: a setup call carries a credential scope (which is what names the Region and routes
 /// it) without a computed signature, and a VIEWER request carries no credential at all, as a
 /// client of a distribution sends none.
-fn emulator() -> MultiServiceRouter {
+pub(crate) fn emulator() -> MultiServiceRouter {
     let engine: Arc<engine::InMemoryEngine> = Arc::new(engine::InMemoryEngine::new());
     let mut router = MultiServiceRouter::new();
     router.set_request_authentication(false);
@@ -124,7 +124,7 @@ fn emulator() -> MultiServiceRouter {
 
 /// A SigV4 `Authorization` whose credential scope names `signing_name`, which is what routes
 /// a setup call. The signature itself is never checked here.
-fn authorization(signing_name: &str) -> String {
+pub(crate) fn authorization(signing_name: &str) -> String {
     format!(
         "AWS4-HMAC-SHA256 Credential=AKIAIOSFODNN7EXAMPLE/20260101/{REGION}/{signing_name}/\
          aws4_request, SignedHeaders=host, Signature=0000"
@@ -132,7 +132,7 @@ fn authorization(signing_name: &str) -> String {
 }
 
 /// Dispatch one request as it arrives on the wire, addressed at `uri` with `host`.
-async fn dispatch(
+pub(crate) async fn dispatch(
     router: &MultiServiceRouter,
     method: &str,
     host: &str,
@@ -159,7 +159,7 @@ async fn dispatch(
 }
 
 /// One API Gateway control-plane call that has to be accepted with `expected`.
-async fn apigw(
+pub(crate) async fn apigw(
     router: &MultiServiceRouter,
     case: &str,
     method: &str,
@@ -191,7 +191,7 @@ async fn apigw(
 }
 
 /// One CloudFront control-plane call.
-async fn cloudfront(
+pub(crate) async fn cloudfront(
     router: &MultiServiceRouter,
     method: &str,
     path: &str,
@@ -213,7 +213,7 @@ async fn cloudfront(
 
 /// One VIEWER request to a distribution: addressed to the domain name the distribution
 /// publishes, over `scheme`, carrying no credential of any kind.
-async fn view(
+pub(crate) async fn view(
     router: &MultiServiceRouter,
     scheme: &str,
     domain: &str,
@@ -232,7 +232,7 @@ async fn view(
 }
 
 /// The member `name` of a JSON object, as text.
-fn member(case: &str, body: &Value, name: &str) -> String {
+pub(crate) fn member(case: &str, body: &Value, name: &str) -> String {
     body.get(name)
         .and_then(Value::as_str)
         .unwrap_or_else(|| panic!("setup {case:?}: no {name:?} in {body}"))
@@ -414,7 +414,7 @@ async fn create_distribution(
 /// Poll `GetDistribution` until CloudFront first reports the distribution `Deployed`, which
 /// is the state a viewer request is served in. The wait is on the CONDITION, with a deadline
 /// far past the span the service owes it.
-async fn wait_until_deployed(router: &MultiServiceRouter, case: &str, id: &str) {
+pub(crate) async fn wait_until_deployed(router: &MultiServiceRouter, case: &str, id: &str) {
     for _ in 0..POLLS {
         let read = cloudfront(
             router,
