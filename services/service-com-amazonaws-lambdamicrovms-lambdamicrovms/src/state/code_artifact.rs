@@ -32,9 +32,11 @@
 //! clock makes the build due
 //! ([`super::ComAmazonawsLambdamicrovmsLambdamicrovmsState::materialize_due`]), so a
 //! caller reading straight after the create still observes the build in flight and no
-//! handler sleeps. The object's BYTES are never read into this process: what the build
-//! establishes here is whether the artifact is served, and the guest that would run
-//! those bytes is not something this emulator runs (see `super::microvm_endpoint`).
+//! handler sleeps. The object's BYTES are what a build produces its image from, so a
+//! served artifact is read into this process under the bound
+//! [`super::guest_program::MAX_ARTIFACT_BYTES`] and the guest program it holds is kept on
+//! the version ([`super::guest_program`]): RUNNING that guest is what a MicroVM's
+//! published endpoint serves (`super::guest_runtime`).
 
 use ::aws_smithy_types::error::metadata::ProvideErrorMetadata;
 
@@ -56,8 +58,10 @@ pub const ACCESS_DENIED_REASON: &str = "Access to the S3 object was denied.";
 /// What a resolution of a version's code artifact established.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CodeArtifactVerdict {
-    /// The object store served the artifact, so the build has code to build.
-    Fetched,
+    /// The object store served the artifact, so the build has code to build: the bytes it
+    /// served, which are what the guest's program is read out of
+    /// ([`super::guest_program`]).
+    Fetched(Vec<u8>),
     /// The store ANSWERED that the artifact cannot be fetched; the clause is the reason
     /// the version and every build of it settle with.
     Unfetchable(&'static str),
@@ -75,7 +79,24 @@ impl CodeArtifactVerdict {
     pub fn failure_reason(&self) -> Option<String> {
         match self {
             Self::Unfetchable(reason) => Some((*reason).to_string()),
-            Self::Fetched | Self::Unestablished => None,
+            Self::Fetched(_) | Self::Unestablished => None,
+        }
+    }
+
+    /// The GUEST the served artifact holds, as the program a MicroVM run from this
+    /// version executes — and `None` for a verdict that served no bytes, or bytes holding
+    /// no program this emulator's engine can run.
+    ///
+    /// `uri` is the `codeArtifact$uri` the artifact was fetched from: the OBJECT KEY it
+    /// addresses is what names the single module of an artifact that is not an archive,
+    /// so that is what the read is given.
+    pub fn guest(&self, uri: &str) -> Option<::std::sync::Arc<super::guest_program::GuestProgram>> {
+        match self {
+            Self::Fetched(bytes) => {
+                let key = super::s3_object_uri(uri).map_or(uri, |(_, key)| key);
+                super::guest_program::read(bytes, key).map(::std::sync::Arc::new)
+            }
+            Self::Unfetchable(_) | Self::Unestablished => None,
         }
     }
 }
@@ -110,20 +131,64 @@ pub async fn resolve(
     artifact_verdict(&s3_client(ctx, &region), bucket, key).await
 }
 
-/// Ask `client` whether it serves the object `key` of `bucket`.
+/// Ask `client` whether it serves the object `key` of `bucket`, and read what it serves.
 ///
 /// The read is `GetObject`, the operation a build fetches its artifact with, because its
 /// refusals are what tell the two halves of an object address apart: a HEAD of an absent
 /// object carries no body at all, so a 404 to one says nothing about WHICH of the bucket
-/// and the key is missing. The answer's body is dropped unread — the bytes are the
-/// guest's, not this emulator's.
+/// and the key is missing. The bytes it answers ARE the guest's program, so they are read
+/// into this process — bounded by [`super::guest_program::MAX_ARTIFACT_BYTES`], which is
+/// what the read holds at most whatever the object's own length says.
 async fn artifact_verdict(
     client: &::aws_sdk_s3::Client,
     bucket: &str,
     key: &str,
 ) -> CodeArtifactVerdict {
-    let error = match client.get_object().bucket(bucket).key(key).send().await {
-        Ok(_) => return CodeArtifactVerdict::Fetched,
+    let read = client
+        .get_object()
+        .bucket(bucket)
+        .key(key)
+        // RANGED to the bound, so a larger artifact is read up to it rather than
+        // buffered whole: what this process holds is bounded by the range it asked for
+        // and not by the length the object declares.
+        .range(format!(
+            "bytes=0-{}",
+            super::guest_program::MAX_ARTIFACT_BYTES
+        ));
+    let error = match read.send().await {
+        Ok(served) => {
+            let mut held = match served.body.collect().await {
+                Ok(body) => body.into_bytes().to_vec(),
+                Err(error) => {
+                    // The store served the object and its bytes did not arrive, which
+                    // establishes nothing about the artifact.
+                    ::tracing::warn!(
+                        bucket = ?bucket,
+                        key = ?key,
+                        error = %error,
+                        "a MicroVM image code artifact did not arrive in full"
+                    );
+                    return CodeArtifactVerdict::Unestablished;
+                }
+            };
+            // The range asked for one byte past the bound, so a longer answer is an
+            // artifact larger than this emulator reads: it is held to the bound, and the
+            // operator is told, because the guest program is then read from a truncated
+            // artifact and the MicroVM will have nothing to run.
+            let bound = usize::try_from(super::guest_program::MAX_ARTIFACT_BYTES)
+                .unwrap_or(usize::MAX);
+            if held.len() > bound {
+                ::tracing::warn!(
+                    bucket = ?bucket,
+                    key = ?key,
+                    bound,
+                    "a MicroVM image code artifact is larger than this emulator reads, so \
+                     its guest program is read from the first {bound} bytes of it"
+                );
+                held.truncate(bound);
+            }
+            return CodeArtifactVerdict::Fetched(held);
+        }
         Err(error) => error,
     };
     let code = error.code().unwrap_or_default();
@@ -196,7 +261,11 @@ mod tests {
     #[test]
     fn only_an_answered_refusal_is_a_failure_reason() {
         let rows: &[(&str, CodeArtifactVerdict, Option<&str>)] = &[
-            ("the artifact is served", CodeArtifactVerdict::Fetched, None),
+            (
+                "the artifact is served",
+                CodeArtifactVerdict::Fetched(b"// the guest".to_vec()),
+                None,
+            ),
             (
                 "no such bucket",
                 CodeArtifactVerdict::Unfetchable(BUCKET_ABSENT_REASON),

@@ -21,8 +21,9 @@ use std::sync::Arc;
 
 use serde_json::{json, Value};
 use service_com_amazonaws_lambdamicrovms_lambdamicrovms::state::microvm_endpoint::{
-    serve_request, AUTH_TOKEN_HEADER,
+    serve_request, AUTH_TOKEN_HEADER, NO_GUEST_RESPONSE_STATUS,
 };
+use service_com_amazonaws_lambdamicrovms_lambdamicrovms::state::microvm_network::connector_state;
 use service_com_amazonaws_lambdamicrovms_lambdamicrovms::state::ComAmazonawsLambdamicrovmsLambdamicrovmsState as MicrovmState;
 use service_com_amazonaws_lambdamicrovms_lambdamicrovms::state::{
     image_not_found_message, microvm_not_found_message, too_many_regions_message,
@@ -341,7 +342,30 @@ async fn an_authentication_token_grants_access_only_in_the_region_that_minted_it
     let name = "regional-token";
     let (status, created) = create_image(&router, REGION, name, json!({})).await;
     assert_eq!(status, 201, "create in {REGION}: got {status} {created}");
-    tokio::time::sleep(PAST_THE_SPAN).await;
+    // The build is clock-owed, so this waits for the CONDITION the launch below needs —
+    // an active version to launch from — rather than for a fixed time.
+    {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        loop {
+            let (status, read) = call_in_region(
+                &router,
+                REGION,
+                "GET",
+                &format!("/2025-09-09/microvm-images/{name}"),
+                None,
+            )
+            .await;
+            assert_eq!(status, 200, "read the image {name}: got {status} {read}");
+            if read["latestActiveImageVersion"].is_string() {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the image {name} never settled with an active version: last read {read}"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    }
 
     let (status, run) = call_in_region(
         &router,
@@ -375,7 +399,7 @@ async fn an_authentication_token_grants_access_only_in_the_region_that_minted_it
     // The token minted at the MINTING region's endpoint grants nothing in the partition
     // the address resolves in.
     let home_token = mint_auth_token(&router, REGION, &microvm_id).await;
-    let (status, _, body) = through_endpoint(&engine, &endpoint, Some(&home_token));
+    let (status, _, body) = through_endpoint(&router, &engine, &endpoint, Some(&home_token)).await;
     assert_eq!(
         status, 403,
         "case a token minted in {REGION} presented for the {other_region} partition: expected \
@@ -383,12 +407,15 @@ async fn an_authentication_token_grants_access_only_in_the_region_that_minted_it
     );
 
     // The control: a token minted at THAT region's endpoint is accepted there, so the
-    // refusal above is the region check and not a dead path. (The emulator runs no guest,
-    // so an authenticated request is answered 501 — see `microvm_endpoint`.)
+    // refusal above is the region check and not a dead path. (This image's code artifact
+    // was never served, so the MicroVM holds no guest program to run and the proxy
+    // answers for a MicroVM it reached nothing inside of — see `microvm_endpoint`.)
     let foreign_token = mint_auth_token(&router, other_region, &microvm_id).await;
-    let (status, _, body) = through_endpoint(&engine, &endpoint, Some(&foreign_token));
+    let (status, _, body) =
+        through_endpoint(&router, &engine, &endpoint, Some(&foreign_token)).await;
     assert_eq!(
-        status, 501,
+        status,
+        NO_GUEST_RESPONSE_STATUS,
         "case a token minted in {other_region}: expected the authenticated answer, got {status} \
          {body}"
     );
@@ -417,7 +444,8 @@ async fn mint_auth_token(router: &MultiServiceRouter, region: &str, microvm_id: 
 
 /// One request to the address a MicroVM is published on, answered by the one decision the
 /// core's listener hands every request there (`state::microvm_endpoint::serve_request`).
-fn through_endpoint(
+async fn through_endpoint(
+    router: &MultiServiceRouter,
     engine: &Arc<engine::InMemoryEngine>,
     endpoint: &str,
     token: Option<&str>,
@@ -430,7 +458,9 @@ fn through_endpoint(
         .body(Vec::new())
         .expect("a well-formed request to a MicroVM endpoint");
     let state = engine.state::<MicrovmState>();
-    let response = serve_request(&state, &request);
+    let connectors = connector_state(&**engine);
+    let callback = smithy_server_runtime::EmbeddedEmulator::from_router(router.clone());
+    let response = serve_request(&state, connectors.as_ref(), &callback, &request).await;
     let status = response.status().as_u16();
     let content_type = response
         .headers()

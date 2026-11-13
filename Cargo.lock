@@ -15036,6 +15036,7 @@ dependencies = [
  "aws-emulator-smithy-macros",
  "aws-emulator-smithy-schema-server",
  "aws-emulator-smithy-server-runtime",
+ "aws-sdk-ec2",
  "aws-sdk-s3",
  "aws-smithy-runtime-api",
  "aws-smithy-schema 0.2.1",
@@ -15043,12 +15044,17 @@ dependencies = [
  "bytes",
  "hex",
  "http",
+ "ipnet",
+ "rquickjs",
  "serde_json",
+ "service-com-amazonaws-ec2-amazonec2",
+ "service-com-amazonaws-lambdacore-lambdacoreapiservice",
  "service-com-amazonaws-s3-amazons3",
  "service-common",
  "sha2 0.10.9",
  "tokio",
  "tracing",
+ "zip",
 ]
 
 [[package]]

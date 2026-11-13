@@ -51,6 +51,17 @@ pub mod code_artifact;
 /// was signed for.
 pub mod regions;
 
+/// The guest a MicroVM runs: the program held in the image version's code artifact.
+pub mod guest_program;
+
+/// RUNNING that guest — the engine the image's own code executes in, and the one request
+/// a published endpoint hands it.
+pub mod guest_runtime;
+
+/// The network a MicroVM's guest reaches: which outbound connection its
+/// `egressNetworkConnectors` carry, and what the guest observes of the one they do.
+pub mod microvm_network;
+
 /// The region an ARN carries when the request is unsigned, matching the region
 /// the emulator's generated client config defaults to.
 pub const DEFAULT_REGION: &str = "us-east-1";
@@ -1186,6 +1197,11 @@ pub struct MicrovmImageVersion {
     /// The per-target builds this version's asynchronous build fans out into, keyed by
     /// `buildId` — see [`ComAmazonawsLambdamicrovmsLambdamicrovmsState::mint_builds`].
     pub builds: BTreeMap<String, MicrovmImageBuild>,
+    /// The GUEST this version's build produced: the program held in the code artifact the
+    /// object store served ([`guest_program`]), which is what a MicroVM run from this
+    /// version executes behind its published endpoint. `None` when the artifact was not
+    /// served at all, or holds no program this emulator's engine can run.
+    pub guest: Option<::std::sync::Arc<guest_program::GuestProgram>>,
 }
 
 impl MicrovmImageVersion {
@@ -1409,6 +1425,11 @@ pub struct Microvm {
     pub state_reason: Option<String>,
     pub ingress_network_connectors: Vec<String>,
     pub egress_network_connectors: Vec<String>,
+    /// The address of the MicroVM's OWN network interface, assigned when it starts: a
+    /// link-local address ([`microvm_network::link_local_address`]), which is what the
+    /// guest observes as the local end of a connection one of its egress connectors
+    /// carries.
+    pub link_local_address: String,
     /// When `PENDING` -> `RUNNING` becomes due; `None` once it has.
     pub provision_due_at: Option<Instant>,
     /// When `SUSPENDING` -> `SUSPENDED` becomes due; `None` once it has, and once a
@@ -1785,6 +1806,14 @@ impl ComAmazonawsLambdamicrovmsLambdamicrovmsState {
         let seq = self.next_microvm_seq;
         self.next_microvm_seq += 1;
         format!("mvm-{seq:016x}")
+    }
+
+    /// The address of the OWN network interface the next MicroVM is started with: one
+    /// link-local address per MicroVM of the store
+    /// ([`microvm_network::link_local_address`]), assigned from the same sequence its id
+    /// is, so no two MicroVMs of one store hold the same one.
+    pub fn next_link_local_address(&self) -> String {
+        microvm_network::link_local_address(self.next_microvm_seq)
     }
 
     /// Mint the next `buildId`. Zero-padded for the same reason as

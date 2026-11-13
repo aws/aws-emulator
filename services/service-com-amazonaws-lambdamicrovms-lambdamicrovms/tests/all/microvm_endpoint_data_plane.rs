@@ -16,13 +16,14 @@ use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 use service_com_amazonaws_lambdamicrovms_lambdamicrovms::state::microvm_endpoint::{
-    auth_token_digest, serve_request, AUTH_TOKEN_HEADER,
+    auth_token_digest, serve_request, AUTH_TOKEN_HEADER, NO_GUEST_RESPONSE_STATUS,
 };
+use service_com_amazonaws_lambdamicrovms_lambdamicrovms::state::microvm_network::connector_state;
 use service_com_amazonaws_lambdamicrovms_lambdamicrovms::state::ComAmazonawsLambdamicrovmsLambdamicrovmsState as MicrovmState;
 use smithy_server_runtime::MultiServiceRouter;
 
 use crate::microvm_lifecycle::{
-    built_image, call, emulator_with_engine, image_body, run_microvm, PAST_THE_SPAN,
+    built_image, call, emulator_with_engine, image_body, run_microvm,
 };
 
 /// One row of the status table: the case, the address a client sends to, the guest
@@ -53,29 +54,90 @@ fn guest_request(
 /// Send `request` to the endpoint this emulator serves, and report the status, the
 /// content type and the body as text.
 fn through_endpoint(
+    router: &MultiServiceRouter,
     engine: &Arc<engine::InMemoryEngine>,
     request: &http::Request<Vec<u8>>,
-) -> (u16, String, String) {
+) -> impl std::future::Future<Output = (u16, String, String)> {
     let state = engine.state::<MicrovmState>();
-    let response = serve_request(&state, request);
-    let status = response.status().as_u16();
-    let content_type = response
-        .headers()
-        .get("content-type")
-        .and_then(|value| value.to_str().ok())
-        .unwrap_or_default()
-        .to_string();
-    let body = String::from_utf8_lossy(response.body()).to_string();
-    (status, content_type, body)
+    let connectors = connector_state(&**engine);
+    let callback = smithy_server_runtime::EmbeddedEmulator::from_router(router.clone());
+    let request = request.clone();
+    async move {
+        let response = serve_request(&state, connectors.as_ref(), &callback, &request).await;
+        let status = response.status().as_u16();
+        let content_type = response
+            .headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default()
+            .to_string();
+        let body = String::from_utf8_lossy(response.body()).to_string();
+        (status, content_type, body)
+    }
+}
+
+/// How long a poll for one clock-owed convergence may take before the test gives up:
+/// generous, because what is asserted is that the transition HAPPENS, not when.
+const SETTLE_DEADLINE: Duration = Duration::from_secs(30);
+
+/// How long one poll of a settling resource waits before looking again.
+const POLL_INTERVAL: Duration = Duration::from_millis(100);
+
+/// Poll `GetMicrovmImage` until the image `name` has settled with an active version, so
+/// what follows waits for the CONDITION rather than for a fixed time.
+async fn settled_image(router: &MultiServiceRouter, name: &str) {
+    let deadline = Instant::now() + SETTLE_DEADLINE;
+    loop {
+        let (status, read) = call(
+            router,
+            "GET",
+            &format!("/2025-09-09/microvm-images/{name}"),
+            None,
+        )
+        .await;
+        assert_eq!(status, 200, "read the image {name}: got {status} {read}");
+        if read["latestActiveImageVersion"].is_string() {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the image {name} never settled with an active version: last read {read}"
+        );
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
+}
+
+/// Poll `GetMicrovm` until `microvm_id` reports `state`.
+async fn microvm_in_state(router: &MultiServiceRouter, microvm_id: &str, state: &str) {
+    let deadline = Instant::now() + SETTLE_DEADLINE;
+    loop {
+        let (status, read) = call(
+            router,
+            "GET",
+            &format!("/2025-09-09/microvms/{microvm_id}"),
+            None,
+        )
+        .await;
+        assert_eq!(status, 200, "read the MicroVM {microvm_id}: got {status} {read}");
+        if read["state"].as_str() == Some(state) {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the MicroVM {microvm_id} never reached {state}: last read {read}"
+        );
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
 }
 
 /// Run a MicroVM from `image` and return `(microvmId, endpoint)` once it is RUNNING.
 async fn running_microvm(router: &MultiServiceRouter, image: &str) -> (String, String) {
     let (status, run) = run_microvm(router, json!({"imageIdentifier": image})).await;
     assert_eq!(status, 200, "run a MicroVM from {image}: got {status} {run}");
-    tokio::time::sleep(PAST_THE_SPAN).await;
+    let microvm_id = run["microvmId"].as_str().unwrap_or_default().to_string();
+    microvm_in_state(router, &microvm_id, "RUNNING").await;
     (
-        run["microvmId"].as_str().unwrap_or_default().to_string(),
+        microvm_id,
         run["endpoint"].as_str().unwrap_or_default().to_string(),
     )
 }
@@ -244,10 +306,11 @@ async fn a_published_microvm_endpoint_is_an_address_a_client_can_open() {
 /// the address names no MicroVM that can be connected to, `403` where no live token
 /// `CreateMicrovmAuthToken` minted for THAT MicroVM (and covering the port its image
 /// publishes its listener on) is presented in `X-aws-proxy-auth`, and otherwise the
-/// honest `501` for the guest's own response, which this emulator runs no guest to
-/// produce. Never a transport failure, whatever the guest path, the method or the
-/// token.
-#[tokio::test]
+/// GUEST's own answer — which, for a MicroVM whose image holds no guest program this
+/// emulator's engine can run (these images' code artifacts were never served), is the
+/// status the proxy answers for a MicroVM it reached nothing inside of. Never a transport
+/// failure, whatever the guest path, the method or the token.
+#[tokio::test(flavor = "multi_thread")]
 async fn a_published_endpoint_answers_an_http_status_for_every_request_class() {
     let (router, engine) = emulator_with_engine();
 
@@ -265,7 +328,10 @@ async fn a_published_endpoint_answers_an_http_status_for_every_request_class() {
     .await;
     assert_eq!(status, 201, "create the ported image: got {status} {created}");
     built_image(&router, "portless").await;
-    tokio::time::sleep(PAST_THE_SPAN).await;
+    // Both images' builds are clock-owed: wait for the CONDITION each test row needs —
+    // an active version to launch from — rather than for a fixed time.
+    settled_image(&router, "ported").await;
+    settled_image(&router, "portless").await;
 
     let (ported_id, ported) = running_microvm(&router, "ported").await;
     let (_, portless) = running_microvm(&router, "portless").await;
@@ -344,7 +410,7 @@ async fn a_published_endpoint_answers_an_http_status_for_every_request_class() {
             "/health",
             "GET",
             Some(&every_port),
-            501,
+            NO_GUEST_RESPONSE_STATUS,
         ),
         (
             "a token naming the published port exactly",
@@ -352,7 +418,7 @@ async fn a_published_endpoint_answers_an_http_status_for_every_request_class() {
             "/health",
             "GET",
             Some(&exact_port),
-            501,
+            NO_GUEST_RESPONSE_STATUS,
         ),
         (
             "a token whose range covers the published port",
@@ -360,7 +426,7 @@ async fn a_published_endpoint_answers_an_http_status_for_every_request_class() {
             "/health",
             "GET",
             Some(&covering_range),
-            501,
+            NO_GUEST_RESPONSE_STATUS,
         ),
         (
             "a MicroVM whose image publishes no port, with a token for every port",
@@ -368,7 +434,7 @@ async fn a_published_endpoint_answers_an_http_status_for_every_request_class() {
             "/health",
             "GET",
             Some(&portless_every_port),
-            501,
+            NO_GUEST_RESPONSE_STATUS,
         ),
         (
             "a MicroVM whose image publishes no port, with a token scoped to one port",
@@ -384,7 +450,7 @@ async fn a_published_endpoint_answers_an_http_status_for_every_request_class() {
             "/connect?host=10.90.1.17&port=443",
             "GET",
             Some(&every_port),
-            501,
+            NO_GUEST_RESPONSE_STATUS,
         ),
         (
             "the guest's root path",
@@ -392,7 +458,7 @@ async fn a_published_endpoint_answers_an_http_status_for_every_request_class() {
             "/",
             "GET",
             Some(&every_port),
-            501,
+            NO_GUEST_RESPONSE_STATUS,
         ),
         (
             "no path past the endpoint at all",
@@ -400,7 +466,7 @@ async fn a_published_endpoint_answers_an_http_status_for_every_request_class() {
             "",
             "GET",
             Some(&every_port),
-            501,
+            NO_GUEST_RESPONSE_STATUS,
         ),
         (
             "a POST to the guest",
@@ -408,7 +474,7 @@ async fn a_published_endpoint_answers_an_http_status_for_every_request_class() {
             "/health",
             "POST",
             Some(&every_port),
-            501,
+            NO_GUEST_RESPONSE_STATUS,
         ),
         (
             "a HEAD of the guest",
@@ -416,7 +482,7 @@ async fn a_published_endpoint_answers_an_http_status_for_every_request_class() {
             "/health",
             "HEAD",
             Some(&every_port),
-            501,
+            NO_GUEST_RESPONSE_STATUS,
         ),
         (
             "an address naming a MicroVM this store never minted",
@@ -454,7 +520,7 @@ async fn a_published_endpoint_answers_an_http_status_for_every_request_class() {
 
     for (case, endpoint, path, method, token, expected) in rows {
         let request = guest_request(method, endpoint, path, token);
-        let (status, content_type, body) = through_endpoint(&engine, &request);
+        let (status, content_type, body) = through_endpoint(&router, &engine, &request).await;
         assert_eq!(
             status, expected,
             "case {case:?}: expected {expected}, got {status} {body:?}"
@@ -481,7 +547,7 @@ async fn a_published_endpoint_answers_an_http_status_for_every_request_class() {
 /// MicroVM's: once `expirationInMinutes` has run out, or the MicroVM can no longer be
 /// connected to, the same request that was served is refused with `403`, and the
 /// address of a MicroVM on its way out answers `404`.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn a_token_stops_being_accepted_once_the_clock_or_the_microvm_has_ended_it() {
     let (router, engine) = emulator_with_engine();
     built_image(&router, "expiring").await;
@@ -497,9 +563,10 @@ async fn a_token_stops_being_accepted_once_the_clock_or_the_microvm_has_ended_it
         ("the MicroVM about to be terminated", &doomed, &doomed_token),
     ] {
         let request = guest_request("GET", endpoint, "/health", Some(token));
-        let (status, _, body) = through_endpoint(&engine, &request);
+        let (status, _, body) = through_endpoint(&router, &engine, &request).await;
         assert_eq!(
-            status, 501,
+            status,
+            NO_GUEST_RESPONSE_STATUS,
             "case {case:?}: a live token must pass the token check, got {status} {body:?}"
         );
     }
@@ -520,7 +587,7 @@ async fn a_token_stops_being_accepted_once_the_clock_or_the_microvm_has_ended_it
             .unwrap_or_else(Instant::now);
     }
     let request = guest_request("GET", &endpoint, "/health", Some(&token));
-    let (status, _, body) = through_endpoint(&engine, &request);
+    let (status, _, body) = through_endpoint(&router, &engine, &request).await;
     assert_eq!(
         status, 403,
         "an expired token must be refused, got {status} {body:?}"
@@ -544,15 +611,17 @@ async fn a_token_stops_being_accepted_once_the_clock_or_the_microvm_has_ended_it
         ("with no token at all", None),
     ] {
         let request = guest_request("GET", &doomed, "/health", token);
-        let (status, _, body) = through_endpoint(&engine, &request);
+        let (status, _, body) = through_endpoint(&router, &engine, &request).await;
         assert_eq!(
             status, 404,
             "case {case:?}: a MicroVM on its way out is published nowhere, got {status} {body:?}"
         );
     }
-    tokio::time::sleep(PAST_THE_SPAN).await;
+    // The termination is clock-owed, so this waits for the MicroVM to REACH its terminal
+    // state rather than for a fixed time.
+    microvm_in_state(&router, &doomed_id, "TERMINATED").await;
     let request = guest_request("GET", &doomed, "/health", Some(&doomed_token));
-    let (status, _, body) = through_endpoint(&engine, &request);
+    let (status, _, body) = through_endpoint(&router, &engine, &request).await;
     assert_eq!(
         status, 404,
         "a terminated MicroVM is published nowhere, got {status} {body:?}"

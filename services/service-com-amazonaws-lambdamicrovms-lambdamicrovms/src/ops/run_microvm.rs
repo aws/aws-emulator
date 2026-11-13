@@ -218,7 +218,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // store (`crate::state::microvm_endpoint`). Opened before the store is locked,
         // because opening it is asynchronous.
         let Some(endpoint_base) =
-            crate::state::microvm_endpoint::ensure_base_url(&*self.engine, &state).await
+            crate::state::microvm_endpoint::ensure_base_url(
+                &*self.engine,
+                &state,
+                ctx.callback().clone(),
+            )
+            .await
         else {
             return Err(endpoint_unavailable());
         };
@@ -354,6 +359,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             _ => return Err(duration_out_of_range(maximum_duration_in_seconds)),
         };
 
+        // The MicroVM's own interface address, assigned from the same sequence its id is
+        // minted from, so it is read before the id advances that sequence.
+        let link_local_address = store.next_link_local_address();
         let microvm_id = store.next_microvm_id();
         let microvm_arn = crate::state::microvm_arn(&region, &microvm_id);
         let endpoint = crate::state::microvm_endpoint::endpoint_url(&endpoint_base, &microvm_id);
@@ -380,6 +388,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     egress_network_connectors: input
                         .egress_network_connectors
                         .unwrap_or_default(),
+                    link_local_address,
                     // "The MicroVM starts in PENDING state and transitions to RUNNING
                     // once provisioning completes."
                     provision_due_at: Some(now + crate::state::MICROVM_PROVISION_SPAN),

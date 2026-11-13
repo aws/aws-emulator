@@ -24,10 +24,19 @@
 //!   on — or name particular ports where that image publishes none, a scope this
 //!   emulator cannot establish) — `403`, the answer `CreateMicrovmAuthToken`'s token is
 //!   what avoids;
-//! * an authenticated request — the GUEST's own HTTP response belongs here, and this
-//!   emulator runs no MicroVM guest (a guest is the image's code artifact, which needs
-//!   a container runtime this emulator does not have), so the honest answer is `501`.
-//!   Nothing is synthesised in the guest's name.
+//! * an authenticated request — the GUEST's own HTTP response belongs here, so the
+//!   request is handed to the guest the MicroVM's image version holds
+//!   ([`super::guest_program`]) and RUN in the engine embedded in this process
+//!   ([`super::guest_runtime`]): the status, the headers and the body a client reads
+//!   back are the ones the guest's own program produced. Nothing is synthesised in the
+//!   guest's name — a MicroVM whose image holds no guest this engine can run, and a
+//!   guest that produced no response, are each answered with the status the PROXY itself
+//!   answers for a MicroVM it reached nothing inside of ([`NO_GUEST_RESPONSE_STATUS`]).
+//!
+//! A guest's outbound connections are decided by the MicroVM's `egressNetworkConnectors`
+//! ([`super::microvm_network`]), which this listener answers from the emulated network
+//! while the guest waits on them — so what a guest reports of a path it opened is what
+//! the account's own connectors, subnets and security groups allow.
 //!
 //! A token is held as a DIGEST, never as the token itself: the caller keeps the only
 //! copy of the secret, and this store keeps just enough to recognise it again.
@@ -81,11 +90,16 @@ const AUTH_TOKEN_REQUIRED: &str = "Present a valid authentication token for this
                                    MicroVM in the X-aws-proxy-auth header. Create one \
                                    with CreateMicrovmAuthToken.\n";
 
-/// What it answers an AUTHENTICATED request: the guest's own response belongs here,
-/// and no guest ran — see this module's header.
-const NO_MICROVM_GUEST: &str = "This MicroVM endpoint is not implemented: the \
-                                emulator runs no MicroVM guest, so the guest's own \
-                                response cannot be served.\n";
+/// What a published endpoint answers a request it reached nothing inside the MicroVM
+/// with: the MicroVM's image holds no guest program this emulator's engine can run, or
+/// the guest it ran produced no response at all. The PROXY is answering for a guest that
+/// did not, which is the gateway's own status.
+pub const NO_GUEST_RESPONSE_STATUS: u16 = 502;
+
+/// What it answers such a request. One sentence carrying nothing from the request: why
+/// the guest produced no response is the operator's to read in this emulator's log
+/// rather than a client's to probe for.
+const NO_GUEST_RESPONSE: &str = "The MicroVM returned no response.\n";
 
 /// One live authentication token for one MicroVM's endpoint, held in
 /// [`ServiceState::auth_tokens`] under [`auth_token_digest`] of the token.
@@ -154,6 +168,7 @@ impl std::fmt::Debug for MicrovmProxy {
 pub async fn ensure_base_url<Eng: Send + Sync + 'static>(
     engine: &Eng,
     state: &::engine::ServiceState<ServiceState>,
+    callback: ::smithy_server_runtime::EmbeddedEmulator,
 ) -> Option<String> {
     // The guard is taken and dropped before the await below: a lock held across an
     // await would make this future non-`Send`.
@@ -173,6 +188,11 @@ pub async fn ensure_base_url<Eng: Send + Sync + 'static>(
         .http(
             MicrovmEndpointServer {
                 state: state.clone(),
+                // The stores and the in-process handle a guest's outbound connection is
+                // decided against, taken where the listener is opened: the listener is
+                // not a second emulator, it is a second ADDRESS of this one.
+                connectors: super::microvm_network::connector_state(engine),
+                callback,
             },
             ::emulator_server::HttpPolicy::default(),
         )
@@ -217,6 +237,11 @@ fn authority(listener: &::emulator_server::ResourceListener) -> String {
 /// the browser checks and owns CORS; this answers the address the path names.
 struct MicrovmEndpointServer {
     state: ::engine::ServiceState<ServiceState>,
+    /// The lambda-core store a MicroVM's `egressNetworkConnectors` are read from, and
+    /// `None` in a deployment carrying none — which resolves no path at all.
+    connectors: Option<::engine::ServiceState<super::microvm_network::ConnectorState>>,
+    /// The in-process handle the emulated network is asked over.
+    callback: ::smithy_server_runtime::EmbeddedEmulator,
 }
 
 impl ::emulator_server::HttpHandler for MicrovmEndpointServer {
@@ -225,7 +250,9 @@ impl ::emulator_server::HttpHandler for MicrovmEndpointServer {
         req: ::http::Request<Vec<u8>>,
     ) -> Pin<Box<dyn Future<Output = ::http::Response<Vec<u8>>> + Send>> {
         let state = self.state.clone();
-        Box::pin(async move { serve_request(&state, &req) })
+        let connectors = self.connectors.clone();
+        let callback = self.callback.clone();
+        Box::pin(async move { serve_request(&state, connectors.as_ref(), &callback, &req).await })
     }
 }
 
@@ -234,11 +261,21 @@ impl ::emulator_server::HttpHandler for MicrovmEndpointServer {
 ///
 /// The MicroVM is resolved FIRST and the token second, which is the order the real
 /// address works in: only an address that names a MicroVM answers at all, and then the
-/// token decides. The one write is the clock's own
-/// ([`ServiceState::materialize_due`]), owed at this instant whether or not anybody
-/// connected, so reaching an endpoint changes nothing a later caller sees.
-pub fn serve_request(
+/// token decides. An authenticated request is then handed to the MicroVM's GUEST and
+/// answered with what the guest's own program produced.
+///
+/// The writes are the clock's own ([`ServiceState::materialize_due`], and the same on the
+/// connector store a guest's connection is decided against), owed at this instant whether
+/// or not anybody connected, so reaching an endpoint changes nothing a later caller sees.
+///
+/// `connectors` is the lambda-core store the MicroVM's `egressNetworkConnectors` are read
+/// from and `callback` the in-process handle the emulated network is asked over; a
+/// deployment carrying neither resolves no path, so every outbound connection a guest
+/// opens is one nothing carried.
+pub async fn serve_request(
     state: &::engine::ServiceState<ServiceState>,
+    connectors: Option<&::engine::ServiceState<super::microvm_network::ConnectorState>>,
+    callback: &::smithy_server_runtime::EmbeddedEmulator,
     req: &::http::Request<Vec<u8>>,
 ) -> ::http::Response<Vec<u8>> {
     let head = req.method() == ::http::Method::HEAD;
@@ -252,33 +289,58 @@ pub fn serve_request(
         return endpoint_response(head, 404, NO_MICROVM_AT_THIS_ADDRESS);
     };
 
+    // Everything the request is answered from is copied out under the lock, which is
+    // dropped before the guest runs: no store lock is held across an await.
     let now = Instant::now();
-    let mut store = state.lock();
-    store.materialize_due(now);
+    let resolved = {
+        let mut store = state.lock();
+        store.materialize_due(now);
 
-    // The address carries the MicroVM's own id rather than a region, so the record is
-    // resolved wherever this store holds it (see `super::regions`) — and the region that
-    // holds it is half the identity a presented token has to match.
-    let Some((region, microvm_id)) = store
-        .microvm_anywhere(&addressed)
-        .filter(|(_, vm)| is_connectable_microvm_state(&vm.state))
-        .map(|(region, vm)| (region.to_string(), vm.microvm_id.clone()))
-    else {
-        return endpoint_response(head, 404, NO_MICROVM_AT_THIS_ADDRESS);
-    };
+        // The address carries the MicroVM's own id rather than a region, so the record is
+        // resolved wherever this store holds it (see `super::regions`) — and the region
+        // that holds it is half the identity a presented token has to match.
+        let Some((region, microvm_id)) = store
+            .microvm_anywhere(&addressed)
+            .filter(|(_, vm)| is_connectable_microvm_state(&vm.state))
+            .map(|(region, vm)| (region.to_string(), vm.microvm_id.clone()))
+        else {
+            return endpoint_response(head, 404, NO_MICROVM_AT_THIS_ADDRESS);
+        };
 
-    let guest_port = store.microvm_guest_port(&region, &microvm_id);
-    let authenticated = presented
-        .and_then(|digest| store.auth_tokens.get(&digest))
-        .is_some_and(|token| {
-            // The token's identity is the REGION and the `microvmId` together: a token
-            // minted against one region's partition grants nothing at another's.
-            token.region == region
-                && token.microvm_id == microvm_id
-                && token.expires_at > now
-                && grants_port(&token.allowed_ports, guest_port)
+        let guest_port = store.microvm_guest_port(&region, &microvm_id);
+        let authenticated = presented
+            .and_then(|digest| store.auth_tokens.get(&digest))
+            .is_some_and(|token| {
+                // The token's identity is the REGION and the `microvmId` together: a
+                // token minted against one region's partition grants nothing at
+                // another's.
+                token.region == region
+                    && token.microvm_id == microvm_id
+                    && token.expires_at > now
+                    && grants_port(&token.allowed_ports, guest_port)
+            });
+        let vm = store.microvm(&region, &microvm_id);
+        let egress = super::microvm_network::GuestEgress {
+            region: region.clone(),
+            connectors: vm
+                .map(|vm| vm.egress_network_connectors.clone())
+                .unwrap_or_default(),
+            link_local_address: vm
+                .map(|vm| vm.link_local_address.clone())
+                .unwrap_or_default(),
+        };
+        // The guest is the program the build of the image version this MicroVM runs
+        // produced, held on that version's record.
+        let running = vm.map(|vm| (vm.image_arn.clone(), vm.image_version.clone()));
+        let guest = running.and_then(|(image_arn, image_version)| {
+            store
+                .image(&region, &image_arn)
+                .and_then(|image| image.versions.get(&image_version))
+                .and_then(|version| version.guest.clone())
         });
-    drop(store);
+        (microvm_id, authenticated, egress, guest)
+    };
+    let (microvm_id, authenticated, egress, guest) = resolved;
 
     if !authenticated {
         // Every attempt on a published endpoint is attributable: the MicroVM addressed
@@ -293,7 +355,134 @@ pub fn serve_request(
         );
         return endpoint_response(head, 403, AUTH_TOKEN_REQUIRED);
     }
-    endpoint_response(head, 501, NO_MICROVM_GUEST)
+
+    // The guest's own response, or the proxy's answer for a MicroVM it reached nothing
+    // inside of.
+    let Some(guest) = guest else {
+        ::tracing::debug!(
+            microvm_id = %microvm_id,
+            "the MicroVM's image holds no guest program this emulator's engine can run"
+        );
+        return endpoint_response(head, NO_GUEST_RESPONSE_STATUS, NO_GUEST_RESPONSE);
+    };
+    match run_guest(connectors, callback, &egress, guest, guest_request(req)).await {
+        super::guest_runtime::GuestOutcome::Answered(answer) => guest_response(head, &answer),
+        other => {
+            ::tracing::debug!(
+                microvm_id = %microvm_id,
+                outcome = ?other,
+                "a MicroVM's guest produced no response"
+            );
+            endpoint_response(head, NO_GUEST_RESPONSE_STATUS, NO_GUEST_RESPONSE)
+        }
+    }
+}
+
+/// Run `guest` over `request`, answering the outbound connections it opens from the
+/// emulated network as it waits on them.
+///
+/// The guest runs on a blocking thread and this future is what decides its connections,
+/// so the two run together: the run asks, this answers, and the run's own bounds
+/// ([`super::guest_runtime`]) are what end it either way.
+async fn run_guest(
+    connectors: Option<&::engine::ServiceState<super::microvm_network::ConnectorState>>,
+    callback: &::smithy_server_runtime::EmbeddedEmulator,
+    egress: &super::microvm_network::GuestEgress,
+    guest: ::std::sync::Arc<super::guest_program::GuestProgram>,
+    request: super::guest_runtime::GuestRequest,
+) -> super::guest_runtime::GuestOutcome {
+    let (asks, mut answers) = ::tokio::sync::mpsc::unbounded_channel();
+    let mut running = Box::pin(super::guest_runtime::serve(guest, request, asks));
+    loop {
+        ::tokio::select! {
+            Some(ask) = answers.recv() => {
+                let verdict = super::microvm_network::resolve(
+                    connectors,
+                    callback,
+                    egress,
+                    &ask.host,
+                    ask.port,
+                )
+                .await;
+                // A run that has already given up on this connection leaves nothing to
+                // send to, which its own ceiling has already reported as unreached.
+                let _ = ask.reply.send(verdict);
+            }
+            outcome = &mut running => return outcome,
+        }
+    }
+}
+
+/// The request a client sent, as the guest's own HTTP server is handed it.
+///
+/// `req.url` is the path the client appended to the published endpoint — the guest's own
+/// path, with the segments addressing the MicroVM taken off, exactly as the request would
+/// arrive at a server inside the MicroVM — and the headers are lowercased, as a Node
+/// server reports them. The body is read as the TEXT a guest reads.
+fn guest_request(req: &::http::Request<Vec<u8>>) -> super::guest_runtime::GuestRequest {
+    let query = req
+        .uri()
+        .query()
+        .map(|query| format!("?{query}"))
+        .unwrap_or_default();
+    super::guest_runtime::GuestRequest {
+        method: req.method().as_str().to_string(),
+        url: format!("{}{query}", guest_path(req.uri().path())),
+        headers: req
+            .headers()
+            .iter()
+            .filter_map(|(name, value)| {
+                value
+                    .to_str()
+                    .ok()
+                    .map(|value| (name.as_str().to_ascii_lowercase(), value.to_string()))
+            })
+            .collect(),
+        body: String::from_utf8_lossy(req.body()).to_string(),
+    }
+}
+
+/// One response from a guest, as the client reads it back: the status, the headers and
+/// the body the guest's own program produced.
+fn guest_response(head: bool, answer: &super::guest_runtime::GuestAnswer) -> ::http::Response<Vec<u8>> {
+    let mut builder = ::http::Response::builder().status(answer.status);
+    for (name, value) in &answer.headers {
+        // The framing is the proxy's: a length or encoding the guest named describes a
+        // body this leg re-frames itself.
+        let framing = name.eq_ignore_ascii_case("content-length")
+            || name.eq_ignore_ascii_case("transfer-encoding");
+        if !framing {
+            builder = builder.header(name, value);
+        }
+    }
+    let length = answer.body.len();
+    let body = if head {
+        Vec::new()
+    } else {
+        answer.body.clone()
+    };
+    builder
+        .header("content-length", length.to_string())
+        .body(body)
+        // A guest that answered a header name or status no HTTP response can carry
+        // answered nothing a client can read, which is the proxy's own answer.
+        .unwrap_or_else(|_| {
+            endpoint_response(head, NO_GUEST_RESPONSE_STATUS, NO_GUEST_RESPONSE)
+        })
+}
+
+/// The GUEST's own path in a request to a published endpoint: whatever follows the
+/// segments that address the MicroVM, and `/` where nothing does.
+fn guest_path(path: &str) -> String {
+    let rest = path
+        .strip_prefix('/')
+        .and_then(|rest| rest.strip_prefix(MICROVM_PATH_SEGMENT))
+        .and_then(|rest| rest.strip_prefix('/'))
+        .map(|rest| match rest.split_once('/') {
+            Some((_identifier, guest)) => format!("/{guest}"),
+            None => "/".to_string(),
+        });
+    rest.unwrap_or_else(|| "/".to_string())
 }
 
 /// The `microvmIdentifier` a request path addresses, or `None` when the path names no

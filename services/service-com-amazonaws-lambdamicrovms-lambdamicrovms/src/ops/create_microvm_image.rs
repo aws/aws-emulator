@@ -251,7 +251,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // a `uri` that addresses no S3 object is asked of nothing and refused below on
         // its own shape.
         let CodeArtifact::Uri(code_artifact_uri) = &input.code_artifact;
-        let artifact = crate::state::code_artifact::resolve(ctx, code_artifact_uri).await;
+        let code_artifact_uri = code_artifact_uri.clone();
+        let artifact = crate::state::code_artifact::resolve(ctx, &code_artifact_uri).await;
 
         let mut store = state.lock();
         store.materialize_due(now);
@@ -272,7 +273,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // build resolves that location before creating anything, so a URI that
         // addresses no S3 object is refused here rather than stored on an image that
         // could never build.
-        if crate::state::s3_object_uri(code_artifact_uri).is_none() {
+        if crate::state::s3_object_uri(&code_artifact_uri).is_none() {
             return Err(CreateMicrovmImageErrorModeled::ValidationException(ValidationException {
                 message: Some(crate::state::CODE_ARTIFACT_URI_REQUIREMENT.to_string()),
             })
@@ -424,6 +425,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // "or CREATE_FAILED on failure": the branch that move takes is the verdict
             // the object store gave for this version's code artifact.
             build_failure_reason: artifact.failure_reason(),
+            // The GUEST the served artifact holds, which a MicroVM run from this version
+            // executes behind its published endpoint.
+            guest: artifact.guest(&code_artifact_uri),
             // The build has not settled yet, so the version's state has no settlement
             // instant to report.
             state_settled_at: None,

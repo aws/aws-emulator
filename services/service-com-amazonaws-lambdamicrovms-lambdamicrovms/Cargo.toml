@@ -35,6 +35,43 @@ sha2 = { workspace = true }
 # it serves that artifact rather than deciding the build's outcome here. Only the
 # generated client is needed — the emulator supplies the transport.
 aws-sdk-s3 = { version = "1", default-features = false, features = ["rt-tokio", "behavior-version-latest"] }
+# The AWS SDK for Amazon EC2, driven over the same in-process callback: the network a
+# MicroVM's egress connector places it in is EC2's (subnets, endpoint network interfaces
+# and security groups), so `src/state/microvm_network.rs` ASKS EC2 for it — the contract
+# `service_common::network` states — rather than holding a second answer of its own.
+aws-sdk-ec2 = { version = "1", default-features = false, features = ["rt-tokio", "behavior-version-latest"] }
+# The lambda-core store in the SAME shared engine, for the network connectors a MicroVM
+# names in `egressNetworkConnectors`: that service owns them and publishes no SDK client,
+# so its own records are read through the engine both services live in — the seam
+# `service-com-amazonaws-lambda-awsgirapiservice` reads Amazon ECR's images through.
+service-com-amazonaws-lambdacore-lambdacoreapiservice = { workspace = true }
+# Reads an IPv4 prefix (a subnet's CIDR, a security-group rule's range) and answers
+# whether one contains an address or another prefix, so no address arithmetic is
+# hand-written here.
+ipnet = "2"
+# Reads the entries of the .zip a MicroVM image's code artifact is packaged as, entirely
+# in memory. Only the stored and deflated entry forms are read; nothing is extracted to a
+# host path.
+zip = { version = "9", default-features = false, features = ["deflate"] }
+# `rquickjs` is the QuickJS JavaScript engine, embedded in this process: it is the
+# EXECUTION SUBSTRATE that RUNS a MicroVM guest's own code, so the response a client reads
+# from a MicroVM's endpoint is the one the guest's program produced
+# (`src/state/guest_runtime.rs`).
+#
+# * the "dyn-load" feature is NOT enabled, so QuickJS registers no dynamic host-library
+#   loader; no "loader" feature either, so an `import` resolves to nothing and the only
+#   modules a guest reaches are the ones this crate implements for it;
+# * plain QuickJS registers no filesystem, process, environment, socket or thread API, and
+#   nothing here adds one: the guest's only host functions are this module's own request,
+#   connect and log seams, each removed from the global object before the guest's code is
+#   compiled;
+# * it is also a NATIVE component: `rquickjs-sys` compiles the QuickJS C sources with `cc`
+#   at build time and the bindings are `unsafe`. That is accepted because the engine is
+#   what makes a guest's code run at all, and it is the engine four other service crates of
+#   this workspace already embed for the same purpose;
+# * no advisory is open against the 0.14 line (`cargo_audit` at the merge gate reads the
+#   locked tree).
+rquickjs = "0.14"
 
 [build-dependencies]
 emulator-core-build-support = { workspace = true }
@@ -42,13 +79,21 @@ emulator-core-build-support = { workspace = true }
 [dev-dependencies]
 # Builds the opaque `nextToken` candidates the pagination suites hand back.
 hex = { workspace = true }
+# Packages the .zip code artifact the guest suites stage, so a guest program reaches the
+# build through exactly the archive form a client would upload.
+zip = { version = "9", default-features = false, features = ["deflate"] }
 # `tokio::time::sleep` for the clock-owed transitions the tests wait out.
 tokio = { workspace = true, features = ["time"] }
 # Amazon S3, mounted beside this service in the build-outcome harness: that a build
 # settles on the failure branch exactly when the object store does not serve its code
 # artifact can only be driven end to end with the owner of objects on the same engine.
-# DEV-ONLY: this crate depends on no other service's crate outside its tests.
 service-com-amazonaws-s3-amazons3 = { workspace = true }
+# Amazon EC2, mounted beside this service in the guest data-plane harness: whether a
+# MicroVM's proxied outbound connection reaches an address is decided by the subnet, the
+# destination interface and the security groups EC2 holds, so it can only be driven end
+# to end with that owner on the same engine. (lambda-core, the other owner that harness
+# needs, is a regular dependency above: the MicroVM endpoint reads its connectors.)
+service-com-amazonaws-ec2-amazonec2 = { workspace = true }
 
 [lints]
 workspace = true

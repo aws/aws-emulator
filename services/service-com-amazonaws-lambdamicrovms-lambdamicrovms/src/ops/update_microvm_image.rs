@@ -247,7 +247,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // through the same resolution, so the two paths cannot disagree about which
         // branch a build settles on (`crate::state::code_artifact`).
         let CodeArtifact::Uri(code_artifact_uri) = &input.code_artifact;
-        let artifact = crate::state::code_artifact::resolve(ctx, code_artifact_uri).await;
+        let code_artifact_uri = code_artifact_uri.clone();
+        let artifact = crate::state::code_artifact::resolve(ctx, &code_artifact_uri).await;
 
         let mut store = state.lock();
         store.materialize_due(now);
@@ -289,7 +290,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         //
         // `codeArtifact$uri` is "The URI of the code artifact in Amazon S3" and the
         // build resolves that location before anything is persisted.
-        if crate::state::s3_object_uri(code_artifact_uri).is_none() {
+        if crate::state::s3_object_uri(&code_artifact_uri).is_none() {
             return Err(validation(
                 crate::state::CODE_ARTIFACT_URI_REQUIREMENT.to_string(),
             ));
@@ -408,6 +409,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // the object store gave for this version's code artifact, and a build that
             // produced nothing leaves the version the image was serving active.
             build_failure_reason: artifact.failure_reason(),
+            // The GUEST the served artifact holds, which a MicroVM run from this version
+            // executes behind its published endpoint.
+            guest: artifact.guest(&code_artifact_uri),
             // The build has not settled yet, so the version's state has no settlement
             // instant to report.
             state_settled_at: None,

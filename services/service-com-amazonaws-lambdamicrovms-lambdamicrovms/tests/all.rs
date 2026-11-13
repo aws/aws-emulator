@@ -53,6 +53,8 @@ mod managed_catalogue_publication_metadata;
 mod managed_namespace_authorization;
 #[path = "all/microvm_endpoint_data_plane.rs"]
 mod microvm_endpoint_data_plane;
+#[path = "all/microvm_guest_data_plane.rs"]
+mod microvm_guest_data_plane;
 #[path = "all/microvm_image_and_instance_paths.rs"]
 mod microvm_image_and_instance_paths;
 #[path = "all/microvm_lifecycle.rs"]
