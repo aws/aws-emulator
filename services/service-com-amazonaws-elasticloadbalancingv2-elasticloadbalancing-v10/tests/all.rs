@@ -127,6 +127,8 @@ mod target_validation_and_quotas;
 mod trust_store_lifecycle;
 #[path = "all/trust_stores.rs"]
 mod trust_stores;
+#[path = "all/web_acl_before_a_lambda_target.rs"]
+mod web_acl_before_a_lambda_target;
 #[path = "all/web_acl_enforcement.rs"]
 mod web_acl_enforcement;
 #[path = "all/weighted_forward_and_target_group_stickiness.rs"]

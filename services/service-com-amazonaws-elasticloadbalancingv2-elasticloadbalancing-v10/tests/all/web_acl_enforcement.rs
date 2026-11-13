@@ -48,14 +48,14 @@ const TAGGED_BODY: &str = "tagged";
 /// The name of the header the inserting web ACL configures, WITHOUT the
 /// `x-amzn-waf-` prefix WAF puts on it ("for the header name `sample`, WAF inserts the
 /// header `x-amzn-waf-sample`" — `CustomHTTPHeader$Name`).
-const INSERTED_HEADER: &str = "tag";
+pub(crate) const INSERTED_HEADER: &str = "tag";
 
 /// The header name the listener's rule matches on: the inserted header as WAF spells it on
 /// the request.
-const INSERTED_HEADER_SENT: &str = "x-amzn-waf-tag";
+pub(crate) const INSERTED_HEADER_SENT: &str = "x-amzn-waf-tag";
 
 /// The value the inserting web ACL gives that header.
-const INSERTED_VALUE: &str = "edge";
+pub(crate) const INSERTED_VALUE: &str = "edge";
 
 /// A router carrying the load balancer service AND the WAFv2 service over ONE engine —
 /// what the production router mounts, minus the other services. Both are needed: the
@@ -105,7 +105,7 @@ async fn waf_call(router: &MultiServiceRouter, operation: &str, body: Value) -> 
 }
 
 /// One WAFv2 call that must succeed.
-async fn waf_ok(router: &MultiServiceRouter, operation: &str, body: Value) -> Value {
+pub(crate) async fn waf_ok(router: &MultiServiceRouter, operation: &str, body: Value) -> Value {
     let (status, parsed) = waf_call(router, operation, body).await;
     assert_eq!(
         status, 200,
@@ -131,7 +131,7 @@ fn base64_of(value: &str) -> String {
 }
 
 /// A `ByteMatchStatement` over `field`, searching for `search` under `constraint`.
-fn byte_match(field: Value, search: &str, constraint: &str) -> Value {
+pub(crate) fn byte_match(field: Value, search: &str, constraint: &str) -> Value {
     json!({
         "ByteMatchStatement": {
             "SearchString": base64_of(search),
@@ -143,7 +143,7 @@ fn byte_match(field: Value, search: &str, constraint: &str) -> Value {
 }
 
 /// One rule at priority 0 carrying `action` over `statement`.
-fn rule(name: &str, statement: Value, rule_action: Value) -> Value {
+pub(crate) fn rule(name: &str, statement: Value, rule_action: Value) -> Value {
     json!({
         "Name": name,
         "Priority": 0,
@@ -154,19 +154,19 @@ fn rule(name: &str, statement: Value, rule_action: Value) -> Value {
 }
 
 /// The web ACL one row puts in front of the load balancer.
-struct WebAcl {
+pub(crate) struct WebAcl {
     /// `WebACL$DefaultAction`.
-    default_action: Value,
+    pub(crate) default_action: Value,
     /// `WebACL$Rules`.
-    rules: Value,
+    pub(crate) rules: Value,
     /// `WebACL$CustomResponseBodies`, for a row whose block names one; left off the
     /// request where the row configures none (the member takes at least one entry).
-    custom_response_bodies: Option<Value>,
+    pub(crate) custom_response_bodies: Option<Value>,
 }
 
 impl WebAcl {
     /// A web ACL whose default action allows, carrying `rules`.
-    fn allowing(rules: Value) -> Self {
+    pub(crate) fn allowing(rules: Value) -> Self {
         Self {
             default_action: json!({ "Allow": {} }),
             rules,
@@ -176,7 +176,7 @@ impl WebAcl {
 }
 
 /// Create the web ACL `spec` describes and answer its ARN.
-async fn create_web_acl(router: &MultiServiceRouter, name: &str, spec: &WebAcl) -> String {
+pub(crate) async fn create_web_acl(router: &MultiServiceRouter, name: &str, spec: &WebAcl) -> String {
     let mut body = json!({
         "Name": name,
         "Scope": "REGIONAL",
@@ -300,7 +300,7 @@ fn row(case: &'static str, web_acl: Option<WebAcl>, status: u16, body: &'static 
 }
 
 /// The header the recorded blocking rule inspects.
-const BLOCK_HEADER: &str = "x-waf-block";
+pub(crate) const BLOCK_HEADER: &str = "x-waf-block";
 
 /// A `Block` rule on the single header above, exactly as the recorded web ACL writes it.
 fn header_block() -> Value {
@@ -319,9 +319,9 @@ fn header_block() -> Value {
 /// `403` for a `Block`, and for the two checks that serve an interstitial the statuses
 /// their own documentation gives — "the HTTP status code 405 Method Not Allowed"
 /// (`CaptchaAction`) and 202 for a `Challenge`.
-const BLOCK_STATUS: u16 = 403;
-const CAPTCHA_STATUS: u16 = 405;
-const CHALLENGE_STATUS: u16 = 202;
+pub(crate) const BLOCK_STATUS: u16 = 403;
+pub(crate) const CAPTCHA_STATUS: u16 = 405;
+pub(crate) const CHALLENGE_STATUS: u16 = 202;
 
 /// Every row of the table.
 fn rows() -> Vec<Row> {
