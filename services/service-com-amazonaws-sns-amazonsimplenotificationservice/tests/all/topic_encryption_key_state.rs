@@ -41,7 +41,7 @@ const AWS_MANAGED_ALIAS: &str = "alias/aws/sns";
 
 /// A key this emulator's KMS minted: its key id and its key ARN, the two forms a topic can
 /// name a key by directly.
-async fn given_key(emulator: &Emulator) -> (String, String) {
+pub(crate) async fn given_key(emulator: &Emulator) -> (String, String) {
     let created = kms(emulator, "CreateKey", &json!({})).await;
     let metadata = &created["KeyMetadata"];
     let key_id = metadata["KeyId"]
@@ -65,7 +65,11 @@ fn account_of(arn: &str) -> String {
 
 /// A topic called `name` whose messages are encrypted under the key `master_key_id` names, or
 /// — for a row that names none — a topic on no customer managed key at all: its ARN.
-async fn given_topic(emulator: &Emulator, name: &str, master_key_id: Option<&str>) -> String {
+pub(crate) async fn given_topic(
+    emulator: &Emulator,
+    name: &str,
+    master_key_id: Option<&str>,
+) -> String {
     let mut params: Vec<(&str, &str)> = vec![("Name", name)];
     if let Some(key) = master_key_id {
         params.push(("Attributes.entry.1.key", "KmsMasterKeyId"));
@@ -98,7 +102,7 @@ async fn publish(emulator: &Emulator, topic: &str, body: &str) -> (u16, String, 
 }
 
 /// Disable or enable the key `key_id` names, as a client of KMS does.
-async fn set_key_enabled(emulator: &Emulator, key_id: &str, enabled: bool) {
+pub(crate) async fn set_key_enabled(emulator: &Emulator, key_id: &str, enabled: bool) {
     let operation = if enabled { "EnableKey" } else { "DisableKey" };
     kms(emulator, operation, &json!({"KeyId": key_id})).await;
     let described = kms(emulator, "DescribeKey", &json!({"KeyId": key_id})).await;
@@ -112,11 +116,11 @@ async fn set_key_enabled(emulator: &Emulator, key_id: &str, enabled: bool) {
 
 /// The metadata block an AWS error carries, which a relayed KMS refusal ends with. The request
 /// id inside it is minted per refused call, so the tail is what every relay shares.
-const RELAY_TAIL: &str = "; Proxy: null)";
+pub(crate) const RELAY_TAIL: &str = "; Proxy: null)";
 
 /// Assert that `message` is KMS's own sentence `expected`, relayed with the metadata block of
 /// the KMS call that failed, reporting `kms_code`.
-fn assert_relayed(case: &str, message: &str, expected: &str, kms_code: &str) {
+pub(crate) fn assert_relayed(case: &str, message: &str, expected: &str, kms_code: &str) {
     assert!(
         message.starts_with(expected),
         "case {case:?}: expected the message to open with KMS's own sentence {expected:?}, got \

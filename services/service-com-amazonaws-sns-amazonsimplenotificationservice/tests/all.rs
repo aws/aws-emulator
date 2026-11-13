@@ -199,6 +199,9 @@ mod topic_archive_window;
 #[path = "all/topic_attributes.rs"]
 mod topic_attributes;
 
+#[path = "all/topic_encryption_key_resolved_per_publish.rs"]
+mod topic_encryption_key_resolved_per_publish;
+
 #[path = "all/topic_encryption_key_state.rs"]
 mod topic_encryption_key_state;
 
