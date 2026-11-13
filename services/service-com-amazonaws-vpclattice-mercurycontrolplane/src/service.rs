@@ -41,9 +41,57 @@
 //! do not write it; editing the entry would let this file drift from the model.
 
 use smithy_server_runtime::{
-    http, ErasedOperation, Refusal, Refused, Service,
+    http, ErasedOperation, Refusal, Refused, Service, Violation, ViolationKind,
 };
 use std::sync::Arc;
+
+/// The error code this service answers a request refused for a modelled input
+/// constraint with: the `ValidationException` (`@httpError 400`) every operation of this
+/// service declares, which is also the code the framework's own default picks there.
+/// Restated here because a reworded refusal replaces the code and the message together.
+const VALIDATION_EXCEPTION: &str = "ValidationException";
+
+/// `violation` with its `@pattern` requirement quoted the way this service quotes one:
+/// the expression without the whole-value anchors the model writes around it
+/// (`service_common::validation::unanchored`, the shared home for that rendering, which
+/// `crate::state::reported_pattern` renders a handler-checked pattern through too).
+/// Every other violation is left exactly as the framework's walk reported it.
+///
+/// Only the RENDERING drops the anchors: the check the walk ran used the model's pattern
+/// as written, so a value that merely contains a match is still refused.
+fn requoting_pattern(violation: &Violation) -> Violation {
+    let ViolationKind::Pattern(pattern) = &violation.kind else {
+        return violation.clone();
+    };
+    Violation {
+        kind: ViolationKind::Pattern(::service_common::validation::unanchored(pattern)),
+        ..violation.clone()
+    }
+}
+
+/// State a request the framework refused before any handler ran the way this service
+/// states it, or `None` to keep the framework's own wording.
+///
+/// The envelope (`N validation error(s) detected: `), the clause
+/// `Value '<value>' at '<member path>' failed to satisfy constraint: <requirement>`, the
+/// member paths and every requirement stay the framework's
+/// (`aws_smithy_schema_server::envelope`), so this service cannot drift from them; the
+/// one thing restated is how a `@pattern` requirement quotes its expression.
+///
+/// `service_common::aws_validation_refusal` is not used for the whole refusal because it
+/// also drops the value half of a COLLECTION's `@length` clause, which this service
+/// states with the framework's own summary of the collection; the `@pattern` rendering is
+/// taken from that crate's shared home for it instead.
+fn stated_refusal(refusal: &Refusal) -> Option<Refused> {
+    let Refusal::Invalid(violations) = refusal else {
+        return None;
+    };
+    let restated: Vec<Violation> = violations.iter().map(requoting_pattern).collect();
+    Some(Refused {
+        code: VALIDATION_EXCEPTION.to_string(),
+        message: ::aws_smithy_schema_server::envelope(&restated)?,
+    })
+}
 
 /// The `com-amazonaws-vpclattice-mercurycontrolplane` emulated service: the generated [`ServiceDefinition`] plus
 /// the behavioral seams this file owns.
@@ -98,15 +146,15 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
     fn override_refusal(&self, refusal: &Refusal) -> Option<Refused> {
         // The centralized walk calls this on a framework-level refusal (an absent
         // required member, or a value outside a declared bound) to let this
-        // service reword it. Returning `None` keeps the framework's default
-        // wording. To state a refusal the way the emulated service states it,
-        // replace this body with a `match refusal { .. }` that returns
-        // `Some(Refused { code, message })` for the cases you reword and `None`
-        // for the rest. Replace BOTH the code and the message: a client branches
-        // on the code, so a message without its matching code is worse than
-        // leaving both alone.
-        let _ = refusal;
-        None
+        // service reword it. A refusal for a modelled input constraint is stated
+        // with the `@pattern` requirement quoted as this service quotes one — the
+        // expression without the whole-value anchors the model writes around it —
+        // and with the framework's envelope, clauses and member paths otherwise
+        // untouched. The code travels with the message: it stays the modelled
+        // `ValidationException`, which is what the framework answers too.
+        // An authentication refusal is not an input-constraint failure, so it
+        // keeps the framework's 403 code and wording.
+        stated_refusal(refusal)
     }
 
     fn override_routing_error(

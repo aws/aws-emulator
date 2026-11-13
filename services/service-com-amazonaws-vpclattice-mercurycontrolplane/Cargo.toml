@@ -29,6 +29,8 @@ hex = { workspace = true }
 # Evaluates the modelled `@pattern` of a resource name, which is written with negative
 # look-ahead the `regex` crate behind `@pattern` cannot compile.
 fancy-regex = "0.16"
+# The shared rendering of a `@pattern` requirement in a constraint-violation message.
+service-common = { path = "../common" }
 
 [build-dependencies]
 emulator-core-build-support = { workspace = true }

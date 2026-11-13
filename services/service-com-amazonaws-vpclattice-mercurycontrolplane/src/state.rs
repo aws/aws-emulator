@@ -1813,15 +1813,21 @@ pub const TARGET_GROUP_NAME_PATTERN: &str = r"^(?!tg-)(?![-])(?!.*[-]$)(?!.*[-]{
 pub const RESOURCE_CONFIGURATION_NAME_PATTERN: &str =
     r"^(?!rcfg-)(?![-])(?!.*[-]$)(?!.*[-]{2})[a-z0-9-]+$";
 
-/// The `@pattern`, with the anchors stripped, as a validation error reports it.
+/// The `@pattern`, with the whole-value anchors stripped, as a validation error reports
+/// it.
 ///
 /// The recorded vpc-lattice validation messages quote the pattern's BODY —
 /// "Member must satisfy regular expression pattern: (?![-])…[a-z0-9-]+" — so the
 /// anchors are dropped before the clause is built. The whole value is matched either
 /// way, so they carry nothing for the caller.
+///
+/// The rule itself is the shared one every service renders a `@pattern` requirement
+/// with (`service_common::validation::unanchored`), reached rather than restated here so
+/// a constraint a handler checks by hand quotes its pattern exactly as one the request
+/// boundary refuses does ([`crate::service`] renders the boundary's clauses through the
+/// same function).
 fn reported_pattern(pattern: &str) -> String {
-    let body = pattern.strip_prefix('^').unwrap_or(pattern);
-    body.strip_suffix('$').unwrap_or(body).to_string()
+    ::service_common::validation::unanchored(pattern)
 }
 
 /// One member whose submitted value broke a constraint, as this service reports it.
