@@ -22,7 +22,10 @@
 //!   the `Arns` it is asked about, and `MaxResults` sizes its page: following `NextToken`
 //!   walks every stored application exactly once;
 //! * the icon URL an application reports is a time-limited address of the S3 object the
-//!   create named, signed so that it leads back to this emulator.
+//!   create named, signed so that it leads back to this emulator;
+//! * an application reports the additional attributes that describe it in `Metadata`,
+//!   keyed by the modelled `ApplicationAttribute` names — asserted over the whole
+//!   attribute class in `tests/all/application_update.rs`.
 
 use serde_json::{json, Value};
 
@@ -51,6 +54,13 @@ const APPLICATION_KIND: &str =
 /// How long the icon URL stays valid, as the crate states it.
 const ICON_URL_VALIDITY_SECONDS: u64 =
     service_com_amazonaws_appstream_photonadminproxyservice::state::ICON_URL_VALIDITY.as_secs();
+
+/// The `ApplicationAttribute` names an application's `Metadata` map is keyed by, read
+/// from the crate so the tests track the modelled values rather than a copy of them.
+pub(crate) const LAUNCH_PARAMETERS_ATTRIBUTE: &str =
+    service_com_amazonaws_appstream_photonadminproxyservice::state::APPLICATION_ATTRIBUTE_LAUNCH_PARAMETERS;
+pub(crate) const WORKING_DIRECTORY_ATTRIBUTE: &str =
+    service_com_amazonaws_appstream_photonadminproxyservice::state::APPLICATION_ATTRIBUTE_WORKING_DIRECTORY;
 
 /// One row of the creation table: the members the request carries beside the app block.
 struct Row {
@@ -125,19 +135,20 @@ fn rows() -> Vec<Row> {
 }
 
 /// The `arn:aws:appstream:…:app-block/<name>` of an app block of this account.
-fn app_block_arn(name: &str) -> String {
+pub(crate) fn app_block_arn(name: &str) -> String {
     format!("arn:aws:appstream:{REGION}:{ACCOUNT}:app-block/{name}")
 }
 
 /// The `arn:aws:appstream:…:application/<name>` of an application of this account.
-fn application_arn(name: &str) -> String {
+pub(crate) fn application_arn(name: &str) -> String {
     format!("arn:aws:appstream:{REGION}:{ACCOUNT}:application/{name}")
 }
 
 /// Create the app block every application below is created against.
 ///
-/// Shared with the other suites in this target (`tests/all/update_application.rs`), so
-/// every application suite stands its app block up the same way.
+/// Shared with the other suites in this target (`tests/all/update_application.rs`,
+/// `tests/all/application_update.rs`), so every application suite stands its app block up
+/// the same way.
 pub(crate) async fn create_app_block(emulator: &Emulator, case: &str, name: &str) -> String {
     let created = emulator
         .ok(
@@ -213,11 +224,40 @@ fn expected_application(row: &Row, app_block_arn: &str, created: &Value) -> Valu
     if let Some(working_directory) = row.working_directory {
         expected["WorkingDirectory"] = json!(working_directory);
     }
+    // "Additional attributes that describe the application": the attributes the
+    // application HAS, keyed by the modelled `ApplicationAttribute` names.
+    expected["Metadata"] = expected_metadata(row.launch_parameters, row.working_directory);
     expected
 }
 
+/// The `Metadata` map an application with these attributes reports: one entry per
+/// attribute it has, keyed by the modelled `ApplicationAttribute` name.
+pub(crate) fn expected_metadata(
+    launch_parameters: Option<&str>,
+    working_directory: Option<&str>,
+) -> Value {
+    let mut metadata = serde_json::Map::new();
+    if let Some(launch_parameters) = launch_parameters.filter(|value| !value.is_empty()) {
+        metadata.insert(
+            LAUNCH_PARAMETERS_ATTRIBUTE.to_string(),
+            json!(launch_parameters),
+        );
+    }
+    if let Some(working_directory) = working_directory.filter(|value| !value.is_empty()) {
+        metadata.insert(
+            WORKING_DIRECTORY_ATTRIBUTE.to_string(),
+            json!(working_directory),
+        );
+    }
+    Value::Object(metadata)
+}
+
 /// The applications a `DescribeApplications` reports, and the token it carries.
-async fn describe(emulator: &Emulator, case: &str, request: Value) -> (Vec<Value>, Option<Value>) {
+pub(crate) async fn describe(
+    emulator: &Emulator,
+    case: &str,
+    request: Value,
+) -> (Vec<Value>, Option<Value>) {
     let payload = emulator.ok(case, "DescribeApplications", request).await;
     let applications = payload
         .get("Applications")
@@ -228,7 +268,7 @@ async fn describe(emulator: &Emulator, case: &str, request: Value) -> (Vec<Value
 }
 
 /// Every application of the account, in the order the read reports them.
-async fn catalog(emulator: &Emulator, case: &str) -> Vec<Value> {
+pub(crate) async fn catalog(emulator: &Emulator, case: &str) -> Vec<Value> {
     let (applications, next_token) = describe(emulator, case, json!({})).await;
     assert!(
         next_token.is_none(),

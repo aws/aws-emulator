@@ -19,6 +19,8 @@ mod app_block_deletion;
 mod app_blocks;
 #[path = "all/application_fleet_associations.rs"]
 mod application_fleet_associations;
+#[path = "all/application_update.rs"]
+mod application_update;
 #[path = "all/applications.rs"]
 mod applications;
 #[path = "all/associated_fleets.rs"]

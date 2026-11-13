@@ -18,6 +18,9 @@
 //!   survives, and the same value can be set again afterwards;
 //! * the update reports the record it stored: a `DescribeApplications` answers with the
 //!   updated application rather than with what the create persisted;
+//! * `Metadata` follows the application's own attributes rather than standing on its own:
+//!   an update that sets one adds its entry and one that deletes one drops it
+//!   (`tests/all/application_update.rs` asserts that map over the whole attribute class);
 //! * a `Name` the account holds no application under is refused with
 //!   `ResourceNotFoundException` (404) carrying AWS's sentence for that class, as is an
 //!   `AppBlockArn` that addresses no app block this account holds, and both leave the
@@ -25,7 +28,7 @@
 
 use serde_json::{json, Value};
 
-use crate::applications::create_app_block;
+use crate::applications::{create_app_block, expected_metadata};
 use crate::refusal_messages::{not_found_sentence, refusal};
 use crate::stack_fleet_lifecycle::{assert_error, Emulator};
 
@@ -197,11 +200,19 @@ async fn update_application_applies_the_members_it_is_given_and_leaves_the_rest(
         }
 
         // Every other member keeps what the create persisted — the identity the create
-        // minted (`Name`, `Arn`, `CreatedTime`) included.
+        // minted (`Name`, `Arn`, `CreatedTime`) included. `Metadata` is not an
+        // independent member: it reports the application's own attributes, so an update
+        // that sets one of those moves the map with it; it is asserted on its own below.
         let moved_icon = echoed.contains(&"IconS3Location");
+        let moved_attributes = echoed
+            .iter()
+            .any(|member| ["LaunchParameters", "WorkingDirectory"].contains(member));
         let before_members = before.as_object().expect("an application is an object");
         for (member, created_value) in before_members {
-            if echoed.contains(&member.as_str()) || (moved_icon && member == "IconURL") {
+            if echoed.contains(&member.as_str())
+                || (moved_icon && member == "IconURL")
+                || (moved_attributes && member == "Metadata")
+            {
                 continue;
             }
             assert_eq!(
@@ -209,6 +220,17 @@ async fn update_application_applies_the_members_it_is_given_and_leaves_the_rest(
                 "case {case:?}: UpdateApplication must leave {member} alone, got {after}"
             );
         }
+
+        // The attribute map reports the attributes the application has AFTER the update,
+        // keyed by the modelled `ApplicationAttribute` names.
+        assert_eq!(
+            after["Metadata"],
+            expected_metadata(
+                after.get("LaunchParameters").and_then(Value::as_str),
+                after.get("WorkingDirectory").and_then(Value::as_str),
+            ),
+            "case {case:?}: Metadata must report the application's own attributes, got {after}"
+        );
         // An update that deletes no attribute reports exactly the members the record had,
         // plus any the update set for the first time.
         let after_members: std::collections::BTreeSet<String> = after

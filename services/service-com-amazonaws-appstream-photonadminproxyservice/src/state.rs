@@ -38,7 +38,8 @@
 //! Applications live here as well: `CreateApplication` resolves the app block the request
 //! names against the stored app blocks and then writes one [`ApplicationRecord`] under the
 //! name it allocates, `UpdateApplication` applies the members it is given to that record
-//! and clears the fields its `AttributesToDelete` names, `DescribeApplications` renders
+//! and clears the fields its `AttributesToDelete` names
+//! ([`ApplicationRecord::delete_attribute`]), `DescribeApplications` renders
 //! the stored records back, a page at
 //! a time, and `DeleteApplication` removes one while nothing still holds it. Which
 //! application an Elastic fleet streams lives here too: `AssociateApplicationFleet` writes
@@ -1129,7 +1130,82 @@ pub struct ApplicationRecord {
 /// URL is time-limited as documented.
 pub const ICON_URL_VALIDITY: ::std::time::Duration = ::std::time::Duration::from_secs(3600);
 
+/// The `ApplicationAttribute` name of an application's launch parameters, one of
+/// `APPLICATION_ATTRIBUTE_VALUES` (`ops/types/shared_types.rs`) — the attributes
+/// `UpdateApplication.AttributesToDelete` can remove from an application.
+pub const APPLICATION_ATTRIBUTE_LAUNCH_PARAMETERS: &str = "LAUNCH_PARAMETERS";
+
+/// The `ApplicationAttribute` name of an application's working directory, the other of
+/// `APPLICATION_ATTRIBUTE_VALUES`.
+pub const APPLICATION_ATTRIBUTE_WORKING_DIRECTORY: &str = "WORKING_DIRECTORY";
+
+/// Whether `attribute` is an application attribute this service's MODEL declares, which
+/// is what [`ApplicationRecord::attribute`] and [`ApplicationRecord::delete_attribute`]
+/// must each carry a field for.
+fn modelled_attribute(attribute: &str) -> bool {
+    crate::ops::types::APPLICATION_ATTRIBUTE_VALUES.contains(&attribute)
+}
+
 impl ApplicationRecord {
+    /// The application's value for one of the attributes the modelled
+    /// `ApplicationAttribute` enum names, or `None` for an attribute this application has
+    /// no value for (one it was created without, or one an update deleted).
+    ///
+    /// An attribute stored as the empty string is one the application does not have: the
+    /// modelled members that carry these values are `@length` 1.., as [`reported_text`]
+    /// treats them.
+    pub fn attribute(&self, attribute: &str) -> Option<&str> {
+        let stored = match attribute {
+            APPLICATION_ATTRIBUTE_LAUNCH_PARAMETERS => self.launch_parameters.as_deref(),
+            APPLICATION_ATTRIBUTE_WORKING_DIRECTORY => self.working_directory.as_deref(),
+            // A name outside the modelled set names no value this record holds. Every
+            // MODELLED attribute has an arm above, so a model that grows one has to grow
+            // this match with it rather than quietly reporting no value for it.
+            other => {
+                debug_assert!(
+                    !modelled_attribute(other),
+                    "no field carries the modelled application attribute {other}"
+                );
+                None
+            }
+        };
+        stored.filter(|value| !value.is_empty())
+    }
+
+    /// Drop the application's value for one of the attributes the modelled
+    /// `ApplicationAttribute` enum names — what `UpdateApplication.AttributesToDelete`
+    /// asks for. An attribute outside that set names no stored value, so there is nothing
+    /// to drop.
+    pub fn delete_attribute(&mut self, attribute: &str) {
+        match attribute {
+            APPLICATION_ATTRIBUTE_LAUNCH_PARAMETERS => self.launch_parameters = None,
+            APPLICATION_ATTRIBUTE_WORKING_DIRECTORY => self.working_directory = None,
+            other => debug_assert!(
+                !modelled_attribute(other),
+                "no field carries the modelled application attribute {other}"
+            ),
+        }
+    }
+
+    /// The "additional attributes that describe the application" an application reports in
+    /// `Application.Metadata`.
+    ///
+    /// The attributes an application HAS are the ones the modelled `ApplicationAttribute`
+    /// enum names — the set `UpdateApplication.AttributesToDelete` deletes from
+    /// (`APPLICATION_ATTRIBUTE_VALUES` in `ops/types/shared_types.rs`) — so the map is
+    /// keyed by those names and carries the application's current value for each attribute
+    /// it has. The key set therefore follows the application's own attributes: a create or
+    /// an update that supplies one adds its key, and an update that deletes one drops it.
+    pub fn metadata(&self) -> ::std::collections::HashMap<String, String> {
+        crate::ops::types::APPLICATION_ATTRIBUTE_VALUES
+            .iter()
+            .filter_map(|attribute| {
+                self.attribute(attribute)
+                    .map(|value| ((*attribute).to_string(), value.to_string()))
+            })
+            .collect()
+    }
+
     /// Render the stored record as the modelled `Application` every reader returns.
     ///
     /// The icon URL is signed per render rather than stored: it is a time-limited address
@@ -1145,9 +1221,11 @@ impl ApplicationRecord {
             // An application is created enabled; only a problem found while an image is
             // built disables one.
             enabled: Some(true),
-            // The additional attributes an image's own application catalog carries;
-            // an application created through this operation has none.
-            metadata: None,
+            // The additional attributes that describe the application, keyed by the
+            // attribute names the model declares; reported as a map even for an
+            // application that has none of them, so a reader never has to tell an absent
+            // map from one with no entries.
+            metadata: Some(self.metadata()),
             working_directory: reported_text(self.working_directory.as_deref()),
             description: reported_text(self.description.as_deref()),
             arn: Some(self.arn.clone()),

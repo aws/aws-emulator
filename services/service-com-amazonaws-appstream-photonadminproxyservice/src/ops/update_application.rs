@@ -157,8 +157,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .ok_or_else(|| crate::scaffolded::Scaffolded::not_implemented("UpdateApplication"))?;
         let mut state = state.lock();
 
-        let attributes_to_delete = input.attributes_to_delete.clone().unwrap_or_default();
-        for attribute in &attributes_to_delete {
+        // "The attributes to delete for an application": the attributes an application has
+        // are the modelled `ApplicationAttribute` values, so a request naming anything
+        // else asks to delete an attribute no application has.
+        let attributes_to_delete = input.attributes_to_delete.as_deref().unwrap_or_default();
+        for attribute in attributes_to_delete {
             if !APPLICATION_ATTRIBUTE_VALUES.contains(&attribute.as_str()) {
                 return Err(crate::scaffolded::Scaffolded::validation(format!(
                     "AttributesToDelete contains an unknown application attribute: {attribute}"
@@ -231,8 +234,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         if let Some(app_block_arn) = input.app_block_arn {
             record.app_block_arn = app_block_arn;
         }
-        for attribute in &attributes_to_delete {
-            delete_attribute(record, attribute);
+        // Clearing an attribute leaves the record without a value for it, which is what
+        // makes the member absent from the rendered `Application` and drops its entry
+        // from the attribute map. Clearing never follows a reference out of this service:
+        // the app block the binaries come from and the S3 object the icon lives in are
+        // resources of their own and keep their own lifecycle.
+        for attribute in attributes_to_delete {
+            record.delete_attribute(attribute);
         }
 
         Ok(UpdateApplicationOutput {
@@ -250,29 +258,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 /// `types/shared_types.rs`).
 fn supplied_member(input: &UpdateApplicationInput, attribute: &str) -> Option<&'static str> {
     match attribute {
-        "LAUNCH_PARAMETERS" => input
+        crate::state::APPLICATION_ATTRIBUTE_LAUNCH_PARAMETERS => input
             .launch_parameters
             .is_some()
             .then_some("LaunchParameters"),
-        "WORKING_DIRECTORY" => input
+        crate::state::APPLICATION_ATTRIBUTE_WORKING_DIRECTORY => input
             .working_directory
             .is_some()
             .then_some("WorkingDirectory"),
         _ => None,
-    }
-}
-
-/// Clear the stored field `attribute` names, so the rendered application no longer
-/// carries it.
-///
-/// A cleared optional field becomes `None`, which is what makes the member absent from
-/// the rendered `Application` (see `crate::state`). Clearing never follows a reference
-/// out of this service: the app block the binaries come from and the S3 object the icon
-/// lives in are resources of their own and keep their own lifecycle.
-fn delete_attribute(record: &mut crate::state::ApplicationRecord, attribute: &str) {
-    match attribute {
-        "LAUNCH_PARAMETERS" => record.launch_parameters = None,
-        "WORKING_DIRECTORY" => record.working_directory = None,
-        _ => {}
     }
 }
