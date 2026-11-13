@@ -227,12 +227,30 @@ impl Amp {
 
     /// Create a workspace and let the clock make it `ACTIVE` — the starting point for
     /// every operation the model allows only on an active workspace.
+    ///
+    /// Waits for the CONDITION, by looking again until a reader reports `ACTIVE`: the
+    /// settling is owed at an instant the service decides, so a caller that waited a fixed
+    /// span would be asserting about how fast the host runs. The deadline is generous
+    /// enough that a loaded host still settles inside it, and each look is one call of the
+    /// same reader a client would poll.
     pub(crate) async fn active_workspace(&self, region: &str, alias: &str) -> String {
         let created = self.create(region, &serde_json::json!({ "alias": alias })).await;
         assert_eq!(created.status, 202, "create {alias}: {created:?}");
         let workspace_id = text(&created.body["workspaceId"]);
-        wait_for_due_transition();
-        workspace_id
+        let deadline = std::time::Instant::now() + SETTLING_DEADLINE;
+        loop {
+            let described = self.describe(region, &workspace_id).await;
+            let status = text(&described.body["workspace"]["status"]["statusCode"]);
+            if status == STATUS_ACTIVE {
+                return workspace_id;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "create {alias}: the workspace never reported {STATUS_ACTIVE}, last status \
+                 {status:?}"
+            );
+            tokio::time::sleep(SETTLING_LOOK_INTERVAL).await;
+        }
     }
 
     /// Dispatch one request exactly as it was built, and answer with the status, the
@@ -302,6 +320,13 @@ fn expected_tags(tags: &[(String, String)]) -> BTreeMap<String, String> {
 pub(crate) fn wait_for_due_transition() {
     std::thread::sleep(TRANSITION_DELAY + std::time::Duration::from_millis(250));
 }
+
+/// How long [`Amp::active_workspace`] keeps looking for the settling the clock owes before
+/// it concludes the workspace is not settling at all, and how often it looks. The deadline
+/// is far past the span the emulator gives a transition, so a loaded host still settles
+/// inside it; nothing is asserted about how long it actually took.
+const SETTLING_DEADLINE: std::time::Duration = std::time::Duration::from_secs(60);
+const SETTLING_LOOK_INTERVAL: std::time::Duration = std::time::Duration::from_millis(20);
 
 /// `WorkspaceId`: length 1..64, pattern `[0-9A-Za-z][-.0-9A-Z_a-z]*`, and the shape the
 /// service mints — `ws-` followed by a UUID.

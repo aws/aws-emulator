@@ -36,7 +36,12 @@ use service_com_amazonaws_amp_amazonprometheusservice::state::{
 const REGION: &str = "us-west-2";
 
 /// One label set and the samples written to it, as a case states them.
-type SeriesCase<'a> = (&'a str, &'a [(&'a str, &'a str)], &'a [(i64, f64)]);
+///
+/// `pub(crate)`, with [`request`], [`remote_write_body`] and [`remote_write_headers`],
+/// because `crate::announced_endpoint_composition` drives the same data plane over the
+/// same wire format: a second copy of the request builder or of the remote-write encoder
+/// would be a second set of rules about how a test reaches that API.
+pub(crate) type SeriesCase<'a> = (&'a str, &'a [(&'a str, &'a str)], &'a [(i64, f64)]);
 
 /// One round-trip case: its name, the metric name written, that series' labels and the
 /// value.
@@ -54,7 +59,7 @@ type WriteRefusalCase<'a> = (&'a str, &'a str, String, Vec<u8>, u16, &'a str);
 
 /// One request to this emulator, addressed to `host` and signed for `region` — the two
 /// facts the announced endpoint and the Region scoping are read from.
-fn request(
+pub(crate) fn request(
     method: &str,
     host: &str,
     region: &str,
@@ -83,7 +88,7 @@ fn request(
 
 /// A remote-write body, built as a sender builds it: the protobuf `WriteRequest` of the
 /// stated series, compressed with snappy's block format.
-fn remote_write_body(series: &[SeriesCase<'_>]) -> Vec<u8> {
+pub(crate) fn remote_write_body(series: &[SeriesCase<'_>]) -> Vec<u8> {
     let request = WriteRequest {
         timeseries: series
             .iter()
@@ -119,7 +124,7 @@ fn snappy(raw: &[u8]) -> Vec<u8> {
 }
 
 /// The headers a remote_write sender announces its body with.
-fn remote_write_headers() -> Vec<(&'static str, &'static str)> {
+pub(crate) fn remote_write_headers() -> Vec<(&'static str, &'static str)> {
     vec![
         ("content-encoding", "snappy"),
         ("content-type", "application/x-protobuf"),
