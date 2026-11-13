@@ -871,6 +871,46 @@ impl SecurityRequirement {
         }
     }
 
+    /// Apply one update entry's SUPPLIED members to this stored record, so every later
+    /// read of this pack and name answers what was written.
+    ///
+    /// The members of an update entry are optional, so a member the request carries
+    /// replaces the stored value and a member it does not carry leaves that field as it
+    /// was — an update of one member is not a clear of the others. The name is the
+    /// requirement's identity ("an immutable identifier ... cannot be changed once the
+    /// requirement is created") and so is not writable here. `updated_at` is when the
+    /// record last changed, so it moves for an entry that wrote something and stays put
+    /// for one that carried no writable member at all.
+    pub fn apply_update(
+        &mut self,
+        description: Option<String>,
+        domain: Option<String>,
+        evaluation: Option<String>,
+        remediation: Option<String>,
+        now: SystemTime,
+    ) {
+        let mut mutated = false;
+        if let Some(description) = description {
+            self.description = description;
+            mutated = true;
+        }
+        if let Some(domain) = domain {
+            self.domain = domain;
+            mutated = true;
+        }
+        if let Some(evaluation) = evaluation {
+            self.evaluation = evaluation;
+            mutated = true;
+        }
+        if let Some(remediation) = remediation {
+            self.remediation = Some(remediation);
+            mutated = true;
+        }
+        if mutated {
+            self.updated_at = now;
+        }
+    }
+
     /// This requirement projected onto the `SecurityRequirementSummary` shape
     /// `ListSecurityRequirements` returns: the STORED record's own fields, never request
     /// input. The summary carries the pack, the name, the description and the stamps;
@@ -1700,6 +1740,18 @@ impl ComAmazonawsSecurityagentSecurityagentState {
     pub fn security_requirement(&self, pack_id: &str, name: &str) -> Option<&SecurityRequirement> {
         self.security_requirements
             .get(&(pack_id.to_string(), name.to_string()))
+    }
+
+    /// The same record, mutably: the one record a write addressed to that pack and name
+    /// changes, so an update and a read can never disagree about which record a name
+    /// names.
+    pub fn security_requirement_mut(
+        &mut self,
+        pack_id: &str,
+        name: &str,
+    ) -> Option<&mut SecurityRequirement> {
+        self.security_requirements
+            .get_mut(&(pack_id.to_string(), name.to_string()))
     }
 
     /// Every security requirement the pack `pack_id` holds, in name order.
