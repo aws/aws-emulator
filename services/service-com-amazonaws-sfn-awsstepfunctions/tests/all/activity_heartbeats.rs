@@ -248,6 +248,33 @@ async fn an_unbeaten_task_is_closed_by_its_window() {
     );
 }
 
+/// Describe `execution_arn` until the clock has closed it, and report what it then
+/// says.
+///
+/// Generous room: the deadline is far longer than any bound a test below declares, and
+/// what ends the loop is the CONDITION — the execution having left `RUNNING` — not the
+/// time spent waiting for it.
+async fn closed_by_the_clock(emulator: &Emulator, execution_arn: &str) -> Value {
+    /// Far longer than the bounds the tests here declare, so a loaded host settles
+    /// inside it.
+    const PATIENCE: Duration = Duration::from_secs(60);
+    /// How long the poll pauses between looks.
+    const PAUSE: Duration = Duration::from_millis(25);
+
+    let began = ::std::time::Instant::now();
+    loop {
+        let described = describe_execution(emulator, execution_arn).await;
+        if described.get("status").and_then(Value::as_str) != Some("RUNNING") {
+            return described;
+        }
+        assert!(
+            began.elapsed() < PATIENCE,
+            "expected {execution_arn} to be closed by its bound, got {described:?}"
+        );
+        ::tokio::time::sleep(PAUSE).await;
+    }
+}
+
 /// A heartbeat does NOT extend the task's whole `TimeoutSeconds`: that bound is its
 /// maximum allowed duration regardless of how many heartbeats were received, so the
 /// clock closes it on time and a beat that arrives afterwards is `TaskTimedOut`.
@@ -273,9 +300,10 @@ async fn heartbeats_do_not_extend_the_whole_task_timeout() {
         );
     }
 
-    // Past the whole-task timeout, which the beats could not move.
-    std::thread::sleep(Duration::from_millis(900));
-    let described = describe_execution(&emulator, &execution).await;
+    // Past the whole-task timeout, which the beats could not move: the outcome is what
+    // this waits FOR — looked for again until it holds, on a deadline far longer than the
+    // two seconds the bound itself allows, so a loaded host reaches it too.
+    let described = closed_by_the_clock(&emulator, &execution).await;
     assert_eq!(
         (
             described.get("status").and_then(Value::as_str),
@@ -296,8 +324,8 @@ async fn heartbeats_do_not_extend_the_whole_task_timeout() {
     );
     assert_eq!(
         body.get("message").and_then(Value::as_str),
-        Some(task_timed_out_message(&activity).as_str()),
-        "expected the refusal to name the activity of the closed task, got {body:?}"
+        Some(task_timed_out_message().as_str()),
+        "expected the refusal to state the reason of this error class, got {body:?}"
     );
     let held = held_tasks(&emulator, &activity);
     assert_eq!(

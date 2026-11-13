@@ -172,14 +172,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // The token is read BEFORE the store is consulted, exactly as every ARN here
         // is: a value that is not a token this service mints is a defect in the
         // REQUEST, which `InvalidToken` reports, and not a task that has been closed.
-        // The token NAMES the activity its task belongs to, which is what a refusal
-        // about a task the store no longer holds says.
-        let Some(token_activity) = crate::state::read_task_token(&input.task_token) else {
+        if crate::state::read_task_token(&input.task_token).is_none() {
             return Err(SendTaskHeartbeatErrorModeled::InvalidToken(InvalidToken {
                 message: Some(crate::state::invalid_token_message()),
             })
             .into());
-        };
+        }
 
         let now = crate::state::now();
         let mut store = state.lock();
@@ -202,7 +200,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         let Some(task) = store.activity_tasks.get(&input.task_token) else {
             return Err(SendTaskHeartbeatErrorModeled::TaskTimedOut(TaskTimedOut {
-                message: Some(crate::state::task_timed_out_message(&token_activity)),
+                message: Some(crate::state::task_timed_out_message()),
             })
             .into());
         };
@@ -236,7 +234,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .is_none_or(crate::state::Execution::is_terminal)
         {
             return Err(SendTaskHeartbeatErrorModeled::TaskTimedOut(TaskTimedOut {
-                message: Some(crate::state::task_timed_out_message(&token_activity)),
+                message: Some(crate::state::task_timed_out_message()),
             })
             .into());
         }

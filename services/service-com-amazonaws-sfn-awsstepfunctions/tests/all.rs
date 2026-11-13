@@ -259,6 +259,8 @@ mod task_role_over_dynamodb;
 mod task_role_session_principal;
 #[path = "all/task_target_authorization.rs"]
 mod task_target_authorization;
+#[path = "all/task_timed_out_wording.rs"]
+mod task_timed_out_wording;
 #[path = "all/task_work_event_families.rs"]
 mod task_work_event_families;
 #[path = "all/terminal_runtime_errors.rs"]

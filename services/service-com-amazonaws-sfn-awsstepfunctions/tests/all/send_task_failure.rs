@@ -157,7 +157,7 @@ async fn send_task_failure_fails_the_execution_with_the_reported_error() {
         );
 
         // The reply CLOSED the task, and a repeat of it answers for a task that is
-        // gone — naming the activity the token itself carries.
+        // gone — stating the one fixed reason this error class carries.
         let held = held_tasks(&emulator, &activity);
         assert_eq!(
             held, 0,
@@ -173,7 +173,7 @@ async fn send_task_failure_fails_the_execution_with_the_reported_error() {
             (
                 400,
                 "TaskTimedOut".to_string(),
-                Some(task_timed_out_message(&activity).as_str())
+                Some(task_timed_out_message().as_str())
             ),
             "case {case:?}: expected a repeat of the reply to be refused, got {status} with \
              {body:?}"
@@ -302,13 +302,13 @@ async fn a_failure_reply_is_refused_for_the_tokens_a_result_reply_is() {
             "a token of a stopped execution, whose task can never be answered",
             stopped_token,
             "TaskTimedOut",
-            task_timed_out_message(&stopped_activity),
+            task_timed_out_message(),
         ),
         (
             "a well-formed token no task was ever scheduled under",
             task_token(MINTED_ID, &stopped_activity),
             "TaskTimedOut",
-            task_timed_out_message(&stopped_activity),
+            task_timed_out_message(),
         ),
         (
             "a token whose activity was deleted while the task was outstanding",
