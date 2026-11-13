@@ -1753,3 +1753,12 @@ mod apigateway_vpc_link_private_integration;
 // single service crate's test target can drive it.
 #[path = "all/cognito_signed_session_leading_keys_partition.rs"]
 mod cognito_signed_session_leading_keys_partition;
+// Declared in the appended tail, which is where every new suite inserts its lines: a
+// CloudFormation-deployed REST API gated by a TOKEN Lambda authorizer whose invocation is
+// admitted by the role its authorizerCredentials names spans CloudFormation (which deploys the
+// eight resources), IAM and STS (the role, its documents and the assume-role reading), AWS
+// Lambda (the authorizer function and its resource policy) and API Gateway (the api, the
+// authorizer, the method and the stage that serves them), so no single service crate's test
+// target can deploy it.
+#[path = "all/cloudformation_rest_api_token_authorizer_credentials.rs"]
+mod cloudformation_rest_api_token_authorizer_credentials;
