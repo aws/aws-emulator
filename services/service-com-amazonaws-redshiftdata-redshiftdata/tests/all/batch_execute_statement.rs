@@ -267,7 +267,7 @@ async fn a_batch_reports_each_statement_it_ran_in_order() {
                     )
                     .await;
                 assert_eq!(
-                    status, 404,
+                    status, 400,
                     "case {}: statement {position} produced no result set, so it has no result \
                      to fetch, got {status} {refused}",
                     case.label

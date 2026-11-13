@@ -101,9 +101,9 @@
 #[allow(unused_imports)]
 use super::types::*;
 use crate::state::{
-    decode_cursor, encode_cursor, BATCH_PARENT_RESULT_MESSAGE, CSV_RESULT_READER_REQUIREMENT,
-    CURSOR_ROWS, INVALID_TOKEN_MESSAGE, NO_RESULT_MESSAGE, RESULT_PAGE_ROWS,
-    UNKNOWN_QUERY_MESSAGE, UNKNOWN_QUERY_STATUS,
+    decode_cursor, encode_cursor, result_page_end, BATCH_PARENT_RESULT_MESSAGE,
+    CSV_RESULT_READER_REQUIREMENT, CURSOR_ROWS, INVALID_TOKEN_MESSAGE, NO_RESULT_MESSAGE,
+    NO_RESULT_STATUS, UNKNOWN_QUERY_MESSAGE, UNKNOWN_QUERY_STATUS,
 };
 
 // `#[operation_error]` below expands to an invocation of the LOCAL declarative
@@ -218,13 +218,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     statement.status.as_str()
                 )));
             }
-            return Err(GetStatementResultV2ErrorModeled::ResourceNotFoundException(
-                ResourceNotFoundException {
-                    message: NO_RESULT_MESSAGE.to_string(),
-                    resource_id: input.id.clone(),
-                },
-            )
-            .into());
+            return Err(no_result(&input.id));
         }
 
         let (rows, column_metadata) = match statement.result() {
@@ -250,7 +244,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             }
         };
 
-        let end = offset.saturating_add(RESULT_PAGE_ROWS).min(rows.len());
+        let end = result_page_end(rows, offset);
         let records = csv_records(&column_metadata, &rows[offset..end], offset == 0)
             .map_err(|reason| unavailable(&format!("the result could not be rendered: {reason}")))?;
         Ok(GetStatementResultV2Output {
@@ -343,5 +337,19 @@ fn no_such_query(id: &str) -> GetStatementResultV2Error {
             resource_id: id.to_string(),
         }),
         UNKNOWN_QUERY_STATUS,
+    )
+}
+
+/// Refuse a result read for a statement that produced no result: the missing
+/// result the service names, in its fixed words ([`NO_RESULT_MESSAGE`]) and at
+/// the status it answers this refusal at ([`NO_RESULT_STATUS`]) rather than at
+/// the one its error shape declares — the same refusal the JSON reader gives.
+fn no_result(id: &str) -> GetStatementResultV2Error {
+    crate::scaffolded::Scaffolded::modeled_with_status(
+        GetStatementResultV2ErrorModeled::ResourceNotFoundException(ResourceNotFoundException {
+            message: NO_RESULT_MESSAGE.to_string(),
+            resource_id: id.to_string(),
+        }),
+        NO_RESULT_STATUS,
     )
 }

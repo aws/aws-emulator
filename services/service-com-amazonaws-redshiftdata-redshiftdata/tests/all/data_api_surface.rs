@@ -16,7 +16,7 @@
 //!   `stringValue`;
 //! * `ColumnMetadata.precision` is the declared width of a non-numeric column
 //!   and the declared precision of an exact-numeric one;
-//! * a statement with no result to fetch is refused as a missing RESULT (404),
+//! * a statement with no result to fetch is refused as a missing RESULT,
 //!   while a query that matched nothing is served as the empty result set it
 //!   produced;
 //! * a statement record's `Id` is the `Id` of the SUBMISSION it belongs to, and
@@ -304,7 +304,8 @@ async fn column_metadata_precision_is_the_declared_size_of_the_column() {
 // ---------------------------------------------------------------------------
 
 /// A statement that produced NO RESULT is refused as a missing result resource
-/// (`ResourceNotFoundException`, 404) — whatever terminal status it reached —
+/// (`ResourceNotFoundException`, at the client-input status the service answers
+/// that refusal with) — whatever terminal status it reached —
 /// while a query that produced a result set is served, even an empty one: "no
 /// result set" and "an empty result set" are different answers.
 #[tokio::test]
@@ -344,7 +345,7 @@ async fn a_statement_with_no_result_is_refused_as_a_missing_result() {
             );
         } else {
             assert_eq!(
-                status, 404,
+                status, 400,
                 "case {label}: a statement with no result has no result to read, got {status} \
                  {response}"
             );
@@ -380,7 +381,7 @@ async fn a_statement_with_no_result_is_refused_as_a_missing_result() {
         .call("GetStatementResult", &json!({"Id": aborted}))
         .await;
     assert_eq!(
-        status, 404,
+        status, 400,
         "an aborted statement has no result to read, got {status} {response}"
     );
     assert_eq!(

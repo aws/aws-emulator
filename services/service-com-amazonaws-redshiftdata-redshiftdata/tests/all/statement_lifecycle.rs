@@ -231,7 +231,7 @@ async fn reported_rows_are_what_the_engine_produced_for_the_submitted_sql() {
                 .call("GetStatementResult", &json!({"Id": id}))
                 .await;
             assert_eq!(
-                status, 404,
+                status, 400,
                 "case {}: a statement with no result set has no result to fetch, got {status} \
                  {refused}",
                 case.label
@@ -741,7 +741,7 @@ async fn a_statement_the_engine_rejects_ends_failed_with_the_engine_s_error() {
             .call("GetStatementResult", &json!({"Id": id}))
             .await;
         assert_eq!(
-            status, 404,
+            status, 400,
             "case {sql}: a failed statement has no result to fetch, got {status} {refused}"
         );
         assert_eq!(
@@ -1375,7 +1375,7 @@ async fn a_next_token_this_service_did_not_issue_is_refused() {
 
     // The refusal rule does not depend on the statement having produced rows,
     // but a statement with no result set has no result to page at all: the read
-    // is refused as a missing result (404) before any token is considered.
+    // is refused as a missing result before any token is considered.
     let no_result_set = emulator.run("CREATE TABLE token_probe (a INTEGER)").await;
     for token in [
         "not-hexadecimal",
@@ -1390,8 +1390,8 @@ async fn a_next_token_this_service_did_not_issue_is_refused() {
             )
             .await;
         assert_eq!(
-            status, 404,
-            "case {token:?} on a statement with no result set: expected 404, got {status} \
+            status, 400,
+            "case {token:?} on a statement with no result set: expected 400, got {status} \
              {response}"
         );
         assert_eq!(
@@ -1407,7 +1407,7 @@ async fn a_next_token_this_service_did_not_issue_is_refused() {
         .call("GetStatementResult", &json!({"Id": no_result_set}))
         .await;
     assert_eq!(
-        status, 404,
+        status, 400,
         "a statement with no result set has no page to serve, got {status} {response}"
     );
 }

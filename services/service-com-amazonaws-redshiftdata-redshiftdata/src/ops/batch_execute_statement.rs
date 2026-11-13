@@ -469,7 +469,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // on that database, so the submissions of one database run one at a
         // time and in submission order — which is what serialises two
         // transactions contending for the same row.
-        let (reserved, id, accepted) = {
+        let (reserved, id, accepted, scope) = {
             let mut store = state.lock();
             store.materialise_due_transitions();
             // Every accepted submission runs independently of this request, so
@@ -547,7 +547,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // how far the transaction handed over below happened to get while
             // the response was being written.
             let accepted = store.statement(&id).map(output_for);
-            (reserved, id, accepted)
+            // The CONNECTION this batch's statements run on — the session they
+            // reuse, or one of their own — and the temporary relations it holds.
+            let scope = store.connection_scope(&id);
+            (reserved, id, accepted, scope)
         };
 
         // The transaction is the batch's, not the request's: it runs to a
@@ -563,7 +566,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // STOPS, which happens inside that transaction and not in this request.
         let callback = ctx.callback().clone();
         let execution = tokio::spawn(async move {
-            let Some((handle, mut slot)) = reserved else {
+            let Some((handle, slot)) = reserved else {
                 // No connection was ever made, so no statement of the batch
                 // ran: each one fails with what the backend answers a
                 // connection to a database that is not there.
@@ -579,11 +582,50 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 crate::state::statement_events::publish_pending(&callback, &*engine).await;
                 return;
             };
-            slot.wait_for_turn().await;
+            let mut slot = Some(slot);
+            if let Some(slot) = slot.as_mut() {
+                slot.wait_for_turn().await;
+            }
             // The batch's turn on its database is now its: the query "has been
             // chosen to be run".
             if let Some(state) = crate::state::service_state(&*engine) {
                 state.lock().pick(&recorded);
+            }
+            // A lock another connection holds inside an open transaction is one
+            // this batch has to wait for. It hands its turn on the database on
+            // while it waits, so the connection holding the lock can release
+            // it, and the batch stays non-terminal — so a caller polling it
+            // sees it running and can cancel it.
+            match crate::state::await_lock_release(
+                &engine,
+                &recorded,
+                sqls.clone(),
+                &scope,
+                &bound,
+                &mut slot,
+            )
+            .await
+            {
+                crate::state::LockWait::Free => {}
+                // Cancelled while it waited: the record already reports ABORTED
+                // and no statement of the batch ran.
+                crate::state::LockWait::Abandoned => {
+                    crate::state::statement_events::publish_pending(&callback, &*engine).await;
+                    return;
+                }
+                crate::state::LockWait::GaveUp(message) => {
+                    if let Some(state) = crate::state::service_state(&*engine) {
+                        state.lock().complete(
+                            &recorded,
+                            crate::state::connection_failures(statements, &message),
+                        );
+                    }
+                    crate::state::statement_events::publish_pending(&callback, &*engine).await;
+                    return;
+                }
+            }
+            if let Some(slot) = slot.as_mut() {
+                slot.wait_for_turn().await;
             }
             let running = ::std::sync::Arc::clone(&engine);
             let started = recorded.clone();
@@ -601,6 +643,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     execution_mode,
                     engine_timeout,
                     &bound,
+                    &scope,
                 )
             })
             .await

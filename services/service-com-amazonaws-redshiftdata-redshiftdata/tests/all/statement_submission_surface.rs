@@ -301,7 +301,7 @@ async fn each_reader_serves_only_the_result_format_it_is_the_reader_for() {
             sql: "CREATE TABLE no_result_csv (id INTEGER)",
             operation: "GetStatementResultV2",
             refusal: Some((
-                404,
+                400,
                 "ResourceNotFoundException",
                 "Query does not have result. Please check query status with DescribeStatement.",
             )),

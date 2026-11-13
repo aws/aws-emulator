@@ -426,7 +426,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // happens to this request — and the SQL runs on a blocking pool with
         // only its own database's lock held, so a slow statement starves no
         // async worker and serialises no other caller.
-        let (reserved, id, accepted) = {
+        let (reserved, id, accepted, scope) = {
             let mut store = state.lock();
             store.materialise_due_transitions();
             // Every accepted submission runs independently of this request, so
@@ -504,7 +504,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // how far the execution handed over below happened to get while the
             // response was being written.
             let accepted = store.statement(&id).map(output_for);
-            (reserved, id, accepted)
+            // The CONNECTION this submission's statements run on: the session
+            // they reuse, or one of their own. It carries the temporary
+            // relations that connection holds, so a statement of a session
+            // resolves what an earlier one of the same session created and a
+            // statement on any other connection cannot.
+            let scope = store.connection_scope(&id);
+            (reserved, id, accepted, scope)
         };
 
         let sql = input.sql.clone();
@@ -522,7 +528,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // happens inside that execution and not inside this request.
         let callback = ctx.callback().clone();
         let execution = tokio::spawn(async move {
-            let Some((handle, mut slot)) = reserved else {
+            let Some((handle, slot)) = reserved else {
                 // No connection was ever made, so nothing ran: the statement
                 // fails with what the backend answers a connection to a
                 // database that is not there.
@@ -538,11 +544,49 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 crate::state::statement_events::publish_pending(&callback, &*engine).await;
                 return;
             };
-            slot.wait_for_turn().await;
+            let mut slot = Some(slot);
+            if let Some(slot) = slot.as_mut() {
+                slot.wait_for_turn().await;
+            }
             // The submission's turn on its database is now its: the query "has
             // been chosen to be run".
             if let Some(state) = crate::state::service_state(&*engine) {
                 state.lock().pick(&recorded);
+            }
+            // A lock another connection holds inside an open transaction is one
+            // this statement has to wait for: it stays non-terminal while it
+            // waits, so a caller polling it sees it running and can cancel it.
+            // The wait hands its turn on the database on and takes a new one
+            // afterwards, so the connection holding the lock can release it.
+            match crate::state::await_lock_release(
+                &engine,
+                &recorded,
+                vec![sql.clone()],
+                &scope,
+                &bound,
+                &mut slot,
+            )
+            .await
+            {
+                crate::state::LockWait::Free => {}
+                // Cancelled while it waited: the record already reports ABORTED
+                // and nothing ran, so there is no outcome to write.
+                crate::state::LockWait::Abandoned => {
+                    crate::state::statement_events::publish_pending(&callback, &*engine).await;
+                    return;
+                }
+                crate::state::LockWait::GaveUp(message) => {
+                    if let Some(state) = crate::state::service_state(&*engine) {
+                        state
+                            .lock()
+                            .complete(&recorded, crate::state::connection_failures(1, &message));
+                    }
+                    crate::state::statement_events::publish_pending(&callback, &*engine).await;
+                    return;
+                }
+            }
+            if let Some(slot) = slot.as_mut() {
+                slot.wait_for_turn().await;
             }
             let running = ::std::sync::Arc::clone(&engine);
             let started = recorded.clone();
@@ -559,6 +603,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     &parameters,
                     engine_timeout,
                     &bound,
+                    &scope,
                 )]
             })
             .await

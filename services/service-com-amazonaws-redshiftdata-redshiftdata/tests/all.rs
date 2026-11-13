@@ -17,6 +17,9 @@ mod batch_execute_statement;
 #[path = "all/caller_patience.rs"]
 mod caller_patience;
 
+#[path = "all/connection_scope.rs"]
+mod connection_scope;
+
 #[path = "all/contended_transactions.rs"]
 mod contended_transactions;
 
@@ -43,6 +46,9 @@ mod redshift_dialect;
 
 #[path = "all/refusal_wording.rs"]
 mod refusal_wording;
+
+#[path = "all/result_pages.rs"]
+mod result_pages;
 
 #[path = "all/state_roundtrip.rs"]
 mod state_roundtrip;

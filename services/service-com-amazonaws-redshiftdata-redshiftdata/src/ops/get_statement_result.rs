@@ -3,8 +3,8 @@
 //! @op GetStatementResult
 //! Returns the rows the statement named by `Id` actually produced, paged with an
 //! opaque `NextToken`. A statement that produced no RESULT — one that failed, was
-//! aborted, or finished without a result set — is refused as a missing result
-//! (404), and a batch's own `Id` is refused as well: a batch's results live on
+//! aborted, or finished without a result set — is refused as a missing result,
+//! and a batch's own `Id` is refused as well: a batch's results live on
 //! the `:<n>` ids of the statements it submitted. A reporting operation, so the
 //! only thing it writes is the outcome a statement's execution already reported.
 //!
@@ -98,9 +98,9 @@
 #[allow(unused_imports)]
 use super::types::*;
 use crate::state::{
-    decode_cursor, encode_cursor, BATCH_PARENT_RESULT_MESSAGE, CURSOR_ROWS, INVALID_TOKEN_MESSAGE,
-    JSON_RESULT_READER_REQUIREMENT, NO_RESULT_MESSAGE, RESULT_PAGE_ROWS, UNKNOWN_QUERY_MESSAGE,
-    UNKNOWN_QUERY_STATUS,
+    decode_cursor, encode_cursor, result_page_end, BATCH_PARENT_RESULT_MESSAGE, CURSOR_ROWS,
+    INVALID_TOKEN_MESSAGE, JSON_RESULT_READER_REQUIREMENT, NO_RESULT_MESSAGE, NO_RESULT_STATUS,
+    UNKNOWN_QUERY_MESSAGE, UNKNOWN_QUERY_STATUS,
 };
 
 // `#[operation_error]` below expands to an invocation of the LOCAL declarative
@@ -210,8 +210,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // Only a statement that ran to completion AND produced a result set has
         // rows to fetch. A statement that FAILED or was ABORTED, and a FINISHED
         // one with no result set (DDL, or DML such as INSERT), has no RESULT to
-        // read: that is a missing result resource (404), not a malformed
-        // request, and never an empty page a client would read as "no rows".
+        // read: that is a missing result resource, served at the status the
+        // service answers this refusal at, and never an empty page a client
+        // would read as "no rows".
         if !statement.has_fetchable_result() {
             // A statement still running is a different answer: its result does
             // not exist YET, and the caller's own request is what is wrong — it
@@ -223,13 +224,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     statement.status.as_str()
                 )));
             }
-            return Err(GetStatementResultErrorModeled::ResourceNotFoundException(
-                ResourceNotFoundException {
-                    message: NO_RESULT_MESSAGE.to_string(),
-                    resource_id: input.id.clone(),
-                },
-            )
-            .into());
+            return Err(no_result(&input.id));
         }
 
         let (rows, column_metadata) = match statement.result() {
@@ -255,7 +250,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             }
         };
 
-        let end = offset.saturating_add(RESULT_PAGE_ROWS).min(rows.len());
+        let end = result_page_end(rows, offset);
         Ok(GetStatementResultOutput {
             records: rows[offset..end].to_vec(),
             column_metadata: Some(column_metadata),
@@ -287,5 +282,19 @@ fn no_such_query(id: &str) -> GetStatementResultError {
             resource_id: id.to_string(),
         }),
         UNKNOWN_QUERY_STATUS,
+    )
+}
+
+/// Refuse a result read for a statement that produced no result: the missing
+/// result the service names, in its fixed words
+/// ([`NO_RESULT_MESSAGE`]) and at the status it answers this refusal at
+/// ([`NO_RESULT_STATUS`]) rather than at the one its error shape declares.
+fn no_result(id: &str) -> GetStatementResultError {
+    crate::scaffolded::Scaffolded::modeled_with_status(
+        GetStatementResultErrorModeled::ResourceNotFoundException(ResourceNotFoundException {
+            message: NO_RESULT_MESSAGE.to_string(),
+            resource_id: id.to_string(),
+        }),
+        NO_RESULT_STATUS,
     )
 }

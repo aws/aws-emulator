@@ -78,6 +78,16 @@ pub mod functions;
 /// when it stops.
 pub mod statement_events;
 
+/// Taking and restoring a snapshot of a warehouse's databases, for the control
+/// planes that own the warehouses.
+mod capture;
+pub use capture::*;
+
+/// The CONNECTION a submission's statements run on: the temporary relations
+/// that belong to it alone, and the locks it holds against the others.
+mod connections;
+pub use connections::*;
+
 /// Page size `ListStatements` uses when the request leaves `MaxResults` at its
 /// modelled default of 0 — the modelled maximum, so an unparameterised call
 /// returns as much as one page can hold.
@@ -94,6 +104,17 @@ pub const DEFAULT_PAGE_SIZE: usize = 1_000;
 /// decides where `NextToken` appears, never which rows exist.
 pub const RESULT_PAGE_ROWS: usize = 1_000;
 
+/// Bytes of RESULT DATA one page of a statement's result carries.
+///
+/// The Amazon Redshift Data API documents its ceiling on a RESULT READ: a call
+/// that would return more than 100 MB of response data is ended, so the bound
+/// is on what ONE call answers with and not on the result set a statement
+/// produces — a larger result set is served across pages, which is what
+/// `NextToken` is for. A page therefore ends at whichever comes first, the rows
+/// [`RESULT_PAGE_ROWS`] admits or this many bytes of them, and a page always
+/// carries at least one row so that paging cannot stall.
+pub const MAX_RESULT_PAGE_BYTES: usize = 100 * 1024 * 1024;
+
 /// The message the Data API answers a result read for a statement that produced
 /// no result with — the fixed text recorded from the service, which points the
 /// caller at the operation that does report the statement's outcome.
@@ -103,6 +124,19 @@ pub const RESULT_PAGE_ROWS: usize = 1_000;
 /// result refuses it the same way.
 pub const NO_RESULT_MESSAGE: &str =
     "Query does not have result. Please check query status with DescribeStatement.";
+
+/// The HTTP status the Data API answers a result read for a statement that
+/// produced no result at.
+///
+/// The missing-resource shape it carries declares `@httpError 404`, which is the
+/// status that shape renders with WHEREVER it is used; on this path the service
+/// answers it as a client-input failure instead — the statement exists and its
+/// outcome is readable, and what is wrong is that the caller asked for a result
+/// of a statement that produced none — so the readers state the status here and
+/// serve the error at it
+/// ([`crate::scaffolded::Scaffolded::ModeledWithStatus`]) rather than swapping
+/// the error code to move the status.
+pub const NO_RESULT_STATUS: u16 = 400;
 
 /// What a reader of a statement's result requires of the statement it is asked
 /// for, when the statement's result is not read in the format that reader
@@ -284,20 +318,32 @@ pub const MAX_RESULT_ROWS: usize = 100_000;
 /// constants is bounded by this even though it charges almost nothing in bytes.
 const MAX_RESULT_CELLS: usize = 2_000_000;
 
-/// Cap on the MATERIALISED size of one SUBMISSION's results, in bytes.
+/// Cap on the size of one SUBMISSION's retained results, in bytes of RESULT
+/// DATA — the size the result's own values take, which is what `ResultSize`
+/// reports.
 ///
-/// The Amazon Redshift Data API publishes a maximum query-result size of 100 MB,
-/// so a result up to that size is one the service itself serves and this
-/// emulator has to hold: a lower bound would refuse a query the real service
-/// answers. What it measures is what holding the result costs THIS process
-/// (every owned value, plus the per-row and per-cell overhead), charged against
-/// that ceiling, which is stricter than charging the engine's own value sizes.
-/// A batch's statements share this one budget, so a request cannot retain more
-/// by submitting more statements.
-const MAX_RESULT_BYTES: usize = 100 * 1024 * 1024;
+/// It is this emulator's MEMORY bound and not a limit of the service: the Data
+/// API's own documented ceiling is on what one result READ answers with
+/// ([`MAX_RESULT_PAGE_BYTES`]), so a statement whose whole result set is larger
+/// than that still runs to completion and is served across pages — a bound here
+/// that refused such a statement would fail work the real service serves. It is
+/// therefore well above that per-call ceiling, and bounds what holding one
+/// request's results can cost this process. A batch's statements share this one
+/// budget, so a request cannot retain more by submitting more statements.
+///
+/// What a retained result RESIDENTLY costs is more than the bytes counted here,
+/// and the other two caps are what bound the difference: each cell is held in a
+/// [`Field`] of its own, so the per-cell overhead is at most
+/// `MAX_RESULT_CELLS * size_of::<Field>()`, and a text value copied out of the
+/// engine is at worst three times its engine size, because
+/// `String::from_utf8_lossy` replaces each invalid byte with a three-byte
+/// replacement character. One submission's retained result therefore costs this
+/// process at most three times this ceiling plus that per-cell overhead, which
+/// is what the three caps bound TOGETHER.
+const MAX_RESULT_BYTES: usize = 256 * 1024 * 1024;
 
 /// Cap on what the retained statement history holds in RESULTS at once, across
-/// every statement of it.
+/// every statement of it, in the same bytes [`MAX_RESULT_BYTES`] counts.
 ///
 /// [`MAX_RESULT_BYTES`] bounds ONE submission, and this bounds their sum: the
 /// oldest statements whose execution has reported are dropped (with their
@@ -305,19 +351,7 @@ const MAX_RESULT_BYTES: usize = 100 * 1024 * 1024;
 /// cannot make the emulator hold result sets without limit. Larger than one
 /// submission's ceiling, so a submission that is inside its own bound is never
 /// refused by this one.
-const MAX_RETAINED_RESULT_BYTES: usize = 384 * 1024 * 1024;
-
-/// What one retained cell costs beyond its payload: the `Field` union itself.
-/// Charged against [`MAX_RESULT_BYTES`] so a NULL or integer cell is never free.
-const RETAINED_CELL_OVERHEAD: usize = std::mem::size_of::<Field>();
-
-/// What one retained row costs beyond its cells: the row's own vector.
-const RETAINED_ROW_OVERHEAD: usize = std::mem::size_of::<Vec<Field>>();
-
-/// Worst-case expansion of a text payload: `String::from_utf8_lossy` replaces
-/// each invalid byte with a three-byte replacement character, so a text value is
-/// charged at three times its engine size.
-const LOSSY_TEXT_EXPANSION: usize = 3;
+const MAX_RETAINED_RESULT_BYTES: usize = 512 * 1024 * 1024;
 
 /// `SQLITE_LIMIT_LENGTH`: the largest single string or blob the engine will
 /// produce, so one value cannot be larger than the whole result budget.
@@ -1156,6 +1190,13 @@ impl ExecutionBound {
     pub fn interrupt(&self) -> Interrupt {
         Interrupt(std::sync::Arc::clone(&self.0))
     }
+
+    /// Whether this execution has been abandoned — what a statement waiting for
+    /// something other than the engine (a lock another connection holds) reads,
+    /// so a cancelled statement stops waiting.
+    pub fn abandoned(&self) -> bool {
+        self.0.stopped()
+    }
 }
 
 impl Default for ExecutionBound {
@@ -1349,7 +1390,7 @@ pub struct Execution {
     result_rows: i64,
     result_size: i64,
     result: Option<ResultSet>,
-    /// What holding this statement's result costs this process, in bytes — what
+    /// The bytes of RESULT DATA this statement's result holds — what
     /// [`MAX_RETAINED_RESULT_BYTES`] bounds across the whole retained history.
     retained_bytes: usize,
     /// What this statement does to the WAREHOUSE's catalogue of databases, for
@@ -1358,6 +1399,20 @@ pub struct Execution {
     /// [`ComAmazonawsRedshiftdataRedshiftdataState::complete`], which is where
     /// that catalogue is reachable.
     catalogue: Vec<CatalogueEffect>,
+    /// What this statement did to the CONNECTION it ran on, applied by the same
+    /// call and for the same reason: the connection registry lives beside the
+    /// catalogue, under the state lock, and not in the engine.
+    connection: ConnectionOutcome,
+}
+
+/// What one statement did to the CONNECTION it ran on: the temporary relations
+/// it created there, and what it did to the locks that connection holds.
+#[derive(Debug, Default)]
+struct ConnectionOutcome {
+    /// The temporary relations the statement created, as the caller named them.
+    temp_created: Vec<String>,
+    /// The locks it took and released, in the order it asked for them.
+    locks: Vec<LockEffect>,
 }
 
 /// What one statement does to the WAREHOUSE's catalogue of databases.
@@ -1390,6 +1445,7 @@ impl Execution {
             result: None,
             retained_bytes: 0,
             catalogue: Vec::new(),
+            connection: ConnectionOutcome::default(),
         }
     }
 
@@ -1411,6 +1467,7 @@ impl Execution {
             result: None,
             retained_bytes: 0,
             catalogue: Vec::new(),
+            connection: ConnectionOutcome::default(),
         }
     }
 
@@ -1431,6 +1488,10 @@ impl Execution {
         // Nothing this statement asked of the warehouse's catalogue happened
         // either: the transaction that held it was never committed.
         self.catalogue = Vec::new();
+        // Nor did anything it built on its connection: a temporary relation
+        // created inside that transaction is not there either, and a lock it
+        // took went with the transaction that held it.
+        self.connection = ConnectionOutcome::default();
     }
 }
 
@@ -1490,8 +1551,8 @@ enum Binding {
 /// which is exactly the Data API's `HasResultSet=false` case.
 enum Produced {
     /// The rows a query returned: the result set, the size the engine reports
-    /// for it (`ResultSize`), and what holding it costs this process — which is
-    /// what the retained-history bound measures.
+    /// for it (`ResultSize`), and what the retained history charges for holding
+    /// it — the same bytes, since what is retained IS the result.
     Rows(ResultSet, i64, usize),
     /// The rows a DML or DDL statement affected.
     Affected(i64),
@@ -1553,7 +1614,7 @@ pub fn connection_failures(statements: usize, message: &str) -> Vec<Execution> {
 /// The `Error` a statement whose execution never reported carries.
 const UNREPORTED_EXECUTION_MESSAGE: &str = "the SQL engine did not report a result for this statement";
 
-/// Run `sql` on the engine `handle` guards.
+/// Run `sql` on the engine `handle` guards, on the connection `scope` names.
 ///
 /// BLOCKING, deliberately: the engine is synchronous, so a caller must put this
 /// on a blocking pool (`tokio::task::spawn_blocking`) rather than run it on an
@@ -1566,20 +1627,24 @@ pub fn run_on(
     parameters: &[SqlParameter],
     timeout: Duration,
     bound: &ExecutionBound,
+    scope: &ConnectionScope,
 ) -> Execution {
     let mut database = handle
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
+    drop_retired_relations(&database, scope);
     let mut budget = Retention::new();
-    run_sql(
-        &mut database,
-        sql,
-        parameters,
-        Binding::Every,
-        &mut budget,
+    let mut held = scope.temp_names();
+    let mut run = RunContext {
+        budget: &mut budget,
         timeout,
         bound,
-    )
+        scope,
+        held: &mut held,
+    };
+    let mut execution = run_sql(&mut database, sql, parameters, Binding::Every, &mut run);
+    close_connection(&database, scope, std::slice::from_mut(&mut execution));
+    execution
 }
 
 /// Run `sqls` serially, in submission order, on the engine `handle` guards, and/// report one [`Execution`] per submitted statement in that same order.
@@ -1602,10 +1667,12 @@ pub fn run_batch_on(
     mode: ExecutionMode,
     timeout: Duration,
     bound: &ExecutionBound,
+    scope: &ConnectionScope,
 ) -> Vec<Execution> {
     let mut database = handle
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
+    drop_retired_relations(&database, scope);
     let deadline = Instant::now() + timeout;
     let transactional = mode == ExecutionMode::Transaction;
 
@@ -1628,17 +1695,20 @@ pub fn run_batch_on(
     // statements cannot keep forty result sets where a single statement may
     // keep one.
     let mut budget = Retention::new();
+    // The connection's temporary relations as the batch's statements see them:
+    // one of them creates a relation the next can resolve, because they run on
+    // the same connection.
+    let mut held = scope.temp_names();
+    let mut run = RunContext {
+        budget: &mut budget,
+        timeout,
+        bound,
+        scope,
+        held: &mut held,
+    };
     for sql in sqls {
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        let execution = run_sql(
-            &mut database,
-            sql,
-            parameters,
-            Binding::Referenced,
-            &mut budget,
-            remaining,
-            bound,
-        );
+        run.timeout = deadline.saturating_duration_since(Instant::now());
+        let execution = run_sql(&mut database, sql, parameters, Binding::Referenced, &mut run);
         let failed = execution.status == StatementStatus::Failed;
         executions.push(execution);
         // Everything this transaction did is about to be rolled back, so there
@@ -1675,7 +1745,25 @@ pub fn run_batch_on(
     while executions.len() < sqls.len() {
         executions.push(Execution::never_ran());
     }
+    close_connection(&database, scope, &mut executions);
     executions
+}
+
+/// What ONE run of a submission's statements runs under: the bounds it shares
+/// with the rest of its submission, and the connection its statements run on.
+struct RunContext<'a> {
+    /// The submission's remaining retained-result budget, which a batch's
+    /// statements all draw on.
+    budget: &'a mut Retention,
+    /// The wall-clock bound left for this run.
+    timeout: Duration,
+    /// The execution's own bound, which a cancel abandons.
+    bound: &'a ExecutionBound,
+    /// The connection the statements run on.
+    scope: &'a ConnectionScope,
+    /// The temporary relations that connection holds, which a statement that
+    /// creates one adds to.
+    held: &'a mut BTreeSet<String>,
 }
 
 /// Run `sql` on `database` under the wall-clock and step bounds, and report what
@@ -1686,10 +1774,10 @@ fn run_sql(
     sql: &str,
     parameters: &[SqlParameter],
     binding: Binding,
-    budget: &mut Retention,
-    timeout: Duration,
-    bound: &ExecutionBound,
+    run: &mut RunContext<'_>,
 ) -> Execution {
+    let bound = run.bound;
+    let timeout = run.timeout;
     // This execution's own bound is installed on the connection for the duration
     // of this execution, replacing the previous one: a bound is never shared
     // between statements, so abandoning one cannot abandon another. A statement
@@ -1722,7 +1810,12 @@ fn run_sql(
     } else {
         binding
     };
-    let mut effects: Vec<CatalogueEffect> = Vec::new();
+    let mut effects = RunEffects {
+        scope: run.scope,
+        held: &mut *run.held,
+        catalogue: Vec::new(),
+        connection: ConnectionOutcome::default(),
+    };
     let mut produced = Ok(Produced::Affected(0));
     if statements.len() > MAX_STATEMENTS_PER_SUBMISSION {
         produced = Err(bound_reached(format!(
@@ -1747,13 +1840,25 @@ fn run_sql(
             )));
             break;
         }
-        produced = run_statement(database, statement, parameters, binding, budget, &mut effects);
+        produced = run_statement(
+            database,
+            statement,
+            parameters,
+            binding,
+            &mut *run.budget,
+            &mut effects,
+        );
         if produced.is_err() {
             break;
         }
     }
     guard.disarm();
     let duration_nanos = i64::try_from(started.elapsed().as_nanos()).unwrap_or(i64::MAX);
+    let RunEffects {
+        catalogue,
+        connection,
+        ..
+    } = effects;
 
     match produced {
         Ok(Produced::Rows(result, bytes, retained)) => Execution {
@@ -1765,7 +1870,8 @@ fn run_sql(
             result_size: bytes,
             result: Some(result),
             retained_bytes: retained,
-            catalogue: effects,
+            catalogue,
+            connection,
         },
         Ok(Produced::Affected(rows)) => Execution {
             status: StatementStatus::Finished,
@@ -1777,7 +1883,8 @@ fn run_sql(
             result_size: -1,
             result: None,
             retained_bytes: 0,
-            catalogue: effects,
+            catalogue,
+            connection,
         },
         Err(failure) => Execution {
             status: StatementStatus::Failed,
@@ -1791,25 +1898,84 @@ fn run_sql(
             // Nothing a failed submission asked of a catalogue happened: it
             // stopped at the statement that failed.
             catalogue: Vec::new(),
+            // What its statements did to their CONNECTION before it failed is
+            // reported, because the engine really did it: a temporary relation
+            // an earlier statement of the text created is there, and a lock it
+            // took is held.
+            connection,
         },
+    }
+}
+
+/// What the statements of ONE run do beyond the engine: the connection they run
+/// on, the temporary relations it holds as they see them, and what they ask of
+/// the catalogue and of their connection for the state store to carry out.
+struct RunEffects<'a> {
+    /// The connection the statements run on.
+    scope: &'a ConnectionScope,
+    /// The temporary relations that connection holds, which a statement that
+    /// creates one adds to so the next statement resolves it.
+    held: &'a mut BTreeSet<String>,
+    /// What the statements ask of the WAREHOUSE's catalogue of databases.
+    catalogue: Vec<CatalogueEffect>,
+    /// What they did to their connection.
+    connection: ConnectionOutcome,
+}
+
+impl RunEffects<'_> {
+    /// The temporary relations the connection holds, as the next statement read
+    /// resolves them.
+    fn temp(&self) -> TempRelations<'_> {
+        TempRelations::new(self.scope.prefix(), self.held)
+    }
+
+    /// Record a temporary relation a statement just created on this connection.
+    fn created_temp(&mut self, relation: String) {
+        let relation = relation.to_ascii_lowercase();
+        self.held.insert(relation.clone());
+        self.connection.temp_created.push(relation);
+    }
+
+    /// How many locks the statements of THIS run have taken so far, which count
+    /// against what one connection may hold beside the ones it already held.
+    fn acquired(&self) -> usize {
+        self.connection
+            .locks
+            .iter()
+            .map(|effect| match effect {
+                LockEffect::Acquire { tables, .. } => tables.len(),
+                LockEffect::ReleaseAll => 0,
+            })
+            .sum()
     }
 }
 
 /// Run ONE statement of a submission: read it as Redshift SQL and do what that
 /// reads as — run it on the engine, change the database's own catalogue of
-/// schemas, take a lock, or record what it asks of the warehouse's catalogue of
-/// databases in `effects` for the state store to carry out.
+/// schemas, take a lock, create a temporary relation of its connection, or
+/// record what it asks of the warehouse's catalogue of databases in `effects`
+/// for the state store to carry out.
 fn run_statement(
     database: &mut Database,
     sql: &str,
     parameters: &[SqlParameter],
     binding: Binding,
     budget: &mut Retention,
-    effects: &mut Vec<CatalogueEffect>,
+    effects: &mut RunEffects<'_>,
 ) -> Result<Produced, ExecutionFailure> {
-    match redshift_sql::translate(sql, &database.schemas) {
+    let translated = redshift_sql::translate(sql, &database.schemas, &effects.temp());
+    match translated {
         redshift_sql::Translated::Run(text) => {
             execute_once(&database.connection, &text, parameters, binding, budget)
+        }
+        // A temporary relation belongs to the connection that created it, so it
+        // is recorded on that connection: a later statement of the same
+        // connection resolves the name, and a statement on any other connection
+        // does not reach the relation at all.
+        redshift_sql::Translated::RunCreatingTemp { sql: text, relation } => {
+            let produced = execute_once(&database.connection, &text, parameters, binding, budget)?;
+            effects.created_temp(relation);
+            Ok(produced)
         }
         redshift_sql::Translated::CreateSchema {
             name,
@@ -1820,9 +1986,37 @@ fn run_statement(
             if_exists,
             cascade,
         } => drop_schema_on(database, &names, if_exists, cascade),
-        redshift_sql::Translated::Lock { tables } => lock_tables(&database.connection, &tables),
+        redshift_sql::Translated::Lock { tables, mode } => {
+            // What ONE connection may hold is bounded, as every other thing a
+            // caller can multiply is: a statement that would take its
+            // connection past that is refused rather than reported as having
+            // taken a lock nothing then holds.
+            let would_hold = effects
+                .scope
+                .locks_held()
+                .saturating_add(effects.acquired())
+                .saturating_add(tables.len());
+            if would_hold > MAX_LOCKS_PER_CONNECTION {
+                return Err(bound_reached(format!(
+                    "this connection may hold at most {MAX_LOCKS_PER_CONNECTION} table locks at \
+                     once, and this statement would make it {would_hold}"
+                )));
+            }
+            let produced = lock_tables(&database.connection, &tables)?;
+            // A lock is held for the TRANSACTION it was taken in: one taken
+            // outside a transaction is released as soon as the statement that
+            // took it ends, so only a lock taken inside one is held against the
+            // other connections.
+            if !database.connection.is_autocommit() {
+                effects
+                    .connection
+                    .locks
+                    .push(LockEffect::Acquire { tables, mode });
+            }
+            Ok(produced)
+        }
         redshift_sql::Translated::CreateDatabase { name } => {
-            effects.push(CatalogueEffect::CreateDatabase(name));
+            effects.catalogue.push(CatalogueEffect::CreateDatabase(name));
             Ok(Produced::Affected(0))
         }
         // "BEGIN … There is no effect on any transaction that is already in
@@ -1836,9 +2030,55 @@ fn run_statement(
                 return Ok(Produced::Affected(0));
             }
             database.connection.execute_batch(control.as_sql())?;
+            // The transaction is over, and the locks it held are the
+            // transaction's: "the locks are held until the transaction ends".
+            if !control.opens() {
+                effects.connection.locks.push(LockEffect::ReleaseAll);
+            }
             Ok(Produced::Affected(0))
         }
     }
+}
+
+/// Drop the temporary relations of the connections this service no longer
+/// holds, which the execution given this scope is what can reach: a connection
+/// that has closed holds nothing, and its relations are nobody's to resolve.
+fn drop_retired_relations(database: &Database, scope: &ConnectionScope) {
+    for relation in scope.retired() {
+        drop_temp_relation(database, relation);
+    }
+}
+
+/// Close the connection a submission ran on, when that connection does not
+/// outlive the submission.
+///
+/// A statement submitted without a `SessionId` runs on a connection opened for
+/// it, so what that connection held goes away with it: the temporary relations
+/// it created are dropped, and the locks it took are released with the
+/// connection rather than recorded against it.
+fn close_connection(database: &Database, scope: &ConnectionScope, executions: &mut [Execution]) {
+    if scope.is_session() {
+        return;
+    }
+    for execution in executions {
+        for relation in std::mem::take(&mut execution.connection.temp_created) {
+            drop_temp_relation(database, &scope.relations().engine_name(&relation));
+        }
+        execution.connection.locks.clear();
+    }
+}
+
+/// Drop one temporary relation by its ENGINE name, whichever kind of relation it
+/// is. Best effort: a relation that is not there is one the connection no longer
+/// holds either way.
+fn drop_temp_relation(database: &Database, engine_name: &str) {
+    let quoted = engine_name.replace('"', "\"\"");
+    let _dropped = database
+        .connection
+        .execute_batch(&format!("DROP VIEW IF EXISTS \"{quoted}\""));
+    let _dropped = database
+        .connection
+        .execute_batch(&format!("DROP TABLE IF EXISTS \"{quoted}\""));
 }
 
 /// `CREATE SCHEMA`: add a schema to the database's own catalogue.
@@ -2050,11 +2290,9 @@ fn execute_once(
 
     let mut rows = statement.query(bound.as_slice())?;
     let mut records: Vec<Vec<Field>> = Vec::new();
-    // `reported` is the engine's own value size, which is what `ResultSize`
-    // means; `retained` is what holding the result actually costs this process,
-    // which is what the bound has to measure.
+    // The result's own byte size: what `ResultSize` means, and what the
+    // retention budget is counted in.
     let mut reported: usize = 0;
-    let mut retained: usize = 0;
     let mut cells: usize = 0;
     let mut observed: Vec<Option<ColumnType>> = declared.clone();
     while let Some(row) = rows.next()? {
@@ -2079,13 +2317,11 @@ fn execute_once(
         // its budget is measured and then refused rather than allocated — one
         // very large value cannot be materialised by checking after the fact.
         let mut row_reported: usize = 0;
-        let mut row_retained: usize = RETAINED_ROW_OVERHEAD;
         for index in 0..columns.len() {
             let value = row.get_ref(index)?;
             row_reported = row_reported.saturating_add(value_bytes(value));
-            row_retained = row_retained.saturating_add(retained_bytes(value));
         }
-        if retained.saturating_add(row_retained) > budget.bytes_left {
+        if reported.saturating_add(row_reported) > budget.bytes_left {
             return Err(bound_reached(format!(
                 "the result set exceeded the {} bytes this submission may still retain, of this \
                  emulator's bound of {MAX_RESULT_BYTES}",
@@ -2093,7 +2329,6 @@ fn execute_once(
             )));
         }
         reported = reported.saturating_add(row_reported);
-        retained += row_retained;
         cells += columns.len();
 
         let mut record = Vec::with_capacity(columns.len());
@@ -2121,7 +2356,7 @@ fn execute_once(
     // The result is kept, so its cost is charged to the submission — only here,
     // on the path that returns it: a statement that failed above dropped every
     // row it had materialised and so spends nothing.
-    budget.spend(records.len(), cells, retained);
+    budget.spend(records.len(), cells, reported);
 
     Ok(Produced::Rows(
         ResultSet {
@@ -2129,7 +2364,7 @@ fn execute_once(
             rows: records,
         },
         i64::try_from(reported).unwrap_or(i64::MAX),
-        retained,
+        reported,
     ))
 }
 
@@ -2148,20 +2383,6 @@ fn value_bytes(value: rusqlite::types::ValueRef<'_>) -> usize {
         ValueRef::Real(_) => std::mem::size_of::<f64>(),
         ValueRef::Text(bytes) | ValueRef::Blob(bytes) => bytes.len(),
     }
-}
-
-/// What retaining one value actually costs this process: the `Field` union it is
-/// stored in plus its owned payload, with text charged at its lossy worst case.
-/// A NULL or integer cell is never free, so a wide projection of constants is
-/// charged for the memory it really takes.
-fn retained_bytes(value: rusqlite::types::ValueRef<'_>) -> usize {
-    use rusqlite::types::ValueRef;
-    let payload = match value {
-        ValueRef::Null | ValueRef::Integer(_) | ValueRef::Real(_) => 0,
-        ValueRef::Text(bytes) => bytes.len().saturating_mul(LOSSY_TEXT_EXPANSION),
-        ValueRef::Blob(bytes) => bytes.len(),
-    };
-    RETAINED_CELL_OVERHEAD.saturating_add(payload)
 }
 
 /// Map one engine value onto the modelled `Field` union.
@@ -2591,8 +2812,45 @@ pub const CURSOR_COLUMNS: &str = "columns";
 /// Cursor kind naming an offset into the databases of one data warehouse.
 pub const CURSOR_DATABASES: &str = "databases";
 
-/// Encode an opaque continuation token for `kind` at `position`.
+/// Where the page of a statement's result that starts at `offset` ends.
 ///
+/// A page carries at most [`RESULT_PAGE_ROWS`] rows and at most
+/// [`MAX_RESULT_PAGE_BYTES`] of result data, whichever comes first, and always
+/// at least ONE row: the service's documented ceiling is on what one result
+/// read answers with, so a result set larger than it is served across pages
+/// rather than refused, and a single row larger than one page is still served.
+///
+/// Both readers of a statement's result page by this, so the JSON and the CSV
+/// form break their pages at the same row.
+pub fn result_page_end(rows: &[Vec<Field>], offset: usize) -> usize {
+    let mut bytes: usize = 0;
+    let mut end = offset;
+    while end < rows.len() && end.saturating_sub(offset) < RESULT_PAGE_ROWS {
+        let row: usize = rows[end].iter().map(field_bytes).sum();
+        if end > offset && bytes.saturating_add(row) > MAX_RESULT_PAGE_BYTES {
+            break;
+        }
+        bytes = bytes.saturating_add(row);
+        end += 1;
+    }
+    end
+}
+
+/// The bytes of RESULT DATA one retained field holds: the value itself, which
+/// is what [`value_bytes`] charges for the same value as the engine produced
+/// it.
+fn field_bytes(field: &Field) -> usize {
+    match field {
+        Field::isNull(_) => 0,
+        Field::booleanValue(_) => std::mem::size_of::<bool>(),
+        Field::longValue(_) => std::mem::size_of::<i64>(),
+        Field::doubleValue(_) => std::mem::size_of::<f64>(),
+        Field::stringValue(value) => value.len(),
+        Field::blobValue(value) => value.len(),
+    }
+}
+
+/// Encode an opaque continuation token for `kind` at `position`.///
 /// Hex-encoded so a client cannot read a meaning into it and depend on the
 /// encoding; the kind is inside the token so a token minted for one operation
 /// is rejected by the other.
@@ -2986,6 +3244,10 @@ pub struct ComAmazonawsRedshiftdataRedshiftdataState {
     /// ([`statement_events::publish_pending`]), so it holds only what has not
     /// been published yet.
     statement_events: Vec<statement_events::StatementEvent>,
+    /// What the CONNECTIONS of this service's statements hold: each live
+    /// session's own temporary relations, and the locks the sessions hold (see
+    /// [`connections`]).
+    connections: Connections,
 }
 
 impl ComAmazonawsRedshiftdataRedshiftdataState {
@@ -3029,6 +3291,10 @@ impl ComAmazonawsRedshiftdataRedshiftdataState {
         for statement in self.statements.values_mut() {
             statement.advance(now);
         }
+        // A session the clock has closed can no longer run SQL statements, so
+        // its connection is closed and holds none of its locks: a release the
+        // clock owes at the same instant whether or not anybody called.
+        self.release_closed_connections();
     }
 
     /// How many submissions are running or queued: those whose execution has not
@@ -3699,6 +3965,19 @@ impl ComAmazonawsRedshiftdataRedshiftdataState {
         // before its outcome is materialised, and the statement reports what the
         // catalogue answered.
         let executions = self.apply_catalogue(&target, executions);
+        // And what its statements did to their CONNECTION: the temporary
+        // relations they created are the connection's from here on, and the
+        // locks they took are held against the other connections — both
+        // recorded before the outcome is materialised, so no caller reads the
+        // statement as FINISHED before what it built is reachable.
+        let mut created: Vec<String> = Vec::new();
+        let mut locks: Vec<LockEffect> = Vec::new();
+        for execution in &executions {
+            created.extend(execution.connection.temp_created.iter().cloned());
+            locks.extend(execution.connection.locks.iter().cloned());
+        }
+        self.hold_temp_relations(id, &created);
+        self.apply_lock_effects(id, &locks);
         let Some(statement) = self.statements.get_mut(id) else {
             return;
         };
@@ -3962,6 +4241,9 @@ fn batch_outcome(executions: &[Execution]) -> Execution {
         // A batch does nothing of its own to a catalogue either: each statement
         // of it carries its own effect, and each one is applied for itself.
         catalogue: Vec::new(),
+        // Nor to the connection they all ran on: each statement of the batch
+        // reports what it did to that connection.
+        connection: ConnectionOutcome::default(),
     }
 }
 
@@ -4026,421 +4308,6 @@ pub fn non_empty(value: Option<&String>) -> Option<String> {
 /// `^[a-z0-9]{8}(-[a-z0-9]{4}){3}-[a-z0-9]{12}(:\d{0,2})?$` accepts.
 pub fn new_uuid() -> String {
     uuid::Uuid::new_v4().as_hyphenated().to_string()
-}
-
-// ---------------------------------------------------------------------------
-// Warehouse capture: taking and restoring a snapshot of a warehouse's databases
-// ---------------------------------------------------------------------------
-
-/// How many pages the engine's own copy moves per step.
-///
-/// Small deliberately: the deadline is checked BETWEEN steps, so the step size is
-/// how often a copy can be given up on. A page is 4 KiB, so a step is a megabyte
-/// of copying — short enough to be a cancellation point, long enough not to pay
-/// the per-step cost per page.
-const COPY_PAGES_PER_STEP: i32 = 256;
-
-/// Wall-clock bound on ONE whole warehouse copy, from the moment the blocking task
-/// starts: it bounds both the wait for a database a statement is running on and the
-/// copying itself, so a copy can never run unbounded on a blocking-pool thread.
-/// Generous beside [`MAX_ENGINE_DEADLINE`], which is how long a statement can be
-/// holding a database this copy needs.
-pub const COPY_TIMEOUT: Duration = MAX_ENGINE_DEADLINE.saturating_add(Duration::from_secs(8));
-
-/// How long a REQUEST waits for a copy: [`COPY_TIMEOUT`] plus a grace period, so
-/// what ends a copy is its own deadline and not the request's patience.
-pub const COPY_REQUEST_BUDGET: Duration = COPY_TIMEOUT.saturating_add(Duration::from_secs(3));
-
-/// How long the copy sleeps between attempts on a database another statement is
-/// running on. It runs on a blocking-pool thread, never on an async worker, so
-/// sleeping here blocks nothing but this copy.
-const COPY_LOCK_POLL: Duration = Duration::from_millis(10);
-
-/// One database of a capture: its name in the warehouse, and the copy itself.
-#[derive(Debug)]
-struct CapturedDatabase {
-    /// The `Database` name the warehouse holds this database under.
-    database: String,
-    /// The copy, a database of its own — so it is unaffected by later statements
-    /// against the warehouse it was copied from, and by that warehouse being
-    /// deleted.
-    handle: DatabaseHandle,
-}
-
-/// The databases of one warehouse as they stood at one instant.
-///
-/// Redshift Serverless' `CreateSnapshot` takes one ("creates a snapshot of all
-/// databases in a namespace") and its `RestoreFromSnapshot` writes it back over a
-/// workgroup's databases; Amazon Redshift's `CreateClusterSnapshot` takes one of a
-/// provisioned cluster ("a snapshot contains a copy of the cluster data as of this
-/// exact time") and `RestoreFromClusterSnapshot` writes it into the cluster it
-/// creates. The copy is taken HERE, in the crate that owns the SQL
-/// engine the databases live in, and handed to the control plane as an opaque
-/// value: nothing outside this module can read or alter a captured database.
-///
-/// Its memory is bounded by the same `max_page_count` as the databases it copies
-/// (see [`pages`](Self::pages), which the holder uses to bound how much it retains).
-#[derive(Debug, Default)]
-pub struct WarehouseCapture {
-    /// One copy per captured database, in database-name order.
-    databases: Vec<CapturedDatabase>,
-    /// The engine pages the copies occupy, as the engine counted them.
-    pages: i64,
-}
-
-impl WarehouseCapture {
-    /// The names of the databases this capture holds, in name order.
-    pub fn database_names(&self) -> Vec<&str> {
-        self.databases
-            .iter()
-            .map(|captured| captured.database.as_str())
-            .collect()
-    }
-
-    /// How many engine pages the capture occupies — the size the engine itself
-    /// reports for the copies, in the unit `max_page_count` bounds a database in.
-    /// A holder of many captures bounds what it retains with this.
-    pub fn pages(&self) -> i64 {
-        self.pages
-    }
-
-    /// True when the warehouse held no database to copy, so the capture carries no
-    /// data. A namespace nothing ran a statement against captures empty.
-    pub fn is_empty(&self) -> bool {
-        self.databases.is_empty()
-    }
-}
-
-/// Why a warehouse could not be captured or restored.
-#[derive(Debug)]
-pub enum WarehouseUnavailable {
-    /// The engine given holds no Data API store, so there are no databases to copy.
-    StoreUnreachable,
-    /// The SQL engine could not open, confine or copy a database.
-    Engine(String),
-    /// The restore would need more than [`MAX_OPEN_DATABASES`] databases open.
-    TooManyOpen(usize),
-    /// The copy did not finish within [`COPY_TIMEOUT`] — it was given up on rather
-    /// than left running on a blocking-pool thread.
-    TimedOut(Duration),
-}
-
-impl From<NoDatabase> for WarehouseUnavailable {
-    fn from(no_database: NoDatabase) -> Self {
-        match no_database {
-            NoDatabase::EngineUnavailable(message) => Self::Engine(message),
-            NoDatabase::TooManyOpen(open) => Self::TooManyOpen(open),
-        }
-    }
-}
-
-impl std::fmt::Display for WarehouseUnavailable {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::StoreUnreachable => write!(f, "the redshift-data store is unreachable"),
-            Self::Engine(message) => write!(f, "the SQL engine could not copy a database: {message}"),
-            Self::TooManyOpen(open) => write!(
-                f,
-                "this emulator holds the most databases it can open at once ({open})"
-            ),
-            Self::TimedOut(after) => write!(
-                f,
-                "the copy was given up on after {} seconds",
-                after.as_secs()
-            ),
-        }
-    }
-}
-
-impl std::error::Error for WarehouseUnavailable {}
-
-/// Copy the databases reachable through `targets` into a capture.
-///
-/// BLOCKING, deliberately, exactly as [`run_on`] is: it drives the SQL engine, so a
-/// caller must put it on a blocking pool (`tokio::task::spawn_blocking`) and bound
-/// the wait for it ([`COPY_REQUEST_BUDGET`]) rather than run it on an async worker.
-/// Its own deadline is [`COPY_TIMEOUT`], checked while waiting for a database and
-/// between copy steps, so it always gives up before the request does.
-///
-/// The union of those targets' databases, because this emulator's Data API
-/// addresses a database by the warehouse a statement named: a Redshift Serverless
-/// namespace's data is reached through the workgroups attached to it, and a
-/// provisioned cluster's through the cluster itself — so each control plane hands
-/// over the targets its own resource is reached through. A database name two of
-/// them both hold is captured once, from the first target in the order given.
-///
-/// The state lock is released before any database is touched — see
-/// [`ComAmazonawsRedshiftdataRedshiftdataState::warehouse_handles`].
-pub fn capture_warehouse<Eng: Send + Sync + 'static>(
-    engine: &Eng,
-    targets: &[ConnectionTarget],
-) -> Result<WarehouseCapture, WarehouseUnavailable> {
-    let Some(state) = service_state(engine) else {
-        return Err(WarehouseUnavailable::StoreUnreachable);
-    };
-    let deadline = Instant::now() + COPY_TIMEOUT;
-
-    let sources: Vec<(String, DatabaseHandle)> = {
-        let state = state.lock();
-        let mut sources: Vec<(String, DatabaseHandle)> = Vec::new();
-        for target in targets {
-            for (database, handle) in state.warehouse_handles(target) {
-                if !sources.iter().any(|(held, _)| held == &database) {
-                    sources.push((database, handle));
-                }
-            }
-        }
-        sources
-    };
-
-    let mut capture = WarehouseCapture::default();
-    for (database, source) in sources {
-        // Each copy is opened through `Database::open`, so a captured database
-        // carries exactly the confinement a live one does.
-        let mut copy = Database::open()
-            .map_err(|error| WarehouseUnavailable::Engine(scrub_paths(&error.to_string())))?;
-        let locked = lock_database_until(&source, deadline)
-            .ok_or(WarehouseUnavailable::TimedOut(COPY_TIMEOUT))?;
-        let pages = copy_database(&locked, &mut copy, deadline)?;
-        drop(locked);
-        capture.pages += pages;
-        capture.databases.push(CapturedDatabase {
-            database,
-            handle: std::sync::Arc::new(Mutex::new(copy)),
-        });
-    }
-    Ok(capture)
-}
-
-/// Write `capture` over the databases of `target`, and report how many
-/// databases it materialised.
-///
-/// BLOCKING and bounded exactly as [`capture_warehouse`] is: a blocking pool and
-/// [`COPY_REQUEST_BUDGET`] on the caller's side, [`COPY_TIMEOUT`] on its own.
-///
-/// The warehouse ends up holding exactly the databases the capture holds, with
-/// exactly their contents: a restore replaces a warehouse's contents rather than
-/// merging into them, so a database the capture does not name is not in the
-/// restored warehouse either. A statement submitted after this reads the restored
-/// data.
-///
-/// Nothing the warehouse serves changes until every copy has been made: the
-/// capture is copied into FRESH databases first and they replace the warehouse's
-/// in one step, so a restore that cannot be completed leaves the warehouse exactly
-/// as it found it.
-pub fn restore_warehouse<Eng: Send + Sync + 'static>(
-    engine: &Eng,
-    capture: &WarehouseCapture,
-    target: &ConnectionTarget,
-) -> Result<usize, WarehouseUnavailable> {
-    let Some(state) = service_state(engine) else {
-        return Err(WarehouseUnavailable::StoreUnreachable);
-    };
-    let deadline = Instant::now() + COPY_TIMEOUT;
-
-    // Asked before anything is copied: a restore the emulator has no room for is
-    // refused while the warehouse is still untouched.
-    state
-        .lock()
-        .room_for_databases(target, capture.databases.len())?;
-
-    // With the state lock released: one fresh confined database per captured
-    // database, with the copy already in it.
-    let mut restored: Vec<(String, Database)> = Vec::with_capacity(capture.databases.len());
-    for captured in &capture.databases {
-        let mut fresh = Database::open()
-            .map_err(|error| WarehouseUnavailable::Engine(scrub_paths(&error.to_string())))?;
-        // Nothing but a restore ever locks a CAPTURED database, so this wait is
-        // bounded for the same reason the others are rather than because it is
-        // expected to be contended.
-        let source = lock_database_until(&captured.handle, deadline)
-            .ok_or(WarehouseUnavailable::TimedOut(COPY_TIMEOUT))?;
-        copy_database(&source, &mut fresh, deadline)?;
-        drop(source);
-        restored.push((captured.database.clone(), fresh));
-    }
-
-    // The swap, under the state lock and infallible.
-    let count = restored.len();
-    state.lock().install_databases(target, restored);
-    Ok(count)
-}
-
-/// Why a bounded copy of a warehouse's databases did not happen.
-///
-/// The copy is blocking engine work, so a caller runs it on the blocking pool
-/// under a budget ([`capture_warehouse_bounded`], [`restore_warehouse_bounded`])
-/// and it can fail three ways: the copy itself could not be made, the request gave
-/// up waiting for it, or the task carrying it did not return.
-///
-/// It lives HERE, beside the seam and the budget, so every control plane that
-/// snapshots a warehouse through this engine reports the same three outcomes
-/// rather than keeping its own copy of them.
-#[derive(Debug)]
-pub enum CopyFailure {
-    /// The databases could not be copied.
-    Unavailable(WarehouseUnavailable),
-    /// The request waited [`COPY_REQUEST_BUDGET`] and gave up, so the copy is
-    /// abandoned rather than reported as done.
-    GaveUp(Duration),
-    /// The blocking task carrying the copy did not return a result.
-    Lost,
-}
-
-impl CopyFailure {
-    /// True when the failure is this emulator being at its capacity for open
-    /// databases — the one of these a control plane reports as a quota error
-    /// rather than as a server fault.
-    pub fn is_capacity(&self) -> bool {
-        matches!(self, Self::Unavailable(WarehouseUnavailable::TooManyOpen(_)))
-    }
-}
-
-impl std::fmt::Display for CopyFailure {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Unavailable(unavailable) => write!(f, "{unavailable}"),
-            Self::GaveUp(budget) => write!(
-                f,
-                "the copy did not finish within {} seconds and was abandoned",
-                budget.as_secs()
-            ),
-            Self::Lost => write!(f, "the copy did not return a result"),
-        }
-    }
-}
-
-impl std::error::Error for CopyFailure {}
-
-/// [`capture_warehouse`] run the way a REQUEST must run it: on the blocking pool,
-/// under [`COPY_REQUEST_BUDGET`].
-///
-/// Copying databases drives the SQL engine, so it may never run on the async
-/// worker the request is served on, and the wait for it has to be bounded — the
-/// budget is longer than the deadline the copy holds itself to, so what ends a
-/// copy is its own deadline and not the request's patience. Call it with NO state
-/// guard held, so one caller's copy serialises nothing else.
-pub async fn capture_warehouse_bounded<Eng: Send + Sync + 'static>(
-    engine: &std::sync::Arc<Eng>,
-    targets: Vec<ConnectionTarget>,
-) -> Result<WarehouseCapture, CopyFailure> {
-    let engine = std::sync::Arc::clone(engine);
-    collect(
-        tokio::time::timeout(
-            COPY_REQUEST_BUDGET,
-            tokio::task::spawn_blocking(move || capture_warehouse(&*engine, &targets)),
-        )
-        .await,
-    )
-}
-
-/// [`restore_warehouse`] run the way a REQUEST must run it: bounded and off the
-/// async worker exactly as [`capture_warehouse_bounded`] is, and for the same
-/// reasons.
-pub async fn restore_warehouse_bounded<Eng: Send + Sync + 'static>(
-    engine: &std::sync::Arc<Eng>,
-    capture: std::sync::Arc<WarehouseCapture>,
-    target: ConnectionTarget,
-) -> Result<usize, CopyFailure> {
-    let engine = std::sync::Arc::clone(engine);
-    collect(
-        tokio::time::timeout(
-            COPY_REQUEST_BUDGET,
-            tokio::task::spawn_blocking(move || restore_warehouse(&*engine, &capture, &target)),
-        )
-        .await,
-    )
-}
-
-/// The outcome of one bounded blocking copy: the copy's own answer, or why there
-/// is none.
-type JoinedCopy<T> = Result<
-    Result<Result<T, WarehouseUnavailable>, tokio::task::JoinError>,
-    tokio::time::error::Elapsed,
->;
-
-/// Read one bounded copy's three failure modes off the join result.
-fn collect<T>(joined: JoinedCopy<T>) -> Result<T, CopyFailure> {
-    match joined {
-        Ok(Ok(Ok(done))) => Ok(done),
-        Ok(Ok(Err(unavailable))) => Err(CopyFailure::Unavailable(unavailable)),
-        Ok(Err(_panicked)) => Err(CopyFailure::Lost),
-        Err(_elapsed) => Err(CopyFailure::GaveUp(COPY_REQUEST_BUDGET)),
-    }
-}
-
-/// Lock a database, giving up at `deadline` rather than waiting for a statement
-/// that may be running on it for as long as [`MAX_ENGINE_DEADLINE`] allows.
-///
-/// Polls rather than blocking: a `Mutex` has no timed acquire, and a copy must have
-/// a point at which it gives up. The sleeps run on a blocking-pool thread.
-fn lock_database_until(
-    handle: &DatabaseHandle,
-    deadline: Instant,
-) -> Option<std::sync::MutexGuard<'_, Database>> {
-    loop {
-        match handle.try_lock() {
-            Ok(guard) => return Some(guard),
-            // A database whose statement panicked is still a database: the poisoning
-            // says nothing about the pages the engine committed.
-            Err(std::sync::TryLockError::Poisoned(poisoned)) => {
-                return Some(poisoned.into_inner())
-            }
-            Err(std::sync::TryLockError::WouldBlock) => {
-                if Instant::now() >= deadline {
-                    return None;
-                }
-                std::thread::sleep(COPY_LOCK_POLL);
-            }
-        }
-    }
-}
-
-/// Copy `source` over `destination` with the engine's own page-level copy, and
-/// report how many pages it moved.
-///
-/// `sqlite3_backup_*` between two OPEN connections, so no path is named and no
-/// file is opened — unlike `VACUUM INTO`, which the authorizer denies. It also
-/// runs beneath SQL, so it copies every table, index, view and trigger of the
-/// source exactly, with no dialect or quoting of its own to get wrong.
-///
-/// Driven one step at a time rather than through `run_to_completion`, so `deadline`
-/// is checked between steps: that is the cancellation point a bounded request
-/// needs. `max_page_count` is a property of the destination CONNECTION and not of
-/// the pages copied into it, so the destination keeps the bound [`Database::open`]
-/// installed and the copy cannot exceed it — the engine answers `SQLITE_FULL` if a
-/// source ever did.
-fn copy_database(
-    source: &Database,
-    destination: &mut Database,
-    deadline: Instant,
-) -> Result<i64, WarehouseUnavailable> {
-    let engine_error =
-        |error: rusqlite::Error| WarehouseUnavailable::Engine(scrub_paths(&error.to_string()));
-    let backup = rusqlite::backup::Backup::new(&source.connection, &mut destination.connection)
-        .map_err(engine_error)?;
-    loop {
-        if Instant::now() >= deadline {
-            return Err(WarehouseUnavailable::TimedOut(COPY_TIMEOUT));
-        }
-        match backup.step(COPY_PAGES_PER_STEP).map_err(engine_error)? {
-            rusqlite::backup::StepResult::Done => break,
-            rusqlite::backup::StepResult::More => {}
-            // Neither end is shared with anything but this copy, which holds both
-            // locks, so a busy or locked step is the engine reporting a state this
-            // copy cannot resolve by waiting.
-            busy => {
-                return Err(WarehouseUnavailable::Engine(format!(
-                    "the engine answered {busy:?} while copying a database"
-                )))
-            }
-        }
-    }
-    // The schemas the source holds are the source's catalogue, and the copy is
-    // the same database: a captured warehouse restores the schemas its tables
-    // are held under, not only the tables.
-    destination.schemas = source.schemas.clone();
-    Ok(i64::from(backup.progress().pagecount.max(0)))
 }
 
 /// This service's store in the shared engine: call it with a handler's `&*self.engine`.
