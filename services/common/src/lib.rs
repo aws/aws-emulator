@@ -558,6 +558,9 @@ pub mod relayed_refusal;
 /// The media type a service announces on a response, where the recorded wire differs from
 /// the one its protocol trait implies.
 pub mod response_media_type;
+/// The ONE plumbing for a service that answers a framework-rendered refusal in an envelope
+/// only the request and the whole rendered response can decide.
+pub mod restated_refusal;
 pub mod rfc3339;
 pub mod rpc_target;
 /// The ONE reading of what an Amazon S3 BUCKET NAME has to be, for every service that

@@ -88,6 +88,10 @@
 #[allow(unused_imports)]
 use super::types::*;
 
+/// `ExpressionType`'s member path as a refusal states it — the lowerCamel spelling of the
+/// member the validating walk reports this input's `ExpressionType` at.
+const EXPRESSION_TYPE_MEMBER_PATH: &str = "expressionType";
+
 // `#[operation_error]` below expands to an invocation of the LOCAL declarative
 // `smithy!` macro, which this line is what emits into the module. Without it the
 // expansion fails with `cannot find macro 'smithy' in this scope` and the
@@ -169,12 +173,20 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             ))
         })?;
 
-        if !crate::state::EXPRESSION_TYPES.contains(&input.expression_type.as_str()) {
+        // `ExpressionType`'s published value set is WIDER than the shipped model's enum
+        // (`crate::service::refusal_wording::PUBLISHED_EXPRESSION_TYPES`), so the admissible
+        // set is checked here as well as at the boundary, and a value outside it is refused
+        // in the one sentence this service states for an enumerated member — the modelled
+        // `ValidationException`, whose text travels in the `Message` member the model
+        // declares.
+        if !crate::service::refusal_wording::PUBLISHED_EXPRESSION_TYPES
+            .contains(&input.expression_type.as_str())
+        {
             return Err(CreateDestinationErrorModeled::ValidationException(
                 ValidationException {
-                    message: Some(format!(
-                        "ExpressionType must be one of {:?}, got {:?}",
-                        crate::state::EXPRESSION_TYPES, input.expression_type
+                    message: Some(crate::service::refusal_wording::enum_value_set_message(
+                        EXPRESSION_TYPE_MEMBER_PATH,
+                        crate::service::refusal_wording::PUBLISHED_EXPRESSION_TYPES,
                     )),
                 },
             )

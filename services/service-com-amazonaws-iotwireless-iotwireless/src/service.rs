@@ -39,6 +39,17 @@
 //! table, and the default error renderers — lives in the generated `ServiceDefinition`
 //! and is reached, not edited, through the one `definition` method below. You
 //! do not write it; editing the entry would let this file drift from the model.
+//!
+//! Two of those seams are taken here, and they are two halves of one answer.
+//! `override_refusal` states a framework-level refusal in AWS's constraint envelope
+//! ([`refusal_wording`]) and notes, for the request being served, the words the stack that
+//! withholds the rejected value states; `override_operation` serves every routable request
+//! through `service_common::restated_refusal`'s wrapper, which answers that refusal in the
+//! envelope of the stack fronting the operation it addressed ([`refusal_envelope`]). Routing,
+//! status and the error code all stay with the framework.
+
+pub mod refusal_envelope;
+pub mod refusal_wording;
 
 use smithy_server_runtime::{
     http, ErasedOperation, Refusal, Refused, Service,
@@ -87,26 +98,36 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
         &self,
         req: &aws_smithy_runtime_api::http::Request,
     ) -> Option<&dyn ErasedOperation> {
-        // Return `Some(op)` to serve a request the model's routing key cannot name
-        // correctly; `None` (the default) lets the generated routing table resolve
-        // it. `req` is the whole request, so a decision that depends on the body —
-        // the `Action` form field on a query protocol, say — is reachable here.
-        let _ = req;
-        None
+        // Every request the generated routing table can serve is served through the shared
+        // wrapper (`service_common::restated_refusal`), which delegates to that same table
+        // entry and then answers a refusal the framework rendered for it in the envelope of
+        // the stack fronting the operation it addressed (see [`refusal_envelope`]). The
+        // routing stays the model's: a request the table cannot serve is declined here, so
+        // the framework answers it as the unroutable request it is.
+        service_common::restated_refusal::routes(&self.entry, req)
+            .then_some(&refusal_envelope::REFUSAL_ENVELOPE as _)
     }
 
     fn override_refusal(&self, refusal: &Refusal) -> Option<Refused> {
-        // The centralized walk calls this on a framework-level refusal (an absent
-        // required member, or a value outside a declared bound) to let this
-        // service reword it. Returning `None` keeps the framework's default
-        // wording. To state a refusal the way the emulated service states it,
-        // replace this body with a `match refusal { .. }` that returns
-        // `Some(Refused { code, message })` for the cases you reword and `None`
-        // for the rest. Replace BOTH the code and the message: a client branches
-        // on the code, so a message without its matching code is worse than
-        // leaving both alone.
-        let _ = refusal;
-        None
+        // The centralized walk calls this on a framework-level refusal (an absent required
+        // member, or a value outside a declared bound) to let this service reword it.
+        //
+        // This service states such a refusal in AWS's constraint envelope, of which only the
+        // words are chosen here: [`refusal_wording`] composes the ONE refusal both ways —
+        // with the rejected value quoted and with that half withheld — because which of the
+        // two a caller is answered with is a property of the stack fronting the refused
+        // operation, and this seam is handed the violations alone. The quoting wording is
+        // returned through the seam, which is the body the multicast stack answers; the other
+        // is recorded for the request being served
+        // (`service_common::restated_refusal::note_refusal`) and the wrapper above answers it
+        // in the member the model declares.
+        //
+        // The CODE is restated alongside the message rather than left behind: a client
+        // branches on the code, and `ValidationException` is both the code the framework's
+        // renderer picks for a constraint refusal and the shape this model declares for one.
+        let worded = refusal_wording::wordings(refusal)?;
+        service_common::restated_refusal::note_refusal(&worded.withholding.message);
+        Some(worded.quoting)
     }
 
     fn override_routing_error(

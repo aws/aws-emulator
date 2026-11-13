@@ -21,6 +21,17 @@
 //! its recordings and its model, so the direction is the caller's to state: this module owns
 //! the renaming, not the choice.
 //!
+//! # Restating the text as well as moving it
+//!
+//! A service may also word that class of failure differently from the layer that rendered it
+//! — the same refusal stated in another envelope's words — and be able to say so only once
+//! the rendered response exists, because the seam that chooses a refusal's words
+//! (`Service::override_refusal`) is handed the violations alone. [`restated_detail_member`]
+//! and [`with_restated_detail_member`] are that case: the same body is owned, the same bodies
+//! are left alone, and the words come from the caller. The per-request plumbing that carries
+//! those words from the refusal seam to the rendered response is
+//! [`crate::restated_refusal`].
+//!
 //! # What it does not touch
 //!
 //! The status, the `__type` discriminator, the `x-amzn-errortype` header, every other member
@@ -71,6 +82,35 @@ pub fn renamed_detail_member(
     from: &str,
     to: &str,
 ) -> Option<Vec<u8>> {
+    rewritten_detail_member(body, modelled_shapes, from, to, None)
+}
+
+/// [`renamed_detail_member`], with the text RESTATED as `restated` — for a service that words
+/// that class of failure itself and can only say so once the rendered response exists.
+///
+/// The same body is owned and the same body is left alone: only a modelled error body whose
+/// text the other layer wrote under `from` is rewritten, and a body already carrying `to` (the
+/// text a handler serialized from the model's own shape) keeps its own value, so a
+/// restatement cannot overwrite words the service already chose.
+pub fn restated_detail_member(
+    body: &[u8],
+    modelled_shapes: &[&str],
+    from: &str,
+    to: &str,
+    restated: &str,
+) -> Option<Vec<u8>> {
+    rewritten_detail_member(body, modelled_shapes, from, to, Some(restated))
+}
+
+/// The ONE rewrite behind both entry points above: move the detail member, and write
+/// `restated` in its place where the caller states words of its own.
+fn rewritten_detail_member(
+    body: &[u8],
+    modelled_shapes: &[&str],
+    from: &str,
+    to: &str,
+    restated: Option<&str>,
+) -> Option<Vec<u8>> {
     let mut document: Value = serde_json::from_slice(body).ok()?;
     let object: &mut Map<String, Value> = document.as_object_mut()?;
     let shape = object
@@ -84,7 +124,11 @@ pub fn renamed_detail_member(
         return None;
     }
     let detail = object.remove(from)?;
-    object.entry(to.to_string()).or_insert(detail);
+    let reported = match restated {
+        Some(words) => Value::String(words.to_string()),
+        None => detail,
+    };
+    object.entry(to.to_string()).or_insert(reported);
     serde_json::to_vec(&document).ok()
 }
 
@@ -96,10 +140,39 @@ pub fn renamed_detail_member(
 /// as the renderer wrote them.
 #[must_use]
 pub fn with_renamed_detail_member(
-    mut resp: RtResponse,
+    resp: RtResponse,
     modelled_shapes: &[&str],
     from: &str,
     to: &str,
+) -> RtResponse {
+    with_rewritten_body(resp, |body| {
+        renamed_detail_member(body, modelled_shapes, from, to)
+    })
+}
+
+/// [`with_renamed_detail_member`], with the text RESTATED as `restated`
+/// ([`restated_detail_member`]) — for a service that words that class of failure itself.
+///
+/// The same responses are left untouched, byte for byte, as there.
+#[must_use]
+pub fn with_restated_detail_member(
+    resp: RtResponse,
+    modelled_shapes: &[&str],
+    from: &str,
+    to: &str,
+    restated: &str,
+) -> RtResponse {
+    with_rewritten_body(resp, |body| {
+        restated_detail_member(body, modelled_shapes, from, to, restated)
+    })
+}
+
+/// `resp` with its body replaced by `rewrite`'s, and the advertised length corrected — the
+/// one response-level half of this rule, so a rename and a restatement cannot differ in what
+/// they leave alone.
+fn with_rewritten_body(
+    mut resp: RtResponse,
+    rewrite: impl FnOnce(&[u8]) -> Option<Vec<u8>>,
 ) -> RtResponse {
     if resp.status().as_u16() < FIRST_ERROR_STATUS {
         return resp;
@@ -110,7 +183,7 @@ pub fn with_renamed_detail_member(
         let Some(bytes) = resp.body().bytes() else {
             return resp;
         };
-        match renamed_detail_member(bytes, modelled_shapes, from, to) {
+        match rewrite(bytes) {
             Some(rewritten) => rewritten,
             None => return resp,
         }
@@ -279,5 +352,48 @@ mod tests {
             "the advertised length must describe the rewritten body, got {:?}",
             answered.headers().get("content-length")
         );
+    }
+
+    /// A restatement reports the caller's own words under the member it names, and leaves the
+    /// same bodies alone as a rename does — one that already carries the target member (a
+    /// handler's own words), and one naming a shape the model does not declare.
+    #[test]
+    fn a_restatement_reports_the_callers_own_words() {
+        // (case, the body, the text the answer carries under the target member)
+        for (case, body, expected) in [
+            (
+                "a body the other layer rendered",
+                r#"{"__type":"BadRequestException","message":"the renderer's words"}"#,
+                Some("the service's words"),
+            ),
+            (
+                "a body already carrying the target member",
+                r#"{"__type":"BadRequestException","Message":"a handler's words"}"#,
+                Some("a handler's words"),
+            ),
+            (
+                "a shape the model does not declare",
+                r#"{"__type":"NotImplemented","message":"the renderer's words"}"#,
+                None,
+            ),
+        ] {
+            let resp = RtResponse::new(
+                aws_smithy_runtime_api::http::StatusCode::try_from(400u16).expect("400"),
+                SdkBody::from(body),
+            );
+            let answered = with_restated_detail_member(
+                resp,
+                &SHAPES,
+                "message",
+                "Message",
+                "the service's words",
+            );
+            let object = decoded(answered.body().bytes().expect("bytes").to_vec());
+            assert_eq!(
+                object.get("Message").and_then(Value::as_str),
+                expected,
+                "case {case:?}: expected {expected:?} under the modelled member, got {object:?}"
+            );
+        }
     }
 }

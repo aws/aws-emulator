@@ -28,6 +28,10 @@ hex = { workspace = true }
 # lockfile as a dependency of the vendored framework crates, so declaring it adds no
 # new entry.
 uuid = { version = "1", features = ["v4"] }
+# `service-common` carries the workspace's ONE AWS wording of a constraint-violation
+# refusal, which `service.rs` states this service's two refusal envelopes over, and the
+# one reading of the resource path a request addresses (`src/service/refusal_*.rs`).
+service-common = { path = "../common" }
 
 [build-dependencies]
 emulator-core-build-support = { workspace = true }

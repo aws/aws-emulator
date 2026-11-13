@@ -49,6 +49,8 @@ mod service_profile_listing;
 mod service_profile_network_server_settings;
 #[path = "all/state_roundtrip.rs"]
 mod state_roundtrip;
+#[path = "all/validation_refusal_envelopes.rs"]
+mod validation_refusal_envelopes;
 #[path = "all/wireless_device_provisioning_refusals.rs"]
 mod wireless_device_provisioning_refusals;
 #[path = "all/wireless_device_reported_members.rs"]

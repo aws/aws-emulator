@@ -513,7 +513,7 @@ async fn omitted_lorawan_settings_take_the_service_defaults() {
             let expected = sent_members
                 .get(*member)
                 .cloned()
-                .unwrap_or_else(|| json!(false));
+                .unwrap_or(Value::Bool(false));
             assert_eq!(
                 block.get(*member),
                 Some(&expected),
