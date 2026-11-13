@@ -8,6 +8,13 @@
 //! `<account>:<Name>` and the federated-user ARN. The account is the calling
 //! identity's.
 //!
+//! The record also carries what the credential may DO: the session policies this mint
+//! passed, and the IAM user whose long-term credentials made it — the identity whose own
+//! policies the session's permissions are the intersection with. A service that later
+//! accepts the credential reads both from the session
+//! (`crate::state::Caller::identity_policies_arn`), which is what scopes the federated
+//! session down to the permissions the mint asked for.
+//!
 //!
 //! ## Shape of an operation
 //!
@@ -362,6 +369,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .into());
         }
 
+        // The IAM user this mint stands on: "you must call the GetFederationToken operation
+        // using the long-term security credentials of an IAM user" (this operation's
+        // documentation), and the session's permissions are "the intersection of the IAM user
+        // policies and the session policies that you pass" — so the credential records which
+        // identity's policies it is judged on, for the service that later accepts it to read
+        // (see `crate::state::Caller::identity_policies_arn`).
+        let federating_user_arn = caller.arn.clone();
         // The federated user lives in the calling identity's account, and is named by
         // the request: `<account>:<Name>` and `arn:aws:sts::<account>:federated-user/<Name>`.
         let federated_user_id = format!("{}:{}", caller.account, input.name);
@@ -387,11 +401,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 tags: crate::state::tag_pairs(input.tags.as_deref()),
                 packed_policy_size: Some(packed_policy),
                 // See `SessionPolicies`: the session policies this mint passed scope what
-                // the credential it vends may do.
+                // the credential it vends may do — and they are the ONLY source of its
+                // permissions, so a mint that passed none vends a session with none:
+                // "though the session policy parameters are optional, if you do not pass a
+                // policy, then the resulting federated user session has no permissions".
                 policies: SessionPolicies {
                     inline: input.policy.clone(),
                     managed_arns: named_policy_arns,
+                    none_means_no_permissions: true,
                 },
+                // The identity whose policies this session's permissions are the
+                // intersection with; see `Session::federating_user_arn`.
+                federating_user_arn: Some(federating_user_arn),
                 ..NewSession::new(identity, SessionKind::FederationToken, duration_seconds)
             },
         );

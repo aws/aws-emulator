@@ -288,6 +288,7 @@ fn mint<Eng: Send + Sync + 'static>(
             policies: sts_store::SessionPolicies {
                 inline: plan.inline_policy.clone(),
                 managed_arns: Vec::new(),
+                ..sts_store::SessionPolicies::default()
             },
             external_id: plan.external_id.clone(),
             role_arn: Some(role.arn.clone()),

@@ -490,6 +490,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 policies: SessionPolicies {
                     inline: input.policy.clone(),
                     managed_arns: named_policy_arns,
+                    ..SessionPolicies::default()
                 },
                 role_arn: Some(role.arn.clone()),
                 // The identity the exchanged token established travels with the session it

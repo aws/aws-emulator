@@ -303,6 +303,7 @@ fn caller<Eng: Send + Sync + 'static>(
             tags: Vec::new(),
             transitive_tag_keys: Vec::new(),
             role_arn: None,
+            federating_user_arn: None,
             federated_claims: Vec::new(),
             session_policies: sts_store::SessionPolicies::default(),
             mfa_authenticated: false,
@@ -320,6 +321,13 @@ fn caller<Eng: Send + Sync + 'static>(
             };
         }
     };
+    // WHOSE identity-based documents are in force for this credential, read through STS's one
+    // answer for it: the role behind an assumed-role session (resolved below to the ARN the
+    // account holds the role under, which carries its path), the IAM user behind a
+    // federated-user session, and the principal itself otherwise. Taken before the resolved
+    // caller is broken up below.
+    let identity_policies_arn = resolved.identity_policies_arn().to_string();
+    let federated_session = resolved.federating_user_arn.is_some();
     let mut caller = Caller {
         account_credential: resolved.identity.arn == sts_store::ambient_identity().arn,
         arn: resolved.identity.arn,
@@ -354,7 +362,14 @@ fn caller<Eng: Send + Sync + 'static>(
     }
     // Which IAM identity the principal's policies are held under is read through the tree's
     // shared readings of a principal ARN.
-    if let Some(role_name) = ::service_common::iam_role::assumed_role_session_role_name(&caller.arn)
+    if federated_session {
+        // A FEDERATED-user session is judged on the documents of the IAM user whose long-term
+        // credentials minted it — "the session permissions are the intersection of the IAM
+        // user policies and the session policies that you pass" (`GetFederationToken`) —
+        // because the federated user is no IAM identity and carries no document of its own.
+        caller.read_policies_of(&store, &identity_policies_arn);
+    } else if let Some(role_name) =
+        ::service_common::iam_role::assumed_role_session_role_name(&caller.arn)
     {
         // An assumed-role session's permissions are the ROLE's, and the role is addressed by
         // the ARN the account holds it under — which carries its PATH, where the session ARN

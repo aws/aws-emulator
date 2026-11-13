@@ -1074,6 +1074,18 @@ pub struct SessionPolicies {
     pub inline: Option<String>,
     /// The managed session policies the mint named, by ARN, in the order it named them.
     pub managed_arns: Vec<String>,
+    /// Set when the credential's permissions come from these session policies and from
+    /// nothing else, so a mint that passed NONE vends a credential with no permissions at
+    /// all: "though the session policy parameters are optional, if you do not pass a policy,
+    /// then the resulting federated user session has no permissions"
+    /// (`GetFederationToken`, the STS model).
+    ///
+    /// Clear for a mint whose credential stands for an identity it keeps the permissions of
+    /// — a role an `AssumeRole` session was minted for, the IAM user a `GetSessionToken`
+    /// session is of — where passing no session policy caps nothing. It is what tells an
+    /// EMPTY scope that grants nothing from an empty scope that withholds nothing
+    /// ([`ScopingPolicies::decision`]).
+    pub none_means_no_permissions: bool,
 }
 
 /// The session policy DOCUMENTS in force on a credential, read for one request.
@@ -1085,6 +1097,9 @@ pub struct ScopingPolicies {
     /// not hold — an entry of AWS's catalog it does not carry — so the scope may allow
     /// more than [`Self::documents`] shows.
     pub unreadable: bool,
+    /// Carried over from the mint ([`SessionPolicies::none_means_no_permissions`]): set when
+    /// a scope holding NO document grants nothing rather than withholding nothing.
+    pub none_means_no_permissions: bool,
 }
 
 impl ScopingPolicies {
@@ -1107,6 +1122,11 @@ impl ScopingPolicies {
     /// refusing on evidence it does not have would deny access AWS permits, while a `Deny`
     /// in a document it CAN read still refuses.
     ///
+    /// The ONE exception is a mint whose credential draws its permissions from the session
+    /// policies alone ([`Self::none_means_no_permissions`]): passing none there left the
+    /// session with no permissions, so an empty scope allows nothing instead of capping
+    /// nothing.
+    ///
     /// The ONE reading of a resolved scope, so this service's gate and every other service
     /// that decides a request signed with such a credential cannot cap one differently.
     #[must_use]
@@ -1117,7 +1137,13 @@ impl ScopingPolicies {
         use ::service_common::iam_authorization::{identity_decision, Decision};
 
         let stated = identity_decision(&self.documents, request);
-        if stated != Decision::Denied && (self.documents.is_empty() || self.unreadable) {
+        // A scope holding no document caps nothing — unless the mint it came from vends its
+        // permissions through session policies alone, where passing none left the credential
+        // with no permissions at all ([`SessionPolicies::none_means_no_permissions`]), which
+        // is an absence of grant rather than a deny.
+        let caps_nothing =
+            (self.documents.is_empty() && !self.none_means_no_permissions) || self.unreadable;
+        if stated != Decision::Denied && caps_nothing {
             return Decision::Allowed;
         }
         stated
@@ -1149,6 +1175,7 @@ pub fn session_scoping_documents(
     ScopingPolicies {
         documents,
         unreadable,
+        none_means_no_permissions: policies.none_means_no_permissions,
     }
 }
 

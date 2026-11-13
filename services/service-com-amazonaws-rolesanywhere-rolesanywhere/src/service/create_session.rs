@@ -357,6 +357,7 @@ impl<Eng: Send + Sync + 'static> NativeCreateSession<Eng> {
                 policies: sts::SessionPolicies {
                     inline: profile.session_policy.clone(),
                     managed_arns: profile.managed_policy_arns.clone(),
+                    ..sts::SessionPolicies::default()
                 },
                 ..sts::NewSession::new(
                     identity_of_session.clone(),

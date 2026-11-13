@@ -430,6 +430,9 @@ enum Refusal {
     DefaultDeny,
     /// The explicit deny of a request a `Deny` statement covers.
     ExplicitDeny,
+    /// The default deny of a request the SESSION POLICIES the credential was minted with do
+    /// not allow, whatever the documents in force on the identity allow.
+    NoSessionGrant,
 }
 
 impl Refusal {
@@ -440,6 +443,9 @@ impl Refusal {
                 format!("because no identity-based policy allows the {action} action")
             }
             Self::ExplicitDeny => "with an explicit deny in an identity-based policy".to_string(),
+            Self::NoSessionGrant => {
+                format!("because no session policy allows the {action} action")
+            }
         }
     }
 }
@@ -782,6 +788,145 @@ async fn each_kind_of_principal_is_judged_on_its_own_policies() {
                 &op.resource(ABSENT_SNAPSHOT_ID),
                 Refusal::DefaultDeny,
             );
+        }
+    }
+}
+
+/// The access key id of the federated-user session the federation rows sign with.
+const FEDERATED_KEY_ID: &str = "ASIAEXAMPLEEBSFEDERATED";
+
+/// The name the federation mint asked for, inside `userNameType` (length 2..32, pattern
+/// `^[\w+=,.@-]*$`).
+const FEDERATED_NAME: &str = "ebs-direct-api-broker";
+
+/// The principal ARN a federated-user session speaks for — what a refusal of it must name.
+fn federated_user_arn() -> String {
+    format!(
+        "arn:aws:sts::{}:federated-user/{FEDERATED_NAME}",
+        engine::emulator_account_id()
+    )
+}
+
+/// Record the federated-user session [`FEDERATED_KEY_ID`] speaks for, as
+/// `sts:GetFederationToken` records one: minted with the long-term credentials of the IAM user
+/// [`given_user`] holds, carrying `scope` as its inline session policy — `None` for a mint
+/// that passed none.
+fn given_federated_session(engine: &Arc<engine::InMemoryEngine>, scope: Option<&Value>) {
+    let vend = sts::NewSession {
+        // The identity whose own policies the session's permissions are the intersection with.
+        federating_user_arn: Some(user_arn()),
+        policies: sts::SessionPolicies {
+            inline: scope.map(|document| document.to_string()),
+            managed_arns: Vec::new(),
+            // Such a session draws its permissions from its session policies alone, which is
+            // what the mint records.
+            none_means_no_permissions: true,
+        },
+        ..sts::NewSession::new(
+            sts::Identity {
+                user_id: format!("{}:{FEDERATED_NAME}", engine::emulator_account_id()),
+                account: engine::emulator_account_id().to_string(),
+                arn: federated_user_arn(),
+            },
+            sts::SessionKind::FederationToken,
+            SESSION_SECONDS,
+        )
+    };
+    let store = sts::service_state(&**engine).expect("the STS store");
+    store
+        .lock()
+        .insert(vend.into_session(FEDERATED_KEY_ID, SystemTime::now()))
+        .expect("the session is recorded");
+}
+
+/// One row of the federated-session table: what each half of the intersection states, and
+/// what the call is then answered.
+struct FederationRow {
+    /// What to call the case in a failure.
+    case: &'static str,
+    /// What the minting IAM user's own inline policy allows, `None` for a user carrying none.
+    user_document: Option<Value>,
+    /// What the mint's inline session policy allows, `None` for a mint that passed none.
+    scope: Option<Value>,
+    /// Which refusal the call meets, `None` for one the intersection permits.
+    refusal: Option<Refusal>,
+}
+
+/// RULE: a federated-user session is judged on the documents of the IAM USER whose long-term
+/// credentials minted it, capped by the session policies that mint passed — "the session
+/// permissions are the intersection of the IAM user policies and the session policies that you
+/// pass" (`GetFederationToken`) — so a call the user allows and the session policy does not is
+/// refused naming the SESSION policy, a call only the session policy allows is refused naming
+/// the identity's documents, and a mint that passed no session policy has no permissions at
+/// all.
+///
+/// The rows differ along what each half of the intersection states, which is what the rule
+/// generalises over.
+#[tokio::test]
+async fn a_federated_session_is_the_minting_users_policies_capped_by_the_session_policy() {
+    let op = Op::PutSnapshotBlock;
+    let action = op.action();
+    let resource = op.resource(ABSENT_SNAPSHOT_ID);
+
+    // (case, what the minting user's own policy allows, what the mint's session policy
+    //  allows, which refusal the call then meets — `None` for one the intersection permits)
+    let rows = [
+        FederationRow {
+            case: "both halves allowing every action of this service",
+            user_document: Some(allow(json!("ebs:*"))),
+            scope: Some(allow(json!("ebs:*"))),
+            refusal: None,
+        },
+        FederationRow {
+            case: "a session policy naming this action alone",
+            user_document: Some(allow(json!("ebs:*"))),
+            scope: Some(allow_on(&action, "*")),
+            refusal: None,
+        },
+        FederationRow {
+            case: "a session policy naming another action of this service",
+            user_document: Some(allow(json!("ebs:*"))),
+            scope: Some(allow(json!("ebs:ListChangedBlocks"))),
+            refusal: Some(Refusal::NoSessionGrant),
+        },
+        FederationRow {
+            // A session policy grants nothing of its own: what the IAM user may not do, a
+            // session minted with its credentials may not do either.
+            case: "a session policy wider than the minting user's own grant",
+            user_document: None,
+            scope: Some(allow(json!("ebs:*"))),
+            refusal: Some(Refusal::DefaultDeny),
+        },
+        FederationRow {
+            // "If you do not pass any session policies, then the resulting federated user
+            // session has no permissions" — even where the minting user allows everything.
+            case: "a mint that passed no session policy at all",
+            user_document: Some(allow(json!("ebs:*"))),
+            scope: None,
+            refusal: Some(Refusal::NoSessionGrant),
+        },
+    ];
+
+    for row in rows {
+        let case = row.case;
+        let harness = Harness::new();
+        given_user(harness.engine());
+        given_inline_policy(harness.engine(), Target::User, row.user_document.as_ref());
+        given_federated_session(harness.engine(), row.scope.as_ref());
+
+        let reply = op
+            .call(&harness, FEDERATED_KEY_ID, ABSENT_SNAPSHOT_ID)
+            .await;
+        match row.refusal {
+            None => assert_not_refused(case, &reply),
+            Some(refusal) => assert_refused(
+                case,
+                &reply,
+                &federated_user_arn(),
+                &action,
+                &resource,
+                refusal,
+            ),
         }
     }
 }

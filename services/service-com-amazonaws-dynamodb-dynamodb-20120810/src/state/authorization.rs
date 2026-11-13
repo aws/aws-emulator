@@ -190,23 +190,29 @@ pub fn request_caller<Eng: Send + Sync + 'static>(
         )
         .map(|caller| {
             (
-                caller.identity.arn,
-                caller.identity.account,
-                caller.role_arn,
+                caller.identity.arn.clone(),
+                caller.identity.account.clone(),
+                caller.role_arn.clone(),
+                // WHOSE identity-based documents are in force for this credential, which is
+                // not always the principal it speaks for: STS's one answer for it
+                // (`sts_store::Caller::identity_policies_arn`).
+                caller.identity_policies_arn().to_string(),
                 // The tags are this registry's record of the session, so they are known
                 // exactly for a credential it minted.
                 caller.kind.is_some(),
-                caller.tags,
-                caller.session_policies,
-                caller.federated_claims,
+                caller.tags.clone(),
+                caller.session_policies.clone(),
+                caller.federated_claims.clone(),
             )
         }),
         // No STS store on this engine: the credential names no session, so it speaks for
-        // the long-term identity it was resolved to.
+        // the long-term identity it was resolved to, and is judged on that identity's
+        // documents.
         None => Ok((
             long_term.arn.clone(),
             long_term.account.clone(),
             None,
+            long_term.arn.clone(),
             false,
             Vec::new(),
             sts_store::SessionPolicies::default(),
@@ -216,8 +222,16 @@ pub fn request_caller<Eng: Send + Sync + 'static>(
     // An expired session credential speaks for nobody: it carries no documents and no
     // principal spelling. The refusal still names what was presented, so a caller reading
     // it can tell an expired credential from an unauthorized one.
-    let Ok((arn, account, role_arn, tags_known, tags, session_policies, federated_claims)) =
-        resolved
+    let Ok((
+        arn,
+        account,
+        role_arn,
+        policies_arn,
+        tags_known,
+        tags,
+        session_policies,
+        federated_claims,
+    )) = resolved
     else {
         return Caller {
             arn: format!("an expired session credential ({access_key_id})"),
@@ -245,13 +259,15 @@ pub fn request_caller<Eng: Send + Sync + 'static>(
     if caller.account_principals.is_empty() {
         caller.account_principals = vec![account_root_arn(&account), account];
     }
-    let identity_arn = role_arn.unwrap_or_else(|| caller.arn.clone());
     // The IAM store of the same engine, read ONCE for both halves of what the caller may do:
     // the documents in force on its identity, and the documents its credential was scoped
-    // with. An engine carrying no IAM store holds neither.
+    // with. An engine carrying no IAM store holds neither. The documents are the ones the
+    // IDENTITY behind the credential carries (`policies_arn`), which for a federated-user
+    // session is the IAM user the mint stood on rather than the federated principal, who
+    // carries none of its own.
     let held = iam.as_ref().map(|iam| iam.lock());
     if let Some(iam) = held.as_deref() {
-        if let Some(policies) = iam.principal_policies(&identity_arn) {
+        if let Some(policies) = iam.principal_policies(&policies_arn) {
             caller.documents = policies.documents;
             caller.unreadable_attachment = !policies.uncarried.is_empty();
         }

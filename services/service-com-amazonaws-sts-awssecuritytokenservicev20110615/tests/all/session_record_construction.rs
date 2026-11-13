@@ -130,6 +130,7 @@ fn rows() -> Vec<Row> {
                         format!("arn:aws:iam::{}:policy/read-only", emulator_account()),
                         "arn:aws:iam::aws:policy/AmazonS3ReadOnlyAccess".to_string(),
                     ],
+                    ..SessionPolicies::default()
                 },
                 ..NewSession::new(
                     assumed_role_identity("demo", "maximum"),
@@ -152,6 +153,7 @@ fn rows() -> Vec<Row> {
                 policies: SessionPolicies {
                     inline: Some(scoping_document("sqs:SendMessage")),
                     managed_arns: Vec::new(),
+                    ..SessionPolicies::default()
                 },
                 packed_policy_size: Some(6),
                 ..NewSession::new(

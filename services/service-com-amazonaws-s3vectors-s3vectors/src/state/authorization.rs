@@ -576,15 +576,13 @@ pub fn caller<Eng: Send + Sync + 'static>(
         Ok(resolved) => {
             // Which IAM identity's policies are in force: an assumed-role session is
             // judged on the ROLE's ("the temporary security credentials … have the
-            // permissions of the role", `AssumeRole`), addressed by the ARN the session
-            // was minted for; any other credential on the identity it speaks for, which
-            // is the IAM user that holds a long-term access key.
-            identity_arn = Some(
-                resolved
-                    .role_arn
-                    .clone()
-                    .unwrap_or_else(|| resolved.identity.arn.clone()),
-            );
+            // permissions of the role", `AssumeRole`), a federated-user session on the
+            // IAM USER whose long-term credentials minted it ("the session permissions
+            // are the intersection of the IAM user policies and the session policies
+            // that you pass", `GetFederationToken`), and any other credential on the
+            // identity it speaks for, which is the IAM user that holds a long-term
+            // access key — STS's own answer for which that is.
+            identity_arn = Some(resolved.identity_policies_arn().to_string());
             // What the MINT of this credential scoped it to, which caps whatever those
             // policies grant; the documents it stands for are read below.
             session_policies = resolved.session_policies;

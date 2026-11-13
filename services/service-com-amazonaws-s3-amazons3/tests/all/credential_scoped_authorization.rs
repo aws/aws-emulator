@@ -1008,8 +1008,12 @@ fn form_encode(value: &str) -> String {
 }
 
 /// The text of the first `<name>…</name>` element of a response body, with the XML escaping a
-/// serializer applies undone. A copy, for the same reason as [`form_encode`].
-fn element(body: &str, name: &str) -> Option<String> {
+/// serializer applies undone.
+///
+/// `pub(crate)`: the federated-session suite ([`super::federated_session_authorization`]) reads
+/// a refusal's own `<Code>` and `<Message>` — whose resource ARN is quoted, so the escaping has
+/// to come off — through this one reader rather than slicing the document a second way.
+pub(crate) fn element(body: &str, name: &str) -> Option<String> {
     let open = format!("<{name}>");
     let close = format!("</{name}>");
     let (_, rest) = body.split_once(&open)?;

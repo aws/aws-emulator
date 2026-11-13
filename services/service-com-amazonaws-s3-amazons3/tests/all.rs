@@ -169,6 +169,8 @@ mod error_message_envelope;
 mod error_messages;
 #[path = "all/express_session_tokens.rs"]
 mod express_session_tokens;
+#[path = "all/federated_session_authorization.rs"]
+mod federated_session_authorization;
 #[path = "all/general_purpose_bucket_names.rs"]
 mod general_purpose_bucket_names;
 #[path = "all/global_condition_keys.rs"]

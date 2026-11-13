@@ -22,7 +22,12 @@
 //!    principal, read through the IAM service's OWN accessor (`principal_policies`, where
 //!    the collection rule itself lives, groups included), so a policy `iam:PutUserPolicy`
 //!    wrote takes effect on the next request and deleting it lifts it again; and the
-//!    BUCKET's own policy, which this service holds.
+//!    BUCKET's own policy, which this service holds. WHICH identity carries them is STS's
+//!    own answer for the credential (`sts_store::Caller::identity_policies_arn`): the ROLE
+//!    behind an assumed-role session, and the IAM USER whose long-term credentials minted a
+//!    federated-user session — "the session permissions are the intersection of the IAM
+//!    user policies and the session policies that you pass" (`GetFederationToken`) — since a
+//!    federated user is no IAM identity and carries no document of its own.
 //! 3. **what the CREDENTIAL itself was scoped to** — the session policies the mint of the
 //!    credential passed, which STS holds on the session the access key id names
 //!    (`sts_store::session_scoping_documents`) and which are read by the one reading of a
@@ -349,6 +354,11 @@ pub fn request_caller<Eng: Send + Sync + 'static>(
             (
                 caller.identity.arn.clone(),
                 caller.role_arn.clone(),
+                // WHOSE identity-based documents are in force for this credential, which is
+                // not always the principal it speaks for: the role behind an assumed-role
+                // session, the IAM user behind a federated-user session, read through STS's
+                // one answer for it (`sts_store::Caller::identity_policies_arn`).
+                caller.identity_policies_arn().to_string(),
                 caller.session_policies.clone(),
                 caller.multi_factor_auth_present(),
                 // The tags are the registry's record of the session, so they are known
@@ -358,10 +368,11 @@ pub fn request_caller<Eng: Send + Sync + 'static>(
             )
         }),
         // No STS store on this engine: the credential names no session, so it speaks for the
-        // long-term identity it was resolved to.
+        // long-term identity it was resolved to, and is judged on that identity's documents.
         None => Ok((
             long_term.arn.clone(),
             None,
+            long_term.arn.clone(),
             sts_store::SessionPolicies::default(),
             None,
             false,
@@ -370,8 +381,15 @@ pub fn request_caller<Eng: Send + Sync + 'static>(
     };
     // An expired session credential speaks for nobody: it carries no documents and no
     // principal spelling, so every action it asks for falls to the implicit deny.
-    let Ok((arn, role_arn, session_policies, multi_factor_auth_present, tags_known, tags)) =
-        resolved
+    let Ok((
+        arn,
+        role_arn,
+        policies_arn,
+        session_policies,
+        multi_factor_auth_present,
+        tags_known,
+        tags,
+    )) = resolved
     else {
         return Caller {
             arn: EXPIRED_CREDENTIAL_PRINCIPAL.to_string(),
@@ -407,7 +425,10 @@ pub fn request_caller<Eng: Send + Sync + 'static>(
         // with — the latter read at the instant of the request, so a managed scoping policy
         // edited since the mint scopes by what it says NOW.
         let held = iam_state.lock();
-        if let Some(policies) = held.principal_policies(&identity_arn) {
+        // The documents in force are the ones the IDENTITY behind the credential carries
+        // (`policies_arn`), which for a federated-user session is the IAM user the mint stood
+        // on rather than the federated principal, who carries none of its own.
+        if let Some(policies) = held.principal_policies(&policies_arn) {
             caller.documents = policies.documents;
             // An attachment the collection resolved no document for is an entry of AWS's own
             // catalog this emulator does not carry: a grant it cannot read.

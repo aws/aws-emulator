@@ -85,6 +85,7 @@ fn inline_scope(document: &Value) -> sts::SessionPolicies {
     sts::SessionPolicies {
         inline: Some(document.to_string()),
         managed_arns: Vec::new(),
+        ..sts::SessionPolicies::default()
     }
 }
 
@@ -94,6 +95,7 @@ fn managed_scope(policy_arns: &[String]) -> sts::SessionPolicies {
     sts::SessionPolicies {
         inline: None,
         managed_arns: policy_arns.to_vec(),
+        ..sts::SessionPolicies::default()
     }
 }
 

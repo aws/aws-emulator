@@ -184,6 +184,17 @@ pub struct Session {
     /// it — the spelling a trust policy names when this session chains into another
     /// role. `None` for every other kind of session.
     pub role_arn: Option<String>,
+    /// The ARN of the IAM user whose LONG-TERM credentials minted a `GetFederationToken`
+    /// session: the identity whose own policies the session's permissions are the
+    /// intersection with ("the session permissions are the intersection of the IAM user
+    /// policies and the session policies that you pass", `GetFederationToken`, this
+    /// service's model).
+    ///
+    /// `None` for every other kind of session, whose principal either IS the identity whose
+    /// policies are in force (a `GetSessionToken` session, minted for the user itself) or
+    /// names it through [`Session::role_arn`] (an assumed role). It is read through
+    /// [`Caller::identity_policies_arn`], never on its own.
+    pub federating_user_arn: Option<String>,
     /// Set when the mint of this session SATISFIED an MFA challenge — a `SerialNumber`
     /// with the `TokenCode` the device answers ([`mfa_challenge_failure`]); see
     /// [`Caller::multi_factor_auth_present`], which is what a policy condition over the
@@ -225,6 +236,8 @@ pub struct NewSession {
     pub external_id: Option<String>,
     /// See [`Session::role_arn`].
     pub role_arn: Option<String>,
+    /// See [`Session::federating_user_arn`].
+    pub federating_user_arn: Option<String>,
     /// See [`Session::mfa_authenticated`].
     pub mfa_authenticated: bool,
     /// See [`Session::federated_claims`].
@@ -246,6 +259,7 @@ impl NewSession {
             policies: SessionPolicies::default(),
             external_id: None,
             role_arn: None,
+            federating_user_arn: None,
             mfa_authenticated: false,
             federated_claims: Vec::new(),
         }
@@ -284,6 +298,7 @@ impl NewSession {
             policies: self.policies,
             external_id: self.external_id,
             role_arn: self.role_arn,
+            federating_user_arn: self.federating_user_arn,
             mfa_authenticated: self.mfa_authenticated,
             federated_claims: self.federated_claims,
             revoked: false,
@@ -1022,6 +1037,9 @@ pub struct Caller {
     pub transitive_tag_keys: Vec<String>,
     /// The role ARN of an assumed-role credential; see [`Session::role_arn`].
     pub role_arn: Option<String>,
+    /// The ARN of the IAM user whose long-term credentials minted a federated-user
+    /// credential; see [`Session::federating_user_arn`].
+    pub federating_user_arn: Option<String>,
     /// The condition keys the web identity this credential was minted by exchanging
     /// publishes; see [`Session::federated_claims`]. Empty for every other credential.
     pub federated_claims: Vec<(String, String)>,
@@ -1044,6 +1062,7 @@ impl Caller {
             tags: Vec::new(),
             transitive_tag_keys: Vec::new(),
             role_arn: None,
+            federating_user_arn: None,
             federated_claims: Vec::new(),
             session_policies: SessionPolicies::default(),
             mfa_authenticated: false,
@@ -1084,6 +1103,31 @@ impl Caller {
         }
         named
     }
+
+    /// The ARN of the IAM identity whose IDENTITY-BASED policies are in force for a request
+    /// this credential signs — which is not always the principal the credential speaks for.
+    ///
+    /// * An assumed-role session is judged on the ROLE's own documents: "the temporary
+    ///   security credentials … have the permissions of the role" (`AssumeRole`), addressed
+    ///   by the ARN the account holds the role under ([`Session::role_arn`]).
+    /// * A federated-user session is judged on the documents of the IAM USER whose long-term
+    ///   credentials minted it: "the session permissions are the intersection of the IAM user
+    ///   policies and the session policies that you pass" (`GetFederationToken`), and the
+    ///   federated user itself is no IAM identity and carries no document of its own
+    ///   ([`Session::federating_user_arn`]).
+    /// * Every other credential is judged on the identity it speaks for: the IAM user that
+    ///   holds a long-term access key, and the same user for a `GetSessionToken` session.
+    ///
+    /// ONE reading, so every service that authorizes a request signed with a credential this
+    /// registry minted collects the same documents for it — the SCOPE the mint passed
+    /// ([`Caller::session_policies`]) then caps what they grant.
+    #[must_use]
+    pub fn identity_policies_arn(&self) -> &str {
+        self.role_arn
+            .as_deref()
+            .or(self.federating_user_arn.as_deref())
+            .unwrap_or(self.identity.arn.as_str())
+    }
 }
 
 /// The caller a request's access key id names, with everything its credential carries.
@@ -1111,6 +1155,7 @@ pub fn resolve_request_caller(
             tags: session.tags.clone(),
             transitive_tag_keys: session.transitive_tag_keys.clone(),
             role_arn: session.role_arn.clone(),
+            federating_user_arn: session.federating_user_arn.clone(),
             federated_claims: session.federated_claims.clone(),
             session_policies: session.policies.clone(),
             mfa_authenticated: session.mfa_authenticated,
