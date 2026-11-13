@@ -21,6 +21,8 @@ mod agent_runtime_lifecycle;
 mod api_key_credential_provider_lifecycle;
 #[path = "all/browser_lifecycle.rs"]
 mod browser_lifecycle;
+#[path = "all/browser_listing_pagination.rs"]
+mod browser_listing_pagination;
 #[path = "all/browser_profile_lifecycle.rs"]
 mod browser_profile_lifecycle;
 #[path = "all/browser_profile_listing.rs"]

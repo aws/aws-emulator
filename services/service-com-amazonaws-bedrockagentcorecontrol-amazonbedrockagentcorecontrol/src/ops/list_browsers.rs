@@ -189,10 +189,17 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             listed.insert(system.browser_id.clone(), &system);
         }
 
-        // `maxResults` has the modeled range 1..100; absent, a page holds that
-        // same documented maximum. The page walk is `crate::state`'s, so every
-        // listing of this service pages by one rule.
-        let page_size = crate::state::page_size(input.max_results, MAX_PAGE_SIZE);
+        // `maxResults` carries its own documented default and its own documented
+        // ceiling — "The default value is 10. The maximum value is 50." — and the
+        // model declares no `@default` for it, so an absent `maxResults` is that
+        // documented default and a page holds at most that documented maximum
+        // however many the caller asks for. The modeled range 1..100 is what
+        // decides which `maxResults` values are ACCEPTED, and the boundary walk
+        // has already refused the ones outside it by the time this runs. The page
+        // walk is `crate::state`'s, so every listing of this service pages by one
+        // rule.
+        let requested = input.max_results.unwrap_or(DEFAULT_PAGE_SIZE);
+        let page_size = crate::state::page_size(Some(requested), MAX_PAGE_SIZE);
         let (browser_summaries, next_token) =
             crate::state::page_over(&listed, resume_after.as_deref(), page_size, |record| {
                 Some(record.summary())
@@ -205,9 +212,19 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
     }
 }
 
-/// The modeled upper bound of `maxResults` (range 1..100), used as the page size
-/// when the caller names none.
-const MAX_PAGE_SIZE: i32 = 100;
+/// The most summaries one page holds, whatever `maxResults` the caller names:
+/// the maximum that member's own documentation states ("The maximum value is
+/// 50", from `smithy_query(query="doc", shape="ListBrowsersRequest",
+/// member="maxResults")`). The member's MODELED range (1..100) is a constraint on
+/// the value, refused by the boundary walk, not a promise about the page: a
+/// `maxResults` of 51..100 is accepted and served this page at most.
+const MAX_PAGE_SIZE: i32 = 50;
+
+/// The page size when the caller names no `maxResults`: the default that
+/// member's own documentation states ("The default value is 10", from
+/// `smithy_query(query="doc", shape="ListBrowsersRequest", member="maxResults")`),
+/// which is the only source for it — the model declares no `@default` trait.
+const DEFAULT_PAGE_SIZE: i32 = 10;
 
 // The opaque `nextToken` codec is `crate::state`'s
 // (`encode_page_token`/`decode_page_token`): every `@paginated` listing in this
