@@ -313,15 +313,16 @@ fn compiler_detail(error: &str) -> String {
 const PARSER_ERROR_PREFIX: &str = "sql parser error: ";
 
 /// Where a statement's `HAVING` clause filters on something the language does not admit: the
-/// predicate to state the fault with, and where in the submitted query string that condition
-/// stands.
+/// predicate to state the fault with, and where that clause stands in the statement the
+/// compiler read ([`compiled_statement`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HavingFault {
     /// The condition as the pipeline the statement TRANSLATES to states it.
     pub predicate: String,
-    /// The first character of the condition in the query string.
+    /// The first character of the clause — its keyword — in the compiled statement.
     pub start_char_offset: usize,
-    /// One past its last character.
+    /// ONE PAST its last character there, the way every compile failure of this service
+    /// states where it stopped (`QueryCompileErrorLocation`).
     pub end_char_offset: usize,
 }
 
@@ -344,8 +345,11 @@ pub fn aggregate_expression_in_having(query_string: &str) -> Option<HavingFault>
     };
     let condition = select.having.as_ref()?;
     let predicate = aggregate_expression_in_condition(condition)?;
+    // The offsets a compile failure reports are offsets into the statement the compiler read,
+    // which is the submitted statement with its source clause written out.
+    let compiled = compiled_statement(query_string);
     let (start_char_offset, end_char_offset) =
-        having_condition_span(query_string).unwrap_or((0, query_string.chars().count()));
+        having_clause_span(&compiled).unwrap_or_else(|| (0, compiled.chars().count()));
     Some(HavingFault {
         predicate,
         start_char_offset,
@@ -353,18 +357,142 @@ pub fn aggregate_expression_in_having(query_string: &str) -> Option<HavingFault>
     })
 }
 
-/// Where the condition of `query_string`'s `HAVING` clause stands in it, as CHARACTER offsets
-/// — what `QueryCompileErrorLocation` carries, so a client can point at the text at fault.
+/// The statement as the compiler reads it: the submitted statement with its source clause
+/// WRITTEN OUT, and every other character of it as the caller wrote it.
 ///
-/// The clause is found by its keyword and runs to the clause that follows it, which in a
-/// `SELECT` of log events is an ordering or a bound; `None` when the query string carries no
-/// such keyword, which a statement whose parser found a `HAVING` clause does not happen to be.
-fn having_condition_span(query_string: &str) -> Option<(usize, usize)> {
+/// A `FROM` clause that names one log group directly is the short way of writing the
+/// `logGroups(logGroupIdentifier: [...])` selector a source of this language is named by —
+/// the ONE form that names log groups by identifier, by name prefix, by account and by log
+/// class ([`super::read_group_selectors`]), and the form a statement reading more than one log
+/// group has to use. A statement is compiled against that form, so the offsets a compile
+/// failure reports for a clause after the source clause are offsets into the written-out text,
+/// past where the short form ended; a source already written as the selector call is already
+/// written out and stands as it is.
+///
+/// Recorded: a statement whose source is written the short way and whose filter clause the
+/// compiler refuses has that clause reported at the place it occupies once the source is
+/// written out — 35 characters further along than the submitted text puts it, which is exactly
+/// what writing one name out as the selector call adds.
+pub fn compiled_statement(query_string: &str) -> String {
+    let Some((from, to)) = source_clause_span(query_string) else {
+        return query_string.to_string();
+    };
     let characters: Vec<char> = query_string.chars().collect();
+    let named: String = characters[from..to].iter().collect();
+    if named.trim().is_empty() || names_the_selector_call(&named) {
+        return query_string.to_string();
+    }
+    let before: String = characters[..from].iter().collect();
+    let after: String = characters[to..].iter().collect();
+    format!("{before}{}{after}", written_out_source(&named))
+}
+
+/// Whether `named` writes its log groups as the selector CALL rather than as a name.
+fn names_the_selector_call(named: &str) -> bool {
+    named
+        .trim()
+        .split_once('(')
+        .is_some_and(|(keyword, _)| keyword.trim().eq_ignore_ascii_case(SELECTOR_CALL))
+}
+
+/// The log group `named` names, written as the selector call that names it.
+fn written_out_source(named: &str) -> String {
+    format!("{SELECTOR_CALL}({IDENTIFIER_KEY}: ['{}'])", named.trim())
+}
+
+/// The call a source clause names log groups by.
+const SELECTOR_CALL: &str = "logGroups";
+
+/// The key of that call that names them by identifier.
+const IDENTIFIER_KEY: &str = "logGroupIdentifier";
+
+/// Where the text naming the log groups stands inside `query_string`'s `FROM` clause, as the
+/// CHARACTER offsets of that text itself — without the quoting that delimits it, which a log
+/// group's name needs (it carries `/`, `-` and `.`) and is no part of the name.
+///
+/// `None` when the statement has no `FROM` clause, or names nothing after it.
+fn source_clause_span(query_string: &str) -> Option<(usize, usize)> {
+    let characters: Vec<char> = query_string.chars().collect();
+    let words = statement_words(query_string);
+    let at = words.iter().position(|(word, ..)| word == FROM_KEYWORD)?;
+    let mut from = words[at].2;
+    while from < characters.len() && characters[from].is_whitespace() {
+        from += 1;
+    }
+    let opening = *characters.get(from)?;
+    if !IDENTIFIER_QUOTES.contains(&opening) {
+        // An unquoted name runs to the whitespace after it.
+        let to = characters[from..]
+            .iter()
+            .position(|character| character.is_whitespace())
+            .map_or(characters.len(), |length| from + length);
+        return (to > from).then_some((from, to));
+    }
+    let inner = from + 1;
+    let to = characters[inner..]
+        .iter()
+        .position(|character| *character == opening)
+        .map(|length| inner + length)?;
+    (to > inner).then_some((inner, to))
+}
+
+/// The keyword that opens the clause naming the log groups to read.
+const FROM_KEYWORD: &str = "from";
+
+/// The characters a statement delimits an identifier or a string with: a log group's name and
+/// a value the caller compares against are written inside one of them.
+const IDENTIFIER_QUOTES: [char; 3] = ['`', '\'', '"'];
+
+/// Where `statement`'s `HAVING` clause stands in it: the first character of its keyword, and
+/// ONE PAST the last character of the condition that follows it — what
+/// `QueryCompileErrorLocation` carries, so a client can point at the text at fault.
+///
+/// A source clause written out ([`compiled_statement`]) is the text these offsets are offsets
+/// into. The clause is found by its keyword and runs to the clause that follows it, which in a
+/// `SELECT` of log events is an ordering or a bound; `None` when the statement carries no such
+/// keyword, which one whose parser found a `HAVING` clause does not happen to be.
+///
+/// The keyword is a word of the STATEMENT, so it is looked for outside every quoted run: a log
+/// group's name and a value the statement compares against carry text of the caller's own, and
+/// a clause keyword is not one of the things they can name. The statement is scanned for it
+/// because the parsed statement carries no offsets into the text it was read from.
+fn having_clause_span(statement: &str) -> Option<(usize, usize)> {
+    let characters: Vec<char> = statement.chars().collect();
+    let words = statement_words(statement);
+    let at = words.iter().position(|(word, ..)| word == HAVING_KEYWORD)?;
+    let start = words[at].1;
+    let mut end = words
+        .iter()
+        .skip(at + 1)
+        .find(|(word, ..)| CLAUSES_AFTER_HAVING.contains(&word.as_str()))
+        .map_or(characters.len(), |(_, from, _)| *from);
+    // The clause ends with its condition, so whatever separates it from what follows is no
+    // part of it.
+    while end > start && characters[end - 1].is_whitespace() {
+        end -= 1;
+    }
+    Some((start, end.max(start)))
+}
+
+/// The words of `statement` that are words of the STATEMENT, each lowercased and with the
+/// character offsets it spans: a keyword is a word the caller wrote outside every quoted run,
+/// while the same text inside one is a log group's name or a value the statement compares
+/// against, and names no clause.
+fn statement_words(statement: &str) -> Vec<(String, usize, usize)> {
+    let characters: Vec<char> = statement.chars().collect();
     let mut words: Vec<(String, usize, usize)> = Vec::new();
     let mut index = 0usize;
     while index < characters.len() {
-        if !characters[index].is_alphanumeric() && characters[index] != '_' {
+        let character = characters[index];
+        if IDENTIFIER_QUOTES.contains(&character) {
+            index += 1;
+            while index < characters.len() && characters[index] != character {
+                index += 1;
+            }
+            index = index.saturating_add(1);
+            continue;
+        }
+        if !character.is_alphanumeric() && character != '_' {
             index += 1;
             continue;
         }
@@ -380,14 +508,7 @@ fn having_condition_span(query_string: &str) -> Option<(usize, usize)> {
             index,
         ));
     }
-    let at = words.iter().position(|(word, ..)| word == HAVING_KEYWORD)?;
-    let start = words.get(at + 1).map_or(words[at].2, |(_, from, _)| *from);
-    let end = words
-        .iter()
-        .skip(at + 1)
-        .find(|(word, ..)| CLAUSES_AFTER_HAVING.contains(&word.as_str()))
-        .map_or(characters.len(), |(_, from, _)| *from);
-    Some((start, end.max(start)))
+    words
 }
 
 /// The keyword that opens the clause filtering a statement's groups.

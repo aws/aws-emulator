@@ -342,10 +342,15 @@ fn malformed_statement(query: &str, detail: &str) -> StartQueryError {
 const COMPILE_ERROR_PREFIX: &str = "Compile Error - ";
 
 /// Refuse a SQL statement that filters its groups on an aggregate function expression: the
-/// rule, then the predicate as the pipeline the statement translates to states it, and the
-/// character span its condition occupies in the submitted query string — which is the
-/// structure the model declares for the detail
-/// (`QueryCompileError`/`QueryCompileErrorLocation`).
+/// rule, then the predicate as the pipeline the statement translates to states it, and where
+/// the offending clause stands in the statement the compiler read
+/// ([`crate::state::insights::sql::compiled_statement`]).
+///
+/// The diagnostic states the clause's FIRST and LAST character — recorded: the pair spans
+/// exactly the characters the clause occupies — in the punctuation this service's compile
+/// diagnostics state a span with. The detail carries the same place in the structure the model
+/// declares for it (`QueryCompileError`/`QueryCompileErrorLocation`), where the second offset
+/// is one PAST the last character, the way every compile failure of this service reports one.
 fn malformed_filter_on_aggregate(
     fault: &crate::state::insights::sql::HavingFault,
 ) -> StartQueryError {
@@ -357,8 +362,9 @@ fn malformed_filter_on_aggregate(
     StartQueryErrorModeled::MalformedQueryException(MalformedQueryException {
         message: Some(crate::state::with_sdk_error_envelope(
             &format!(
-                "{rule} ([{}, {}])",
-                fault.start_char_offset, fault.end_char_offset
+                "{rule} ([{},{}])",
+                fault.start_char_offset,
+                fault.end_char_offset.saturating_sub(1)
             ),
             ENVELOPE_MALFORMED_QUERY,
         )),

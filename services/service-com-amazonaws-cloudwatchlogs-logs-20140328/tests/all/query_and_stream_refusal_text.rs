@@ -17,6 +17,9 @@
 //!   read and whichever way the token fails to place;
 //! * a query string that does not compile is refused with the COMPILER'S diagnostic, so a
 //!   caller can tell where the query is wrong;
+//! * a SQL statement filtering its groups on an aggregate function expression is refused with
+//!   the compiler's rule, the offending predicate as the pipeline the statement translates to
+//!   states it, and the RANGE that clause occupies in the statement the compiler read;
 //! * a `logGroupNamePattern` outside the accepted grammar is refused with the constraint
 //!   template stating the expression the service publishes.
 //!
@@ -663,5 +666,278 @@ async fn an_invalid_log_group_name_pattern_states_the_published_expression() {
                 "case {case}: the template carries no submitted value, got {said:?}"
             );
         }
+    }
+}
+
+/// The clause keyword the rows below spell in UPPER CASE, so a lower-case occurrence of the
+/// same text inside a log group's name or a compared value is not the clause.
+const HAVING: &str = "HAVING";
+
+/// The statement the compiler reads, derived here the way the service derives it rather than
+/// read from the implementation: a `FROM` clause naming one log group directly is the short
+/// way of writing the `logGroups(logGroupIdentifier: [...])` selector a query's source is
+/// named by (`StartQuery`'s own documentation for the `SOURCE` command, which "can select log
+/// groups based on log group name prefix, account ID, and log class"), so the written-out
+/// selector stands in its place; a source already written as that call stands as it is.
+fn statement_the_compiler_reads(case: &str, query_string: &str) -> String {
+    let (before, rest) = query_string
+        .split_once('`')
+        .unwrap_or_else(|| panic!("case {case}: the statement quotes its source clause"));
+    let (named, after) = rest
+        .split_once('`')
+        .unwrap_or_else(|| panic!("case {case}: the quoted source clause closes"));
+    if named.trim_start().starts_with("logGroups(") {
+        return query_string.to_string();
+    }
+    format!("{before}`logGroups(logGroupIdentifier: ['{named}'])`{after}")
+}
+
+/// The range the `HAVING` clause occupies in `statement`: the first character of its keyword
+/// and the last character of the condition after it, which ends where the clause following it
+/// begins. CHARACTER offsets — every statement below is ASCII, so each byte is one character.
+fn clause_range(case: &str, statement: &str) -> (usize, usize) {
+    let at = statement
+        .find(HAVING)
+        .unwrap_or_else(|| panic!("case {case}: the statement carries a {HAVING} clause"));
+    let clause = &statement[at..];
+    let clause = clause.split(" ORDER BY").next().unwrap_or(clause).trim_end();
+    let start = statement[..at].chars().count();
+    (start, start + clause.chars().count() - 1)
+}
+
+/// A SQL statement whose `HAVING` clause filters its groups on an aggregate function
+/// expression does not compile, and the refusal states the RULE, the offending predicate as
+/// the pipeline the statement translates to states it, and the RANGE that clause occupies in
+/// the statement the compiler read — so a caller can point at the clause at fault.
+///
+/// The rows span what the rule generalises over: which aggregate the condition calls, how long
+/// the source name before the clause is (which moves the whole range), whether the source is
+/// written short or as the selector call it abbreviates, whether a further clause ends the
+/// condition, and whether a name or a compared value carries the clause keyword itself.
+#[tokio::test]
+async fn an_aggregate_inside_a_sql_filter_is_refused_with_the_rule_and_the_clauses_range() {
+    let logs = Logs::new();
+    const GROUP: &str = "/sql/filter";
+    const LONGER_GROUP: &str = "/sql/filter-on-an-aggregate-expression-0123456789";
+    const KEYWORD_GROUP: &str = "/sql/having-in-the-name";
+    for group in [GROUP, LONGER_GROUP, KEYWORD_GROUP] {
+        logs.ok("CreateLogGroup", &json!({"logGroupName": group}))
+            .await;
+    }
+    let now_secs = now_ms() / 1_000;
+
+    // (case, the statement, the predicate the pipeline the statement translates to states the
+    // condition with: the filter command and the condition, its spacing removed and the name
+    // of every function call lowercased)
+    let cases: Vec<(&str, String, &str)> = vec![
+        (
+            "a count of the rows of each group",
+            format!("SELECT svc, COUNT(*) AS n FROM `{GROUP}` GROUP BY svc HAVING COUNT(*) > 1"),
+            "filtercount(*)>1",
+        ),
+        (
+            "a sum over a field",
+            format!(
+                "SELECT svc, SUM(ms) AS total FROM `{GROUP}` GROUP BY svc HAVING SUM(ms) > 50"
+            ),
+            "filtersum(ms)>50",
+        ),
+        (
+            "a longer source name, which moves the clause along",
+            format!(
+                "SELECT svc, COUNT(*) AS n FROM `{LONGER_GROUP}` GROUP BY svc \
+                 HAVING COUNT(*) > 1"
+            ),
+            "filtercount(*)>1",
+        ),
+        (
+            "an aggregate beside a condition over the group key",
+            format!(
+                "SELECT svc, COUNT(*) AS n FROM `{GROUP}` GROUP BY svc \
+                 HAVING svc = 'a' AND MAX(ms) > 1"
+            ),
+            // Removing the spacing runs the operator into the call that follows it, and the
+            // pipeline writes a call's name lowercased.
+            "filtersvc='a'andmax(ms)>1",
+        ),
+        (
+            "an ordering after the clause, which ends its condition",
+            format!(
+                "SELECT svc, COUNT(*) AS n FROM `{GROUP}` GROUP BY svc HAVING COUNT(*) > 1 \
+                 ORDER BY svc"
+            ),
+            "filtercount(*)>1",
+        ),
+        (
+            "a source already written as the selector call",
+            format!(
+                "SELECT svc, COUNT(*) AS n FROM `logGroups(logGroupIdentifier: ['{GROUP}'])` \
+                 GROUP BY svc HAVING COUNT(*) > 1"
+            ),
+            "filtercount(*)>1",
+        ),
+        (
+            "a source name that carries the clause keyword",
+            format!(
+                "SELECT svc, COUNT(*) AS n FROM `{KEYWORD_GROUP}` GROUP BY svc \
+                 HAVING COUNT(*) > 1"
+            ),
+            "filtercount(*)>1",
+        ),
+        (
+            "a compared value that carries the clause keyword",
+            format!(
+                "SELECT svc, COUNT(*) AS n FROM `{GROUP}` WHERE run = 'having' GROUP BY svc \
+                 HAVING COUNT(*) > 1"
+            ),
+            "filtercount(*)>1",
+        ),
+    ];
+
+    for (case, query_string, predicate) in cases {
+        let (status, body) = logs
+            .call(
+                "StartQuery",
+                &json!({
+                    "queryLanguage": "SQL",
+                    "queryString": query_string,
+                    "startTime": now_secs - 3_600,
+                    "endTime": now_secs,
+                }),
+            )
+            .await;
+        assert_eq!(
+            status, 400,
+            "case {case}: a filter on an aggregate does not compile, got {status} {body}"
+        );
+        let code = crate::harness::error_code(&body);
+        assert_eq!(
+            code, MALFORMED_QUERY,
+            "case {case}: expected {MALFORMED_QUERY}, got {code} with {body}"
+        );
+        // The envelope reports the status and the code the response itself answers with; the
+        // diagnostic is what it wraps.
+        let said = without_sdk_envelope(case, &message(case, &body), 400, MALFORMED_QUERY);
+        let statement = statement_the_compiler_reads(case, &query_string);
+        let (start, end) = clause_range(case, &statement);
+        assert_eq!(
+            said,
+            format!(
+                "No aggregation function expression allowed: {predicate} ([{start},{end}])"
+            ),
+            "case {case}: expected the rule, the translated predicate and the clause's range \
+             in {statement:?}, got {said:?}"
+        );
+        // The range is a range of the statement the compiler read, so for a source written
+        // the short way it sits PAST where that short form ended in the submitted text.
+        let submitted = query_string
+            .find(HAVING)
+            .unwrap_or_else(|| panic!("case {case}: the request carries a {HAVING} clause"));
+        if statement == query_string {
+            assert_eq!(
+                start, submitted,
+                "case {case}: a written-out source moves nothing, got {said:?}"
+            );
+        } else {
+            assert!(
+                start > submitted,
+                "case {case}: the written-out source moves the clause along, got {said:?}"
+            );
+        }
+        // The detail travels in the structure the model declares for it, locating the same
+        // text the message names: the message states the clause's first and LAST character,
+        // while the modelled location states one PAST its last, as every compile failure of
+        // this service reports one.
+        let location = &body["queryCompileError"]["location"];
+        assert_eq!(
+            (
+                location["startCharOffset"].as_i64(),
+                location["endCharOffset"].as_i64()
+            ),
+            (
+                Some(i64::try_from(start).expect("an offset fits in an i64")),
+                Some(i64::try_from(end + 1).expect("an offset fits in an i64"))
+            ),
+            "case {case}: the compile error locates the clause the message names, got {body}"
+        );
+    }
+
+    // Nothing was started: a refused statement leaves no query behind.
+    let described = logs
+        .ok("DescribeQueries", &json!({"logGroupName": GROUP}))
+        .await;
+    assert!(
+        described["queries"]
+            .as_array()
+            .is_none_or(|queries| queries.is_empty()),
+        "case the refused statements: no query is recorded, got {described}"
+    );
+}
+
+/// The statement shape CloudWatch Logs was RECORDED refusing, with the span it answered,
+/// reproduced here as literal values: the span places the clause 35 characters further along
+/// than the submitted text does, which is exactly what writing the source name out as the
+/// selector call adds — so a reference text of any other length, or an exclusive second
+/// offset, fails this test where the derived table above would not notice.
+///
+/// Both recorded forms are here. Their conditions are the same length, so the one span serves
+/// both — the span is the clause's place, not a function of what it filters on. The log group
+/// and the marker are one recorded run's values filling the statement; what the span depends
+/// on is their LENGTH, and the message carries neither of them.
+#[tokio::test]
+async fn the_recorded_aggregate_filter_refusal_states_the_recorded_span() {
+    let logs = Logs::new();
+    const GROUP: &str = "sim2real-logsql-having-734ccb6a6695";
+    const MARKER: &str = "mk7986f4cdabce";
+    logs.ok("CreateLogGroup", &json!({"logGroupName": GROUP}))
+        .await;
+    let now_secs = now_ms() / 1_000;
+
+    // (case, the recorded statement, the diagnostic the service answered it with)
+    let recorded: [(&str, String, &str); 2] = [
+        (
+            "the recorded count form",
+            format!(
+                "SELECT svc, COUNT(*) AS n, SUM(ms) AS total FROM `{GROUP}` \
+                 WHERE run = '{MARKER}' GROUP BY svc HAVING COUNT(*) > 1"
+            ),
+            "No aggregation function expression allowed: filtercount(*)>1 ([164,182])",
+        ),
+        (
+            "the recorded sum form",
+            format!(
+                "SELECT svc, COUNT(*) AS n, SUM(ms) AS total FROM `{GROUP}` \
+                 WHERE run = '{MARKER}' GROUP BY svc HAVING SUM(ms) > 50"
+            ),
+            "No aggregation function expression allowed: filtersum(ms)>50 ([164,182])",
+        ),
+    ];
+
+    for (case, query_string, expected) in recorded {
+        let (status, body) = logs
+            .call(
+                "StartQuery",
+                &json!({
+                    "queryLanguage": "SQL",
+                    "queryString": query_string,
+                    "startTime": now_secs - 3_600,
+                    "endTime": now_secs,
+                }),
+            )
+            .await;
+        assert_eq!(
+            status, 400,
+            "case {case}: the recorded statement is refused, got {status} {body}"
+        );
+        let code = crate::harness::error_code(&body);
+        assert_eq!(
+            code, MALFORMED_QUERY,
+            "case {case}: expected {MALFORMED_QUERY}, got {code} with {body}"
+        );
+        let said = without_sdk_envelope(case, &message(case, &body), 400, MALFORMED_QUERY);
+        assert_eq!(
+            said, expected,
+            "case {case}: expected the recorded diagnostic, got {said:?}"
+        );
     }
 }
