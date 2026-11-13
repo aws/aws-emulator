@@ -2470,6 +2470,11 @@ pub fn identity_is_service_assigned(resource_type: &str) -> bool {
         // in force is carried forward and a later deployment applies its declaration to the
         // rotation that exists ([`SECRETSMANAGER_ROTATION_SCHEDULE`]).
         || resource_type == SECRETSMANAGER_ROTATION_SCHEDULE
+        // So is its RESOURCE POLICY, for the same reason: the resource is the policy
+        // attached to a secret, the identifier it is known by is that secret's ARN as
+        // `PutResourcePolicy` answered it, and no naming rule here can compute the six
+        // characters that ARN ends in ([`SECRETSMANAGER_RESOURCE_POLICY`]).
+        || resource_type == SECRETSMANAGER_RESOURCE_POLICY
         // A NESTED STACK is one more, and the clearest case of it: "Ref returns the stack
         // ID" of the stack CloudFormation created for the resource, which carries the unique
         // id that service minted for it — the name the naming rules compute is only what the
@@ -3723,6 +3728,17 @@ pub const SECRETSMANAGER_SECRET: &str = "AWS::SecretsManager::Secret";
 /// the one in force forward and the declaration is applied to the rotation that exists
 /// rather than read as a different resource.
 pub const SECRETSMANAGER_ROTATION_SCHEDULE: &str = "AWS::SecretsManager::RotationSchedule";
+
+/// The resource-based policy an AWS Secrets Manager secret carries, as a resource type of
+/// its own. This is a type `super::provisioning` attaches in Secrets Manager itself, and the
+/// resource is the policy of the secret the declaration's `SecretId` names — so the
+/// identifier it is known by is that secret's ARN, which `PutResourcePolicy` answers and
+/// whose six trailing characters that service drew per secret. That is why
+/// [`identity_is_service_assigned`] names the type: the identifier in force is one no naming
+/// rule here can compute, so a re-deploy carries the one in force forward and the
+/// declaration is applied to the policy that exists rather than read as a different
+/// resource.
+pub const SECRETSMANAGER_RESOURCE_POLICY: &str = "AWS::SecretsManager::ResourcePolicy";
 
 /// A Systems Manager Parameter Store parameter's resource type (the SSM model:
 /// `cloudFormationName: SSM`). This is a type `super::provisioning` creates in Systems

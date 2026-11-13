@@ -13,6 +13,8 @@
 // points it into `tests/all/`.
 #[path = "all/authorization_before_existence.rs"]
 mod authorization_before_existence;
+#[path = "all/caller_principal_conditions.rs"]
+mod caller_principal_conditions;
 #[path = "all/conditioned_authorization.rs"]
 mod conditioned_authorization;
 #[path = "all/identity_based_authorization.rs"]

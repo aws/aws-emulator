@@ -53,6 +53,11 @@ pub const SECRET_ID_KEY: &str = "secretsmanager:SecretId";
 
 /// The global condition key naming the principal that made the request: "aws:PrincipalArn
 /// — the ARN of the principal that made the request" (IAM's global condition keys).
+///
+/// "For IAM roles, the request context returns the ARN of the role, not the ARN of the user
+/// that assumed the role", so a request signed by an assumed-role session answers it with
+/// the ROLE's ARN — the identity whose permissions are in force — rather than with the
+/// session ARN STS reports for the credential.
 pub const PRINCIPAL_ARN_KEY: &str = "aws:PrincipalArn";
 
 /// The global condition key naming that principal's account: "aws:PrincipalAccount — the
@@ -225,6 +230,13 @@ impl Conditions {
     /// policy admits a whole account without admitting everybody — is decided rather than
     /// left undecided. A request whose credential speaks for no principal populates
     /// neither, so a clause over one of them stays undecided for it.
+    ///
+    /// `principal_arn` is the ARN of the IDENTITY whose permissions are in force, which for
+    /// a request signed by an assumed-role session is the ROLE's: "for IAM roles, the
+    /// request context returns the ARN of the role, not the ARN of the user that assumed the
+    /// role" ([`PRINCIPAL_ARN_KEY`], IAM's global condition keys). The gate reads it off the
+    /// caller it resolved (`crate::state::authorization`), so a policy that locks a secret
+    /// to one role is satisfied by every session of that role.
     pub fn add_caller(&mut self, principal_arn: &str) {
         self.publish(PRINCIPAL_ARN_KEY);
         self.values

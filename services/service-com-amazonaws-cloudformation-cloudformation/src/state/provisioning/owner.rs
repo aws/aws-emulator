@@ -86,6 +86,12 @@ impl Owner {
             Self::SecretsManagerRotationSchedule => {
                 secretsmanager_rotation_schedule::create(ctx, region, resource).await
             }
+            // A resource policy carries no tags of its own either: it is not a resource of
+            // the owning service, but the POLICY of the secret it names, so CloudFormation
+            // propagates none to it.
+            Self::SecretsManagerResourcePolicy => {
+                secretsmanager_resource_policy::create(ctx, region, resource).await
+            }
             // A secret IS taggable: its `Tags` property is the tag list `CreateSecret` takes,
             // so it carries the tags CloudFormation gives the resource beside its own.
             Self::SecretsManagerSecret => {
@@ -222,6 +228,9 @@ impl Owner {
                     .await
             }
             Self::SecretsManagerSecret => Ok(secretsmanager_secret::readiness()),
+            Self::SecretsManagerResourcePolicy => {
+                Ok(secretsmanager_resource_policy::readiness())
+            }
             Self::StepFunctionsStateMachine => Ok(step_functions_state_machine::readiness()),
             // Each of these resources EXISTS from the moment its create answers: API Gateway
             // reports no state an api, a resource, a method, a deployment or a stage is still
@@ -326,6 +335,9 @@ impl Owner {
             // A rotation schedule's `Id` is the ARN of the secret it was configured on, which
             // its own create answered, so there is nothing left to read once it is up.
             Self::SecretsManagerRotationSchedule => Ok(BTreeMap::new()),
+            // A resource policy's `Id` is the ARN of the secret it was attached to, which its
+            // own create answered, so there is nothing left to read once it is up.
+            Self::SecretsManagerResourcePolicy => Ok(BTreeMap::new()),
             Self::SecretsManagerSecret | Self::StepFunctionsStateMachine => Ok(BTreeMap::new()),
             // An api's id and its root resource, and the id of a resource or a deployment, are
             // the ones their own creates answered with, so there is nothing left to read once
@@ -422,6 +434,9 @@ impl Owner {
             }
             Self::SecretsManagerRotationSchedule => {
                 Ok(secretsmanager_rotation_schedule::removal())
+            }
+            Self::SecretsManagerResourcePolicy => {
+                Ok(secretsmanager_resource_policy::removal())
             }
             Self::SecretsManagerSecret => {
                 secretsmanager_secret::removal(ctx, region, physical_resource_id).await
@@ -547,6 +562,9 @@ impl Owner {
             Self::SecretsManagerRotationSchedule => {
                 secretsmanager_rotation_schedule::update(ctx, region, resource, declared).await
             }
+            Self::SecretsManagerResourcePolicy => {
+                secretsmanager_resource_policy::update(ctx, region, resource, declared).await
+            }
             Self::SecretsManagerSecret => {
                 secretsmanager_secret::update(ctx, region, resource, declared).await
             }
@@ -646,6 +664,8 @@ impl Owner {
             // them.
             // A rotation schedule is not taggable at all, so nothing is asked about its tags.
             Self::SecretsManagerRotationSchedule => Ok(()),
+            // A resource policy is not taggable either, so nothing is asked about its tags.
+            Self::SecretsManagerResourcePolicy => Ok(()),
             Self::SecretsManagerSecret | Self::StepFunctionsStateMachine => Ok(()),
             // Nor are the tags of an api or a stage that already exists ([`Provisioner::retag`]'s
             // own default), so nothing is asked about those either.
@@ -752,6 +772,11 @@ impl Owner {
             // rotation off with no snapshot invented for it.
             Self::SecretsManagerRotationSchedule => {
                 secretsmanager_rotation_schedule::delete(ctx, region, resource).await
+            }
+            // Nor of a resource policy: there is no such call, so a `Snapshot` deletion
+            // policy on this type takes the document off with no snapshot invented for it.
+            Self::SecretsManagerResourcePolicy => {
+                secretsmanager_resource_policy::delete(ctx, region, resource).await
             }
             // Secrets Manager takes no snapshot of a secret on the way out: there is no such
             // call, so a `Snapshot` deletion policy on this type deletes the secret with no
@@ -870,6 +895,9 @@ impl Owner {
                 secretsmanager_rotation_schedule::actual_configuration(ctx, region, resource)
                     .await
             }
+            Self::SecretsManagerResourcePolicy => {
+                secretsmanager_resource_policy::actual_configuration(ctx, region, resource).await
+            }
             Self::SecretsManagerSecret => {
                 secretsmanager_secret::actual_configuration(ctx, region, resource).await
             }
@@ -926,6 +954,7 @@ impl Owner {
             Self::NestedStack => message.to_string(),
             // AWS Secrets Manager's and AWS Step Functions' do the same.
             Self::SecretsManagerRotationSchedule
+            | Self::SecretsManagerResourcePolicy
             | Self::SecretsManagerSecret
             | Self::StepFunctionsStateMachine => message.to_string(),
             // Amazon API Gateway's does the same.

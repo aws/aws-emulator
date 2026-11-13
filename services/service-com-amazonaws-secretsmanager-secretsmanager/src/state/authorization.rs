@@ -223,11 +223,13 @@ fn decide<Eng: Send + Sync + 'static>(
     let refusal = |reason: &str| not_authorized(&caller.arn, &action, reported, reason);
     // The keys the CALLER populates travel with the request too, so a statement scoped to
     // one principal or one account — how a resource-based policy admits an account's
-    // callers without admitting every caller — is decided rather than left undecided. A
-    // credential that speaks for nobody populates neither.
+    // callers without admitting every caller — is decided rather than left undecided. The
+    // principal they name is the IDENTITY whose permissions are in force, which for a
+    // session is the role behind it ([`Caller::identity_arn`]). A credential that speaks
+    // for nobody populates neither.
     let mut conditions = conditions.clone();
     if !caller.principals.is_empty() {
-        conditions.add_caller(&caller.arn);
+        conditions.add_caller(&caller.identity_arn);
     }
     let conditions = &conditions;
     // The principal spellings travel with the request because that is what a statement's
@@ -515,6 +517,13 @@ struct Caller {
     /// Every spelling of the principal: the session ARN STS reports, and the ARN of the
     /// IAM role behind an assumed-role session.
     principals: Vec<String>,
+    /// The ARN of the IDENTITY whose permissions are in force: the ROLE behind an
+    /// assumed-role session, else the principal's own ARN. It is what the global condition
+    /// key naming the calling principal answers with — "for IAM roles, the request context
+    /// returns the ARN of the role, not the ARN of the user that assumed the role"
+    /// (`aws:PrincipalArn`, IAM's global condition keys) — while the ARN a refusal NAMES
+    /// stays [`Caller::arn`], which is what STS reports for the credential presented.
+    identity_arn: String,
     /// The identity-based policy documents in force on the principal.
     documents: Vec<String>,
     /// The permissions boundary in force on the principal, when it carries one whose
@@ -560,19 +569,26 @@ fn caller<Eng: Send + Sync + 'static>(
     ctx: &::smithy_server_runtime::OperationContext<'_>,
 ) -> Caller {
     let access_key_id = ::engine::extract_akid(&ctx.parts().headers);
-    let identity = match sts_store::service_state(engine) {
-        Some(sts) => sts_store::resolve_caller(
+    // The caller is read with the ROLE its credential is a session of, where it is one:
+    // that role is the identity whose permissions are in force, and the one the global
+    // principal condition key answers with (see [`Caller::identity_arn`]). STS records it
+    // at the mint, so it is read from there rather than spelled from the session's ARN,
+    // which carries no path.
+    let resolved = match sts_store::service_state(engine) {
+        Some(sts) => sts_store::resolve_request_caller(
             &mut sts.lock(),
             &access_key_id,
             SystemTime::now(),
             ctx.credential_store(),
-        ),
+            sts_store::ambient_identity(),
+        )
+        .map(|caller| (caller.identity, caller.role_arn)),
         // No STS store on this engine: the only identity a request can present is the
-        // account's own published credential.
-        None => Ok(sts_store::ambient_identity()),
+        // account's own published credential, which is a session of no role.
+        None => Ok((sts_store::ambient_identity(), None)),
     };
-    let identity = match identity {
-        Ok(identity) => identity,
+    let (identity, session_role_arn) = match resolved {
+        Ok(resolved) => resolved,
         // The session credential has expired, so it speaks for nobody: no documents, no
         // principal spelling, and every action it asks for falls to the default deny. The
         // key id it presented is NOT quoted back — this module echoes no value of the
@@ -583,6 +599,7 @@ fn caller<Eng: Send + Sync + 'static>(
             return Caller {
                 arn: EXPIRED_CREDENTIAL_PRINCIPAL.to_string(),
                 principals: Vec::new(),
+                identity_arn: String::new(),
                 documents: Vec::new(),
                 boundary: None,
                 account_credential: false,
@@ -594,6 +611,7 @@ fn caller<Eng: Send + Sync + 'static>(
     let mut caller = Caller {
         account_credential: identity.arn == sts_store::ambient_identity().arn,
         principals: vec![identity.arn.clone()],
+        identity_arn: session_role_arn.clone().unwrap_or_else(|| identity.arn.clone()),
         arn: identity.arn,
         documents: Vec::new(),
         boundary: None,
@@ -617,6 +635,7 @@ fn caller<Eng: Send + Sync + 'static>(
         {
             caller.account_credential = false;
             caller.arn = user.arn.clone();
+            caller.identity_arn = user.arn.clone();
             caller.principals = vec![user.arn.clone()];
         }
     }
@@ -627,6 +646,10 @@ fn caller<Eng: Send + Sync + 'static>(
         // session ARN does not.
         if let Some(held) = store.roles.get(&iam_store::name_key(role_name)) {
             caller.principals.push(held.arn.clone());
+            // The ARN the ACCOUNT holds the role under, which carries its path: the one a
+            // statement names the role by, and so the one the principal condition key
+            // answers with for a session of it.
+            caller.identity_arn = held.arn.clone();
             caller.read_policies_of(&store, &held.arn.clone());
         }
     } else if ::service_common::iam_role::user_name(&caller.arn).is_some() {

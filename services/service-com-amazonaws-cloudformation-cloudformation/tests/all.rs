@@ -421,6 +421,8 @@ mod stack_configuration_and_provider_limits;
 mod stack_declared_function_identity;
 #[path = "all/stack_delete_failure_reason.rs"]
 mod stack_delete_failure_reason;
+#[path = "all/stack_declared_resource_policy.rs"]
+mod stack_declared_resource_policy;
 #[path = "all/stack_event_timeline.rs"]
 mod stack_event_timeline;
 #[path = "all/stack_exports.rs"]

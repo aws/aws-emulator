@@ -252,6 +252,10 @@ mod nested_stack;
 /// `AWS::S3::Bucket`: the halves of that type's provider the catalogue cannot carry — how a
 /// changed declaration reaches a bucket that exists, and how the provider words a refusal.
 mod s3_bucket;
+/// `AWS::SecretsManager::ResourcePolicy`: the resource-based policy a stack attaches to a
+/// secret, attached in AWS Secrets Manager itself
+/// ([`secretsmanager_resource_policy`]).
+mod secretsmanager_resource_policy;
 /// `AWS::SecretsManager::RotationSchedule`: the rotation a stack binds to a secret, put in
 /// force in AWS Secrets Manager itself ([`secretsmanager_rotation_schedule`]).
 mod secretsmanager_rotation_schedule;
@@ -382,9 +386,10 @@ pub(super) const REST_XML: &str = "application/xml";
 /// (`sigv4Name: secretsmanager`, service shape `secretsmanager`), which speaks `awsJson1_1`.
 ///
 /// Here rather than in one of the modules that call it, because more than one provisions a
-/// resource of that service: the SECRET itself ([`secretsmanager_secret`]) and the rotation
-/// configured on it ([`secretsmanager_rotation_schedule`]), which have to address the same
-/// service the same way.
+/// resource of that service: the SECRET itself ([`secretsmanager_secret`]), the rotation
+/// configured on it ([`secretsmanager_rotation_schedule`]) and the resource policy attached
+/// to it ([`secretsmanager_resource_policy`]), which have to address the same service the
+/// same way.
 pub(super) const SECRETSMANAGER_SIGNING_NAME: &str = "secretsmanager";
 /// See [`SECRETSMANAGER_SIGNING_NAME`].
 pub(super) const SECRETSMANAGER_TARGET_PREFIX: &str = "secretsmanager";
@@ -849,6 +854,9 @@ pub(super) enum Owner {
     /// `AWS::SecretsManager::RotationSchedule`, whose arms are
     /// [`secretsmanager_rotation_schedule`]'s.
     SecretsManagerRotationSchedule,
+    /// `AWS::SecretsManager::ResourcePolicy`, whose arms are
+    /// [`secretsmanager_resource_policy`]'s.
+    SecretsManagerResourcePolicy,
     /// `AWS::SecretsManager::Secret`, whose arms are [`secretsmanager_secret`]'s.
     SecretsManagerSecret,
     /// `AWS::StepFunctions::StateMachine`, whose arms are
@@ -931,6 +939,9 @@ pub(super) fn owner_for(resource_type: &str) -> Option<Owner> {
     }
     if resource_type == secretsmanager_rotation_schedule::SECRETSMANAGER_ROTATION_SCHEDULE {
         return Some(Owner::SecretsManagerRotationSchedule);
+    }
+    if resource_type == secretsmanager_resource_policy::SECRETSMANAGER_RESOURCE_POLICY {
+        return Some(Owner::SecretsManagerResourcePolicy);
     }
     if resource_type == secretsmanager_secret::SECRETSMANAGER_SECRET {
         return Some(Owner::SecretsManagerSecret);

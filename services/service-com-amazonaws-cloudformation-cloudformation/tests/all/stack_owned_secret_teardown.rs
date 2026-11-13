@@ -188,7 +188,11 @@ fn arn_output(row: &Row) -> String {
 
 /// Call one AWS Secrets Manager operation through the same router, signed for
 /// `secretsmanager` the way a client's SDK signs it: the status and the parsed answer.
-async fn secretsmanager(
+///
+/// `pub(crate)`: `tests/all.rs` is this binary's crate root, so a sibling suite that reads
+/// the secret a stack created addresses that service through THIS call rather than carrying
+/// a second copy of it.
+pub(crate) async fn secretsmanager(
     router: &MultiServiceRouter,
     operation: &str,
     request: &Value,
