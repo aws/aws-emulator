@@ -547,10 +547,10 @@ async fn a_template_may_be_as_large_as_the_documented_maximum_and_no_larger() {
             assert_eq!(
                 created.message(),
                 format!(
-                    "The template is {size} bytes, which is larger than the maximum \
-                     template size of {ceiling} bytes."
+                    "Template {name} exceeds maximum allowed size of {} KB.",
+                    ceiling / 1024
                 ),
-                "case {case:?}: expected the refusal to state the size and the maximum, got {:?}",
+                "case {case:?}: expected the refusal to name the template and the quota, got {:?}",
                 created.message()
             );
             let read = ses.get_template(name).await;

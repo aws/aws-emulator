@@ -319,13 +319,19 @@ pub const MAX_CONTACTS_PER_LIST: usize = 10_000;
 /// binds rather than growing the store without end.
 pub const MAX_EMAIL_TEMPLATES: usize = 10_000;
 
+/// The quota SES documents for one email template, in the unit it documents it in — and
+/// the unit a refusal past it states ([`email_template_exceeds_maximum_size`]). The size
+/// in bytes is derived from this rather than the other way round, so the sentence and the
+/// bound cannot disagree.
+pub const MAX_EMAIL_TEMPLATE_KILOBYTES: usize = 500;
+
 /// The largest one email template may be, counting its subject line and both body
 /// parts: SES documents a maximum size of 500 KB for an email template, and
 /// `CreateEmailTemplate` refuses past it on the input rather than holding a template
 /// no send could use. The parts are caller-sized — none of them carries a length bound
 /// in the model — so this bound and [`MAX_EMAIL_TEMPLATES`] together are what bound the
 /// template store.
-pub const MAX_EMAIL_TEMPLATE_BYTES: usize = 500 * 1024;
+pub const MAX_EMAIL_TEMPLATE_BYTES: usize = MAX_EMAIL_TEMPLATE_KILOBYTES * 1024;
 
 /// Addresses the account's suppression lists may hold, across the account-level list
 /// and every tenant's own.
@@ -3323,16 +3329,43 @@ pub fn email_template_not_found(template_name: &str) -> String {
 }
 
 /// How this service words `AlreadyExistsException` for a template name the account
-/// already holds.
+/// already holds, for a create that attached `tag_count` tags.
 ///
-/// The template store belongs to one account, so the sentence names both the template
-/// the request asked for and the account that already holds it; the account is the one
-/// this emulator serves, read from the emulator rather than from anything the request
-/// carries.
-pub fn email_template_already_exists(template_name: &str) -> String {
+/// SES has TWO sentences for one condition, and which one it answers is decided by the
+/// path the create took rather than by what the store holds: a create that attaches tags
+/// is refused with the bare statement that the name is taken, disclosing nothing about
+/// the resource or the account, while a create that attaches none is refused with the
+/// sentence that names both the template the request asked for and the account that
+/// already holds it. The account is the one this emulator serves, read from the emulator
+/// rather than from anything the request carries.
+///
+/// Stated once here — the selection included — so the two sentences cannot be chosen
+/// differently by a second caller.
+pub fn email_template_already_exists(template_name: &str, tag_count: usize) -> String {
+    if tag_count == 0 {
+        format!(
+            "Template {template_name} already exists for account id {}",
+            ::emulator_server::emulator_account_id()
+        )
+    } else {
+        "Template already exists".to_string()
+    }
+}
+
+/// How this service words `BadRequestException` for template content past the size quota
+/// ([`MAX_EMAIL_TEMPLATE_BYTES`]).
+///
+/// The quota is a service limit rather than a modelled bound, and the sentence states it:
+/// the template the request named, and the limit in the unit SES documents it in. What the
+/// refused content MEASURED is not part of it — the sentence is about the quota, which is
+/// also what tells this refusal apart from a member refused for its own modelled length.
+///
+/// One wording for every operation that writes a named template's content, so a client
+/// sees the same sentence whichever call first tells it the template is too large.
+pub fn email_template_exceeds_maximum_size(template_name: &str) -> String {
     format!(
-        "Template {template_name} already exists for account id {}",
-        ::emulator_server::emulator_account_id()
+        "Template {template_name} exceeds maximum allowed size of \
+         {MAX_EMAIL_TEMPLATE_KILOBYTES} KB."
     )
 }
 
@@ -3584,11 +3617,12 @@ const CONSTRAINT_SEPARATOR: &str = " failed to satisfy constraint: ";
 /// boundary with: one clause per violation, in the envelope AWS counts them in.
 ///
 /// Every clause is the framework's own, with ONE difference: a value refused for its
-/// FORM — outside a modelled enum's value set, or outside a modelled `@pattern` — is
-/// stated WITHOUT the value. SES names the member and the value set or the pattern
-/// that member had to satisfy and withholds what was sent. A length, range or
-/// absent-member clause quotes the value the way the framework renders it, which is
-/// how AWS's own validation renders those.
+/// FORM — outside a modelled enum's value set, or outside a modelled `@pattern` — or for
+/// being LONGER than a modelled `@length` maximum is stated WITHOUT the value. SES names
+/// the member and the value set, the pattern or the maximum that member had to satisfy
+/// and withholds what was sent. A too-SHORT value, a range violation and an absent member
+/// quote the value the way the framework renders it, which is how AWS's own validation
+/// renders those.
 ///
 /// `None` when there is nothing to state, which keeps the framework's own wording.
 pub fn boundary_refusal_message(violations: &[Violation]) -> Option<String> {
@@ -3615,9 +3649,11 @@ pub fn boundary_refusal_message(violations: &[Violation]) -> Option<String> {
 /// The requirement half is the framework's own words — the clause is cut at the
 /// separator rather than rebuilt — so a constraint class the framework learns to check
 /// cannot drift from this wording, and only the SUBJECT of a clause about a value's
-/// form changes: from the value-quoting form to the member on its own. The one thing
-/// decided here rather than by the walk is the ORDER a value set is listed in, which
-/// belongs to the enum rather than to the walk that read the model's members
+/// form or its excess length changes: from the value-quoting form to the member on its
+/// own.
+///
+/// The one thing decided here rather than by the walk is the ORDER a value set is listed
+/// in, which belongs to the enum rather than to the walk that read the model's members
 /// ([`in_published_enum_value_order`]) — applied to the violation before it is
 /// rendered, so the sentence around the list stays the framework's whatever shape it
 /// takes.
@@ -3626,7 +3662,7 @@ fn boundary_clause(violation: &Violation) -> String {
     let rendered = violation.message();
     if !matches!(
         violation.kind,
-        ViolationKind::EnumValue(_) | ViolationKind::Pattern(_)
+        ViolationKind::EnumValue(_) | ViolationKind::Pattern(_) | ViolationKind::MaxLength(_)
     ) {
         return rendered;
     }

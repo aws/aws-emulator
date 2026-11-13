@@ -157,14 +157,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         // SES documents a maximum size of 500 KB for an email template, and none of the
         // content's parts carries a length bound in the model, so the size of what the
-        // request carries is checked here.
-        let size = crate::state::email_template_size(&content);
-        if size > crate::state::MAX_EMAIL_TEMPLATE_BYTES {
-            return Err(bad_request(format!(
-                "The template is {size} bytes, which is larger than the maximum \
-                 template size of {} bytes.",
-                crate::state::MAX_EMAIL_TEMPLATE_BYTES
-            )));
+        // request carries is checked here. The refusal is the one `crate::state` words
+        // for content past the quota — the same sentence whichever operation writes the
+        // content — and the template that stands is left exactly as it was.
+        if crate::state::email_template_size(&content) > crate::state::MAX_EMAIL_TEMPLATE_BYTES {
+            return Err(bad_request(
+                crate::state::email_template_exceeds_maximum_size(&name),
+            ));
         }
 
         let mut store = state.lock();

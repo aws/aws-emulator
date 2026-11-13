@@ -117,6 +117,8 @@ mod email_identity_policies_read;
 mod email_identity_verification_info;
 #[path = "all/email_template_listing.rs"]
 mod email_template_listing;
+#[path = "all/email_template_refusal_wording.rs"]
+mod email_template_refusal_wording;
 #[path = "all/email_template_render.rs"]
 mod email_template_render;
 #[path = "all/email_template_updates.rs"]

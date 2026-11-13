@@ -617,6 +617,12 @@ fn template_content(
     let Some(content) = template.template_content.clone() else {
         return Err(bad_request(NO_DEFAULT_TEMPLATE));
     };
+    // Content the request carries INLINE belongs to no named template: this branch is
+    // reached only where the request named neither a `TemplateName` nor a
+    // `TemplateArn`, and nothing here is stored as a template. So the quota sentence a
+    // named write is refused with (`crate::state::email_template_exceeds_maximum_size`,
+    // which names the template) has no name to state, and this guard reports the size it
+    // measured against the bound instead.
     let size = crate::state::email_template_size(&content);
     if size > crate::state::MAX_EMAIL_TEMPLATE_BYTES {
         return Err(bad_request(format!(

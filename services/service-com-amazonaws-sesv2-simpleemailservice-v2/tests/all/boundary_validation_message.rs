@@ -10,8 +10,8 @@
 //! The rule these cases pin: a clause about a value's FORM — the enum value set or
 //! the regular-expression pattern the member had to satisfy — names the member and
 //! the requirement and WITHHOLDS the value that violated it, while a clause about a
-//! value's size keeps the value the framework quotes. The envelope is AWS's own: one
-//! clause per violation, counted.
+//! value that falls SHORT of a length minimum keeps the value the framework quotes. The
+//! envelope is AWS's own: one clause per violation, counted.
 
 use std::sync::Arc;
 
@@ -264,10 +264,12 @@ async fn two_clauses_are_counted_in_the_envelope() {
 
 #[tokio::test]
 async fn a_size_clause_keeps_the_value() {
-    // The boundary of the rule: a clause about how LONG a value is, not about its
-    // form, is the framework's own sentence — which quotes the value, as AWS's own
-    // validation does for a length constraint. `TenantName` is modelled with a
-    // minimum length of 1 and no pattern
+    // The boundary of the rule, on its MINIMUM side: a clause about a value that is too
+    // SHORT is the framework's own sentence, which quotes the value, as AWS's own
+    // validation does for a length minimum. (A value past a length MAXIMUM is the other
+    // side of that line and is stated without the value — pinned in the
+    // email-template refusal-wording suite beside this one.) `TenantName` is modelled
+    // with a minimum length of 1 and no pattern
     // (`smithy_query(query="operation",operation="CreateTenant")`).
     let ses = Ses::new();
     let reply = ses.create_tenant("").await;

@@ -165,14 +165,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         // SES documents a maximum size of 500 KB for an email template, and none of
         // the content's parts carries a length bound in the model, so the size of what
-        // the request carries is checked here.
-        let size = crate::state::email_template_size(&content);
-        if size > crate::state::MAX_EMAIL_TEMPLATE_BYTES {
-            return Err(bad_request(format!(
-                "The template is {size} bytes, which is larger than the maximum \
-                 template size of {} bytes.",
-                crate::state::MAX_EMAIL_TEMPLATE_BYTES
-            )));
+        // the request carries is checked here. The refusal is worded once in
+        // `crate::state`, and nothing is stored for it: the name the request asked for
+        // still holds whatever it held before.
+        if crate::state::email_template_size(&content) > crate::state::MAX_EMAIL_TEMPLATE_BYTES {
+            return Err(bad_request(
+                crate::state::email_template_exceeds_maximum_size(&name),
+            ));
         }
 
         let tags: Vec<(String, String)> = input
@@ -196,10 +195,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // conflict this operation models, and replacing that template's content is
         // what `UpdateEmailTemplate` is for. The stored template is left exactly as it
         // was, so the refused create changes nothing a later read or render sees.
+        //
+        // Which sentence the refusal carries is decided by the create itself rather than
+        // by the store: a create that attaches tags is refused with the bare statement
+        // that the name is taken, and one that attaches none with the sentence naming the
+        // template and the account (`crate::state::email_template_already_exists`).
         if store.email_templates.contains_key(&name) {
             return Err(CreateEmailTemplateErrorModeled::AlreadyExistsException(
                 AlreadyExistsException {
-                    message: Some(crate::state::email_template_already_exists(&name)),
+                    message: Some(crate::state::email_template_already_exists(
+                        &name,
+                        tags.len(),
+                    )),
                 },
             )
             .into());
