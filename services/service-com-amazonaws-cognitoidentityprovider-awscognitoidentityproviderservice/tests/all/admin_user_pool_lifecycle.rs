@@ -29,7 +29,12 @@ const GOOD_PASSWORD: &str = "Passw0rd!2024";
 
 /// One emulator with just this service mounted.
 fn router() -> MultiServiceRouter {
-    let engine: Arc<engine::InMemoryEngine> = Arc::new(engine::InMemoryEngine::new());
+    router_on(Arc::new(engine::InMemoryEngine::new()))
+}
+
+/// One emulator with just this service mounted, serving `engine`'s store, so a
+/// suite that holds the engine sees the very state the handlers read and write.
+fn router_on(engine: Arc<engine::InMemoryEngine>) -> MultiServiceRouter {
     let mut router = MultiServiceRouter::new();
     router.register_service(
         service_com_amazonaws_cognitoidentityprovider_awscognitoidentityproviderservice::EmulatedService::new(engine),
@@ -1709,25 +1714,56 @@ async fn resending_an_invitation_is_the_only_second_create_a_username_accepts() 
 
 #[tokio::test]
 async fn the_pool_store_is_bounded_and_a_delete_makes_room_again() {
-    use service_com_amazonaws_cognitoidentityprovider_awscognitoidentityproviderservice::state::MAX_USER_POOLS;
+    use service_com_amazonaws_cognitoidentityprovider_awscognitoidentityproviderservice::state::{
+        new_user_pool, service_state, PoolSigningKeys, MAX_USER_POOLS,
+    };
 
-    let router = router();
+    let engine: Arc<engine::InMemoryEngine> = Arc::new(engine::InMemoryEngine::new());
+    let router = router_on(Arc::clone(&engine));
+    let store = service_state(&*engine).expect("the cognito-idp store is reachable");
+
+    // Fill the store to one short of its bound by SEEDING it, not by driving
+    // `CreateUserPool` once per slot: each create mints a pool's RSA key pairs,
+    // so the bound is reached here in a moment instead of in minutes of key
+    // generation, and the requests below still cross the bound over the wire.
+    // The seeded pools share one key set, which nothing in this suite reads.
+    let seed_keys = PoolSigningKeys::generate();
+    {
+        let mut guard = store.lock();
+        let mut seeded = 0;
+        while guard.user_pools.len() < MAX_USER_POOLS - 1 {
+            let pool = new_user_pool(
+                format!("seeded-{seeded}"),
+                REGION,
+                std::time::SystemTime::now(),
+                seed_keys.clone(),
+            );
+            guard.user_pools.entry(pool.id.clone()).or_insert(pool);
+            seeded += 1;
+        }
+        assert_eq!(
+            guard.user_pools.len(),
+            MAX_USER_POOLS - 1,
+            "case \"seeded to one short of the bound\": the store must hold \
+             {} pools before the bound is crossed over the wire",
+            MAX_USER_POOLS - 1
+        );
+    }
 
     // This emulator keeps its pools in memory, so the store has a maximum: the
-    // request past it is refused rather than growing the process.
-    let mut last_id = String::new();
-    for index in 0..MAX_USER_POOLS {
-        let created = ok(
-            &router,
-            "CreateUserPool",
-            &json!({ "PoolName": format!("pool-{index}") }),
-        )
-        .await;
-        last_id = created["UserPool"]["Id"]
-            .as_str()
-            .unwrap_or_else(|| panic!("pool {index} must be created, got {created}"))
-            .to_string();
-    }
+    // request past it is refused rather than growing the process. The create
+    // that takes the last free slot is served...
+    let created = ok(
+        &router,
+        "CreateUserPool",
+        &json!({ "PoolName": "the-last-slot" }),
+    )
+    .await;
+    let last_id = created["UserPool"]["Id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("the pool in the last free slot must be created, got {created}"))
+        .to_string();
+    // ...and the one past the bound is not.
     let (status, payload) = call(
         &router,
         "CreateUserPool",
