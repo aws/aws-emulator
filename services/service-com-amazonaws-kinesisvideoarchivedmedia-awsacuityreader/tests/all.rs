@@ -27,6 +27,8 @@ mod get_images_request_bounds;
 mod get_images_resize_pair;
 #[path = "all/get_images_sampling.rs"]
 mod get_images_sampling;
+#[path = "all/get_images_window_bound.rs"]
+mod get_images_window_bound;
 #[path = "all/refusal_message_wording.rs"]
 mod refusal_message_wording;
 #[path = "all/registered_stream_reads.rs"]
