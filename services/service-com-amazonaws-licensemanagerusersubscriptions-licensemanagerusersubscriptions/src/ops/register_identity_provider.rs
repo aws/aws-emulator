@@ -38,16 +38,18 @@
 //! * `ActiveDirectoryIdentityProvider.DirectoryId` names a directory of this account in
 //!   AWS Directory Service: registering an identity provider for a directory the account
 //!   does not have would mint a provider every later subscription flow would build on.
-//!   The id is resolved against the account's directories
-//!   ([`crate::state::ComAmazonawsLicensemanagerusersubscriptionsLicensemanagerusersubscriptionsState::resolves_active_directory`])
-//!   and one that is absent, or not in the `Active` stage, is refused naming the
-//!   requested id. A provider the request marks `IsSharedActiveDirectory`, one whose id
-//!   takes the `sd-` form, and one that names no `DirectoryId` at all are not directories
-//!   of this account's OWN fleet, so that fleet is not what decides them: this check does
-//!   not apply to them and the registration goes on. What would decide a shared directory
-//!   is `ds:DescribeSharedDirectories`, still a scaffolded 501 in the Directory Service
-//!   emulator, and a self-managed Active Directory is no Directory Service resource at
-//!   all.
+//!   The id is resolved against the directories the account HAS, read off the record the
+//!   plane that creates directories publishes
+//!   ([`crate::state::ad_directory_fleet::resolves_active_directory`]), and one that is
+//!   absent, or not yet in service, is refused naming the requested id — so a directory a
+//!   client created with `ds:CreateDirectory` or `ds:CreateMicrosoftAD` is registrable once
+//!   it is built, and one it deleted stops being registrable at once. A provider the request
+//!   marks `IsSharedActiveDirectory`, one whose id takes the `sd-` form, and one that names
+//!   no `DirectoryId` at all are not directories of this account's OWN fleet, so that fleet
+//!   is not what decides them: this check does not apply to them and the registration goes
+//!   on. What would decide a shared directory is `ds:DescribeSharedDirectories`, still a
+//!   scaffolded 501 in the Directory Service emulator, and a self-managed Active Directory
+//!   is no Directory Service resource at all.
 //!
 //! A self-managed Active Directory's `ActiveDirectorySettings.DomainCredentialsProvider`
 //! names a Secrets Manager secret of the account the same way — the credentials "needed for
@@ -216,16 +218,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         // THE DIRECTORY PREREQUISITE, ahead of every network resource the request names:
         // the registration is FOR that directory, so a request naming one the account does
-        // not have (or that is not usable) is refused for the directory whatever else it
+        // not have (or that is not usable yet) is refused for the directory whatever else it
         // also got wrong — a caller told to fix a security group would otherwise correct it
         // and be refused again, never learning which prerequisite actually blocked the
-        // registration. The directories the account has are not a clock-driven view, so
-        // this is a plain read: the store is locked for the lookup alone and released
-        // before the awaits below, which ask another service.
-        {
-            let state = state.lock();
-            resolve_directory(&state, &input.identity_provider)?;
-        }
+        // registration. Resolved through the one predicate every caller asks, which reads
+        // this service's own fleet seam and the record of the plane that CREATES
+        // directories; neither store is held while the other is read.
+        let now = std::time::SystemTime::now();
+        resolve_directory(&*self.engine, &input.identity_provider, now)?;
 
         // The subnets and the security group a supplied `Settings` names are resources of
         // the caller's own VPC — this registration CREATES the activation-server VPC
@@ -257,8 +257,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         crate::state::credentials_secret::resolve_domain_credentials(ctx, &input.identity_provider)
             .await
             .map_err(into_error)?;
-
-        let now = std::time::SystemTime::now();
 
         let region = crate::state::request_region(&ctx.parts().headers);
         let signing_name = ctx.identity().signing_name().to_string();
@@ -413,8 +411,8 @@ fn directory_not_usable(directory_id: &str) -> RegisterIdentityProviderError {
 /// not hold.
 const SHARED_DIRECTORY_PREFIX: &str = "sd-";
 
-/// Resolve the directory an `ActiveDirectoryIdentityProvider` names against the account's
-/// directories.
+/// Resolve the directory an `ActiveDirectoryIdentityProvider` names against the directories
+/// the account has.
 ///
 /// A provider is resolved whenever it names a `DirectoryId` of this account's own
 /// directories. The two forms that fleet does not hold are OUT OF SCOPE for this check —
@@ -429,9 +427,10 @@ const SHARED_DIRECTORY_PREFIX: &str = "sd-";
 ///   Service emulator, so there is nothing to resolve it against yet;
 /// * a self-managed Active Directory (`ActiveDirectorySettings`, no `DirectoryId`), run by
 ///   the customer and not a Directory Service resource at all.
-fn resolve_directory(
-    state: &crate::state::ComAmazonawsLicensemanagerusersubscriptionsLicensemanagerusersubscriptionsState,
+fn resolve_directory<Eng: ::std::marker::Send + ::std::marker::Sync + 'static>(
+    engine: &Eng,
     identity_provider: &IdentityProvider,
+    now: std::time::SystemTime,
 ) -> Result<(), RegisterIdentityProviderError> {
     let IdentityProvider::ActiveDirectoryIdentityProvider(ad) = identity_provider;
     if ad.is_shared_active_directory.unwrap_or(false) {
@@ -444,11 +443,11 @@ fn resolve_directory(
     else {
         return Ok(());
     };
-    // Every way the lookup can fail to produce an ACTIVE directory of that id is the one
-    // refusal: the account has no directory of that id, or it is in a stage this
-    // registration cannot be built on. A caller is told which id was refused and nothing
-    // else.
-    if state.resolves_active_directory(directory_id) {
+    // Every way the resolution can fail to produce a directory of that id this registration
+    // can be built on is the one refusal: the account has no directory of that id, it is
+    // still being built, or it has been deleted. A caller is told which id was refused and
+    // nothing else.
+    if crate::state::ad_directory_fleet::resolves_active_directory(engine, directory_id, now) {
         Ok(())
     } else {
         Err(directory_not_usable(directory_id))

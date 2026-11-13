@@ -23,6 +23,8 @@ mod associations_follow_their_registration;
 mod credentials_secret_resolution;
 #[path = "all/deregistration_spares_what_it_was_not_asked_about.rs"]
 mod deregistration_spares_what_it_was_not_asked_about;
+#[path = "all/directory_fleet_resolution.rs"]
+mod directory_fleet_resolution;
 #[path = "all/fail_closed_refusals_answer_401.rs"]
 mod fail_closed_refusals_answer_401;
 #[path = "all/filter_operations.rs"]

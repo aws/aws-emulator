@@ -383,12 +383,17 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // reports as the realm of every object inside it, and the NetBIOS short name, which
         // names the organizational unit the objects it creates sit in — are recorded with it
         // for the same reason, read back off the record this create persisted.
+        // WHEN the directory is in service is recorded with it, for a reader of another
+        // kind: a service that BUILDS on a directory of this account is not told the stage
+        // this record carries, and this create answers while the stage chain it owes still
+        // stands — so the instant that chain reaches [`crate::state::STAGE_ACTIVE`] is
+        // recorded here, read from the one helper that states the chain
+        // ([`crate::state::directory_active_at`]), and the clock brings the directory into
+        // service for every reader at that one instant.
         if let Some(inventory) = crate::state::ad_directory_inventory(&*self.engine) {
-            inventory.lock().register_in_domain(
-                &directory_id,
-                &stored.name,
-                stored.short_name.as_deref(),
-            );
+            let mut inventory = inventory.lock();
+            inventory.register_in_domain(&directory_id, &stored.name, stored.short_name.as_deref());
+            inventory.record_in_service_at(&directory_id, crate::state::directory_active_at(now));
         }
 
         Ok(CreateDirectoryOutput {

@@ -11,7 +11,9 @@
 //! live here too, each behind its own seed seam; the instances are ALSO resolved against
 //! the service that owns them ([`ec2_fleet`]), which is what makes an instance a client
 //! really launched a target this service accepts, and so are the subnets and the security
-//! group a registration's `Settings` name. The credentials secret a request's
+//! group a registration's `Settings` name, and so is the directory an identity-provider
+//! registration is for ([`ad_directory_fleet`]), which is what makes a directory a client
+//! really created one a registration can be built on. The credentials secret a request's
 //! `CredentialsProvider` names is resolved the same way, against the service that owns
 //! secrets ([`credentials_secret`]). The
 //! list/lookup/pagination/filter helpers live here as well, so the operation handlers in
@@ -25,6 +27,10 @@ pub mod ec2_fleet;
 /// Resolving the Secrets Manager secret a request's `CredentialsProvider` names against the
 /// secrets the account holds, through the service that owns them.
 pub mod credentials_secret;
+
+/// Resolving the AWS Directory Service directory an identity-provider registration names
+/// against the directories the account has, through the plane that creates them.
+pub mod ad_directory_fleet;
 
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, SystemTime};
@@ -856,15 +862,19 @@ pub struct ComAmazonawsLicensemanagerusersubscriptionsLicensemanagerusersubscrip
     /// a test registers with
     /// [`ComAmazonawsLicensemanagerusersubscriptionsLicensemanagerusersubscriptionsState::register_account_instance`].
     pub account_instances: HashMap<String, String>,
-    /// The AWS Directory Service directories this account has, keyed by `DirectoryId`,
-    /// each carrying the `DirectoryStage` it is in.
+    /// The AWS Directory Service directories this account has in this service's OWN fleet
+    /// seam, keyed by `DirectoryId`, each carrying the `DirectoryStage` it is in.
     ///
     /// Whether an identity provider can be registered for a directory is a fact about the
-    /// ACCOUNT's directories, not about this service: this service models no operation
-    /// that creates one, so — exactly like [`account_instances`](Self::account_instances)
-    /// above — [`seed_account_directories`] is the fixture standing in for Directory
-    /// Service's own `CreateDirectory`, and the single place a directory store would
-    /// publish directories for this service to read. A test registers its own with
+    /// ACCOUNT's directories, not about this service, and this service models no operation
+    /// that creates one — so the directories a request is resolved against come from the
+    /// plane that creates them, read off the record that plane publishes
+    /// ([`ad_directory_fleet`]). This map is the OTHER half of that resolution, not a closed
+    /// list of the only ids that can be registered, exactly as
+    /// [`account_instances`](Self::account_instances) above is for instances: it holds the
+    /// directories [`seed_account_directories`] starts the account with, so a process that
+    /// mounts this service with no Directory Service beside it still has a directory to
+    /// register an identity provider for, plus any a test registers with
     /// [`ComAmazonawsLicensemanagerusersubscriptionsLicensemanagerusersubscriptionsState::register_account_directory`].
     pub account_directories: HashMap<String, String>,
     /// The earliest instant at which a stored record owes the clock a status transition,
@@ -914,12 +924,15 @@ pub fn seed_account_instances() -> Vec<(String, String)> {
 /// being deleted, is not one a registration can be built on.
 pub const DIRECTORY_STAGE_ACTIVE: &str = "Active";
 
-/// The directories the account starts with, as `(DirectoryId, DirectoryStage)`.
+/// The directories the account starts with in this service's own fleet seam, as
+/// `(DirectoryId, DirectoryStage)`.
 ///
 /// Three `Active` directories with ids of Directory Service's own `d-[0-9a-f]{10}` form
-/// (the `@pattern` `ActiveDirectoryIdentityProvider.DirectoryId` carries). The set is
-/// deliberately small and fixed: it decides only whether a directory of that id EXISTS
-/// and is usable, which is all a registration reads.
+/// (the `@pattern` `ActiveDirectoryIdentityProvider.DirectoryId` carries), so a process
+/// that mounts this service with no Directory Service beside it has a directory to register
+/// an identity provider for. It is NOT the set of directories this service accepts: a
+/// directory the plane that creates directories holds is resolved against that plane's own
+/// record ([`ad_directory_fleet::resolves_active_directory`]), whatever this seed says.
 pub fn seed_account_directories() -> Vec<(String, String)> {
     ["d-9f8e7d6c5b", "d-1a2b3c4d5e", "d-4455667788"]
         .into_iter()
@@ -1161,12 +1174,14 @@ impl ComAmazonawsLicensemanagerusersubscriptionsLicensemanagerusersubscriptionsS
             .insert(directory_id.into(), stage.into())
     }
 
-    /// Whether `directory_id` names a directory of this account that an identity provider
-    /// can be registered for: one the account holds, in the `Active` stage
-    /// ([`DIRECTORY_STAGE_ACTIVE`]).
+    /// Whether this service's OWN fleet seam holds `directory_id` in the `Active` stage
+    /// ([`DIRECTORY_STAGE_ACTIVE`]) — the stage an identity provider can be registered for.
     ///
-    /// Every other outcome — no directory of that id, or one in any other stage — is the
-    /// one refusal, so a caller is told which id was refused and nothing else.
+    /// Half of the directory resolution: an id this answers `false` for is resolved against
+    /// the plane that creates directories before the request is refused, which is what
+    /// [`ad_directory_fleet::resolves_active_directory`] does — the one predicate every
+    /// caller that resolves a caller-named directory asks. Nothing calls this on its own to
+    /// decide a refusal.
     pub fn resolves_active_directory(&self, directory_id: &str) -> bool {
         self.account_directories
             .get(directory_id)

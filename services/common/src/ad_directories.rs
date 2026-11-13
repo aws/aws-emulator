@@ -42,6 +42,13 @@
 //! directory the control plane has just created is out of service, which is the state every
 //! create leaves it in.
 //!
+//! One more fact belongs to the record, read by a service that BUILDS on a directory rather
+//! than by the data plane: WHEN the create brings the directory into service. A create
+//! answers before the directory's servers exist, so a directory the account already holds is
+//! not yet one another service can be registered against; the create records the instant its
+//! build finishes and the CLOCK — not a later call — is what brings it into service, for the
+//! reason the data-API toggle above carries its own due instant.
+//!
 //! The inventory is a record of what this emulator CREATED, so a reader asking about an id
 //! gets a yes or a no about this account's own directories and nothing else. It is BOUNDED
 //! in both dimensions a caller can grow — see [`MAX_RECORDED_DIRECTORIES`], far above the
@@ -127,6 +134,10 @@ struct AccountRecord {
 struct DirectoryRecord {
     /// Whether this directory's data API is in service, and the change the clock owes it.
     data_access: DataAccess,
+    /// When the create that registered this directory brings it into service — the instant
+    /// its build finishes — or `None` for a registration that recorded no build to wait
+    /// for.
+    in_service_at: Option<SystemTime>,
     /// The fully qualified domain name the directory was created with, as the control
     /// plane's create named it. Empty for a directory registered without one.
     domain_name: String,
@@ -224,6 +235,35 @@ impl AdDirectoryInventory {
     #[must_use]
     pub fn holds(&self, directory_id: &str) -> bool {
         self.held.contains_key(directory_id)
+    }
+
+    /// Record WHEN the create that registered `directory_id` brings it into service: the
+    /// instant the directory's build finishes and it reaches the stage a service that
+    /// builds on it can be registered against.
+    ///
+    /// A no-op for an id the inventory holds no record of — a directory the account does not
+    /// hold has no build to finish, and recording one would claim the account holds it — and
+    /// for one whose instant is already recorded, so a control plane that re-registers a
+    /// directory it already told the inventory about cannot restart that directory's build.
+    pub fn record_in_service_at(&mut self, directory_id: &str, in_service_at: SystemTime) {
+        if let Some(record) = self.held.get_mut(directory_id) {
+            record.in_service_at.get_or_insert(in_service_at);
+        }
+    }
+
+    /// Whether the account holds `directory_id` AND the create that registered it has
+    /// brought it into service by `now` — the question a service that builds on a directory
+    /// of this account asks, because a create answers while the directory is still being
+    /// built.
+    ///
+    /// A record carrying no in-service instant is a directory registered with no build to
+    /// wait for, so it is in service for as long as it is held; a directory the inventory
+    /// does not hold is in service at no instant at all.
+    #[must_use]
+    pub fn holds_in_service(&self, directory_id: &str, now: SystemTime) -> bool {
+        self.held
+            .get(directory_id)
+            .is_some_and(|record| record.in_service_at.is_none_or(|due| now >= due))
     }
 
     /// The fully qualified domain name `directory_id` was created with, or `None` for an
@@ -472,6 +512,66 @@ mod tests {
             inventory.is_empty(),
             "case every directory forgotten: expected an empty inventory, got {} record(s)",
             inventory.len()
+        );
+    }
+
+    /// RULE: a directory is in service from the instant its create recorded and not one
+    /// instant before, whatever build the create owed — and at no instant at all once the
+    /// account no longer holds it.
+    #[test]
+    fn a_directory_is_in_service_from_the_instant_its_create_recorded() {
+        let mut inventory = AdDirectoryInventory::default();
+        let created_at = at();
+        // The rows differ along the one thing the rule generalises over: how long the
+        // create's build takes before the directory is in service.
+        let builds: [(&str, usize, Duration); 3] = [
+            ("a build of one span", 1, SETTLES_IN),
+            ("a build of four spans", 2, SETTLES_IN * 4),
+            ("a build of ten spans", 3, SETTLES_IN * 10),
+        ];
+        for (case, rank, build) in builds {
+            let id = directory(rank);
+            inventory.register_in_domain(&id, &domain(rank), Some(&short_name(rank)));
+            inventory.record_in_service_at(&id, created_at + build);
+            // A second recording is the same build, not a restarted one.
+            inventory.record_in_service_at(&id, created_at + build + SETTLES_IN * 100);
+            for (moment, asked_at, expected) in [
+                ("the instant of the create", created_at, false),
+                ("one span short of due", created_at + build - SETTLES_IN, false),
+                ("the instant it falls due", created_at + build, true),
+                ("long after it is due", created_at + build + SETTLES_IN * 100, true),
+            ] {
+                let in_service = inventory.holds_in_service(&id, asked_at);
+                assert_eq!(
+                    in_service, expected,
+                    "case {case:?} at {moment:?}: expected holds_in_service({id:?}) to be \
+                     {expected}, got {in_service}"
+                );
+            }
+        }
+
+        // A registration that recorded no build to wait for is in service for as long as it
+        // is held, and an id the inventory holds nothing for is in service at no instant.
+        inventory.register(&directory(4));
+        for (case, id, expected) in [
+            ("a registration with no build recorded", directory(4), true),
+            ("an id never registered", directory(9), false),
+        ] {
+            let in_service = inventory.holds_in_service(&id, created_at);
+            assert_eq!(
+                in_service, expected,
+                "case {case:?}: expected holds_in_service({id:?}) to be {expected}, got \
+                 {in_service}"
+            );
+        }
+
+        // A deleted directory is in service at no instant: the account no longer holds it.
+        inventory.forget(&directory(1));
+        let after_delete = inventory.holds_in_service(&directory(1), created_at + SETTLES_IN * 100);
+        assert!(
+            !after_delete,
+            "case \"a deleted directory\": expected holds_in_service to be false, got \
+             {after_delete}"
         );
     }
 

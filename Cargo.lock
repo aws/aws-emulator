@@ -15250,6 +15250,7 @@ dependencies = [
  "hex",
  "http",
  "serde_json",
+ "service-com-amazonaws-directoryservice-directoryservice-20150416",
  "service-com-amazonaws-ec2-amazonec2",
  "service-com-amazonaws-iam-awsidentitymanagementv20100508",
  "service-com-amazonaws-secretsmanager-secretsmanager",

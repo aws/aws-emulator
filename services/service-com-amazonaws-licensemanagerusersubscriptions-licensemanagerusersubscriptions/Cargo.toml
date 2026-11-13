@@ -64,6 +64,13 @@ service-com-amazonaws-ec2-amazonec2 = { workspace = true }
 # license server endpoint and a registration resolve the credentials secret they name can
 # only be driven end to end with the owner of secrets on the same engine. DEV-ONLY.
 service-com-amazonaws-secretsmanager-secretsmanager = { workspace = true }
+# AWS Directory Service, mounted beside this one in the test harness for the same reason:
+# that an identity provider can be registered for a directory a client created with
+# `ds:CreateDirectory`/`ds:CreateMicrosoftAD`, and stops being registrable once that client
+# deleted it, can only be driven end to end with the plane that creates directories on the
+# same engine. DEV-ONLY: this crate's own resolution reads the inventory that plane
+# publishes through `service-common`, so `src/` depends on no other service's crate.
+service-com-amazonaws-directoryservice-directoryservice-20150416 = { workspace = true }
 
 [lints]
 workspace = true
