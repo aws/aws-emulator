@@ -468,6 +468,11 @@ mod cognito_post_confirmation_lambda_trigger;
 mod cognito_group_role_mapping;
 #[path = "all/cognito_sms_caller_role_trust.rs"]
 mod cognito_sms_caller_role_trust;
+// Declared beside its sibling cognito suites, at the head, for the same reason they are
+// here: whether a session already vended survives the teardown of the pool that vended it
+// spans Amazon Cognito Identity, IAM, STS, Amazon S3 and the emulator's own credential gate.
+#[path = "all/cognito_vended_session_outlives_pool_deletion.rs"]
+mod cognito_vended_session_outlives_pool_deletion;
 #[path = "all/pi_resource_metadata_reflects_rds_configuration.rs"]
 mod pi_resource_metadata_reflects_rds_configuration;
 // At the head for the reason the entries above record: the appended tail and the sorted

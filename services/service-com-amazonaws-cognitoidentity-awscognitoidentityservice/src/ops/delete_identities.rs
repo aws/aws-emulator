@@ -233,28 +233,21 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> DeleteIdentities<
         // id, and a second call over an overlapping batch, ask for a deletion that has
         // already happened — so it is processed and leaves nothing to report.
         let mut deleted: Vec<String> = Vec::new();
-        let mut revoked: Vec<String> = Vec::new();
         {
             let mut store = state.lock();
             for identity_id in &input.identity_ids_to_delete {
-                if let Some(access_key_ids) = store.delete_identity(identity_id) {
-                    revoked.extend(access_key_ids);
+                if store.delete_identity(identity_id) {
                     deleted.push(identity_id.clone());
                 }
             }
         }
 
-        // The stores those identities were known in OUTSIDE this service's own are written
-        // with this lock released, so two of them are never held at once: a session issued
-        // to a deleted identity is no longer a credential this emulator accepts, and a
-        // token issued for one names nobody its redeemer can resolve.
-        for access_key_id in revoked {
-            crate::state::discard_vended_role_session(
-                &*self.engine,
-                ctx.credential_store(),
-                &access_key_id,
-            );
-        }
+        // The store the deleted identities were known in OUTSIDE this service's own is
+        // written with this lock released, so two of them are never held at once: a token
+        // issued for a deleted identity names nobody its redeemer can resolve. A role
+        // session a vend already handed out is left alone — it is a session of the IAM role
+        // the pool resolved, held by the token service's registry until its own expiry, and
+        // deleting the identity it was vended for is not its revocation.
         for identity_id in &deleted {
             crate::state::forget_issued_web_identities_of_identity(&*self.engine, identity_id);
         }

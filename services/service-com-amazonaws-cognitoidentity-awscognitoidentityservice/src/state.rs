@@ -2292,9 +2292,12 @@ impl ComAmazonawsCognitoidentityAwscognitoidentityserviceState {
     /// Every login `merged_away` was reached through — its developer user identifiers and
     /// its federated logins alike — now resolves to `survivor`, which is left linked to the
     /// union of the two provider sets and stamped with `now` as the instant it changed. The
-    /// two users are one user afterwards, so nothing reaches `merged_away` any more: the
-    /// credentials outstanding for it and the OpenID Connect tokens issued for it spoke for
-    /// a user that is now reached through `survivor` alone, so they are given up.
+    /// two users are one user afterwards, so nothing reaches `merged_away` any more: this
+    /// service's record of the session outstanding for it and the OpenID Connect tokens
+    /// issued for it spoke for a user that is now reached through `survivor` alone, so they
+    /// are given up. A role session already vended for it is not: that credential is a
+    /// session of the IAM role, held by the token service's registry until its own expiry,
+    /// and a merge of two identities is not its revocation.
     ///
     /// The RECORD of `merged_away` nevertheless stays stored, in `identities` and in the
     /// pool's listing order, with its logins emptied and `disabled` set: a merge takes the
@@ -2306,7 +2309,7 @@ impl ComAmazonawsCognitoidentityAwscognitoidentityserviceState {
     ///
     /// Both identities have to be the named pool's own, which is what the caller resolved
     /// them through: an identity belongs to the pool that minted it and never moves, so a
-    /// pair this pool does not hold is merged nowhere and answered `None` — rather than one
+    /// pair this pool does not hold is merged nowhere and answered `false` — rather than one
     /// pool's records being torn down while another pool's listing still names the identity.
     pub fn merge_identity_into(
         &mut self,
@@ -2314,14 +2317,14 @@ impl ComAmazonawsCognitoidentityAwscognitoidentityserviceState {
         merged_away: &str,
         survivor: &str,
         now: SystemTime,
-    ) -> Option<Vec<String>> {
+    ) -> bool {
         let both_belong_to_the_pool = [merged_away, survivor].iter().all(|identity_id| {
             self.identities
                 .get(*identity_id)
                 .is_some_and(|identity| identity.identity_pool_id == identity_pool_id)
         });
         if !both_belong_to_the_pool {
-            return None;
+            return false;
         }
         for (provider, login) in self.pool_logins_of_identity(identity_pool_id, merged_away) {
             self.link_login(identity_pool_id, &provider, &login, survivor);
@@ -2350,13 +2353,8 @@ impl ComAmazonawsCognitoidentityAwscognitoidentityserviceState {
         }
         self.open_id_tokens
             .retain(|_, issued| issued.identity_id != merged_away);
-        Some(
-            self.credentials
-                .remove(merged_away)
-                .map(|issued| issued.access_key_id)
-                .into_iter()
-                .collect(),
-        )
+        self.credentials.remove(merged_away);
+        true
     }
 
     /// Whether indexing `logins` for this pool would take it past
@@ -2697,21 +2695,28 @@ impl ComAmazonawsCognitoidentityAwscognitoidentityserviceState {
     }
 
     /// Remove ONE identity with everything that named it — the logins its pool indexed
-    /// against it, its place in the pool's listing order, the credentials outstanding for
-    /// it and the OpenID Connect tokens issued for it — and report the access key ids whose
-    /// credentials the caller must now forget. `None` when this service holds no such
-    /// identity, so nothing was written.
+    /// against it, its place in the pool's listing order, the record of the session
+    /// outstanding for it and the OpenID Connect tokens issued for it. `false` when this
+    /// service holds no such identity, so nothing was written.
     ///
-    /// The teardown [`Self::delete_identity_pool`] does for the logins, credentials and
+    /// The teardown [`Self::delete_identity_pool`] does for the logins, session records and
     /// tokens of every identity of a pool, plus the RECORD itself, which only this
     /// transition removes: once the identity is gone, a login that resolved to it resolves
     /// nothing (so presenting it again is a NEW user), a listing of the pool no longer names
-    /// it, and the credentials and tokens that spoke for it speak for nobody. Removing the
+    /// it, and the tokens that spoke for it speak for nobody. Removing the
     /// record is this transition's own: a merge gives an identity's LOGINS up, not the
     /// record, and leaves it stored as a disabled one ([`Self::merge_identity_into`]), and a
     /// pool delete leaves the records of the identities it minted standing.
-    pub fn delete_identity(&mut self, identity_id: &str) -> Option<Vec<String>> {
-        let identity = self.identities.remove(identity_id)?;
+    ///
+    /// What it does NOT reach is the ROLE SESSION a vend already handed out: the credential
+    /// is a session of the IAM role the pool resolved, held in the token service's registry
+    /// until its own expiry, so what goes here is only this service's record of which
+    /// session this identity holds — the identity's lease on re-vending the same credential,
+    /// not the credential itself.
+    pub fn delete_identity(&mut self, identity_id: &str) -> bool {
+        let Some(identity) = self.identities.remove(identity_id) else {
+            return false;
+        };
         if let Some(identities) = self.identities_by_pool.get_mut(&identity.identity_pool_id) {
             identities.retain(|listed| listed != identity_id);
         }
@@ -2719,20 +2724,21 @@ impl ComAmazonawsCognitoidentityAwscognitoidentityserviceState {
             .retain(|(pool, _, _), linked| !(*pool == identity.identity_pool_id && linked == identity_id));
         self.open_id_tokens
             .retain(|_, issued| issued.identity_id != identity_id);
-        Some(
-            self.credentials
-                .remove(identity_id)
-                .map(|issued| issued.access_key_id)
-                .into_iter()
-                .collect(),
-        )
+        self.credentials.remove(identity_id);
+        true
     }
 
-    /// Remove a pool with everything that belongs to it — its login index entries, its
-    /// identities' outstanding credentials, the OIDC tokens it issued, the listing order of
-    /// its identities and the principal-tag attribute maps of its providers — and
-    /// report the access key ids whose credentials the caller must now forget. `None` when
-    /// no such pool is stored.
+    /// Remove a pool with everything that belongs to it — its login index entries, the
+    /// records of the sessions outstanding for its identities, the OIDC tokens it issued,
+    /// the listing order of its identities and the principal-tag attribute maps of its
+    /// providers. `false` when no such pool is stored.
+    ///
+    /// A pool's lifecycle does not reach a ROLE SESSION already vended for one of its
+    /// identities: that credential is a session of the IAM role the pool resolved, kept by
+    /// the token service's registry until its own expiry, so deleting the pool stops further
+    /// vends without touching a session already in a caller's hands. What goes here is this
+    /// service's own record of which session each identity holds — the lease that lets a
+    /// second vend inside the window hand back the same credential.
     ///
     /// What the pool does NOT take with it is the RECORD of each identity it minted: an
     /// identity belongs to the pool that minted it and names it for as long as the record
@@ -2749,8 +2755,10 @@ impl ComAmazonawsCognitoidentityAwscognitoidentityserviceState {
     /// delete-pool cycles from growing the store without limit. A record this eviction
     /// removes is one this emulator no longer holds at all, so a call naming it reports that
     /// identity missing.
-    pub fn delete_identity_pool(&mut self, identity_pool_id: &str) -> Option<Vec<String>> {
-        self.identity_pools.remove(identity_pool_id)?;
+    pub fn delete_identity_pool(&mut self, identity_pool_id: &str) -> bool {
+        if self.identity_pools.remove(identity_pool_id).is_none() {
+            return false;
+        }
         self.identity_pool_roles.remove(identity_pool_id);
         self.principal_tag_attribute_maps
             .retain(|(pool, _), _| pool != identity_pool_id);
@@ -2758,11 +2766,8 @@ impl ComAmazonawsCognitoidentityAwscognitoidentityserviceState {
             .identities_by_pool
             .remove(identity_pool_id)
             .unwrap_or_default();
-        let mut revoked = Vec::new();
         for identity_id in &identity_ids {
-            if let Some(issued) = self.credentials.remove(identity_id) {
-                revoked.push(issued.access_key_id);
-            }
+            self.credentials.remove(identity_id);
         }
         self.orphaned_identities.extend(identity_ids);
         while self.orphaned_identities.len() > MAX_ORPHANED_IDENTITY_RECORDS {
@@ -2776,7 +2781,7 @@ impl ComAmazonawsCognitoidentityAwscognitoidentityserviceState {
         // exists any more, so the token names nothing.
         self.open_id_tokens
             .retain(|_, issued| issued.identity_pool_id != identity_pool_id);
-        Some(revoked)
+        true
     }
 }
 
@@ -3973,7 +3978,7 @@ mod tests {
                     .insert(identity_pool_id.clone(), stored_pool(&identity_pool_id));
                 orphaned_in_order.extend(mint_identities(&mut store, &identity_pool_id, *count));
                 assert!(
-                    store.delete_identity_pool(&identity_pool_id).is_some(),
+                    store.delete_identity_pool(&identity_pool_id),
                     "case {case:?}: the pool must be deleted, not reported missing"
                 );
             }

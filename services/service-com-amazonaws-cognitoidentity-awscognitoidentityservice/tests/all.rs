@@ -113,5 +113,7 @@ mod update_identity_pool;
 mod vended_role_session;
 #[path = "all/vended_session_identity_record.rs"]
 mod vended_session_identity_record;
+#[path = "all/vended_session_outlives_pool_lifecycle.rs"]
+mod vended_session_outlives_pool_lifecycle;
 #[path = "all/wire_error_envelope.rs"]
 mod wire_error_envelope;

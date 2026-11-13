@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op DeleteIdentityPool
-//! Removes a stored pool with the identities and credentials that belong to it.
+//! Removes a stored pool with the identities and issuance records that belong to it,
+//! leaving a role session a vend already handed out in force until it expires.
 //!
 //! ## Shape of an operation
 //!
@@ -212,8 +213,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> DeleteIdentityPoo
             .into());
         };
 
-        let revoked = state.lock().delete_identity_pool(&input.identity_pool_id);
-        let Some(revoked) = revoked else {
+        if !state.lock().delete_identity_pool(&input.identity_pool_id) {
             return Err(DeleteIdentityPoolErrorModeled::ResourceNotFoundException(
                 ResourceNotFoundException {
                     message: Some(format!(
@@ -223,20 +223,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> DeleteIdentityPoo
                 },
             )
             .into());
-        };
-
-        // The pool's identities are gone, so the sessions issued to them are no longer
-        // credentials this emulator accepts — in the credential store, and in the session
-        // registry that would otherwise still resolve them to a role.
-        for access_key_id in revoked {
-            crate::state::discard_vended_role_session(
-                &*self.engine,
-                ctx.credential_store(),
-                &access_key_id,
-            );
         }
-        // The web identity tokens issued FOR this pool name nothing now either, so the
-        // registry the redeemer of one reads gives them up with the pool.
+
+        // A credential a vend already handed out is NOT given up here. What
+        // `GetCredentialsForIdentity` answers is a session of the IAM role the pool
+        // resolved, and the pool's own lifecycle reaches no session already issued: the
+        // session is held by the token service's registry under its own expiry, so a request
+        // still presenting it resolves to the same assumed-role principal and is decided by
+        // the policies in force on that role, exactly as it was before the delete. The pool
+        // is gone, so no FURTHER session can be vended for its identities.
+        //
+        // The web identity tokens issued FOR this pool name nothing now, so the registry the
+        // redeemer of one reads gives them up with the pool.
         crate::state::forget_issued_web_identities(&*self.engine, &input.identity_pool_id);
         Ok(DeleteIdentityPoolOutput)
     }

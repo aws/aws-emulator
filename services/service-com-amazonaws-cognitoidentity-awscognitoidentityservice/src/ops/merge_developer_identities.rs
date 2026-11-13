@@ -405,14 +405,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> MergeDeveloperIde
         // resolves to that identity, and the destination identity is left with none of its
         // own: a stored, DISABLED identity of the pool, which a read of its id still
         // describes and a listing that hides no disabled identity still reports.
-        let revoked =
+        let merged =
             store.merge_identity_into(&input.identity_pool_id, &destination, &source, now);
         // Both identities were resolved through THIS pool's own login index, which names no
         // other pool's identities, so the merge has no pair to decline here: the arm is the
         // invariant written down rather than an input any request reaches. A pair it did
         // decline would be one this pool does not hold, which is a mapping this caller may
         // not reach here.
-        let Some(revoked) = revoked else {
+        if !merged {
             return Err(
                 MergeDeveloperIdentitiesErrorModeled::NotAuthorizedException(
                     NotAuthorizedException {
@@ -423,21 +423,16 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> MergeDeveloperIde
                 )
                 .into(),
             );
-        };
-        // The stores the merged-away identity was known in OUTSIDE this service's own are
+        }
+        // The store the merged-away identity was known in OUTSIDE this service's own is
         // written with this lock released, so two of them are never held at once.
         drop(store);
 
         // Nothing reaches the merged-away user any more — its logins are the survivor's —
-        // so the session issued to it is no longer a credential this emulator accepts, and
-        // the tokens issued for it name a user only the survivor's id now stands for.
-        for access_key_id in revoked {
-            crate::state::discard_vended_role_session(
-                &*self.engine,
-                ctx.credential_store(),
-                &access_key_id,
-            );
-        }
+        // so the tokens issued for it name a user only the survivor's id now stands for. A
+        // role session a vend already handed out keeps working: it is a session of the IAM
+        // role the pool resolved, held by the token service's registry until its own expiry,
+        // and a merge of two identities is not its revocation.
         crate::state::forget_issued_web_identities_of_identity(&*self.engine, &destination);
 
         Ok(MergeDeveloperIdentitiesOutput {
