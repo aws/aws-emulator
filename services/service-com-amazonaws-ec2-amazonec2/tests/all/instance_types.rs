@@ -1069,25 +1069,22 @@ async fn an_undocumented_filter_is_refused() {
 /// everything — and a filter naming one it REPORTS selects exactly the types carrying the
 /// value asked for.
 ///
-/// The accelerator inventories and the configurable bandwidth weightings are per-type
-/// hardware data neither the model nor the name yields, so they are reported absent rather
-/// than invented, and EC2's rule for a filter on an attribute a resource does not carry is
-/// that it matches no value: each such filter is accepted (it is a documented name) and
-/// answers an empty set. The members whose value DOES follow from the type's name — its
+/// The accelerator inventories are per-type hardware data neither the model nor the name
+/// yields, so they are reported absent rather than invented, and EC2's rule for a filter on an
+/// attribute a resource does not carry is that it matches no value: each such filter is
+/// accepted (it is a documented name) and answers an empty set. The members whose value the
+/// catalog or the type's name DOES yield — the bandwidth weightings a type publishes, its
 /// network cards and their performance, its processor's clock speed, its Nitro features and
 /// the EBS attachments its pool leaves it — are reported, so the second half of the table
 /// asserts the same filters select the type that reports the value and only it.
 #[tokio::test]
 async fn a_filter_on_a_member_reported_absent_selects_nothing() {
     let (router, _engine) = super::ec2_query::emulator();
-    let absent: [(&str, &str, &str); 2] = [
-        ("bandwidth weightings", "network-info.bandwidth-weightings", "default"),
-        (
-            "an EBS-optimized figure no type carries",
-            "ebs-info.ebs-optimized-info.baseline-iops",
-            "7",
-        ),
-    ];
+    let absent: [(&str, &str, &str); 1] = [(
+        "an EBS-optimized figure no type carries",
+        "ebs-info.ebs-optimized-info.baseline-iops",
+        "7",
+    )];
 
     for (case, name, value) in absent {
         let (status, body) = describe(&router, "us-east-1", &filters(&[(name, &[value])])).await;
@@ -1105,9 +1102,15 @@ async fn a_filter_on_a_member_reported_absent_selects_nothing() {
     }
 
     // The rows differ along the member filtered on and the kind of value it carries: a
-    // Gigabit string, a card count, a clock speed, a Nitro feature's enum member and an
-    // attachment count.
-    let reported: [(&str, &str, &str, &str); 5] = [
+    // Gigabit string, a card count, a clock speed, a Nitro feature's enum member, an
+    // attachment count and a published list of bandwidth weightings.
+    let reported: [(&str, &str, &str, &str); 6] = [
+        (
+            "the bandwidth weightings",
+            "network-info.bandwidth-weightings",
+            "default",
+            "c9gd.2xlarge",
+        ),
         (
             "the network performance",
             "network-info.network-performance",

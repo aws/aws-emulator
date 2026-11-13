@@ -2615,9 +2615,8 @@ pub(super) fn maximum_ebs_attachments(nitro: bool, instance_store_disks: i32) ->
 /// host features it is offered with. Those are facts AWS publishes per instance type, held
 /// row by row in [`published_instance_type_facts`], and this reports what the type's row
 /// carries wherever it carries it. A member neither the row nor the derivation answers (the
-/// GPU, inference, media and Neuron device inventories, and the configurable bandwidth
-/// weightings) is reported absent rather than invented, and a filter naming one therefore
-/// selects nothing.
+/// GPU, inference, media and Neuron device inventories) is reported absent rather than
+/// invented, and a filter naming one therefore selects nothing.
 pub fn instance_type_info(instance_type: &str) -> Option<InstanceTypeInfo> {
     let name = InstanceTypeName::parse(instance_type)?;
     let record = instance_type_record(instance_type)?;
@@ -2797,11 +2796,28 @@ pub fn instance_type_info(instance_type: &str) -> Option<InstanceTypeInfo> {
                     .and_then(|facts| facts.ena_srd_supported)
                     .unwrap_or_else(|| has_nitro_feature(&name, FIRST_ENA_SRD_GENERATION)),
             ),
-            bandwidth_weightings: None,
+            // "A list of valid settings for configured bandwidth weighting, if supported"
+            // (`NetworkInfo$BandwidthWeightings`): the weightings the catalog publishes for
+            // the type, and nothing at all for a type whose split between network and EBS
+            // bandwidth is fixed — which is what AWS reports for one.
+            bandwidth_weightings: facts.and_then(|facts| facts.bandwidth_weightings).map(
+                |weightings| {
+                    weightings
+                        .iter()
+                        .map(|weighting| (*weighting).to_string())
+                        .collect()
+                },
+            ),
             // "Indicates whether changing the number of ENA queues is supported"
             // (`$FlexibleEnaQueuesSupport`), reported as the enum member it is for every
-            // type rather than only for the types that have it.
-            flexible_ena_queues_support: Some(supported_or_not(nitro_clock)),
+            // type rather than only for the types that have it: the published row where the
+            // catalog holds one, else the adapter feature of the Nitro hardware generation
+            // named by [`FIRST_NITRO_CLOCK_GENERATION`].
+            flexible_ena_queues_support: Some(supported_or_not(
+                facts
+                    .and_then(|facts| facts.flexible_ena_queues_supported)
+                    .unwrap_or(nitro_clock),
+            )),
             // "Indicates conntrack information for the instance type"
             // (`NetworkInfo$ConnectionTrackingConfiguration`): the idle timeouts a security
             // group's connection tracking applies by default, which are the same for every

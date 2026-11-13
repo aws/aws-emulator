@@ -15,6 +15,13 @@
 // exactly that. The lines above are the file header, which no landing edits.
 #[path = "all/prefix_lists.rs"]
 mod prefix_lists;
+// The published facts of four instance-type FAMILIES: the EBS, network, instance store,
+// processor, boot mode, core count and host-feature members AWS publishes per type, each
+// served from that type's own catalog row rather than computed from the size multiplier in its
+// name. Declared beside `prefix_lists` for the reason the note above gives: the sorted
+// neighbourhood and the tail of this file are where every new ec2 suite inserts its lines.
+#[path = "all/published_instance_type_family_tables.rs"]
+mod published_instance_type_family_tables;
 // What `CreateClientVpnEndpoint` persists — the endpoint it stores from the request's members,
 // the certificates it resolves against Certificate Manager, and what it refuses. Declared
 // beside `prefix_lists` for the reason the note above gives: the sorted neighbourhood and the
