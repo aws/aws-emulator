@@ -266,6 +266,28 @@ pub const GROUP_STATE_IN_SERVICE: &str = "InService";
 /// `Activity$AutoScalingGroupState` for a group that has been deleted.
 pub const GROUP_STATE_DELETED: &str = "Deleted";
 
+/// What the failed activity of a unit of capacity the ACCOUNT could not place reports as
+/// its `StatusMessage` — the cause of the failure a client reads off the activity
+/// ([`StoredActivity::to_activity`]) when nothing about the group itself stopped the
+/// launch.
+///
+/// One sentence for every launch path, so a client reads the same cause whether the
+/// capacity change, a replacement or the group's own create asked for the instance, and
+/// it ends the way every launch failure does: with the launch that was not made.
+pub const UNPLACED_INSTANCE_MESSAGE: &str =
+    "The account could not place the instance. Launching EC2 instance failed.";
+
+/// What the activity of a launch that FAILED describes: the launch Amazon EC2 Auto
+/// Scaling set out to make, and the reason it did not — the activity's own
+/// `StatusMessage`, named as the status reason.
+///
+/// The activity of a launch that SUCCEEDED names the instance it launched
+/// (`lifecycle_events::InstanceLifecycle::description`); a launch that failed has no
+/// instance to name, so it names the reason instead.
+pub fn failed_launch_description(status_message: &str) -> String {
+    format!("Launching a new EC2 instance. Status Reason: {status_message}")
+}
+
 /// What the activities of a termination request record as the reason they began: a
 /// caller named the instance, which is what tells the activity log a manual termination
 /// apart from the scale-in a capacity change chose for itself.
@@ -616,6 +638,9 @@ pub struct StoredActivity {
     pub start_time: SystemTime,
     pub end_time: Option<SystemTime>,
     pub status_code: String,
+    /// Why the activity did not do what it set out to, for an activity that failed:
+    /// `Activity$StatusMessage`, which the description names as the status reason.
+    pub status_message: Option<String>,
     pub progress: i32,
     pub details: Option<String>,
     pub auto_scaling_group_state: Option<String>,
@@ -645,11 +670,10 @@ impl StoredActivity {
             // "If an attempt to launch instances failed, the StatusCode value is Failed or
             // Cancelled and the StatusMessage element in the response indicates the cause
             // of the failure" (`DescribeScalingActivities`'s own documentation): the
-            // sentence the failed activity recorded IS that cause, and an activity that
-            // did not fail has none.
-            status_message: (self.status_code == ACTIVITY_FAILED)
-                .then(|| self.description.clone())
-                .flatten(),
+            // reason the failed activity recorded IS that cause, stated apart from the
+            // description of what the activity set out to do, and an activity that did not
+            // fail has none.
+            status_message: self.status_message.clone(),
             progress: Some(self.progress),
             details: self.details.clone(),
             auto_scaling_group_state: Some(if group_held {
@@ -1084,6 +1108,8 @@ impl AutoScalingState {
             start_time,
             end_time: if finished { Some(start_time) } else { None },
             status_code: status_code.to_string(),
+            // An activity that did not fail carries no status message.
+            status_message: None,
             progress: if finished { 100 } else { 50 },
             details: None,
             auto_scaling_group_state: Some(group_state.to_string()),
@@ -1092,14 +1118,19 @@ impl AutoScalingState {
     }
 
     /// Append a scaling activity that FAILED: the capacity change asked for an
-    /// instance Amazon EC2 did not place, so the group reports no instance for it and
-    /// the activity it recorded says so instead of claiming a launch that never
-    /// happened.
+    /// instance that was not placed, so the group reports no instance for it and the
+    /// activity it recorded says so instead of claiming a launch that never happened.
+    ///
+    /// `description` is what the activity set out to do and `status_message` is why it
+    /// did not — the two the API reports apart
+    /// ([`StoredActivity::to_activity`]); [`failed_launch_description`] builds the one
+    /// from the other for a launch.
     pub fn record_failed_activity(
         &mut self,
         group_name: &str,
         group_arn: &str,
         description: String,
+        status_message: String,
         cause: String,
         start_time: SystemTime,
     ) -> String {
@@ -1113,6 +1144,7 @@ impl AutoScalingState {
             // Nothing is owed on a launch that failed: it ended when it failed.
             end_time: Some(start_time),
             status_code: ACTIVITY_FAILED.to_string(),
+            status_message: Some(status_message),
             progress: 100,
             details: None,
             auto_scaling_group_state: Some(GROUP_STATE_IN_SERVICE.to_string()),
@@ -1268,7 +1300,7 @@ impl AutoScalingState {
         let due = now + LIFECYCLE_TRANSITION;
 
         let wanted = usize::try_from(to_launch).unwrap_or(0);
-        let (launched_ids, unplaced) = self.launch_into_group(
+        let launch = self.launch_into_group(
             engine,
             &GroupLaunch {
                 group_name,
@@ -1279,6 +1311,9 @@ impl AutoScalingState {
                 destination: LaunchDestination::Group,
             },
         );
+        let launched_ids = launch.launched_ids.clone();
+        let unplaced_message = launch.unplaced_message(UNPLACED_INSTANCE_MESSAGE);
+        let unplaced = launch.unplaced;
 
         let group = self
             .groups
@@ -1323,11 +1358,34 @@ impl AutoScalingState {
             self.record_failed_activity(
                 group_name,
                 &arn,
-                "Launching a new EC2 instance failed: the account could not place it"
-                    .to_string(),
+                failed_launch_description(&unplaced_message),
+                unplaced_message.clone(),
                 cause.to_string(),
                 now,
             );
+        }
+    }
+
+    /// Take the attachments `target_group_arns` names off the group `group_name`, in both
+    /// forms an attachment takes — the group's own `TargetGroupARNs` and an `elbv2`
+    /// traffic source — leaving every other attachment where it is.
+    ///
+    /// What a target group that no longer exists leaves behind: an attachment names a
+    /// resource of Elastic Load Balancing v2, and a target group ARN carries the id that
+    /// service minted for that one target group, so an attachment whose target group has
+    /// been deleted can never be registered into again. It therefore ends with it, exactly
+    /// as a `DetachLoadBalancerTargetGroups` of the same ARN would end it, and the launch
+    /// that found it gone is what records the refusal — so the group's activity log says
+    /// why before the attachment goes.
+    fn drop_attachments(&mut self, group_name: &str, target_group_arns: &[String]) {
+        let Some(group) = self.groups.get_mut(group_name) else {
+            return;
+        };
+        if let Some(attached) = group.target_group_arns.as_mut() {
+            attached.retain(|arn| !target_group_arns.contains(arn));
+        }
+        if let Some(sources) = group.traffic_sources.as_mut() {
+            sources.retain(|source| !target_group_arns.contains(&source.identifier));
         }
     }
 
@@ -1433,21 +1491,40 @@ impl AutoScalingState {
 
     /// Launch instances into the group through the account's own Amazon EC2 store and
     /// give the group its own view of each, answering the ids launched and how many
-    /// of the ones asked for Amazon EC2 could not place.
+    /// of the ones asked for could not be placed.
     ///
     /// THE ONE launch path: a capacity change and an instance refresh's replacement
     /// both reach Amazon EC2 through here, so one group's instances are launched from
     /// one resolution of its launch source however the launch was asked for. A launch
     /// Amazon EC2 could not place gives the group no instance — an id it reported
     /// would resolve nowhere — and is counted for the caller to record.
+    ///
+    /// A launch into the GROUP also owes each of its attachments a registration, so an
+    /// attachment whose target group Elastic Load Balancing v2 no longer holds stops it
+    /// before anything is minted: nothing is placed, the sentence the caller records for
+    /// each unplaced unit names that target group
+    /// ([`elbv2_targets::unresolved_attachments`]), and the attachment itself ends with the
+    /// target group it named ([`Self::drop_attachments`]).
     fn launch_into_group<Eng: Send + Sync + 'static>(
         &mut self,
         engine: &Eng,
         request: &GroupLaunch<'_>,
-    ) -> (Vec<String>, usize) {
+    ) -> GroupLaunchOutcome {
         let Some(group) = self.groups.get(request.group_name) else {
-            return (Vec::new(), request.count);
+            return GroupLaunchOutcome::unplaced(request.count, None);
         };
+        // The group's instances are the targets of the target groups it is attached to,
+        // so a launch that could not register has not brought an instance into service:
+        // it launches nothing at all, which is also what the warm pool's own instances —
+        // which no attachment takes — are not held to.
+        if request.count > 0 && request.destination == LaunchDestination::Group {
+            let unresolved = elbv2_targets::unresolved_attachments(engine, group);
+            if !unresolved.is_empty() {
+                let reason = elbv2_targets::launch_blocked_message(&unresolved);
+                self.drop_attachments(request.group_name, &unresolved);
+                return GroupLaunchOutcome::unplaced(request.count, Some(reason));
+            }
+        }
         let region = group.region.clone();
         let zones = group.availability_zones.clone();
         let vpc_zone_identifier = group.vpc_zone_identifier.clone();
@@ -1538,9 +1615,13 @@ impl AutoScalingState {
         };
         if !placed {
             ec2_instances::terminate(engine, &launched_ids);
-            return (Vec::new(), request.count);
+            return GroupLaunchOutcome::unplaced(request.count, None);
         }
-        (launched_ids, unplaced)
+        GroupLaunchOutcome {
+            launched_ids,
+            unplaced,
+            blocked: None,
+        }
     }
 
     /// The instances a scale-in of `count` takes out of the group.
@@ -1824,7 +1905,7 @@ impl AutoScalingState {
     ) -> Option<String> {
         let arn = self.groups.get(group_name).map(|group| group.arn.clone())?;
         let due = now + LIFECYCLE_TRANSITION;
-        let (launched_ids, unplaced) = self.launch_into_group(
+        let launch = self.launch_into_group(
             engine,
             &GroupLaunch {
                 group_name,
@@ -1834,6 +1915,9 @@ impl AutoScalingState {
                 destination: LaunchDestination::Group,
             },
         );
+        let launched_ids = launch.launched_ids.clone();
+        let unplaced_message = launch.unplaced_message(UNPLACED_INSTANCE_MESSAGE);
+        let unplaced = launch.unplaced;
         let replaced = if launched_ids.is_empty() {
             Vec::new()
         } else {
@@ -1873,7 +1957,8 @@ impl AutoScalingState {
             self.record_failed_activity(
                 group_name,
                 &arn,
-                "Launching a new EC2 instance failed: the account could not place it".to_string(),
+                failed_launch_description(&unplaced_message),
+                unplaced_message.clone(),
                 cause.to_string(),
                 now,
             );
@@ -1924,6 +2009,38 @@ struct GroupLaunch<'a> {
     desired_configuration: Option<&'a DesiredConfiguration>,
     /// Which of the group's two instance collections the launch places into.
     destination: LaunchDestination,
+}
+
+/// What one launch into a group produced: the instances it placed, how many units of
+/// the capacity it was asked for nothing was placed for, and why — when the reason is
+/// the group's own configuration rather than the account's capacity.
+#[derive(Debug)]
+struct GroupLaunchOutcome {
+    /// The ids of the instances that were launched, in launch order.
+    launched_ids: Vec<String>,
+    /// How many of the instances asked for were not placed.
+    unplaced: usize,
+    /// The sentence each unplaced unit's failed activity records in place of the
+    /// account's own, when something about the group stopped the launch outright.
+    blocked: Option<String>,
+}
+
+impl GroupLaunchOutcome {
+    /// A launch that placed nothing, for `blocked`'s reason when it carries one.
+    fn unplaced(count: usize, blocked: Option<String>) -> Self {
+        Self {
+            launched_ids: Vec::new(),
+            unplaced: count,
+            blocked,
+        }
+    }
+
+    /// What the failed activity of each unplaced unit of this launch records: the reason
+    /// the launch itself carries, or `account` — what an account that could not place the
+    /// instance records — when it carries none.
+    fn unplaced_message(&self, account: &str) -> String {
+        self.blocked.clone().unwrap_or_else(|| account.to_string())
+    }
 }
 
 /// Where a launch places what it launched: the group's own capacity, or the warm pool

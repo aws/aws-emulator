@@ -48,9 +48,22 @@
 //! bounded by that group's own attachments ([`crate::state::MAX_TARGET_GROUPS_PER_GROUP`])
 //! times its own instances ([`crate::state::MAX_GROUP_CAPACITY`]).
 //!
+//! # An attachment whose target group is gone
+//!
+//! Registering the instance is PART of bringing it into service, so an attachment whose
+//! target group Elastic Load Balancing v2 no longer holds ([`unresolved_attachments`])
+//! stops the launch that would have to register there: the group launches nothing and
+//! records the refusal that names the target group instead
+//! ([`launch_blocked_message`]), which is what a client reads off the group's scaling
+//! activities. The attachment then ends with the target group it named
+//! (`AutoScalingState::drop_attachments`), because a target group ARN carries the id that
+//! service minted for that one target group and so can never be registered into again.
+//!
 //! LOCKING. A reconcile reads the wanted set under this service's own lock, RELEASES it,
 //! and only then takes the Elastic Load Balancing v2 store's lock for the one pass that
-//! registers and deregisters; nothing awaits while either is held. Elastic Load Balancing v2
+//! registers and deregisters; nothing awaits while either is held. A read of that store
+//! ([`unresolved_attachments`]) takes its lock for the read alone and locks nothing of
+//! this service inside it, so the order is the same one. Elastic Load Balancing v2
 //! never reaches this service, so the two locks are never taken in the other order and no
 //! cycle exists.
 
@@ -59,7 +72,7 @@ use std::time::SystemTime;
 
 use ::service_com_amazonaws_elasticloadbalancingv2_elasticloadbalancing_v10::state as elbv2;
 
-use crate::state::{AutoScalingState, LIFECYCLE_TERMINATING};
+use crate::state::{AutoScalingState, StoredGroup, LIFECYCLE_TERMINATING};
 
 /// The `TargetTypeEnum` value of a target group whose targets are Amazon EC2 instances,
 /// which is the only kind an Auto Scaling group's instances can be registered in
@@ -143,20 +156,13 @@ impl Scope {
     }
 }
 
-/// Every registration the group `group_name` owes right now, in attachment order and, within
-/// an attachment, in instance order. Empty for a name this store holds no group for, which is
-/// what a deleted group owes.
+/// Every Elastic Load Balancing v2 target group the group `group` is ATTACHED to, in
+/// attachment order and once each however many times it is named.
 ///
-/// An instance counts while it is not on its way out of the group: an instance that is still
-/// `Pending` has launched and is being brought into service, which is what the registration
-/// is part of, and one that is `Terminating` is leaving. A target group is counted from both
-/// forms the attachment takes — the group's own `TargetGroupARNs` and an `elbv2` traffic
-/// source — because either one associates that target group with the group, and each target
-/// group is counted once however many times it is named.
-pub fn wanted_of(store: &AutoScalingState, group_name: &str) -> Vec<TargetRegistration> {
-    let Some(group) = store.groups.get(group_name) else {
-        return Vec::new();
-    };
+/// A target group is counted from both forms the attachment takes — the group's own
+/// `TargetGroupARNs` and an `elbv2` traffic source — because either one associates that
+/// target group with the group.
+pub fn attached_arns(group: &StoredGroup) -> Vec<&str> {
     let mut arns: Vec<&str> = Vec::new();
     let attached = group.attached_target_groups().iter().map(String::as_str);
     let from_traffic_sources = group
@@ -175,8 +181,85 @@ pub fn wanted_of(store: &AutoScalingState, group_name: &str) -> Vec<TargetRegist
             arns.push(arn);
         }
     }
+    arns
+}
+
+/// The target groups `group` is attached to that Elastic Load Balancing v2 no longer
+/// holds, in attachment order: the attachments that can take no registration at all,
+/// because the target group they name has been deleted in that service since it was
+/// attached.
+///
+/// A READ of the other service's store, under that store's lock alone — this module's
+/// header states the order, and nothing of this service is locked inside it.
+///
+/// Answers none when that store is unreachable (the engine is not the shared in-memory
+/// one): there is then no target group this service could have registered into, so no
+/// attachment can be said to have lost one.
+pub fn unresolved_attachments<Eng: Send + Sync + 'static>(
+    engine: &Eng,
+    group: &StoredGroup,
+) -> Vec<String> {
+    let arns = attached_arns(group);
+    if arns.is_empty() {
+        return Vec::new();
+    }
+    let Some(state) = elbv2::service_state(engine) else {
+        return Vec::new();
+    };
+    let store = state.lock();
+    arns.into_iter()
+        .filter(|arn| !store.target_groups.contains_key(*arn))
+        .map(str::to_string)
+        .collect()
+}
+
+/// How Elastic Load Balancing v2 names ITSELF in the refusal a caller of it reports —
+/// the service's own `cloudFormationName`
+/// (`smithy_query(query="service_info")` of that service's model), which is the name an
+/// AWS SDK renders in the exception it raises for a failed call.
+const ELBV2_SERVICE_NAME: &str = "ElasticLoadBalancingV2";
+
+/// The wire error code and HTTP status Elastic Load Balancing v2 answers a call naming a
+/// target group it does not hold with: its `TargetGroupNotFoundException`'s own
+/// `awsQueryError` code and `httpError`
+/// (`smithy_query(query="shape",shape="TargetGroupNotFoundException")`).
+const TARGET_GROUP_NOT_FOUND_CODE: &str = "TargetGroupNotFound";
+const TARGET_GROUP_NOT_FOUND_STATUS: u16 = 400;
+
+/// What the scaling activity of a launch that could not be registered reports as its
+/// `StatusMessage`: the refusal Elastic Load Balancing v2 answered for the target groups
+/// that are gone, and the launch that therefore did not happen.
+///
+/// The refusal is that service's own — its `TargetGroupNotFound` wording for the
+/// identifiers a call names (`elbv2::target_groups_not_found_message`), with the service,
+/// status and code an AWS SDK renders beside the message of a failed call, so a client
+/// reads here exactly what it would read from a call of its own against the deleted target
+/// group. The sentence that ends it is Amazon EC2 Auto Scaling's own: the launch it did not
+/// make.
+pub fn launch_blocked_message(unresolved: &[String]) -> String {
+    format!(
+        "{} (Service: {ELBV2_SERVICE_NAME}, Status Code: {TARGET_GROUP_NOT_FOUND_STATUS}, Error \
+         Code: {TARGET_GROUP_NOT_FOUND_CODE}). Launching EC2 instance failed.",
+        elbv2::target_groups_not_found_message(unresolved.iter().map(String::as_str))
+    )
+}
+
+/// Every registration the group `group_name` owes right now, in attachment order and, within
+/// an attachment, in instance order. Empty for a name this store holds no group for, which is
+/// what a deleted group owes.
+///
+/// An instance counts while it is not on its way out of the group: an instance that is still
+/// `Pending` has launched and is being brought into service, which is what the registration
+/// is part of, and one that is `Terminating` is leaving. A target group is counted from both
+/// forms the attachment takes — the group's own `TargetGroupARNs` and an `elbv2` traffic
+/// source — because either one associates that target group with the group, and each target
+/// group is counted once however many times it is named.
+pub fn wanted_of(store: &AutoScalingState, group_name: &str) -> Vec<TargetRegistration> {
+    let Some(group) = store.groups.get(group_name) else {
+        return Vec::new();
+    };
     let mut registrations = Vec::new();
-    for arn in arns {
+    for arn in attached_arns(group) {
         for instance in &group.instances {
             if instance.lifecycle_state == LIFECYCLE_TERMINATING {
                 continue;

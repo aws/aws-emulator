@@ -79,6 +79,12 @@ pub const WARMED_PENDING: &str = "Warmed:Pending";
 /// The `LifecycleState` of an instance the pool is taking out.
 pub const WARMED_TERMINATING: &str = "Warmed:Terminating";
 
+/// What the failed activity of a warm-pool instance the ACCOUNT could not place records,
+/// on the same footing as the group's own ([`super::UNPLACED_INSTANCE_MESSAGE`]) and
+/// naming the collection the instance was to be launched into.
+pub const UNPLACED_WARM_POOL_INSTANCE_MESSAGE: &str =
+    "The account could not place the instance. Launching EC2 instance into warm pool failed.";
+
 /// The largest `MaxRecords` `DescribeWarmPool` honours.
 ///
 /// From the model's own documentation for `DescribeWarmPoolType$MaxRecords`: "The
@@ -125,6 +131,14 @@ pub fn warm_pool_launch_description(instance_id: &str) -> String {
 /// The `Activity$Description` a warm-pool termination records, in the same shape.
 pub fn warm_pool_termination_description(instance_id: &str) -> String {
     format!("Terminating EC2 instance in warm pool: {instance_id}")
+}
+
+/// The `Activity$Description` of a warm-pool launch that FAILED: what the launch set out
+/// to do and the reason it did not, on the same footing as the group's own
+/// ([`super::failed_launch_description`]) \u2014 a launch that failed has no instance to name,
+/// so it names the reason instead.
+pub fn warm_pool_failed_launch_description(status_message: &str) -> String {
+    format!("Launching a new EC2 instance into warm pool. Status Reason: {status_message}")
 }
 
 /// The warm pool of one group, as it is stored.
@@ -454,7 +468,7 @@ impl AutoScalingState {
 
         let cause = warm_pool_change_cause(held, target);
         let due = now + LIFECYCLE_TRANSITION;
-        let (launched_ids, unplaced) = self.launch_into_group(
+        let launch = self.launch_into_group(
             engine,
             &GroupLaunch {
                 group_name,
@@ -465,6 +479,9 @@ impl AutoScalingState {
                 destination: LaunchDestination::WarmPool,
             },
         );
+        let launched_ids = launch.launched_ids.clone();
+        let unplaced_message = launch.unplaced_message(UNPLACED_WARM_POOL_INSTANCE_MESSAGE);
+        let unplaced = launch.unplaced;
         if !taken.is_empty() {
             if let Some(pool) = self
                 .groups
@@ -524,9 +541,8 @@ impl AutoScalingState {
                 self.record_failed_activity(
                     group_name,
                     &arn,
-                    "Launching a new EC2 instance into warm pool failed: the account could not \
-                     place it"
-                        .to_string(),
+                    warm_pool_failed_launch_description(&unplaced_message),
+                    unplaced_message.clone(),
                     cause.clone(),
                     now,
                 );

@@ -802,6 +802,7 @@ fn seed_activity(
             start_time: started,
             end_time: Some(started),
             status_code: autoscaling::state::ACTIVITY_SUCCESSFUL.to_string(),
+            status_message: None,
             progress: 100,
             details: None,
             auto_scaling_group_state: Some(

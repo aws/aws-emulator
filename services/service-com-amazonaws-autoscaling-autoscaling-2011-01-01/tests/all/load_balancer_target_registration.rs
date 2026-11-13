@@ -22,13 +22,25 @@
 //! one the owning service returns from its own read, and the instance ids are the account's
 //! own Amazon EC2 instances.
 //!
+//! Registering the instance is PART of bringing it into service, so the same rule decides
+//! what a launch does when an attachment can take no registration at all: a target group
+//! that has been DELETED in Elastic Load Balancing v2 since it was attached stops the
+//! launch that would have to register there — the group launches nothing and records a
+//! failed scaling activity whose `StatusMessage` names the target groups that are gone
+//! ("if an attempt to launch instances failed, the StatusCode value is Failed or Cancelled
+//! and the StatusMessage element in the response indicates the cause of the failure",
+//! `DescribeScalingActivities`) — and launches again as soon as the group holds no
+//! attachment that cannot resolve.
+//!
 //! The tables below span what the rule generalises over: how many target groups a group is
 //! attached to, how many instances it holds, how many zones they are spread across, the
 //! target group's own port, whether the attachment came from the create or from a later
 //! attach, whether the attachment is named as `TargetGroupARNs` or as an `elbv2` traffic
-//! source, the target group's `TargetType`, and the documented per-call bound on an attach.
+//! source, the target group's `TargetType`, the documented per-call bound on an attach, and
+//! how many of a group's attachments have been deleted out of band.
 
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use smithy_server_runtime::MultiServiceRouter;
 
@@ -37,8 +49,8 @@ use service_com_amazonaws_ec2_amazonec2 as ec2_service;
 use service_com_amazonaws_elasticloadbalancingv2_elasticloadbalancing_v10 as elbv2_service;
 
 use crate::support::{
-    borrowed, ec2_query, form_encode, p, query, seed_subnets, tag_value, tag_values, SeededSubnet,
-    REGION,
+    borrowed, ec2_query, form_encode, p, query, seed_subnets, tag_value, tag_values, xml_unescape,
+    SeededSubnet, REGION,
 };
 
 /// The API version an Elastic Load Balancing v2 client puts in its awsQuery body, read from
@@ -58,6 +70,12 @@ const MAX_TARGET_GROUPS_PER_GROUP: usize = autoscaling::state::MAX_TARGET_GROUPS
 /// The `TargetTypeEnum` value of a target group whose targets are Amazon EC2 instances
 /// (`TargetGroup$TargetType`: "`instance` - Targets are specified by instance ID").
 const TARGET_TYPE_INSTANCE: &str = "instance";
+
+/// The `TrafficSourceIdentifier$Type` of a traffic source whose `Identifier` is an Elastic
+/// Load Balancing v2 target group ARN — "`elbv2` if `Identifier` is the ARN of an
+/// Application Load Balancer, Gateway Load Balancer, or Network Load Balancer target group"
+/// (`smithy_query(query="doc",shape="TrafficSourceIdentifier",member="Type")`).
+const TRAFFIC_SOURCE_TYPE_ELBV2: &str = "elbv2";
 
 /// One emulator with the three services on one engine: a group's instances are the
 /// account's own Amazon EC2 instances, and the targets they occupy are Elastic Load
@@ -1148,4 +1166,565 @@ async fn one_group_holds_at_most_the_ceiling_of_attachments() {
             "case {case:?}: expected the message {refusal:?}, got {message:?}"
         );
     }
+}
+
+/// How often a poll re-reads the group.
+const POLL_INTERVAL: Duration = Duration::from_millis(25);
+
+/// How long a poll keeps trying before it gives up: the lifecycle span this service owes a
+/// transition, with ample margin for a loaded test machine. Read from the service's own span
+/// rather than written out, so the two cannot drift apart.
+fn poll_budget() -> Duration {
+    autoscaling::state::LIFECYCLE_TRANSITION + Duration::from_secs(10)
+}
+
+/// The `LifecycleState` of an instance that is in service, from the model's own
+/// `LifecycleState` enum (`smithy_query(query="shape",shape="LifecycleState")`).
+const LIFECYCLE_IN_SERVICE: &str = "InService";
+
+/// The `ScalingActivityStatusCode` of an activity that did not place what it set out to,
+/// from the model's own `ScalingActivityStatusCode` enum
+/// (`smithy_query(query="shape",shape="ScalingActivityStatusCode")`).
+const ACTIVITY_FAILED: &str = "Failed";
+
+/// Post one `SetDesiredCapacity` and answer its status, wire error code and message.
+async fn set_desired_capacity(
+    router: &MultiServiceRouter,
+    name: &str,
+    desired: usize,
+) -> (u16, String, String) {
+    let (status, body) = query(
+        router,
+        "SetDesiredCapacity",
+        &[
+            ("AutoScalingGroupName", name),
+            ("DesiredCapacity", &desired.to_string()),
+            ("HonorCooldown", "false"),
+        ],
+    )
+    .await;
+    (
+        status,
+        tag_value(&body, "Code"),
+        xml_unescape(&tag_value(&body, "Message")),
+    )
+}
+
+/// Delete one target group through Elastic Load Balancing v2's own wire — the service that
+/// owns it is what takes it away, so the attachment the Auto Scaling group still holds is
+/// left naming a target group that no longer exists.
+async fn delete_target_group(router: &MultiServiceRouter, arn: &str) {
+    let (status, body) =
+        elbv2_query(router, "DeleteTargetGroup", &[p("TargetGroupArn", arn)]).await;
+    assert_eq!(
+        status, 200,
+        "DeleteTargetGroup for {arn:?} expected 200, got {status}: {body}"
+    );
+}
+
+/// One scaling activity as a client reads it: what it set out to do, its status code and
+/// the message a failed one carries.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ReportedActivity {
+    description: String,
+    status_code: String,
+    status_message: String,
+}
+
+/// Every scaling activity the group reports, through `DescribeScalingActivities`.
+async fn scaling_activities(router: &MultiServiceRouter, name: &str) -> Vec<ReportedActivity> {
+    let (status, body) = query(
+        router,
+        "DescribeScalingActivities",
+        &[("AutoScalingGroupName", name)],
+    )
+    .await;
+    assert_eq!(
+        status, 200,
+        "DescribeScalingActivities for {name:?} expected 200, got {status}: {body}"
+    );
+    let inner = element_inner(&body, "Activities").unwrap_or_default();
+    members(inner)
+        .into_iter()
+        .map(|member| ReportedActivity {
+            description: xml_unescape(&tag_value(member, "Description")),
+            status_code: tag_value(member, "StatusCode"),
+            status_message: xml_unescape(&tag_value(member, "StatusMessage")),
+        })
+        .collect()
+}
+
+/// The activities of the group that FAILED, in the order it reports them.
+async fn failed_activities(router: &MultiServiceRouter, name: &str) -> Vec<ReportedActivity> {
+    scaling_activities(router, name)
+        .await
+        .into_iter()
+        .filter(|activity| activity.status_code == ACTIVITY_FAILED)
+        .collect()
+}
+
+/// Every instance the group reports, as `(instance id, LifecycleState)` in the order
+/// reported.
+async fn instance_states(router: &MultiServiceRouter, name: &str) -> Vec<(String, String)> {
+    let body = described(router, name).await;
+    let inner = element_inner(&body, "Instances").unwrap_or_default();
+    members(inner)
+        .into_iter()
+        .map(|member| {
+            (
+                tag_value(member, "InstanceId"),
+                tag_value(member, "LifecycleState"),
+            )
+        })
+        .collect()
+}
+
+/// Read the group until it holds `wanted` instances and every one of them is in service, or
+/// a generous deadline passes — the CONDITION, never a fixed wait. Answers what it last read.
+async fn settled_instances(
+    router: &MultiServiceRouter,
+    case: &str,
+    name: &str,
+    wanted: usize,
+) -> Vec<(String, String)> {
+    let deadline = Instant::now() + poll_budget();
+    loop {
+        let held = instance_states(router, name).await;
+        let settled = held.len() == wanted
+            && held
+                .iter()
+                .all(|(_, state)| state == LIFECYCLE_IN_SERVICE);
+        if settled || Instant::now() >= deadline {
+            assert_eq!(
+                held.len(),
+                wanted,
+                "case {case:?}: expected {name:?} to hold {wanted} instance(s), got {held:?}"
+            );
+            for (instance_id, state) in &held {
+                assert_eq!(
+                    state, LIFECYCLE_IN_SERVICE,
+                    "case {case:?}: expected {instance_id} of {name:?} to reach \
+                     {LIFECYCLE_IN_SERVICE}, got {held:?}"
+                );
+            }
+            return held;
+        }
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
+}
+
+/// The ids of the targets Elastic Load Balancing v2 reports in `arn`, sorted — read through
+/// its own `DescribeTargetHealth`.
+async fn registered_ids(router: &MultiServiceRouter, arn: &str) -> Vec<String> {
+    let mut ids: Vec<String> = registered_targets(router, arn)
+        .await
+        .into_iter()
+        .map(|target| target.id)
+        .collect();
+    ids.sort();
+    ids
+}
+
+/// The ids of the instances the group reports, sorted — what every target group it is
+/// attached to must hold.
+fn instance_ids(instances: &[(String, String)]) -> Vec<String> {
+    let mut ids: Vec<String> = instances.iter().map(|(id, _)| id.clone()).collect();
+    ids.sort();
+    ids
+}
+
+/// The target groups the group holds an attachment to, in EITHER form the attachment takes
+/// — its own `TargetGroupARNs` and an `elbv2` traffic source — which is what a registration
+/// of its instances follows.
+async fn attached_identifiers(router: &MultiServiceRouter, name: &str) -> Vec<String> {
+    let body = described(router, name).await;
+    let mut held = tag_values(
+        element_inner(&body, "TargetGroupARNs").unwrap_or_default(),
+        "member",
+    );
+    for source in members(element_inner(&body, "TrafficSources").unwrap_or_default()) {
+        if tag_value(source, "Type") == TRAFFIC_SOURCE_TYPE_ELBV2 {
+            held.push(tag_value(source, "Identifier"));
+        }
+    }
+    held
+}
+
+/// The `DesiredCapacity` the group reports.
+async fn reported_desired_capacity(router: &MultiServiceRouter, name: &str) -> String {
+    tag_value(&described(router, name).await, "DesiredCapacity")
+}
+
+/// The `StatusMessage` the failed activity of a launch blocked by deleted target groups
+/// carries: Elastic Load Balancing's own `TargetGroupNotFound` refusal for the identifiers
+/// a call names — one identifier, or several, under the plural noun, with the service,
+/// status and code an AWS SDK renders beside it — followed by the launch Amazon EC2 Auto
+/// Scaling therefore did not make.
+fn blocked_message(unresolved: &[String]) -> String {
+    format!(
+        "Target groups '{}' not found (Service: ElasticLoadBalancingV2, Status Code: 400, Error \
+         Code: TargetGroupNotFound). Launching EC2 instance failed.",
+        unresolved.join(", ")
+    )
+}
+
+/// What the activity of that launch DESCRIBES: the launch it set out to make and the
+/// status reason it failed with — the two members `DescribeScalingActivities` reports
+/// apart, where the activity of a launch that succeeded names the instance it launched.
+fn blocked_description(unresolved: &[String]) -> String {
+    format!(
+        "Launching a new EC2 instance. Status Reason: {}",
+        blocked_message(unresolved)
+    )
+}
+
+/// One row of the deleted-attachment table: how many target groups the group is attached to,
+/// which of them are deleted out of band, how the attachment was made, how many instances the
+/// group holds before the scale-out, and the capacity the scale-out asks for.
+struct DeletedAttachmentRow {
+    case: &'static str,
+    target_groups: usize,
+    /// The indexes, into the row's own target groups, of the ones deleted before the
+    /// scale-out. Empty for a row whose every attachment still resolves.
+    deleted: &'static [usize],
+    attached_as: AttachedAs,
+    held: usize,
+    desired: usize,
+}
+
+fn deleted_attachment_rows() -> Vec<DeletedAttachmentRow> {
+    vec![
+        DeletedAttachmentRow {
+            case: "the only attached target group is deleted",
+            target_groups: 1,
+            deleted: &[0],
+            attached_as: AttachedAs::TargetGroupArns,
+            held: 1,
+            desired: 2,
+        },
+        DeletedAttachmentRow {
+            case: "one of two attached target groups is deleted",
+            target_groups: 2,
+            deleted: &[1],
+            attached_as: AttachedAs::TargetGroupArns,
+            held: 1,
+            desired: 2,
+        },
+        DeletedAttachmentRow {
+            case: "both attached target groups are deleted, scaling out by two",
+            target_groups: 2,
+            deleted: &[0, 1],
+            attached_as: AttachedAs::TargetGroupArns,
+            held: 2,
+            desired: 4,
+        },
+        DeletedAttachmentRow {
+            case: "the deleted target group is named as an elbv2 traffic source",
+            target_groups: 1,
+            deleted: &[0],
+            attached_as: AttachedAs::Elbv2TrafficSources,
+            held: 1,
+            desired: 2,
+        },
+        DeletedAttachmentRow {
+            case: "the deleted target group was attached by a later attach",
+            target_groups: 1,
+            deleted: &[0],
+            attached_as: AttachedAs::LaterAttach,
+            held: 1,
+            desired: 3,
+        },
+        DeletedAttachmentRow {
+            case: "every attached target group still exists",
+            target_groups: 2,
+            deleted: &[],
+            attached_as: AttachedAs::TargetGroupArns,
+            held: 1,
+            desired: 2,
+        },
+        DeletedAttachmentRow {
+            case: "the group is attached to nothing at all",
+            target_groups: 0,
+            deleted: &[],
+            attached_as: AttachedAs::TargetGroupArns,
+            held: 1,
+            desired: 3,
+        },
+    ]
+}
+
+/// Every row: a scale-out of a group holding an attachment whose target group is GONE
+/// launches nothing and records one failed activity per instance it was asked for, naming
+/// the target groups that are missing — while the group's stored capacity still moves, the
+/// instances it already holds stay in service and registered, and the attachment that can
+/// never resolve again is no longer one the group holds. A row whose every attachment
+/// resolves scales out as it always did.
+#[tokio::test]
+async fn a_scale_out_is_refused_while_an_attached_target_group_is_gone() {
+    let (router, engine) = emulator();
+    let subnets = seed_subnets(&engine, 2);
+    let vpc_id = vpc_of(&router, &subnets[0]).await;
+    create_launch_template(&router, "lt-deleted").await;
+
+    for (row, case) in deleted_attachment_rows().into_iter().enumerate() {
+        let name = format!("asg-deleted-{row}");
+        let mut arns = Vec::new();
+        for index in 0..case.target_groups {
+            arns.push(
+                create_target_group(
+                    &router,
+                    &format!("tg-deleted-{row}-{index}"),
+                    80,
+                    TARGET_TYPE_INSTANCE,
+                    &vpc_id,
+                )
+                .await,
+            );
+        }
+        create_group(
+            &router,
+            &name,
+            "lt-deleted",
+            &subnets,
+            case.held,
+            &arns,
+            case.attached_as,
+        )
+        .await;
+        let before = settled_instances(&router, case.case, &name, case.held).await;
+        // Every attachment holds the instances the group launched before anything was
+        // deleted, so what follows is a change the delete made and not a group that never
+        // registered.
+        for arn in &arns {
+            let actual = registered_ids(&router, arn).await;
+            assert_eq!(
+                actual,
+                instance_ids(&before),
+                "case {:?}: expected {arn:?} to hold the group's instances before the delete, \
+                 got {actual:?}",
+                case.case
+            );
+        }
+
+        let gone: Vec<String> = case
+            .deleted
+            .iter()
+            .map(|index| arns[*index].clone())
+            .collect();
+        for arn in &gone {
+            delete_target_group(&router, arn).await;
+        }
+        let kept: Vec<String> = arns
+            .iter()
+            .filter(|arn| !gone.contains(arn))
+            .cloned()
+            .collect();
+
+        let (status, code, message) = set_desired_capacity(&router, &name, case.desired).await;
+        assert_eq!(
+            status, 200,
+            "case {:?}: the capacity change itself must be served, got {status} with {code:?} \
+             {message:?}",
+            case.case
+        );
+        // The capacity the group was asked for is the capacity it holds, whether or not the
+        // launch it owes could be made: the request was accepted.
+        let reported = reported_desired_capacity(&router, &name).await;
+        assert_eq!(
+            reported,
+            case.desired.to_string(),
+            "case {:?}: expected the group to report DesiredCapacity {}, got {reported:?}",
+            case.case,
+            case.desired
+        );
+
+        let failed = failed_activities(&router, &name).await;
+        if gone.is_empty() {
+            // Nothing blocks the launch, so the scale-out happens and nothing failed.
+            let after = settled_instances(&router, case.case, &name, case.desired).await;
+            assert!(
+                failed.is_empty(),
+                "case {:?}: expected no failed activity, got {failed:?}",
+                case.case
+            );
+            for arn in &kept {
+                let actual = registered_ids(&router, arn).await;
+                assert_eq!(
+                    actual,
+                    instance_ids(&after),
+                    "case {:?}: expected {arn:?} to hold every instance after the scale-out, got \
+                     {actual:?}",
+                    case.case
+                );
+            }
+            continue;
+        }
+
+        // Blocked: nothing was launched, and the instances the group already holds are
+        // exactly the ones it still reports, still in service.
+        let after = instance_states(&router, &name).await;
+        assert_eq!(
+            after, before,
+            "case {:?}: expected the group to still hold {before:?} and launch nothing, got \
+             {after:?}",
+            case.case
+        );
+        let wanted = blocked_message(&gone);
+        let wanted_description = blocked_description(&gone);
+        assert_eq!(
+            failed.len(),
+            case.desired - case.held,
+            "case {:?}: expected one failed activity per instance the change asked for, got \
+             {failed:?}",
+            case.case
+        );
+        for activity in &failed {
+            assert_eq!(
+                activity.status_message, wanted,
+                "case {:?}: expected the failed activity to report {wanted:?}, got {activity:?}",
+                case.case
+            );
+            assert_eq!(
+                activity.description, wanted_description,
+                "case {:?}: expected the failed activity to describe {wanted_description:?}, got \
+                 {activity:?}",
+                case.case
+            );
+        }
+        // The attachments that DO resolve are untouched by the refusal: they hold the
+        // instances the group already had, and nothing was registered for a launch that
+        // never happened.
+        for arn in &kept {
+            let actual = registered_ids(&router, arn).await;
+            assert_eq!(
+                actual,
+                instance_ids(&before),
+                "case {:?}: expected {arn:?} to hold only the instances the group already had, \
+                 got {actual:?}",
+                case.case
+            );
+        }
+        // The attachment that can never resolve again is no longer one the group holds,
+        // exactly as a detach of it would leave the group, while every attachment that
+        // does resolve is still there.
+        let attached = attached_identifiers(&router, &name).await;
+        for arn in &gone {
+            assert!(
+                !attached.contains(arn),
+                "case {:?}: expected the group to hold no attachment to the deleted {arn:?}, \
+                 got {attached:?}",
+                case.case
+            );
+        }
+        for arn in &kept {
+            assert!(
+                attached.contains(arn),
+                "case {:?}: expected the group to keep its attachment to {arn:?}, got \
+                 {attached:?}",
+                case.case
+            );
+        }
+    }
+}
+
+/// The refusal stands until the client asks again: while the group holds an attachment
+/// Elastic Load Balancing v2 cannot resolve the scale-out launches nothing, and once that
+/// attachment has ended with the target group it named — and a fresh target group is
+/// attached — the same scale-out launches the instance and registers it there.
+#[tokio::test]
+async fn a_scale_out_resumes_once_no_attachment_is_missing() {
+    let (router, engine) = emulator();
+    let subnets = seed_subnets(&engine, 2);
+    let vpc_id = vpc_of(&router, &subnets[0]).await;
+    create_launch_template(&router, "lt-resumes").await;
+
+    let gone = create_target_group(&router, "tg-resumes", 80, TARGET_TYPE_INSTANCE, &vpc_id).await;
+    create_group(
+        &router,
+        "asg-resumes",
+        "lt-resumes",
+        &subnets,
+        1,
+        std::slice::from_ref(&gone),
+        AttachedAs::TargetGroupArns,
+    )
+    .await;
+    let before = settled_instances(&router, "before the delete", "asg-resumes", 1).await;
+
+    delete_target_group(&router, &gone).await;
+    let (status, code, message) = set_desired_capacity(&router, "asg-resumes", 2).await;
+    assert_eq!(
+        status, 200,
+        "the blocked capacity change must be served, got {status} with {code:?} {message:?}"
+    );
+    let blocked = failed_activities(&router, "asg-resumes").await;
+    let wanted = blocked_message(std::slice::from_ref(&gone));
+    assert_eq!(
+        blocked.len(),
+        1,
+        "the blocked scale-out must record one failed activity, got {blocked:?}"
+    );
+    assert_eq!(
+        blocked[0].status_message, wanted,
+        "expected the failed activity to report {wanted:?}, got {:?}",
+        blocked[0]
+    );
+    let held = instance_states(&router, "asg-resumes").await;
+    assert_eq!(
+        held, before,
+        "the blocked scale-out must launch nothing, got {held:?}"
+    );
+    // Nothing launches for that change afterwards either: the refusal was the whole of what
+    // it did, so the group stays exactly as it left it and reports the refusal once. Watched
+    // over a budget several times the span this service owes a transition, so a launch the
+    // clock could still have made falls inside it.
+    let quiet = Instant::now() + autoscaling::state::LIFECYCLE_TRANSITION * 8;
+    while Instant::now() < quiet {
+        tokio::time::sleep(POLL_INTERVAL).await;
+        let held = instance_states(&router, "asg-resumes").await;
+        assert_eq!(
+            held, before,
+            "the refused scale-out must launch nothing afterwards either, got {held:?}"
+        );
+        let still = failed_activities(&router, "asg-resumes").await;
+        assert_eq!(
+            still, blocked,
+            "the refused scale-out must report its refusal once, got {still:?}"
+        );
+    }
+    // The attachment that could not resolve has ended with the target group it named.
+    let attached = attached_identifiers(&router, "asg-resumes").await;
+    assert!(
+        attached.is_empty(),
+        "expected the group to hold no attachment to the deleted target group, got \
+         {attached:?}"
+    );
+
+    // A fresh target group takes its place and the client asks for the capacity again:
+    // nothing is in the way now, so the launch is made and the instance is registered there.
+    let fresh = create_target_group(&router, "tg-fresh", 80, TARGET_TYPE_INSTANCE, &vpc_id).await;
+    let (status, code, message) = attach(&router, "asg-resumes", std::slice::from_ref(&fresh)).await;
+    assert_eq!(
+        status, 200,
+        "attaching the fresh target group must succeed, got {status} with {code:?} {message:?}"
+    );
+    let (status, code, message) = set_desired_capacity(&router, "asg-resumes", 2).await;
+    assert_eq!(
+        status, 200,
+        "the capacity change asked for again must be served, got {status} with {code:?} \
+         {message:?}"
+    );
+
+    let after = settled_instances(&router, "after the fresh attachment", "asg-resumes", 2).await;
+    let actual = registered_ids(&router, &fresh).await;
+    assert_eq!(
+        actual,
+        instance_ids(&after),
+        "expected the fresh target group to hold every instance of the group, got {actual:?}"
+    );
+    let failed = failed_activities(&router, "asg-resumes").await;
+    assert_eq!(
+        failed, blocked,
+        "the resumed scale-out must record no further failure, got {failed:?}"
+    );
 }
