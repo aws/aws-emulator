@@ -11,14 +11,14 @@
 //! and every other key the pool holds is left exactly as it was. A call that is refused
 //! writes nothing, so a pool's tag set only ever changes through a call that succeeded.
 //!
-//! Three rules refuse a call before it writes: a tag entry outside the bounds the model's
+//! Four rules refuse a call before it writes: a tag entry outside the bounds the model's
 //! own `IdentityPoolTagsType` states (400 `ValidationException`, the protocol-level
 //! constraint refusal, because the bounds are on the map's KEY and VALUE shapes and so are
-//! not checked by the boundary walk over the member); a key in the `aws:` namespace AWS
-//! reserves for its own tags; and a call that would leave the pool with more tags than an
-//! identity pool can have. The last two are bad input parameters, which is the modelled
-//! 400 `InvalidParameterException` — the only client-input error this operation models for
-//! a tag this service will not store.
+//! not checked by the boundary walk over the member); a key or a value carrying a character
+//! tags may not hold; a key in the `aws:` namespace AWS reserves for its own tags; and a
+//! call that would leave the pool with more tags than an identity pool can have. The last
+//! three are bad input parameters, which is the modelled 400 `InvalidParameterException` —
+//! the only client-input error this operation models for a tag this service will not store.
 //!
 //! ## Shape of an operation
 //!
@@ -254,6 +254,21 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> TagResource<Eng> 
             return Err(crate::scaffolded::Scaffolded::validation(
                 crate::state::validation_errors_detected(violations.len(), &violations),
             ));
+        }
+
+        // The CHARACTERS a tag is spelled with, which the model bounds nothing about: AWS
+        // publishes one character set for a tag key and a tag value alike, and an entry
+        // outside it is a bad input parameter rather than a constraint the model states.
+        // The rule is the shared one every operation of this service that writes a pool's
+        // tags reads.
+        let entries: Vec<(&str, &str)> = requested
+            .iter()
+            .map(|(tag_key, tag_value)| (tag_key.as_str(), tag_value.as_str()))
+            .collect();
+        if let Some(message) =
+            crate::state::pool_configuration::tag_charset_refusal(&entries)
+        {
+            return Err(invalid_parameter(message.to_string()));
         }
 
         for (tag_key, _) in &requested {

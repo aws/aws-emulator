@@ -20,13 +20,16 @@ use crate::identity_pool_flow::{
     cognito_trust_policy, error_code, member, non_empty, Emulator, ABSENT_POOL_ID,
 };
 
-/// An IAM role ARN: `arn:<partition>:iam::<12-digit-account-id>:role/<path and name>`,
-/// the form `RolesMap`'s value and `MappingRule$RoleARN` (both documented "the Role ARN",
-/// `smithy_query(query="shape",shape="RolesMap,MappingRule")`) carry. `pub(crate)` so a
-/// sibling suite in this test target spells a role ARN the same way rather than keeping a
-/// second copy of this helper.
+/// An IAM role ARN of the account this emulator serves:
+/// `arn:aws:iam::<account>:role/<path and name>`, the form `RolesMap`'s value and
+/// `MappingRule$RoleARN` (both documented "the Role ARN",
+/// `smithy_query(query="shape",shape="RolesMap,MappingRule")`) carry. The account is the
+/// emulator's own (`engine::emulator_account_id`) because a role an identity pool is
+/// configured with is a role the caller passes to Amazon Cognito, and a service is only
+/// passed a role of the account it acts for. `pub(crate)` so a sibling suite in this test
+/// target spells a role ARN the same way rather than keeping a second copy of this helper.
 pub(crate) fn role_arn(name: &str) -> String {
-    format!("arn:aws:iam::123456789012:role/{name}")
+    format!("arn:aws:iam::{}:role/{name}", engine::emulator_account_id())
 }
 
 /// `MappingRuleMatchType`'s values, from
@@ -79,10 +82,13 @@ fn configurations() -> Vec<(&'static str, Value, Option<Value>)> {
             None,
         ),
         (
-            "both roles, in another partition and under a path",
+            // The partition of the account's own ARNs, and a role under a path: the role
+            // IAM holds is named by the LAST segment of the resource, so a path changes
+            // nothing about which role is named.
+            "both roles, one of them under a path",
             json!({
-                "authenticated": "arn:aws-cn:iam::123456789012:role/Cognito_poolAuth_Role",
-                "unauthenticated": "arn:aws:iam::123456789012:role/service-role/unauth",
+                "authenticated": role_arn("Cognito_poolAuth_Role"),
+                "unauthenticated": role_arn("service-role/unauth"),
             }),
             None,
         ),
@@ -325,9 +331,16 @@ async fn roles_of_a_pool_that_is_not_stored_are_not_found() {
     }
 }
 
-/// RULE: a configuration whose role is not an IAM role ARN, or whose role mapping is
-/// missing what the model documents as required for its `Type`, is refused with HTTP 400
-/// `InvalidParameterException` — and the pool keeps the configuration it already had.
+/// One refused configuration: the case, the `Roles` map it carries, the `RoleMappings` it
+/// carries (`None` sends the member not at all) and the refusal it earns — the HTTP status
+/// and the error code.
+type RefusedConfiguration = (&'static str, Value, Option<Value>, (u16, &'static str));
+
+/// RULE: a configuration naming a role Amazon Cognito may not be passed — a value that
+/// names no IAM role of this account — is refused `NotAuthorizedException` (HTTP 403),
+/// while one whose role MAPPING is missing what the model documents as required for its
+/// `Type` is refused `InvalidParameterException` (HTTP 400); either way the pool keeps the
+/// configuration it already had.
 #[tokio::test]
 async fn an_incomplete_or_non_role_configuration_is_refused_and_changes_nothing() {
     let emulator = Emulator::new();
@@ -345,34 +358,55 @@ async fn an_incomplete_or_non_role_configuration_is_refused_and_changes_nothing(
         )
         .await;
 
-    let refusals: Vec<(&str, Value, Option<Value>)> = vec![
-        // A role value that is long enough to satisfy `ARNString` (len 20..2048) but does
-        // not name an IAM role: a user, another service's resource, an account id that is
-        // not twelve digits, a role with no name at all, and a value that is no ARN.
+    /// The refusal a role a service may not be passed earns: the code of
+    /// `NotAuthorizedException`, which is what a value naming no role of this account is,
+    /// at the status this service answers every client error with
+    /// (`crate::service::modeled_error_status`).
+    const PASS_ROLE: (u16, &str) = (400, "NotAuthorizedException");
+    /// The refusal a bad input parameter earns.
+    const BAD_PARAMETER: (u16, &str) = (400, "InvalidParameterException");
+
+    let refusals: Vec<RefusedConfiguration> = vec![
+        // A role value that is long enough to satisfy `ARNString` (len 20..2048) but names
+        // no IAM role of this account: a user, another service's resource, another
+        // account's role, a role with no name at all, and a value that is no ARN. Every one
+        // of them is the same answer, because the pass is decided about the value as the
+        // role of an account that is not this one rather than parsed as a parameter.
         (
             "a user ARN where a role belongs",
-            json!({"authenticated": "arn:aws:iam::123456789012:user/alice"}),
+            json!({"authenticated": format!("arn:aws:iam::{}:user/alice", engine::emulator_account_id())}),
             None,
+            PASS_ROLE,
         ),
         (
             "another service's ARN",
             json!({"authenticated": "arn:aws:s3:::a-bucket-named-like-this"}),
             None,
+            PASS_ROLE,
+        ),
+        (
+            "another account's role",
+            json!({"unauthenticated": "arn:aws:iam::123456789012:role/Cognito_poolUnauth_Role"}),
+            None,
+            PASS_ROLE,
         ),
         (
             "an account id that is not twelve digits",
             json!({"unauthenticated": "arn:aws:iam::12345:role/Cognito_poolUnauth_Role"}),
             None,
+            PASS_ROLE,
         ),
         (
             "a role ARN with no role name",
-            json!({"authenticated": "arn:aws:iam::123456789012:role/"}),
+            json!({"authenticated": format!("arn:aws:iam::{}:role/", engine::emulator_account_id())}),
             None,
+            PASS_ROLE,
         ),
         (
             "a value that is not an ARN",
             json!({"authenticated": "not-an-arn-but-long-enough"}),
             None,
+            PASS_ROLE,
         ),
         (
             "a mapped rule naming something other than a role",
@@ -385,10 +419,11 @@ async fn an_incomplete_or_non_role_configuration_is_refused_and_changes_nothing(
                         "Claim": "isAdmin",
                         "MatchType": "Equals",
                         "Value": "yes",
-                        "RoleARN": "arn:aws:iam::123456789012:user/alice",
+                        "RoleARN": format!("arn:aws:iam::{}:user/alice", engine::emulator_account_id()),
                     }]},
                 },
             })),
+            PASS_ROLE,
         ),
         // `RoleMapping$RulesConfiguration`: "If you specify Rules as the role mapping
         // type, RulesConfiguration is required."
@@ -398,6 +433,7 @@ async fn an_incomplete_or_non_role_configuration_is_refused_and_changes_nothing(
             Some(json!({
                 "accounts.google.com": {"Type": "Rules", "AmbiguousRoleResolution": "Deny"},
             })),
+            BAD_PARAMETER,
         ),
         // `RoleMapping$AmbiguousRoleResolution`: "If you specify Token or Rules as the
         // Type, AmbiguousRoleResolution is required."
@@ -405,6 +441,7 @@ async fn an_incomplete_or_non_role_configuration_is_refused_and_changes_nothing(
             "a Token mapping with no AmbiguousRoleResolution",
             json!({"authenticated": role_arn("Cognito_poolAuth_Role")}),
             Some(json!({"accounts.google.com": {"Type": "Token"}})),
+            BAD_PARAMETER,
         ),
         (
             "a Rules mapping with no AmbiguousRoleResolution",
@@ -415,6 +452,7 @@ async fn an_incomplete_or_non_role_configuration_is_refused_and_changes_nothing(
                     "RulesConfiguration": {"Rules": rules(2)},
                 },
             })),
+            BAD_PARAMETER,
         ),
         // One rule past the 25 the model's `RulesConfigurationType$Rules` doc publishes.
         (
@@ -427,10 +465,11 @@ async fn an_incomplete_or_non_role_configuration_is_refused_and_changes_nothing(
                     "RulesConfiguration": {"Rules": rules(26)},
                 },
             })),
+            BAD_PARAMETER,
         ),
     ];
 
-    for (case, roles, role_mappings) in refusals {
+    for (case, roles, role_mappings, (expected_status, expected_code)) in refusals {
         let (status, body) = emulator
             .call(
                 "SetIdentityPoolRoles",
@@ -438,12 +477,12 @@ async fn an_incomplete_or_non_role_configuration_is_refused_and_changes_nothing(
             )
             .await;
         assert_eq!(
-            status, 400,
-            "case {case:?}: expected HTTP 400, got {status} with {body}"
+            status, expected_status,
+            "case {case:?}: expected HTTP {expected_status}, got {status} with {body}"
         );
         assert!(
-            error_code(&body).contains("InvalidParameterException"),
-            "case {case:?}: expected InvalidParameterException, got {body}"
+            error_code(&body).contains(expected_code),
+            "case {case:?}: expected {expected_code}, got {body}"
         );
 
         let got = emulator

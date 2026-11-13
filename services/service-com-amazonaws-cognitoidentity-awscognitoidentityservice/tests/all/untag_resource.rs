@@ -136,7 +136,7 @@ fn baseline() -> Value {
         tag("Owner", "platform"),
         tag("CostCenter", "4711"),
         tag("Unset", ""),
-        tag("Description", "pool d'identité — étape 1"),
+        tag("Description", "pool identité étape 1"),
         tag("k", "at-the-key-bound"),
         tag(&"k".repeat(128), "at-the-other-key-bound"),
     ])

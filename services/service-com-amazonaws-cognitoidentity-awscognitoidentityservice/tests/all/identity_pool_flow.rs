@@ -214,6 +214,26 @@ impl Emulator {
         seed_role(&self.engine, role_arn, trust_policy)
     }
 
+    /// Take the WRITE CLAIM a handler of this service takes while it reconfigures a pool
+    /// (`state::claimed_pool_write`), so a suite can drive the state a second writer of that
+    /// pool meets instead of racing two requests against the clock. The claim is given back
+    /// when the value is dropped.
+    pub(crate) fn pool_write_claim(
+        &self,
+        identity_pool_id: &str,
+    ) -> service_com_amazonaws_cognitoidentity_awscognitoidentityservice::state::PoolWriteClaim
+    {
+        let state = service_com_amazonaws_cognitoidentity_awscognitoidentityservice::state::service_state(
+            &*self.engine,
+        )
+        .expect("the identity-pool store is on this engine");
+        service_com_amazonaws_cognitoidentity_awscognitoidentityservice::state::claimed_pool_write(
+            &state,
+            identity_pool_id,
+        )
+        .expect("no other request holds this pool's write claim")
+    }
+
     /// A pool whose two roles are configured and seeded: the shape a pool has to be in for
     /// it to be able to vend credentials at all. Answers its `IdentityPoolId`.
     pub(crate) async fn pool_with_roles(&self, name: &str, allow_unauthenticated: bool) -> String {
@@ -493,6 +513,18 @@ async fn describe_identity_pool_reports_what_create_identity_pool_stored() {
 
         // Every member the request sent comes back with the value it was sent with.
         for (member, sent) in request.as_object().expect("the request is an object") {
+            // With ONE exception: an explicitly empty `SupportedLoginProviders` configures
+            // no login provider, and AWS answers the pool the same way whether the member
+            // was sent empty or not sent at all, so the member is ABSENT rather than echoed
+            // as an empty map (`pool_configuration_rules` asserts that rule in full).
+            if member == "SupportedLoginProviders" && sent.as_object().is_some_and(Map::is_empty) {
+                assert!(
+                    self::member(&created, member).is_none(),
+                    "case {case:?}: an explicitly empty SupportedLoginProviders must leave the \
+                     member out, got {created}"
+                );
+                continue;
+            }
             assert_eq!(
                 &created[member], sent,
                 "case {case:?}: CreateIdentityPool answered {member} = {}, expected {sent}",

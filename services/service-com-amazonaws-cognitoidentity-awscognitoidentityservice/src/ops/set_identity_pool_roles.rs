@@ -6,11 +6,21 @@
 //! `GetIdentityPoolRoles` reports back exactly what was set, and the pool's previous
 //! configuration is gone rather than merged into.
 //!
-//! A role is refused unless it is an IAM role ARN, and a role mapping unless it carries
-//! what the model documents as required for its `Type`; both are
-//! `InvalidParameterException` (HTTP 400), the modelled error for a bad input parameter. A
-//! `Roles` KEY outside the constraints the model states for it is a different refusal: the
-//! protocol's own `ValidationException` (HTTP 400), as for any value the model bounds.
+//! A role the pool is configured with is a role the caller PASSES to Amazon Cognito, so it
+//! has to be a role of the caller's own account: a value naming another account's role, or
+//! naming no role at all, is refused `NotAuthorizedException` (HTTP 403) — the pass is
+//! decided about the value as the role of an account that is not this one rather than
+//! parsed as a parameter ([`crate::state::names_an_assumable_role`]). A role MAPPING that
+//! does not carry what the model documents as required for its `Type` is a bad input
+//! parameter, `InvalidParameterException` (HTTP 400). A `Roles` KEY outside the constraints
+//! the model states for it is a third refusal: the protocol's own `ValidationException`
+//! (HTTP 400), as for any value the model bounds.
+//!
+//! The write is one pool's whole configuration, so it is taken under the pool's own write
+//! claim ([`crate::state::claimed_pool_write`]): a second request writing the same pool at
+//! the same time is the parallel modification the modelled
+//! `ConcurrentModificationException` (HTTP 400) reports, and the writer that loses the race
+//! stores nothing.
 //!
 //! ## Shape of an operation
 //!
@@ -325,6 +335,23 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> SetIdentityPoolRo
             .into());
         };
 
+        // The pool's whole role configuration is replaced, so the write is taken under the
+        // pool's own claim: a request that finds another one already writing this pool is
+        // the loser of a parallel modification and stores nothing. The claim is taken
+        // BEFORE the pool is read and given back when it is dropped, on the way out of this
+        // function however it answers.
+        let Some(_claim) = crate::state::claimed_pool_write(&state, &input.identity_pool_id)
+        else {
+            return Err(
+                SetIdentityPoolRolesErrorModeled::ConcurrentModificationException(
+                    ConcurrentModificationException {
+                        message: Some(crate::state::PARALLEL_MODIFICATION_MESSAGE.to_string()),
+                    },
+                )
+                .into(),
+            );
+        };
+
         let mut store = state.lock();
         if !store.identity_pools.contains_key(&input.identity_pool_id) {
             return Err(SetIdentityPoolRolesErrorModeled::ResourceNotFoundException(
@@ -367,10 +394,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> SetIdentityPoolRo
 /// 400 `ValidationException` naming the member, the map it was handed and what a key of that
 /// map has to satisfy ([`crate::state::map_key_constraint_refusal`]) — and reaches a handler
 /// at all only because the validating walk ahead of it treats a map's key as a path segment
-/// rather than as a constrained leaf. A VALUE that is not an IAM role ARN satisfies every
-/// constraint the model states (`ARNString` bounds only the length), so it is this service's
-/// own rule about a well-formed value it cannot serve: the modelled
-/// `InvalidParameterException`.
+/// rather than as a constrained leaf. A VALUE satisfies every constraint the model states
+/// (`ARNString` bounds only the length), so what is asked of it is not its form but whether
+/// Amazon Cognito may be passed it: a value that names no role of this account is refused
+/// `NotAuthorizedException` ([`not_authorized`]).
 fn validated_roles(
     roles: &::std::collections::HashMap<String, String>,
 ) -> Result<::std::collections::BTreeMap<String, String>, SetIdentityPoolRolesError> {
@@ -391,10 +418,8 @@ fn validated_roles(
                 ),
             ));
         }
-        if !crate::state::is_iam_role_arn(role_arn) {
-            return Err(invalid_parameter(format!(
-                "Roles['{role_type}'] value '{role_arn}' is not a valid IAM role ARN."
-            )));
+        if !crate::state::names_an_assumable_role(role_arn) {
+            return Err(not_authorized());
         }
     }
     // Every key and value was admitted, so the map as submitted is the map as stored.
@@ -454,19 +479,29 @@ fn validated_role_mappings(
                     crate::state::MAX_RULES_PER_IDENTITY_PROVIDER
                 )));
             }
-            for (position, rule) in configuration.rules.iter().enumerate() {
-                if !crate::state::is_iam_role_arn(&rule.role_arn) {
-                    return Err(invalid_parameter(format!(
-                        "RoleMappings['{provider}'].RulesConfiguration.Rules[{position}].RoleARN \
-                         '{}' is not a valid IAM role ARN.",
-                        rule.role_arn
-                    )));
-                }
+            // A role a RULE resolves to is as much a role this pool would be passed as one
+            // of its two plain roles, so the same question is asked of it.
+            if configuration
+                .rules
+                .iter()
+                .any(|rule| !crate::state::names_an_assumable_role(&rule.role_arn))
+            {
+                return Err(not_authorized());
             }
         }
         validated.insert(provider.clone(), mapping.clone());
     }
     Ok(validated)
+}
+
+/// The modelled refusal for a role Amazon Cognito may not be passed (HTTP 403): a value
+/// that names no IAM role of this account, in the one sentence that rule is worded with
+/// ([`crate::state::CROSS_ACCOUNT_PASS_ROLE_MESSAGE`]).
+fn not_authorized() -> SetIdentityPoolRolesError {
+    SetIdentityPoolRolesErrorModeled::NotAuthorizedException(NotAuthorizedException {
+        message: Some(crate::state::CROSS_ACCOUNT_PASS_ROLE_MESSAGE.to_string()),
+    })
+    .into()
 }
 
 /// The modelled refusal for a bad input parameter (HTTP 400), carrying what was wrong

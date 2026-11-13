@@ -423,6 +423,8 @@ async fn a_refused_call_is_recorded_with_the_code_its_caller_was_answered_with()
             "ResourceNotFoundException",
         ),
         (
+            // A value that names no IAM ROLE of this account names no role Amazon Cognito
+            // may be passed, which is the pass-role refusal rather than a bad parameter.
             "a role that names no IAM role",
             "SetIdentityPoolRoles",
             json!({
@@ -433,7 +435,7 @@ async fn a_refused_call_is_recorded_with_the_code_its_caller_was_answered_with()
                 )},
             }),
             400,
-            "InvalidParameterException",
+            "NotAuthorizedException",
         ),
         (
             "a resource ARN that names no pool",

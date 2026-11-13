@@ -26,6 +26,10 @@ tracing = { workspace = true }
 hex = { workspace = true }
 # Mixes the material a minted GUID is built from.
 sha2 = { workspace = true }
+# Matches a value against a modelled `@pattern` the way AWS's constraint layer reads it:
+# compiled with Unicode mode off, so `\w` and `\s` stand for ASCII characters alone
+# (`crate::state::pool_configuration`).
+regex = "1.13"
 # `iam_authorization`: the shared evaluation of IAM policy documents against
 # (action, resource), which this service's authorization gate runs and which the resolved
 # role's trust policy is read with; also the account's management-event log a vend and the

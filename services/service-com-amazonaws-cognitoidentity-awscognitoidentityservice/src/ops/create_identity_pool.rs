@@ -241,8 +241,49 @@ fn recorded_request(input: &CreateIdentityPoolInput) -> ::serde_json::Value {
     .recorded()
 }
 
+/// Why this service will not store the configuration `input` asks for, as this operation's
+/// own modelled error, or `Ok(())` when it is one it stores.
+///
+/// The rules and the classes they are refused in are the shared ones every operation that
+/// writes a pool reads ([`crate::state::pool_configuration`]); what belongs to this
+/// operation is which of ITS modelled errors carries each class.
+fn refuse_configuration(input: &CreateIdentityPoolInput) -> Result<(), CreateIdentityPoolError> {
+    let configuration = crate::state::pool_configuration::PoolConfiguration {
+        identity_pool_name: &input.identity_pool_name,
+        developer_provider_name: input.developer_provider_name.as_deref(),
+        identity_pool_tags: input.identity_pool_tags.as_ref(),
+        user_pool_providers: input
+            .cognito_identity_providers
+            .as_ref()
+            .map_or(0, Vec::len),
+    };
+    match configuration.refusal() {
+        None => Ok(()),
+        Some(crate::state::pool_configuration::ConfigurationRefusal::Constraint(message)) => {
+            Err(crate::scaffolded::Scaffolded::validation(message))
+        }
+        Some(crate::state::pool_configuration::ConfigurationRefusal::InvalidParameter(
+            message,
+        )) => Err(
+            CreateIdentityPoolErrorModeled::InvalidParameterException(InvalidParameterException {
+                message: Some(message.to_string()),
+            })
+            .into(),
+        ),
+        Some(crate::state::pool_configuration::ConfigurationRefusal::LimitExceeded(message)) => {
+            Err(
+                CreateIdentityPoolErrorModeled::LimitExceededException(LimitExceededException {
+                    message: Some(message),
+                })
+                .into(),
+            )
+        }
+    }
+}
+
 impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> CreateIdentityPool<Eng> {
-    /// The create itself: authorize, mint the pool's id and persist it.
+    /// The create itself: authorize, check the configuration, mint the pool's id and
+    /// persist it.
     async fn create(
         &self,
         input: CreateIdentityPoolInput,
@@ -259,6 +300,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> CreateIdentityPoo
         ) {
             return Err(denied);
         }
+        // The configuration this call would store is checked before anything is minted, so
+        // a refused create leaves no pool behind. Every rule is the one the two
+        // pool-configuration operations share ([`crate::state::pool_configuration`]).
+        refuse_configuration(&input)?;
+
         let Some(state) = crate::state::service_state(&*self.engine) else {
             return Err(CreateIdentityPoolErrorModeled::InternalErrorException(
                 InternalErrorException {
@@ -297,9 +343,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> CreateIdentityPoo
             identity_pool_name: input.identity_pool_name,
             allow_unauthenticated_identities: input.allow_unauthenticated_identities,
             allow_classic_flow: input.allow_classic_flow,
-            supported_login_providers: input
-                .supported_login_providers
-                .map(|providers| providers.into_iter().collect()),
+            supported_login_providers: crate::state::pool_configuration::configured_providers(
+                input.supported_login_providers,
+            ),
             developer_provider_name: input.developer_provider_name,
             open_id_connect_provider_arns: input.open_id_connect_provider_ar_ns,
             cognito_identity_providers: input.cognito_identity_providers,

@@ -18,6 +18,10 @@ pub mod authorization;
 /// where the account's trails deliver it.
 pub mod data_events;
 
+/// What an identity pool's own configuration has to satisfy before it is stored, and how a
+/// configuration this service will not store is refused.
+pub mod pool_configuration;
+
 use crate::ops::types::{CognitoIdentityProvider, MappingRule, RoleMapping};
 use emulator_server::CredentialStore;
 /// What an integrated Amazon Cognito user pool says about a token presented as the login of
@@ -1295,7 +1299,21 @@ pub const TAG_KEY_PUNCTUATION: &str = "_.:/=+-@";
 /// script). The emptiness and the length of a key are the MODELLED bounds of the shape it
 /// is written through, checked where it is read; this is the character rule alone.
 pub fn is_well_formed_tag_key(tag_key: &str) -> bool {
-    tag_key.chars().all(|character| {
+    is_well_formed_tag_text(tag_key)
+}
+
+/// Whether `tag_text` — a tag KEY or a tag VALUE — is spelled with the characters a tag
+/// admits ([`TAG_KEY_PUNCTUATION`] beside letters, digits and separator whitespace, in any
+/// script).
+///
+/// AWS's tagging rules publish ONE character set for a tag, which both halves of it are
+/// written in, so the key rule ([`is_well_formed_tag_key`]) and the value rule
+/// ([`pool_configuration::tag_charset_refusal`]) are this one function rather than two
+/// readings that could drift. The emptiness and the length of either half are the MODELLED
+/// bounds of the shape it is written through, checked where it is read; this is the
+/// character rule alone.
+pub fn is_well_formed_tag_text(tag_text: &str) -> bool {
+    tag_text.chars().all(|character| {
         character.is_alphanumeric()
             // A separator, which is what AWS's rule admits as a "space": a control
             // character is whitespace to Rust but is not a separator.
@@ -2056,7 +2074,80 @@ pub struct ComAmazonawsCognitoidentityAwscognitoidentityserviceState {
     /// identity it names, so the record is what tells this service which identity and
     /// pool a token presented later belongs to, and whether its window is still open.
     pub open_id_tokens: HashMap<String, IssuedOpenIdToken>,
+    /// The pools a request is WRITING at this instant, by `IdentityPoolId` — the claims
+    /// [`claimed_pool_write`] hands out and the dropped [`PoolWriteClaim`] gives back.
+    ///
+    /// A pool is reconfigured as a whole, by its configuration (`UpdateIdentityPool`) or by
+    /// its role configuration (`SetIdentityPoolRoles`), so two requests writing one pool at
+    /// the same time are the parallel modification `ConcurrentModificationException` is
+    /// thrown for ("Thrown if there are parallel requests to modify a resource",
+    /// `smithy_query(query="shape",shape="ConcurrentModificationException")`): the writer
+    /// that finds the pool already claimed is the one that loses the race, and what it did
+    /// not get to write is not stored. Nothing is claimed by a READ, and a claim never
+    /// outlives the request that took it.
+    pub pool_writes_in_flight: ::std::collections::BTreeSet<String>,
 }
+
+/// The claim one request holds on a pool while it writes it.
+///
+/// Held for the whole of the write — taken before the pool is read and given back when this
+/// value is dropped, which happens on the way out of the handler whatever the handler
+/// answers — so a second writer of the same pool meets the claim rather than a half-written
+/// record, and a refused or panicking write leaves no claim behind.
+pub struct PoolWriteClaim {
+    state: ::engine::ServiceState<ComAmazonawsCognitoidentityAwscognitoidentityserviceState>,
+    identity_pool_id: String,
+}
+
+impl ::std::fmt::Debug for PoolWriteClaim {
+    fn fmt(&self, formatter: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+        formatter
+            .debug_struct("PoolWriteClaim")
+            .field("identity_pool_id", &self.identity_pool_id)
+            .finish()
+    }
+}
+
+impl Drop for PoolWriteClaim {
+    fn drop(&mut self) {
+        self.state
+            .lock()
+            .pool_writes_in_flight
+            .remove(&self.identity_pool_id);
+    }
+}
+
+/// The claim on `identity_pool_id`, or `None` when another request is writing that pool
+/// right now — which is the parallel modification the modelled
+/// `ConcurrentModificationException` reports.
+///
+/// `state` is this service's store handle (what [`service_state`] hands back); the claim
+/// holds a handle of its own so it can give the claim back when it is dropped.
+pub fn claimed_pool_write(
+    state: &::engine::ServiceState<ComAmazonawsCognitoidentityAwscognitoidentityserviceState>,
+    identity_pool_id: &str,
+) -> Option<PoolWriteClaim> {
+    if !state
+        .lock()
+        .pool_writes_in_flight
+        .insert(identity_pool_id.to_string())
+    {
+        return None;
+    }
+    Some(PoolWriteClaim {
+        state: state.clone(),
+        identity_pool_id: identity_pool_id.to_string(),
+    })
+}
+
+/// The text `ConcurrentModificationException` (HTTP 400) carries, in the model's own words
+/// for the shape: "Thrown if there are parallel requests to modify a resource"
+/// (`smithy_query(query="shape",shape="ConcurrentModificationException")`).
+///
+/// Fixed text with no request- or state-derived part: what the caller acts on is that the
+/// write lost a race, which is the same fact whichever pool it was for.
+pub const PARALLEL_MODIFICATION_MESSAGE: &str =
+    "There are parallel requests to modify this resource.";
 
 impl ComAmazonawsCognitoidentityAwscognitoidentityserviceState {
     /// Whether another pool would take this emulator past [`MAX_IDENTITY_POOLS`].
@@ -2772,35 +2863,32 @@ fn is_region_like(region: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
 
-/// Whether `arn` is an IAM ROLE ARN —
-/// `arn:<partition>:iam::<12-digit-account-id>:role/<path and name>` — which is what the
-/// modelled `ARNString` carries wherever this service names a role (`RolesMap`'s value
-/// and `MappingRule$RoleARN`, both documented "the Role ARN"). `ARNString` constrains
-/// only the length (20..2048), so the ARN's own form is the service's rule and is checked
-/// where a role is written.
-pub fn is_iam_role_arn(arn: &str) -> bool {
-    let mut fields = arn.splitn(6, ':');
-    let (Some("arn"), Some(partition), Some("iam"), Some(""), Some(account), Some(resource)) = (
-        fields.next(),
-        fields.next(),
-        fields.next(),
-        fields.next(),
-        fields.next(),
-        fields.next(),
-    ) else {
-        return false;
-    };
-    let partition_is_named = !partition.is_empty()
-        && partition
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'-');
-    // An AWS account id is twelve digits.
-    let account_is_an_id = account.len() == 12 && account.bytes().all(|b| b.is_ascii_digit());
-    let names_a_role = resource
-        .strip_prefix("role/")
-        .is_some_and(|path_and_name| !path_and_name.is_empty() && !path_and_name.ends_with('/'));
-    partition_is_named && account_is_an_id && names_a_role
+/// Whether `role_arn` names an IAM role OF THE ACCOUNT this emulator serves — the one
+/// question this service asks of a role it is handed for an identity pool to assume.
+///
+/// A role an identity pool is configured with is a role the caller PASSES to Amazon
+/// Cognito, and a service can only be passed a role of the account it is acting for: a
+/// value naming another account's role, and a value naming no role at all, are the same
+/// answer here, because the pass is decided about the value as the role of some account
+/// that is not this one rather than parsed as a parameter. What the refusal then says is
+/// [`CROSS_ACCOUNT_PASS_ROLE_MESSAGE`].
+///
+/// The reading is `service_common::iam_role::role_name`, the tree's one resolution of a
+/// caller-supplied IAM ARN onto an entity of this account (the `iam` vendor, no Region, this
+/// account, a `role/<path><name>` resource), so this service and every other one handed a
+/// role ARN read it the same way.
+pub fn names_an_assumable_role(role_arn: &str) -> bool {
+    ::service_common::iam_role::role_name(role_arn).is_some()
 }
+
+/// How AWS words the refusal of a role a service may not be passed: a value that names no
+/// role of the caller's own account.
+///
+/// Fixed text with no request- or state-derived part — the value is the caller's own input
+/// and the refusal adds nothing by echoing it — and the sentence every emulated service
+/// that authorizes a pass of a caller-supplied role answers with, so a client reads one
+/// wording for one rule.
+pub const CROSS_ACCOUNT_PASS_ROLE_MESSAGE: &str = "Cross-account pass role is not allowed.";
 
 /// This service's ARN namespace, from the model's own `aws.api#service` trait
 /// (`smithy_query(query="service_info")`: `arnNamespace: cognito-identity`). It is the

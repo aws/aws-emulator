@@ -185,7 +185,7 @@ fn pool_shapes() -> Vec<(&'static str, Value, Option<Value>)> {
                 ],
                 "SamlProviderARNs": ["arn:aws:iam::123456789012:saml-provider/Login"],
             }),
-            Some(tag_map([tag("Description", "pool d'identité — étape 1")])),
+            Some(tag_map([tag("Description", "pool identité étape 1")])),
         ),
         (
             "the 50 tags an identity pool can have",

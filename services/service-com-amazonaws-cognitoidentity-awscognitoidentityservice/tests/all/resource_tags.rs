@@ -99,8 +99,12 @@ fn tag_sets() -> Vec<(&'static str, Option<Value>)> {
             Some(tag_map([tag("Unset", "")])),
         ),
         (
-            "a value carrying spaces and non-ASCII characters",
-            Some(tag_map([tag("Description", "pool d'identité — étape 1")])),
+            // The characters a tag is spelled with: AWS's tagging rules publish them as
+            // letters, numbers, spaces representable in UTF-8 and `_ . : / = + - @` — which
+            // is the set the refusal of a tag outside it names (`TagResource`) — so a value
+            // of letters of any script and spaces is one AWS stores, byte for byte.
+            "a value carrying spaces and non-ASCII letters",
+            Some(tag_map([tag("Description", "pool identité étape 1")])),
         ),
         (
             "the 50 tags an identity pool can have",
@@ -920,7 +924,11 @@ async fn tag_resource_tags_the_pool_any_well_formed_arn_for_it_names() {
 
     let mut expected = tag_map([]);
     for (case, arn) in arns {
-        let assigned = tag_map([tag(case, arn.as_str())]);
+        // The key this row writes is its case text with the characters a tag key may not
+        // hold taken out (AWS's tagging rules admit letters, numbers, spaces and
+        // `_ . : / = + - @`), so what the call is judged on is the ARN rather than the key.
+        let key = case.replace(',', "");
+        let assigned = tag_map([tag(&key, arn.as_str())]);
         let (status, body) = tag_call(&emulator, &arn, &assigned).await;
         assert_eq!(
             status, 200,

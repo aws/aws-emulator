@@ -162,6 +162,18 @@ async fn an_update_replaces_the_stored_configuration() {
         // Every member the request sent comes back with the value it was sent with, and
         // the id is the one the pool was minted with.
         for (member, sent) in request.as_object().expect("the request is an object") {
+            // With ONE exception: an explicitly empty `SupportedLoginProviders` configures
+            // no login provider, and AWS answers the pool the same way whether the member
+            // was sent empty or not sent at all, so the member is ABSENT rather than echoed
+            // as an empty map (`pool_configuration_rules` asserts that rule in full).
+            if member == "SupportedLoginProviders" && sent.as_object().is_some_and(Map::is_empty) {
+                assert!(
+                    updated[member].is_null(),
+                    "case {case:?}: an explicitly empty SupportedLoginProviders must leave the \
+                     member out, got {updated}"
+                );
+                continue;
+            }
             assert_eq!(
                 &updated[member], sent,
                 "case {case:?}: the update answered {member} = {}, expected {sent}",

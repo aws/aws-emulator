@@ -11379,6 +11379,7 @@ dependencies = [
  "bytes",
  "hex",
  "http",
+ "regex",
  "serde_json",
  "service-com-amazonaws-cognitoidentityprovider-awscognitoidentityproviderservice",
  "service-com-amazonaws-iam-awsidentitymanagementv20100508",

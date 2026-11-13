@@ -236,8 +236,48 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
     }
 }
 
+/// Why this service will not store the configuration `input` asks for, as this operation's
+/// own modelled error, or `Ok(())` when it is one it stores.
+///
+/// The rules and the classes they are refused in are the shared ones every operation that
+/// writes a pool reads ([`crate::state::pool_configuration`]); what belongs to this
+/// operation is which of ITS modelled errors carries each class.
+fn refuse_configuration(input: &UpdateIdentityPoolInput) -> Result<(), UpdateIdentityPoolError> {
+    let configuration = crate::state::pool_configuration::PoolConfiguration {
+        identity_pool_name: &input.identity_pool_name,
+        developer_provider_name: input.developer_provider_name.as_deref(),
+        identity_pool_tags: input.identity_pool_tags.as_ref(),
+        user_pool_providers: input
+            .cognito_identity_providers
+            .as_ref()
+            .map_or(0, Vec::len),
+    };
+    match configuration.refusal() {
+        None => Ok(()),
+        Some(crate::state::pool_configuration::ConfigurationRefusal::Constraint(message)) => {
+            Err(crate::scaffolded::Scaffolded::validation(message))
+        }
+        Some(crate::state::pool_configuration::ConfigurationRefusal::InvalidParameter(
+            message,
+        )) => Err(
+            UpdateIdentityPoolErrorModeled::InvalidParameterException(InvalidParameterException {
+                message: Some(message.to_string()),
+            })
+            .into(),
+        ),
+        Some(crate::state::pool_configuration::ConfigurationRefusal::LimitExceeded(message)) => {
+            Err(
+                UpdateIdentityPoolErrorModeled::LimitExceededException(LimitExceededException {
+                    message: Some(message),
+                })
+                .into(),
+            )
+        }
+    }
+}
+
 impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> UpdateIdentityPool<Eng> {
-    /// The update itself: authorize, then rewrite the stored pool.
+    /// The update itself: authorize, check the configuration, then rewrite the stored pool.
     async fn update(
         &self,
         input: UpdateIdentityPoolInput,
@@ -262,6 +302,30 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> UpdateIdentityPoo
             )
             .into());
         };
+
+        // A pool is reconfigured as a whole, so the write is taken under the pool's own
+        // claim: a request that finds another one already writing this pool is the loser of
+        // a parallel modification and stores nothing. The claim is taken BEFORE the request
+        // is checked and the pool is read — the whole of the write is one writer's — and
+        // given back when it is dropped, on the way out of this function however it
+        // answers.
+        let Some(_claim) = crate::state::claimed_pool_write(&state, &input.identity_pool_id)
+        else {
+            return Err(
+                UpdateIdentityPoolErrorModeled::ConcurrentModificationException(
+                    ConcurrentModificationException {
+                        message: Some(crate::state::PARALLEL_MODIFICATION_MESSAGE.to_string()),
+                    },
+                )
+                .into(),
+            );
+        };
+
+        // The configuration this call would leave the pool with is checked before the pool
+        // is read, so a refused update leaves the stored record exactly as it was. Every
+        // rule is the one the two pool-configuration operations share
+        // ([`crate::state::pool_configuration`]).
+        refuse_configuration(&input)?;
 
         let mut store = state.lock();
         // An update names an existing pool: there is nothing to update about one this
@@ -313,9 +377,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> UpdateIdentityPoo
             identity_pool_name: input.identity_pool_name,
             allow_unauthenticated_identities: input.allow_unauthenticated_identities,
             allow_classic_flow: input.allow_classic_flow,
-            supported_login_providers: input
-                .supported_login_providers
-                .map(|providers| providers.into_iter().collect()),
+            supported_login_providers: crate::state::pool_configuration::configured_providers(
+                input.supported_login_providers,
+            ),
             developer_provider_name,
             open_id_connect_provider_arns: input.open_id_connect_provider_ar_ns,
             cognito_identity_providers: input.cognito_identity_providers,

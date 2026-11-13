@@ -79,6 +79,8 @@ mod merged_identity_retention;
 mod minted_token_identity_binding;
 #[path = "all/open_id_token.rs"]
 mod open_id_token;
+#[path = "all/pool_configuration_rules.rs"]
+mod pool_configuration_rules;
 #[path = "all/pool_without_identity_providers.rs"]
 mod pool_without_identity_providers;
 #[path = "all/principal_tag_attribute_map.rs"]
