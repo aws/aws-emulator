@@ -105,6 +105,8 @@ mod http_api_integration_fault_status;
 mod http_api_jwt_claims_reach_the_integration;
 #[path = "all/http_api_jwt_data_plane.rs"]
 mod http_api_jwt_data_plane;
+#[path = "all/http_api_jwt_refusal_is_per_request.rs"]
+mod http_api_jwt_refusal_is_per_request;
 #[path = "all/http_api_jwt_scope_gate.rs"]
 mod http_api_jwt_scope_gate;
 #[path = "all/http_api_payload_quota.rs"]

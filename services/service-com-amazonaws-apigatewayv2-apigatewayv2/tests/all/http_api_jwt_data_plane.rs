@@ -98,7 +98,7 @@ const TEMPORARY_REDIRECT: u16 = 307;
 const UNKNOWN_SERVICE: &str = "UnknownService";
 
 /// Now, in whole seconds since the epoch: the clock a token's `exp` is compared against.
-fn now() -> i64 {
+pub(crate) fn now() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|since| i64::try_from(since.as_secs()).unwrap_or(i64::MAX))
@@ -125,7 +125,7 @@ fn token(claims: Value) -> String {
 }
 
 /// A compact JWS with the JOSE header given, so a case can present an unsecured token.
-fn signed_with(header: Value, claims: Value) -> String {
+pub(crate) fn signed_with(header: Value, claims: Value) -> String {
     format!("{}.{}.c2lnbmF0dXJlLWJ5dGVz", segment(&header), segment(&claims))
 }
 

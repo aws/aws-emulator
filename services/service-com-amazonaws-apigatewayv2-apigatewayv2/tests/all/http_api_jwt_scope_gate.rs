@@ -56,7 +56,7 @@ const REGION: &str = "us-east-1";
 fn apigateway_host() -> String {
     format!("apigateway.{REGION}.amazonaws.com")
 }
-fn cognito_host() -> String {
+pub(crate) fn cognito_host() -> String {
     format!("cognito-idp.{REGION}.amazonaws.com")
 }
 
@@ -69,13 +69,31 @@ const COGNITO_TARGET_PREFIX: &str = "AWSCognitoIdentityProviderService";
 /// "Amazon Cognito represents scopes in the access token in the format
 /// `$resource-server-identifier/$scope`" (`CreateResourceServer.Identifier`), so a scope a
 /// route requires is that identifier and one of these names joined by `/`.
-const RESOURCE_SERVER: &str = "https://orders.example.test";
+pub(crate) const RESOURCE_SERVER: &str = "https://orders.example.test";
 const ADMIN: &str = "orders.admin";
-const READ: &str = "orders.read";
+pub(crate) const READ: &str = "orders.read";
 const WRITE: &str = "orders.write";
 /// A scope the resource server defines and NO token of this suite is granted, so a route
 /// requiring it is one the presented token cannot meet.
-const AUDIT: &str = "orders.audit";
+pub(crate) const AUDIT: &str = "orders.audit";
+
+/// Every scope [`RESOURCE_SERVER`] defines, which is also the set every app client
+/// [`m2m_client`] creates is allowed: a grant may only ask for a scope the pool's resource
+/// server really defines, so the two lists are one list.
+pub(crate) const DEFINED_SCOPES: &[&str] = &[ADMIN, READ, WRITE, AUDIT];
+
+/// Those scopes as `CreateResourceServer$Scopes` takes them.
+pub(crate) fn resource_server_scopes() -> Vec<Value> {
+    DEFINED_SCOPES
+        .iter()
+        .map(|name| {
+            json!({
+                "ScopeName": name,
+                "ScopeDescription": format!("the {name} scope")
+            })
+        })
+        .collect()
+}
 
 /// A `ClientSecretType`-shaped secret (pattern `^[\w+]+$`, length 24..64) this suite's app
 /// clients are created with, so the grant can present the stored one.
@@ -108,7 +126,7 @@ const SCOPE_REPORT: &str = "import json\n\
      \x20                                'client_id': decided['claims']['client_id']})}\n";
 
 /// A scope of [`RESOURCE_SERVER`], in the format a token and a route both spell it in.
-fn scope(name: &str) -> String {
+pub(crate) fn scope(name: &str) -> String {
     format!("{RESOURCE_SERVER}/{name}")
 }
 
@@ -146,7 +164,7 @@ async fn control(
 
 /// One Amazon Cognito user pools call that must succeed; its credential scope is what routes
 /// it to that service rather than to this one.
-async fn cognito(emulator: &MultiServiceRouter, operation: &str, body: Value) -> Value {
+pub(crate) async fn cognito(emulator: &MultiServiceRouter, operation: &str, body: Value) -> Value {
     let request = http::Request::builder()
         .method("POST")
         .uri(format!("https://{}/", cognito_host()))
@@ -182,7 +200,7 @@ async fn cognito(emulator: &MultiServiceRouter, operation: &str, body: Value) ->
 
 /// The CLAIM SET of a minted token: the second segment of its compact JWS, decoded with
 /// the tree's one base64url reader (`service_common::jwt::decode_base64url`).
-fn claims_of(token: &str) -> Value {
+pub(crate) fn claims_of(token: &str) -> Value {
     let segments: Vec<&str> = token.split('.').collect();
     assert_eq!(
         segments.len(),
@@ -198,7 +216,11 @@ fn claims_of(token: &str) -> Value {
 
 /// One app client of `user_pool_id` configured for the machine-to-machine grant, with every
 /// scope of the pool's resource server allowed. Answers its `ClientId`.
-async fn m2m_client(emulator: &MultiServiceRouter, user_pool_id: &str, name: &str) -> String {
+pub(crate) async fn m2m_client(
+    emulator: &MultiServiceRouter,
+    user_pool_id: &str,
+    name: &str,
+) -> String {
     let created = cognito(
         emulator,
         "CreateUserPoolClient",
@@ -226,7 +248,7 @@ async fn m2m_client(emulator: &MultiServiceRouter, user_pool_id: &str, name: &st
 /// The access token `GetClientToken` mints for `client_id` carrying `scopes`, checked to be
 /// a token whose `scope` claim really carries them: every scope a row relies on is the
 /// POOL's, not a value written here.
-async fn granted_token(
+pub(crate) async fn granted_token(
     emulator: &MultiServiceRouter,
     client_id: &str,
     scopes: &[String],
@@ -399,15 +421,7 @@ async fn a_jwt_route_serves_the_token_that_claims_one_of_its_scopes_and_forbids_
         .as_str()
         .unwrap_or_else(|| panic!("CreateUserPool must mint an Id, got {pool}"))
         .to_string();
-    let defined_scopes: Vec<Value> = [ADMIN, READ, WRITE, AUDIT]
-        .iter()
-        .map(|name| {
-            json!({
-                "ScopeName": name,
-                "ScopeDescription": format!("the {name} scope")
-            })
-        })
-        .collect();
+    let defined_scopes: Vec<Value> = resource_server_scopes();
     cognito(
         &emulator,
         "CreateResourceServer",

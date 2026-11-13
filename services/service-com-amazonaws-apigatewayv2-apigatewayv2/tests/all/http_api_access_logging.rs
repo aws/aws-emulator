@@ -129,32 +129,68 @@ pub(crate) async fn logs(
 /// such group at all — which is what "nothing was delivered and nothing was created" looks
 /// like to a client.
 ///
+/// EVERY page is read, so a reader never misses a line because the group held more events
+/// than one answer carries. `None` is only CloudWatch Logs saying it holds no such group
+/// ([`names_no_group`]); any other refusal is a failed read and panics rather than being
+/// read as "nothing was delivered".
+///
 /// `pub(crate)` for the reason [`emulator`] is.
 pub(crate) async fn delivered_to(
     router: &MultiServiceRouter,
     group: &str,
 ) -> Option<Vec<String>> {
-    let (status, body) = logs(router, "FilterLogEvents", json!({ "logGroupName": group })).await;
-    if status != 200 {
-        return None;
+    let mut messages: Vec<String> = Vec::new();
+    let mut next: Option<String> = None;
+    loop {
+        let mut request = json!({ "logGroupName": group });
+        if let Some(token) = next.as_deref() {
+            request["nextToken"] = json!(token);
+        }
+        let (status, body) = logs(router, "FilterLogEvents", request).await;
+        if status != 200 {
+            assert!(
+                names_no_group(&body),
+                "FilterLogEvents on {group:?} must answer 200 or report no such group, got \
+                 {status} {body}"
+            );
+            return None;
+        }
+        messages.extend(
+            body.get("events")
+                .and_then(Value::as_array)
+                .map(|events| {
+                    events
+                        .iter()
+                        .map(|event| {
+                            event
+                                .get("message")
+                                .and_then(Value::as_str)
+                                .unwrap_or_default()
+                                .to_string()
+                        })
+                        .collect::<Vec<String>>()
+                })
+                .unwrap_or_default(),
+        );
+        next = body
+            .get("nextToken")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        if next.is_none() {
+            return Some(messages);
+        }
     }
-    Some(
-        body.get("events")
-            .and_then(Value::as_array)
-            .map(|events| {
-                events
-                    .iter()
-                    .map(|event| {
-                        event
-                            .get("message")
-                            .and_then(Value::as_str)
-                            .unwrap_or_default()
-                            .to_string()
-                    })
-                    .collect()
-            })
-            .unwrap_or_default(),
-    )
+}
+
+/// Whether a refusal of that read is CloudWatch Logs saying it holds no such log group:
+/// `ResourceNotFoundException`, the shape `FilterLogEvents` declares for it, however the
+/// envelope qualified the shape it named.
+fn names_no_group(body: &Value) -> bool {
+    const NO_SUCH_GROUP: &str = "ResourceNotFoundException";
+    body.get("__type")
+        .and_then(Value::as_str)
+        .and_then(|named| named.rsplit('#').next())
+        .is_some_and(|shape| shape == NO_SUCH_GROUP)
 }
 
 /// [`delivered_to`] for this suite's own destination.
