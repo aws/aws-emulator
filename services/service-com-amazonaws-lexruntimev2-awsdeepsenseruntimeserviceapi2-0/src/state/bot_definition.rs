@@ -10,6 +10,11 @@
 //!
 //! * the state has to name resources that bot declares, else it describes a
 //!   dialog the bot could never be in ([`BotLocaleModel::check_session_state`]);
+//! * the dialog it describes is reported as the bot's own, not as the caller
+//!   spelled it ([`BotLocaleModel::completed_session_state`]): the active intent
+//!   carries the slots that bot declares for it and the dialog members every
+//!   reported intent carries, and the conversation is interpreted as being on
+//!   that intent;
 //! * the messages that state's dialog action sends are the ones the BOT
 //!   authors for it, which is what a response reports when the request carries
 //!   no messages of its own ([`BotLocaleModel::authored_messages`]).
@@ -17,9 +22,9 @@
 //! The turn's own side of the same model — matching an utterance, filling slots,
 //! choosing the next dialog action — is [`super::nlu`]'s.
 
-use crate::ops::types::{Message, SessionState};
+use crate::ops::types::{Intent, Interpretation, Message, SessionState};
 use crate::state::bot_model::BotLocaleModel;
-use crate::state::nlu::DIALOG_ACTION_ELICIT_SLOT;
+use crate::state::nlu::{active_intent, declared_slots, DIALOG_ACTION_ELICIT_SLOT};
 use crate::state::DIALOG_ACTION_CLOSE;
 
 /// `ConfirmIntent`: the next action is to ask the user to confirm the intent
@@ -78,6 +83,55 @@ impl BotLocaleModel {
         Ok(())
     }
 
+    /// The dialog state this locale reports for the one a caller SEEDED, and the
+    /// interpretations that go with it.
+    ///
+    /// A seeded state is a client's assertion about a conversation with this bot
+    /// (`PutSession` "sets the state of the session with the user"), so what is
+    /// stored — and read back — is that dialog as the BOT has it, completed
+    /// against the locale exactly as a turn's own dialog is:
+    ///
+    /// * the active intent names "all of the slots for the intent", the ones the
+    ///   locale declares for it, each carrying the value the seed filled or the
+    ///   documented null ([`declared_slots`]), and carries the dialog members
+    ///   every reported active intent carries ([`active_intent`]);
+    /// * the conversation is on that intent, so it is reported as the
+    ///   interpretation of the session — "an object containing information about
+    ///   an intent that Amazon Lex V2 determined might satisfy the user's
+    ///   utterance" (`Interpretation`). Nothing was said to the bot yet, so there
+    ///   is no confidence to report for it and no service that interpreted an
+    ///   input.
+    ///
+    /// A state that seeds NO intent leaves the conversation on none, and there is
+    /// then nothing to interpret: the list is empty.
+    pub fn completed_session_state(
+        &self,
+        mut state: SessionState,
+    ) -> (SessionState, Vec<Interpretation>) {
+        let Some(mut seeded) = state.intent.take() else {
+            return (state, Vec::new());
+        };
+        let filled = seeded.slots.take().unwrap_or_default();
+        let slots = match self.intent(&seeded.name) {
+            Some(authored) => declared_slots(authored, &filled),
+            // An intent the locale does not declare has no slots here to name,
+            // so what the seed carried for it stands.
+            None => filled,
+        };
+        let intent = active_intent(Intent {
+            slots: Some(slots),
+            ..seeded
+        });
+        let interpretations = vec![Interpretation {
+            nlu_confidence: None,
+            sentiment_response: None,
+            intent: Some(intent.clone()),
+            interpretation_source: None,
+        }];
+        state.intent = Some(intent);
+        (state, interpretations)
+    }
+
     /// The messages the BOT authors for the dialog state `state` describes,
     /// "ordered ... the order that the messages are defined in the bot".
     ///
@@ -129,6 +183,9 @@ mod tests {
             nlu_intent_confidence_threshold: 0.4,
             intents: vec![ModelIntent {
                 name: "OrderShake".to_string(),
+                // An intent authored from scratch, so it is based on no built-in
+                // intent of Amazon Lex's.
+                parent_intent_signature: None,
                 sample_utterances: vec!["I would like a shake".to_string()],
                 slots: vec![ModelSlot {
                     name: "Flavor".to_string(),

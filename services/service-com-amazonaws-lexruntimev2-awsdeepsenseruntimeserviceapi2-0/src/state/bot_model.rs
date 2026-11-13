@@ -18,6 +18,7 @@
 //! actually built.
 
 use crate::ops::types::{Button, ImageResponseCard, Message, Value};
+use crate::state::FALLBACK_INTENT;
 use service_com_amazonaws_lexmodelsv2_lexmodelbuildingservicev2 as lexmodels;
 
 /// The shapes the control plane authored a bot with, under one name so a reader
@@ -89,12 +90,32 @@ impl BotLocaleModel {
     pub fn intent(&self, name: &str) -> Option<&ModelIntent> {
         self.intents.iter().find(|intent| intent.name == name)
     }
+
+    /// The FALLBACK intent of this locale: the one built on the built-in intent
+    /// Amazon Lex uses "when it can't determine another intent to invoke",
+    /// which the control plane adds to every locale as it creates it.
+    pub fn fallback_intent(&self) -> Option<&ModelIntent> {
+        self.intents.iter().find(|intent| intent.is_fallback())
+    }
+
+    /// The NAME the locale's fallback intent is reported by: the authored one
+    /// where the locale declares it, else [`crate::state::FALLBACK_INTENT`], the
+    /// name Amazon Lex gives the intent it adds to a locale.
+    pub fn fallback_intent_name(&self) -> String {
+        self.fallback_intent()
+            .map_or_else(|| FALLBACK_INTENT.to_string(), |intent| intent.name.clone())
+    }
 }
 
 /// One intent of a built locale.
 #[derive(Debug, Clone)]
 pub struct ModelIntent {
     pub name: String,
+    /// The built-in intent this one is based on, as `parentIntentSignature`
+    /// names it, or `None` for an intent authored from scratch. It is what tells
+    /// the locale's fallback intent from its own intents, whatever either is
+    /// named.
+    pub parent_intent_signature: Option<String>,
     /// The utterances authored on the intent. An intent built on a built-in
     /// intent Amazon Lex supplies also answers to Amazon's own utterances for
     /// it, which are not part of the bot and so are not held here.
@@ -116,6 +137,13 @@ pub struct ModelIntent {
 }
 
 impl ModelIntent {
+    /// Is this the locale's FALLBACK intent — the one built on the built-in
+    /// intent Amazon Lex invokes when it can't determine another, which is the
+    /// one Amazon Lex V2 inserts among the alternative intents of a turn?
+    pub fn is_fallback(&self) -> bool {
+        self.parent_intent_signature.as_deref() == Some(lexmodels::state::FALLBACK_INTENT_SIGNATURE)
+    }
+
     /// Does the BOT complete this intent itself, rather than leaving its
     /// fulfilment to its caller?
     ///
@@ -302,6 +330,7 @@ pub fn built_locale<Eng: Send + Sync + 'static>(
         .iter()
         .map(|intent| ModelIntent {
             name: intent.intent_name.clone(),
+            parent_intent_signature: intent.parent_intent_signature.clone(),
             sample_utterances: intent
                 .sample_utterances
                 .iter()

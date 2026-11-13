@@ -450,7 +450,9 @@ async fn one_conversation_carries_one_originating_request_id() {
 /// Rule 5: what an utterance NOTHING satisfies reports beside the fallback
 /// intent — the bot's own intents, at the scores they reached, which is what
 /// tells a fallback the locale's threshold caused from a bot that matches
-/// nothing at all.
+/// nothing at all; and what a turn that DID match reports beside its own
+/// intent — the fallback intent Amazon Lex V2 inserts among the alternatives of
+/// a response, unscored.
 #[tokio::test]
 async fn the_bots_own_intents_are_reported_as_scored_alternatives() {
     let emulator = Emulator::new();
@@ -514,7 +516,7 @@ async fn the_bots_own_intents_are_reported_as_scored_alternatives() {
             );
         }
 
-        let alternatives: Vec<(String, f64)> = interpretations
+        let alternatives: Vec<(String, Option<f64>)> = interpretations
             .iter()
             .skip(1)
             .map(|other| {
@@ -526,20 +528,25 @@ async fn the_bots_own_intents_are_reported_as_scored_alternatives() {
                         .to_string(),
                     other
                         .pointer("/nluConfidence/score")
-                        .and_then(Value::as_f64)
-                        .unwrap_or_else(|| {
-                            panic!("case {case:?}: an alternative must be scored: {other}")
-                        }),
+                        .and_then(Value::as_f64),
                 )
             })
             .collect();
         if *scored {
-            assert!(
-                alternatives.is_empty(),
-                "case {case:?}: the locale declares one intent an utterance can match, and the \
-                 turn matched it, got {alternatives:?}"
+            // The locale declares one intent an utterance can match and the
+            // turn matched it, so the one alternative left is the fallback
+            // intent Amazon Lex V2 INSERTS among the alternatives — inserted
+            // rather than scored, so it carries no confidence.
+            assert_eq!(
+                alternatives,
+                vec![(FALLBACK_INTENT.to_string(), None)],
+                "case {case:?}: the inserted fallback intent is the remaining alternative, \
+                 got {alternatives:?}"
             );
         } else {
+            // The turn is already ON the fallback intent, so it is reported as
+            // the turn's own interpretation and the alternatives are the bot's
+            // own intents, each at the score it reached.
             assert_eq!(
                 alternatives
                     .iter()
@@ -550,8 +557,11 @@ async fn the_bots_own_intents_are_reported_as_scored_alternatives() {
                  got {alternatives:?}"
             );
             for (name, score) in &alternatives {
+                let score = score.unwrap_or_else(|| {
+                    panic!("case {case:?}: a scored alternative carries its confidence: {name}")
+                });
                 assert!(
-                    (0.0..THRESHOLD).contains(score),
+                    (0.0..THRESHOLD).contains(&score),
                     "case {case:?}: {name} did not reach the locale's {THRESHOLD} threshold, \
                      so its score must sit in 0.00..{THRESHOLD}, got {score}"
                 );

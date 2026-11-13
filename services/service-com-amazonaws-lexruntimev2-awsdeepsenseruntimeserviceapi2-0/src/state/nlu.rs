@@ -12,14 +12,16 @@
 //! through [`crate::state::take_turn`] and neither holds a second copy of the
 //! dialog.
 //!
-//! The three rules it implements, each from the modelled contract:
+//! The rules it implements, each from the modelled contract:
 //!
 //! 1. An utterance is matched against the sample utterances the locale's intents
 //!    declare; the best match at or above the locale's own
 //!    `nluIntentConfidenceThreshold` is the intent of the turn, and when nothing
 //!    matches the conversation stays on the intent it is already on, or falls
-//!    back to [`crate::state::FALLBACK_INTENT`] — with the locale's own intents
-//!    reported beside it at the scores they did reach, nought included.
+//!    back to the locale's own fallback intent
+//!    ([`crate::state::bot_model::BotLocaleModel::fallback_intent`]) — with the
+//!    locale's own intents reported beside it at the scores they did reach,
+//!    nought included.
 //! 2. A sample utterance names a slot of its intent in braces, and the words in
 //!    that position are what the user said for the slot; the answer to a slot the
 //!    previous turn elicited is the whole utterance. Either way the words are
@@ -34,15 +36,26 @@
 //!    intent to
 //!    ([`crate::state::bot_model::ModelIntent::bot_completes_fulfillment`]) —
 //!    and `ReadyForFulfillment` where the fulfilment is the caller's.
-//! 4. Every turn reports both members a client drives a dialog off:
-//!    `Intent.state`, and `Intent.slots` — the map of the intent's slots, which
+//! 4. Every turn reports every member a client drives a dialog off:
+//!    `Intent.state`; `Intent.slots` — the map of the intent's slots, which
 //!    names EVERY slot the recognized intent declares with a null value for each
 //!    one that has none ("a map of all of the slots for the intent … if a slot
 //!    has not been filled, the value is null", `Intent$slots`) and is the empty
-//!    map for an intent that declares none.
+//!    map for an intent that declares none; and `Intent.confirmationState`,
+//!    which is [`CONFIRMATION_STATE_NONE`] until the dialog records a
+//!    confirmation ([`active_intent`]).
+//! 5. The alternatives a turn reports are the intents that "might satisfy the
+//!    user's utterance" ordered by their confidence, and the locale's fallback
+//!    intent is INSERTED among the alternatives of the RESPONSE —
+//!    `Interpretation$nluConfidence` "determines the threshold where Amazon Lex
+//!    V2 will insert the `AMAZON.FallbackIntent` … when returning alternative
+//!    intents in a response" — so it is reported by the recognition that
+//!    answers the utterance and not by a later read of the session, which
+//!    reports what the recognition itself made of it
+//!    ([`with_inserted`]).
 
 use super::bot_model::{resolve_slot_value, BotLocaleModel, ModelIntent};
-use super::{DIALOG_ACTION_CLOSE, FALLBACK_INTENT, INTERPRETATION_SOURCE, MAX_UTTERANCE_CHARS};
+use super::{DIALOG_ACTION_CLOSE, INTERPRETATION_SOURCE, MAX_UTTERANCE_CHARS};
 use crate::ops::types::{
     ConfidenceScore, DialogAction, Intent, Interpretation, Message, SessionState, Slot, Value,
 };
@@ -98,7 +111,62 @@ pub const INTENT_STATE_FULFILLED: &str = "Fulfilled";
 /// list is `len 0..5`.
 pub const MAX_INTERPRETATIONS: usize = 5;
 
-/// What one turn made of the utterance: everything it leaves on the session.
+/// `None`: "indicates whether the intent has been `Confirmed`, `Denied`, or
+/// `None` if the confirmation stage has not yet been reached"
+/// (`Intent$confirmationState`, whose member set is
+/// `CONFIRMATION_STATE_VALUES`) — so an intent whose dialog has not reached its
+/// confirmation stage is reported with this value rather than with the member
+/// left out.
+pub const CONFIRMATION_STATE_NONE: &str = "None";
+
+/// The intent a DIALOG is on, as this service reports it: the two members every
+/// reported active intent carries beside its name and state are filled in, so a
+/// client can read either without first testing whether it is there.
+///
+/// * `slots` is "a map of all of the slots for the intent" (`Intent$slots`), the
+///   empty map where the dialog knows of none;
+/// * `confirmationState` is [`CONFIRMATION_STATE_NONE`] until a confirmation has
+///   been recorded for the intent, which is what "`None` if the confirmation
+///   stage has not yet been reached" states.
+///
+/// An intent Amazon Lex V2 merely CONSIDERED is not a dialog's intent: an
+/// alternative interpretation names the intent and the slots it would fill and
+/// carries neither of these dialog members, so this is applied to the active
+/// intent only.
+pub fn active_intent(intent: Intent) -> Intent {
+    Intent {
+        slots: Some(intent.slots.unwrap_or_default()),
+        confirmation_state: Some(
+            intent
+                .confirmation_state
+                .unwrap_or_else(|| CONFIRMATION_STATE_NONE.to_string()),
+        ),
+        ..intent
+    }
+}
+
+/// One alternative interpretation: an intent that "might satisfy the user's
+/// utterance" (`Interpretation`), at the confidence it reached — none at all for
+/// an intent Amazon Lex V2 INSERTS among the alternatives rather than scores.
+fn alternative(name: String, score: Option<f64>) -> Interpretation {
+    Interpretation {
+        nlu_confidence: score.map(|score| ConfidenceScore { score }),
+        sentiment_response: None,
+        intent: Some(Intent {
+            name,
+            // An alternative is an intent the utterance MIGHT have satisfied: no
+            // dialog is on it, so nothing is filled or being elicited for it and
+            // the map it reports is empty.
+            slots: Some(HashMap::new()),
+            state: None,
+            confirmation_state: None,
+        }),
+        interpretation_source: Some(INTERPRETATION_SOURCE.to_string()),
+    }
+}
+
+/// What one turn made of the utterance: everything it leaves on the session,
+/// and the entry only the RESPONSE to a recognition carries.
 #[derive(Debug, Clone)]
 pub struct TurnPlan {
     /// The intent the conversation is on after the turn, with the slots filled
@@ -109,9 +177,45 @@ pub struct TurnPlan {
     /// The messages this turn sends the user — a slot's prompt, or the intent's
     /// closing response. Empty when the bot has nothing authored to say.
     pub messages: Vec<Message>,
-    /// The intents that might satisfy the utterance, "ordered by the confidence
-    /// score" (`Interpretation`), the turn's own first.
+    /// What the RECOGNITION made of the utterance: the intents it scored that
+    /// might satisfy it, "ordered by the confidence score" (`Interpretation`),
+    /// the turn's own first. This is what the session holds, so it is also what
+    /// a later `GetSession` reports.
     pub interpretations: Vec<Interpretation>,
+    /// The locale's fallback intent, which Amazon Lex V2 INSERTS among the
+    /// alternative intents of the response it answers a recognition with
+    /// (`Interpretation$nluConfidence`: "determines the threshold where Amazon
+    /// Lex V2 will insert the `AMAZON.FallbackIntent` … when returning
+    /// alternative intents in a response") — so it belongs to the response and
+    /// not to the session's own interpretations. `None` for a turn that is
+    /// already ON the fallback intent, which reports it as its own
+    /// interpretation.
+    pub inserted_fallback: Option<Interpretation>,
+}
+
+/// The interpretations a RECOGNITION answers with: the ones it produced, plus
+/// the entry Amazon Lex V2 inserts among the alternative intents of a response.
+///
+/// An intent the utterance scored against is already reported, with the score it
+/// reached, so it is not reported a second time.
+pub fn with_inserted(
+    mut interpretations: Vec<Interpretation>,
+    inserted: Option<Interpretation>,
+) -> Vec<Interpretation> {
+    let Some(inserted) = inserted else {
+        return interpretations;
+    };
+    let named = |entry: &Interpretation| {
+        entry
+            .intent
+            .as_ref()
+            .zip(inserted.intent.as_ref())
+            .is_some_and(|(held, fallback)| held.name == fallback.name)
+    };
+    if !interpretations.iter().any(named) && interpretations.len() < MAX_INTERPRETATIONS {
+        interpretations.push(inserted);
+    }
+    interpretations
 }
 
 /// Interpret `text` against `model` for a conversation in `state`.
@@ -152,13 +256,14 @@ pub fn interpret(model: &BotLocaleModel, text: &str, state: &SessionState) -> Tu
     // The intent of this turn: the one the utterance recognised, else the one
     // the conversation is already on (an answer to a slot elicitation names no
     // intent of its own), else the fallback intent.
+    let fallback_name = model.fallback_intent_name();
     let (name, captures) = match recognized {
         Some((intent, matched)) => (intent.name.clone(), matched.captures.clone()),
         None => (
             state
                 .intent
                 .as_ref()
-                .map_or_else(|| FALLBACK_INTENT.to_string(), |intent| intent.name.clone()),
+                .map_or_else(|| fallback_name.clone(), |intent| intent.name.clone()),
             Vec::new(),
         ),
     };
@@ -249,21 +354,35 @@ pub fn interpret(model: &BotLocaleModel, text: &str, state: &SessionState) -> Tu
         None => slots,
     };
 
-    let intent = Intent {
+    // "A map of all of the slots for the intent. The name of the slot maps to
+    // the value of the slot. If a slot has not been filled, the value is null"
+    // (`Intent$slots`): the map is reported on every turn, naming every slot the
+    // intent declares, so a client can index it without first testing whether
+    // the member is there and can tell a slot that is declared and open from one
+    // the intent does not have. `confirmationState` is reported the same way,
+    // and both are filled in by [`active_intent`].
+    let intent = active_intent(Intent {
         name,
-        // "A map of all of the slots for the intent. The name of the slot maps to
-        // the value of the slot. If a slot has not been filled, the value is
-        // null" (`Intent$slots`): the map is reported on every turn, naming every
-        // slot the intent declares, so a client can index it without first
-        // testing whether the member is there and can tell a slot that is
-        // declared and open from one the intent does not have.
         slots: Some(slots),
         state: intent_state,
         confirmation_state: continued.and_then(|intent| intent.confirmation_state.clone()),
-    };
+    });
 
-    // The turn's own interpretation first, then the other intents the utterance
-    // scored against, best first, up to what the modelled list holds.
+    // The fallback intent is one of the alternatives Amazon Lex V2 reports:
+    // `Interpretation$nluConfidence` "determines the threshold where Amazon Lex
+    // V2 will insert the AMAZON.FallbackIntent … when returning alternative
+    // intents in a response", so the locale's own fallback intent is INSERTED
+    // into the response rather than scored against the utterance — which is why
+    // it carries no confidence, and why it is not part of what the RECOGNITION
+    // made of the utterance and a later read of the session reports. A turn that
+    // is already ON the fallback reports it as its own interpretation, so there
+    // is nothing to insert beside it.
+    let inserted_fallback = (intent.name != fallback_name).then(|| alternative(fallback_name, None));
+
+    // What the recognition made of the utterance: its own interpretation first,
+    // then the other intents it scored, best first. The room the inserted entry
+    // needs is left for it, so the response it joins still holds no more than
+    // the modelled list does.
     let mut interpretations = vec![Interpretation {
         nlu_confidence: recognized.map(|(_, matched)| ConfidenceScore {
             score: matched.score,
@@ -272,27 +391,13 @@ pub fn interpret(model: &BotLocaleModel, text: &str, state: &SessionState) -> Tu
         intent: Some(intent.clone()),
         interpretation_source: Some(INTERPRETATION_SOURCE.to_string()),
     }];
+    let room = MAX_INTERPRETATIONS - 1 - usize::from(inserted_fallback.is_some());
     for (candidate, matched) in scored
         .iter()
         .filter(|(candidate, _)| candidate.name != intent.name)
-        .take(MAX_INTERPRETATIONS - 1)
+        .take(room)
     {
-        interpretations.push(Interpretation {
-            nlu_confidence: Some(ConfidenceScore {
-                score: matched.score,
-            }),
-            sentiment_response: None,
-            intent: Some(Intent {
-                name: candidate.name.clone(),
-                // An alternative is an intent the utterance MIGHT have
-                // satisfied: no dialog is on it, so nothing is filled or being
-                // elicited for it and the map it reports is empty.
-                slots: Some(HashMap::new()),
-                state: None,
-                confirmation_state: None,
-            }),
-            interpretation_source: Some(INTERPRETATION_SOURCE.to_string()),
-        });
+        interpretations.push(alternative(candidate.name.clone(), Some(matched.score)));
     }
 
     TurnPlan {
@@ -300,6 +405,7 @@ pub fn interpret(model: &BotLocaleModel, text: &str, state: &SessionState) -> Tu
         dialog_action,
         messages,
         interpretations,
+        inserted_fallback,
     }
 }
 
@@ -313,7 +419,7 @@ pub fn interpret(model: &BotLocaleModel, text: &str, state: &SessionState) -> Tu
 /// dialog reached, and an intent that declares none reports an empty map. A name
 /// the intent does not declare is not a slot of it, so a stray entry a caller
 /// put in the session is not reported back.
-fn declared_slots(
+pub(crate) fn declared_slots(
     authored: &ModelIntent,
     filled: &HashMap<String, Slot>,
 ) -> HashMap<String, Slot> {

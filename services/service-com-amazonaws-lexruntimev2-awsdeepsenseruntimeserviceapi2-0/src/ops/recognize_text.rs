@@ -302,8 +302,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             messages: Some(turn.messages),
             session_state: Some(turn.session_state),
             interpretations: Some(turn.interpretations),
-            request_attributes: (!turn.request_attributes.is_empty())
-                .then_some(turn.request_attributes),
+            // "The attributes sent in the request" (`requestAttributes`), as the
+            // session has accumulated them: the map is reported on every turn,
+            // empty for a conversation nothing has sent an attribute on, so a
+            // client threading attributes across turns can read it without
+            // first testing whether the member is there.
+            request_attributes: Some(turn.request_attributes),
             session_id: Some(turn.session_id),
             // A bot member is recognized only for a bot in a network of bots,
             // which this runtime holds no definition of.

@@ -1209,8 +1209,21 @@ async fn the_lex_headers_are_gzipped_and_base64_encoded() {
         decoded,
         json!({
             "dialogAction": {"type": "ElicitSlot", "slotToElicit": SLOT},
-            "intent": {"name": INTENT, "state": "InProgress"},
+            // The seeded dialog is completed against the bot's own locale: the
+            // active intent names every slot that bot declares for it, with the
+            // documented null for the one nothing has filled, and carries the
+            // confirmation state of a dialog that has not reached its
+            // confirmation stage.
+            "intent": {
+                "name": INTENT,
+                "state": "InProgress",
+                "slots": {SLOT: Value::Null},
+                "confirmationState": "None",
+            },
             "sessionAttributes": {"cart": "2"},
+            // Reported on every state, empty for a conversation that has set no
+            // context.
+            "activeContexts": [],
             "originatingRequestId": originating_request_id,
         }),
         "the decoded session-state header is the stored state's JSON"

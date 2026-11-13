@@ -30,8 +30,14 @@
 
 use bytes::Bytes;
 use serde_json::{json, Value};
+use service_com_amazonaws_lexmodelsv2_lexmodelbuildingservicev2 as lexmodels;
 
 use crate::harness::{gzip_base64, Emulator};
+
+/// The intent Amazon Lex V2 inserts among the alternative intents of a
+/// recognition's response, named as the control plane names the one it adds to
+/// every locale it creates.
+const FALLBACK: &str = lexmodels::state::FALLBACK_INTENT_NAME;
 
 /// The text `requestContentType` the model lists ("Text format — `text/plain;
 /// charset=utf-8`").
@@ -304,10 +310,26 @@ async fn an_utterance_advances_the_session_exactly_as_the_same_text_does() {
             case.name
         );
         let actual_attributes = utterance.lex_header("x-amz-lex-request-attributes");
+        // The attributes the two encodings report must agree. An empty
+        // collection has no header form here — this operation's collection
+        // headers are optional `NonEmptyString`s — so the empty map its
+        // JSON-bodied sibling reports is an absent header, and the header is
+        // reported exactly when the map is not empty.
+        let expected_attributes = expected
+            .get("requestAttributes")
+            .cloned()
+            .unwrap_or_else(|| json!({}));
         assert_eq!(
-            actual_attributes,
-            expected.get("requestAttributes").cloned(),
+            actual_attributes.clone().unwrap_or_else(|| json!({})),
+            expected_attributes,
             "case {:?}: the request attributes must agree, got {actual_attributes:?}",
+            case.name
+        );
+        assert_eq!(
+            actual_attributes.is_none(),
+            expected_attributes == json!({}),
+            "case {:?}: the header is reported exactly when the map is not empty, \
+             got {actual_attributes:?} against {expected_attributes}",
             case.name
         );
         assert_eq!(
@@ -365,10 +387,47 @@ async fn an_utterance_advances_the_session_exactly_as_the_same_text_does() {
             "case {:?}: GetSession must report what the turn persisted, got {stored:?}",
             case.name
         );
+        // The SESSION holds what the recognition made of the utterance; the
+        // response adds the fallback intent Amazon Lex V2 inserts among its
+        // alternative intents, which is part of the answer and not of the
+        // session.
+        let reported: Vec<Value> = actual_interpretations
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        let persisted: Vec<Value> = stored
+            .get("interpretations")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
         assert_eq!(
-            stored.get("interpretations"),
-            Some(&actual_interpretations),
-            "case {:?}: the turn's interpretation must be persisted, got {stored:?}",
+            reported.get(..persisted.len()).map(<[Value]>::to_vec),
+            Some(persisted.clone()),
+            "case {:?}: the turn's interpretation must be persisted, got {persisted:?} \
+             against {reported:?}",
+            case.name
+        );
+        let added: Vec<Value> = reported.into_iter().skip(persisted.len()).collect();
+        // The one entry a response adds is the inserted fallback intent — unless
+        // the turn is already ON the fallback, which reports it as its own
+        // interpretation and has nothing to insert beside it.
+        let on_fallback = actual_state
+            .as_ref()
+            .and_then(|state| state.pointer("/intent/name"))
+            .and_then(Value::as_str)
+            == Some(FALLBACK);
+        let expected_added: Vec<Value> = if on_fallback {
+            Vec::new()
+        } else {
+            vec![json!({
+                "intent": {"name": FALLBACK, "slots": {}},
+                "interpretationSource": "Lex",
+            })]
+        };
+        assert_eq!(
+            added, expected_added,
+            "case {:?}: the only entry the response adds is the inserted fallback intent, \
+             got {added:?}",
             case.name
         );
         let after_text = by_text.send("GET", &case.session_path(), None).await;

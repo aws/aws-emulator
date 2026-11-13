@@ -370,14 +370,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // `session_mut` is the bounded insertion path: it expires idle
             // sessions and refuses to grow the store past its cap.
             let session = store.session_mut(key, now).map_err(store_full)?;
-            session.replace_session_state(input.session_state, now);
+            // The seeded dialog is completed against the bot's own locale and
+            // interpreted as the dialog it describes, so what a later read
+            // reports is the state the bot has rather than the request echoed.
+            session.replace_session_state(input.session_state, now, &locale);
             session.messages = messages;
-            // The dialog this call replaces is gone, and so are the
-            // interpretations an earlier turn of it produced: this operation
-            // "creates a new session or modifies an existing session", and an
-            // interpretation of an utterance that is no longer part of the
-            // session would otherwise be reported by the next read.
-            session.interpretations.clear();
             session.request_attributes = input.request_attributes.unwrap_or_default();
             session.updated_at = now;
             (

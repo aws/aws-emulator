@@ -431,15 +431,22 @@ impl ComAmazonawsLexruntimev2Awsdeepsenseruntimeserviceapi20State {
         // a slot's prompt, or the intent's closing response — and none when the
         // bot has nothing authored to say at the step the dialog reached.
         session.messages = plan.messages;
-        // The interpretations of this turn, written back onto the session so a
-        // following GetSession reports the same ones.
+        // What the recognition made of the utterance, written back onto the
+        // session so a following GetSession reports the same interpretations.
         session.interpretations = plan.interpretations;
 
         Ok(Turn {
             session_id: session.session_id.clone(),
             session_state: session.visible_session_state(now),
             messages: session.messages.clone(),
-            interpretations: session.interpretations.clone(),
+            // The RESPONSE to a recognition also carries the fallback intent
+            // Amazon Lex V2 inserts among its alternative intents: it is part of
+            // the answer to this utterance, not of what the session holds, so a
+            // later read of the session does not report it.
+            interpretations: nlu::with_inserted(
+                session.interpretations.clone(),
+                plan.inserted_fallback,
+            ),
             request_attributes: session.request_attributes.clone(),
         })
     }
@@ -626,8 +633,15 @@ impl Session {
     /// `originatingRequestId`.
     pub fn visible_session_state(&self, now: SystemTime) -> SessionState {
         let mut state = self.session_state.clone();
-        let live = self.live_contexts(now);
-        state.active_contexts = (!live.is_empty()).then_some(live);
+        // `activeContexts` is the list of contexts that "indicate to Amazon Lex
+        // V2 the context of a request", whose modelled `ActiveContextsList`
+        // admits a list of `len 0..20`: the list is reported on every state,
+        // empty for a conversation that has set no context, so a client can
+        // iterate it without first testing whether the member is there.
+        state.active_contexts = Some(self.live_contexts(now));
+        // The active intent is reported with the dialog members every reported
+        // intent carries, whatever the dialog has put on it.
+        state.intent = state.intent.map(nlu::active_intent);
         // "A unique identifier for a specific request": the service reports it
         // on every state it answers with, so it is read off the session rather
         // than only echoed back when a caller supplied one.
@@ -655,21 +669,35 @@ impl Session {
     }
 
     /// Store a dialog state a caller supplied in full, as `PutSession` does:
-    /// every member the request carried becomes the session's state.
+    /// every member the request carried becomes the session's state, completed
+    /// against the bot's own locale
+    /// ([`bot_model::BotLocaleModel::completed_session_state`]) — so a seeded
+    /// dialog is read back as the dialog the bot has, interpretations included,
+    /// rather than as the caller happened to spell it.
     ///
     /// The `originatingRequestId` is the SESSION's, not one turn's: it is minted
     /// with the conversation and reported for as long as it lives, so a request
     /// that carries none leaves the one the session already holds in place.
-    pub fn replace_session_state(&mut self, supplied: SessionState, now: SystemTime) {
+    pub fn replace_session_state(
+        &mut self,
+        supplied: SessionState,
+        now: SystemTime,
+        locale: &bot_model::BotLocaleModel,
+    ) {
         let active_contexts = supplied.active_contexts.clone().unwrap_or_default();
         if let Some(originating_request_id) = supplied.originating_request_id.clone() {
             self.originating_request_id = originating_request_id;
         }
+        let (supplied, interpretations) = locale.completed_session_state(supplied);
         self.session_state = SessionState {
             active_contexts: None,
             originating_request_id: None,
             ..supplied
         };
+        // The dialog this call replaces is gone, and so are the interpretations
+        // an earlier turn of it produced: what the session is interpreted as is
+        // the dialog it now holds.
+        self.interpretations = interpretations;
         self.set_active_contexts(active_contexts, now);
     }
 
@@ -816,10 +844,14 @@ mod tests {
                 if *expected { "" } else { " not" }
             );
             let state = session.visible_session_state(now);
+            // The member is reported on every state, so what tells an expired
+            // context from a live one is the length of the list, not whether
+            // the list is there at all.
             assert_eq!(
-                state.active_contexts.is_some(),
-                *expected,
-                "case {case:?}: the session state a caller observes must agree",
+                state.active_contexts.as_ref().map(Vec::len),
+                Some(usize::from(*expected)),
+                "case {case:?}: the session state a caller observes must agree, got {:?}",
+                state.active_contexts,
             );
         }
     }
