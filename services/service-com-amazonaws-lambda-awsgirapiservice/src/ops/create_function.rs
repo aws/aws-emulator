@@ -407,6 +407,26 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 crate::state::INVALID_TAGS_MESSAGE.to_string(),
             ));
         }
+        // What remains is the SHAPE of each key, which the request walk never checks a
+        // map's key against ([`crate::state::tag_key_shape_refusal`]).
+        if let Some(message) = crate::state::tag_key_shape_refusal(
+            input
+                .tags
+                .iter()
+                .flat_map(|tags| tags.iter().map(|(key, value)| (key.as_str(), value.as_str()))),
+        ) {
+            return Err(crate::scaffolded::Scaffolded::validation(message));
+        }
+
+        // The level filters a `LoggingConfig` names are a feature of the structured log
+        // format alone, so a configuration asking for one on the plain-text format is
+        // refused before anything is created, rather than stored as filtering the function
+        // cannot perform (see [`crate::state::log_level_format_refusal`]).
+        if let Some(message) =
+            crate::state::log_level_format_refusal(input.logging_config.as_ref())
+        {
+            return Err(invalid_parameter(message.to_string()));
+        }
 
         let mut code = package_code(&package_type, &input)?;
 

@@ -218,6 +218,16 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         ) {
             return Err(invalid_tags());
         }
+        // What remains is the SHAPE of each key, which the request walk never checks a
+        // map's key against ([`crate::state::tag_key_shape_refusal`]).
+        if let Some(message) = crate::state::tag_key_shape_refusal(
+            input
+                .tags
+                .iter()
+                .map(|(key, value)| (key.as_str(), value.as_str())),
+        ) {
+            return Err(crate::scaffolded::Scaffolded::validation(message));
+        }
 
         let mut store = state.lock();
         // The one tag map the store holds for the named resource — the same map

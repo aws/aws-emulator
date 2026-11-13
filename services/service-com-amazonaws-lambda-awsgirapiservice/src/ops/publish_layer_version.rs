@@ -363,13 +363,26 @@ fn layer_archive(
             "Content must name an Amazon S3 location (S3Bucket and S3Key) or an inline ZipFile"
                 .to_string(),
         )),
-        (Some(zip_file), false) => Ok(crate::state::LayerArchiveRecord {
-            zip_bytes: Some(zip_file.clone()),
-            // The archive this emulator holds is its own copy of the bytes the caller
-            // uploaded, which is what the default storage mode describes.
-            s3_object_storage_mode: crate::state::S3_OBJECT_STORAGE_MODE_COPY.to_string(),
-            ..crate::state::LayerArchiveRecord::default()
-        }),
+        (Some(zip_file), false) => {
+            // The ceiling a .zip archive's CONTENTS are held to is the same for a layer
+            // as for a deployment package — the published unzipped quota "applies to all
+            // the files you upload, including layers" — and the archive this emulator
+            // holds is measured on what it expands to, which its stored length says
+            // nothing about. The S3-sourced branch below is already held to it on the
+            // length Amazon S3 reports and on the object's own contents
+            // (`crate::state::s3_package_bytes`), so the uploaded archive is held to it
+            // here.
+            if crate::state::is_over_the_unzipped_limit(Some(zip_file)) {
+                return Err(invalid_parameter(crate::state::unzipped_limit_message()));
+            }
+            Ok(crate::state::LayerArchiveRecord {
+                zip_bytes: Some(zip_file.clone()),
+                // The archive this emulator holds is its own copy of the bytes the caller
+                // uploaded, which is what the default storage mode describes.
+                s3_object_storage_mode: crate::state::S3_OBJECT_STORAGE_MODE_COPY.to_string(),
+                ..crate::state::LayerArchiveRecord::default()
+            })
+        }
         (None, true) => {
             let (Some(bucket), Some(key)) = (&content.s3_bucket, &content.s3_key) else {
                 return Err(invalid_parameter(

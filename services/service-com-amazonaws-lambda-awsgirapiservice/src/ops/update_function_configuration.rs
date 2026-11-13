@@ -395,6 +395,16 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             return Err(crate::scaffolded::Scaffolded::validation(message));
         }
 
+        // The level filters a `LoggingConfig` names are a feature of the structured log
+        // format alone, so a configuration asking for one on the plain-text format is
+        // refused before the record is read or touched, exactly as the quota clauses above
+        // are (see [`crate::state::log_level_format_refusal`]).
+        if let Some(message) =
+            crate::state::log_level_format_refusal(input.logging_config.as_ref())
+        {
+            return Err(invalid_parameter(message.to_string()));
+        }
+
         let now = ::std::time::SystemTime::now();
         let region = crate::state::request_region(ctx);
 

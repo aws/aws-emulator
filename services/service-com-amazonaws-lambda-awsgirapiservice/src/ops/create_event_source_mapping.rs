@@ -426,6 +426,16 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 crate::state::INVALID_TAGS_MESSAGE.to_string(),
             ));
         }
+        // What remains is the SHAPE of each key, which the request walk never checks a
+        // map's key against ([`crate::state::tag_key_shape_refusal`]).
+        if let Some(message) = crate::state::tag_key_shape_refusal(
+            input
+                .tags
+                .iter()
+                .flat_map(|tags| tags.iter().map(|(key, value)| (key.as_str(), value.as_str()))),
+        ) {
+            return Err(crate::scaffolded::Scaffolded::validation(message));
+        }
 
         // "Creates a mapping between an event source and an Lambda Event Function." The
         // event source is either a resource ARN (`EventSourceArn`) or a self-managed

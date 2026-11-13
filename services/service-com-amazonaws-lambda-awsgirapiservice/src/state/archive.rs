@@ -53,6 +53,35 @@ pub fn unzipped_bytes(zip_bytes: Option<&[u8]>) -> i64 {
     unzipped
 }
 
+/// Whether the archive `zip_bytes` holds expands to [`super::CODE_SIZE_UNZIPPED_LIMIT`] or
+/// more — the bound the refusal states, so the ceiling itself is over it and one byte under
+/// it is not.
+///
+/// Measured from the archive's own directory ([`unzipped_bytes`]), so a package whose stored
+/// bytes are small and whose CONTENTS are not is judged on what it expands to. An archive
+/// this emulator holds no bytes for, or cannot read, measures 0 and is not over the ceiling:
+/// nothing is refused on a size that was not computed.
+#[must_use]
+pub fn is_over_the_unzipped_limit(zip_bytes: Option<&[u8]>) -> bool {
+    unzipped_bytes(zip_bytes) >= super::CODE_SIZE_UNZIPPED_LIMIT
+}
+
+/// The sentence Lambda refuses a .zip package whose expanded contents reach the published
+/// unzipped ceiling with: the ceiling the package was measured against and nothing of the
+/// request.
+///
+/// The ONE wording for that ceiling, whichever write named the package and wherever its
+/// bytes came from — the inline upload, and the object Amazon S3 handed over
+/// ([`super::s3_source`], which reports it for an object whose reported LENGTH is already
+/// past the ceiling).
+#[must_use]
+pub fn unzipped_limit_message() -> String {
+    format!(
+        "Unzipped size must be smaller than {} bytes",
+        super::CODE_SIZE_UNZIPPED_LIMIT
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

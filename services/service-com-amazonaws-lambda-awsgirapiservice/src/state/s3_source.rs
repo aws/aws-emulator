@@ -87,10 +87,7 @@ pub fn s3_package_message(package: &S3Package) -> Option<String> {
         S3Package::Refused { code, message } => Some(format!(
             "Error occurred while GetObject. S3 Error Code: {code}. S3 Error Message: {message}"
         )),
-        S3Package::TooLarge => Some(format!(
-            "Unzipped size must be smaller than {} bytes",
-            super::CODE_SIZE_UNZIPPED_LIMIT
-        )),
+        S3Package::TooLarge => Some(super::unzipped_limit_message()),
         S3Package::Read(_) | S3Package::Unknown => None,
     }
 }
@@ -166,8 +163,9 @@ fn is_over_the_package_ceiling(length: Option<i64>) -> bool {
 /// The bytes the Amazon S3 location `bucket`/`key` names, for the three writes that store a
 /// package named that way.
 ///
-/// `Err` is the message the write is refused with ([`s3_package_message`]), and `Ok(None)` is
-/// an object nothing could be shown about, which refuses nothing and holds no bytes.
+/// `Err` is the message the write is refused with ([`s3_package_message`], and the expanded
+/// ceiling for an object whose CONTENTS are past it), and `Ok(None)` is an object nothing
+/// could be shown about, which refuses nothing and holds no bytes.
 pub async fn s3_package_bytes(
     ctx: &smithy_server_runtime::OperationContext<'_>,
     region: &str,
@@ -180,6 +178,13 @@ pub async fn s3_package_bytes(
         return Err(message);
     }
     match package {
+        // The length Amazon S3 reported is only half of the ceiling: an archive whose
+        // stored bytes are well under it can still declare CONTENTS past it, and the
+        // package is held to what it expands to, so the object this read handed over is
+        // measured the same way an inline upload is (`super::archive`).
+        S3Package::Read(bytes) if super::is_over_the_unzipped_limit(Some(&bytes)) => {
+            Err(super::unzipped_limit_message())
+        }
         S3Package::Read(bytes) => Ok(Some(bytes)),
         S3Package::Refused { .. } | S3Package::TooLarge | S3Package::Unknown => Ok(None),
     }

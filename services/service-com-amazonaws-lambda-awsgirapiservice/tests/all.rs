@@ -357,6 +357,8 @@ mod layer_version_listing;
 mod layer_version_permissions;
 #[path = "all/layer_versions.rs"]
 mod layer_versions;
+#[path = "all/log_level_requires_json_format.rs"]
+mod log_level_requires_json_format;
 #[path = "all/missing_policy_refusal.rs"]
 mod missing_policy_refusal;
 #[path = "all/node_error_trace_lines.rs"]
@@ -375,6 +377,8 @@ mod node_loader_errors;
 mod node_runtime_environment;
 #[path = "all/nodejs_invoke_run.rs"]
 mod nodejs_invoke_run;
+#[path = "all/package_unzipped_ceiling.rs"]
+mod package_unzipped_ceiling;
 #[path = "all/permission_and_policy_refusals.rs"]
 mod permission_and_policy_refusals;
 #[path = "all/permission_principal_and_qualifier_rules.rs"]
@@ -437,6 +441,8 @@ mod state_roundtrip;
 mod stream_mapping_iterator_age_series;
 #[path = "all/synchronous_invoke_run.rs"]
 mod synchronous_invoke_run;
+#[path = "all/tag_key_shape.rs"]
+mod tag_key_shape;
 #[path = "all/tag_resource_arn_constraint.rs"]
 mod tag_resource_arn_constraint;
 #[path = "all/test_suite_declarations.rs"]

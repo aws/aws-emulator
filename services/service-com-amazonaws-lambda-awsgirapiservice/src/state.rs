@@ -358,7 +358,7 @@ pub use execution::{
 /// same archive's entries in [`execution::package`]. It is re-exported here for the same
 /// reason as [`capacity_provider`]: the records holding those archives stay in this module.
 pub mod archive;
-pub use archive::unzipped_bytes;
+pub use archive::{is_over_the_unzipped_limit, unzipped_bytes, unzipped_limit_message};
 
 /// Whether an invocation's payload is the JSON an invocation carries, and the diagnostic a
 /// payload that is not is refused with, lives in [`invocation_payload`], beside the running
@@ -4809,6 +4809,16 @@ pub use package_code::*;
 /// `/2017-03-31/tags/{Resource}` operations; see the module's own header.
 mod resource_tags;
 pub use resource_tags::*;
+
+/// The constraints a tag KEY carries, which no request boundary applies, and the refusal a
+/// request naming one outside them gets; see the module's own header.
+mod tag_key_shape;
+pub use tag_key_shape::{is_shaped_tag_key, tag_key_shape_refusal};
+
+/// Which LOG FORMAT a function's level filters may be configured on; see the module's own
+/// header.
+mod log_level_format;
+pub use log_level_format::{log_level_format_refusal, LOG_LEVELS_NEED_JSON_MESSAGE};
 
 /// WHERE a layer version's archive and a function's deployment package are downloaded
 /// from: the presigned URL a read announces for one, and the object a request to that URL

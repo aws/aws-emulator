@@ -206,6 +206,22 @@ pub(crate) fn make_activation_due(engine: &Arc<engine::InMemoryEngine>) {
     }
 }
 
+/// Move every stored function's UPDATE completion instant into the past as well, the way
+/// [`make_activation_due`] moves its activation: "you can't modify the function" while an
+/// update is in progress, so a suite driving several writes at one function brings each
+/// settle forward instead of waiting it out.
+pub(crate) fn make_update_due(engine: &Arc<engine::InMemoryEngine>) {
+    make_activation_due(engine);
+    let state = engine.state::<ComAmazonawsLambdaAwsgirapiserviceState>();
+    let mut store = state.lock();
+    let past = SystemTime::now() - Duration::from_secs(1);
+    for function in store.functions.values_mut() {
+        if function.last_update_due.is_some() {
+            function.last_update_due = Some(past);
+        }
+    }
+}
+
 /// Push an image to the Amazon ECR registry of the SAME engine, so a container-image
 /// `ImageUri` naming it RESOLVES: a `PackageType=Image` create follows its reference into
 /// that registry, and a reference naming nothing pushed is refused.

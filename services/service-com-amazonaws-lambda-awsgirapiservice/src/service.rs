@@ -160,7 +160,7 @@ mod validation;
 /// belongs — the frozen crate stores only the elided value, which
 /// `services/common/src/validation.rs` records as the core seam this whole re-read exists
 /// until.
-const LARGEST_QUOTED_VALUE_BYTES: usize = 2 * 20_480;
+pub(crate) const LARGEST_QUOTED_VALUE_BYTES: usize = 2 * 20_480;
 
 /// Wire one `crate::ops::<module>::<Operation>` per line into `table`, each wrapped in
 /// [`StatedPerOperation`] and keyed by its operation shape name — the routing key

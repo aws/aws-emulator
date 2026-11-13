@@ -27,31 +27,14 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime};
 
 use serde_json::{json, Value};
-use service_com_amazonaws_lambda_awsgirapiservice::state::ComAmazonawsLambdaAwsgirapiserviceState;
 use smithy_server_runtime::MultiServiceRouter;
 
 use crate::function_lifecycle::{
-    create_function, function_arn, json_call, make_activation_due, package_bytes, router_on,
-    zip_file, Answer, ACCOUNT, REGION, ROLE,
+    create_function, function_arn, json_call, make_activation_due, make_update_due, package_bytes,
+    router_on, zip_file, Answer, ACCOUNT, REGION, ROLE,
 };
-
-/// Bring an in-flight configuration update's completion instant forward, the way
-/// [`make_activation_due`] brings a creation's forward: "you can't modify the function"
-/// while one is in progress, so each row below starts from a settled function.
-fn make_update_due(engine: &Arc<engine::InMemoryEngine>) {
-    make_activation_due(engine);
-    let state = engine.state::<ComAmazonawsLambdaAwsgirapiserviceState>();
-    let mut store = state.lock();
-    let past = SystemTime::now() - Duration::from_secs(1);
-    for function in store.functions.values_mut() {
-        if function.last_update_due.is_some() {
-            function.last_update_due = Some(past);
-        }
-    }
-}
 
 /// Where `CreateFunction` and the function-scoped operations are bound.
 const FUNCTIONS_URI: &str = "/2015-03-31/functions";

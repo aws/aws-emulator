@@ -215,6 +215,16 @@ pub fn resolve_package_code(
                      upload; use S3Bucket and S3Key for a larger deployment package"
                 ));
             }
+            // `AccountLimit$CodeSizeUnzipped` is the other ceiling the same package is
+            // held to — "The maximum size of your function's code and layers when
+            // they're extracted" ([`CODE_SIZE_UNZIPPED_LIMIT`]) — and it is measured on
+            // what the archive EXPANDS to, which the stored length says nothing about: a
+            // small archive whose entries declare more than the ceiling is a function
+            // that could never run, so it is refused here and nothing is stored (see
+            // [`super::archive`]).
+            if is_over_the_unzipped_limit(Some(zip_file)) {
+                return Err(unzipped_limit_message());
+            }
             Ok(CodeRecord {
                 zip_bytes: Some(zip_file.to_vec()),
                 source_kms_key_arn: members.source_kms_key_arn.map(str::to_string),
