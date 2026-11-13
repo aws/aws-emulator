@@ -54,7 +54,16 @@ fn emulator() -> (MultiServiceRouter, Arc<engine::InMemoryEngine>) {
 
 /// One `restJson1` request against the AWS Lambda emulator; the credential scope is what
 /// routes it there rather than to AppConfig.
-async fn lambda(router: &MultiServiceRouter, method: &str, uri: &str, body: &Value) -> Answer {
+///
+/// `pub(crate)` because every suite here whose fixture is a FUNCTION — a `LAMBDA`
+/// validator's, and an extension action's steering target
+/// (`crate::deployment_tick_directive`) — reaches Lambda through this one door.
+pub(crate) async fn lambda(
+    router: &MultiServiceRouter,
+    method: &str,
+    uri: &str,
+    body: &Value,
+) -> Answer {
     let credential = format!(
         "AKIDTESTTESTTEST/20260101/{REGION}/lambda/aws4_request, SignedHeaders=host, \
          Signature=0000"
@@ -109,17 +118,23 @@ async fn given_active_function(
         created.status,
         String::from_utf8_lossy(&created.body)
     );
-    {
-        let state = engine.state::<ComAmazonawsLambdaAwsgirapiserviceState>();
-        let mut store = state.lock();
-        let past = SystemTime::now() - Duration::from_secs(1);
-        for function in store.functions.values_mut() {
-            function.active_due = past;
-        }
-    }
+    activate_functions(engine);
     created
         .string("FunctionArn")
         .unwrap_or_else(|| panic!("case {name:?}: CreateFunction answered no FunctionArn"))
+}
+
+/// Bring every function's activation forward: the transition into `Active` is owed by
+/// Lambda's OWN clock, so no suite here sleeps on its behalf.
+///
+/// `pub(crate)` for the same reason [`lambda`] is.
+pub(crate) fn activate_functions(engine: &Arc<engine::InMemoryEngine>) {
+    let state = engine.state::<ComAmazonawsLambdaAwsgirapiserviceState>();
+    let mut store = state.lock();
+    let past = SystemTime::now() - Duration::from_secs(1);
+    for function in store.functions.values_mut() {
+        function.active_due = past;
+    }
 }
 
 /// The ARN of a function nothing created, which Lambda itself refuses the invocation of —

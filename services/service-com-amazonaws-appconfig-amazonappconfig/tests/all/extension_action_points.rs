@@ -262,11 +262,16 @@ async fn stored_bytes(
 
 /// A deployment strategy of this account's own, so a suite can pick the pacing it needs
 /// rather than the bake time a predefined strategy carries. Answers its id.
-pub(crate) async fn given_strategy(
+///
+/// [`given_strategy`] is the shorthand for one that reaches every target in a single
+/// growth step; a suite that needs a rollout to pass THROUGH shares names its growth
+/// factor here.
+pub(crate) async fn given_growing_strategy(
     router: &MultiServiceRouter,
     name: &str,
     duration_in_minutes: i32,
     final_bake_time_in_minutes: i32,
+    growth_factor: f64,
 ) -> String {
     let created = json_call(
         router,
@@ -276,7 +281,7 @@ pub(crate) async fn given_strategy(
             "Name": name,
             "DeploymentDurationInMinutes": duration_in_minutes,
             "FinalBakeTimeInMinutes": final_bake_time_in_minutes,
-            "GrowthFactor": 100.0,
+            "GrowthFactor": growth_factor,
             "GrowthType": "LINEAR",
             "ReplicateTo": "NONE",
         }),
@@ -292,6 +297,23 @@ pub(crate) async fn given_strategy(
     created
         .string("Id")
         .unwrap_or_else(|| panic!("case {name:?}: the strategy answered no Id"))
+}
+
+/// The same, reaching every target in one growth step — the pacing most suites need.
+pub(crate) async fn given_strategy(
+    router: &MultiServiceRouter,
+    name: &str,
+    duration_in_minutes: i32,
+    final_bake_time_in_minutes: i32,
+) -> String {
+    given_growing_strategy(
+        router,
+        name,
+        duration_in_minutes,
+        final_bake_time_in_minutes,
+        100.0,
+    )
+    .await
 }
 
 /// `StartDeployment`.

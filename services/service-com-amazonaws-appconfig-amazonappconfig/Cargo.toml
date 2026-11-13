@@ -68,6 +68,9 @@ tokio = { workspace = true, features = ["time"] }
 # function it names.
 service-com-amazonaws-sqs-amazonsqs = { workspace = true }
 service-com-amazonaws-lambda-awsgirapiservice = { workspace = true }
+# The deployment package the tick suite uploads for its steering function is a .zip
+# archive it writes in memory, the way a caller uploads one.
+zip = { version = "9", default-features = false, features = ["deflate"] }
 
 [lints]
 workspace = true

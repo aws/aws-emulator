@@ -187,6 +187,14 @@ pub const DEPLOYMENT_TYPE_USER: &str = "USER";
 pub const TRIGGERED_BY_USER: &str = "USER";
 /// See [`TRIGGERED_BY_USER`].
 pub const TRIGGERED_BY_APPCONFIG: &str = "APPCONFIG";
+/// The entity a deployment event an EXTENSION's action asked for is attributed to.
+///
+/// Recorded behaviour, not a modelled one: the enum
+/// (`smithy_query(query="shape",shape="TriggeredBy")`) lists `USER`, `APPCONFIG`,
+/// `CLOUDWATCH_ALARM` and `INTERNAL_ERROR`, and AppConfig nonetheless attributes a
+/// rollback an extension's action directed to the extension that directed it — which is
+/// the one attribution a client can use to tell its own abort apart from its guard's.
+pub const TRIGGERED_BY_EXTENSION: &str = "EXTENSION";
 
 /// The documented application quota: `ServiceQuotaExceededException`'s own
 /// documentation lists "Applications: 100 max".

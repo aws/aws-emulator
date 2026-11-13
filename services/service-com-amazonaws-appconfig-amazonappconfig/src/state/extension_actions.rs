@@ -950,9 +950,11 @@ pub async fn drive_deployment<Eng: Send + Sync + 'static>(
 /// The directive is the extension's abort of a deployment that is still in flight, which
 /// AppConfig itself then works through ([`Deployment::begin_rollback`]) rather than
 /// settling in one call the way a caller's own stop does — so the deployment reports the
-/// rollback in progress, and the event it logs records the invocations that asked for it
-/// and the description the extension gave as its reason. A deployment the service has
-/// already finished with is left exactly as it was: there is nothing in flight to abort.
+/// rollback in progress, and the event it logs records the invocations that asked for it,
+/// the description the extension gave as its reason, and the EXTENSION as what triggered
+/// it ([`super::TRIGGERED_BY_EXTENSION`]) rather than the caller who started the rollout
+/// or AppConfig's own schedule. A deployment the service has already finished with is left
+/// exactly as it was: there is nothing in flight to abort.
 fn apply_roll_back(
     deployment: &mut Deployment,
     description: Option<String>,
@@ -964,6 +966,7 @@ fn apply_roll_back(
     }
     if let Some(event) = deployment.event_log.last_mut() {
         event.action_invocations = Some(records);
+        event.triggered_by = Some(super::TRIGGERED_BY_EXTENSION.to_string());
         if let Some(description) = description {
             event.description = Some(description);
         }
@@ -1091,6 +1094,16 @@ fn deployment_event(
                 environment,
                 deployment.deployment_number,
             )),
+        )
+        // Where the rollout stands when the point is dispatched: the share of targets the
+        // configuration is available to, the quantity the API itself reports as
+        // `Deployment$PercentageComplete` ("the percentage of targets for which the
+        // deployment is available"). It is the position an `AT_DEPLOYMENT_TICK` target
+        // rules on when it answers a directive, so the event states it rather than
+        // leaving the target to guess how far the deployment it is steering has got.
+        .member(
+            "PercentageComplete",
+            Value::from(deployment.percentage_complete),
         );
     if let Some(profile) = application.profiles.get(&deployment.configuration_profile_id) {
         event = event.resource("ConfigurationProfile", &profile.id, &profile.name);
