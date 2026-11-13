@@ -63,6 +63,8 @@ mod node_inventory;
 mod ops_item_deletion;
 #[path = "all/ops_item_events.rs"]
 mod ops_item_events;
+#[path = "all/ops_item_queries.rs"]
+mod ops_item_queries;
 #[path = "all/ops_item_related_items.rs"]
 mod ops_item_related_items;
 #[path = "all/ops_item_updates.rs"]

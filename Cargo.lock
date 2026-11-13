@@ -10976,6 +10976,7 @@ dependencies = [
  "aws-sdk-firehose",
  "aws-sdk-lambda",
  "aws-sdk-sns",
+ "aws-sdk-ssm",
  "aws-smithy-runtime-api",
  "aws-smithy-schema 0.2.1",
  "aws-smithy-types",

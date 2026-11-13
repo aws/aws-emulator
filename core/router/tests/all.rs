@@ -17,6 +17,12 @@
 // else appends to.
 #[path = "all/cloudformation_fifo_resource_generated_names.rs"]
 mod cloudformation_fifo_resource_generated_names;
+// Declared here, in this same head region, for the reason the entry above records: the work
+// item an alarm's Systems Manager OpsItem action opens has to be read where a client reads it
+// — through OpsCenter's own query — so neither CloudWatch's nor Systems Manager's own test
+// target can drive the transition and then read what it opened.
+#[path = "all/cloudwatch_alarm_ssm_ops_item_action.rs"]
+mod cloudwatch_alarm_ssm_ops_item_action;
 // Declared here, in this same head region, for the reason the entry above records: what a
 // stack-deployed metric-stream pipeline exports before and after an update rewrites its filter
 // spans CloudFormation, IAM, CloudWatch, Firehose and Amazon S3 at once, so no single service
@@ -573,8 +579,6 @@ mod cloudformation_provisions_eks_clusters;
 #[path = "all/cloudformation_provisions_cognito_user_pool_groups.rs"]
 mod cloudformation_provisions_cognito_user_pool_groups;
 // the tail of this file is where every concurrently landing router suite appends.
-#[path = "all/cloudformation_provisions_cloudfront_resources.rs"]
-mod cloudformation_provisions_cloudfront_resources;
 #[path = "all/cloudformation_provisions_cloudwatch_dashboards.rs"]
 mod cloudformation_provisions_cloudwatch_dashboards;
 #[path = "all/cloudformation_provisions_sagemaker_model_package_group.rs"]
@@ -1845,6 +1849,11 @@ mod elbv2_lambda_target_published_address;
 // can wire it and then read the group back.
 #[path = "all/logs_vended_group_lambda_subscriber_permission.rs"]
 mod logs_vended_group_lambda_subscriber_permission;
+// Both suites below are declared ONCE, in the sorted span above beside the other
+// CloudFormation suites: the pair was appended here as well while two branches were landing
+// at once, which declared each of them a second time and compiled neither.
+#[path = "all/cloudformation_provisions_cloudfront_resources.rs"]
+mod cloudformation_provisions_cloudfront_resources;
 // `cloudformation_monitored_alb_search_estate` and `cloudformation_domain_endpoint_outputs`
 // are declared ONCE, in the head region above beside the other `cloudformation_…` suites.
 // Two branches each re-declared the pair in this tail, which compiles neither: a suite is

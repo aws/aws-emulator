@@ -206,6 +206,10 @@ pub mod resource_policies;
 /// and the store the reads project.
 pub mod ops_items;
 
+/// Which of the OpsItems a Region holds a `DescribeOpsItems` query selects, and the order
+/// it reports them in.
+pub mod ops_item_queries;
+
 /// Just-in-time node access: whether an account has the workflow at all, the access
 /// requests it holds and the credentials an approved one is exchanged for.
 pub mod just_in_time_node_access;

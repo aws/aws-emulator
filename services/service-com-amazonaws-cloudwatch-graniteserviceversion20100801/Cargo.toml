@@ -52,6 +52,12 @@ aws-sdk-ec2 = { version = "1", default-features = false }
 # resource-based policy (`state::alarm_actions::lambda_actions`). Only the generated client is
 # needed — the emulator supplies the transport.
 aws-sdk-lambda = { version = "1", default-features = false }
+# The AWS SDK for AWS Systems Manager, driven over the same in-process callback through the
+# shared client construction in `service-common`: an alarm's SSM OPSITEM action opens the
+# OpsCenter work item its ARN names (`state::alarm_actions::ssm_ops_item_actions`), whose
+# operational data is written with this SDK's own shapes. Only the generated client is needed —
+# the emulator supplies the transport.
+aws-sdk-ssm = { version = "1", default-features = false }
 # The AWS SDK for Amazon EventBridge, driven over the same in-process callback: every alarm
 # state transition publishes a state-change event onto the account's default event bus
 # (`state::alarm_actions::state_change_events`), through the shared client construction in

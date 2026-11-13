@@ -29,7 +29,9 @@ use std::collections::BTreeMap;
 use std::time::SystemTime;
 
 use super::{ComAmazonawsSsmAmazonssmState, ARN_SERVICE};
-use crate::ops::types::{OpsItem, OpsItemDataValue, OpsItemNotification, RelatedOpsItem};
+use crate::ops::types::{
+    OpsItem, OpsItemDataValue, OpsItemNotification, OpsItemSummary, RelatedOpsItem,
+};
 
 /// The resource portion an OpsItem ARN carries before the OpsItem's id, e.g.
 /// `arn:aws:ssm:us-east-1:111122223333:opsitem/oi-0dd0a6b47d6b`, which is what the
@@ -121,8 +123,20 @@ pub const RESERVED_OPERATIONAL_DATA_PREFIXES: &[&str] = &[
 /// `/aws/automations` ("to associate an Automation runbook with the OpsItem"), and
 /// `/aws/dedup` is the key that carries the dedup string this create deduplicates on
 /// ([`DEDUP_OPERATIONAL_DATA_KEY`]).
-pub const SERVICE_OPERATIONAL_DATA_KEYS: &[&str] =
-    &["/aws/resources", "/aws/automations", DEDUP_OPERATIONAL_DATA_KEY];
+pub const SERVICE_OPERATIONAL_DATA_KEYS: &[&str] = &[
+    RELATED_RESOURCES_OPERATIONAL_DATA_KEY,
+    RELATED_AUTOMATIONS_OPERATIONAL_DATA_KEY,
+    DEDUP_OPERATIONAL_DATA_KEY,
+];
+
+/// The operational-data key whose value "specif[ies] a related resource in the request"
+/// (`CreateOpsItem`'s `OperationalData` doc), and so the one the `ResourceId` filter key of a
+/// query reads ([`super::ops_item_queries`]).
+pub const RELATED_RESOURCES_OPERATIONAL_DATA_KEY: &str = "/aws/resources";
+
+/// The operational-data key whose value "associate[s] an Automation runbook with the OpsItem"
+/// (the same doc), and so the one the `AutomationId` filter key of a query reads.
+pub const RELATED_AUTOMATIONS_OPERATIONAL_DATA_KEY: &str = "/aws/automations";
 
 /// The operational-data key whose value carries a dedup string: an OpsItem created with
 /// one is the same work item as an OpsItem already open with the same string, which is
@@ -405,6 +419,21 @@ pub fn mint_ops_item_id(sequence: u64, at: SystemTime) -> String {
     super::minted_prefixed_hex_id(OPS_ITEM_ID_PREFIX, OPS_ITEM_ID_HEX_DIGITS, sequence, at)
 }
 
+/// Whether `id` is shaped like an OpsItem id: the form the modelled `OpsItemId` pattern
+/// requires (`^(oi)-[0-9a-f]{12}$`), which is the form this store mints
+/// ([`mint_ops_item_id`]).
+///
+/// What tells a page token this service handed out from a value that was never one of its ids
+/// ([`super::ops_item_queries`]).
+pub fn is_ops_item_id(id: &str) -> bool {
+    id.strip_prefix(OPS_ITEM_ID_PREFIX).is_some_and(|digits| {
+        digits.len() == OPS_ITEM_ID_HEX_DIGITS
+            && digits
+                .bytes()
+                .all(|digit| matches!(digit, b'0'..=b'9' | b'a'..=b'f'))
+    })
+}
+
 /// One OpsItem as the store holds it.
 ///
 /// Every member `GetOpsItem` reports is here, so a read projects this record
@@ -531,6 +560,40 @@ impl OpsItemRecord {
             planned_start_time: self.planned_start_time,
             planned_end_time: self.planned_end_time,
             ops_item_arn: Some(self.arn()),
+        }
+    }
+
+    /// The modelled `OpsItemSummary` for this record: the members a QUERY reports, projected
+    /// from the same persisted record the single-OpsItem read projects
+    /// ([`Self::to_ops_item`]), so a listing and a read never disagree about one OpsItem.
+    ///
+    /// `OpsItemSummary` carries no `Description`, `Notifications`, `RelatedOpsItems`, `Version`
+    /// or `OpsItemArn`: a summary is what the model says it is, and those are read through
+    /// `GetOpsItem`.
+    pub fn to_summary(&self) -> OpsItemSummary {
+        OpsItemSummary {
+            created_by: Some(self.created_by.clone()),
+            created_time: Some(::aws_smithy_types::DateTime::from(self.created_time)),
+            last_modified_by: Some(self.last_modified_by.clone()),
+            last_modified_time: Some(::aws_smithy_types::DateTime::from(self.last_modified_time)),
+            priority: self.priority,
+            source: Some(self.source.clone()),
+            status: Some(self.status.clone()),
+            ops_item_id: Some(self.ops_item_id.clone()),
+            title: Some(self.title.clone()),
+            operational_data: Some(
+                self.operational_data
+                    .iter()
+                    .map(|(key, value)| (key.clone(), value.clone()))
+                    .collect(),
+            ),
+            category: self.category.clone(),
+            severity: self.severity.clone(),
+            ops_item_type: Some(self.ops_item_type.clone()),
+            actual_start_time: self.actual_start_time,
+            actual_end_time: self.actual_end_time,
+            planned_start_time: self.planned_start_time,
+            planned_end_time: self.planned_end_time,
         }
     }
 }

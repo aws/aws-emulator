@@ -38,13 +38,15 @@
 //! was already due, and what is due NEXT is exactly what the client is no longer here to ask
 //! for.
 //!
-//! Three action kinds are executed from here, because each is an operation of another service
+//! Four action kinds are executed from here, because each is an operation of another service
 //! this emulator serves: an SNS topic ARN, which receives the notification, an EC2 INSTANCE
 //! action ([`ec2_instance_actions`]), which is the EC2 operation it names performed on the
-//! instance the alarm watches, and a LAMBDA FUNCTION ([`lambda_actions`]), which is invoked
-//! with the transition. Every other action kind an alarm may carry (an Auto Scaling policy, an
-//! SSM OpsItem) needs its own invocation path, which is not implemented in this emulator: such
-//! an action is logged and NOTHING is invented for it — no history item claiming it ran.
+//! instance the alarm watches, a LAMBDA FUNCTION ([`lambda_actions`]), which is invoked with
+//! the transition, and a SYSTEMS MANAGER OPSITEM ([`ssm_ops_item_actions`]), for which
+//! OpsCenter opens a work item about the transition. Every other action kind an alarm may carry
+//! (an Auto Scaling policy) needs its own invocation path, which is not implemented in this
+//! emulator: such an action is logged and NOTHING is invented for it — no history item claiming
+//! it ran.
 //!
 //! A transition also publishes an EVENT that is no action of the alarm's at all: CloudWatch
 //! puts every change of an alarm's state onto the account's default event bus
@@ -70,6 +72,10 @@ pub mod lambda_actions;
 /// The event every alarm state transition publishes onto the account's default event bus, and
 /// the document a Lambda alarm action is handed.
 pub mod state_change_events;
+
+/// The Systems Manager OpsItem actions an alarm action list may carry, and the work item
+/// executing one opens.
+pub mod ssm_ops_item_actions;
 /// The ARN namespace of Amazon SNS, whose topics are the action kind this module delivers to.
 const SNS_ARN_NAMESPACE: &str = "sns";
 
@@ -140,6 +146,10 @@ pub struct AlarmNotification {
     pub subject: Option<String>,
     /// The notification document, as published.
     pub message: String,
+    /// WHY the alarm moved, as the alarm itself reports it (`MetricAlarm$StateReason`): the
+    /// explanation an action that describes the transition carries, as the OpsItem a Systems
+    /// Manager action opens does ([`ssm_ops_item_actions`]). `None` for an alarm carrying none.
+    pub state_reason: Option<String>,
     /// The transition itself, as the event every state change publishes onto the account's
     /// default event bus reports it ([`state_change_events`]) and as a Lambda alarm action's
     /// function is handed it. It is owed by the transition rather than by [`Self::actions`], so
@@ -368,6 +378,7 @@ impl Transition<'_> {
             new_state_value: self.new_state_value.to_string(),
             actions,
             instance_id: self.instance_id.map(str::to_string),
+            state_reason: self.new_state_reason.map(str::to_string),
             subject,
             message: Value::Object(document).to_string(),
             state_change: self.state_change,
@@ -476,6 +487,23 @@ async fn settle<Eng: Send + Sync + 'static>(
                 record_action(&state, &notification, action, failure.as_deref(), now);
                 continue;
             }
+            // A SYSTEMS MANAGER OPSITEM action is not a message to a target either: it is the
+            // work item OpsCenter opens about the transition, at the severity and in the
+            // category the action's own ARN names ([`ssm_ops_item_actions`]).
+            if ssm_ops_item_actions::of_action_arn(action).is_some() {
+                let failure =
+                    ssm_ops_item_actions::execute(callback, action, &notification).await;
+                if let Some(failure) = failure.as_deref() {
+                    ::tracing::warn!(
+                        alarm = %notification.alarm_name,
+                        action = %action,
+                        error = %failure,
+                        "an alarm action could not be executed"
+                    );
+                }
+                record_action(&state, &notification, action, failure.as_deref(), now);
+                continue;
+            }
             // A LAMBDA function action is an invocation of that function with the transition,
             // decided by the function's own resource-based policy ([`lambda_actions`]).
             if lambda_actions::of_action_arn(action).is_some() {
@@ -496,9 +524,9 @@ async fn settle<Eng: Send + Sync + 'static>(
                 ::tracing::warn!(
                     alarm = %notification.alarm_name,
                     action = %action,
-                    "this alarm action is neither an EC2 instance action, a Lambda function \
-                     nor an SNS topic in a Region this emulator can reach; no other action \
-                     kind is executed here"
+                    "this alarm action is neither an EC2 instance action, a Lambda function, \
+                     a Systems Manager OpsItem nor an SNS topic in a Region this emulator can \
+                     reach; no other action kind is executed here"
                 );
                 continue;
             };
@@ -855,7 +883,9 @@ fn action_history_item(
     // alarm's own configuration drives, so it is the part dropped when the whole document
     // would not fit. Each form is rendered at most once, because the document carries the
     // notification itself and is the largest thing this item holds.
-    let published = if ec2_instance_actions::of_action_arn(action).is_some() {
+    let published = if ec2_instance_actions::of_action_arn(action).is_some()
+        || ssm_ops_item_actions::of_action_arn(action).is_some()
+    {
         None
     } else if lambda_actions::of_action_arn(action).is_some() {
         Some(notification.state_change.lambda_payload().to_string())
@@ -1230,12 +1260,22 @@ pub(super) fn bounded(summary: String) -> String {
     /// The modelled maximum length of `AlarmHistoryItem$HistorySummary`.
     const MAX_HISTORY_SUMMARY_LEN: usize = 255;
 
-    if summary.len() <= MAX_HISTORY_SUMMARY_LEN {
-        return summary;
+    bounded_to(summary, MAX_HISTORY_SUMMARY_LEN)
+}
+
+/// `value` inside `max` BYTES, cut at a character boundary rather than inside one.
+///
+/// The ONE cut this module makes: a history summary names an action ARN longer than its own
+/// bound ([`bounded`]), and the description a Systems Manager action hands that service carries
+/// an alarm's name and its state reason inside that member's own bound
+/// ([`ssm_ops_item_actions`]) — same rule, so one reading of it.
+pub(super) fn bounded_to(value: String, max: usize) -> String {
+    if value.len() <= max {
+        return value;
     }
-    summary
+    value
         .char_indices()
-        .take_while(|(index, character)| index + character.len_utf8() <= MAX_HISTORY_SUMMARY_LEN)
+        .take_while(|(index, character)| index + character.len_utf8() <= max)
         .map(|(_, character)| character)
         .collect()
 }
