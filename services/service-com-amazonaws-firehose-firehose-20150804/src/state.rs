@@ -511,6 +511,11 @@ pub struct StoredRecord {
     pub record_id: String,
     pub data: Vec<u8>,
     pub received_at: SystemTime,
+    /// How many delivery attempts this record has already been left by: every attempt its
+    /// destination did not take counts one, so the error output of a record that was finally
+    /// parked states how many attempts it really cost. Zero for a record no attempt has been
+    /// made for yet.
+    pub delivery_attempts: u32,
 }
 
 /// One Firehose stream.
@@ -905,6 +910,8 @@ fn push_record(
         record_id: record_id.clone(),
         data,
         received_at: now,
+        // No delivery has been attempted for a record that has just been accepted.
+        delivery_attempts: 0,
     });
     Some(record_id)
 }

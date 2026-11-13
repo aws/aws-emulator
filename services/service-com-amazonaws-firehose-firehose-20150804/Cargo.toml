@@ -116,6 +116,11 @@ service-com-amazonaws-kms-trentservice = { workspace = true }
 # The destination reads of the delivery suite go through Amazon S3's own restXml wire, so
 # its listings are read with the same XML reader that service's tests use.
 quick-xml = "0.41"
+# The HTTP endpoint a destination delivers to is served by another service of this emulator,
+# and a Lambda function URL is one such endpoint: the suite that drives an endpoint
+# destination end to end mounts Lambda beside Firehose on the same engine, so the POST this
+# crate renders is answered by a handler that RUNS.
+service-com-amazonaws-lambda-awsgirapiservice = { workspace = true }
 
 [lints]
 workspace = true

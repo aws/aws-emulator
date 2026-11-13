@@ -77,6 +77,8 @@ mod error_output_prefix_resolution;
 mod format_conversion_delivery;
 #[path = "all/http_endpoint_delivery.rs"]
 mod http_endpoint_delivery;
+#[path = "all/http_endpoint_lambda_error_output.rs"]
+mod http_endpoint_lambda_error_output;
 #[path = "all/kinesis_source_ingestion.rs"]
 mod kinesis_source_ingestion;
 #[path = "all/kms_key_resolution.rs"]

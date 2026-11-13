@@ -629,6 +629,7 @@ mod tests {
                     record_id: format!("record-{index}"),
                     data: data.to_vec(),
                     received_at: SystemTime::UNIX_EPOCH,
+                    delivery_attempts: 0,
                 })
                 .collect()
         };

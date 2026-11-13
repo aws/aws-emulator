@@ -49,7 +49,9 @@
 //! and `CommonAttributes`, and the `AccessKey` the configuration carries —
 //! [`post_to_endpoint`]. A buffer the endpoint does not acknowledge is attempted again for
 //! as long as `RetryOptions` allows and is then parked in the destination's Amazon S3
-//! backup ([`backup_object`]), so nothing a put accepted is lost.
+//! backup ([`backup_object`]), so nothing a put accepted is lost. What the endpoint's own
+//! answer REPORTED about the refusal is the message the parked records' error output carries
+//! ([`reported_error_message`]), beside the attempts the buffer really cost.
 //!
 //! The POST is sent through the IN-PROCESS transport of the emulator this delivery runs
 //! within (the connector of `smithy_server_runtime::OperationContext::callback`, handed to
@@ -1497,6 +1499,11 @@ fn restore(
         return;
     };
     let mut records = delivery.records;
+    // One attempt was made for each of these records and did not place them, which is what
+    // the error output of a record that is finally parked reports as the attempts it cost.
+    for record in &mut records {
+        record.delivery_attempts = record.delivery_attempts.saturating_add(1);
+    }
     records.append(&mut stream.records);
     stream.records = records;
     stream.delivery_retry_at = Some(now + DELIVERY_RETRY_SPAN);
@@ -1542,11 +1549,15 @@ pub async fn deliver_due<Eng: Send + Sync + 'static>(
             // backup. One this emulator cannot work out — an `S3Configuration` naming no
             // bucket, a prefix that does not resolve — leaves the records owed instead of
             // dropping them.
-            match endpoint
-                .backup
-                .as_ref()
-                .and_then(|target| backup_object(&delivery, target, failure, now))
-            {
+            match endpoint.backup.as_ref().and_then(|target| {
+                backup_object(
+                    &delivery,
+                    target,
+                    failure.failure,
+                    failure.reported_message.as_deref(),
+                    now,
+                )
+            }) {
                 Some(object) => parked.push(object),
                 None => owed = true,
             }
@@ -1571,10 +1582,13 @@ pub async fn deliver_due<Eng: Send + Sync + 'static>(
                 owed = true;
                 continue;
             }
+            // The collector's own answer reports its refusal in a document of its own rather
+            // than in the message of a delivery failure, so the failure class's wording is
+            // what the error output of a parked event states.
             match collector
                 .backup
                 .as_ref()
-                .and_then(|target| backup_object(&delivery, target, failure, now))
+                .and_then(|target| backup_object(&delivery, target, failure, None, now))
             {
                 Some(object) => parked.push(object),
                 None => owed = true,
@@ -1708,15 +1722,15 @@ async fn post_to_endpoint(
     delivery: &PendingDelivery,
     endpoint: &HttpEndpointTarget,
     now: SystemTime,
-) -> Result<(), DeliveryFailure> {
+) -> Result<(), EndpointFailure> {
     let request_id = ::uuid::Uuid::new_v4().to_string();
     // The body is this buffer's records, so its size is bounded by the per-stream buffer
     // budget (`crate::state::MAX_BUFFERED_BYTES_PER_STREAM`) the put already charged
     // against, plus the base64 expansion of it.
     let body = ::serde_json::to_vec(&request_envelope(&request_id, delivery, now))
-        .map_err(|_| HTTP_ENDPOINT_CONNECTION_FAILED)?;
+        .map_err(|_| EndpointFailure::unreported(HTTP_ENDPOINT_CONNECTION_FAILED))?;
     let body = if endpoint.gzip {
-        gzip(&body).ok_or(HTTP_ENDPOINT_CONNECTION_FAILED)?
+        gzip(&body).ok_or_else(|| EndpointFailure::unreported(HTTP_ENDPOINT_CONNECTION_FAILED))?
     } else {
         body
     };
@@ -1762,7 +1776,7 @@ async fn post_to_endpoint(
                 "the HTTP endpoint destination's configuration does not render a delivery \
                  request, so nothing was delivered to it"
             );
-            return Err(HTTP_ENDPOINT_CONNECTION_FAILED);
+            return Err(EndpointFailure::unreported(HTTP_ENDPOINT_CONNECTION_FAILED));
         }
     };
     let response = HttpConnector::call(transport, request)
@@ -1774,16 +1788,23 @@ async fn post_to_endpoint(
                 "the HTTP endpoint destination could not be reached, so this delivery was \
                  left for a later one"
             );
-            HTTP_ENDPOINT_CONNECTION_FAILED
+            EndpointFailure::unreported(HTTP_ENDPOINT_CONNECTION_FAILED)
         })?;
     let status = response.status().as_u16();
+    // What the destination itself REPORTED about this delivery, read before the answer is
+    // judged: a refusal is reported in the answer's own error member whatever its status
+    // line said, and that message is the one the error output of a parked record carries.
+    let reported_message = reported_error_message(&response);
     if !(200..300).contains(&status) {
         ::tracing::warn!(
             stream = %delivery.stream,
             status,
             "the HTTP endpoint destination did not acknowledge this delivery"
         );
-        return Err(HTTP_ENDPOINT_DESTINATION_EXCEPTION);
+        return Err(EndpointFailure {
+            failure: HTTP_ENDPOINT_DESTINATION_EXCEPTION,
+            reported_message,
+        });
     }
     if let Err(reason) = acknowledges(&response, &request_id) {
         ::tracing::warn!(
@@ -1792,10 +1813,90 @@ async fn post_to_endpoint(
             reason,
             "the HTTP endpoint destination's answer does not acknowledge this delivery"
         );
-        return Err(HTTP_ENDPOINT_INVALID_RESPONSE);
+        return Err(EndpointFailure {
+            failure: HTTP_ENDPOINT_INVALID_RESPONSE,
+            reported_message,
+        });
     }
     Ok(())
 }
+
+/// How a delivery to an HTTP endpoint destination failed, with what the destination's own
+/// answer REPORTED about it.
+///
+/// The failure class is what decides where the records are parked and which `errorCode`
+/// their error output names; the reported message is the destination's own account of the
+/// refusal, which is the message that error output states ([`backup_object`]).
+#[derive(Debug, Clone)]
+struct EndpointFailure {
+    failure: DeliveryFailure,
+    /// The message the destination's answer reported, and `None` where it reported none —
+    /// an answer that is not a JSON document, one stating no error, or no answer at all.
+    reported_message: Option<String>,
+}
+
+impl EndpointFailure {
+    /// A failure the destination reported nothing of its own about: the request could not be
+    /// made at all, so there is no answer to read a message out of and the failure class's
+    /// own wording is what the error output states.
+    fn unreported(failure: DeliveryFailure) -> Self {
+        Self {
+            failure,
+            reported_message: None,
+        }
+    }
+}
+
+/// What the destination's answer REPORTS about a delivery it did not take, and `None` where
+/// it reports nothing.
+///
+/// The delivery protocol `HttpEndpointConfiguration$Url` points at asks a destination to
+/// state why it could not process a request in its answer's own error member rather than in
+/// the status line, so that member is where the message comes from whatever the status said.
+/// An answer that states nothing there — an absent or empty member, a member that is not
+/// text, a body that is not a JSON document — reports no message, and the failure class's own
+/// wording stays in its place.
+fn reported_error_message(
+    response: &::aws_smithy_runtime_api::client::orchestrator::HttpResponse,
+) -> Option<String> {
+    let body = response.body().bytes()?;
+    let answer = ::serde_json::from_slice::<::serde_json::Value>(body).ok()?;
+    let reported = answer
+        .get(ANSWER_ERROR_MESSAGE_MEMBER)
+        .and_then(::serde_json::Value::as_str)?;
+    // The destination composed this message and it is copied into the document of EVERY
+    // record of the buffer, so what one answer adds to this process is not a multiple of
+    // what it sent: enough of the message for the account a destination gives of a refusal,
+    // and no more.
+    let reported: String = reported.chars().take(MAX_REPORTED_MESSAGE_CHARS).collect();
+    (!reported.is_empty()).then_some(reported)
+}
+
+/// How much of the message a destination reported the error output carries — see
+/// [`reported_error_message`].
+pub const MAX_REPORTED_MESSAGE_CHARS: usize = 4_096;
+
+/// As much of the message a destination reported as the error output of a buffer of
+/// `records` records carries.
+///
+/// The message is bounded two ways, because it is a value this emulator did not compose and
+/// it is copied into the document of EVERY record of the buffer: one copy by
+/// [`MAX_REPORTED_MESSAGE_CHARS`], and all the copies TOGETHER — a buffer holds up to
+/// `crate::state::MAX_BUFFERED_RECORDS_PER_STREAM` records — by
+/// [`MAX_REPORTED_MESSAGE_CHARS_PER_BUFFER`], so the PRODUCT of the two factors is bounded
+/// and not only each of them. Every document of one buffer states the same message, so a
+/// consumer reads one account of the refusal however many records it covers.
+fn copied_message(reported: &str, records: usize) -> String {
+    let per_record = MAX_REPORTED_MESSAGE_CHARS_PER_BUFFER
+        .checked_div(records)
+        .unwrap_or(MAX_REPORTED_MESSAGE_CHARS)
+        .min(MAX_REPORTED_MESSAGE_CHARS);
+    reported.chars().take(per_record).collect()
+}
+
+/// What the message a destination reported may add to ONE buffer's error output, over every
+/// document of it — see [`copied_message`].
+const MAX_REPORTED_MESSAGE_CHARS_PER_BUFFER: usize = 1024 * 1024;
 
 /// Whether the endpoint's answer ACKNOWLEDGES the delivery request `request_id`, or why it
 /// does not.
@@ -1919,16 +2020,33 @@ fn retries_spent(
 /// record ([`error_envelope`]), so a consumer of that prefix learns how the delivery failed
 /// and still holds the record's own bytes. `None` when the backup cannot be worked out at
 /// all, in which case the records stay owed rather than being dropped.
+///
+/// `reported_message` is what the destination's own answer said about the refusal
+/// ([`reported_error_message`]), which is the message each of those documents states: what a
+/// consumer of the error prefix diagnoses a refusal by is the destination's account of it,
+/// not a wording this emulator chose. A destination that reported none leaves the failure
+/// class's own wording in its place. As much of that account as the buffer admits
+/// ([`copied_message`]) is what the documents carry.
 fn backup_object(
     delivery: &PendingDelivery,
     target: &S3Target,
     failure: DeliveryFailure,
+    reported_message: Option<&str>,
     now: SystemTime,
 ) -> Option<DeliveredObject> {
     let prefix = error_output_prefix(target, failure, now).ok()?;
     let records: Vec<&StoredRecord> = delivery.records.iter().collect();
+    let reported_message =
+        reported_message.map(|message| copied_message(message, records.len()));
     let encoded = compressed(
-        error_payload(&records, failure, now, None, &BTreeMap::new()),
+        error_payload(
+            &records,
+            failure,
+            now,
+            None,
+            &BTreeMap::new(),
+            reported_message.as_deref(),
+        ),
         target,
     )?;
     Some(DeliveredObject {
@@ -2200,7 +2318,7 @@ fn search_error_envelope(
     now: SystemTime,
 ) -> ::serde_json::Value {
     ::serde_json::json!({
-        "attemptsMade": 1,
+        "attemptsMade": attempts_made(record),
         "arrivalTimestamp": record.map_or_else(|| epoch_millis(now), |record| epoch_millis(record.received_at)),
         "errorCode": failure.error_code,
         "errorMessage": failure.error_message,
@@ -2586,6 +2704,10 @@ async fn objects_of<Eng: Send + Sync + 'static>(
                     now,
                     catalog_table.as_ref(),
                     &faults,
+                    // These records were judged by this emulator's own delivery and not by a
+                    // destination that reported anything about them, so each document states
+                    // what failed for its own record or the failure class's wording.
+                    None,
                 )),
             ));
         }
@@ -3363,13 +3485,24 @@ fn concatenated(processed: &[(&StoredRecord, Vec<u8>)], append_delimiter: bool) 
 /// of any other kind was not measured against a table and names none. `faults` carries, by
 /// record id, the code and the message of ONE record where the failure is a statement about
 /// that record, which is what its own document names instead of the failure class's.
+/// `reported_message` is what the DESTINATION said about a refusal of the whole buffer,
+/// which every document of it states for the same reason: the message a consumer of the
+/// error prefix diagnoses the failure by is the account of whoever judged the records.
 fn error_payload(
     records: &[&StoredRecord],
     failure: DeliveryFailure,
     now: SystemTime,
     catalog_table: Option<&::serde_json::Value>,
     faults: &BTreeMap<String, RecordFault>,
+    reported_message: Option<&str>,
 ) -> Vec<u8> {
+    // The destination's own account of the refusal, as the fault every record of the buffer
+    // states: its message is the destination's, under the failure class's code, which is
+    // what classes a refusal the destination made of the whole buffer.
+    let reported = reported_message.map(|message| RecordFault {
+        error_code: failure.error_code,
+        message: message.to_string(),
+    });
     let documents: Vec<String> = records
         .iter()
         .map(|record| {
@@ -3378,7 +3511,7 @@ fn error_payload(
                 failure,
                 now,
                 catalog_table,
-                faults.get(&record.record_id),
+                faults.get(&record.record_id).or(reported.as_ref()),
             )
             .to_string()
         })
@@ -3394,8 +3527,9 @@ fn error_payload(
 /// `rawData` is the record's data base64-encoded, exactly as the put carried it on the
 /// wire, so nothing of the record is lost by the failure. The two timestamps are epoch
 /// MILLISECONDS: `arrivalTimestamp` is when the record was ingested and
-/// `attemptEndingTimestamp` when this delivery attempt ended. A record the destination's
-/// data format conversion failed on also names the Data Catalog table that conversion reads
+/// `attemptEndingTimestamp` when this delivery attempt ended, and `attemptsMade` is how many
+/// attempts the record cost ([`attempts_made`]). A record the destination's data format
+/// conversion failed on also names the Data Catalog table that conversion reads
 /// its columns from (`dataCatalogTable`), because WHICH schema the record did not match is
 /// what a consumer of that failure diagnoses it by. The code and the message are `fault`'s
 /// where the failure is a statement about THIS record's own data, and the failure class's
@@ -3408,7 +3542,7 @@ fn error_envelope(
     fault: Option<&RecordFault>,
 ) -> ::serde_json::Value {
     let mut envelope = ::serde_json::json!({
-        "attemptsMade": 1,
+        "attemptsMade": attempts_made(Some(record)),
         "arrivalTimestamp": epoch_millis(record.received_at),
         "attemptEndingTimestamp": epoch_millis(now),
         "rawData": ::aws_smithy_types::base64::encode(&record.data),
@@ -3424,6 +3558,18 @@ fn error_envelope(
         }
     }
     envelope
+}
+
+/// What an error-output document reports as `attemptsMade`: the delivery attempts the
+/// record has already been left by, plus the attempt being reported now.
+///
+/// A record is attempted once when its buffer comes due and once more on every retry its
+/// destination's `RetryOptions` allowed before the records were parked
+/// (`crate::state::StoredRecord::delivery_attempts` counts those), so a buffer that spent a
+/// whole retry window reports the attempts it really cost rather than the one attempt a
+/// first-try failure costs. A failure whose record is not at hand reports that one attempt.
+fn attempts_made(record: Option<&StoredRecord>) -> u64 {
+    record.map_or(0, |record| u64::from(record.delivery_attempts)) + 1
 }
 
 /// `at` as epoch milliseconds, which is how the error-output document carries an instant.
