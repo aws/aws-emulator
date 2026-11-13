@@ -200,6 +200,10 @@ pub mod import_source;
 /// the task does.
 pub mod export_worker;
 
+/// Running a started Insights query at the instant it completes, which is what fixes the
+/// results that query answers from then on.
+pub mod query_worker;
+
 /// Whether the KMS key a request names may be used to encrypt the resource it names, which
 /// is what the key's own key policy decides.
 pub mod kms_key_grant;
@@ -1262,6 +1266,14 @@ pub struct QueryRecord {
     /// [`Self::running_due_ms`]. `None` once it is in a terminal status, which owes no
     /// further transition.
     pub complete_due_ms: Option<i64>,
+    /// What this query's RUN produced, once it has run: the rows and the counts over the run
+    /// ([`insights::Execution`]), `None` for a query that has not produced them.
+    ///
+    /// "Returns the results FROM the specified query" (`GetQueryResults`): a query that has
+    /// run holds its own results, so what it answers is this snapshot and not a fresh run over
+    /// whatever the log groups hold now — a group deleted, or an event ingested, after the
+    /// query ran changes neither the rows nor the statistics it reports.
+    pub snapshot: Option<insights::Execution>,
 }
 
 impl QueryRecord {
@@ -1296,6 +1308,19 @@ impl QueryRecord {
             create_time_ms,
             running_due_ms: Some(running_due_ms),
             complete_due_ms: Some(running_due_ms.saturating_add(QUERY_COMPLETION_DELAY_MS)),
+            // A query that has not run has produced no results to report.
+            snapshot: None,
+        }
+    }
+
+    /// Record what this query's run produced, which is the snapshot it answers from then on
+    /// ([`Self::snapshot`]).
+    ///
+    /// The FIRST snapshot stands: a query RUNS once, so what it produced is fixed at that run
+    /// and a later execution of the same stored query replaces nothing.
+    pub fn record_snapshot(&mut self, execution: insights::Execution) {
+        if self.snapshot.is_none() {
+            self.snapshot = Some(execution);
         }
     }
 
@@ -3359,8 +3384,37 @@ pub fn resource_not_found_message(resource_kind: &str) -> String {
 /// query that is simply no longer running ([`query_not_running_message`]).
 ///
 /// The only variable part is the `queryId` the request carried, taken from it verbatim.
+///
+/// This is the sentence `StopQuery` refuses such an id with. `GetQueryResults` words its own
+/// ([`query_results_invalid_query_id_message`]) and refuses it under the other error class the
+/// two operations both model, so a caller holding one handle can tell WHICH read refused it
+/// and the two templates are not unified.
 pub fn invalid_query_id_message(query_id: &str) -> String {
     format!("The provided queryId={query_id} is invalid.")
+}
+
+/// The refusal `GetQueryResults` answers for a `queryId` that names no query of this account.
+///
+/// The operation models both `InvalidParameterException` ("A parameter is specified
+/// incorrectly") and `ResourceNotFoundException` ("The specified resource does not exist"), and
+/// CloudWatch Logs refuses an unissued results handle as the incorrectly specified PARAMETER of
+/// the two: a handle that was never valid, rather than a resource that was there and is gone.
+/// The sentence is this operation's own, spaced and terminated as the service words it, and its
+/// only variable part is the `queryId` the request carried, taken from it verbatim.
+pub fn query_results_invalid_query_id_message(query_id: &str) -> String {
+    format!("The provided queryId = {query_id} is invalid ")
+}
+
+/// The refusal `GetQueryResults` answers for a `nextToken` it cannot resume THIS query's
+/// results from — a token minted for another query, and one whose payload it cannot decode at
+/// all.
+///
+/// The fixed text is the sentence this operation words that condition with, stated inside the
+/// SDK envelope of the `InvalidParameterException` it is refused under
+/// ([`with_sdk_error_envelope`]), so the status and the code stated in the text are the ones the
+/// response itself answers with and the only per-run field is the request id.
+pub fn query_results_invalid_token_message() -> String {
+    with_sdk_error_envelope("Invalid token for query", ENVELOPE_INVALID_PARAMETER)
 }
 
 /// The refusal CloudWatch Logs answers when the missing resource is a QUERY DEFINITION: the

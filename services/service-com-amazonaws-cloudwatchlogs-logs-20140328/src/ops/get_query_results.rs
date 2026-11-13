@@ -247,7 +247,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // is locked, and the query then runs with it released: reading one caller's results
         // is bounded work over the records it read, and every other request of this service
         // waits on the same store.
-        let (query, encryption_key, prepared) = {
+        let (query, encryption_key, snapshot, prepared) = {
             let mut store = state.lock();
 
             // A query advances on the CLOCK — a scheduled one starts running and a running
@@ -257,28 +257,41 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             store.materialize_due_query_transitions(crate::state::now_ms());
 
             // "The ID number of the query": an id this account holds no query under names no
-            // query whose results could be returned, which is the missing resource this
-            // operation models — stated by naming the id that was rejected, the way
-            // `StopQuery` names it.
+            // query whose results could be returned. This operation models both
+            // `InvalidParameterException` and `ResourceNotFoundException`, and a results handle
+            // that was never issued is the incorrectly specified PARAMETER of the two — a
+            // handle that was never valid rather than a resource that is gone — worded with
+            // this operation's own sentence
+            // ([`crate::state::query_results_invalid_query_id_message`]), which names the id
+            // that was rejected.
             let Some(query) = store.queries.get(&input.query_id).cloned() else {
-                return Err(GetQueryResultsErrorModeled::ResourceNotFoundException(
-                    ResourceNotFoundException {
-                        message: Some(crate::state::invalid_query_id_message(&input.query_id)),
-                    },
-                )
-                .into());
+                return Err(invalid_parameter(
+                    &crate::state::query_results_invalid_query_id_message(&input.query_id),
+                ));
             };
 
-            // "GetQueryResults does not start running a query": only a query that has
-            // started has results to report, so a query that is still `Scheduled`, or that
-            // was cancelled or timed out, is read for nothing.
-            let running = query.status == crate::state::QUERY_STATUS_RUNNING
+            // "Returns the results FROM the specified query": a query that has RUN holds the
+            // results it produced ([`crate::state::QueryRecord::snapshot`]), so they are
+            // reported from that snapshot however the log groups it read have changed since.
+            // Only a query that has started and has produced none yet is read over the events
+            // the store holds now — a running one, whose results are partial ("If the value of
+            // the Status field in the output is Running, this operation returns only partial
+            // results"), and a completed one whose run has not landed yet. A query that is
+            // still `Scheduled`, or that was cancelled or timed out, is read for nothing.
+            let started = query.status == crate::state::QUERY_STATUS_RUNNING
                 || query.status == crate::state::QUERY_STATUS_COMPLETE;
-            let prepared = running.then(|| crate::state::insights::prepare(&store, &query));
+            let snapshot = query.snapshot.clone();
+            let prepared = (started && snapshot.is_none())
+                .then(|| crate::state::insights::prepare(&store, &query));
             // "If you associated an KMS key with the CloudWatch Logs Insights query results
             // in this account, this field displays the ARN of the key that's used to encrypt
             // the query results when StartQuery stores them."
-            (query, store.query_results_kms_key_id.clone(), prepared)
+            (
+                query,
+                store.query_results_kms_key_id.clone(),
+                snapshot,
+                prepared,
+            )
         };
 
         // "The token for the next set of items to return": a position inside THIS query's
@@ -288,18 +301,37 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 let cursor =
                     Cursor::decode(token).filter(|cursor| cursor.query_id == query.query_id);
                 let Some(cursor) = cursor else {
-                    return Err(invalid_parameter(crate::state::INVALID_NEXT_TOKEN_MESSAGE));
+                    return Err(invalid_parameter(
+                        &crate::state::query_results_invalid_token_message(),
+                    ));
                 };
                 cursor.after
             }
             None => 0,
         };
 
-        // A query whose string this service cannot run reports the `Failed` status of an
-        // execution that produced nothing.
-        let execution = match prepared {
-            Some(prepared) => crate::state::insights::run(prepared).await,
-            None => crate::state::insights::Execution::default(),
+        // The results the query holds, or — for one that has not produced them yet — the run
+        // over the events the store holds now. A query whose string this service cannot run
+        // reports the `Failed` status of an execution that produced nothing.
+        let execution = match (snapshot, prepared) {
+            (Some(snapshot), _) => snapshot,
+            (None, Some(prepared)) => {
+                let execution = crate::state::insights::run(prepared).await;
+                // A query the clock has already COMPLETED produced its results at the instant
+                // it completed, whether or not its own run has landed yet
+                // ([`crate::state::query_worker`]): recording them here materialises what that
+                // instant already owed, so the next reader of this query — and this one, if the
+                // log groups change under it — sees the one result set rather than a fresh run.
+                // A query still RUNNING has produced nothing yet: its partial results are not
+                // its snapshot.
+                if query.status == crate::state::QUERY_STATUS_COMPLETE {
+                    if let Some(held) = state.lock().queries.get_mut(&query.query_id) {
+                        held.record_snapshot(execution.clone());
+                    }
+                }
+                execution
+            }
+            (None, None) => crate::state::insights::Execution::default(),
         };
         let status = match execution.failed.as_deref() {
             Some(reason) => {

@@ -153,6 +153,40 @@ pub struct GetLogRecord<Eng> {
 /// reflected back into a 400 body.
 const INVALID_POINTER_MESSAGE: &str = "InvalidParameter Unable to deserialize token";
 
+/// The fields of a record whose value is an INSTANT: the two CloudWatch Logs generates for
+/// every log event it stores (`crate::state::insights::GENERATED_FIELDS`).
+///
+/// A RECORD states each of them in the epoch MILLISECONDS the event is stored under — the
+/// unit every timestamp of this service carries — while an Insights RESULT TABLE renders them
+/// for reading (`crate::state::insights::format_timestamp`), which is the form
+/// `GetQueryResults` answers a row in. So the record retrieved here is that row's record with
+/// each instant stated in the record's own unit ([`epoch_millis_instants`]).
+const INSTANT_FIELDS: [&str; 2] = [
+    crate::state::insights::FIELD_TIMESTAMP,
+    crate::state::insights::FIELD_INGESTION_TIME,
+];
+
+/// `record` with every instant field it carries stated in epoch milliseconds.
+///
+/// The instant is the one the rendering stands for, read back through the reading that undoes
+/// it (`crate::state::insights::parse_timestamp`), so the record reports the event's own
+/// stored instant and nothing is recomputed from the clock. A field carrying anything else is
+/// left exactly as the record holds it.
+fn epoch_millis_instants(
+    record: crate::state::insights::Record,
+) -> ::std::collections::HashMap<String, String> {
+    let mut fields = record.values;
+    for field in INSTANT_FIELDS {
+        let Some(value) = fields.get_mut(field) else {
+            continue;
+        };
+        if let Some(millis) = crate::state::insights::parse_timestamp(value) {
+            *value = millis.to_string();
+        }
+    }
+    fields.into_iter().collect()
+}
+
 /// Refuse the request with the error this operation models for a parameter that is
 /// "specified incorrectly".
 fn invalid_parameter(message: &str) -> GetLogRecordError {
@@ -220,14 +254,28 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         };
 
         let store = state.lock();
-        let record = crate::state::insights::pointed_record(&store, &pointer).map_err(|miss| {
-            not_found(crate::state::resource_not_found_message(miss.resource_kind()))
-        })?;
+        // The record the store still holds for the pointer. A pointer a QUERY handed out also
+        // addresses a record of that query's RESULT SET, which holds the records its rows
+        // point at ("you can use the value of @ptr in a GetLogRecord operation to get the full
+        // log record") — so a pointer whose log group, log stream or event the store no longer
+        // holds is still retrieved from the result set that produced it, and only a pointer no
+        // result set holds names the missing resource it addressed.
+        let record = match crate::state::insights::pointed_record(&store, &pointer) {
+            Ok(record) => record,
+            Err(miss) => crate::state::insights::result_set_record(
+                &store,
+                &input.log_record_pointer,
+            )
+            .ok_or_else(|| {
+                not_found(crate::state::resource_not_found_message(miss.resource_kind()))
+            })?,
+        };
 
         // "Fields are returned as field name/field value pairs", one pair per field of the
-        // record the addressed event is.
+        // record the addressed event is — each instant of it stated in the epoch milliseconds
+        // the event is stored under ([`INSTANT_FIELDS`]).
         Ok(GetLogRecordOutput {
-            log_record: Some(record.values.into_iter().collect()),
+            log_record: Some(epoch_millis_instants(record)),
         })
     }
 }

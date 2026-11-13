@@ -13,10 +13,14 @@
 //! * the fields reported are the ones CloudWatch Logs generates for an event plus the fields
 //!   the event's own message names, and nothing else;
 //! * a field the query's row carried and the same field of the retrieved record carry one
-//!   value, whichever subset the query projected;
+//!   value, whichever subset the query projected — and for the two fields whose value is an
+//!   INSTANT, one instant: a record states it in the epoch MILLISECONDS the event is stored
+//!   under, where a result row renders it for reading;
 //! * a pointer this service did not mint is refused as a parameter specified incorrectly, and
-//!   a pointer whose log group, log stream or event this store no longer holds is refused as
-//!   the missing resource it names;
+//!   a pointer whose log group, log stream or event this store no longer holds — and that no
+//!   query's result set holds either — is refused as the missing resource it names, while a
+//!   pointer a QUERY handed out keeps addressing the record that query read, because the
+//!   result set holds the records its rows point at;
 //! * retrieving a record changes nothing a later caller sees.
 //!
 //! Every case drives the service the way a client does — `POST /` with
@@ -213,6 +217,16 @@ fn value(fields: &BTreeMap<String, String>, field: &str) -> String {
     fields.get(field).cloned().unwrap_or_default()
 }
 
+/// The fields of a record whose value is an INSTANT: the two CloudWatch Logs generates for
+/// every event, as `insights::GENERATED_FIELDS` names them.
+const INSTANT_FIELDS: [&str; 2] = ["@timestamp", "@ingestionTime"];
+
+/// The instant a RECORD states for `field`, which it states in epoch milliseconds, or `None`
+/// when the value is in no such unit.
+fn record_instant(fields: &BTreeMap<String, String>, field: &str) -> Option<i64> {
+    value(fields, field).parse::<i64>().ok()
+}
+
 /// Every field of the addressed event is retrieved, whatever form its message takes and
 /// however narrow the projection of the query that produced the pointer was.
 #[tokio::test]
@@ -258,14 +272,15 @@ async fn every_field_of_the_event_a_pointer_addresses_is_retrieved() {
             "case {case:?}: @log is the account-qualified log group, got {got:?}"
         );
         assert_eq!(
-            parse_timestamp(&value(&got, "@timestamp")),
+            record_instant(&got, "@timestamp"),
             Some(base + offset),
-            "case {case:?}: @timestamp is the instant the event was stamped with, got {got:?}"
+            "case {case:?}: @timestamp is the instant the event was stamped with, in epoch \
+             milliseconds, got {got:?}"
         );
         assert!(
-            parse_timestamp(&value(&got, "@ingestionTime"))
-                .is_some_and(|accepted| accepted >= base + offset),
-            "case {case:?}: @ingestionTime is the instant the event was accepted, got {got:?}"
+            record_instant(&got, "@ingestionTime").is_some_and(|accepted| accepted >= base + offset),
+            "case {case:?}: @ingestionTime is the instant the event was accepted, in epoch \
+             milliseconds, got {got:?}"
         );
         for (field, expected) in &discovered {
             assert_eq!(
@@ -325,6 +340,18 @@ async fn the_record_agrees_with_the_query_row_it_was_pointed_from() {
             let pointer = value(row, "@ptr");
             let got = retrieved(&logs, &pointer, false).await;
             for (field, projected) in row {
+                // A row RENDERS an instant for reading and a record states it in epoch
+                // milliseconds, so for those two fields the reads agree on the INSTANT rather
+                // than on its text.
+                if INSTANT_FIELDS.contains(&field.as_str()) {
+                    assert_eq!(
+                        record_instant(&got, field),
+                        parse_timestamp(projected),
+                        "case {case:?}: {field} of the row and of the record are one instant, \
+                         got {got:?}"
+                    );
+                    continue;
+                }
                 assert_eq!(
                     &value(&got, field),
                     projected,
@@ -463,10 +490,13 @@ async fn a_pointer_that_addresses_no_record_is_refused() {
     }
 }
 
-/// A pointer the service minted stops addressing a record once the resource holding that
-/// record is removed, and says which resource is gone.
+/// A pointer a QUERY handed out keeps addressing the record that query read once the log
+/// stream, and then the log group, that held it is deleted: the query's result set holds the
+/// records its rows point at, so the `@ptr` it handed out is as durable as the rows are. A
+/// pointer no result set holds addresses only what the store still holds, and says which
+/// resource is gone ([`a_pointer_that_addresses_no_record_is_refused`]).
 #[tokio::test]
-async fn a_pointer_outlives_no_resource_that_held_its_record() {
+async fn a_pointer_a_query_handed_out_outlives_the_resources_that_held_its_record() {
     let logs = Logs::new();
     let (_, window) = stored_events(&logs).await;
     let rows = query_rows(&logs, window, "fields @message, @logStream").await;
@@ -479,7 +509,9 @@ async fn a_pointer_outlives_no_resource_that_held_its_record() {
     let in_a = pointer_in(STREAM_A);
     let in_b = pointer_in(STREAM_B);
 
-    // Both resolve while their stream is held.
+    // Both resolve while their stream is held, and each record is kept to compare against
+    // what the pointer reports once its resources are gone.
+    let mut held: Vec<(&str, BTreeMap<String, String>)> = Vec::new();
     for (case, pointer) in [(STREAM_A, &in_a), (STREAM_B, &in_b)] {
         let got = retrieved(&logs, pointer, false).await;
         assert_eq!(
@@ -487,25 +519,26 @@ async fn a_pointer_outlives_no_resource_that_held_its_record() {
             case,
             "case {case}: the pointer resolves while its stream is held, got {got:?}"
         );
+        held.push((case, got));
     }
+    let record_of = |stream: &str| -> BTreeMap<String, String> {
+        held.iter()
+            .find(|(case, _)| *case == stream)
+            .map(|(_, record)| record.clone())
+            .unwrap_or_else(|| panic!("case {stream}: its record was read"))
+    };
 
-    // One stream deleted: its pointer names the missing stream, and the other still resolves.
+    // One stream deleted: its pointer still reports the record the query read it as, because
+    // the result set holds it.
     logs.ok(
         "DeleteLogStream",
         &json!({"logGroupName": GROUP, "logStreamName": STREAM_B}),
     )
     .await;
-    let (code, message) = logs
-        .refusal(RECORD, &json!({"logRecordPointer": in_b}))
-        .await;
     assert_eq!(
-        code, NOT_FOUND,
-        "case a deleted stream: expected {NOT_FOUND}, got {code} {message:?}"
-    );
-    assert_eq!(
-        message,
-        resource_not_found_message("log stream"),
-        "case a deleted stream: the refusal names the stream that is gone, got {message:?}"
+        retrieved(&logs, &in_b, false).await,
+        record_of(STREAM_B),
+        "case a deleted stream: the result set holds the record its row pointed at"
     );
     let still = retrieved(&logs, &in_a, false).await;
     assert_eq!(
@@ -514,21 +547,16 @@ async fn a_pointer_outlives_no_resource_that_held_its_record() {
         "case another stream: deleting one stream leaves the other's records, got {still:?}"
     );
 
-    // The group deleted: the remaining pointer names the missing group.
+    // The group deleted: the remaining pointer still reports its own record too.
     logs.ok("DeleteLogGroup", &json!({"logGroupName": GROUP}))
         .await;
-    let (code, message) = logs
-        .refusal(RECORD, &json!({"logRecordPointer": in_a}))
-        .await;
-    assert_eq!(
-        code, NOT_FOUND,
-        "case a deleted group: expected {NOT_FOUND}, got {code} {message:?}"
-    );
-    assert_eq!(
-        message,
-        resource_not_found_message("log group"),
-        "case a deleted group: the refusal names the group that is gone, got {message:?}"
-    );
+    for (case, pointer) in [(STREAM_A, &in_a), (STREAM_B, &in_b)] {
+        assert_eq!(
+            retrieved(&logs, pointer, false).await,
+            record_of(case),
+            "case a deleted group: the result set holds the record its row pointed at"
+        );
+    }
 }
 
 /// The `logRecord` member is a map of field name to field value, so a record's values are

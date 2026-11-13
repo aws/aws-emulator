@@ -219,6 +219,8 @@ mod query_definitions;
 mod query_language_admission;
 #[path = "all/query_results.rs"]
 mod query_results;
+#[path = "all/query_row_limit_and_handle_refusals.rs"]
+mod query_row_limit_and_handle_refusals;
 #[path = "all/query_window_refusal.rs"]
 mod query_window_refusal;
 #[path = "all/refusal_error_codes.rs"]

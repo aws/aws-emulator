@@ -173,12 +173,15 @@ pub(super) async fn run(
         records,
         ..Rows::default()
     };
+    // The row bound the START named, which is authoritative over any the query string carries
+    // ([`super::requested_row_limit`]).
+    let requested = super::requested_row_limit(query);
     for stage in stages {
         ::tokio::task::yield_now().await;
         // A stage this service cannot run, and a run that has spent its budget, each leave
         // the query with no results. What the run READ is still reported, because the events
         // were read before the stage was reached.
-        let outcome = apply(&lookup_tables, &mut rows, stage, dialect, budget)
+        let outcome = apply(&lookup_tables, &mut rows, stage, dialect, requested, budget)
             .err()
             .map(|failure| failure.reason)
             .or_else(|| budget.reason());
@@ -196,20 +199,37 @@ pub(super) async fn run(
     // "The maximum number of log events to return from the query" (`StartQuery$limit`) bounds
     // the whole result, and the API hands back at most `MAX_RESULT_ROWS` of them however many
     // the query asked for.
-    let mut limit = MAX_RESULT_ROWS;
-    if let Some(asked) = query.limit {
-        limit = limit.min(usize::try_from(asked).unwrap_or(MAX_RESULT_ROWS));
-    }
-    rows.records.truncate(limit);
+    rows.records.truncate(requested.unwrap_or(MAX_RESULT_ROWS));
 
     Execution {
         rows: rendered(&rows, budget),
+        // The result set holds the records its rows point at, so the `@ptr` a row carries
+        // keeps addressing the record this run read ([`Execution::records`]).
+        records: pointed_records(&rows),
         records_matched: rows.matched as f64,
         records_scanned: scanned as f64,
         bytes_scanned: bytes as f64,
         log_groups_scanned: groups as f64,
         failed: None,
     }
+}
+
+/// The whole record behind each row of LOG RECORDS, keyed by the `@ptr` that row carries.
+///
+/// An AGGREGATION's rows are no single log record and carry no pointer, so they contribute
+/// nothing; neither does a record a stage left without one.
+fn pointed_records(rows: &Rows) -> BTreeMap<String, Record> {
+    if rows.aggregated {
+        return BTreeMap::new();
+    }
+    rows.records
+        .iter()
+        .filter_map(|record| {
+            record
+                .get(FIELD_PTR)
+                .map(|pointer| (pointer.to_string(), record.clone()))
+        })
+        .collect()
 }
 
 /// The rows a finished pipeline answers: each record as the field/value pairs of the columns
@@ -286,11 +306,16 @@ fn source_selector_remainder(arguments: &str) -> String {
 const LOOKUP: &str = "lookup";
 
 /// Apply one stage to the records in hand.
+///
+/// `requested` is the row bound the start of the query named, when it named one: it is
+/// authoritative over the one a row-bounding command of the pipeline carries
+/// ([`super::requested_row_limit`]).
 fn apply(
     lookup_tables: &BTreeMap<String, String>,
     rows: &mut Rows,
     stage: &CompiledStage,
     dialect: Dialect,
+    requested: Option<usize>,
     budget: &Budget,
 ) -> Result<(), ExecutionFailure> {
     let arguments = stage.arguments.trim();
@@ -327,7 +352,11 @@ fn apply(
                 .ok_or_else(|| {
                     ExecutionFailure::new(format!("{} is not a number of log events", stage.command))
                 })?;
-            rows.records.truncate(count);
+            // The count the command states is still read — a command stating none is no
+            // bound at all — but a start that named its own row bound REPLACES it: the
+            // request parameter is authoritative over the query string's bound in both
+            // directions ([`super::requested_row_limit`]).
+            rows.records.truncate(requested.unwrap_or(count));
             Ok(())
         }
         "dedup" => dedup(rows, arguments, budget),

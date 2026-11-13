@@ -645,6 +645,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         record.limit = input.limit;
         store.queries.insert(query_id.clone(), record);
         store.enforce_query_ceiling();
+        // The store is released before the run is handed over, so the query runs over the
+        // store rather than inside the call that started it.
+        drop(store);
+
+        // "Schedules a query of a log group using CloudWatch Logs Insights": the query RUNS
+        // off this response path, at the instant the clock completes it, and records what it
+        // produced on its own record — which is the result set the `queryId` answered here is
+        // a durable handle on ([`crate::state::query_worker`]).
+        crate::state::query_worker::start(::std::sync::Arc::clone(&self.engine), query_id.clone());
 
         Ok(StartQueryOutput {
             // "The unique ID of the query", which is the id the store now holds it under —

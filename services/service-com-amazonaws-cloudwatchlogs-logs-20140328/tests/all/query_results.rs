@@ -18,7 +18,8 @@
 //!   query that has started has results;
 //! * `maxItems` pages the results and the `nextToken` of one query's results continues that
 //!   query's enumeration and no other;
-//! * a `queryId` this account holds no query under is refused as a missing resource;
+//! * a `queryId` this account holds no query under is refused as an incorrectly specified
+//!   parameter;
 //! * reading the results changes nothing a later caller sees.
 //!
 //! Every case drives the service the way a client does — `POST /` with
@@ -36,7 +37,7 @@ use std::time::Duration;
 use serde_json::{json, Value};
 
 use service_com_amazonaws_cloudwatchlogs_logs_20140328::state::{
-    insights::parse_timestamp, invalid_query_id_message, QUERY_STATUS_CANCELLED,
+    insights::parse_timestamp, query_results_invalid_query_id_message, QUERY_STATUS_CANCELLED,
     QUERY_STATUS_COMPLETE, QUERY_STATUS_FAILED, QUERY_STATUS_SCHEDULED,
 };
 
@@ -46,9 +47,8 @@ use crate::harness::{base_ms, batch, now_ms, Logs, REGION};
 const START: &str = "StartQuery";
 const RESULTS: &str = "GetQueryResults";
 
-/// The modelled error codes the rules name.
+/// The modelled error code the rules name.
 const INVALID_PARAMETER: &str = "InvalidParameterException";
-const NOT_FOUND: &str = "ResourceNotFoundException";
 
 /// The log group every case queries, and the one no case writes an event into.
 const GROUP: &str = "/insights/results";
@@ -1138,9 +1138,10 @@ async fn a_sort_orders_numbers_before_text_and_absent_values_last() {
     );
 }
 
-/// A `queryId` this account holds no query under is refused as the missing resource it is.
+/// A `queryId` this account holds no query under is refused as the incorrectly specified
+/// parameter it is: a results handle that was never issued was never valid.
 #[tokio::test]
-async fn an_unheld_query_id_is_refused_as_a_missing_resource() {
+async fn an_unheld_query_id_is_refused_as_an_incorrectly_specified_parameter() {
     let logs = Logs::new();
     let (_, start_time, end_time) = group_with_events(&logs).await;
     let held = start(
@@ -1170,13 +1171,13 @@ async fn an_unheld_query_id_is_refused_as_a_missing_resource() {
     for (case, query_id) in cases {
         let (code, message) = logs.refusal(RESULTS, &json!({"queryId": query_id})).await;
         assert_eq!(
-            code, NOT_FOUND,
-            "case {case:?}: expected {NOT_FOUND}, got {code}"
+            code, INVALID_PARAMETER,
+            "case {case:?}: expected {INVALID_PARAMETER}, got {code}"
         );
         assert_eq!(
             message,
-            invalid_query_id_message(&query_id),
-            "case {case:?}: the refusal names the id that was rejected"
+            query_results_invalid_query_id_message(&query_id),
+            "case {case:?}: the refusal names the id that was rejected, got {message:?}"
         );
     }
 }

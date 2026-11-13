@@ -697,15 +697,14 @@ async fn evaluate_statement(
     ::tokio::task::yield_now().await;
     order_rows(evaluation, parsed, &mut rows)?;
 
-    // "LIMIT count" bounds the rows the statement answers; the query's own limit and the
-    // API's ceiling bound it further.
-    let mut limit = MAX_RESULT_ROWS;
-    if let Some(asked) = query.limit {
-        limit = limit.min(usize::try_from(asked).unwrap_or(MAX_RESULT_ROWS));
-    }
-    if let Some(asked) = read_limit(parsed)? {
-        limit = limit.min(asked);
-    }
+    // "LIMIT count" bounds the rows the statement answers, and the API's ceiling bounds it
+    // further — but a start that named its own row bound REPLACES the statement's clause, the
+    // way it replaces a pipeline's row-bounding command ([`super::requested_row_limit`]). The
+    // clause is read either way, so a `LIMIT` this service cannot run is still refused.
+    let clause = read_limit(parsed)?;
+    let limit = super::requested_row_limit(query)
+        .or(clause)
+        .map_or(MAX_RESULT_ROWS, |rows| rows.min(MAX_RESULT_ROWS));
     rows.truncate(limit);
 
     // A row of log events carries the pointer to its record, as every other query language's
@@ -739,6 +738,20 @@ async fn evaluate_statement(
 
     Ok(Execution {
         rows: rendered,
+        // The result set holds the records its rows point at, so the `@ptr` a row carries
+        // keeps addressing the record this run read (`Execution::records`). A row of GROUPS
+        // points at no single log record.
+        records: if aggregating {
+            ::std::collections::BTreeMap::new()
+        } else {
+            rows.iter()
+                .filter_map(|record| {
+                    record
+                        .get(FIELD_PTR)
+                        .map(|pointer| (pointer.to_string(), record.clone()))
+                })
+                .collect()
+        },
         records_matched: matched as f64,
         records_scanned: scan.scanned as f64,
         bytes_scanned: scan.bytes as f64,

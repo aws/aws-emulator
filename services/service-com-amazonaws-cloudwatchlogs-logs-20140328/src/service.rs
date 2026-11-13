@@ -545,6 +545,45 @@ fn is_log_name_length_breach(violation: &Violation) -> bool {
             .any(|segment| LOG_NAME_MEMBERS.contains(&segment))
 }
 
+/// The `@length` bounds the model declares on `QueryId` (1..256): the characters a query id
+/// may be long, at either end.
+const QUERY_ID_MIN_CHARS: i64 = 1;
+const QUERY_ID_MAX_CHARS: i64 = 256;
+
+/// The members whose value IS a query id, by the name a violation's member path carries.
+/// Source: the model — every input member targeting `QueryId` is spelled `queryId`
+/// (`GetQueryResults`, `StopQuery`, `ListLogGroupsForQuery`, `CreateLookupTable`,
+/// `UpdateLookupTable`), as the crate root's `OPERATIONS.md` lists them per operation. The
+/// match is on any segment of the path, like every other member rule here.
+const QUERY_ID_MEMBERS: &[&str] = &["queryId"];
+
+/// The whole message CloudWatch Logs refuses a `queryId` outside the length bounds
+/// [`QUERY_ID_MIN_CHARS`]..[`QUERY_ID_MAX_CHARS`] the model declares for it with.
+///
+/// The service holds a query id to that ONE bound itself, so the refusal states the KIND of
+/// identifier and the bound rather than a clause naming the member the id arrived on — which
+/// is why this message carries no `N validation error(s) detected` envelope, the way the log
+/// name bound beside it carries none ([`log_name_length_message`]). One sentence covers both
+/// ends of the bound, because a value shorter than the minimum is a BLANK id. Only the bound
+/// is interpolated, from the model's own maximum; nothing of the submitted id is.
+fn query_id_length_message() -> String {
+    format!("Query id is blank or exceeded max length {QUERY_ID_MAX_CHARS}")
+}
+
+/// Whether one violation is a query id outside the bounds the model declares for one.
+fn is_query_id_length_breach(violation: &Violation) -> bool {
+    let bound = match violation.kind {
+        ViolationKind::MinLength(min) => min == QUERY_ID_MIN_CHARS,
+        ViolationKind::MaxLength(max) => max == QUERY_ID_MAX_CHARS,
+        _ => false,
+    };
+    bound
+        && violation
+            .path
+            .split('.')
+            .any(|segment| QUERY_ID_MEMBERS.contains(&segment))
+}
+
 /// The refusal message for a framework-level refusal: the AWS envelope
 /// (`N validation error(s) detected: `) over one clause per violation, in the order the
 /// validating walk found them.
@@ -557,11 +596,17 @@ fn is_log_name_length_breach(violation: &Violation) -> bool {
 /// request-to-response step itself), so it words the violations it finds through this
 /// one function and reads alike.
 pub(crate) fn constraint_envelope(violations: &[Violation]) -> Option<String> {
-    // The one violation class this service words as a sentence of its own rather than as a
-    // clause: a log group or log stream name past the bound the service holds both to
+    // The TWO violation classes this service words as a sentence of its own rather than as a
+    // clause. First: a log group or log stream name past the bound the service holds both to
     // ([`log_name_length_message`]), which it answers whatever else the request also broke.
     if violations.iter().any(is_log_name_length_breach) {
         return Some(log_name_length_message());
+    }
+    // Second: a query id outside the bounds the model declares for one, which the service
+    // states as the one sentence it words that bound with ([`query_id_length_message`]), at
+    // either end.
+    if violations.iter().any(is_query_id_length_breach) {
+        return Some(query_id_length_message());
     }
     let clauses: Vec<String> = violations
         .iter()

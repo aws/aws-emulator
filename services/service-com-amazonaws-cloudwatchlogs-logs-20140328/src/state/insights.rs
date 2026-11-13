@@ -102,6 +102,24 @@ pub const MAX_SCANNED_BYTES: usize = 4 * 1024 * 1024;
 /// from a query, if available, by using pagination" (`GetQueryResults`).
 pub const MAX_RESULT_ROWS: usize = 100_000;
 
+/// The rows the START of a query bounds its answer to: `StartQuery$limit` when the start named
+/// one — "The maximum number of log events to return from the query. The maximum limit is
+/// 100,000" (`EventsLimitStartQuery`, `@range 1..100000`) — held to the most rows the API hands
+/// back ([`MAX_RESULT_ROWS`]), and `None` when the start named none.
+///
+/// That parameter is AUTHORITATIVE over whatever row bound the QUERY STRING itself carries — a
+/// `limit`/`head` command of a pipeline, a SQL `LIMIT` clause — so a start that names one
+/// REPLACES the string's bound rather than intersecting with it, in both directions: a
+/// parameter above it widens the answer, one below it narrows it. A start that names none
+/// leaves the query string's own bound to decide.
+pub fn requested_row_limit(query: &QueryRecord) -> Option<usize> {
+    query.limit.map(|asked| {
+        usize::try_from(asked)
+            .unwrap_or(MAX_RESULT_ROWS)
+            .min(MAX_RESULT_ROWS)
+    })
+}
+
 /// How many rows ONE `GetQueryResults` call answers when the request names no `maxItems`:
 /// "The maximum number of log events to return in the response. The maximum is 10,000 log
 /// events per request", which is also the member's modelled maximum
@@ -330,6 +348,16 @@ pub struct Execution {
     /// is one object in the top-level array. Each of these log event objects is an array of
     /// field/value pairs").
     pub rows: Vec<Vec<(String, String)>>,
+    /// The WHOLE record behind each row of LOG RECORDS the run produced, keyed by the `@ptr`
+    /// that row carries — "a @ptr field, which is the identifier for the log record", and
+    /// "you can use the value of @ptr in a GetLogRecord operation to get the full log record".
+    ///
+    /// A result set holds the records it points at, so the pointer a query handed out keeps
+    /// addressing the record that query read ([`result_set_record`]) — the same durability the
+    /// rows themselves have. An AGGREGATION's rows are no single log record and point at none,
+    /// so they contribute nothing here; and what one run may hold is bounded by the events one
+    /// run reads at all ([`MAX_SCANNED_EVENTS`]).
+    pub records: BTreeMap<String, Record>,
     /// "the number of log events that matched the query criteria"
     /// (`QueryStatistics$recordsMatched`).
     pub records_matched: f64,
@@ -769,6 +797,26 @@ pub fn pointed_record(store: &State, pointer: &LogRecordPointer) -> Result<Recor
         event.ingestion_seq,
         ::engine::emulator_account_id(),
     ))
+}
+
+/// The record one of this account's QUERY RESULT SETS holds under `pointer`, if any holds it.
+///
+/// "You can use the value of @ptr in a GetLogRecord operation to get the full log record"
+/// (`GetQueryResults`): a query hands a pointer out with the rows it produced, and the result
+/// set holds the records those rows point at ([`Execution::records`]) — so the pointer keeps
+/// addressing the record its query read even once the log group, the log stream or the event
+/// itself is gone from the store. A pointer no result set holds addresses only what the store
+/// still holds ([`pointed_record`]).
+///
+/// The lookup is over the queries this account holds, which the store itself caps
+/// ([`super::MAX_QUERIES`]), and a query whose results have been dropped holds nothing.
+pub fn result_set_record(store: &State, pointer: &str) -> Option<Record> {
+    store.queries.values().find_map(|query| {
+        query
+            .snapshot
+            .as_ref()
+            .and_then(|snapshot| snapshot.records.get(pointer).cloned())
+    })
 }
 
 /// The log groups a query reads: the ones its own source selector names when it carries one,
