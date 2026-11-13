@@ -48,7 +48,7 @@
 //! the stack published the same one.
 
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use serde_json::{json, Value};
@@ -88,11 +88,17 @@ pub(crate) const MAPPING_STATE_ENABLED: &str = "Enabled";
 /// is created in: it has no poller to stand up, so it is terminal at once.
 pub(crate) const MAPPING_STATE_DISABLED: &str = "Disabled";
 
-/// How many times a poll for a documented asynchronous transition reads before this suite
-/// calls it a hang, and how long it sleeps between reads. Generous slack over the emulator's
-/// own spans: a loaded machine is not a defect, and what the bound is for is that the wait
-/// TERMINATES.
-const POLLS: usize = 200;
+/// How long a wait for a documented asynchronous transition goes on reading before this suite
+/// calls it a hang, and how long it hands the runtime back between two reads.
+///
+/// The bound is a WALL-CLOCK deadline rather than a count of reads, because a count of reads
+/// bounds the wait by how fast the host serves ONE read: the spans the services here choose,
+/// and the function run behind a batch a mapping consumed, take the time they take whatever
+/// the host is doing, so a fixed number of cheap reads can run out before the condition can
+/// hold on a loaded machine while taking no longer on an idle one. What is waited for below is
+/// the CONDITION; the deadline is generous slack over those spans, and all it is for is that
+/// the wait TERMINATES.
+const WAIT_DEADLINE: Duration = Duration::from_secs(60);
 const POLL_INTERVAL: Duration = Duration::from_millis(25);
 
 /// The emulator with the five services this suite exercises, mounted on ONE engine exactly as
@@ -341,14 +347,17 @@ async fn physical_id(
 
 /// Poll `GetEventSourceMapping` until Lambda reports the mapping out of `Creating`, and
 /// answer the body it last reported.
+///
+/// The wait is on that CONDITION, looking again until it holds or [`WAIT_DEADLINE`] passes:
+/// nothing here is bounded by how many reads were taken or by how long one took.
 pub(crate) async fn mapping_until_settled(
     router: &MultiServiceRouter,
     case: &str,
     uuid: &str,
 ) -> Value {
     let uri = format!("{MAPPINGS_URI}/{uuid}");
-    let mut last = Value::Null;
-    for _ in 0..POLLS {
+    let giving_up_at = Instant::now() + WAIT_DEADLINE;
+    loop {
         let (status, body) = lambda(router, "GET", &uri, None).await;
         assert_eq!(
             status, 200,
@@ -358,26 +367,28 @@ pub(crate) async fn mapping_until_settled(
         if body.get("State").and_then(Value::as_str) != Some(MAPPING_STATE_CREATING) {
             return body;
         }
-        last = body;
+        assert!(
+            Instant::now() < giving_up_at,
+            "case {case:?}: the mapping never settled out of {MAPPING_STATE_CREATING} within \
+             {WAIT_DEADLINE:?}, last saw {body}"
+        );
         tokio::time::sleep(POLL_INTERVAL).await;
     }
-    panic!("case {case:?}: the mapping never settled out of {MAPPING_STATE_CREATING}, last saw {last}")
 }
 
 /// Poll `GetEventSourceMapping` until Lambda no longer holds the mapping, and answer the last
-/// status it reported.
+/// status it reported — the condition the caller asserts on, looked for again until it holds
+/// or [`WAIT_DEADLINE`] passes.
 async fn mapping_until_gone(router: &MultiServiceRouter, uuid: &str) -> u16 {
     let uri = format!("{MAPPINGS_URI}/{uuid}");
-    let mut last = 0;
-    for _ in 0..POLLS {
+    let giving_up_at = Instant::now() + WAIT_DEADLINE;
+    loop {
         let (status, _) = lambda(router, "GET", &uri, None).await;
-        last = status;
-        if status == 404 {
+        if status == 404 || Instant::now() >= giving_up_at {
             return status;
         }
         tokio::time::sleep(POLL_INTERVAL).await;
     }
-    last
 }
 
 /// Every mapping Lambda holds for one event source, through `ListEventSourceMappings`.
@@ -403,7 +414,10 @@ pub(crate) async fn mappings_of_source(
 /// that really CONSUMES does: "Lambda reads items from the event source and invokes the
 /// function", and a batch the function processed is deleted from the queue.
 ///
-/// Answers how many messages the queue reported last, so the caller names the case.
+/// Answers how many messages the queue reported last, so the caller names the case. The queue
+/// is read again until it holds nothing or [`WAIT_DEADLINE`] passes — a span far longer than
+/// the poll interval and the function run a consumed batch goes through, so a row fails only
+/// when the mapping did not consume at all.
 async fn consumed_from(router: &MultiServiceRouter, case: &str, queue_url: &str) -> String {
     let (status, sent) = sqs(
         router,
@@ -415,8 +429,8 @@ async fn consumed_from(router: &MultiServiceRouter, case: &str, queue_url: &str)
         status, 200,
         "case {case:?}: expected the message to be sent, got {status} with body {sent}"
     );
-    let mut last = String::new();
-    for _ in 0..POLLS {
+    let giving_up_at = Instant::now() + WAIT_DEADLINE;
+    loop {
         let (status, attributes) = sqs(
             router,
             "GetQueueAttributes",
@@ -442,13 +456,12 @@ async fn consumed_from(router: &MultiServiceRouter, case: &str, queue_url: &str)
             .as_str()
             .unwrap_or_default()
             .to_string();
-        last = format!("{visible} visible, {hidden} in flight");
-        if visible == "0" && hidden == "0" {
+        let last = format!("{visible} visible, {hidden} in flight");
+        if (visible == "0" && hidden == "0") || Instant::now() >= giving_up_at {
             return last;
         }
         tokio::time::sleep(POLL_INTERVAL).await;
     }
-    last
 }
 
 // ---------------------------------------------------------------------------

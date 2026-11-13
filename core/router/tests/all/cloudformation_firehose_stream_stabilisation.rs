@@ -28,7 +28,7 @@
 //! declares, never read back out of the answer being checked.
 
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use serde_json::{json, Value};
@@ -48,10 +48,17 @@ const REGION: &str = "us-east-1";
 /// How often the suite asks the stack whether it has completed, and how long it goes on
 /// asking. The interval is short because the first completed observation is what the rule is
 /// stated about: the poll that sees the stack complete is the one whose stream status and put
-/// are then checked. The budget is long enough that a loaded machine is slower than the spans
-/// these services choose without the rule being any different.
+/// are then checked.
+///
+/// The bound on the asking is a WALL-CLOCK deadline rather than a count of reads. A count
+/// bounds the wait by how fast the host serves ONE read, which is not what is being waited
+/// for: the spans the services behind a stack choose take the time they take, so a fixed
+/// number of cheap reads can run out before the stack can complete on a loaded machine while
+/// allowing no more on an idle one. The deadline is long enough that a loaded machine is
+/// slower than those spans without the rule being any different, and all it is for is that
+/// the wait TERMINATES.
 const POLL_INTERVAL: Duration = Duration::from_millis(25);
-const POLLS: usize = 400;
+const SETTLE_DEADLINE: Duration = Duration::from_secs(60);
 
 /// The `StackStatus` / `ResourceStatus` values the rule is stated in.
 const CREATE_IN_PROGRESS: &str = "CREATE_IN_PROGRESS";
@@ -177,17 +184,16 @@ pub(crate) async fn stack_status(router: &MultiServiceRouter, stack: &str) -> (S
 ///
 /// `pub(crate)` because every suite deploying a stack whose resources their owning services
 /// report as still coming up needs exactly this: the operation's completion is owed from the
-/// instant those services report the resources ready, which no fixed sleep can name.
+/// instant those services report the resources ready, which no fixed sleep can name. The wait
+/// is on that CONDITION, looking again until it holds or [`SETTLE_DEADLINE`] passes.
 pub(crate) async fn wait_for_stack_status(
     router: &MultiServiceRouter,
     stack: &str,
     wanted: &str,
 ) -> (String, String) {
+    let giving_up_at = Instant::now() + SETTLE_DEADLINE;
     let mut last = stack_status(router, stack).await;
-    for _ in 0..POLLS {
-        if last.0 == wanted {
-            return last;
-        }
+    while last.0 != wanted && Instant::now() < giving_up_at {
         tokio::time::sleep(POLL_INTERVAL).await;
         last = stack_status(router, stack).await;
     }
