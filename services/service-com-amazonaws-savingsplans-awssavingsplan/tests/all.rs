@@ -53,6 +53,8 @@ mod shared_catalog_paging;
 mod shared_page_cursor_rule;
 #[path = "all/state_roundtrip.rs"]
 mod state_roundtrip;
+#[path = "all/tag_key_removal_round_trip.rs"]
+mod tag_key_removal_round_trip;
 #[path = "all/tag_key_round_trip.rs"]
 mod tag_key_round_trip;
 #[path = "all/tag_quota_errors.rs"]
