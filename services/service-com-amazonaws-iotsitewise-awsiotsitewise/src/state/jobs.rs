@@ -31,8 +31,17 @@ pub struct BulkImportJobRecord {
     /// The `jobId` this job was minted with ([`new_id`]).
     pub job_id: String,
     /// "The unique name that helps identify the job request", as the create
-    /// stated it.
+    /// stated it. One name is held by at most one stored job
+    /// ([`ComAmazonawsIotsitewiseAwsiotsitewiseState::bulk_import_job_holding_name`]).
     pub job_name: String,
+    /// The ARN this job was minted with, in the region the create that started
+    /// it was signed for ([`bulk_import_job_arn`]).
+    ///
+    /// No modelled member of a bulk import job reports an ARN; this one is what
+    /// the already-exists refusal of a later create claiming this job's
+    /// [`Self::job_name`] points at, so that refusal names the ARN this job
+    /// CARRIES rather than one rebuilt from the refused request.
+    pub arn: String,
     /// "The ARN of the IAM role that allows IoT SiteWise to read Amazon S3
     /// data". This service neither assumes nor resolves it.
     pub job_role_arn: String,
@@ -96,6 +105,15 @@ impl BulkImportJobRecord {
     /// moved yet is the instant it was created.
     pub fn last_update_date(&self, now: SystemTime) -> SystemTime {
         self.settled(now).1
+    }
+
+    /// Whether this job holds the `jobName` `name`.
+    ///
+    /// A name is matched exactly as both sides stated it: the modelled
+    /// `BulkImportJobName` carries no case-insensitivity, so two names differing
+    /// in case are two names.
+    pub fn holds_name(&self, name: &str) -> bool {
+        self.job_name == name
     }
 
     /// Whether this job answers a read scoped to `workspace`.
@@ -452,6 +470,23 @@ pub fn enrichment_job_arn(region: &str, job_id: &str) -> String {
     )
 }
 
+/// The ARN segment a BULK IMPORT job is named by, for the reason
+/// [`ENRICHMENT_JOB_RESOURCE_TYPE`] states for the other job kind: no modelled
+/// member of a bulk import job carries an ARN, so the form is this service's own
+/// — the `<type>/<id>` resource form every IoT SiteWise ARN takes, as
+/// [`parse_resource_arn`] reads them back.
+pub const BULK_IMPORT_JOB_RESOURCE_TYPE: &str = "bulk-import-job";
+
+/// The ARN of a bulk import job in `region`; see
+/// [`BULK_IMPORT_JOB_RESOURCE_TYPE`].
+pub fn bulk_import_job_arn(region: &str, job_id: &str) -> String {
+    ::engine::emulator_arn(
+        ARN_SERVICE,
+        region,
+        &format!("{BULK_IMPORT_JOB_RESOURCE_TYPE}/{job_id}"),
+    )
+}
+
 /// How many spent idempotency tokens the store remembers.
 ///
 /// CHOSEN: a mutating call that carries a `clientToken` adds an entry and nothing
@@ -751,6 +786,23 @@ pub fn workspace_scoped_token_key(resource: &str) -> (String, String) {
 }
 
 impl ComAmazonawsIotsitewiseAwsiotsitewiseState {
+    /// The bulk import job that already holds the `jobName` `name`, or `None`
+    /// when no stored job does.
+    ///
+    /// `jobName` is documented "The unique name that helps identify the job
+    /// request", so a name one job holds is not free for another: a create may
+    /// not take it, the same one-name-one-resource rule this service applies to
+    /// every name member it documents as unique.
+    ///
+    /// Answers the RECORD, so the refusal names the holder by the id and the ARN
+    /// that job carries rather than by anything rebuilt from the refused
+    /// request.
+    pub fn bulk_import_job_holding_name(&self, name: &str) -> Option<&BulkImportJobRecord> {
+        self.bulk_import_jobs
+            .values()
+            .find(|record| record.holds_name(name))
+    }
+
     /// What `operation` is to do with the request whose `clientToken` is `token`
     /// and whose identifying members render as `request`.
     ///

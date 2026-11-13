@@ -231,14 +231,19 @@ fn instant(seconds: i64, nanos: i64) -> Value {
 
 /// `POST /jobs`: one bulk import of `files` into the session dataset `dataset` of
 /// [`WORKSPACE`], with the job-level `jobConfiguration` `configuration`.
+///
+/// `job_name` is the import's own `jobName`, which the member documents as "the
+/// unique name that helps identify the job request": one name is held by at most
+/// one job, so every import this suite starts on one router names its own.
 async fn import(
     router: &MultiServiceRouter,
     dataset: &str,
+    job_name: &str,
     files: Vec<Value>,
     configuration: Option<Value>,
 ) -> (u16, Value) {
     let mut body = json!({
-        "jobName": "Video import",
+        "jobName": job_name,
         "jobRoleArn": JOB_ROLE_ARN,
         "files": files,
         "errorReportLocation": { "bucket": "sitewise-errors", "prefix": "imports/" },
@@ -658,7 +663,9 @@ async fn an_imported_video_file_becomes_the_capture_source_its_alias_names() {
             .job_format
             .map(|format| json!({ "fileFormat": format.wire() }));
 
-        let (status, started) = import(&router, &dataset, vec![file], configuration).await;
+        let (status, started) =
+            import(&router, &dataset, &format!("Video import {row}"), vec![file], configuration)
+                .await;
         assert_eq!(
             status, 202,
             "case {label:?}: expected the import to be accepted, got {status} {started}"
@@ -782,7 +789,7 @@ async fn imported_video_reads_back_by_either_identifier_and_pages_one_file_per_a
             "fileFormat": { "mp4": {} },
         }));
     }
-    let (status, started) = import(&router, &dataset, files.clone(), None).await;
+    let (status, started) = import(&router, &dataset, "Paging import", files.clone(), None).await;
     assert_eq!(
         status, 202,
         "the import of three clips must be accepted, got {status} {started}"
@@ -857,7 +864,7 @@ async fn imported_video_reads_back_by_either_identifier_and_pages_one_file_per_a
 
     // Importing the same files again stores the same spans again rather than a
     // second copy of each: a segment is single-valued at its start time.
-    let (status, again) = import(&router, &dataset, files, None).await;
+    let (status, again) = import(&router, &dataset, "Paging import again", files, None).await;
     assert_eq!(
         status, 202,
         "the repeated import must be accepted, got {status} {again}"
@@ -917,7 +924,7 @@ async fn an_import_naming_more_video_files_than_this_emulator_reads_is_refused()
         }));
     }
 
-    let (status, refused) = import(&router, &dataset, files.clone(), None).await;
+    let (status, refused) = import(&router, &dataset, "Quota import", files.clone(), None).await;
     assert_eq!(
         status, 410,
         "one file past the ceiling must be the modelled quota refusal, got {status} {refused}"
@@ -940,7 +947,8 @@ async fn an_import_naming_more_video_files_than_this_emulator_reads_is_refused()
 
     // At the ceiling exactly, the import is accepted and EVERY file's video lands.
     files.pop();
-    let (status, started) = import(&router, &dataset, files, None).await;
+    let (status, started) = import(&router, &dataset, "Quota import at the ceiling", files, None)
+        .await;
     assert_eq!(
         status, 202,
         "an import at the ceiling must be accepted, got {status} {started}"

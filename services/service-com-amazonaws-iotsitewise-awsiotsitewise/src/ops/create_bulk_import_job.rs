@@ -5,7 +5,10 @@
 //! Implemented: the handler below resolves the destination the request names —
 //! the session dataset of a workspace, or the time series outside one the
 //! account's warm or cold tier is the precondition for — records the job, and
-//! answers with the lifecycle the create owes it. A job whose destination is a
+//! answers with the lifecycle the create owes it. `jobName` is "the unique name
+//! that helps identify the job request", so a create claiming a name a stored
+//! job already holds is refused with the modelled
+//! `ResourceAlreadyExistsException` naming that job. A job whose destination is a
 //! session dataset also records that dataset's data segments: one per file whose
 //! alias names a stream this store holds, covering the data it holds for that
 //! stream from the instant the file states.
@@ -355,6 +358,19 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 )));
             }
 
+            // `jobName` is "The unique name that helps identify the job
+            // request", so a second job may not take a name a stored job already
+            // holds — the one-name-one-resource rule this service applies to
+            // every name member its model documents as unique, as `CreateGateway`
+            // does for `gatewayName` and `CreateAssetModel` for
+            // `assetModelName`. The collision is on the job's own IDENTITY, so it
+            // is the modelled `ResourceAlreadyExistsException` (409) naming the
+            // job that holds the name. Checked before anything is written, so a
+            // refused create starts no job.
+            if let Some(holder) = store.bulk_import_job_holding_name(&input.job_name) {
+                return Err(already_exists(holder));
+            }
+
             let job_id = loop {
                 let candidate = crate::state::new_id();
                 if !store.bulk_import_jobs.contains_key(&candidate) {
@@ -363,6 +379,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             };
 
             let record = crate::state::BulkImportJobRecord {
+                arn: crate::state::bulk_import_job_arn(
+                    &crate::state::request_region(ctx.parts()),
+                    &job_id,
+                ),
                 job_id,
                 job_name: input.job_name.clone(),
                 job_role_arn: input.job_role_arn.clone(),
@@ -470,5 +490,23 @@ fn not_found(resource: &str, requested: &str) -> CreateBulkImportJobError {
         CreateBulkImportJobErrorModeled::ResourceNotFoundException(ResourceNotFoundException {
             message: crate::state::not_found_message(resource, requested),
         }),
+    )
+}
+
+/// HTTP 409 `ResourceAlreadyExistsException` for a collision on the job's own
+/// IDENTITY — the unique `jobName` a create claims. The message names the
+/// DIMENSION of the request that collided, in this service's one uniqueness
+/// wording, while `resourceId`/`resourceArn` point at the job that already holds
+/// the name: its own stored id and the ARN it was minted with, never one rebuilt
+/// from this request's region.
+fn already_exists(existing: &crate::state::BulkImportJobRecord) -> CreateBulkImportJobError {
+    CreateBulkImportJobError::Modeled(
+        CreateBulkImportJobErrorModeled::ResourceAlreadyExistsException(
+            ResourceAlreadyExistsException {
+                message: crate::state::already_using_message("bulk import job", "name"),
+                resource_id: existing.job_id.clone(),
+                resource_arn: existing.arn.clone(),
+            },
+        ),
     )
 }

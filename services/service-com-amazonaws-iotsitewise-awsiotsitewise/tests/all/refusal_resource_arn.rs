@@ -136,7 +136,9 @@ fn arn_in(region: &str, resource: &str) -> String {
 /// The shared harness's `call` signs every request for one region, which is what
 /// makes the stored ARN and a rebuilt one indistinguishable; this suite is about
 /// telling them apart, so the credential scope's region is a parameter here.
-async fn call_signed_for(
+/// Shared with the sibling suites that pin one refusal's ARN of their own
+/// (`bulk_import_job_name_uniqueness`), rather than growing a copy of it.
+pub(crate) async fn call_signed_for(
     router: &MultiServiceRouter,
     region: &str,
     method: &str,
