@@ -25,6 +25,8 @@ mod api_key_deletes_drawn_expirations;
 mod api_key_deletes_listing_agreement;
 #[path = "all/api_key_deletes_page_cut_independence.rs"]
 mod api_key_deletes_page_cut_independence;
+#[path = "all/api_key_deletes_uniform_offset.rs"]
+mod api_key_deletes_uniform_offset;
 #[path = "all/api_key_deletes_unmoved_by_other_calls.rs"]
 mod api_key_deletes_unmoved_by_other_calls;
 #[path = "all/api_key_deletion_window.rs"]
