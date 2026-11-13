@@ -6,7 +6,8 @@
 //! `GetAlias` or a `KeyIdentifier` naming the alias resolves to the same key. An
 //! alias is never stored unbound here — this operation's own documentation says an
 //! alias cannot be created without a key, so a request carrying no `KeyArn` is
-//! refused.
+//! refused. An alias name is unique in the account and region, so a name the registry
+//! already holds is refused with `ConflictException` rather than re-registered.
 //!
 //! ## Shape of an operation
 //!
@@ -219,26 +220,22 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         };
 
         let mut store = state.lock();
-        // An alias name identifies one key within the account, so a name already in
-        // use cannot be taken by a different key. This operation carries
-        // `@idempotent` though — `smithy_query(query="operation",operation="CreateAlias")`
-        // reports `"idempotent": true`, and this crate's OPERATIONS.md lists it under
-        // "## CreateAlias / Traits: @idempotent" — so a repeat of the SAME create, the
-        // normal consequence of an SDK retry, answers the binding that is already
-        // stored instead of failing; only a rebind to another key is the inconsistent
-        // state `ConflictException` describes. This is a deliberate deviation from
-        // the bootstrap issue's text, which asked for 409 on any second create of the
-        // name.
-        if let Some(existing) = store.aliases.get(&input.alias_name) {
-            if existing.as_deref() != Some(key_arn.as_str()) {
-                return Err(CreateAliasErrorModeled::ConflictException(ConflictException {
-                    message: Some(alias_already_exists(&input.alias_name)),
-                })
-                .into());
-            }
-            return Ok(CreateAliasOutput {
-                alias: crate::state::alias(&input.alias_name, Some(&key_arn)),
-            });
+        // An alias name is unique in the account and region — this operation's own
+        // documentation says so ("The alias must be unique in the account and Amazon
+        // Web Services Region"), and names the operation that repoints an existing
+        // one: "To change the key that's associated with the alias, call UpdateAlias."
+        // So a name the registry already holds is never taken a second time, whatever
+        // key the second request names: creating a resource that already exists is the
+        // inconsistent state `ConflictException` describes, and the service refuses it
+        // with the duplicate-name sentence. `@idempotent` on the signature does not
+        // make the repeat succeed: it marks the call safe to retry, and the retry of a
+        // create whose first attempt landed earns the same conflict as any other
+        // second create of the name.
+        if store.aliases.contains_key(&input.alias_name) {
+            return Err(CreateAliasErrorModeled::ConflictException(ConflictException {
+                message: Some(alias_already_exists(&input.alias_name)),
+            })
+            .into());
         }
         // An alias may only be bound to a key that exists. Checked before the store's
         // own capacity, so the error a request earns does not depend on how full the

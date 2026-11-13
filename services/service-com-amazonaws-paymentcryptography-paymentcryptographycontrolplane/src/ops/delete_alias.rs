@@ -1,15 +1,12 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op DeleteAlias
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `DeleteAlias`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
-//!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`DeleteAlias::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! Removes an alias from the registry: the binding the alias name holds in
+//! [`crate::state`] is dropped, so the name is free for another `CreateAlias` and no
+//! later `GetAlias`, `ListAliases` or `KeyIdentifier` resolves through it. The key the
+//! alias pointed at is untouched — "Deletes the alias, but doesn't affect the
+//! underlying key" — and a name the registry does not hold names no resource to
+//! delete, so it is refused rather than reported as deleted.
 //!
 //! ## Shape of an operation
 //!
@@ -170,18 +167,32 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `DeleteAlias` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(DeleteAliasErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("DeleteAlias"))
+        // `AliasName`'s `^alias/[a-zA-Z0-9/_-]+$` pattern and 7..256 length are
+        // modelled, so the centralized walk has already refused a malformed name
+        // before this body runs.
+        let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
+            DeleteAliasErrorModeled::InternalServerException(InternalServerException {
+                message: Some("the payment cryptography key store is unavailable".to_string()),
+            })
+        })?;
+
+        let mut store = state.lock();
+        // An alias exists only while the registry holds its name, so a name it does
+        // not hold — never created, or already deleted — names nothing to delete.
+        // `ResourceNotFoundException` carries the identifier that could not be
+        // located, which for this operation is the alias name the request supplied.
+        if store.aliases.remove(&input.alias_name).is_none() {
+            return Err(
+                DeleteAliasErrorModeled::ResourceNotFoundException(ResourceNotFoundException {
+                    resource_id: Some(input.alias_name.clone()),
+                })
+                .into(),
+            );
+        }
+
+        // Only the binding is dropped: the key the alias named stays in the store, as
+        // this operation's own documentation requires.
+        crate::state::record_mutation(ctx.parts(), Self::NAME, &input.alias_name);
+        Ok(DeleteAliasOutput {})
     }
 }

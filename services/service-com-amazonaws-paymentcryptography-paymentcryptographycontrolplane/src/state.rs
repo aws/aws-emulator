@@ -841,10 +841,12 @@ pub struct ComAmazonawsPaymentcryptographyPaymentcryptographycontrolplaneState {
     /// reason.
     ///
     /// The binding is an `Option` because an alias can outlive its binding:
-    /// `UpdateAlias` rebinds or clears one and `DeleteAlias` removes the alias, and
-    /// both are still 501, so today only `CreateAlias` writes here and it always
-    /// stores a bound alias — the operation's own documentation says an alias cannot
-    /// be created without a key.
+    /// `UpdateAlias` rebinds or clears one and is still 501, so `CreateAlias` — which
+    /// always stores a bound alias, because the operation's own documentation says an
+    /// alias cannot be created without a key — is today the only writer that adds an
+    /// entry. `DeleteAlias` removes one: an entry is present exactly while the alias
+    /// exists, so a name's PRESENCE here is what `CreateAlias` refuses a duplicate of
+    /// and what `GetAlias` and `ListAliases` report.
     pub aliases: BTreeMap<String, Option<String>>,
     /// The account's default key replication regions: the regions a key created
     /// without a replication configuration of its own is replicated to.

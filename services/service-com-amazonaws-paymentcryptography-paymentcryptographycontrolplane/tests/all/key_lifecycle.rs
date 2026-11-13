@@ -697,18 +697,30 @@ async fn an_alias_binds_a_key_and_resolves_in_every_identifier_form() {
             );
         }
 
-        // `CreateAlias` is `@idempotent`: a byte-identical retry answers the stored
-        // binding rather than failing, and the binding is unchanged.
-        let retried = ok_call(
+        // An alias name is unique in the account and region, so the repeat of even
+        // the byte-identical create is refused: the name is taken, and nothing about
+        // the stored binding changes.
+        let (status, parsed) = call(
             &router,
             "CreateAlias",
             &json!({"AliasName": name, "KeyArn": arn}),
         )
         .await;
         assert_eq!(
-            retried.get("Alias"),
+            status, 409,
+            "case {name}: re-creating a stored alias name must conflict, got {status} \
+             {parsed}"
+        );
+        assert_eq!(
+            error_code(&parsed),
+            "ConflictException",
+            "case {name}: expected ConflictException, got {parsed}"
+        );
+        let after_retry = ok_call(&router, "GetAlias", &json!({"AliasName": name})).await;
+        assert_eq!(
+            after_retry.get("Alias"),
             Some(alias),
-            "case {name}: a repeated CreateAlias must answer the stored binding"
+            "case {name}: a refused repeat must leave the stored binding alone"
         );
 
         // Rebinding the same name to a different key is the inconsistent state
