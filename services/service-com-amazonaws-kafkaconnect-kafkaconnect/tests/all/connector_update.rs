@@ -918,52 +918,45 @@ async fn an_update_that_names_no_single_valid_setting_is_refused_with_nothing_st
         );
     }
 
-    // A version that is not the connector's own, whatever form it takes.
-    for stale in ["9", "", "1.0", "0"] {
+    // A version that is not the connector's own, whatever form it takes, and an ARN this
+    // emulator holds no connector at: both are the one gate this operation decides before
+    // it resolves the connector, so both carry the same refusal.
+    //
+    // `update_connector_version_gate.rs` is where that rule is spanned; these rows keep
+    // the refusal beside the stored-nothing assertions of this suite.
+    let unheld = format!(
+        "arn:aws:kafkaconnect:{REGION}:{ACCOUNT}:connector/ghost/00000000-0000-0000-0000-000000000000"
+    );
+    let version_rows: Vec<(String, &str, &str)> = vec![
+        ("a version the connector has moved past".to_string(), connector_arn.as_str(), "9"),
+        ("an empty version".to_string(), connector_arn.as_str(), ""),
+        ("a version in another form".to_string(), connector_arn.as_str(), "1.0"),
+        ("the version before the first".to_string(), connector_arn.as_str(), "0"),
+        ("an ARN no connector carries".to_string(), unheld.as_str(), "1"),
+    ];
+    for (case, arn, named) in &version_rows {
         let (status, refused) = update(
             &emulator,
-            &connector_arn,
-            stale,
+            arn,
+            named,
             json!({"connectorConfiguration": {"tasks.max": "5"}}),
         )
         .await;
         assert_eq!(
             status, 400,
-            "case {stale:?}: a currentVersion that is not the connector's is a 400, got \
-             {status} {refused}"
+            "case {case:?}: a currentVersion that is not a connector's current version is \
+             a 400, got {status} {refused}"
+        );
+        assert!(
+            error_code(&refused).contains("BadRequestException"),
+            "case {case:?}: expected BadRequestException, got {refused}"
         );
         assert_eq!(
             text(&refused, "message"),
-            "Invalid parameter currentVersion: The specified version is not the current \
-             version of the resource.",
-            "case {stale:?}: the refusal must name the member it refused, got {refused}"
+            "Invalid parameter currentVersion.",
+            "case {case:?}: the refusal must name the member it refused, got {refused}"
         );
     }
-
-    // An ARN this emulator holds no connector at.
-    let unheld = format!(
-        "arn:aws:kafkaconnect:{REGION}:{ACCOUNT}:connector/ghost/00000000-0000-0000-0000-000000000000"
-    );
-    let (status, refused) = update(
-        &emulator,
-        &unheld,
-        "1",
-        json!({"connectorConfiguration": {"tasks.max": "5"}}),
-    )
-    .await;
-    assert_eq!(
-        status, 404,
-        "an ARN no connector carries is a 404, got {status} {refused}"
-    );
-    assert!(
-        error_code(&refused).contains("NotFoundException"),
-        "an ARN no connector carries is a NotFoundException, got {refused}"
-    );
-    assert_eq!(
-        text(&refused, "message"),
-        "Invalid parameter connectorArn: The requested resource doesn\u{2019}t exist.",
-        "the refusal must name the member it could not resolve, got {refused}"
-    );
 
     // And a connector that is not running: one still updating, and one still being
     // created. Both are refused on the connector, with no second operation recorded.

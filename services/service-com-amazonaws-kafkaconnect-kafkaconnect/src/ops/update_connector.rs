@@ -12,8 +12,10 @@
 //! forms, or capacity counts the members' documentation does not admit (an `mcuCount`
 //! outside the documented value set, auto-scaling worker and task counts that do not
 //! bound each other) is a `BadRequestException`, as is a `currentVersion` that is not the
-//! connector's, a connector that is not `RUNNING`, or a `connectorArn` that is not a
-//! well-formed ARN of this service.
+//! current version of a connector this region holds — the gate the operation decides
+//! before it resolves the connector, so a well-formed `connectorArn` naming no connector
+//! is refused on `currentVersion` too — a connector that is not `RUNNING`, or a
+//! `connectorArn` that is not a well-formed ARN of this service.
 //!
 //! ## Shape of an operation
 //!
@@ -237,32 +239,29 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             }
         };
 
+        // "The current version of the connector that you want to update": the
+        // version a client holds is the one the service handed it for a
+        // connector this service holds, so this operation's `@required`
+        // `currentVersion` is judged BEFORE the connector is resolved and is
+        // what the refusal blames — whether the version has moved on or the
+        // endpoint's region holds no connector at that ARN at all, the value
+        // the request carried is not a current version here. Nothing is left
+        // for the lookup to answer with, so the connector falls out of the one
+        // gate that decided it, and the refusal carries the service's
+        // no-reason parameter form.
+        //
         // A regional endpoint acts only on its own region's connectors, so a
-        // connectorArn minted in another region updates nothing and is answered
-        // exactly as an ARN this service never minted.
-        let Some(connector) = state.connector_in(&region, &input.connector_arn) else {
-            return Err(UpdateConnectorErrorModeled::NotFoundException(NotFoundException {
-                message: Some(crate::state::invalid_parameter_because(
-                    "connectorArn",
-                    crate::state::RESOURCE_DOES_NOT_EXIST,
-                )),
+        // connectorArn minted in another region names no connector to be at a
+        // version, exactly as an ARN this service never minted.
+        let Some(connector) = state
+            .connector_in(&region, &input.connector_arn)
+            .filter(|connector| connector.current_version == input.current_version)
+        else {
+            return Err(UpdateConnectorErrorModeled::BadRequestException(BadRequestException {
+                message: Some(crate::state::invalid_parameter("currentVersion")),
             })
             .into());
         };
-
-        // "The current version of the connector that you want to update": the
-        // version a client holds is the one the service handed it, so a value
-        // that is not the connector's own names settings it has moved on from
-        // and the update is refused rather than applied to the wrong ones.
-        if input.current_version != connector.current_version {
-            return Err(UpdateConnectorErrorModeled::BadRequestException(BadRequestException {
-                message: Some(crate::state::invalid_parameter_because(
-                    "currentVersion",
-                    crate::state::VERSION_IS_NOT_CURRENT,
-                )),
-            })
-            .into());
-        }
 
         // Only a running connector has workers to move onto new settings; one
         // still being created, already updating or restarting, or being

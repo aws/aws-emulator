@@ -69,6 +69,8 @@ mod state_roundtrip;
 mod tag_length_bounds;
 #[path = "all/tag_rules.rs"]
 mod tag_rules;
+#[path = "all/update_connector_version_gate.rs"]
+mod update_connector_version_gate;
 #[path = "all/validation_messages.rs"]
 mod validation_messages;
 #[path = "all/worker_configuration_create_and_describe.rs"]

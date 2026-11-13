@@ -9,9 +9,11 @@
 //! `BadRequestException` (HTTP 400) blaming that member with the service's `Invalid ARN.`
 //! reason. A WELL-FORMED ARN the account holds no resource at is a different answer: the
 //! resource is absent, so that one stays the modelled `NotFoundException` (HTTP 404) with
-//! the service's `The requested resource doesn't exist.` reason. Both errors are declared
-//! for every one of these operations, and each label is an `@httpLabel __string` with no
-//! `@pattern`, so the handler is the only place the distinction can be drawn.
+//! the service's `The requested resource doesn't exist.` reason — except where an earlier
+//! gate of the operation has already decided the request, which is `UpdateConnector` and
+//! its `@required` `currentVersion`. Both errors are declared for every one of these
+//! operations, and each label is an `@httpLabel __string` with no `@pattern`, so the
+//! handler is the only place the distinction can be drawn.
 //!
 //! The tables span what the rule generalises over:
 //!
@@ -393,6 +395,13 @@ async fn a_well_formed_arn_the_store_does_not_hold_stays_the_modelled_not_found(
     // The contrast the rule turns on: the SAME routes, given a well-formed kafkaconnect
     // ARN of the kind each one addresses, answer that the resource is absent.
     for route in routes() {
+        // `UpdateConnector` is the one route that answers an unheld ARN with something
+        // else, because its `@required` `currentVersion` is judged BEFORE the connector is
+        // resolved: no connector that endpoint holds is at the version the request named,
+        // so that member is what the refusal blames. Asserted right after this table.
+        if route.operation == "UpdateConnector" {
+            continue;
+        }
         let arn = unheld_arn(route.kind);
         let case = format!("{} on an unheld {} ARN", route.operation, route.kind);
         let (status, answered) =
@@ -412,6 +421,32 @@ async fn a_well_formed_arn_the_store_does_not_hold_stays_the_modelled_not_found(
             "case {case:?}: expected the message {expected:?}, got {actual:?}"
         );
     }
+
+    // And the one route whose earlier gate has already decided the request: the version
+    // it names is not the current version of any connector this endpoint holds, so it is
+    // the modelled 400 on that member and the connector is never resolved.
+    let update = routes()
+        .into_iter()
+        .find(|route| route.operation == "UpdateConnector")
+        .expect("the surface binds UpdateConnector");
+    let arn = unheld_arn(update.kind);
+    let (status, answered) = call(&emulator, update.method, &update.uri(&arn), update.body()).await;
+    assert_eq!(
+        status, 400,
+        "case \"UpdateConnector on an unheld connector ARN\": expected HTTP 400, got {status} \
+         {answered}"
+    );
+    assert!(
+        error_code(&answered).contains("BadRequestException"),
+        "case \"UpdateConnector on an unheld connector ARN\": expected BadRequestException, got \
+         {answered}"
+    );
+    let actual = message(&answered);
+    assert_eq!(
+        actual, "Invalid parameter currentVersion.",
+        "case \"UpdateConnector on an unheld connector ARN\": expected the refusal of the version \
+         the request named, got {actual:?}"
+    );
 }
 
 #[tokio::test]

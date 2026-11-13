@@ -387,6 +387,37 @@ async fn every_parameter_rejection_names_the_parameter_it_refused() {
     }
 }
 
+/// Look again until `plugin_arn` reads back ACTIVE — the state a connector may reference
+/// it in — or a generous deadline passes. Only the clock moves a plugin there, so the wait
+/// is for that condition and not for a span of time.
+async fn poll_until_plugin_active(emulator: &MultiServiceRouter, plugin_arn: &str) {
+    // A multiple of the service's own transition span, so this cannot drift from it, and
+    // far longer than one transition needs; nothing is asserted about how long it takes.
+    let deadline = service_com_amazonaws_kafkaconnect_kafkaconnect::state::TRANSITION_SPAN * 60;
+    let started = std::time::Instant::now();
+    loop {
+        let (status, described) = call(
+            emulator,
+            "GET",
+            &format!("/v1/custom-plugins/{}", label(plugin_arn)),
+            Value::Null,
+        )
+        .await;
+        assert_eq!(
+            status, 200,
+            "DescribeCustomPlugin must succeed, got {status} {described}"
+        );
+        if described["customPluginState"].as_str() == Some("ACTIVE") {
+            return;
+        }
+        assert!(
+            started.elapsed() < deadline,
+            "the plugin must become ACTIVE, last read {described}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+}
+
 #[tokio::test]
 async fn a_rejection_against_stored_state_names_its_parameter_too() {
     let emulator = emulator();
@@ -411,13 +442,10 @@ async fn a_rejection_against_stored_state_names_its_parameter_too() {
         "customPluginArn",
     );
 
-    // Past the transition the plugin is ACTIVE, so the rows below are refused on the
-    // member each one names rather than on the plugin's state.
-    tokio::time::sleep(
-        service_com_amazonaws_kafkaconnect_kafkaconnect::state::TRANSITION_SPAN
-            + std::time::Duration::from_millis(400),
-    )
-    .await;
+    // Once the plugin is ACTIVE the rows below are refused on the member each one names
+    // rather than on the plugin's state. Only the clock moves it there, so this looks
+    // again until a read reports it rather than waiting a span of time.
+    poll_until_plugin_active(&emulator, &plugin).await;
 
     // A revision the stored plugin does not have: the member that could not be resolved
     // is `revision`, not the ARN, which did resolve.
@@ -466,10 +494,11 @@ async fn a_rejection_against_stored_state_names_its_parameter_too() {
             "case {stale:?}: a currentVersion that is not the connector's is a 400, got \
              {status} {answered}"
         );
-        assert_names_member_with_a_reason(
+        assert_names_member(
             &format!("the stale currentVersion {stale:?}"),
             &answered,
             "currentVersion",
+            None,
         );
     }
 }

@@ -202,10 +202,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         if let Some(named) = &input.current_version {
             if named != &connector.current_version {
                 return Err(DeleteConnectorErrorModeled::BadRequestException(BadRequestException {
-                    message: Some(crate::state::invalid_parameter_because(
-                        "currentVersion",
-                        crate::state::VERSION_IS_NOT_CURRENT,
-                    )),
+                    // The one form this service words a `currentVersion` it does
+                    // not recognise in: the no-reason parameter message naming
+                    // the member that carried it.
+                    message: Some(crate::state::invalid_parameter("currentVersion")),
                 })
                 .into());
             }

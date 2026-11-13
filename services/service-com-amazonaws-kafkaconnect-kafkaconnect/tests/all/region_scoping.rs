@@ -514,7 +514,10 @@ async fn an_arn_is_resolved_only_through_the_endpoint_of_its_own_region() {
     let capacity = json!({"capacity": {"provisionedCapacity": {"mcuCount": 2, "workerCount": 2}}});
 
     // Every by-ARN route of the surface, read and write: through a FOREIGN Region's endpoint
-    // each is the modelled 404, exactly as an ARN this service never minted.
+    // each is the modelled 404, exactly as an ARN this service never minted. `UpdateConnector`
+    // is the one exception and is checked below it: it decides its `@required`
+    // `currentVersion` before it resolves the connector, so a foreign Region's endpoint
+    // refuses it on that member instead — still without resolving the connector.
     let routes: Vec<(&str, &str, String, Value)> = vec![
         ("DescribeConnector", "GET", format!("/v1/connectors/{connector}"), Value::Null),
         (
@@ -528,12 +531,6 @@ async fn an_arn_is_resolved_only_through_the_endpoint_of_its_own_region() {
             "POST",
             format!("/v1/connectors/{connector}/restart"),
             Value::Null,
-        ),
-        (
-            "UpdateConnector",
-            "PUT",
-            format!("/v1/connectors/{connector}?currentVersion=1"),
-            capacity,
         ),
         ("DeleteConnector", "DELETE", format!("/v1/connectors/{connector}"), Value::Null),
         (
@@ -595,6 +592,36 @@ async fn an_arn_is_resolved_only_through_the_endpoint_of_its_own_region() {
                 "case ({foreign}, {operation_name}): expected NotFoundException, got {answered}"
             );
         }
+    }
+
+    // `UpdateConnector` through a foreign Region's endpoint: the connector is no more
+    // resolvable there than for an ARN this service never minted, and the version the
+    // request named is not the current version of any connector that endpoint holds, so
+    // the refusal is that member's — the modelled 400 — and nothing is updated.
+    for foreign in REGIONS.iter().filter(|region| **region != home) {
+        let (status, answered) = call(
+            &emulator,
+            foreign,
+            "PUT",
+            &format!("/v1/connectors/{connector}?currentVersion=1"),
+            capacity.clone(),
+        )
+        .await;
+        assert_eq!(
+            status, 400,
+            "case ({foreign}, UpdateConnector): an ARN of {home} must not resolve through \
+             another Region's endpoint, got {status} {answered}"
+        );
+        assert!(
+            error_code(&answered).contains("BadRequestException"),
+            "case ({foreign}, UpdateConnector): expected BadRequestException, got {answered}"
+        );
+        assert_eq!(
+            text(&answered, "message"),
+            "Invalid parameter currentVersion.",
+            "case ({foreign}, UpdateConnector): expected the refusal of the version the \
+             request named, got {answered}"
+        );
     }
 
     // None of those refusals wrote anything: the home Region's resources read back exactly as

@@ -2148,11 +2148,6 @@ pub const RESOURCE_DOES_NOT_EXIST: &str = "The requested resource doesn\u{2019}t
 /// with.
 pub const INVALID_ARN: &str = "Invalid ARN.";
 
-/// The reason a call that names a version other than the resource's own is
-/// refused with. The version a client holds is the one the service handed it,
-/// so a different one names settings the resource has moved on from.
-pub const VERSION_IS_NOT_CURRENT: &str = "The specified version is not the current version of the resource.";
-
 /// The reason a capacity naming both of its forms, or neither, is refused with.
 /// `Capacity` models `autoScaling` and `provisionedCapacity` as two optional
 /// members of which a connector has exactly one — "whether it is auto scaled or
@@ -2190,6 +2185,11 @@ pub const NAME_ALREADY_EXISTS: &str = "A resource with this name already exists.
 
 /// The message for a rejection of the member `member`, with no further reason:
 /// `Invalid parameter <member>.`
+///
+/// The form this service's own recorded rejections of a value it simply does
+/// not accept carry (`Invalid parameter nextToken.`,
+/// `Invalid parameter currentVersion.`): the member name is the only variable
+/// part, and no value of the request or of the store is interpolated.
 pub fn invalid_parameter(member: &str) -> String {
     format!("{INVALID_PARAMETER} {member}.")
 }

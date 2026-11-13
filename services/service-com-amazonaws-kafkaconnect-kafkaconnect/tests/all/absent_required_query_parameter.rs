@@ -395,9 +395,9 @@ async fn an_absent_required_query_member_is_the_modelled_bad_request_naming_it()
     }
 
     // The member PRESENT but carrying a value the operation refuses is the OPERATION's
-    // own refusal, named in this service's `Invalid parameter <member>: <reason>` form —
-    // so the route really matched and the handler really ran, rather than the request
-    // being refused for being unroutable.
+    // own refusal, named in this service's parameter-rejection form — so the route really
+    // matched and the handler really ran, rather than the request being refused for being
+    // unroutable.
     for stale in ["", "9", "1.0"] {
         let (status, answered) = call(
             &emulator,
@@ -416,8 +416,8 @@ async fn an_absent_required_query_member_is_the_modelled_bad_request_naming_it()
              {status} {answered}"
         );
         let message = text(&answered, "message");
-        assert!(
-            message.starts_with("Invalid parameter currentVersion: "),
+        assert_eq!(
+            message, "Invalid parameter currentVersion.",
             "case {stale:?}: expected the operation's own refusal of the value, got {message:?}"
         );
     }
