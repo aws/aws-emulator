@@ -56,7 +56,7 @@ const UNHELD_VERSION_TOKEN: &str = "E1ABCDEFGHIJKL";
 
 /// A viewer-request event object, in the shape CloudFront documents for one: the version, the
 /// context, the viewer and the `request` the function may modify.
-const VIEWER_REQUEST_EVENT: &str = r#"{"version":"1.0",
+pub(crate) const VIEWER_REQUEST_EVENT: &str = r#"{"version":"1.0",
      "context":{"distributionDomainName":"d111111abcdef8.cloudfront.net",
      "distributionId":"EDFDVBD6EXAMPLE","eventType":"viewer-request","requestId":"r-1"},
      "viewer":{"ip":"198.51.100.11"},
@@ -65,7 +65,7 @@ const VIEWER_REQUEST_EVENT: &str = r#"{"version":"1.0",
 
 /// A viewer-response event object, the other half of the pair: it carries a `response` rather
 /// than a request, so a function handed one works on the response.
-const VIEWER_RESPONSE_EVENT: &str = r#"{"version":"1.0",
+pub(crate) const VIEWER_RESPONSE_EVENT: &str = r#"{"version":"1.0",
      "context":{"distributionDomainName":"d111111abcdef8.cloudfront.net",
      "distributionId":"EDFDVBD6EXAMPLE","eventType":"viewer-response","requestId":"r-2"},
      "viewer":{"ip":"198.51.100.11"},
@@ -81,7 +81,7 @@ const VIEWER_RESPONSE_EVENT: &str = r#"{"version":"1.0",
 /// `POST /2020-05-31/function/{Name}/test`, carrying the event object as the base64 blob
 /// member a restXml request puts it in, the stage when the request names one, and `if_match`
 /// as the `If-Match` header the operation binds its required `IfMatch` member to.
-async fn test_function(
+pub(crate) async fn test_function(
     router: &MultiServiceRouter,
     name: &str,
     stage: Option<&str>,

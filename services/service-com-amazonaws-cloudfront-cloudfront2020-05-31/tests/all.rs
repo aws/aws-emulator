@@ -169,6 +169,8 @@ mod function_lifecycle;
 mod function_list;
 #[path = "all/function_publish.rs"]
 mod function_publish;
+#[path = "all/function_test_not_found_message.rs"]
+mod function_test_not_found_message;
 #[path = "all/function_test_run.rs"]
 mod function_test_run;
 #[path = "all/function_update.rs"]
