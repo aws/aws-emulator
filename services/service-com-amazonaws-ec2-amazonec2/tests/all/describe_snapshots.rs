@@ -8,8 +8,8 @@
 //! 1. EVERY SNAPSHOT THE ACCOUNT HOLDS IS REPORTED AS THE STORE HOLDS IT, each member read
 //!    off the stored snapshot (its id, its source volume and that volume's size and
 //!    encryption state, the description and tags its create asked for, its owner and its
-//!    storage tier) — and an account holding none is reported as holding none rather than
-//!    refused;
+//!    storage tier) — and an account that created none is reported as holding none rather
+//!    than refused;
 //! 2. EACH NARROWING SELECTS EXACTLY THE SNAPSHOTS WHOSE ATTRIBUTE IT NAMES: `SnapshotIds`,
 //!    `OwnerIds`, `RestorableByUserIds` and every documented filter, the values of one
 //!    filter joined with an OR and the filters with an AND, an attribute no stored snapshot
@@ -29,7 +29,9 @@
 //! narrows, which attribute, which value form, how many values, which page size, which
 //! refusal — so no row is the specification. The snapshots the rows read are made through
 //! `CreateSnapshots`, the writer of this crate's snapshot store, so the report is read back
-//! over the wire from state a wire call wrote.
+//! over the wire from state a wire call wrote. Each row narrows to the snapshots the account
+//! itself owns ([`the_accounts_own`]): the inventory also carries the PUBLIC snapshots of the
+//! published AMI catalogue, which [`super::describe_snapshots_public_catalogue`] covers.
 
 use std::collections::BTreeMap;
 
@@ -88,8 +90,11 @@ fn emulator() -> (MultiServiceRouter, std::sync::Arc<engine::InMemoryEngine>) {
 
 /// One snapshot a `DescribeSnapshots` answer reported: its direct members as the text the
 /// response carried for each, and its tags as the pairs they were reported in.
+///
+/// Shared with the suite that covers the PUBLIC half of the same inventory
+/// ([`super::describe_snapshots_public_catalogue`]), so a reported snapshot is read one way.
 #[derive(Debug, Clone, Default)]
-struct ReportedSnapshot {
+pub(super) struct ReportedSnapshot {
     members: BTreeMap<String, String>,
     tags: Vec<(String, String)>,
 }
@@ -98,7 +103,7 @@ impl ReportedSnapshot {
     /// The text of the member `name`, or the empty string when the response reported none —
     /// an element present and empty reads as the empty string, which is what
     /// [`SNAPSHOT_PROGRESS_PENDING`] is.
-    fn member(&self, name: &str) -> &str {
+    pub(super) fn member(&self, name: &str) -> &str {
         self.members.get(name).map_or("", String::as_str)
     }
 
@@ -112,7 +117,7 @@ impl ReportedSnapshot {
 }
 
 /// Every snapshot a `DescribeSnapshots` answer reported, in the order it reported them.
-fn described_snapshots(case: &str, body: &str) -> Vec<ReportedSnapshot> {
+pub(super) fn described_snapshots(case: &str, body: &str) -> Vec<ReportedSnapshot> {
     let document = super::wire::document(case, body);
     let mut snapshots = Vec::new();
     for item in super::wire::set_items(document.root_element(), "snapshotSet") {
@@ -331,6 +336,29 @@ fn every_id(seeded: &[Seeded]) -> Vec<String> {
     ids_at(seeded, &(0..seeded.len()).collect::<Vec<usize>>())
 }
 
+/// `params` narrowed to the snapshots the ACCOUNT ITSELF owns.
+///
+/// The inventory this operation reports is wider than the snapshots the account created: it
+/// also carries the PUBLIC ones the published AMI catalogue restores its root devices from
+/// ("the snapshots available to you include public snapshots", covered by
+/// [`super::describe_snapshots_public_catalogue`]). A row of this suite is about the snapshots
+/// it seeded, so it says so with the `owner-id` filter, which EC2 joins to the row's own
+/// narrowing with an AND — the filter rather than `OwnerIds`, whose values are joined with an
+/// OR, so a row that narrows by owner itself keeps its meaning.
+pub(super) fn the_accounts_own(params: &[(String, String)]) -> Params {
+    let next = 1 + params
+        .iter()
+        .filter(|(name, _)| name.starts_with("Filter.") && name.ends_with(".Name"))
+        .count();
+    let mut narrowed = params.to_vec();
+    narrowed.push(p(&format!("Filter.{next}.Name"), "owner-id"));
+    narrowed.push(p(
+        &format!("Filter.{next}.Value.1"),
+        engine::emulator_account_id(),
+    ));
+    narrowed
+}
+
 /// RULE 1: the report carries every snapshot the account holds, each member read off the
 /// stored snapshot; an account holding none is reported as holding none.
 #[tokio::test]
@@ -338,18 +366,18 @@ async fn the_report_carries_every_stored_snapshot_as_the_store_holds_it() {
     let (router, engine) = emulator();
     let account = engine::emulator_account_id();
 
-    let (status, body) = describe(&router, &[]).await;
+    let (status, body) = describe(&router, &the_accounts_own(&[])).await;
     assert_eq!(
         status, 200,
         "a fresh account: expected HTTP 200, got {status} with body {body}"
     );
     assert!(
         described_snapshots("a fresh account", &body).is_empty(),
-        "a fresh account holds no snapshot, got {body}"
+        "a fresh account holds no snapshot of its own, got {body}"
     );
 
     let seeded = seed_all(&router, &engine).await;
-    let (status, body) = describe(&router, &[]).await;
+    let (status, body) = describe(&router, &the_accounts_own(&[])).await;
     assert_eq!(
         status, 200,
         "every snapshot of the account: expected HTTP 200, got {status} with body {body}"
@@ -417,7 +445,7 @@ async fn the_report_carries_every_stored_snapshot_as_the_store_holds_it() {
 
     // A read changes nothing a later caller sees: the next report is the same report.
     assert_eq!(
-        described_ids(&router, "a second read", &[]).await,
+        described_ids(&router, "a second read", &the_accounts_own(&[])).await,
         reported_ids,
         "a second read reports the same snapshots"
     );
@@ -438,7 +466,7 @@ async fn every_documented_narrowing_selects_exactly_what_it_names() {
     // The `start-time` filter compares against the timestamp the report carries, so this
     // row's expectation is READ OFF that report rather than written by hand: the rule is
     // that a filter value is compared against the rendering the caller was shown.
-    let (_, body) = describe(&router, &[]).await;
+    let (_, body) = describe(&router, &the_accounts_own(&[])).await;
     let for_start_times = described_snapshots("reading the reported start times", &body);
     let probe_start = for_start_times
         .first()
@@ -556,9 +584,9 @@ async fn every_documented_narrowing_selects_exactly_what_it_names() {
             Vec::new(),
         ),
         (
-            "the transfer-type filter: none of these is a copy",
+            "the transfer-type filter: every snapshot is the standard transfer",
             filters(&[("transfer-type", &["standard"])]),
-            Vec::new(),
+            all.clone(),
         ),
         (
             "the start-time filter, against the instant the report carries",
@@ -620,18 +648,37 @@ async fn every_documented_narrowing_selects_exactly_what_it_names() {
             indexed("RestorableBy", &["self"]),
             all.clone(),
         ),
-        (
-            "RestorableByUserIds all: none of these is public",
-            indexed("RestorableBy", &["all"]),
-            Vec::new(),
-        ),
     ];
 
     for (case, params, expected) in rows {
         assert_eq!(
-            described_ids(&router, case, &params).await,
+            described_ids(&router, case, &the_accounts_own(&params)).await,
             expected,
             "case {case:?}: expected the snapshots {expected:?}"
+        );
+    }
+
+    // `RestorableByUserIds` `all` selects the PUBLIC snapshots of the inventory ("all for
+    // public snapshots"), so it reports some — the sibling suite asserts which — and none of
+    // the ones this suite seeded is among them: a snapshot of the account carries no create
+    // volume permission for the all group. Read UNNARROWED, so the rule rather than the
+    // narrowing decides what the row sees.
+    let public = described_ids(
+        &router,
+        "RestorableByUserIds all",
+        &indexed("RestorableBy", &["all"]),
+    )
+    .await;
+    assert!(
+        !public.is_empty(),
+        "case \"RestorableByUserIds all\": the public snapshots of the inventory are \
+         restorable by every account, got none"
+    );
+    for seeded_id in &all {
+        assert!(
+            !public.contains(seeded_id),
+            "case \"RestorableByUserIds all\": {seeded_id} is the account's own, so it is not \
+             public, got {public:?}"
         );
     }
 }
@@ -669,7 +716,7 @@ async fn max_results_pages_the_report_in_snapshot_id_order() {
         // One more page than the set could need, so a token that never clears fails here
         // rather than spinning.
         for _ in 0..expected.len() + 2 {
-            let mut params = narrowing.clone();
+            let mut params = the_accounts_own(&narrowing);
             params.push(p("MaxResults", page_size.to_string()));
             if let Some(token) = token.as_deref() {
                 params.push(p("NextToken", token));
@@ -723,7 +770,7 @@ async fn a_request_that_cannot_be_served_is_refused_with_ec2s_own_code() {
             "a value that is not a snapshot id at all",
             indexed("SnapshotId", &["not-a-snapshot"]),
             400,
-            "InvalidSnapshotID.Malformed",
+            "InvalidParameterValue",
         ),
         (
             "the all-zero placeholder id",
@@ -824,7 +871,7 @@ async fn a_request_that_cannot_be_served_is_refused_with_ec2s_own_code() {
 
     // Nothing a refusal touched: the account still holds exactly the seeded snapshots.
     assert_eq!(
-        described_ids(&router, "after every refusal", &[]).await,
+        described_ids(&router, "after every refusal", &the_accounts_own(&[])).await,
         all,
         "a refused read leaves the store as it was"
     );
@@ -838,7 +885,7 @@ async fn the_clock_moves_a_reported_snapshot_from_pending_to_completed() {
     let (router, engine) = emulator();
     let seeded = seed_snapshot(&router, &engine, &SEEDS[0]).await;
 
-    let (status, body) = describe(&router, &[]).await;
+    let (status, body) = describe(&router, &the_accounts_own(&[])).await;
     assert_eq!(
         status, 200,
         "the snapshot just created: expected HTTP 200, got {status} with body {body}"
@@ -861,7 +908,7 @@ async fn the_clock_moves_a_reported_snapshot_from_pending_to_completed() {
     );
 
     // Reading it again does not move it: the move is the clock's, not the read's.
-    let (_, again) = describe(&router, &[]).await;
+    let (_, again) = describe(&router, &the_accounts_own(&[])).await;
     let still = described_snapshots("a second read before the span", &again);
     assert_eq!(
         still[0].member("status"),

@@ -634,9 +634,9 @@ async fn every_narrowing_selects_the_direct_api_snapshots_whose_attribute_it_nam
             Vec::new(),
         ),
         (
-            "the transfer-type filter, which only a copy carries",
+            "the transfer-type filter: every snapshot is the standard transfer",
             filters(&[("transfer-type", &["standard"])]),
-            Vec::new(),
+            both.clone(),
         ),
         (
             "two filters, which are joined with an AND",
@@ -649,7 +649,11 @@ async fn every_narrowing_selects_the_direct_api_snapshots_whose_attribute_it_nam
     ];
 
     for (case, params, expected) in rows {
-        let reported = described_ids(&router, case, &params).await;
+        // Narrowed to the snapshots the ACCOUNT owns: the inventory also carries the public
+        // snapshots of the published AMI catalogue, which is the sibling suite's subject
+        // ([`super::describe_snapshots_public_catalogue`]).
+        let narrowed = super::describe_snapshots::the_accounts_own(&params);
+        let reported = described_ids(&router, case, &narrowed).await;
         assert_eq!(
             reported, expected,
             "case {case:?}: expected {expected:?} in SnapshotId order, got {reported:?}"
@@ -693,7 +697,12 @@ async fn one_report_carries_both_this_services_own_snapshots_and_the_direct_api_
 
     let mut expected = vec![own.clone(), direct.clone()];
     expected.sort();
-    let reported = described_ids(&router, "both sides at once", &[]).await;
+    let reported = described_ids(
+        &router,
+        "both sides at once",
+        &super::describe_snapshots::the_accounts_own(&[]),
+    )
+    .await;
     assert_eq!(
         reported, expected,
         "case both sides at once: expected {expected:?} in SnapshotId order, got {reported:?}"
@@ -701,7 +710,8 @@ async fn one_report_carries_both_this_services_own_snapshots_and_the_direct_api_
 
     // A page of one walks the merged sequence, each snapshot once.
     let mut walked: Vec<String> = Vec::new();
-    let mut params: Params = vec![p("MaxResults", "1")];
+    let mut params: Params =
+        super::describe_snapshots::the_accounts_own(&[p("MaxResults", "1")]);
     loop {
         let (status, body) = describe(&router, &params).await;
         assert_eq!(
@@ -716,7 +726,10 @@ async fn one_report_carries_both_this_services_own_snapshots_and_the_direct_api_
         walked.extend(page.iter().map(|snapshot| snapshot.member("snapshotId").to_string()));
         match super::ec2_query::member(&body, "nextToken") {
             Some(token) if !token.is_empty() => {
-                params = vec![p("MaxResults", "1"), p("NextToken", token)];
+                params = super::describe_snapshots::the_accounts_own(&[
+                    p("MaxResults", "1"),
+                    p("NextToken", token),
+                ]);
             }
             _ => break,
         }
@@ -819,7 +832,7 @@ async fn the_other_ec2_snapshot_readers_resolve_a_direct_api_snapshot_and_still_
             "a value that is not a snapshot id at all",
             "DescribeSnapshots",
             indexed("SnapshotId", &["not-a-snapshot"]),
-            "InvalidSnapshotID.Malformed",
+            "InvalidParameterValue",
         ),
         (
             // `CopySnapshot` answers a source it cannot resolve with its own recorded

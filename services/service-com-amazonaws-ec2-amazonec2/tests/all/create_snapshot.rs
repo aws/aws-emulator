@@ -186,7 +186,7 @@ async fn a_snapshot_reports_the_volume_it_was_taken_of() {
             &router,
             "DescribeSnapshots",
             &[
-                p("OwnerId.1", "self"),
+                p("Owner.1", "self"),
                 p("Filter.1.Name", "volume-id"),
                 p("Filter.1.Value.1", &volume_id),
             ],
@@ -260,7 +260,7 @@ async fn a_volume_id_this_operation_cannot_resolve_gets_one_answer() {
 
     // Nothing was stored for any of them, and the volume the account holds is still
     // snapshottable — so the rows above were refused for the ids they named.
-    let (status, listed) = op(&router, "DescribeSnapshots", &[p("OwnerId.1", "self")]).await;
+    let (status, listed) = op(&router, "DescribeSnapshots", &[p("Owner.1", "self")]).await;
     assert_eq!(
         status, 200,
         "expected DescribeSnapshots to succeed, got {status} {listed}"
@@ -348,7 +348,7 @@ async fn a_request_that_cannot_be_served_is_refused_and_stores_nothing() {
         );
         // Nothing was stored for any of them: the listing of the account's snapshots is
         // still empty.
-        let (status, listed) = op(&router, "DescribeSnapshots", &[p("OwnerId.1", "self")]).await;
+        let (status, listed) = op(&router, "DescribeSnapshots", &[p("Owner.1", "self")]).await;
         assert_eq!(
             status, 200,
             "case {case:?}: expected DescribeSnapshots to succeed, got {status} {listed}"

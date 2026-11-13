@@ -449,13 +449,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     // The members a snapshot of this kind carries nothing for: the owner
                     // alias names an Amazon-published snapshot, the Outpost ARN one stored
                     // on an Outpost (refused above), the restore expiry a temporarily
-                    // restored archived snapshot, the transfer type and completion duration
-                    // a snapshot COPY ("Only for snapshot copies"), the state message a
+                    // restored archived snapshot, the completion duration a TIME-BASED copy,
+                    // the state message a
                     // failed asynchronous copy, the data encryption key id a member
                     // "only returned by DescribeSnapshots", and the Availability Zone a
                     // LOCAL snapshot ("the Availability Zone or Local Zone of the
                     // snapshots") rather than a regional one. `SseType` is "reserved for
-                    // future use".
+                    // future use", and the transfer type is the standard one the store
+                    // writes for a snapshot no caller asked a completion duration for.
                     owner_alias: None,
                     outpost_arn: None,
                     restore_expiry_time: None,
@@ -465,8 +466,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     completion_duration_minutes: None,
                     state_message: None,
                     data_encryption_key_id: None,
-                    // Nothing in this emulator writes blocks to a volume, so there is no
-                    // full snapshot size measured for one.
+                    // Derived by the store from the source volume's size: the member
+                    // measures the blocks that volume held when the snapshot was created, so
+                    // it is settled as the snapshot starts
+                    // ([`crate::state::SnapshotRecord::view_at`]).
                     full_snapshot_size_in_bytes: None,
                     // Minted, stamped and derived by the store: the id, the start time, and
                     // the state, progress and completion time the clock decides.

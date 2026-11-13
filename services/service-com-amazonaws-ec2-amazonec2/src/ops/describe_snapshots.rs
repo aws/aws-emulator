@@ -1,10 +1,19 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op DescribeSnapshots
-//! IMPLEMENTED: reports every EBS snapshot the account holds — the ones `crate::state` holds
-//! and the ones the EBS direct APIs hold — narrowed by `SnapshotIds`, `OwnerIds`,
+//! IMPLEMENTED: reports every EBS snapshot the account can see — the ones `crate::state`
+//! holds, the ones the EBS direct APIs hold, and the PUBLIC ones the AMI catalogue restores
+//! its devices from — narrowed by `SnapshotIds`, `OwnerIds`,
 //! `RestorableByUserIds` and the documented filters, and paged by `MaxResults`/`NextToken`.
 //! This is the ONLY file to touch for this operation.
+//!
+//! "The snapshots available to you include public snapshots, private snapshots that you own,
+//! and private snapshots owned by other Amazon Web Services accounts for which you have
+//! explicit create volume permissions": the public half of that inventory is the set of
+//! snapshots the images of the catalogue restore from
+//! ([`crate::state::ComAmazonawsEc2Amazonec2State::image_backing_snapshots`]), derived from
+//! the image records the ids were minted into rather than copied into this store, so an AMI
+//! and the snapshot behind it cannot disagree.
 //!
 //! A snapshot's `State`, `Progress` and `CompletionTime` are facts of its AGE, derived by
 //! [`crate::state::SnapshotRecord::view_at`] off the instant the clock owes the `pending`
@@ -200,9 +209,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         use crate::scaffolded::Scaffolded;
         use crate::state::{
             CompiledFilter, MAX_FILTER_MATCH_STEPS, MAX_FILTER_VALUE_BYTES, MAX_FILTER_VALUES,
-            MAX_FILTERS, MAX_PAGE_SIZE, MAX_RESOURCE_IDS, MatchBudget, decode_page_token,
-            invalid_pagination_token_for, invalid_user_id_malformed, require_service_state,
-            unresolvable_snapshot_id,
+            MAX_FILTERS, MAX_PAGE_SIZE, MAX_RESOURCE_IDS, MatchBudget, SNAPSHOT_ID_PREFIX,
+            SNAPSHOT_IDS_PARAMETER, decode_page_token, invalid_id_parameter_value,
+            invalid_pagination_token_for, invalid_user_id_malformed, prefixed_id_is_well_formed,
+            require_service_state, unresolvable_snapshot_id,
         };
 
         // `ctx` carries request metadata only; this operation reads none of it. The store
@@ -227,6 +237,27 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     values.len()
                 )));
             }
+        }
+
+        // Each `SnapshotIds` entry's own FORM, as a PARAMETER of the request and before the
+        // store is reached: this operation's id list is validated at the parameter layer, so
+        // a value that is not in the form EC2 prints a snapshot id in is
+        // `InvalidParameterValue` naming the parameter and the form it expects ("Value (…)
+        // for parameter snapshotId is invalid. Expected: 'snap-...'."), the way
+        // `DescribeVolumes` answers its own id list. That is a different answer from the
+        // resource-level `InvalidSnapshotID.Malformed`, which is for a value INSIDE that form
+        // that no snapshot can carry, and from `InvalidSnapshot.NotFound`, which is for one
+        // the account simply holds no snapshot for — both of which the one classification
+        // [`crate::state::unresolvable_snapshot_id`] holds answers below.
+        if let Some(malformed) = requested_ids
+            .iter()
+            .find(|snapshot_id| !prefixed_id_is_well_formed(SNAPSHOT_ID_PREFIX, snapshot_id))
+        {
+            return Err(invalid_id_parameter_value(
+                SNAPSHOT_IDS_PARAMETER,
+                malformed,
+                SNAPSHOT_ID_PREFIX,
+            ));
         }
 
         // The model declares no `@range` on `MaxResults`, so the only bound on the page
@@ -321,6 +352,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // this operation reports — read under this store's guard, which is the lock order
         // every operation of this service keeps (see [`crate::state::direct_api_snapshots`]).
         let direct_api = crate::state::direct_api_snapshots(&*self.engine, observed);
+        // "The snapshots available to you include public snapshots" (`DescribeSnapshots`),
+        // and "all Amazon Web Services accounts have create volume permissions for these
+        // snapshots": the public ones of this account's inventory are the snapshots the AMI
+        // catalogue restores its devices from, derived from the image records the ids were
+        // minted into (see [`crate::state::published_snapshots`]).
+        let catalogue = store.image_backing_snapshots();
 
         // "If you specify an invalid snapshot ID, an error is returned": a value that is
         // not a snapshot id at all and a well-formed one the account holds no snapshot for
@@ -330,11 +367,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // "If you specify a snapshot ID for which you do not have access, it is not
         // included in the returned results" is the OTHER answer, and it needs no branch
         // here: every snapshot this store holds is owned by the calling account, which has
-        // implicit create volume permissions for the snapshots it owns, so a stored
-        // snapshot is always one the caller may see.
+        // implicit create volume permissions for the snapshots it owns, and every public one
+        // is a snapshot every account may see — so a snapshot of the inventory is always one
+        // the caller may see.
         if let Some(unresolvable) = requested_ids.iter().find(|snapshot_id| {
             !store.snapshots.contains_key(snapshot_id.as_str())
                 && !direct_api.contains_key(snapshot_id.as_str())
+                && !catalogue.contains_key(snapshot_id.as_str())
         }) {
             return Err(unresolvable_snapshot_id(unresolvable));
         }
@@ -395,6 +434,26 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 break;
             }
             if store.snapshots.contains_key(snapshot_id) || !asked_about(snapshot) {
+                continue;
+            }
+            if crate::state::matches_every_filter(&selectors, &mut budget, &|name| {
+                filter_values(snapshot, name)
+            }) {
+                selected.push(snapshot.clone());
+            }
+        }
+        // The PUBLIC snapshots of the inventory — the ones the AMI catalogue restores its
+        // devices from — under the same two tests. One the snapshot store or the direct APIs
+        // also hold under that id is reported from that record alone, so one snapshot is
+        // never reported twice.
+        for (snapshot_id, snapshot) in &catalogue {
+            if budget.exhausted() {
+                break;
+            }
+            if store.snapshots.contains_key(snapshot_id)
+                || direct_api.contains_key(snapshot_id)
+                || !asked_about(snapshot)
+            {
                 continue;
             }
             if crate::state::matches_every_filter(&selectors, &mut budget, &|name| {
@@ -534,14 +593,18 @@ fn owner_matches(snapshot: &SnapshotView, term: &str, account: &str) -> bool {
 /// May the user `term` names create a volume from `snapshot`?
 ///
 /// "all for public snapshots" selects the snapshots whose create volume permissions were
-/// granted to the all group. For an account — `self` being the calling one — the only
-/// permission this slice models is the owner's own implicit one ("an Amazon Web Services
-/// account has implicit create volume permissions for all snapshots it owns"): public and
-/// explicit permissions are granted through `ModifySnapshotAttribute`, which is still a
-/// scaffold, so no stored snapshot carries one and none can be reported for one.
+/// granted to the all group, which in this inventory are the ones the calling account does
+/// NOT own: a snapshot of another account is reported here only because every account has
+/// create volume permissions for a public snapshot ("public: … All Amazon Web Services
+/// accounts have create volume permissions for these snapshots"). For an account — `self`
+/// being the calling one — the only permission this slice models is the owner's own implicit
+/// one ("an Amazon Web Services account has implicit create volume permissions for all
+/// snapshots it owns"): public and explicit permissions on a snapshot of the account are
+/// granted through `ModifySnapshotAttribute`, which is still a scaffold, so no snapshot of
+/// the account carries one and none can be reported for one.
 fn restorable_by_matches(snapshot: &SnapshotView, term: &str, account: &str) -> bool {
     if term == RESTORABLE_BY_ALL {
-        return false;
+        return snapshot.owner_id.as_deref() != Some(account);
     }
     let user = if term == crate::state::OWNER_SELF {
         account

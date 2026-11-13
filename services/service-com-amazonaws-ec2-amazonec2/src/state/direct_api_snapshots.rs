@@ -197,11 +197,17 @@ fn snapshot_view(snapshot: &DirectApiSnapshot, now: SystemTime) -> SnapshotView 
         // snapshot's own block size. Only a SEALED snapshot has a full size — one still
         // taking writes has no final set of blocks to measure.
         full_snapshot_size_in_bytes: completed.then(|| full_snapshot_size_in_bytes(snapshot)),
+        // "Only for snapshot copies […] `standard` - The snapshot copy was created with a
+        // standard snapshot copy operation" (`Snapshot$TransferType`): EC2 reports a transfer
+        // type for every snapshot it reports, and `time-based` belongs to the one kind of
+        // write that asks for a completion duration — which the direct APIs' own write does
+        // not take, so a snapshot written through them is a standard one.
+        transfer_type: Some(SNAPSHOT_TRANSFER_TYPE_STANDARD.to_string()),
         // The members a direct-API snapshot carries nothing for, for the reasons this crate's
         // own snapshot writers record against the same shape: the owner alias names an
         // Amazon-published snapshot, the Outpost ARN one stored on an Outpost, the
         // Availability Zone one in a Local Zone, the restore expiry a temporarily restored
-        // archived snapshot, the transfer type and completion duration a snapshot COPY, the
+        // archived snapshot, the completion duration a time-based copy, the
         // state message a failed asynchronous copy, and the data encryption key id a member
         // "only returned by DescribeSnapshots" for a snapshot of an encrypted volume this
         // emulator holds no key material for.
@@ -209,7 +215,6 @@ fn snapshot_view(snapshot: &DirectApiSnapshot, now: SystemTime) -> SnapshotView 
         outpost_arn: None,
         availability_zone: None,
         restore_expiry_time: None,
-        transfer_type: None,
         completion_duration_minutes: None,
         state_message: None,
         data_encryption_key_id: None,

@@ -797,6 +797,12 @@ mod create_snapshot;
 // concurrent ec2 landings insert their two lines.
 #[path = "all/describe_snapshots.rs"]
 mod describe_snapshots;
+// What `DescribeSnapshots` reports of the PUBLIC half of that inventory — the snapshots the
+// published AMI catalogue restores its root devices from — and the full size, transfer type,
+// page token and parameter-layer id refusal every snapshot of it carries. Declared in the
+// MIDDLE of the list for the reason the suite above gives.
+#[path = "all/describe_snapshots_public_catalogue.rs"]
+mod describe_snapshots_public_catalogue;
 // What a DELETE of a snapshot leaves of the fast snapshot restores enabled on it — the pairs
 // live in THIS service's store for a snapshot of either side of the one snapshot resource, so
 // the rule is one rule. Declared in the MIDDLE of the list for the reason the suites above

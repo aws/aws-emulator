@@ -12,15 +12,18 @@
 //! [`std::collections::BTreeMap`], so a report has one stable order and a pagination token
 //! can name the id the next page starts at.
 //!
-//! Three members are NOT stored: the state, the progress and the completion time. "Creates
+//! Four members are NOT stored: the state, the progress, the completion time and the full
+//! snapshot size. "Creates
 //! crash-consistent snapshots" hands back a snapshot in `pending`
 //! ([`SNAPSHOT_STATE_PENDING`]), and reaching `completed` is owed by the CLOCK rather than
 //! by a later call — so the record keeps the instant that move falls due
 //! ([`SnapshotRecord::completed_at`], monotonic and never reported, on the same
 //! [`super::TRANSITION_DELAY`] span as a volume's `creating` -> `available` move) and
-//! [`SnapshotRecord::view_at`] derives all three from it. A read therefore observes the move
-//! the clock already owed without writing anything, and two writers cannot store two
-//! different words for one snapshot's state.
+//! [`SnapshotRecord::view_at`] derives the first three from it. A read therefore observes the
+//! move the clock already owed without writing anything, and two writers cannot store two
+//! different words for one snapshot's state. The fourth is derived from the size of the
+//! volume the snapshot was taken of ([`volume_full_snapshot_size_in_bytes`]), which is what
+//! the member measures, so one volume is never measured two ways.
 //!
 //! [`ComAmazonawsEc2Amazonec2State::insert_snapshot`] is the one way a snapshot is stored,
 //! and it mints the id itself: a snapshot id is the service's to choose, never a caller's.
@@ -94,8 +97,16 @@ pub const SNAPSHOT_TRANSFER_TYPE_TIME_BASED: &str = "time-based";
 /// [`super::IMAGE_TAGGABLE_RESOURCES`] lists for the snapshots an image create tags.
 pub const SNAPSHOT_TAGGABLE_RESOURCE: &str = "snapshot";
 
-/// The id prefix of an EBS snapshot, as [`super::snapshot_id_is_well_formed`] reads one.
+/// The id prefix of an EBS snapshot, as [`super::snapshot_id_is_well_formed`] reads one and
+/// as a refusal names the form it expected.
 pub const SNAPSHOT_ID_PREFIX: &str = "snap";
+
+/// The name EC2 gives `DescribeSnapshotsRequest$SnapshotIds` when it refuses one of its
+/// entries at the PARAMETER layer: "Value (…) for parameter snapshotId is invalid. Expected:
+/// 'snap-...'." — the member's wire name is `SnapshotId.N`, and `snapshotId` is what the
+/// service calls the parameter those values make up, the way it calls `DescribeVolumes`'
+/// own list [`super::VOLUME_IDS_PARAMETER`].
+pub const SNAPSHOT_IDS_PARAMETER: &str = "snapshotId";
 
 /// How many EBS snapshots this emulator stores before a create is refused.
 ///
@@ -160,11 +171,12 @@ pub fn snapshot_in_use<E>(snapshot_id: &str, image_id: &str) -> crate::scaffolde
 /// One stored EBS snapshot: the modelled [`SnapshotView`] every operation that reports one
 /// answers with, plus the instant the clock owes it its `pending` -> `completed` move.
 ///
-/// The view holds no `State`, `Progress` or `CompletionTime`: all three are facts of the
-/// snapshot's age, so [`SnapshotRecord::view_at`] derives them — see the module docs.
+/// The view holds no `State`, `Progress`, `CompletionTime` or `FullSnapshotSizeInBytes`: all
+/// four are facts of the snapshot's age, so [`SnapshotRecord::view_at`] derives them — see
+/// the module docs.
 #[derive(Debug, Clone)]
 pub struct SnapshotRecord {
-    /// The snapshot as the model shapes it, with the three age-derived members left for
+    /// The snapshot as the model shapes it, with the age-derived members left for
     /// [`SnapshotRecord::view_at`] to fill.
     pub view: SnapshotView,
     /// The instant from which this snapshot's `pending` -> `completed` move is due.
@@ -222,9 +234,45 @@ impl SnapshotRecord {
             // "The time stamp when the snapshot was completed": a snapshot that has not
             // completed has none, rather than one in the future.
             completion_time: completed.then(|| system_time_to_date_time(self.completion_time)),
+            // "The full size of the snapshot, in bytes […] represents the size of all the
+            // blocks that were written to the source volume AT THE TIME THE SNAPSHOT WAS
+            // CREATED" (`Snapshot$FullSnapshotSizeInBytes`): a fact of the source volume as
+            // the create found it, so it is settled when the snapshot starts and does not
+            // wait on the transfer the way the three members above do. Derived from that
+            // volume's size through the one conversion [`volume_full_snapshot_size_in_bytes`]
+            // holds,
+            // rather than stored, so one volume is never measured two ways.
+            full_snapshot_size_in_bytes: self
+                .view
+                .volume_size
+                .and_then(volume_full_snapshot_size_in_bytes),
             ..self.view.clone()
         }
     }
+}
+
+/// The bytes one GiB holds, for the snapshot sizes EC2 reports in BYTES while the volume
+/// they were taken of is measured in GiB (`Snapshot$VolumeSize`, "the size of the volume, in
+/// GiB", against `Snapshot$FullSnapshotSizeInBytes`, "the full size of the snapshot, in
+/// bytes").
+pub const BYTES_PER_GIB: i64 = 1_024 * 1_024 * 1_024;
+
+/// "The full size of the snapshot, in bytes […] represents the size of all the blocks that
+/// were written to the source volume at the time the snapshot was created"
+/// (`Snapshot$FullSnapshotSizeInBytes`) for a snapshot of a volume of `volume_size` GiB.
+///
+/// The FULL size rather than an incremental one: every block of the source volume is
+/// accounted for, so the size a snapshot of a volume reports is that volume's own size in
+/// bytes. The ONE definition of that conversion, so the snapshot a create, a copy or an
+/// image's catalogue entry reports cannot measure the same volume differently; a size
+/// outside the width of the reported member is reported as none rather than wrapped, which
+/// the modelled width of `Snapshot$VolumeSize` makes unreachable. A snapshot written BLOCK BY
+/// BLOCK through the EBS direct APIs is measured off its blocks instead, by that module's own
+/// reading of the same member.
+pub fn volume_full_snapshot_size_in_bytes(volume_size: i32) -> Option<i64> {
+    i64::from(volume_size)
+        .checked_mul(BYTES_PER_GIB)
+        .filter(|size| *size >= 0)
 }
 
 /// The caller-chosen bytes one stored snapshot holds: its tags and the description the
@@ -304,6 +352,16 @@ impl ComAmazonawsEc2Amazonec2State {
         let snapshot_id = self.next_id(SNAPSHOT_ID_PREFIX);
         view.snapshot_id = Some(snapshot_id.clone());
         view.start_time = Some(system_time_to_date_time(started_at));
+        // "Indicates whether the snapshot […] was created with a standard or time-based
+        // snapshot copy operation […] `standard` […] completed on a best-effort basis"
+        // (`Snapshot$TransferType`): EC2 reports a transfer type for EVERY snapshot it
+        // reports, and `time-based` belongs to the one kind of write that asks for a
+        // completion duration — a copy — so a writer that named none made a `standard` one.
+        // Written here, where a snapshot is stored, so every reader of the record reports the
+        // same word for it.
+        view.transfer_type = view
+            .transfer_type
+            .or_else(|| Some(SNAPSHOT_TRANSFER_TYPE_STANDARD.to_string()));
         self.add_stored_bytes(snapshot_payload_bytes(
             view.tags.as_deref().unwrap_or_default(),
             view.description.as_deref(),

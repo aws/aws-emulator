@@ -144,7 +144,7 @@ async fn mint_snapshot(
 
 /// The ids `DescribeSnapshots` reports for the snapshots this account owns, in report order.
 async fn account_snapshot_ids(router: &MultiServiceRouter, case: &str) -> Vec<String> {
-    let (status, body) = op(router, "DescribeSnapshots", &[p("OwnerId.1", "self")]).await;
+    let (status, body) = op(router, "DescribeSnapshots", &[p("Owner.1", "self")]).await;
     assert_eq!(
         status, 200,
         "case {case:?}: expected HTTP 200 from DescribeSnapshots, got {status} with body {body}"

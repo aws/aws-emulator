@@ -500,9 +500,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 data_encryption_key_id: None,
                 // "The full size of the snapshot, in bytes. […] represents the size of all
                 // the blocks that were written to the source volume"
-                // (`Snapshot$FullSnapshotSizeInBytes`): nothing in this emulator writes
-                // blocks to a volume, so the source has no measured size and neither has
-                // its copy.
+                // (`Snapshot$FullSnapshotSizeInBytes`): a copy holds every block of the
+                // source volume the snapshot was taken of, so the store derives it from the
+                // size this copy carries, as a fact of the copy's age
+                // ([`crate::state::SnapshotRecord::view_at`]).
                 full_snapshot_size_in_bytes: None,
                 // Minted, stamped and derived by the store: the id, the start time, and the
                 // state, progress and completion time the clock decides.

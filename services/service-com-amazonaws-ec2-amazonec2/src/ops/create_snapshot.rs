@@ -318,11 +318,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 // `CreateSnapshots` records for the same shape: the owner alias names an
                 // Amazon-published snapshot, the Outpost ARN one stored on an Outpost
                 // (refused above), the restore expiry a temporarily restored archived
-                // snapshot, the transfer type and completion duration a snapshot COPY, the
+                // snapshot, the completion duration a TIME-BASED copy, the
                 // state message a failed asynchronous copy, the data encryption key id a
                 // member "only returned by DescribeSnapshots", and the Availability Zone a
-                // LOCAL snapshot. `SseType` is "reserved for future use", and nothing in this
-                // emulator writes blocks to a volume, so no full snapshot size is measured.
+                // LOCAL snapshot. `SseType` is "reserved for future use". The full snapshot
+                // size is DERIVED by the store from the source volume's size, which is what
+                // that member measures ([`crate::state::SnapshotRecord::view_at`]), and the
+                // transfer type is the standard one the store writes for a snapshot no
+                // caller asked a completion duration for.
                 owner_alias: None,
                 outpost_arn: None,
                 restore_expiry_time: None,

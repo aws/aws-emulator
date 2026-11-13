@@ -155,7 +155,7 @@ async fn snapshots_of(
         router,
         "DescribeSnapshots",
         &[
-            ("OwnerId.1", "self"),
+            ("Owner.1", "self"),
             ("Filter.1.Name", "volume-id"),
             ("Filter.1.Value.1", volume_id),
         ],
@@ -447,7 +447,7 @@ async fn snapshot_by_id(
 /// The snapshot ids the account holds, read through the listing a client polls with —
 /// `OwnerIds=["self"]` and nothing else.
 async fn every_snapshot_of_the_account(router: &MultiServiceRouter, case: &str) -> BTreeSet<String> {
-    let (status_code, body) = ec2(router, "DescribeSnapshots", &[("OwnerId.1", "self")]).await;
+    let (status_code, body) = ec2(router, "DescribeSnapshots", &[("Owner.1", "self")]).await;
     assert_eq!(
         status_code, 200,
         "case {case:?}: expected the account-wide DescribeSnapshots to succeed, got \

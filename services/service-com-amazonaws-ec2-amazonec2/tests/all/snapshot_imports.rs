@@ -526,7 +526,7 @@ async fn the_clock_turns_the_disk_into_a_snapshot_of_the_account_and_completes_t
 
         // The account holds no snapshot yet either: the task reporting none and the snapshot
         // store holding none are the same fact.
-        let (status, listed) = describe_snapshots(&router, &[p("OwnerId.1", "self")]).await;
+        let (status, listed) = describe_snapshots(&router, &[p("Owner.1", "self")]).await;
         assert_eq!(
             status, 200,
             "case {case:?}: expected HTTP 200 from DescribeSnapshots, got {status} with body \
@@ -870,7 +870,7 @@ async fn a_dry_run_import_reports_what_would_have_happened_and_writes_nothing() 
         stored.is_empty(),
         "expected a dry run to store nothing, got {stored:?}"
     );
-    let (status, listed) = describe_snapshots(&router, &[p("OwnerId.1", "self")]).await;
+    let (status, listed) = describe_snapshots(&router, &[p("Owner.1", "self")]).await;
     assert_eq!(
         status, 200,
         "expected HTTP 200 from DescribeSnapshots, got {status} with body {listed}"
