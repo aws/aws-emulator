@@ -245,6 +245,85 @@ pub fn tables_info_key(prefix: &str, export_task_identifier: &str, tables: usize
     )
 }
 
+/// The key of the export's own SUMMARY file: `<prefix>export_info_<ExportTaskIdentifier>.json`
+/// — the object a completed export writes beside the per-table files, which is what tooling
+/// reads to discover what one export covered.
+#[must_use]
+pub fn export_info_key(prefix: &str, export_task_identifier: &str) -> String {
+    format!("{prefix}export_info_{export_task_identifier}.json")
+}
+
+/// What the export's summary file says about the export ITSELF, beside the tables it wrote:
+/// the export's own identity and destination, each taken from the task that ran.
+#[derive(Debug, Clone, Copy)]
+pub struct ExportSummary<'a> {
+    /// `ExportTaskIdentifier`, which is also the folder every object of the export sits in.
+    pub export_task_identifier: &'a str,
+    /// `SourceArn`: the ARN of the snapshot or cluster the data was read out of.
+    pub source_arn: &'a str,
+    /// `SourceType`, one of the values `ExportSourceType` publishes.
+    pub source_type: &'a str,
+    /// `S3Bucket`: the destination the objects were written into.
+    pub s3_bucket: &'a str,
+    /// `S3Prefix`, absent for an export written at the root of the bucket.
+    pub s3_prefix: Option<&'a str>,
+    /// `KmsKeyId`: the key the exported data is encrypted under.
+    pub kms_key_id: &'a str,
+    /// `ExportOnly`, empty where the whole source was exported.
+    pub export_only: &'a [String],
+}
+
+/// The SUMMARY file a completed export writes: what was exported, out of what, where to,
+/// how much of it there was, and the per-table row and byte counts — the description of the
+/// export as a whole, which the per-table file beside it does not carry.
+///
+/// Everything in it is read off the export that RAN: the task's own members, the tables the
+/// source really held and the sizes of the objects really produced. `started` and `ended`
+/// are the instants the export ran between.
+#[must_use]
+pub fn export_info_document(
+    summary: &ExportSummary<'_>,
+    tables: &[ExportedTable],
+    started: SystemTime,
+    ended: SystemTime,
+) -> String {
+    let bytes: u64 = tables.iter().map(|table| table.body.len() as u64).sum();
+    let rows: usize = tables.iter().map(|table| table.rows).sum();
+    let exported: Vec<::serde_json::Value> = tables
+        .iter()
+        .map(|table| {
+            ::serde_json::json!({
+                "target": format!("{}.{}", table.schema, table.table),
+                "database": table.database,
+                "schema": table.schema,
+                "table": table.table,
+                "rowsExported": table.rows,
+                "sizeBytes": table.body.len(),
+                "files": [table.key.clone()],
+            })
+        })
+        .collect();
+    ::serde_json::json!({
+        "exportTaskIdentifier": summary.export_task_identifier,
+        "sourceArn": summary.source_arn,
+        "sourceType": summary.source_type,
+        "exportOnly": summary.export_only,
+        "s3Bucket": summary.s3_bucket,
+        "s3Prefix": summary.s3_prefix.unwrap_or_default(),
+        "kmsKeyId": summary.kms_key_id,
+        "status": super::EXPORT_TASK_STATUS_COMPLETE,
+        "percentProgress": super::COMPLETE_PERCENT_PROGRESS,
+        "startTime": epoch_millis(started),
+        "endTime": epoch_millis(ended),
+        "totalExtractedDataInGB": gigabytes(bytes),
+        "totalExtractedDataInBytes": bytes,
+        "tablesExported": tables.len(),
+        "rowsExported": rows,
+        "tables": exported,
+    })
+    .to_string()
+}
+
 /// The JSON file that says what the export wrote: one entry per exported table, naming the
 /// table it came from, the status it ended in, the size it wrote, the part files it was
 /// written to and the source-to-exported type mapping of each of its columns — the contents

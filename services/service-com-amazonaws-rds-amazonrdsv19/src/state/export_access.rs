@@ -57,7 +57,7 @@ pub async fn export_role_defect<Eng: Send + Sync + 'static>(
     role_arn: &str,
     bucket: &str,
 ) -> Option<ExportRoleDefect> {
-    if ::service_common::iam_role::held_role_is_unassumable(
+    if ::service_common::iam_role::role_is_unassumable(
         ctx,
         region,
         role_arn,
@@ -71,18 +71,14 @@ pub async fn export_role_defect<Eng: Send + Sync + 'static>(
     // resource form the required actions are granted on
     // ("arn:aws:s3:::your-s3-bucket/*", `IamRoleArn`).
     let objects = ::service_com_amazonaws_s3_amazons3::state::object_arn(bucket, "*");
-    // Every spelling of the role a resource-based policy may name: the role's own ARN, and
-    // the account spellings a DENY of the account refuses each of its principals under
-    // ([`::service_common::iam_authorization::account_principals`]).
-    let mut principals = vec![role_arn.to_string()];
-    principals.extend(::service_common::iam_authorization::account_principals(
-        role_arn,
-    ));
+    let principals = export_principals(role_arn);
+    let context = export_context(role_arn);
     let request = ::service_common::iam_authorization::Request::new(
         EXPORT_OBJECT_WRITE_ACTION,
         &objects,
         &principals,
-    );
+    )
+    .with_context(&context);
     // The bucket's own policy is read first: "an explicit deny in any policy overrides any
     // allow", so a bucket that denies the role the write refuses the export whatever the
     // role carries.
@@ -104,6 +100,77 @@ pub async fn export_role_defect<Eng: Send + Sync + 'static>(
     }
     Some(ExportRoleDefect::MissingPermissions)
 }
+
+/// Every spelling of the role a resource-based policy may name: the role's own ARN, and the
+/// account spellings a DENY of the account refuses each of its principals under
+/// ([`::service_common::iam_authorization::account_principals`]).
+fn export_principals(role_arn: &str) -> Vec<String> {
+    let mut principals = vec![role_arn.to_string()];
+    principals.extend(::service_common::iam_authorization::account_principals(
+        role_arn,
+    ));
+    principals
+}
+
+/// The condition keys the calls an export makes carry: the export acts UNDER the role the
+/// request named, so `aws:PrincipalArn` is that role's ARN — which is what a destination
+/// policy that admits or refuses one principal is written over.
+fn export_context(role_arn: &str) -> Vec<(String, String)> {
+    vec![(PRINCIPAL_ARN_KEY.to_string(), role_arn.to_string())]
+}
+
+/// The IAM global condition key naming the identity whose policies are in force: "the ARN
+/// of the principal that made the request", which for a request made under an assumed role
+/// is that role's own ARN.
+const PRINCIPAL_ARN_KEY: &str = "aws:PrincipalArn";
+
+/// The KMS action of the two the export needs that the key `key_id` does NOT authorize the
+/// role `role_arn` to perform, or `None` where the key authorizes both of them.
+///
+/// "The caller of this operation must be authorized to run the following operations. These
+/// can be set in the Amazon Web Services KMS key policy: kms:CreateGrant kms:DescribeKey"
+/// (`KmsKeyId`), and in KMS "no AWS principal has any permissions to a KMS key unless the
+/// key policy allows it" — so the question is what the KEY's own policy says about the role
+/// the export runs under, and a policy that delegates to IAM by granting the account (the
+/// default key policy) authorizes it.
+///
+/// `None` for everything that is not an answer: no KMS beside this service, a key it would
+/// not report a policy for, or a document that could not be read. A refusal has to be
+/// grounded in what KMS said.
+pub async fn export_key_withheld_action(
+    ctx: &::smithy_server_runtime::OperationContext<'_>,
+    region: &str,
+    key_id: &str,
+    role_arn: &str,
+) -> Option<&'static str> {
+    let kms = super::managed_master_secret::kms_client(ctx, region)?;
+    let policy = kms
+        .get_key_policy()
+        .key_id(key_id)
+        .send()
+        .await
+        .ok()?
+        .policy
+        .filter(|document| !document.is_empty())?;
+    let principals = export_principals(role_arn);
+    let context = export_context(role_arn);
+    EXPORT_KEY_ACTIONS.into_iter().find(|action| {
+        let request = ::service_common::iam_authorization::Request::new(
+            action,
+            // The key itself is the resource those actions are taken on; a key policy
+            // names its own key as `"*"`, which covers it.
+            key_id,
+            &principals,
+        )
+        .with_context(&context);
+        ::service_common::iam_authorization::resource_decision(&policy, &request)
+            != ::service_common::iam_authorization::Decision::Allowed
+    })
+}
+
+/// The KMS operations an export has to be authorized to run on the key its data is
+/// encrypted under, as `KmsKeyId` lists them.
+const EXPORT_KEY_ACTIONS: [&str; 2] = ["kms:CreateGrant", "kms:DescribeKey"];
 
 /// Every identity-based policy document IAM holds for the role `role_arn` names — the
 /// documents of the managed policies attached to it, and its inline policies — or `None`

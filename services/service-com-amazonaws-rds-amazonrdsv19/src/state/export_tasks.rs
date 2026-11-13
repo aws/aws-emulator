@@ -122,37 +122,33 @@ pub fn invalid_export_source_state_message(status: &str) -> String {
     format!("The state of the export source is invalid for exporting to an Amazon S3 bucket: {status}.")
 }
 
-/// What an `InvalidS3BucketFault` carries: the destination bucket cannot be found or
-/// reached, which is how the fault itself is worded ("The specified Amazon S3 bucket name
-/// can't be found or Amazon RDS isn't authorized to access the specified Amazon S3 bucket").
+/// What an `InvalidS3BucketFault` carries for a destination bucket the export cannot write
+/// to AT ALL — one this Region's object store holds nothing under, and one whose name is no
+/// bucket name: Amazon RDS states the one fact and the two conditions that produce it, and
+/// the only variable part is the `S3BucketName` the request carried.
 pub fn invalid_s3_bucket_message(bucket: &str) -> String {
     format!(
-        "The specified Amazon S3 bucket name {bucket} can't be found or Amazon RDS isn't \
-         authorized to access the specified Amazon S3 bucket."
+        "The S3 bucket {bucket} isn't valid. Either it isn't located in the current AWS \
+         Region or it doesn't exist."
     )
 }
 
-/// What a request naming a destination bucket in another Region is refused with: an export
-/// writes to a bucket in the Region the source is in.
-pub fn cross_region_export_bucket_message(
-    bucket: &str,
-    bucket_region: &str,
-    request_region: &str,
-) -> String {
-    format!(
-        "The S3 bucket {bucket} is in region {bucket_region}, which is not the region the \
-         export runs in ({request_region}). The S3 bucket must be in the same region as the \
-         snapshot or cluster being exported."
-    )
+/// The same fault's SENTENCE does not cover a bucket that EXISTS outside the export's
+/// Region: that one is refused as the parameter value it is, with the one condition stated
+/// rather than the pair above. The bucket name is the only variable part — neither Region is
+/// named.
+pub fn cross_region_export_bucket_message(bucket: &str) -> String {
+    format!("The S3 bucket {bucket} isn't located in the current AWS Region.")
 }
 
-/// What an `IamRoleNotFoundFault` carries: the role an export was asked to run under is not
-/// one Amazon RDS can assume for an export, naming the principal its trust policy has to
-/// grant.
+/// What an `IamRoleNotFoundFault` carries: the export principal cannot assume the role the
+/// request named — because the role's trust policy does not admit it, or because IAM holds
+/// no such role — which is the one fault both conditions are reported as, naming the
+/// principal and the `IamRoleArn` the request carried.
 pub fn export_role_not_found_message(role_arn: &str) -> String {
     format!(
-        "The IAM role {role_arn} is missing for exporting to an Amazon S3 bucket. The role \
-         must exist and its trust relationship must allow {} to assume it.",
+        "The principal {} isn't allowed to assume the IAM role {role_arn} or the IAM role \
+         {role_arn} doesn't exist.",
         super::EXPORT_SERVICE_PRINCIPAL
     )
 }
@@ -200,6 +196,18 @@ pub fn target_kms_key_not_accessible_message(key_id: &str) -> String {
 /// naming the identifier the request carried and nothing else.
 pub fn export_kms_key_not_accessible_message(key_id: &str) -> String {
     format!("The KMS key {key_id} doesn't exist or is disabled.")
+}
+
+/// The same fault where the key EXISTS but the role the export runs under is not authorized
+/// to USE it: "the caller of this operation must be authorized to run the following
+/// operations" on the key (`KmsKeyId`), and a key whose own policy grants that role none of
+/// them encrypts nothing.
+///
+/// Worded as Amazon RDS words a missing authorization on an export — the role, the action
+/// and the resource the action is not granted on — so the variable parts are the request's
+/// `IamRoleArn`, the KMS action the export has to perform and the request's `KmsKeyId`.
+pub fn export_kms_key_not_authorized_message(role_arn: &str, action: &str, key_id: &str) -> String {
+    format!("The IAM role {role_arn} isn't authorized to call {action} on the KMS key {key_id}.")
 }
 
 /// What a request whose `SourceArn` names a resource of ANOTHER Region is refused with.

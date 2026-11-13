@@ -128,7 +128,10 @@ pub(crate) fn emulator() -> (MultiServiceRouter, Arc<engine::InMemoryEngine>) {
 
 /// An Amazon S3 client over this emulator's own in-process callback — the seam the export
 /// writes its objects through, so a read here sees what the export really stored.
-fn s3(router: &MultiServiceRouter) -> aws_sdk_s3::Client {
+///
+/// `pub(crate)` so the sibling suite that reads the objects one export wrote reaches them
+/// through this one client rather than building a second copy of it.
+pub(crate) fn s3(router: &MultiServiceRouter) -> aws_sdk_s3::Client {
     s3_in(router, REGION)
 }
 
@@ -740,14 +743,19 @@ struct ExportFixture {
     snapshot_arn: String,
 }
 
-/// The tables the exported database holds: one with an integer key, text, real and NUMERIC
-/// columns, one with two text columns, and one that is empty — so the export spans the column
-/// types the source engine holds, a value beyond a double's exact range, a null in every
-/// nullable kind, and a table with no rows.
+/// The tables the exported database holds: one with an integer key, text, real and 64-bit
+/// integer columns, one with two text columns, and one that is empty — so the export spans
+/// the column types the source engine holds, a value beyond a double's exact range, a null in
+/// every nullable kind, and a table with no rows.
+///
+/// `ledger` is declared `BIGINT` rather than an exact-numeric type: a column declared
+/// `DECIMAL`/`NUMERIC` carries that type's own precision and scale through the export, which
+/// the sibling suite `snapshot_export_to_s3` pins, while the value below is what an INTEGER
+/// column's export has to preserve.
 const SEEDED_TABLES: &[(&str, &str, &[&str])] = &[
     (
         "orders",
-        "CREATE TABLE orders (id INTEGER, customer TEXT, total REAL, ledger NUMERIC)",
+        "CREATE TABLE orders (id INTEGER, customer TEXT, total REAL, ledger BIGINT)",
         &[
             // 2^53 + 1: a value a double cannot hold exactly, so the exported column has to
             // be a 64-bit integer for the row to survive the export.

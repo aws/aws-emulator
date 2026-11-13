@@ -367,19 +367,16 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .into());
         }
         // "The Amazon S3 bucket ... must be in the same Amazon Web Services Region as the
-        // snapshot" (Exporting DB snapshot data to Amazon S3): a bucket in another Region
-        // is a parameter this export cannot be run with, which this Query API answers
-        // `InvalidParameterValue`.
+        // snapshot" (Exporting DB snapshot data to Amazon S3): a bucket that EXISTS outside
+        // this endpoint's Region is a parameter this export cannot be run with, which this
+        // Query API answers `InvalidParameterValue` — the fault above is for a destination
+        // this Region holds nothing under at all.
         if let Some(bucket_region) =
             crate::state::bucket_region(&*self.engine, &input.s3_bucket_name)
         {
             if !bucket_region.is_empty() && bucket_region != region {
                 return Err(StartExportTaskError::invalid_parameter_value(
-                    crate::state::cross_region_export_bucket_message(
-                        &input.s3_bucket_name,
-                        &bucket_region,
-                        &region,
-                    ),
+                    crate::state::cross_region_export_bucket_message(&input.s3_bucket_name),
                 ));
             }
         }
@@ -419,6 +416,33 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 .into())
             }
             None => {}
+        }
+
+        // And the key the exported data is encrypted under has to be one the export can USE
+        // under that role: "the caller of this operation must be authorized to run the
+        // following operations" on it — `kms:CreateGrant` and `kms:DescribeKey` (`KmsKeyId`)
+        // — and in KMS no principal holds any permission on a key its own policy does not
+        // grant, so a key whose policy grants the role neither of them cannot encrypt this
+        // export. It is the modelled `KMSKeyNotAccessibleFault`, exactly as a key that does
+        // not exist is.
+        if let Some(action) = crate::state::export_key_withheld_action(
+            ctx,
+            &region,
+            &input.kms_key_id,
+            &input.iam_role_arn,
+        )
+        .await
+        {
+            return Err(StartExportTaskErrorModeled::KMSKeyNotAccessibleFault(
+                KMSKeyNotAccessibleFault {
+                    message: Some(crate::state::export_kms_key_not_authorized_message(
+                        &input.iam_role_arn,
+                        action,
+                        &input.kms_key_id,
+                    )),
+                },
+            )
+            .into());
         }
 
         // Everything the export needs holds, so the TASK is recorded first and the export
@@ -542,6 +566,27 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 tables.len(),
             ),
             body: crate::state::tables_info_document(
+                &tables,
+                started,
+                ::std::time::SystemTime::now(),
+            )
+            .into_bytes(),
+        });
+        // And the export's own SUMMARY file, which says what the export as a whole covered:
+        // the source it read, the destination it wrote, the status it ended in and the row
+        // and byte counts of every table it wrote.
+        objects.push(crate::state::ExportedObject {
+            key: crate::state::export_info_key(&prefix, &input.export_task_identifier),
+            body: crate::state::export_info_document(
+                &crate::state::ExportSummary {
+                    export_task_identifier: &input.export_task_identifier,
+                    source_arn: &source.arn,
+                    source_type: source.source_type,
+                    s3_bucket: &input.s3_bucket_name,
+                    s3_prefix: input.s3_prefix.as_deref(),
+                    kms_key_id: &input.kms_key_id,
+                    export_only: &export_only,
+                },
                 &tables,
                 started,
                 ::std::time::SystemTime::now(),
@@ -697,10 +742,11 @@ fn resolve_export_source(
                 snapshot_time: snapshot.snapshot_create_time,
                 wire: crate::state::engine_wire(&snapshot.engine)
                     .unwrap_or(crate::state::EngineWire::MySql),
-                // An Aurora DB cluster's data plane is its own cluster endpoint, which this
-                // emulator serves no database behind, so a cluster snapshot carries no copy
-                // to export.
-                database: None,
+                // The COPY of the cluster's storage the snapshot carries
+                // (`crate::state::DbClusterSnapshotRecord::storage`), taken by the engine
+                // when the snapshot was taken: it is what restoring the snapshot brings
+                // back, so it is also what exporting it writes out.
+                database: snapshot.storage.clone(),
             })
         }
         _ => {
@@ -728,16 +774,23 @@ fn resolve_export_source(
                 )
                 .into());
             }
-            // The cluster's data lives on its WRITER member, which is the database an
-            // export of the cluster reads.
+            // The cluster's data lives on its own cluster VOLUME — "each Aurora DB cluster
+            // hosts copies of its data" and every member is opened onto that volume — so
+            // that is the database an export of the cluster reads, and a cluster whose
+            // storage this emulator keeps on its members instead is read off its writer.
             let database = store
-                .cluster_members(cluster)
-                .first()
-                .map(|member| (member.region.clone(), member.identifier.clone()))
-                .and_then(|key| {
+                .cluster_engine_endpoint(&(region.to_string(), identifier.clone()))
+                .map(crate::state::DbEngineEndpoint::database)
+                .or_else(|| {
                     store
-                        .engine_endpoint(&key)
-                        .map(crate::state::DbEngineEndpoint::database)
+                        .cluster_members(cluster)
+                        .first()
+                        .map(|member| (member.region.clone(), member.identifier.clone()))
+                        .and_then(|key| {
+                            store
+                                .engine_endpoint(&key)
+                                .map(crate::state::DbEngineEndpoint::database)
+                        })
                 });
             Ok(ExportSource {
                 arn: cluster.arn(),
