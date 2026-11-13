@@ -43,7 +43,7 @@ const BUCKET_NOT_EMPTY: &str = "The bucket you tried to delete is not empty";
 const EXPECTED_CLASS: &str = "GeneralServiceException";
 
 /// Pull the quoted exception and the reported class out of one `ResourceStatusReason`.
-fn parts(case: &str, reason: &str) -> (String, String) {
+pub(crate) fn parts(case: &str, reason: &str) -> (String, String) {
     let opens = "Resource handler returned message: \"";
     let rest = reason.strip_prefix(opens).unwrap_or_else(|| {
         panic!("case {case:?}: expected the reason to open with {opens:?}, got {reason:?}")

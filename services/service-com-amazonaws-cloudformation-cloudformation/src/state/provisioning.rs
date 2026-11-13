@@ -3842,6 +3842,22 @@ const SDK_SERVICE_NAMES: &[(&str, &str, SdkDiagnostic)] = &[
     // ValidationException; Request ID: …)" (RequestToken: …, HandlerErrorCode:
     // InvalidRequest)`).
     ("braket", "Braket", SdkDiagnostic::Operation),
+    // Elastic Load Balancing v2's SDK names it `ElasticLoadBalancingV2` — that model's own
+    // `awsService.cloudFormationName`, which is also the name its SDK client carries
+    // (`smithy_query(query="service_info")`: `sdkId: "Elastic Load Balancing v2"`,
+    // `cloudFormationName: ElasticLoadBalancingV2`). The four resource types this emulator
+    // provisions over this signing name are all that service's
+    // ([`provisioning::elastic_load_balancing`]), and the shape is the bare ENVELOPE, with no
+    // attempt count after it, as the recorded `ResourceStatusReason` of an
+    // `AWS::ElasticLoadBalancingV2::ListenerRule` whose priority the listener already
+    // evaluates a rule at carries it (`"<the service's sentence> (Service:
+    // ElasticLoadBalancingV2, Status Code: 400, Request ID: …)"`, where Amazon Route 53's
+    // below carries `(SDK Attempt Count: …)` past the closing parenthesis).
+    (
+        "elasticloadbalancing",
+        "ElasticLoadBalancingV2",
+        SdkDiagnostic::Envelope,
+    ),
     ("es", "OpenSearch", SdkDiagnostic::Attempts),
     ("iam", "Iam", SdkDiagnostic::Attempts),
     ("lambda", "Lambda", SdkDiagnostic::Attempts),
@@ -3873,6 +3889,10 @@ enum SdkDiagnostic {
     /// <code>; Request ID: <id>)` — semicolon-separated, naming the operation that was
     /// refused and the error code it was refused with in place of the attempt count.
     Operation,
+    /// `(Service: <service>, Status Code: <status>, Request ID: <id>)` — the same
+    /// comma-separated envelope [`SdkDiagnostic::Attempts`] opens with, and NOTHING after it:
+    /// the SDK of such a service words no attempt count at all.
+    Envelope,
 }
 
 /// The services whose answers carry an EXTENDED request id beside the request id, which
@@ -3948,6 +3968,10 @@ fn sdk_diagnostic(
                 sdk_request_ids(signing_name),
             )
         }),
+        SdkDiagnostic::Envelope => Some(format!(
+            "(Service: {service}, Status Code: {status}, {})",
+            sdk_request_ids(signing_name),
+        )),
     }
 }
 

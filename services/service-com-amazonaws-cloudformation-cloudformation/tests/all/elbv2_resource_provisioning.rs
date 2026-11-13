@@ -42,7 +42,7 @@ const POLL_ATTEMPTS: usize = 12;
 /// The network every row's load balancer is placed in: a VPC and two subnets of it, in two
 /// Availability Zones, since Elastic Load Balancing resolves a placement against Amazon EC2
 /// and an Application Load Balancer needs subnets in at least two zones.
-const NETWORK: &str = concat!(
+pub(crate) const NETWORK: &str = concat!(
     "  Vpc:\n",
     "    Type: AWS::EC2::VPC\n",
     "    Properties:\n",
@@ -341,7 +341,11 @@ fn template_of(row: &Row) -> String {
 }
 
 /// Read a stack until it reports a status no longer in progress, and answer that read's body.
-async fn poll_to_terminal(router: &MultiServiceRouter, case: &str, stack_name: &str) -> String {
+pub(crate) async fn poll_to_terminal(
+    router: &MultiServiceRouter,
+    case: &str,
+    stack_name: &str,
+) -> String {
     let mut described = String::new();
     for _ in 0..POLL_ATTEMPTS {
         wait_for_the_transition().await;
@@ -364,7 +368,7 @@ async fn poll_to_terminal(router: &MultiServiceRouter, case: &str, stack_name: &
 /// Every output of the described stack as the key/value pairs a client reads it as — the very
 /// read the issue filed: an output reported with a key and no value is missing from this map,
 /// which is what the panic below reports.
-fn outputs_of(case: &str, described: &str) -> Vec<(String, String)> {
+pub(crate) fn outputs_of(case: &str, described: &str) -> Vec<(String, String)> {
     let mut values = Vec::new();
     for output in wire_outputs(described) {
         let key = output.key.clone().unwrap_or_default();
@@ -380,7 +384,7 @@ fn outputs_of(case: &str, described: &str) -> Vec<(String, String)> {
 }
 
 /// The value of one output, which the row declared and so the stack must report.
-fn output(case: &str, values: &[(String, String)], key: &str) -> String {
+pub(crate) fn output(case: &str, values: &[(String, String)], key: &str) -> String {
     values
         .iter()
         .find(|(name, _)| name == key)

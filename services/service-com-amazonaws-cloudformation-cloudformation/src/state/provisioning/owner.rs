@@ -945,8 +945,26 @@ impl Owner {
     pub(super) fn handler_error_class(self, code: &str, classified: &'static str) -> &'static str {
         match self {
             Self::Builtin(provisioner) => provisioner.handler_error_class(code, classified),
+            // A rule's PRIORITY is where its listener evaluates it — "a listener can't have
+            // multiple rules with the same priority" — so a priority that listener already
+            // holds a rule at is a rule that ALREADY EXISTS at the place the declaration asks
+            // for, which is the class this provider puts that refusal in rather than the
+            // in-use class the code's own wording reads as. The distinction is what a client
+            // branches on: an already-exists failure is one no retry of the same template can
+            // clear.
+            Self::ElasticLoadBalancing(_) if code.contains(PRIORITY_IN_USE) => {
+                super::HANDLER_ERROR_ALREADY_EXISTS
+            }
             // Every other provider here reports the class the error code itself falls in.
             _ => classified,
         }
     }
 }
+
+/// The error code Elastic Load Balancing refuses a rule asking for a priority its listener
+/// already evaluates a rule at with: the `awsQueryError` code of `CreateRule`'s own
+/// `PriorityInUseException`
+/// (`smithy_query(query="operation",operation="CreateRule")`: `awsQueryError {code:
+/// 'PriorityInUse', httpResponseCode: 400}`), which `SetRulePriorities` refuses the same
+/// conflict with.
+const PRIORITY_IN_USE: &str = "PriorityInUse";
