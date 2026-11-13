@@ -131,6 +131,8 @@ mod export_job_creation;
 mod export_job_reads;
 #[path = "all/export_jobs.rs"]
 mod export_jobs;
+#[path = "all/import_job_capacity.rs"]
+mod import_job_capacity;
 #[path = "all/import_jobs.rs"]
 mod import_jobs;
 #[path = "all/json_wire.rs"]
