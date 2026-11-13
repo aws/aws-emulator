@@ -35,6 +35,14 @@ pub const AVAILABILITY_AVAILABLE: &str = "AVAILABLE";
 /// available."
 pub const AVAILABILITY_UNAVAILABLE: &str = "UNAVAILABLE";
 
+/// `UNTRANSFERABLE`, from the model's `Transferable` enum
+/// (`crate::ops::types::TRANSFERABLE_VALUES`): "The domain name can't be transferred to
+/// Route 53."
+pub const TRANSFERABLE_UNTRANSFERABLE: &str = "UNTRANSFERABLE";
+/// `DOMAIN_IN_OWN_ACCOUNT`, from the model's `Transferable` enum: "The domain already
+/// exists in the current Amazon Web Services account."
+pub const TRANSFERABLE_DOMAIN_IN_OWN_ACCOUNT: &str = "DOMAIN_IN_OWN_ACCOUNT";
+
 /// `STANDARD`, from the model's `PriceType` enum
 /// (`crate::ops::types::PRICE_TYPE_VALUES`): the domain "is priced at the regular rate
 /// for its TLD", as opposed to `REGISTRY_PREMIUM`, which prices an individual name.
@@ -113,6 +121,83 @@ pub fn standard_registration_price(tld: &str) -> PriceWithCurrency {
         price: standard_registration_rate(tld),
         currency: CURRENCY_USD.to_string(),
         price_type: Some(PRICE_TYPE_STANDARD.to_string()),
+    }
+}
+
+/// What a transfer of a name under `tld` in to this registrar costs, as the modelled
+/// `PriceWithCurrency`.
+///
+/// A transfer in carries a year of registration with it, so the registrar charges the
+/// TLD's one-year rate for it — the same amount as a registration under that TLD, which
+/// is why both come from [`standard_registration_rate`]. `PriceType` is `STANDARD`: this
+/// is the regular rate for the TLD, not an individual name's registry premium.
+pub fn standard_transfer_price(tld: &str) -> PriceWithCurrency {
+    PriceWithCurrency {
+        price: standard_registration_rate(tld),
+        currency: CURRENCY_USD.to_string(),
+        price_type: Some(PRICE_TYPE_STANDARD.to_string()),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Whether a name can be transferred in
+// ---------------------------------------------------------------------------
+
+/// What the registry's record of a name means for transferring that name IN to this
+/// registrar — the question `CheckDomainTransferability` answers.
+///
+/// A transfer in moves an EXISTING registration: `TransferDomain` "[t]ransfers a domain
+/// from another registrar to Amazon Route 53". So the answer turns on where the name's
+/// registration lives rather than on whether the name could be registered, and each of
+/// the three situations this registry can be in for a name has its own answer.
+///
+/// Three of the model's `Transferable` members cannot arise from what this registry
+/// knows: `DONT_KNOW` and `PENDING` both describe a registry that did not answer in
+/// time, which never happens to an in-process store; `PREMIUM_DOMAIN` describes a name
+/// with registry premium pricing, and every name here is priced at its TLD's standard
+/// rate; and `DOMAIN_IN_ANOTHER_ACCOUNT` describes a name held by another Amazon Web
+/// Services account, which this emulator has no notion of — a name it holds for somebody
+/// else is held OUTSIDE Route 53. Nor is a name ever `TRANSFERABLE`: the only
+/// registrations this registry holds are this account's own, which are here already, and
+/// third parties', which move only on the authorization of the registrant who holds them
+/// (the `AuthCode` the losing registrar issues), and this registrar has no way to obtain
+/// one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Transferability {
+    /// The calling account already holds the name.
+    DomainInOwnAccount,
+    /// Another registrant holds it, outside this registrar.
+    HeldElsewhere,
+    /// No registry holds the name, so there is no registration to move at all.
+    NotRegistered,
+}
+
+impl Transferability {
+    /// The `Transferable` enum member this answer is reported as.
+    pub fn member(self) -> &'static str {
+        match self {
+            Self::DomainInOwnAccount => TRANSFERABLE_DOMAIN_IN_OWN_ACCOUNT,
+            Self::HeldElsewhere | Self::NotRegistered => TRANSFERABLE_UNTRANSFERABLE,
+        }
+    }
+
+    /// The explanation `CheckDomainTransferabilityResponse`'s `Message` carries, which
+    /// the member's own documentation returns "for when a domain can't be transferred" —
+    /// so every answer here carries one, each naming the requested domain and what the
+    /// caller would have to do about it.
+    pub fn message(self, name: &str) -> String {
+        match self {
+            Self::DomainInOwnAccount => {
+                format!("The domain {name} already exists in the current Amazon Web Services account.")
+            }
+            Self::HeldElsewhere => format!(
+                "The domain {name} is registered with another registrant. Ask the current \
+                 registrant to authorize the transfer and then try again."
+            ),
+            Self::NotRegistered => format!(
+                "The domain {name} isn't registered. Register the domain first and then try again."
+            ),
+        }
     }
 }
 

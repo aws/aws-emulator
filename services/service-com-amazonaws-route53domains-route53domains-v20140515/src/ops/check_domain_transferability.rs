@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op CheckDomainTransferability
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `CheckDomainTransferability`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
+//! Answers for the registry, out of the same record `CheckDomainAvailability` reads,
+//! told apart by WHERE the name's registration lives: a transfer in moves an EXISTING
+//! registration from another registrar, so a name this account already holds is
+//! `DOMAIN_IN_OWN_ACCOUNT` and every other name is `UNTRANSFERABLE` — a name no registry
+//! holds has no registration to move, and a third party's registration moves only on
+//! that registrant's authorization. Every answer carries the `Message` explaining it and
+//! the standard transfer price of the name's TLD.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`CheckDomainTransferability::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! This operation is a pure read: it never writes.
 //!
 //! ## Shape of an operation
 //!
@@ -133,6 +133,30 @@ pub struct CheckDomainTransferability<Eng> {
     engine: ::std::sync::Arc<Eng>,
 }
 
+/// How this operation refuses a `DomainName` it cannot resolve: `InvalidInput` for a
+/// malformed name, `UnsupportedTLD` for a TLD the registrar does not offer. Both are
+/// errors this operation's model declares, and the name is resolved by the one rule
+/// every operation that takes a `DomainName` applies.
+fn refuse_domain_name(
+    raw: &str,
+    err: crate::state::DomainNameError,
+) -> CheckDomainTransferabilityError {
+    match err {
+        crate::state::DomainNameError::Invalid => {
+            CheckDomainTransferabilityErrorModeled::InvalidInput(InvalidInput {
+                message: Some(crate::state::invalid_domain_name_message(raw)),
+            })
+            .into()
+        }
+        crate::state::DomainNameError::UnsupportedTld => {
+            CheckDomainTransferabilityErrorModeled::UnsupportedTLD(UnsupportedTLD {
+                message: Some(crate::state::unsupported_tld_message(raw)),
+            })
+            .into()
+        }
+    }
+}
+
 impl<Eng> CheckDomainTransferability<Eng> {
     /// Construct the operation from the shared engine. INFALLIBLE — the engine is a
     /// construction-time dependency, so engine access is guaranteed by the time any
@@ -159,18 +183,34 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `CheckDomainTransferability` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(CheckDomainTransferabilityErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("CheckDomainTransferability"))
+        // `ctx` carries request metadata only; this operation needs none of it.
+        let _ = ctx;
+        // `AuthCode` is the code the registrar for the TLD "requires ... to transfer the
+        // domain", issued by the registrar the name is leaving. Nothing in this registry
+        // can check a code against another registrar, and the operation documents no
+        // answer that depends on one, so it selects nothing here. The member is
+        // `@sensitive`: it is neither stored nor reported.
+        let name = crate::state::resolve_domain_name(&input.domain_name)
+            .map_err(|err| refuse_domain_name(&input.domain_name, err))?;
+
+        let state = crate::state::service_state(&*self.engine)
+            .ok_or_else(|| crate::state::state_unavailable(Self::NAME))?;
+        let transferability = state.lock().transferability(&name);
+
+        Ok(CheckDomainTransferabilityOutput {
+            transferability: Some(DomainTransferability {
+                transferable: Some(transferability.member().to_string()),
+            }),
+            // `Message` "[p]rovides an explanation for when a domain can't be
+            // transferred", which is every answer this registry gives.
+            message: Some(transferability.message(&name)),
+            // `Price` "is returned only when Route 53 can determine whether the domain is
+            // transferable" — which this registry always can, since it holds the record
+            // the answer comes out of — and it is the standard transfer rate of the name's
+            // TLD, not an individual name's registry premium.
+            price: Some(crate::state::standard_transfer_price(crate::state::tld_of(
+                &name,
+            ))),
+        })
     }
 }

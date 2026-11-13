@@ -21,8 +21,10 @@
 mod registry;
 pub use registry::{
     seeded_registrations, standard_registration_price, standard_registration_rate,
-    unavailable_domain_message, AVAILABILITY_AVAILABLE, AVAILABILITY_UNAVAILABLE, CURRENCY_USD,
-    DEFAULT_STANDARD_REGISTRATION_RATE, PRICE_TYPE_STANDARD, STANDARD_REGISTRATION_RATES,
+    standard_transfer_price, unavailable_domain_message, Transferability, AVAILABILITY_AVAILABLE,
+    AVAILABILITY_UNAVAILABLE, CURRENCY_USD, DEFAULT_STANDARD_REGISTRATION_RATE,
+    PRICE_TYPE_STANDARD, STANDARD_REGISTRATION_RATES, TRANSFERABLE_DOMAIN_IN_OWN_ACCOUNT,
+    TRANSFERABLE_UNTRANSFERABLE,
 };
 
 use crate::ops::types::{ContactDetail, Nameserver};
@@ -171,6 +173,22 @@ impl ComAmazonawsRoute53domainsRoute53domainsV20140515State {
     /// already registered.
     pub fn is_registered(&self, name: &str) -> bool {
         self.domains.contains_key(name) || self.registered_elsewhere.contains(name)
+    }
+
+    /// What the registry's record of `name` means for transferring it IN to this
+    /// registrar — the question `CheckDomainTransferability` answers.
+    ///
+    /// It is the same record [`Self::is_registered`] reads, told apart by WHERE the
+    /// registration lives: this account's own domains, a third party's registration
+    /// outside this registrar, or no registration at all.
+    pub fn transferability(&self, name: &str) -> Transferability {
+        if self.domains.contains_key(name) {
+            Transferability::DomainInOwnAccount
+        } else if self.registered_elsewhere.contains(name) {
+            Transferability::HeldElsewhere
+        } else {
+            Transferability::NotRegistered
+        }
     }
 
     /// Append the operation record a mutating call owes and return its `OperationId`.
