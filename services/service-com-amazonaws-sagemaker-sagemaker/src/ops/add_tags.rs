@@ -2,9 +2,10 @@
 
 //! @op AddTags
 //!
-//! Attaches tags to the resource `ResourceArn` names and answers that resource's whole
-//! tag set, which is what the modelled output documents ("A list of tags associated with
-//! the SageMaker resource").
+//! Attaches tags to the resource `ResourceArn` names and answers the tags THIS call
+//! associated with it — "a list of tags associated with the SageMaker resource" (the
+//! modelled output), read back out of the store after the merge so each pair carries the
+//! value the resource now holds. The resource's WHOLE set is what `ListTags` reports.
 //!
 //! A tag key inside the namespace Amazon Web Services keeps for its own tags
 //! ([`crate::state::RESERVED_TAG_KEY_PREFIX`]) is refused with a 400
@@ -16,6 +17,13 @@
 //! stored on the resource's OWN record (through
 //! [`crate::state::ComAmazonawsSagemakerSagemakerState::tags_mut`]), beside the ones its
 //! `Create*` stored, so one resource has exactly one tag set however it was tagged.
+//!
+//! The answer carries one entry per distinct key the request named, in the order it named
+//! them; a key the call did not touch is part of the resource's set but not of this
+//! answer, which is what recorded SageMaker answers (the recorded answer to an `AddTags`
+//! over an already-tagged resource holds exactly the pairs that call wrote). The
+//! resource's own order is left exactly as it was, so `ListTags` still pages it in the
+//! order the tags were added and a `NextToken` keeps resolving against it.
 //!
 //! ## Shape of an operation
 //!
@@ -211,7 +219,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         }
 
         let mut changed = false;
+        // The ORDER the request named its keys in, so the response below can report the
+        // tags this call wrote ahead of the ones it left alone. Recorded as the merge runs,
+        // because a key repeated inside one request is written once and names one position.
+        let mut written: Vec<String> = Vec::new();
         for tag in input.tags {
+            if !written.contains(&tag.key) {
+                written.push(tag.key.clone());
+            }
             match tags.iter_mut().find(|held| held.key == tag.key) {
                 // "Adds or OVERWRITES one or more tags": the key keeps its place in the
                 // set and takes the request's value. The same key sent twice in ONE
@@ -230,10 +245,20 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 }
             }
         }
-        // The output is the resource's whole tag set after the merge, which is what the
-        // modelled `Tags` member documents, read back out of the store rather than echoed
-        // from the request: what a caller reads here is what `ListTags` reports.
-        let associated = tags.clone();
+        // The output is the tags THIS CALL associated with the resource — "a list of tags
+        // associated with the SageMaker resource" — read back out of the store after the
+        // merge rather than echoed from the request, so each pair is reported as the
+        // resource now holds it and `ListTags` reports the same values. The keys the call
+        // did not touch are not part of this answer: a caller that adds one tag reads that
+        // one tag back, whatever else the resource carries, and reads the whole set with
+        // `ListTags`. The resource's own order — what `ListTags` pages through and what a
+        // `NextToken` is resolved against — is left exactly as it was.
+        let mut associated: Vec<Tag> = Vec::with_capacity(written.len());
+        for key in &written {
+            if let Some(tag) = tags.iter().find(|held| held.key == *key) {
+                associated.push(tag.clone());
+            }
+        }
         drop(store);
 
         // Recorded only where the merge really moved the stored set, the same rule

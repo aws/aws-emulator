@@ -2,10 +2,11 @@
 
 //! @op CreateImage
 //! IMPLEMENTED: registers an image in `crate::state` under its `ImageName`, minting the
-//! `ImageArn` from the request's region, and refuses a name already in use with the
-//! modelled `ResourceInUse`. A created image is reported `CREATING` until the instant
-//! the clock owes it its settled status. This is the ONLY file to touch for this
-//! operation.
+//! `ImageArn` from the request's region. A create that REPEATS the request the stored
+//! image was registered by is answered with that image's ARN (the retry path), and a name
+//! re-used for a DIFFERENT image is refused with the modelled `ResourceInUse`. A created
+//! image is reported `CREATING` until the instant the clock owes it its settled status.
+//! This is the ONLY file to touch for this operation.
 //!
 //! This create is ACCEPTED whatever the `RoleArn` names: the image is built under that
 //! role, and a role this account's IAM answers SageMaker cannot assume is reported on the
@@ -174,6 +175,47 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 .then(|| crate::state::admission::unable_to_assume_role_with_arn(&input.role_arn));
 
         let mut store = state.lock();
+        // The name is resolved BEFORE the quota below: a request the account has already
+        // satisfied adds no record, so neither the repeat nor the conflict depends on the
+        // store's utilization.
+        //
+        // The model documents `ImageName` as "must be unique to your account", so the name
+        // is never overwritten. What a name already held answers depends on WHAT the
+        // request asks for:
+        //
+        // * the SAME image the stored one was registered by — every member of the create
+        //   stating what the image already holds — is a REPEAT of a request this account
+        //   has already satisfied, which is the SDK's own retry path, so it is answered
+        //   with the stored image's ARN and nothing is created a second time. The response
+        //   is the identity the first call minted, so a retried create and the call it
+        //   retries are indistinguishable to the caller;
+        // * a DIFFERENT image under a name already taken is refused with the modelled
+        //   in-use error: otherwise the caller reads a 200 for an image it did not create,
+        //   and the image it did create is gone.
+        if let Some(held) = store.images.get(&input.image_name) {
+            if held.was_created_by(
+                input.description.as_deref(),
+                input.display_name.as_deref(),
+                &input.role_arn,
+                input.tags.as_deref().unwrap_or_default(),
+            ) {
+                let arn = held.arn.clone();
+                return Ok(CreateImageOutput {
+                    image_arn: Some(arn),
+                });
+            }
+            return Err(CreateImageErrorModeled::ResourceInUse(ResourceInUse {
+                // SageMaker words this refusal for the IMAGE: the resource type, the
+                // member it is addressed by with the name the request submitted, and what
+                // the caller should do instead — not an ARN synthesised from that name.
+                message: Some(format!(
+                    "The Image with ImageName {} already exists. Please use a different \
+                     ImageName.",
+                    input.image_name
+                )),
+            })
+            .into());
+        }
         // The store is bounded, so a caller varying `ImageName` cannot grow it without
         // end. `ResourceLimitExceeded` is the limit failure this operation models.
         if !store.images_below_quota() {
@@ -183,23 +225,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                      utilization of {} and a request delta of 1.",
                     crate::state::IMAGE_QUOTA,
                     store.images.len()
-                )),
-            })
-            .into());
-        }
-        // The model documents `ImageName` as "must be unique to your account", so a name
-        // already in use is refused with the modelled in-use error rather than
-        // overwritten: otherwise the caller reads a 200 for an image it did not create,
-        // and the image it did create is gone.
-        if store.images.contains_key(&input.image_name) {
-            return Err(CreateImageErrorModeled::ResourceInUse(ResourceInUse {
-                // SageMaker words this refusal for the IMAGE: the resource type, the
-                // member it is addressed by with the name the request submitted, and what
-                // the caller should do instead — not an ARN synthesised from that name.
-                message: Some(format!(
-                    "The Image with ImageName {} already exists. Please use a different \
-                     ImageName.",
-                    input.image_name
                 )),
             })
             .into());

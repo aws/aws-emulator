@@ -7,8 +7,10 @@
 //! does not hold with the modelled `ResourceNotFound`. This is the ONLY file to touch
 //! for this operation.
 //!
-//! No `ExportArtifacts` is reported: nothing rendered the model card PDF, so there is no
-//! object to name — see `crate::state::MODEL_CARD_EXPORT_NOT_RUN_FAILURE`.
+//! `ExportArtifacts` names the object the job's export WROTE, once the job has reached
+//! `Completed`; a job still running or one that wrote nothing reports none, beside the
+//! `FailureReason` saying why (`crate::state::run_model_card_export`).
+//!
 //! ## Shape of an operation
 //!
 //! Each operation is a struct that owns the shared engine and implements
@@ -209,10 +211,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             created_at: crate::state::timestamp(job.created_at),
             last_modified_at: crate::state::timestamp(job.last_modified_at),
             failure_reason: job.failure_reason.clone(),
-            // Nothing rendered the card's PDF, so there is no artifact to name: the
-            // optional member stays absent rather than pointing at an object nothing
-            // wrote.
-            export_artifacts: None,
+            // The document the job's export WROTE, once the job has reached `Completed`:
+            // "the Amazon S3 URI of the exported model artifacts". A job still running,
+            // or one that wrote nothing, names no artifact — the member stays absent
+            // rather than pointing at an object nothing wrote.
+            export_artifacts: job
+                .exported_artifact()
+                .map(|uri| ModelCardExportArtifacts {
+                    s3_export_artifacts: uri.to_string(),
+                }),
         };
         let arn = job.arn.clone();
         drop(store);

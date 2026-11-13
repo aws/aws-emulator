@@ -18332,6 +18332,7 @@ dependencies = [
  "flate2",
  "hex",
  "http",
+ "pdf-writer",
  "percent-encoding",
  "regex",
  "serde_json",

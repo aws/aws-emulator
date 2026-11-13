@@ -208,6 +208,37 @@ impl Image {
         }
         true
     }
+
+    /// Whether a `CreateImage` carrying these members states exactly the image this record
+    /// already holds — i.e. whether that create is a REPEAT of the one that registered it.
+    ///
+    /// Every member a create can state takes part: the description, the display name, the
+    /// role the image is built under, and the tag set. The tags are compared as the SET
+    /// they are ("Tag keys must be unique per resource", `AddTags`), so the same pairs in
+    /// another order are the same request, and a create that states no tags at all is the
+    /// same as one that states an empty list. A member stating anything else describes a
+    /// DIFFERENT image, and the caller is told the name is taken rather than handed this
+    /// image's ARN for a configuration it did not ask for.
+    pub fn was_created_by(
+        &self,
+        description: Option<&str>,
+        display_name: Option<&str>,
+        role_arn: &str,
+        tags: &[Tag],
+    ) -> bool {
+        self.description.as_deref() == description
+            && self.display_name.as_deref() == display_name
+            && self.role_arn == role_arn
+            && tag_set(&self.tags) == tag_set(tags)
+    }
+}
+
+/// A tag list as the SET of (key, value) pairs it states, so two lists holding the same
+/// pairs in different orders compare equal.
+fn tag_set(tags: &[Tag]) -> BTreeMap<&str, &str> {
+    tags.iter()
+        .map(|tag| (tag.key.as_str(), tag.value.as_str()))
+        .collect()
 }
 
 impl ImageVersion {

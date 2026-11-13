@@ -149,6 +149,9 @@ pub fn is_model_card_content(content: &str) -> bool {
 pub const MODEL_CARD_EXPORT_STATUS_IN_PROGRESS: &str = "InProgress";
 /// See [`MODEL_CARD_EXPORT_STATUS_IN_PROGRESS`].
 pub const MODEL_CARD_EXPORT_STATUS_FAILED: &str = "Failed";
+/// See [`MODEL_CARD_EXPORT_STATUS_IN_PROGRESS`]: the member for an export that produced its
+/// document (`crate::state::model_card_export`).
+pub const MODEL_CARD_EXPORT_STATUS_COMPLETED: &str = "Completed";
 
 /// How long after `CreateModelCardExportJob` the clock owes the job's terminal status.
 ///
@@ -158,23 +161,6 @@ pub const MODEL_CARD_EXPORT_STATUS_FAILED: &str = "Failed";
 /// and uploading the document takes; the span is compressed, never zero, and the due
 /// instant is stored rather than slept on.
 pub const MODEL_CARD_EXPORT_JOB_SETTLES_AFTER: Duration = Duration::from_millis(300);
-
-/// Why a model card export job this emulator accepted ends in the modelled `Failed`
-/// status.
-///
-/// The job renders the card's version as the model card PDF document SageMaker
-/// publishes and writes it to the request's `OutputConfig$S3OutputPath`. That renderer
-/// is AWS's own and this emulator does not have it, and the engine contract
-/// (`vendor/engine/src/lib.rs`) forbids reporting a status or an artifact for work
-/// nothing performed — so reporting `Completed` with `ExportArtifacts` naming an object
-/// nothing wrote would claim an export that never happened. The job therefore ends in
-/// the status the model carries for an export that produced no document, with this
-/// reason saying why, and no `ExportArtifacts` beside it. Everything around the render —
-/// resolving the card and its version, accepting the job, minting its ARN, replaying it,
-/// reporting its terminal status — is real.
-pub const MODEL_CARD_EXPORT_NOT_RUN_FAILURE: &str =
-    "This emulator renders no model card PDF, so the model card was not exported and no \
-     artifact was written to the job's S3OutputPath.";
 
 /// The store key one model card export job is held under: the card it exports and the
 /// job's own name.
@@ -215,6 +201,12 @@ pub fn model_card_export_job_key_from_arn(arn: &str, region: &str) -> Option<Str
 /// exported rather than whichever is latest by then. `ends_at` is the instant the clock
 /// owes the move out of `InProgress`; it is stored, never slept on, and materialised by
 /// whichever reporting call first runs at or after it ([`ModelCardExportJob::settle_status`]).
+///
+/// `outcome` is what the job's own export RAN ([`run_model_card_export`]): the `s3://` URI
+/// of the document it wrote, or why it wrote none. It is recorded when the export runs and
+/// is what the terminal status the clock owes is read off, so the status, the
+/// `FailureReason` and the `ExportArtifacts` a read reports always agree with what
+/// happened.
 #[derive(Debug, Clone)]
 pub struct ModelCardExportJob {
     pub name: String,
@@ -224,6 +216,7 @@ pub struct ModelCardExportJob {
     pub status: String,
     pub output_config: ModelCardExportOutputConfig,
     pub failure_reason: Option<String>,
+    pub outcome: ModelCardExportOutcome,
     pub created_at: SystemTime,
     pub last_modified_at: SystemTime,
     pub ends_at: SystemTime,
@@ -237,18 +230,42 @@ impl ModelCardExportJob {
     /// the result, and `LastModifiedAt` takes the instant the move was due rather than
     /// "now", so the value is stable across later reads.
     ///
-    /// The terminal status is [`MODEL_CARD_EXPORT_STATUS_FAILED`] with
-    /// [`MODEL_CARD_EXPORT_NOT_RUN_FAILURE`]; see that constant for why an export this
-    /// emulator accepted cannot end `Completed`.
+    /// The terminal status is the one the job's own [`ModelCardExportJob::outcome`] names:
+    /// [`MODEL_CARD_EXPORT_STATUS_COMPLETED`] for an export that wrote its document, and
+    /// [`MODEL_CARD_EXPORT_STATUS_FAILED`] carrying the reason for one that did not.
     ///
     /// Answers whether the transition happened on this call, so the caller can record it.
     pub fn settle_status(&mut self, now: SystemTime) -> bool {
-        if self.status == MODEL_CARD_EXPORT_STATUS_IN_PROGRESS && now >= self.ends_at {
-            self.status = MODEL_CARD_EXPORT_STATUS_FAILED.to_string();
-            self.failure_reason = Some(MODEL_CARD_EXPORT_NOT_RUN_FAILURE.to_string());
-            self.last_modified_at = self.ends_at;
-            return true;
+        if self.status != MODEL_CARD_EXPORT_STATUS_IN_PROGRESS || now < self.ends_at {
+            return false;
         }
-        false
+        match &self.outcome {
+            ModelCardExportOutcome::Exported(_) => {
+                self.status = MODEL_CARD_EXPORT_STATUS_COMPLETED.to_string();
+            }
+            ModelCardExportOutcome::Failed(reason) => {
+                self.status = MODEL_CARD_EXPORT_STATUS_FAILED.to_string();
+                self.failure_reason = Some(reason.clone());
+            }
+        }
+        self.last_modified_at = self.ends_at;
+        true
+    }
+
+    /// The document this job's export wrote, once the job has REACHED
+    /// [`MODEL_CARD_EXPORT_STATUS_COMPLETED`], and `None` before that.
+    ///
+    /// A job still `InProgress` names no artifact: the export's own object is reported
+    /// beside the status that says the export finished, never ahead of it.
+    #[must_use]
+    pub fn exported_artifact(&self) -> Option<&str> {
+        match &self.outcome {
+            ModelCardExportOutcome::Exported(uri)
+                if self.status == MODEL_CARD_EXPORT_STATUS_COMPLETED =>
+            {
+                Some(uri.as_str())
+            }
+            _ => None,
+        }
     }
 }

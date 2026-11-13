@@ -114,6 +114,14 @@ fn error_code(body: &Value) -> String {
         .to_string()
 }
 
+/// The `message` an error body carries.
+fn message(body: &Value) -> String {
+    body.get("message")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string()
+}
+
 fn str_field(body: &Value, member: &str) -> String {
     body.get(member)
         .and_then(Value::as_str)
@@ -563,8 +571,10 @@ async fn a_duplicate_transform_job_name_is_refused_and_the_stored_job_survives()
     }
 }
 
-/// RULE: a `ModelName` this account and region holds no model for is refused with
-/// `ResourceNotFound` and nothing is persisted, so the job cannot be described.
+/// RULE: a `ModelName` this account and region holds no model for is refused with a 400
+/// `ValidationException` naming the model the request asked for — a dangling reference to
+/// another resource is a property of the REQUEST — and nothing is persisted, so the job
+/// cannot be described.
 #[tokio::test]
 async fn a_transform_job_naming_an_unknown_model_is_refused_and_persists_nothing() {
     // Rows differ along the name shape and along what else the account holds: a store
@@ -594,8 +604,14 @@ async fn a_transform_job_naming_an_unknown_model_is_refused_and_persists_nothing
         );
         assert_eq!(
             error_code(&refused),
-            "ResourceNotFound",
+            "ValidationException",
             "case {case}: error code, got {refused:?}"
+        );
+        assert_eq!(
+            message(&refused),
+            format!("Could not find model \"{requested}\"."),
+            "case {case}: the refusal must name the model the request asked for, got \
+             {refused:?}"
         );
 
         let (status, missing) = emulator

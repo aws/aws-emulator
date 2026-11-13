@@ -38,6 +38,13 @@ const REGION: &str = "us-east-1";
 /// Long enough to pass `sm::TRANSIENT_STATE_SETTLES_AFTER` (300 ms).
 const PAST_SETTLE_DUE: Duration = Duration::from_millis(600);
 
+/// A deadline far longer than any span this state gives a transient status, so a loaded
+/// runner does not decide whether a poll loop terminates.
+const TERMINAL_DEADLINE: Duration = Duration::from_secs(30);
+
+/// How long a poll loop waits before looking again.
+const POLL_INTERVAL: Duration = Duration::from_millis(25);
+
 /// This service's one store, as every handler reaches it.
 fn store(
     emulator: &Emulator,
@@ -772,8 +779,9 @@ async fn update_model_card_applies_one_change_at_a_time() {
 }
 
 /// RULE: an export job is stored against its card and readable by its ARN; it leaves
-/// `InProgress` only when the clock says so, and ends in the modelled failure state
-/// because this emulator renders no PDF.
+/// `InProgress` only when the clock says so, and ends in the terminal status its own
+/// export produced — here the modelled failure, because every row's output location names
+/// a bucket this account does not hold, so no document could be written to it.
 #[tokio::test]
 async fn a_model_card_export_job_reads_back_and_settles_on_the_clock() {
     let emulator = Emulator::new();
@@ -861,23 +869,41 @@ async fn a_model_card_export_job_reads_back_and_settles_on_the_clock() {
         "case unknown card version: expected 400 ResourceNotFound, got {status} {parsed}"
     );
 
-    tokio::time::sleep(PAST_SETTLE_DUE).await;
     for (job, arn) in &arns {
-        let described = emulator
-            .ok(
-                "DescribeModelCardExportJob",
-                &json!({"ModelCardExportJobArn": arn}),
-            )
-            .await;
+        // Wait for the CONDITION — the move out of `InProgress` the clock owes — rather
+        // than for a fixed time, looking again until it holds or a generous deadline
+        // passes.
+        let deadline = std::time::Instant::now() + TERMINAL_DEADLINE;
+        let described = loop {
+            let described = emulator
+                .ok(
+                    "DescribeModelCardExportJob",
+                    &json!({"ModelCardExportJobArn": arn}),
+                )
+                .await;
+            if str_field(&described, "Status") != sm::MODEL_CARD_EXPORT_STATUS_IN_PROGRESS {
+                break described;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "case {job}: the job must leave InProgress, last read {described}"
+            );
+            tokio::time::sleep(POLL_INTERVAL).await;
+        };
         assert_eq!(
             str_field(&described, "Status"),
             sm::MODEL_CARD_EXPORT_STATUS_FAILED,
             "case {job}: once the clock is past due the job is terminal, got {described}"
         );
-        assert_eq!(
-            described.get("FailureReason").and_then(Value::as_str),
-            Some(sm::MODEL_CARD_EXPORT_NOT_RUN_FAILURE),
-            "case {job}: a failed job must say why, got {described}"
+        let reason = described
+            .get("FailureReason")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        assert!(
+            reason.starts_with("Model card export failed")
+                && reason.contains("s3://bucket/cards"),
+            "case {job}: a failed job must say why and name the object it was writing \
+             under the output path, got {described}"
         );
         assert!(
             described.get("ExportArtifacts").is_none(),

@@ -1098,6 +1098,11 @@ pub use mlflow_tracking_server::*;
 pub mod model_card;
 pub use model_card::*;
 
+/// What a model card EXPORT runs — the PDF it renders and the object it writes: see
+/// `state/model_card_export.rs`.
+pub mod model_card_export;
+pub use model_card_export::*;
+
 /// The notebook-instance slice: see `state/notebook_instance.rs`.
 pub mod notebook_instance;
 pub use notebook_instance::*;

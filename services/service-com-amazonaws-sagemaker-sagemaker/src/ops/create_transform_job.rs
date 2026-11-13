@@ -4,7 +4,8 @@
 //!
 //! Starts a batch transform job: validates the sizing rules the service documents but
 //! does not model, refuses a duplicate name (`ResourceInUse`) or a `ModelName` no stored
-//! model answers to (`ResourceNotFound`), refuses an input location the model's execution
+//! model answers to (400 `ValidationException`, the class SageMaker refuses a dangling
+//! reference to another resource with), refuses an input location the model's execution
 //! role cannot read (400 `ValidationException`, see [`crate::state::s3_access`]), then
 //! persists the job as `InProgress` with the instant the clock owes it a terminal status,
 //! and answers its ARN.
@@ -261,16 +262,22 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             }
             // "ModelName must be the name of an existing Amazon SageMaker model within an
             // Amazon Web Services Region in an Amazon Web Services account" (this
-            // operation's model doc), so a job naming no stored model is refused with the
-            // modelled not-found error and nothing is persisted.
+            // operation's model doc), so a job naming no stored model is refused and nothing
+            // is persisted. A dangling REFERENCE to another resource is a property of the
+            // REQUEST — the caller has to change the member it sent — so SageMaker refuses it
+            // as a 400 `ValidationException` carrying the hosting family's own sentence, the
+            // way every other create that resolves a model by name does
+            // (`create_endpoint_config`, `create_endpoint`, `create_inference_component`,
+            // `create_inference_recommendations_job`); the modelled `ResourceNotFound` states
+            // a miss of the resource the call itself addresses, which here is the transform
+            // job this request is creating.
             let Some(model) = store.models.get(&input.model_name) else {
-                return Err(CreateTransformJobErrorModeled::ResourceNotFound(ResourceNotFound {
-                    message: Some(crate::state::could_not_find(
+                return Err(crate::scaffolded::Scaffolded::validation(
+                    crate::state::could_not_find(
                         crate::state::MODEL_KIND_LABEL,
                         &input.model_name,
-                    )),
-                })
-                .into());
+                    ),
+                ));
             };
             model.execution_role_arn.clone()
         };

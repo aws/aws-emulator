@@ -520,8 +520,9 @@ async fn a_missing_hosting_resource_is_quoted_as_the_request_named_it() {
         );
     }
 
-    // The same rule on the modelled not-found of `CreateTransformJob`, whose `ModelName`
-    // reference is resolved the same way.
+    // The same rule on `CreateTransformJob`, whose `ModelName` reference is resolved the
+    // same way: a dangling reference to another resource is a property of the REQUEST, so
+    // it is refused with the same 400 `ValidationException` the hosting creates answer.
     let emulator = Emulator::new();
     let (status, refused) = emulator
         .call(
@@ -533,7 +534,7 @@ async fn a_missing_hosting_resource_is_quoted_as_the_request_named_it() {
         (status, error_code(&refused).as_str(), message(&refused)),
         (
             400,
-            "ResourceNotFound",
+            "ValidationException",
             "Could not find model \"absent-model\".".to_string()
         ),
         "case \"a transform job on a missing model\": expected the request's name, \

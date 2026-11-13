@@ -17,8 +17,8 @@
 //! hyperparameter tuning job, an Inference Recommender job, a HyperPod cluster and the
 //! cluster policy that hangs off it), every shape of `TagKey`/`TagValue` the modelled
 //! grammar admits (every script, both ends of each published length bound and one past
-//! it), overwrite-by-key, removal by key, the refusal for an ARN naming no resource, and
-//! the 50-tags-per-resource bound.
+//! it), overwrite-by-key, removal by key, WHICH tags an `AddTags` answer reports, the
+//! refusal for an ARN naming no resource, and the 50-tags-per-resource bound.
 
 use serde_json::{json, Value};
 
@@ -498,10 +498,11 @@ async fn tag_keys_and_values_round_trip_byte_for_byte() {
             )
             .await;
         expected.push((key.clone(), value.clone()));
+        // The answer carries the tag THIS call wrote, as the resource now holds it.
         assert_eq!(
             tag_pairs(&added, "Tags"),
-            expected,
-            "case {case}: AddTags must answer every tag the resource now carries"
+            vec![(key.clone(), value.clone())],
+            "case {case}: AddTags must answer the tag it wrote"
         );
 
         let reported = listed(&emulator, &arn).await;
@@ -623,10 +624,19 @@ async fn adding_a_key_the_resource_already_carries_overwrites_its_value() {
                 &json!({ "ResourceArn": arn, "Tags": tags_request(&added) }),
             )
             .await;
+        // The answer carries the keys THIS call wrote, one entry per distinct key, in the
+        // order the request named them and with the value the key ended up holding.
+        let mut written: Vec<(String, String)> = Vec::new();
+        for (key, value) in &added {
+            match written.iter_mut().find(|(held, _)| held == key) {
+                Some(held) => held.1 = (*value).to_string(),
+                None => written.push(((*key).to_string(), (*value).to_string())),
+            }
+        }
         assert_eq!(
             tag_pairs(&answered, "Tags"),
-            owned(&expected),
-            "case {case}: AddTags must answer the merged set"
+            written,
+            "case {case}: AddTags must answer the tags it wrote"
         );
         assert_eq!(
             listed(&emulator, &arn).await,
@@ -947,9 +957,14 @@ async fn a_resource_cannot_be_taken_past_the_fifty_tag_bound() {
         )
         .await;
     assert_eq!(
-        tag_pairs(&accepted, "Tags").len(),
-        TAGS_PER_RESOURCE,
+        tag_pairs(&accepted, "Tags"),
+        vec![("extra".to_string(), "x".to_string())],
         "removing a key must make room for another, got {accepted:?}"
+    );
+    assert_eq!(
+        listed(&emulator, &arn).await.len(),
+        TAGS_PER_RESOURCE,
+        "the resource must be back at the bound"
     );
 }
 
@@ -1033,6 +1048,125 @@ async fn list_tags_reports_one_page_of_a_bounded_tag_set() {
             error_code(&parsed),
             "ValidationException",
             "case token={token:?}: error code, got {parsed:?}"
+        );
+    }
+}
+
+/// RULE: `AddTags` answers the tags THIS call associated with the resource — one entry per
+/// distinct key the request named, in the order it named them, carrying the value the key
+/// ends up holding — and not the keys the call left alone, which stay in the resource's own
+/// set for `ListTags` to report in the order it holds them.
+#[tokio::test]
+async fn add_tags_answers_the_tags_the_call_associated_with_the_resource() {
+    // Rows differ along what the rule generalises over: how many keys the resource already
+    // carries, how many the request writes, whether each of them is new or an overwrite,
+    // where the overwritten keys sit in the stored order, and a key repeated inside one
+    // request.
+    type Row<'case> = (
+        &'case str,
+        Vec<(&'case str, &'case str)>,
+        Vec<(&'case str, &'case str)>,
+        Vec<(&'case str, &'case str)>,
+        Vec<(&'case str, &'case str)>,
+    );
+    // (case, the tags the resource already carries, the request, the answer, the stored set)
+    let rows: Vec<Row<'_>> = vec![
+        (
+            "one new key beside one held key",
+            vec![("env", "prod")],
+            vec![("Owner", "ml-platform")],
+            vec![("Owner", "ml-platform")],
+            vec![("env", "prod"), ("Owner", "ml-platform")],
+        ),
+        (
+            "one new key beside three held keys",
+            vec![("env", "prod"), ("Owner", "ml"), ("tier", "gold")],
+            vec![("Project", "atlas")],
+            vec![("Project", "atlas")],
+            vec![
+                ("env", "prod"),
+                ("Owner", "ml"),
+                ("tier", "gold"),
+                ("Project", "atlas"),
+            ],
+        ),
+        (
+            "two new keys, in the order the request named them",
+            vec![("env", "prod")],
+            vec![("zone", "a"), ("Owner", "ml")],
+            vec![("zone", "a"), ("Owner", "ml")],
+            vec![("env", "prod"), ("zone", "a"), ("Owner", "ml")],
+        ),
+        (
+            "an overwrite of the last held key",
+            vec![("env", "prod"), ("Owner", "ml")],
+            vec![("Owner", "ml-platform")],
+            vec![("Owner", "ml-platform")],
+            vec![("env", "prod"), ("Owner", "ml-platform")],
+        ),
+        (
+            "an overwrite beside a new key",
+            vec![("env", "prod"), ("Owner", "ml")],
+            vec![("Owner", "ml-platform"), ("Project", "atlas")],
+            vec![("Owner", "ml-platform"), ("Project", "atlas")],
+            vec![
+                ("env", "prod"),
+                ("Owner", "ml-platform"),
+                ("Project", "atlas"),
+            ],
+        ),
+        (
+            "a key repeated inside one request is answered once",
+            vec![("env", "prod")],
+            vec![("Owner", "first"), ("Owner", "second")],
+            vec![("Owner", "second")],
+            vec![("env", "prod"), ("Owner", "second")],
+        ),
+        (
+            "every held key overwritten",
+            vec![("env", "prod"), ("Owner", "ml")],
+            vec![("Owner", "ml-platform"), ("env", "staging")],
+            vec![("Owner", "ml-platform"), ("env", "staging")],
+            vec![("env", "staging"), ("Owner", "ml-platform")],
+        ),
+        (
+            "an empty request writes nothing and answers nothing",
+            vec![("env", "prod"), ("Owner", "ml")],
+            vec![],
+            vec![],
+            vec![("env", "prod"), ("Owner", "ml")],
+        ),
+    ];
+
+    for (case, held, requested, answered, stored) in rows {
+        let emulator = Emulator::new();
+        emulator
+            .ok(
+                "CreateExperiment",
+                &json!({
+                    "ExperimentName": "ordered-tags",
+                    "Tags": tags_request(&held),
+                }),
+            )
+            .await;
+        let arn = format!("arn:aws:sagemaker:us-east-1:{ACCOUNT}:experiment/ordered-tags");
+
+        let answer = emulator
+            .ok(
+                "AddTags",
+                &json!({ "ResourceArn": arn, "Tags": tags_request(&requested) }),
+            )
+            .await;
+        assert_eq!(
+            tag_pairs(&answer, "Tags"),
+            owned(&answered),
+            "case {case:?}: AddTags must answer the tags it wrote, got {answer:?}"
+        );
+        assert_eq!(
+            listed(&emulator, &arn).await,
+            owned(&stored),
+            "case {case:?}: the resource's whole set, in its own order, must be what \
+             ListTags reports"
         );
     }
 }

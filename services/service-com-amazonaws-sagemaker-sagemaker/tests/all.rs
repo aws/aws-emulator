@@ -61,6 +61,8 @@ mod control_plane_preconditions;
 mod create_admission;
 #[path = "all/create_refusal_message_fidelity.rs"]
 mod create_refusal_message_fidelity;
+#[path = "all/custom_image_create_retries.rs"]
+mod custom_image_create_retries;
 #[path = "all/custom_image_deletion.rs"]
 mod custom_image_deletion;
 #[path = "all/custom_image_version_deletion.rs"]
@@ -165,6 +167,8 @@ mod mlflow_tracking_server;
 mod model_artifact_admission;
 #[path = "all/model_card_deletion.rs"]
 mod model_card_deletion;
+#[path = "all/model_card_export_documents.rs"]
+mod model_card_export_documents;
 #[path = "all/model_card_export_jobs.rs"]
 mod model_card_export_jobs;
 #[path = "all/model_card_governance.rs"]

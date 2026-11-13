@@ -17,9 +17,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 
-use service_com_amazonaws_sagemaker_sagemaker::state::{
-    MODEL_CARD_EXPORT_JOB_SETTLES_AFTER, MODEL_CARD_EXPORT_NOT_RUN_FAILURE,
-};
+use service_com_amazonaws_sagemaker_sagemaker::state::MODEL_CARD_EXPORT_JOB_SETTLES_AFTER;
 
 use crate::inference_deployment_lifecycle::{error_code, message, str_field, Emulator, ACCOUNT};
 use crate::model_card_governance::{content_with_description, create_body, number_field};
@@ -32,6 +30,22 @@ const SETTLES_AFTER: Duration = MODEL_CARD_EXPORT_JOB_SETTLES_AFTER;
 /// Long enough to pass [`SETTLES_AFTER`], so the terminal status the clock owes is due by
 /// the time the next call runs.
 pub(crate) const PAST_SETTLE_DUE: Duration = SETTLES_AFTER.saturating_mul(3);
+
+/// A deadline far longer than the span the state gives a job's export, so a loaded runner
+/// does not decide whether a poll loop terminates.
+const TERMINAL_DEADLINE: Duration = Duration::from_secs(30);
+
+/// How long a poll loop waits before looking again.
+const POLL_INTERVAL: Duration = Duration::from_millis(25);
+
+/// What a `FailureReason` says for an export that wrote no document, as
+/// `crate::state::export_failed` words it: every row's `S3OutputPath` names a bucket this
+/// account does not hold, so the write is refused and the job fails.
+const EXPORT_FAILED_PREFIX: &str = "Model card export failed";
+
+/// The bucket every [`OUTPUT_PATHS`] entry names, in both spellings — and one this account
+/// does not hold, so every export of this suite is refused by Amazon S3 and the job fails.
+const EXPORT_BUCKET: &str = "export-bucket";
 
 /// `ModelCardExportOutputConfig$S3OutputPath` is an `S3Uri`, modelled
 /// `^(https|s3)://([^/]+)/?(.*)$` (smithy_query query="shape"
@@ -180,8 +194,10 @@ async fn created_export_jobs_round_trip_through_describe() {
             "case {case}: expected OutputConfig to round trip, got {described:?}"
         );
         // The status and the `FailureReason` always agree: `InProgress` with no reason
-        // until the clock's due instant, the modelled `Failed` with the reason after it.
-        // Which of the two this read sees depends only on how long the two calls took.
+        // until the clock's due instant, and after it the terminal status the job's own
+        // export produced — here the modelled `Failed`, because the row's output location
+        // names a bucket this account does not hold. Which of the two this read sees
+        // depends only on how long the two calls took.
         let job_status = str_field(&described, "Status");
         let reason = described
             .get("FailureReason")
@@ -191,7 +207,9 @@ async fn created_export_jobs_round_trip_through_describe() {
         assert!(
             (job_status == "InProgress" && reason.is_none())
                 || (job_status == "Failed"
-                    && reason.as_deref() == Some(MODEL_CARD_EXPORT_NOT_RUN_FAILURE)),
+                    && reason
+                        .as_deref()
+                        .is_some_and(|reason| reason.contains(EXPORT_FAILED_PREFIX))),
             "case {case}: a job is InProgress with no FailureReason until its end is due \
              and Failed with the reason after it, got {described:?}"
         );
@@ -205,7 +223,7 @@ async fn created_export_jobs_round_trip_through_describe() {
         assert_eq!(
             described.get("ExportArtifacts"),
             None,
-            "case {case}: nothing rendered the card, so the job names no artifact, got \
+            "case {case}: no document was written, so the job names no artifact, got \
              {described:?}"
         );
         assert!(
@@ -349,10 +367,10 @@ async fn export_job_arns_carry_the_signed_region_and_the_card_is_named_either_wa
 }
 
 /// RULE: an export job is created `InProgress` and the clock owes it a terminal status a
-/// span later; because this emulator renders no model card PDF, that terminal status is
-/// the modelled `Failed` with a `FailureReason` saying so, no `ExportArtifacts`, and a
-/// `LastModifiedAt` that is stable across later reads. Holds for every job, whatever its
-/// shape.
+/// span later; because every row here exports to a bucket this account does not hold, that
+/// terminal status is the modelled `Failed` with a `FailureReason` naming the location, no
+/// `ExportArtifacts`, and a `LastModifiedAt` that is stable across later reads. Holds for
+/// every job, whatever its shape.
 #[tokio::test]
 async fn an_export_job_reaches_the_terminal_status_the_clock_owes_it() {
     // Rows differ along the shape of the job: the version pinned, the output path and the
@@ -397,29 +415,35 @@ async fn an_export_job_reaches_the_terminal_status_the_clock_owes_it() {
             );
         }
 
-        tokio::time::sleep(PAST_SETTLE_DUE).await;
-
-        let settled = emulator
-            .ok(
-                "DescribeModelCardExportJob",
-                &json!({ "ModelCardExportJobArn": arn }),
-            )
-            .await;
+        // Wait for the CONDITION the clock owes — the move out of `InProgress` — by
+        // looking again until it holds or a generous deadline passes.
+        let deadline = Instant::now() + TERMINAL_DEADLINE;
+        let settled = loop {
+            let read = emulator
+                .ok(
+                    "DescribeModelCardExportJob",
+                    &json!({ "ModelCardExportJobArn": arn }),
+                )
+                .await;
+            if str_field(&read, "Status") != "InProgress" {
+                break read;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "case {case}: the job must leave InProgress, last read {read:?}"
+            );
+            tokio::time::sleep(POLL_INTERVAL).await;
+        };
         assert_eq!(
             str_field(&settled, "Status"),
             "Failed",
             "case {case}: the terminal status the clock owes, got {settled:?}"
         );
-        assert_eq!(
-            str_field(&settled, "FailureReason"),
-            MODEL_CARD_EXPORT_NOT_RUN_FAILURE,
-            "case {case}: FailureReason must say why nothing was exported, got {settled:?}"
-        );
         let reason = str_field(&settled, "FailureReason");
         assert!(
-            reason.contains("renders no model card PDF") && reason.contains("S3OutputPath"),
-            "case {case}: FailureReason must say the card was not rendered and nothing was \
-             written to the job's output path, got {reason:?}"
+            reason.contains(EXPORT_FAILED_PREFIX) && reason.contains(EXPORT_BUCKET),
+            "case {case}: FailureReason must say the export failed and name the object it \
+             was writing under the output path, got {reason:?}"
         );
         assert_eq!(
             settled.get("ExportArtifacts"),
@@ -429,7 +453,7 @@ async fn an_export_job_reaches_the_terminal_status_the_clock_owes_it() {
         // `LastModifiedAt` is the instant the move was DUE, not the instant it was read:
         // the due instant is the stored `CreatedAt + SETTLES_AFTER`, which is exact
         // because it is stored at create time rather than slept on — while the read itself
-        // ran `PAST_SETTLE_DUE` (three spans) after the create.
+        // polled until the move had happened.
         let created_at = number_field(&settled, "CreatedAt");
         let modified_at = number_field(&settled, "LastModifiedAt");
         let due_at = created_at + SETTLES_AFTER.as_secs_f64();

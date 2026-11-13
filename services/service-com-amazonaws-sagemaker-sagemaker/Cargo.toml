@@ -60,6 +60,10 @@ flate2 = "1"
 # image-reference grammar's own expression rather than a hand-rolled walk over its characters
 # (`state::container_image`).
 regex = "1.13"
+# The model card PDF a `CreateModelCardExportJob` writes under its `S3OutputPath`: the
+# document is laid out by the maintained PDF writer rather than by hand, so the object the
+# export leaves in Amazon S3 is a file a PDF reader opens.
+pdf-writer = "0.13"
 # The account's own IAM and STS records, read to decide WHO a request speaks for and what
 # that principal may do: the lineage reads are authorized against the identity-based policies
 # IAM holds for it (`service::authorization`). Both stores live on the same shared engine, so

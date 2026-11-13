@@ -10,9 +10,13 @@
 //! `ConflictException`.
 //! This is the ONLY file to touch for this operation.
 //!
-//! Nothing here renders the model card PDF the export writes to S3, so the job ends in
-//! the modelled `Failed` status with `crate::state::MODEL_CARD_EXPORT_NOT_RUN_FAILURE`;
-//! see that constant for why no `Completed` status and no `ExportArtifacts` are invented.
+//! The export itself RUNS here (`crate::state::run_model_card_export`): the card version
+//! is rendered as the model card PDF and written under the request's
+//! `OutputConfig$S3OutputPath` through the emulator's own Amazon S3, and what that
+//! produced is recorded on the job — so the terminal status the clock owes it is
+//! `Completed` with the `ExportArtifacts` naming the object that was written, or the
+//! modelled `Failed` with the reason nothing was.
+//!
 //! ## Shape of an operation
 //!
 //! Each operation is a struct that owns the shared engine and implements
@@ -180,97 +184,143 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             })
         };
 
-        // The whole resolve-and-insert runs under the one store lock, so when two callers
-        // race on one export-job name exactly one creates it and the other reads the
-        // conflict below.
-        let mut store = state.lock();
+        // Everything decided from the STORE is decided in this block, under one guard
+        // that is RELEASED before the export writes its object: the card and the version
+        // to export, the job's name, and the store's bound. The name is resolved once more
+        // under the guard the record is written with, so when two callers race on one
+        // export-job name exactly one creates it and the other reads the conflict.
+        let (card_name, card_version, card_status, card_content, key, arn) = {
+            let mut store = state.lock();
 
-        // An export job exports a card that exists: a job naming a card the store does
-        // not hold is refused, never accepted against a card nobody created.
-        let Some(card) = store.model_cards.get(card_name) else {
-            return Err(not_found().into());
-        };
+            // An export job exports a card that exists: a job naming a card the store
+            // does not hold is refused, never accepted against a card nobody created.
+            let Some(card) = store.model_cards.get(card_name) else {
+                return Err(not_found().into());
+            };
 
-        // "If a version is not provided, then the latest version of the model card is
-        // exported" (`ModelCardVersion`'s model doc). The version is RESOLVED here and
-        // stored, so a later read reports the version this job exports rather than
-        // whichever is the latest by then.
-        let exported = match input.model_card_version {
-            Some(requested) => card.version(requested),
-            None => card.latest_version(),
-        };
-        let Some(exported) = exported else {
-            return Err(not_found().into());
-        };
-        let card_version = exported.version;
-        // The card's own stored name, so the job's ARN carries it however the request
-        // addressed the card.
-        let card_name = card.name.clone();
+            // "If a version is not provided, then the latest version of the model card is
+            // exported" (`ModelCardVersion`'s model doc). The version is RESOLVED here and
+            // stored, so a later read reports the version this job exports rather than
+            // whichever is the latest by then.
+            let exported = match input.model_card_version {
+                Some(requested) => card.version(requested),
+                None => card.latest_version(),
+            };
+            let Some(exported) = exported else {
+                return Err(not_found().into());
+            };
+            let card_version = exported.version;
+            // The version's own stored status and content: what the export RENDERS, taken
+            // while the card is resolved so the document is the version this job exports
+            // even if the card gains another before the render runs.
+            let card_status = exported.status.clone();
+            let card_content = exported.content.clone();
+            // The card's own stored name, so the job's ARN carries it however the request
+            // addressed the card.
+            let card_name = card.name.clone();
 
-        let key =
-            crate::state::model_card_export_job_key(&card_name, &input.model_card_export_job_name);
+            let key = crate::state::model_card_export_job_key(
+                &card_name,
+                &input.model_card_export_job_name,
+            );
 
-        // A job name already used for this card is refused, never overwritten: otherwise
-        // the caller reads a 200 for a job it did not start and the one it did start is
-        // gone. The name is scoped to the card, because the card's name is part of the
-        // job's ARN. Decided BEFORE the quota below: a name already taken is a conflict
-        // whatever the store's utilization, and re-submitting it would consume no quota.
-        if store.model_card_export_jobs.contains_key(&key) {
-            return Err(CreateModelCardExportJobErrorModeled::ConflictException(
-                ConflictException {
-                    message: Some(format!(
-                        "Model Card Export Job with name {} already exists for model card \
-                         {card_name}. Choose a different name.",
-                        input.model_card_export_job_name
-                    )),
+            // A job name already used for this card is refused, never overwritten:
+            // otherwise the caller reads a 200 for a job it did not start and the one it
+            // did start is gone. The name is scoped to the card, because the card's name
+            // is part of the job's ARN. Decided BEFORE the quota below: a name already
+            // taken is a conflict whatever the store's utilization, and re-submitting it
+            // would consume no quota.
+            if store.model_card_export_jobs.contains_key(&key) {
+                return Err(CreateModelCardExportJobErrorModeled::ConflictException(
+                    ConflictException {
+                        message: Some(format!(
+                            "Model Card Export Job with name {} already exists for model \
+                             card {card_name}. Choose a different name.",
+                            input.model_card_export_job_name
+                        )),
+                    },
+                )
+                .into());
+            }
+            // The store is bounded, so a caller varying the job name cannot grow it
+            // without end. `ResourceLimitExceeded` is the limit failure this operation
+            // models.
+            if !store.model_card_export_jobs_below_quota() {
+                return Err(CreateModelCardExportJobErrorModeled::ResourceLimitExceeded(
+                    ResourceLimitExceeded {
+                        message: Some(format!(
+                            "The account-level service limit for model card export jobs is \
+                             {}, with current utilization of {} and a request delta of 1.",
+                            crate::state::MODEL_CARD_EXPORT_JOB_QUOTA,
+                            store.model_card_export_jobs.len()
+                        )),
+                    },
+                )
+                .into());
+            }
+
+            let arn = crate::state::resource_arn(
+                &region,
+                crate::state::MODEL_CARD_KIND,
+                &format!(
+                    "{card_name}/export-job/{}",
+                    input.model_card_export_job_name
+                ),
+            );
+            // The name is RESERVED under the same guard that resolved it: the job is
+            // recorded `InProgress` before its export runs, so a second call naming it
+            // reads the conflict above, the quota it consumes is counted once, and no
+            // object is ever written for a create that is then refused.
+            //
+            // Until the export reports, the outcome the clock would settle the job into is
+            // the server's own failure: a handler that does not get to the end of its own
+            // run has reported nothing about the work, and nothing is claimed for it.
+            store.model_card_export_jobs.insert(
+                key.clone(),
+                crate::state::ModelCardExportJob {
+                    name: input.model_card_export_job_name.clone(),
+                    arn: arn.clone(),
+                    card_name: card_name.clone(),
+                    card_version,
+                    status: crate::state::MODEL_CARD_EXPORT_STATUS_IN_PROGRESS.to_string(),
+                    output_config: input.output_config.clone(),
+                    failure_reason: None,
+                    outcome: crate::state::ModelCardExportOutcome::Failed(
+                        crate::state::INTERNAL_FAILURE_REASON.to_string(),
+                    ),
+                    created_at: now,
+                    last_modified_at: now,
+                    // The instant the move out of `InProgress` falls due: stored, never
+                    // slept on.
+                    ends_at: now + crate::state::MODEL_CARD_EXPORT_JOB_SETTLES_AFTER,
                 },
-            )
-            .into());
-        }
-        // The store is bounded, so a caller varying the job name cannot grow it without
-        // end. `ResourceLimitExceeded` is the limit failure this operation models.
-        if !store.model_card_export_jobs_below_quota() {
-            return Err(CreateModelCardExportJobErrorModeled::ResourceLimitExceeded(
-                ResourceLimitExceeded {
-                    message: Some(format!(
-                        "The account-level service limit for model card export jobs is {}, \
-                         with current utilization of {} and a request delta of 1.",
-                        crate::state::MODEL_CARD_EXPORT_JOB_QUOTA,
-                        store.model_card_export_jobs.len()
-                    )),
-                },
-            )
-            .into());
-        }
+            );
 
-        let arn = crate::state::resource_arn(
+            (card_name, card_version, card_status, card_content, key, arn)
+        };
+
+        // The job's own work: the card version is rendered as the model card PDF and
+        // written under the location the request named. What it produced is RECORDED on the
+        // job below, not revealed here — the terminal status is owed by the clock, which
+        // `ModelCardExportJob::settle_status` materialises once the span is over.
+        let outcome = crate::state::run_model_card_export(
+            ctx,
             &region,
-            crate::state::MODEL_CARD_KIND,
-            &format!(
-                "{card_name}/export-job/{}",
-                input.model_card_export_job_name
-            ),
-        );
-        store.model_card_export_jobs.insert(
-            key,
-            crate::state::ModelCardExportJob {
-                name: input.model_card_export_job_name,
-                arn: arn.clone(),
-                card_name,
-                card_version,
-                status: crate::state::MODEL_CARD_EXPORT_STATUS_IN_PROGRESS.to_string(),
-                output_config: input.output_config,
-                // Nothing has failed yet: the job is running, and the clock owes it a
-                // terminal status a span from now.
-                failure_reason: None,
-                created_at: now,
-                last_modified_at: now,
-                // The instant the move out of `InProgress` falls due: stored, never slept
-                // on. See `state::MODEL_CARD_EXPORT_NOT_RUN_FAILURE` for which terminal
-                // status it is.
-                ends_at: now + crate::state::MODEL_CARD_EXPORT_JOB_SETTLES_AFTER,
+            crate::state::ExportedCardVersion {
+                card_name: &card_name,
+                job_name: &input.model_card_export_job_name,
+                version: card_version,
+                status: &card_status,
+                content: &card_content,
             },
-        );
+            &input.output_config.s3_output_path,
+        )
+        .await;
+
+        let mut store = state.lock();
+        if let Some(job) = store.model_card_export_jobs.get_mut(&key) {
+            job.outcome = outcome;
+        }
         drop(store);
 
         crate::state::record_state_change(Self::NAME, &arn, ctx);
