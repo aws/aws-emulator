@@ -353,6 +353,8 @@ mod refusal_messages_published;
 mod refusal_resource_naming;
 #[path = "all/refused_argument_envelope.rs"]
 mod refused_argument_envelope;
+#[path = "all/refused_change_publishes_no_event.rs"]
+mod refused_change_publishes_no_event;
 #[path = "all/rename_object_query_parameter.rs"]
 mod rename_object_query_parameter;
 #[path = "all/replication_role_trust.rs"]

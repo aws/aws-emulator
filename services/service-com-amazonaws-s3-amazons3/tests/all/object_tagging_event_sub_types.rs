@@ -243,7 +243,11 @@ fn per_row(name: &str, index: usize) -> String {
 
 /// A default-bus rule matching the `aws.s3` events of `bucket` whose `detail-type` is
 /// `detail_type`, delivering to the queue named `queue`.
-async fn rule_on_detail_type(
+///
+/// `pub(crate)`: the suite for what a REFUSED change publishes
+/// ([`super::refused_change_publishes_no_event`]) scopes its own bus inbox to one
+/// detail-type through this rather than writing a second rule builder.
+pub(crate) async fn rule_on_detail_type(
     emulator: &Emulator,
     name: &str,
     bucket: &str,
