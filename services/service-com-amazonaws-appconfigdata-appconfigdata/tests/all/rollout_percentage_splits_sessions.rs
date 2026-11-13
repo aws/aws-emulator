@@ -47,9 +47,9 @@ use service_com_amazonaws_appconfigdata_appconfigdata::state::ComAmazonawsAppcon
 use super::configuration_session_poll::{Emulator, Hierarchy};
 
 /// The two versions deployed, told apart by their bytes.
-const PREVIOUS: &[u8] = br#"{"tier":"one"}"#;
+pub(crate) const PREVIOUS: &[u8] = br#"{"tier":"one"}"#;
 /// See [`PREVIOUS`].
-const NEW: &[u8] = br#"{"tier":"two"}"#;
+pub(crate) const NEW: &[u8] = br#"{"tier":"two"}"#;
 
 /// RULE: the position a session is minted at is its own — successive sessions are spread
 /// over the whole range of percentage points a rollout advances through, so a rollout
@@ -259,7 +259,7 @@ async fn deploy_two_versions(emulator: &Emulator, hierarchy: &Hierarchy) -> i64 
         .await;
     emulator.settle_deployments(hierarchy);
     let version = host_version(emulator, hierarchy, NEW).await;
-    let strategy = create_strategy(emulator).await;
+    let strategy = create_strategy(emulator, "gradual", "LINEAR", 100.0).await;
     start_deployment(emulator, hierarchy, &strategy, &version).await
 }
 
@@ -298,7 +298,7 @@ async fn poll_at(
 /// sessions is split — which is asserted on its own above. A row that states the version
 /// ONE session must be served pins that position instead, so the row is about the gate
 /// rather than about where the mint happened to put it.
-fn fix_position(emulator: &Emulator, token: &str, position: f32) {
+pub(crate) fn fix_position(emulator: &Emulator, token: &str, position: f32) {
     let state = emulator.state();
     let mut store = state.lock();
     store
@@ -311,7 +311,7 @@ fn fix_position(emulator: &Emulator, token: &str, position: f32) {
 /// Pin the in-flight deployment's `PercentageComplete` at `percentage`, with its start
 /// instant moved to now so the clock owes the record nothing while the poll below reads
 /// it. How far a rollout has got is owed by the clock and no operation sets it.
-fn pin_percentage(emulator: &Emulator, hierarchy: &Hierarchy, percentage: f32) {
+pub(crate) fn pin_percentage(emulator: &Emulator, hierarchy: &Hierarchy, percentage: f32) {
     let state = emulator.control_plane();
     let mut store = state.lock();
     let environment = store
@@ -328,7 +328,11 @@ fn pin_percentage(emulator: &Emulator, hierarchy: &Hierarchy, percentage: f32) {
 }
 
 /// Write one hosted configuration version, answering the version number AppConfig minted.
-async fn host_version(emulator: &Emulator, hierarchy: &Hierarchy, content: &[u8]) -> String {
+pub(crate) async fn host_version(
+    emulator: &Emulator,
+    hierarchy: &Hierarchy,
+    content: &[u8],
+) -> String {
     let application_id = &hierarchy.application_id;
     let profile_id = &hierarchy.profile_id;
     let written = emulator
@@ -356,19 +360,30 @@ async fn host_version(emulator: &Emulator, hierarchy: &Hierarchy, content: &[u8]
         .to_string()
 }
 
-/// Create the deployment strategy the gradual rollout is paced by.
-async fn create_strategy(emulator: &Emulator) -> String {
+/// Create a deployment strategy that paces a gradual rollout: a rollout window and a bake
+/// time long enough that the clock owes the deployment nothing while a test reads it, grown
+/// by `growth_factor` percent of the targets per interval in the `growth_type` the caller
+/// names (the modelled `GrowthType`, `EXPONENTIAL | LINEAR`).
+pub(crate) async fn create_strategy(
+    emulator: &Emulator,
+    name: &str,
+    growth_type: &str,
+    growth_factor: f32,
+) -> String {
     let created = emulator
         .post_json(
             "/deploymentstrategies",
-            r#"{"Name":"gradual","DeploymentDurationInMinutes":1440,"GrowthFactor":100.0,
-                "GrowthType":"LINEAR","FinalBakeTimeInMinutes":1440,"ReplicateTo":"NONE"}"#,
+            &format!(
+                r#"{{"Name":"{name}","DeploymentDurationInMinutes":1440,
+                      "GrowthFactor":{growth_factor},"GrowthType":"{growth_type}",
+                      "FinalBakeTimeInMinutes":1440,"ReplicateTo":"NONE"}}"#
+            ),
         )
         .await;
     assert_eq!(
         created.status,
         201,
-        "CreateDeploymentStrategy: expected 201, got {} body {}",
+        "CreateDeploymentStrategy({name}): expected 201, got {} body {}",
         created.status,
         created.text()
     );
@@ -376,7 +391,7 @@ async fn create_strategy(emulator: &Emulator) -> String {
 }
 
 /// Start the gradual deployment of `version`, answering its deployment number.
-async fn start_deployment(
+pub(crate) async fn start_deployment(
     emulator: &Emulator,
     hierarchy: &Hierarchy,
     strategy_id: &str,

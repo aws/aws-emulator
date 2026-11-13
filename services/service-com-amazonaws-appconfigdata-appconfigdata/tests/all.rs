@@ -29,6 +29,8 @@ mod rollout_percentage_splits_sessions;
 mod session_requires_a_deployment;
 #[path = "all/state_roundtrip.rs"]
 mod state_roundtrip;
+#[path = "all/stop_mid_rollout_withdraws_the_release.rs"]
+mod stop_mid_rollout_withdraws_the_release;
 #[path = "all/token_validation_and_lifetime.rs"]
 mod token_validation_and_lifetime;
 // A clock-driven suite: it waits out a rollout's growth intervals rather than writing a
