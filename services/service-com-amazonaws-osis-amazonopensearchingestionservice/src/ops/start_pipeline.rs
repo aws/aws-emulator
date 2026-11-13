@@ -4,9 +4,9 @@
 //!
 //! A MUTATION, the inverse of `StopPipeline`: it moves a pipeline that is eligible for
 //! starting into `STARTING` and the clock owes it `ACTIVE`. The new status is persisted,
-//! so a later `GetPipeline` / `ListPipelines` reports it. A start of a pipeline that an
-//! accepted start already put on its way to running is idempotent: it is accepted and
-//! reports that same transition rather than starting a second one.
+//! so a later `GetPipeline` / `ListPipelines` reports it. A start of a pipeline whose
+//! accepted start is still in flight is idempotent: it is accepted and reports that same
+//! transition rather than starting a second one.
 //!
 //! ## Shape of an operation
 //!
@@ -152,7 +152,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         let state = crate::state::service_state(&*self.engine).ok_or_else(store_unavailable)?;
         let mut store = state.lock();
-        store.settle(now);
 
         let pipeline_name = input.pipeline_name.clone();
         let stored = store
@@ -160,18 +159,25 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .get_mut(&pipeline_name)
             .ok_or_else(not_found)?;
 
-        // A start of a pipeline that an accepted start has already put on its way to
-        // running is the SAME start, not a conflicting one: the duplicate request is
-        // accepted and reports the transition already in flight, so the pipeline still
-        // makes exactly one transition however many times the caller (or its retry) asks.
-        if stored.status == crate::state::STATUS_STARTING {
+        // A start of a pipeline that an accepted start already put on its way to running is
+        // the SAME start, not a conflicting one: the duplicate request is accepted and
+        // reports the transition already in flight, so the pipeline still makes exactly one
+        // transition however many times the caller (its retry, or a second racer) asks.
+        // This is decided BEFORE the owed transition is materialised, because a start
+        // cannot conflict with itself: the state such a request asks for is the one the
+        // pipeline is already moving to.
+        if stored.start_in_flight() {
             return Ok(StartPipelineOutput {
                 pipeline: Some(stored.to_pipeline()),
             });
         }
 
-        // Otherwise the pipeline must be in one of the statuses a start is eligible from:
-        // a running pipeline, or one mid-change, is not, which is what this operation's
+        // For every other request the transition the clock owes this pipeline is
+        // materialised first, so the status the start is judged against is the settled one.
+        stored.settle(now);
+
+        // The pipeline must be in one of the statuses a start is eligible from: a running
+        // pipeline, or one mid-change, is not, which is what this operation's
         // ConflictException reports — stating the eligible set the caller has to get the
         // pipeline into and the status it is in instead.
         if !crate::state::START_ELIGIBLE_STATUSES.contains(&stored.status.as_str()) {

@@ -27,7 +27,6 @@
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
-use std::time::Duration;
 
 use serde_json::{json, Value};
 use smithy_server_runtime::MultiServiceRouter;
@@ -35,15 +34,6 @@ use smithy_server_runtime::MultiServiceRouter;
 /// A region that is not the emulator default, so nothing under test can depend on
 /// a default-region code path.
 const REGION: &str = "eu-west-2";
-
-/// The transition span the service itself uses, so the rows below are tied to the
-/// implementation's own constant rather than to a copy of it.
-const TRANSITION_SPAN: Duration =
-    service_com_amazonaws_osis_amazonopensearchingestionservice::state::TRANSITION_SPAN;
-
-/// Comfortably past [`TRANSITION_SPAN`], so a transition the clock owes has come
-/// due by the time the next call runs.
-const PAST_TRANSITION: Duration = TRANSITION_SPAN.saturating_add(Duration::from_millis(400));
 
 /// The statuses a start is eligible from, written out here rather than read from
 /// the service so the message is compared against the rule and not against the
@@ -200,8 +190,9 @@ async fn delete_pipeline(router: &MultiServiceRouter, name: &str) -> Answer {
     .await
 }
 
-/// Create a pipeline and let the `CREATING` -> `ACTIVE` transition the clock owes
-/// come due, so the caller starts from a running pipeline.
+/// Create a pipeline and read it back, so the caller starts from a running pipeline: the
+/// `CREATING` -> `ACTIVE` transition the create armed is due as soon as the create has
+/// answered.
 async fn active_pipeline(router: &MultiServiceRouter, name: &str, min_units: i64, max_units: i64) {
     let created = create_pipeline(router, create_body(name, min_units, max_units)).await;
     assert_eq!(
@@ -209,7 +200,6 @@ async fn active_pipeline(router: &MultiServiceRouter, name: &str, min_units: i64
         "case {name:?}: expected the pipeline to be created, got {} / {:?}",
         created.status, created.body
     );
-    tokio::time::sleep(PAST_TRANSITION).await;
     let read = get_pipeline(router, name).await;
     assert_eq!(
         read.status_value(),
@@ -219,8 +209,7 @@ async fn active_pipeline(router: &MultiServiceRouter, name: &str, min_units: i64
     );
 }
 
-/// Stop a running pipeline and let it settle, so the caller starts from a stopped
-/// one.
+/// Stop a running pipeline and read it back, so the caller starts from a stopped one.
 async fn stopped_pipeline(router: &MultiServiceRouter, name: &str, min_units: i64, max_units: i64) {
     active_pipeline(router, name, min_units, max_units).await;
     let stopped = stop_pipeline(router, name).await;
@@ -229,7 +218,6 @@ async fn stopped_pipeline(router: &MultiServiceRouter, name: &str, min_units: i6
         "case {name:?}: expected the pipeline to be stopped, got {} / {:?}",
         stopped.status, stopped.body
     );
-    tokio::time::sleep(PAST_TRANSITION).await;
     let read = get_pipeline(router, name).await;
     assert_eq!(
         read.status_value(),
@@ -400,36 +388,38 @@ fn parse_eligibility_refusal(message: &str) -> Option<(BTreeSet<String>, String)
 async fn starting_an_ineligible_pipeline_states_the_eligible_statuses_and_the_current_one() {
     let router = new_router();
 
-    // Rows differ in the ineligible status reached: running, mid-create and
-    // mid-stop. The two transient rows are set up LAST, and read first, so each
-    // is still mid-change when its row runs.
+    // Rows differ in how the pipeline reached the running status a start is refused from:
+    // created, and stopped and started again. A pipeline mid-change is ineligible too and
+    // the wording names the transient status, but the transition a lifecycle call arms is
+    // due the instant that call answers
+    // (`service_com_amazonaws_osis_amazonopensearchingestionservice::state::TRANSITION_SPAN`),
+    // so only that call's own response carries a transient status and a later start always
+    // meets a settled one.
     let running = "running-pipeline";
     active_pipeline(&router, running, 1, 1).await;
 
-    let mid_stop = "mid-stop-pipeline";
-    active_pipeline(&router, mid_stop, 1, 4).await;
-    let stopping = stop_pipeline(&router, mid_stop).await;
+    let restarted = "restarted-pipeline";
+    stopped_pipeline(&router, restarted, 2, 5).await;
+    let started = start_pipeline(&router, restarted).await;
     assert_eq!(
-        stopping.status, 200,
-        "case \"mid-stop\": expected the stop to succeed, got {} / {:?}",
-        stopping.status, stopping.body
+        started.status, 200,
+        "case \"restarted\": expected the start to succeed, got {} / {:?}",
+        started.status, started.body
     );
-
-    let mid_create = "mid-create-pipeline";
-    let created = create_pipeline(&router, create_body(mid_create, 2, 3)).await;
+    let read = get_pipeline(&router, restarted).await;
     assert_eq!(
-        created.status, 200,
-        "case \"mid-create\": expected the create to succeed, got {} / {:?}",
-        created.status, created.body
+        read.status_value(),
+        "ACTIVE",
+        "case \"restarted\": expected the restarted pipeline to be running, got {:?}",
+        read.body
     );
 
     let expected_eligible: BTreeSet<String> =
         START_ELIGIBLE.iter().map(|status| status.to_string()).collect();
 
     for (case, name, current) in [
-        ("a pipeline still being created", mid_create, "CREATING"),
-        ("a pipeline still being stopped", mid_stop, "STOPPING"),
-        ("a running pipeline", running, "ACTIVE"),
+        ("a pipeline running since it was created", running, "ACTIVE"),
+        ("a pipeline running again after a restart", restarted, "ACTIVE"),
     ] {
         let refused = start_pipeline(&router, name).await;
         assert_eq!(
@@ -528,7 +518,6 @@ async fn a_duplicate_start_is_accepted_and_the_pipeline_transitions_once() {
 
         // The single transition the accepted start owes comes due, and the
         // pipeline is running.
-        tokio::time::sleep(PAST_TRANSITION).await;
         let read = get_pipeline(&router, name).await;
         assert_eq!(
             read.status_value(),

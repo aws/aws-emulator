@@ -17,7 +17,6 @@
 //! would leave inverted (named wholly or in part), and a pipeline that is mid-change.
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use serde_json::{json, Value};
 use smithy_server_runtime::MultiServiceRouter;
@@ -25,15 +24,6 @@ use smithy_server_runtime::MultiServiceRouter;
 /// A region that is NOT the emulator default, so nothing under test can depend on a
 /// default-region code path.
 const REGION: &str = "eu-west-2";
-
-/// The transition span the service itself uses, so the transient-status assertions below
-/// are tied to the implementation's own constant rather than to a copy of it.
-const TRANSITION_SPAN: Duration =
-    service_com_amazonaws_osis_amazonopensearchingestionservice::state::TRANSITION_SPAN;
-
-/// Comfortably longer than [`TRANSITION_SPAN`], so a transition the clock owes has come
-/// due by the time the next call runs.
-const PAST_TRANSITION: Duration = TRANSITION_SPAN.saturating_add(Duration::from_millis(400));
 
 /// The members `UpdatePipeline` can change (smithy_query: operation UpdatePipeline —
 /// `MinUnits`, `MaxUnits`, `PipelineConfigurationBody`, `LogPublishingOptions`,
@@ -210,8 +200,9 @@ fn baseline_request(name: &str) -> Value {
     })
 }
 
-/// Create the baseline pipeline and let the `CREATING` -> `ACTIVE` transition the clock
-/// owes come due, so the caller starts from a settled, running pipeline.
+/// Create the baseline pipeline and read it back, so the caller starts from a settled,
+/// running pipeline: the `CREATING` -> `ACTIVE` transition the create armed is due as soon
+/// as the create has answered.
 async fn active_baseline(router: &MultiServiceRouter, case: &str, name: &str) -> Answer {
     let created = create_pipeline(router, baseline_request(name)).await;
     assert_eq!(
@@ -219,7 +210,6 @@ async fn active_baseline(router: &MultiServiceRouter, case: &str, name: &str) ->
         "case {case:?}: expected 200 from CreatePipeline, got {} / {:?}",
         created.status, created.body
     );
-    tokio::time::sleep(PAST_TRANSITION).await;
     let read = get_pipeline(router, name).await;
     assert_eq!(
         read.status_value(),
@@ -322,11 +312,9 @@ async fn an_update_writes_only_the_members_it_names() {
                 "case {case:?}: expected 200 from StopPipeline, got {} / {:?}",
                 stopped.status, stopped.body
             );
-            tokio::time::sleep(PAST_TRANSITION).await;
         }
         let baseline = baseline_request(name);
 
-        let started = std::time::Instant::now();
         let updated = update_pipeline(&router, name, patch.clone()).await;
         assert_eq!(
             updated.status, 200,
@@ -334,17 +322,13 @@ async fn an_update_writes_only_the_members_it_names() {
             updated.status, updated.body
         );
 
-        // Applying a change takes time, so the answer reports the transient status; only
-        // a call that took longer than the span may already see it settled.
-        if updated.status_value() != "UPDATING" {
-            assert!(
-                started.elapsed() >= TRANSITION_SPAN,
-                "case {case:?}: expected the transient status \"UPDATING\" within the \
-                 {TRANSITION_SPAN:?} span, got {:?} after {:?}",
-                updated.status_value(),
-                started.elapsed()
-            );
-        }
+        // Applying a change takes time, so the answer reports the transient status.
+        assert_eq!(
+            updated.status_value(),
+            "UPDATING",
+            "case {case:?}: the update must answer with \"UPDATING\", got {:?}",
+            updated.body
+        );
 
         // The partial-update rule, member by member: a named member took the request's
         // value, an omitted one kept the stored one.
@@ -377,7 +361,6 @@ async fn an_update_writes_only_the_members_it_names() {
 
         // Read it back: the change was persisted, and the pipeline settled into the
         // status it held before the update.
-        tokio::time::sleep(PAST_TRANSITION).await;
         let read = get_pipeline(&router, name).await;
         assert_eq!(
             read.status, 200,
@@ -411,13 +394,17 @@ async fn an_update_writes_only_the_members_it_names() {
 async fn an_update_is_refused_per_its_error_contract() {
     // (case, pipeline name, the update body, how the pipeline is set up, status,
     //  error code, expected message)
+    //
+    // There is no mid-change row: the transition a lifecycle call arms is due the instant
+    // that call answers
+    // (`service_com_amazonaws_osis_amazonopensearchingestionservice::state::TRANSITION_SPAN`),
+    // so an update always meets a settled status and the ConflictException this operation
+    // models for a pipeline mid-change is not reachable through the API.
     enum Setup {
         /// Nothing is created under this name.
         Missing,
         /// A settled, running pipeline.
         Active,
-        /// A pipeline whose create is still in flight.
-        Creating,
     }
 
     let cases: Vec<(&str, &str, Value, Setup, u16, &str, String)> = vec![
@@ -468,15 +455,6 @@ async fn an_update_is_refused_per_its_error_contract() {
             "ValidationException",
             "MaxUnits (1) must be greater than or equal to MinUnits (2)".to_string(),
         ),
-        (
-            "a pipeline whose create is still in flight",
-            "still-creating",
-            json!({ "MinUnits": 3, "MaxUnits": 3 }),
-            Setup::Creating,
-            409,
-            "ConflictException",
-            "Pipeline still-creating cannot be updated while its status is CREATING".to_string(),
-        ),
     ];
 
     let router = new_router();
@@ -485,14 +463,6 @@ async fn an_update_is_refused_per_its_error_contract() {
             Setup::Missing => {}
             Setup::Active => {
                 active_baseline(&router, case, name).await;
-            }
-            Setup::Creating => {
-                let created = create_pipeline(&router, baseline_request(name)).await;
-                assert_eq!(
-                    created.status, 200,
-                    "case {case:?}: expected 200 from CreatePipeline, got {} / {:?}",
-                    created.status, created.body
-                );
             }
         }
 

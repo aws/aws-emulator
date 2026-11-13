@@ -23,6 +23,8 @@ mod pipeline_lifecycle;
 mod pipeline_not_found_wording;
 #[path = "all/pipeline_refusal_wording.rs"]
 mod pipeline_refusal_wording;
+#[path = "all/pipeline_status_settling.rs"]
+mod pipeline_status_settling;
 #[path = "all/pipeline_update.rs"]
 mod pipeline_update;
 #[path = "all/reserved_tag_keys.rs"]

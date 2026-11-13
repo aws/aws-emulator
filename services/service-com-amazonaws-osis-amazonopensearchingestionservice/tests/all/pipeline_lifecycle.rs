@@ -13,7 +13,6 @@
 //! size, status), so no assertion is pinned to one recorded request.
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use serde_json::{json, Value};
 use smithy_server_runtime::MultiServiceRouter;
@@ -24,15 +23,6 @@ const REGION: &str = "eu-west-2";
 
 /// The canonical emulator account id every ARN carries.
 const ACCOUNT: &str = "000000000000";
-
-/// The transition span the service itself uses, so the transient-status assertions below
-/// are tied to the implementation's own constant rather than to a copy of it.
-const TRANSITION_SPAN: Duration =
-    service_com_amazonaws_osis_amazonopensearchingestionservice::state::TRANSITION_SPAN;
-
-/// Comfortably longer than [`TRANSITION_SPAN`], so a transition the clock owes has come
-/// due by the time the next read runs.
-const PAST_TRANSITION: Duration = Duration::from_millis(900);
 
 /// What one call answered: the status, the modelled error code (empty on success) and the
 /// parsed body.
@@ -185,8 +175,9 @@ async fn list_pipelines(router: &MultiServiceRouter, query: &str) -> Answer {
     call(router, "GET", &path, None).await
 }
 
-/// Create a pipeline and wait out the `CREATING` -> `ACTIVE` transition the clock owes,
-/// so the caller starts from a running pipeline.
+/// Create a pipeline and read it back, so the caller starts from a running pipeline: the
+/// `CREATING` -> `ACTIVE` transition the create armed is due as soon as the create has
+/// answered, so the read that follows it reports the settled status.
 async fn active_pipeline(router: &MultiServiceRouter, name: &str) -> Answer {
     let created = create_pipeline(
         router,
@@ -203,9 +194,7 @@ async fn active_pipeline(router: &MultiServiceRouter, name: &str) -> Answer {
         "case {name:?}: expected 200 from CreatePipeline, got {} / {:?}",
         created.status, created.body
     );
-    tokio::time::sleep(PAST_TRANSITION).await;
-    let read = get_pipeline(router, name).await;
-    assert_eq!(
+    let read = get_pipeline(router, name).await;    assert_eq!(
         read.status_value(),
         "ACTIVE",
         "case {name:?}: the pipeline must settle to ACTIVE, got {:?}",
@@ -214,18 +203,15 @@ async fn active_pipeline(router: &MultiServiceRouter, name: &str) -> Answer {
     read
 }
 
-/// A pipeline read within `elapsed` of the call that started a transition must still
-/// report the transient status; only a read that took longer than the span may already
-/// see it settled.
-fn assert_transient_status(case: &str, read: &Answer, expected: &str, elapsed: Duration) {
-    let status = read.status_value();
-    if status != expected {
-        assert!(
-            elapsed >= TRANSITION_SPAN,
-            "case {case:?}: expected the transient status {expected:?} within the \
-             {TRANSITION_SPAN:?} span, got {status:?} after {elapsed:?}"
-        );
-    }
+/// The call that arms a transition answers with the transient status the model gives it,
+/// rendered from the record it has just written.
+fn assert_transient_status(case: &str, answer: &Answer, expected: &str) {
+    assert_eq!(
+        answer.status_value(),
+        expected,
+        "case {case:?}: the call must answer with the transient status {expected:?}, got {:?}",
+        answer.pipeline()
+    );
 }
 
 /// Every member a create was given is persisted and read back — across inputs that differ
@@ -285,7 +271,6 @@ async fn created_pipelines_read_back_exactly_as_created() {
     let router = new_router();
     for (case, request) in cases {
         let name = request["PipelineName"].as_str().unwrap().to_string();
-        let started = std::time::Instant::now();
         let created = create_pipeline(&router, request.clone()).await;
         assert_eq!(
             created.status, 200,
@@ -307,7 +292,7 @@ async fn created_pipelines_read_back_exactly_as_created() {
             arn.len()
         );
         // A newly created pipeline is not running yet.
-        assert_transient_status(case, &created, "CREATING", started.elapsed());
+        assert_transient_status(case, &created, "CREATING");
 
         // One ingestion endpoint per pipeline, derived from the pipeline's own name and
         // the region it lives in.
@@ -362,7 +347,6 @@ async fn created_pipelines_read_back_exactly_as_created() {
 
         // Read it back: GetPipeline answers from the stored record, so every member the
         // create was given, and every one the service minted, must match.
-        tokio::time::sleep(PAST_TRANSITION).await;
         let read = get_pipeline(&router, &name).await;
         assert_eq!(
             read.status, 200,
@@ -507,14 +491,13 @@ async fn stop_and_start_move_the_status_every_later_read_reports() {
     let name = "lifecycle-pipeline";
     active_pipeline(&router, name).await;
 
-    let started = std::time::Instant::now();
     let stopped = stop_pipeline(&router, name).await;
     assert_eq!(
         stopped.status, 200,
         "case \"stop an active pipeline\": expected 200, got {} / {:?}",
         stopped.status, stopped.body
     );
-    assert_transient_status("stop an active pipeline", &stopped, "STOPPING", started.elapsed());
+    assert_transient_status("stop an active pipeline", &stopped, "STOPPING");
 
     // A second stop while the first is still in flight is a conflict, not a no-op.
     let conflict = stop_pipeline(&router, name).await;
@@ -529,7 +512,6 @@ async fn stop_and_start_move_the_status_every_later_read_reports() {
         conflict.error_type
     );
 
-    tokio::time::sleep(PAST_TRANSITION).await;
     for (case, answer) in [
         ("GetPipeline", get_pipeline(&router, name).await),
         ("StopPipeline", stop_pipeline(&router, name).await),
@@ -557,21 +539,14 @@ async fn stop_and_start_move_the_status_every_later_read_reports() {
         listed.body["Pipelines"]
     );
 
-    let started = std::time::Instant::now();
     let restarted = start_pipeline(&router, name).await;
     assert_eq!(
         restarted.status, 200,
         "case \"start a stopped pipeline\": expected 200, got {} / {:?}",
         restarted.status, restarted.body
     );
-    assert_transient_status(
-        "start a stopped pipeline",
-        &restarted,
-        "STARTING",
-        started.elapsed(),
-    );
+    assert_transient_status("start a stopped pipeline", &restarted, "STARTING");
 
-    tokio::time::sleep(PAST_TRANSITION).await;
     let read = get_pipeline(&router, name).await;
     assert_eq!(
         read.status_value(),
@@ -622,7 +597,9 @@ async fn delete_removes_the_pipeline_from_every_read() {
         active_pipeline(&router, &format!("deletable-{ordinal}")).await;
     }
 
-    // A pipeline still settling into a status cannot be deleted.
+    // The create answers with the transient status it is modelled to report, and the
+    // transition it arms is due the instant that answer is owed, so the delete that
+    // follows it meets a settled, running pipeline and removes it.
     let created = create_pipeline(
         &router,
         json!({
@@ -633,26 +610,19 @@ async fn delete_removes_the_pipeline_from_every_read() {
         }),
     )
     .await;
-    let elapsed = std::time::Instant::now();
-    let refused = delete_pipeline(&router, "mid-create-pipeline").await;
-    if elapsed.elapsed() < TRANSITION_SPAN {
-        assert_eq!(
-            refused.status, 409,
-            "case \"delete a CREATING pipeline\": expected 409, got {} / {:?}",
-            refused.status, refused.body
-        );
-        assert_eq!(
-            refused.error_type, "ConflictException",
-            "case \"delete a CREATING pipeline\": expected ConflictException, got {:?}",
-            refused.error_type
-        );
-        assert_eq!(
-            created.status_value(),
-            "CREATING",
-            "case \"delete a CREATING pipeline\": the create must report CREATING, got {:?}",
-            created.pipeline()
-        );
-    }
+    assert_transient_status("delete a just-created pipeline", &created, "CREATING");
+    let deleted = delete_pipeline(&router, "mid-create-pipeline").await;
+    assert_eq!(
+        deleted.status, 200,
+        "case \"delete a just-created pipeline\": expected 200, got {} / {:?}",
+        deleted.status, deleted.body
+    );
+    let gone = get_pipeline(&router, "mid-create-pipeline").await;
+    assert_eq!(
+        gone.status, 404,
+        "case \"delete a just-created pipeline\": the pipeline must be gone, got {} / {:?}",
+        gone.status, gone.body
+    );
 
     for ordinal in 0..3 {
         let name = format!("deletable-{ordinal}");

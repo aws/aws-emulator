@@ -229,7 +229,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         let state = crate::state::service_state(&*self.engine).ok_or_else(store_unavailable)?;
         let mut store = state.lock();
-        store.settle(now);
 
         // Pipeline names are unique across the pipelines owned by an account within a
         // Region (the `PipelineName` member's own doc), so a second create of a name that

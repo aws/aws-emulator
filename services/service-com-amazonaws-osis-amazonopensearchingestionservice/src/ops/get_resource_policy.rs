@@ -152,12 +152,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
         let _ = ctx;
-        let now = ::std::time::SystemTime::now();
 
         let state = crate::state::service_state(&*self.engine).ok_or_else(store_unavailable)?;
-        let mut store = state.lock();
-        // The only write a report may make: the transition the clock already owes.
-        store.settle(now);
+        let store = state.lock();
 
         // `ResourceArn` is `@length(46, 76)` with the pipeline-ARN pattern, so a malformed
         // ARN was already refused; an ARN no stored pipeline carries names no resource

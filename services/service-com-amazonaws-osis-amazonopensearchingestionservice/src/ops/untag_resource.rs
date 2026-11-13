@@ -146,7 +146,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
         let _ = ctx;
-        let now = ::std::time::SystemTime::now();
 
         // A tag key in the namespace AWS keeps for its own tags is no more a caller's to
         // REMOVE than to assign, and that is a fact of the REQUEST alone: it is judged
@@ -160,7 +159,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         let state = crate::state::service_state(&*self.engine).ok_or_else(store_unavailable)?;
         let mut store = state.lock();
-        store.settle(now);
 
         // `Arn` is `@length(46, 76)` with the pipeline-ARN pattern, so a malformed ARN was
         // already refused; an ARN no stored pipeline carries names no resource to untag.

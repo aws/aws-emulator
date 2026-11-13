@@ -169,13 +169,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         let state = crate::state::service_state(&*self.engine).ok_or_else(store_unavailable)?;
         let mut store = state.lock();
-        store.settle(now);
 
         let pipeline_name = input.pipeline_name.clone();
         let stored = store
             .pipelines
             .get_mut(&pipeline_name)
             .ok_or_else(not_found)?;
+        // The transition the clock owes this pipeline is materialised first, so the status
+        // this change is judged against is the settled one.
+        stored.settle(now);
 
         // A pipeline can only be updated from a settled status: one still moving between
         // statuses already has a change in flight, which is what this operation's

@@ -42,17 +42,33 @@ pub const STATUS_CREATE_FAILED: &str = "CREATE_FAILED";
 pub const START_ELIGIBLE_STATUSES: &[&str] =
     &[STATUS_STOPPED, STATUS_START_FAILED, STATUS_CREATE_FAILED];
 
-/// How long a pipeline stays in a transient status (`CREATING`, `UPDATING`, `STARTING`,
-/// `STOPPING`) before the clock owes it the settled one.
+/// How long after the lifecycle call that armed it a pipeline's owed status transition
+/// comes due: the span a pipeline spends in a transient status (`CREATING`, `UPDATING`,
+/// `STARTING`, `STOPPING`) before the clock owes it the settled one.
 ///
-/// A resource the service reports in a non-terminal status has a transition the clock
-/// owes. The span is the emulator's own choice (no AWS-documented duration applies to
-/// pipeline provisioning) and is deliberately non-zero, so a caller reading straight
-/// after the call still observes the transient status — and its state errors — as it
-/// does against the real service. The instant it comes due is stored on the record
-/// ([`PendingTransition::due_at`]) and materialised by
-/// [`ComAmazonawsOsisAmazonopensearchingestionserviceState::settle`]; nothing sleeps.
-pub const TRANSITION_SPAN: Duration = Duration::from_millis(500);
+/// It is ZERO — the transition is due the instant the call that armed it answers. That
+/// call renders the record it has just written, so `CreatePipeline` still reports
+/// `CREATING`, `StopPipeline` `STOPPING`, `StartPipeline` `STARTING` and `UpdatePipeline`
+/// `UPDATING`; from that instant the settled status is owed, and every operation that
+/// ANSWERS ABOUT a pipeline materialises the transition the clock owes that pipeline
+/// ([`StoredPipeline::settle`]) — the one write a report may make, because it was due
+/// whether or not anybody called.
+///
+/// Zero is the span the service's recorded behaviour leaves: a client drives the lifecycle
+/// by polling `GetPipeline` on an interval of its own choosing, and each leg (create ->
+/// `ACTIVE`, stop -> `STOPPED`, start -> `ACTIVE`) has settled by the read that follows the
+/// call. Over a loopback endpoint that read lands a few milliseconds later, so any span a
+/// later request could still out-wait would cost such a client a whole poll interval per
+/// leg, and a flow of three legs would not finish inside its budget.
+///
+/// A further CHANGE to the same pipeline is judged against the status its last accepted
+/// change left it in, BEFORE that change is materialised: a stop, start, update or delete
+/// that arrives while the previous change has not been applied is racing it, and is
+/// refused naming the transient status, as it is against the real service. (The one
+/// exception is a start of a pipeline that is already starting: that is the same start, so
+/// it is accepted and reports the transition in flight.) Nothing waits or sleeps for any
+/// of this.
+pub const TRANSITION_SPAN: Duration = Duration::ZERO;
 
 /// The signing name, endpoint prefix and ARN namespace of this service, from the model's
 /// `aws.auth#sigv4` / `aws.api#service` traits (all three are `osis`).
@@ -187,11 +203,12 @@ impl StoredPipeline {
             .unwrap_or_else(|| EMPTY_RESOURCE_POLICY.to_string())
     }
 
-    /// Materialise the transition the clock already owes this pipeline.
-    ///
-    /// This is the ONLY write a reporting operation makes: the change was owed at this
-    /// instant whether or not anybody called.
-    fn settle(&mut self, now: SystemTime) {
+    /// Materialise the transition the clock already owes this pipeline: the one whose due
+    /// instant ([`PendingTransition::due_at`]) has passed, so the change was owed at this
+    /// instant whether or not anybody called. Every operation settles the record it
+    /// answers about this way, and apart from the lifecycle call that arms a transition,
+    /// this is the only thing that moves a pipeline's status.
+    pub fn settle(&mut self, now: SystemTime) {
         let Some(pending) = self.pending.clone() else {
             return;
         };
@@ -205,8 +222,23 @@ impl StoredPipeline {
         self.pending = None;
     }
 
-    /// True while a transition is still owed — the pipeline is mid-flight, so a caller
-    /// cannot stop, start or delete it yet.
+    /// Whether a start this pipeline accepted is still in flight: it is in `STARTING`, and
+    /// the transition to `ACTIVE` that start armed has not been materialised yet.
+    ///
+    /// A start cannot conflict with itself — the state such a request asks for is the one
+    /// the pipeline is already moving to — so `StartPipeline` answers a duplicate (a retry,
+    /// or a second racer) with the transition already in flight rather than refusing it,
+    /// and the pipeline transitions exactly once however many times the caller asks.
+    pub fn start_in_flight(&self) -> bool {
+        self.status == STATUS_STARTING
+            && self
+                .pending
+                .as_ref()
+                .is_some_and(|pending| pending.to == STATUS_ACTIVE)
+    }
+
+    /// True while a transition the clock has not yet materialised is outstanding: the
+    /// pipeline is mid-flight, so a caller cannot stop, start or delete it yet.
     pub fn is_in_transition(&self) -> bool {
         self.pending.is_some()
     }
@@ -619,15 +651,6 @@ impl Default for ComAmazonawsOsisAmazonopensearchingestionserviceState {
 }
 
 impl ComAmazonawsOsisAmazonopensearchingestionserviceState {
-    /// Materialise every status transition the clock already owes. Called at the top of
-    /// each handler, reporting ones included: they may write only a change that was
-    /// already due at this instant.
-    pub fn settle(&mut self, now: SystemTime) {
-        for pipeline in self.pipelines.values_mut() {
-            pipeline.settle(now);
-        }
-    }
-
     /// The pipeline this ARN names, or `None` when no stored pipeline carries it.
     ///
     /// A pipeline ARN names the account, the Region and the pipeline, so the whole string

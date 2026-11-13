@@ -172,18 +172,29 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             })
         })?;
         let mut store = state.lock();
-        // The only write a report may make: the transition the clock already owes.
-        store.settle(now);
 
-        let ordered: Vec<(String, PipelineSummary)> = store
+        // The page is taken over the pipeline NAMES first, so the only records this
+        // listing settles are the ones it reports back: a pipeline on a later page, or on
+        // no page at all, is neither read nor written here.
+        let ordered: Vec<(String, String)> = store
             .pipelines
-            .iter()
-            .map(|(name, pipeline)| (name.clone(), pipeline.to_summary()))
+            .keys()
+            .map(|name| (name.clone(), name.clone()))
             .collect();
         let page = crate::state::page_of(ordered, after.as_deref(), input.max_results);
 
+        let mut summaries: Vec<PipelineSummary> = Vec::with_capacity(page.items.len());
+        for name in &page.items {
+            if let Some(pipeline) = store.pipelines.get_mut(name) {
+                // The only write a report makes: the transition the clock already owes
+                // this record.
+                pipeline.settle(now);
+                summaries.push(pipeline.to_summary());
+            }
+        }
+
         Ok(ListPipelinesOutput {
-            pipelines: Some(page.items),
+            pipelines: Some(summaries),
             next_token: page.next_token,
         })
     }

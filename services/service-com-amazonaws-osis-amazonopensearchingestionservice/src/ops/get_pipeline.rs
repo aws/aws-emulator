@@ -146,13 +146,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         let state = crate::state::service_state(&*self.engine).ok_or_else(store_unavailable)?;
         let mut store = state.lock();
-        // The only write a report may make: the transition the clock already owes.
-        store.settle(now);
 
         let stored = store
             .pipelines
-            .get(&input.pipeline_name)
+            .get_mut(&input.pipeline_name)
             .ok_or_else(not_found)?;
+        // The only write a report makes, and only to the pipeline it answers about: the
+        // transition the clock already owes this record. No other pipeline is touched.
+        stored.settle(now);
         Ok(GetPipelineOutput {
             pipeline: Some(stored.to_pipeline()),
         })
