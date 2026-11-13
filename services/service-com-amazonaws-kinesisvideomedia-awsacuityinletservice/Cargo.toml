@@ -30,8 +30,15 @@ service-com-amazonaws-kinesisvideo-kinesisvideo-20170930 = { workspace = true }
 # (`ListFragments`, `GetMediaForFragmentList`), so one ingest writes both views of it.
 service-com-amazonaws-kinesisvideoarchivedmedia-awsacuityreader = { workspace = true }
 # `request_path` / `nth_path_segment`: the shared readers of a request URI's path, which
-# the ingest plane's claim is made on.
+# the ingest plane's claim is made on; `iam_authorization` / `iam_role`: the ONE shared
+# evaluation of IAM policy documents and the ONE wording of an authorization refusal, which
+# this plane's gate decides with (`src/service/authorization.rs`).
 service-common = { path = "../common" }
+# The two stores that gate reads: the SESSION a credential speaks for lives in STS's store
+# while the POLICIES in force on that principal live in IAM's. Only their `state`
+# accessors are used; the DECISION itself is `service-common`'s one shared evaluation.
+service-com-amazonaws-iam-awsidentitymanagementv20100508 = { workspace = true }
+service-com-amazonaws-sts-awssecuritytokenservicev20110615 = { workspace = true }
 # Reads the Matroska container a producer submits to the ingest plane: its EBML element
 # tree, the Clusters that become fragments and the frames each one carries.
 webm-iterable = "0.7"
@@ -42,6 +49,13 @@ emulator-core-build-support = { workspace = true }
 [dev-dependencies]
 sha2 = { workspace = true }
 hex = { workspace = true }
+# IAM and the token service, mounted beside this one in the authorization suite's harness:
+# the policies a media call is authorized against are IAM's and the identity a credential
+# speaks for is STS's, so the gate is driven end to end against the services that own them.
+# They are also normal dependencies of this crate (the gate reads their stores); this entry
+# only states that the harness mounts them.
+service-com-amazonaws-iam-awsidentitymanagementv20100508 = { workspace = true }
+service-com-amazonaws-sts-awssecuritytokenservicev20110615 = { workspace = true }
 # One case dials the address `GetDataEndpoint` announces, in THIS process, as a producer
 # handed that address does: tokio's socket and byte-stream halves carry the HTTP exchange
 # on the transport the announced scheme names. `time`: the suites wait for a stream to

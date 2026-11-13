@@ -85,6 +85,10 @@ pub struct MediaStream {
     /// that absolute position is what a continuation token is minted from, so a token
     /// still names the fragment it was minted for after older ones have gone.
     pub dropped: u64,
+    /// When this log was last written, as a sequence number this store hands out: higher
+    /// is more recent. It is what picks the log to drop when the store is holding as many
+    /// as it may ([`MAX_STORED_STREAM_LOGS`]).
+    pub written_at: u64,
 }
 
 /// The most fragments one stream's media log holds.
@@ -102,6 +106,24 @@ pub const MAX_STORED_FRAGMENTS_PER_STREAM: usize = 1024;
 /// per second"), which is also what bounds one read session and one ingest request — so
 /// a stream's whole retained log can still be read back in one session.
 pub const MAX_STORED_MEDIA_BYTES_PER_STREAM: usize = 25_000_000;
+
+/// The most stream media logs this store holds at once.
+///
+/// A ceiling on the STORE for the same reason as the two above, and their global
+/// counterpart: those bound what ONE stream holds, while a producer may keep addressing new
+/// streams for as long as the emulator runs — and because a log is keyed by the stream's ARN
+/// (see [`ComAmazonawsKinesisvideomediaAwsacuityinletserviceState::streams`]), a stream
+/// deleted and created again under one name leaves the previous incarnation's log behind,
+/// which no identifier resolves to any more but which would stay resident. Retained media is
+/// therefore bounded by this count times [`MAX_STORED_MEDIA_BYTES_PER_STREAM`] rather than
+/// by how many streams have been written to.
+///
+/// When a new log would take the store past it, the log written longest ago goes, together
+/// with the cursors that named it: its stream then reads as a stream nothing has been
+/// produced to, which is a state every client already handles (a created stream reads empty)
+/// and never a missing resource — the stream itself is the control plane's record, which
+/// this store neither holds nor removes.
+pub const MAX_STORED_STREAM_LOGS: usize = 64;
 
 /// One fragment as a producer submitted it: the bytes and the facts an ingest records
 /// about them, which the two read planes then report.
@@ -147,6 +169,11 @@ pub struct ComAmazonawsKinesisvideomediaAwsacuityinletserviceState {
     /// while the ARN carries the stream's creation instant: a stream deleted and
     /// created again under one name is a different stream, and must not inherit the
     /// previous incarnation's media or its cursors.
+    ///
+    /// How many entries this map holds is bounded by [`MAX_STORED_STREAM_LOGS`], as what
+    /// one entry holds is bounded by [`MAX_STORED_FRAGMENTS_PER_STREAM`] and
+    /// [`MAX_STORED_MEDIA_BYTES_PER_STREAM`] — so the media this store retains is bounded
+    /// however many streams a producer addresses.
     pub streams: HashMap<String, MediaStream>,
     /// Continuation token -> cursor, so a token this service minted is resolved from
     /// persisted state rather than parsed back out of the token text.
@@ -154,6 +181,9 @@ pub struct ComAmazonawsKinesisvideomediaAwsacuityinletserviceState {
     /// The last log id handed out; `0` means none has been, so an id is always at least
     /// `1` and never collides with the "no log yet" id a log-less stream reports.
     next_stream_id: u64,
+    /// The last write sequence number handed out ([`MediaStream::written_at`]), which
+    /// orders the logs by how recently each was written.
+    next_write_sequence: u64,
 }
 
 impl ComAmazonawsKinesisvideomediaAwsacuityinletserviceState {
@@ -170,8 +200,16 @@ impl ComAmazonawsKinesisvideomediaAwsacuityinletserviceState {
         let fresh_id = self.next_stream_id.saturating_add(1);
         if !self.streams.contains_key(stream_arn) {
             self.next_stream_id = fresh_id;
+            // A log this store does not hold yet is one more log, so the global ceiling is
+            // enforced here — the one place the number of logs grows.
+            self.drop_logs_beyond_the_ceiling();
         }
-        self.streams
+        // Stamped on every write, so the log dropped when the ceiling is reached is the one
+        // whose producer stopped writing longest ago.
+        self.next_write_sequence = self.next_write_sequence.saturating_add(1);
+        let written_at = self.next_write_sequence;
+        let log = self
+            .streams
             .entry(stream_arn.to_string())
             .or_insert_with(|| MediaStream {
                 arn: stream_arn.to_string(),
@@ -181,7 +219,36 @@ impl ComAmazonawsKinesisvideomediaAwsacuityinletserviceState {
                 next_fragment_number: 1,
                 id: fresh_id,
                 dropped: 0,
-            })
+                written_at,
+            });
+        log.written_at = written_at;
+        log
+    }
+
+    /// Make room for one more media log: while the store holds as many as
+    /// [`MAX_STORED_STREAM_LOGS`] allows, drop the one written longest ago and the cursors
+    /// that named it.
+    ///
+    /// A loop rather than a single removal, so a ceiling lowered between builds settles on
+    /// the first write instead of leaving the store over it forever. The cursors go with the
+    /// log for the same reason they go with dropped fragments
+    /// ([`forget_cursors_behind_the_log`](Self::forget_cursors_behind_the_log)): a cursor
+    /// into media that is gone resolves to no position, and the next call presenting it is
+    /// answered as the bad argument it is.
+    fn drop_logs_beyond_the_ceiling(&mut self) {
+        while self.streams.len() >= MAX_STORED_STREAM_LOGS {
+            let Some(oldest) = self
+                .streams
+                .values()
+                .min_by_key(|stream| stream.written_at)
+                .map(|stream| stream.arn.clone())
+            else {
+                return;
+            };
+            self.streams.remove(&oldest);
+            self.continuations
+                .retain(|_, held| held.stream_arn != oldest);
+        }
     }
 
     /// Append `chunk` to the media log of the stream `stream_name`/`stream_arn` names,
@@ -481,6 +548,28 @@ fn registered_stream<Eng: Send + Sync + 'static>(
 ) -> Option<(String, String)> {
     let stream = registered_stream_record(engine, stream_name, stream_arn)?;
     Some((stream.name, stream.arn))
+}
+
+/// The resource an IAM decision about a media call is taken on: the `StreamARN` of the
+/// stream the request addresses.
+///
+/// The control-plane registry holds the one ARN both planes address a stream by, so that
+/// ARN is what a policy's `Resource` element is matched against whenever the identifier
+/// resolves. For an identifier the registry does not hold there is no ARN to state — a
+/// stream's ARN carries the creation instant the control plane assigned it, which an
+/// unregistered name has none of — so the decision is taken on the identifier the request
+/// carried, which is everything the request said about the resource. Either way the
+/// decision is taken before anything about the stream is reported, so a caller IAM refuses
+/// learns nothing about whether the stream is there.
+pub fn addressed_stream_resource<Eng: Send + Sync + 'static>(
+    engine: &Eng,
+    stream_name: Option<&str>,
+    stream_arn: Option<&str>,
+) -> String {
+    registered_stream(engine, stream_name, stream_arn)
+        .map(|(_, arn)| arn)
+        .or_else(|| stream_arn.or(stream_name).map(str::to_string))
+        .unwrap_or_default()
 }
 
 /// What the Kinesis Video Streams control plane holds for one stream: its identity, and

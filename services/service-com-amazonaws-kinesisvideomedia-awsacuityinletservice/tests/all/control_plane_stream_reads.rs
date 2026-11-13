@@ -54,13 +54,18 @@ fn at(millis: u64) -> SystemTime {
 
 /// One router over one engine, carrying the media data plane AND the Kinesis Video
 /// Streams control plane — what makes a created stream readable here.
-struct Harness {
-    router: MultiServiceRouter,
-    engine: Arc<engine::InMemoryEngine>,
+///
+/// `pub(crate)` because the refusal-wording suite beside this one
+/// (`refusal_message_fidelity`) drives the same two services over the same seams, and one
+/// harness is what keeps the two suites agreeing on how a stream is created, deleted and
+/// read.
+pub(crate) struct Harness {
+    pub(crate) router: MultiServiceRouter,
+    pub(crate) engine: Arc<engine::InMemoryEngine>,
 }
 
 impl Harness {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let engine: Arc<engine::InMemoryEngine> = Arc::new(engine::InMemoryEngine::new());
         let mut router = MultiServiceRouter::new();
         router.register_service(control_plane::EmulatedService::new(Arc::clone(&engine)));
@@ -71,7 +76,7 @@ impl Harness {
     /// POST one restJson1 call at the data endpoint host. The credential scope's
     /// service field is the routing key; no authenticator is registered, so the
     /// signature itself is not checked.
-    async fn call(&self, path: &str, body: &serde_json::Value) -> http::Response<Bytes> {
+    pub(crate) async fn call(&self, path: &str, body: &serde_json::Value) -> http::Response<Bytes> {
         let request = http::Request::builder()
             .method("POST")
             .uri(format!("https://{ENDPOINT_HOST}{path}"))
@@ -92,7 +97,7 @@ impl Harness {
     }
 
     /// Create `name` through the control plane and answer the `StreamARN` it minted.
-    async fn create_stream(&self, name: &str) -> String {
+    pub(crate) async fn create_stream(&self, name: &str) -> String {
         let response = self
             .call(
                 "/createStream",
@@ -133,7 +138,7 @@ impl Harness {
 
     /// Wait until the control plane reports `name` as `ACTIVE` — the status its own
     /// clock owes a freshly created stream, and the one `DeleteStream` requires.
-    async fn wait_until_active(&self, name: &str) {
+    pub(crate) async fn wait_until_active(&self, name: &str) {
         for _ in 0..100 {
             let info = self.describe_stream(name).await;
             if info.get("Status").and_then(serde_json::Value::as_str) == Some("ACTIVE") {
@@ -169,7 +174,7 @@ impl Harness {
     /// Produce `chunks` to the stream the given identifier names, through this
     /// service's producer entry point on the shared engine (there is no `PutMedia`
     /// operation yet), and answer the fragment numbers it stored them under.
-    fn produce(
+    pub(crate) fn produce(
         &self,
         stream_name: Option<&str>,
         stream_arn: Option<&str>,
@@ -202,7 +207,7 @@ impl Harness {
     }
 
     /// `GetMedia` for the given addressing members and selector.
-    async fn get_media(
+    pub(crate) async fn get_media(
         &self,
         addressing: &serde_json::Value,
         selector: serde_json::Value,
@@ -218,7 +223,7 @@ impl Harness {
     /// record's removal at an instant IT fixed; this only moves that instant to now, so
     /// the test reads the state a caller arriving after the span would have seen,
     /// without sleeping through it.
-    fn expire_deletion(&self, name: &str) {
+    pub(crate) fn expire_deletion(&self, name: &str) {
         let state = control_plane::state::service_state(&*self.engine)
             .expect("the control plane store");
         let mut store = state.lock();
@@ -234,11 +239,11 @@ impl Harness {
     }
 }
 
-fn status(response: &http::Response<Bytes>) -> u16 {
+pub(crate) fn status(response: &http::Response<Bytes>) -> u16 {
     response.status().as_u16()
 }
 
-fn error_code(response: &http::Response<Bytes>) -> String {
+pub(crate) fn error_code(response: &http::Response<Bytes>) -> String {
     response
         .headers()
         .get("x-amzn-errortype")
@@ -247,7 +252,7 @@ fn error_code(response: &http::Response<Bytes>) -> String {
         .to_string()
 }
 
-fn json(response: &http::Response<Bytes>) -> serde_json::Value {
+pub(crate) fn json(response: &http::Response<Bytes>) -> serde_json::Value {
     serde_json::from_slice(response.body()).unwrap_or(serde_json::Value::Null)
 }
 

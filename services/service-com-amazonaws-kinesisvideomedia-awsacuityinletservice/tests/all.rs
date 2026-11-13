@@ -19,10 +19,16 @@ mod get_media;
 mod ingest_plane_addressing;
 #[path = "all/media_endpoint_grouping.rs"]
 mod media_endpoint_grouping;
+#[path = "all/media_log_store_ceiling.rs"]
+mod media_log_store_ceiling;
+#[path = "all/media_plane_authorization.rs"]
+mod media_plane_authorization;
 #[path = "all/put_media_ingest.rs"]
 mod put_media_ingest;
 #[path = "all/read_plane_addressing.rs"]
 mod read_plane_addressing;
+#[path = "all/refusal_message_fidelity.rs"]
+mod refusal_message_fidelity;
 #[path = "all/route_claim.rs"]
 mod route_claim;
 #[path = "all/route_claims.rs"]

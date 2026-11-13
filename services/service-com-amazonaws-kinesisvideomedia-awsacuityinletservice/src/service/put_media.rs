@@ -105,10 +105,21 @@ const INVALID_ARGUMENT: &str = "InvalidArgumentException";
 /// hold.
 const RESOURCE_NOT_FOUND: &str = "ResourceNotFoundException";
 
+/// `AccessDeniedException` — the code AWS refuses a call IAM does not permit with (HTTP
+/// 403), answered ahead of everything this plane would otherwise read or write
+/// ([`crate::service::authorization`]). No Kinesis Video media model declares a shape for
+/// it, so it is stated here in this plane's own error envelope.
+const ACCESS_DENIED: &str = "AccessDeniedException";
+
 /// The code this emulator states for a fault of its OWN — the one it answers when a
 /// handler cannot run at all (HTTP 500). It is not a limit the caller reached and not a
 /// fault in the request, so it carries neither a throttling code nor a 4xx.
 const INTERNAL_FAILURE: &str = "InternalFailure";
+
+/// The API name this route is published and authorized under: `GetDataEndpoint`'s
+/// `APIName` for the write plane, which is also the name of the IAM action it performs
+/// (`kinesisvideo:PutMedia`).
+const PUT_MEDIA_API_NAME: &str = "PutMedia";
 
 /// The auth schemes a request to this plane is verified under.
 ///
@@ -226,9 +237,9 @@ impl<Eng: Send + Sync + 'static> ErasedOperation for PutMediaIngest<Eng> {
         &'r self,
         _svc: &'r dyn Service,
         req: &'r RtRequest,
-        _ctx: &'r OperationContext<'r>,
+        ctx: &'r OperationContext<'r>,
     ) -> BoxFuture<'r, RtResponse> {
-        Box::pin(async move { self.serve(req).await })
+        Box::pin(async move { self.serve(req, ctx).await })
     }
 
     fn auth_schemes(&self) -> Option<&'static [&'static str]> {
@@ -239,7 +250,7 @@ impl<Eng: Send + Sync + 'static> ErasedOperation for PutMediaIngest<Eng> {
 impl<Eng: Send + Sync + 'static> PutMediaIngest<Eng> {
     /// Serve one ingest request: take the Clusters its container carries, and answer the
     /// acknowledgement stream for them.
-    pub async fn serve(&self, req: &RtRequest) -> RtResponse {
+    pub async fn serve(&self, req: &RtRequest, ctx: &OperationContext<'_>) -> RtResponse {
         let session = match submitted_session(req) {
             Ok(session) => session,
             Err(refusal) => return refusal.response(),
@@ -264,6 +275,21 @@ impl<Eng: Send + Sync + 'static> PutMediaIngest<Eng> {
         let name = session.stream_name.as_deref();
         let arn = session.stream_arn.as_deref();
         let submitted_bytes = body.len();
+
+        // IAM decides before any media is taken: AWS evaluates authorization at the IAM
+        // layer ahead of the operation, so a producer whose identity-based policies do not
+        // allow `kinesisvideo:PutMedia` on the stream it addresses is refused, and nothing
+        // is read from the container, persisted or acknowledged. Asked while no store of
+        // this service is locked.
+        let resource = crate::service::authorization::AddressedStream::of(&*self.engine, name, arn);
+        if let Some(refusal) = crate::service::authorization::authorization_refusal(
+            &*self.engine,
+            ctx,
+            PUT_MEDIA_API_NAME,
+            &resource,
+        ) {
+            return access_denied(refusal).response();
+        }
 
         // The stream is resolved BEFORE the container is read: a stream nothing
         // registered is a fault in the request, which is answered as an HTTP error, and
@@ -564,6 +590,16 @@ fn store_unavailable() -> Refusal {
         status: 500,
         code: INTERNAL_FAILURE,
         message: "The media store is unavailable.".to_string(),
+    }
+}
+
+/// `AccessDeniedException` for a producer IAM does not permit: the sentence the gate
+/// stated, in this plane's own error envelope at the status AWS refuses such a call with.
+fn access_denied(message: String) -> Refusal {
+    Refusal {
+        status: 403,
+        code: ACCESS_DENIED,
+        message,
     }
 }
 

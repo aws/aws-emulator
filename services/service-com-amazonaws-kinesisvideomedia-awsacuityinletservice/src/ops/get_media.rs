@@ -19,13 +19,20 @@
 //! producer writes to it — and `ResourceNotFoundException` is only ever for an
 //! identifier that registry does not hold.
 //!
+//! Before any of that, the call is AUTHORIZED: AWS decides at the IAM layer, ahead of the
+//! operation, so this handler asks [`crate::service::authorization`] whether the caller's
+//! identity-based policies allow `kinesisvideo:GetMedia` on the stream the request
+//! addresses, and a caller they do not allow is refused `AccessDeniedException` (HTTP 403)
+//! with nothing resolved and no media served.
+//!
 //! Where this emulator stops short of the real service, it stops honestly: a real
 //! `GetMedia` holds the connection open and keeps streaming new fragments, while this
 //! one ends the session at the newest fragment persisted when the call arrived and
 //! hands back the token that resumes there. The throttling
-//! (`ClientLimitExceededException`, `ConnectionLimitExceededException`), wrong-endpoint
-//! (`InvalidEndpointException`) and authorization (`NotAuthorizedException`) behaviours
-//! are not modelled here and are filed as their own gap issues.
+//! (`ClientLimitExceededException`, `ConnectionLimitExceededException`) and wrong-endpoint
+//! (`InvalidEndpointException`) behaviours, and the stream-level/expired-token refusal the
+//! modelled `NotAuthorizedException` (401) carries, are not modelled here and are filed as
+//! their own gap issues.
 //!
 //! ## Shape of an operation
 //!
@@ -171,6 +178,16 @@ fn invalid_argument(message: impl Into<String>) -> GetMediaError {
     })
     .into()
 }
+
+/// The message a `StartSelector$ContinuationToken` this service never issued is refused
+/// with: the one fixed sentence Kinesis Video Streams states when it cannot DECODE the
+/// token a request presented.
+///
+/// A continuation token is an opaque value the service itself mints and encodes, so a token
+/// it did not mint is a token it cannot decode, whatever text it carries. The whole message
+/// is fixed: no part of it comes from the request or from this service's state, which is
+/// what keeps a token and a stream name out of an error channel that states neither.
+pub const UNDECODABLE_CONTINUATION_TOKEN_MESSAGE: &str = "Illegal embedded sign character";
 
 /// `ResourceNotFoundException` (HTTP 404). The modelled shape documents exactly one
 /// condition — "The stream with the given name does not exist" — so it is answered for
@@ -377,6 +394,32 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             }
         }
 
+        // IAM decides next, on this operation's own action and the stream the request
+        // addresses: AWS evaluates authorization at the IAM layer ahead of the operation, so
+        // a caller whose identity-based policies do not allow the call is refused with the
+        // code and status AWS refuses an unauthorized call with — `AccessDeniedException`
+        // (403), which this service's model declares no shape for (see `crate::scaffolded`)
+        // — and nothing about the stream is resolved or served. Asked before this service's
+        // store is locked, so only one store is ever held at a time.
+        //
+        // It follows the identifier check above only because the decision names the
+        // resource the request addresses, and a request naming no single stream names none:
+        // that check reads the request alone, exactly as the boundary validator that ran
+        // before this handler does.
+        let resource = crate::service::authorization::AddressedStream::of(
+            &*self.engine,
+            name,
+            arn,
+        );
+        if let Some(refusal) = crate::service::authorization::authorization_refusal(
+            &*self.engine,
+            ctx,
+            Self::NAME,
+            &resource,
+        ) {
+            return Err(GetMediaError::access_denied(refusal));
+        }
+
         // Each selector type carries its own companion member, per
         // `StartSelector$StartSelectorType`: FRAGMENT_NUMBER needs
         // `AfterFragmentNumber`, PRODUCER_TIMESTAMP / SERVER_TIMESTAMP need
@@ -516,10 +559,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     store
                         .continuation(token, &stream.arn, fragments.len())
                         .ok_or_else(|| {
-                            invalid_argument(format!(
-                                "Continuation token {token} does not resolve to a position on stream {}.",
-                                stream.name
-                            ))
+                            invalid_argument(UNDECODABLE_CONTINUATION_TOKEN_MESSAGE)
                         })?
                 }
                 // Every modelled selector type is handled above, and an unmodelled one

@@ -670,8 +670,28 @@ pub fn not_authorized_by_identity_policy(
     reason: &str,
 ) -> String {
     format!(
-        "User: {principal} is not authorized to perform: {action} on resource: {resource} {reason}"
+        "{} {reason}",
+        not_authorized_to_perform(principal, action, resource)
     )
+}
+
+/// The same sentence WITHOUT a reason clause: the principal that signed, the action it asked
+/// for and the resource it asked for, and nothing further.
+///
+/// It is [`not_authorized_by_identity_policy`] minus the clause, and the two are stated in
+/// one place for that reason. Some services' recorded refusal carries no clause naming which
+/// of IAM's rules withheld the grant, so ONE sentence answers an explicit `Deny` and IAM's
+/// default deny alike; a gate reaches for this form only where a recording of its own
+/// service's refusal shows it, and for every other gate
+/// [`not_authorized_by_identity_policy`] with the matching clause
+/// ([`IDENTITY_POLICY_EXPLICIT_DENY`], [`no_identity_policy_allows`]) is the sentence.
+///
+/// `action` is the fully qualified IAM action and `resource` what the request addressed, as
+/// in [`not_authorized_by_identity_policy`]; both come from the request, so this too can be
+/// stated before the resource is resolved.
+#[must_use]
+pub fn not_authorized_to_perform(principal: &str, action: &str, resource: &str) -> String {
+    format!("User: {principal} is not authorized to perform: {action} on resource: {resource}")
 }
 
 /// The reason clause for a request an explicit `Deny` in one of the principal's own

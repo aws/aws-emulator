@@ -61,6 +61,13 @@
 //!
 //! The Matroska container a producer submits is read by [`matroska`].
 //!
+//! ## Who may reach either plane
+//!
+//! Both routes are authorized before they read or write anything, against the
+//! identity-based policies IAM holds for the principal the request's credential names
+//! ([`authorization`]) — the step AWS takes at the IAM layer ahead of the operation, and
+//! the reason a caller a policy denies is served no media and ingests none.
+//!
 //! ## Where the modelled read route is served
 //!
 //! The modelled `POST /getMedia` belongs to the READ plane and is bound on the address
@@ -71,6 +78,7 @@
 //! an unroutable request instead of the operation — nothing is resolved and nothing is
 //! read.
 
+pub mod authorization;
 pub mod matroska;
 pub mod put_media;
 pub mod read_plane;
