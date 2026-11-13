@@ -45,6 +45,17 @@ pub mod keyspaces_tables;
 /// capacity is read and moved.
 pub mod custom_resource_endpoint;
 
+/// The Lambda function version or alias a `lambda` scalable target names, resolved in the
+/// service that owns it.
+pub mod lambda_functions;
+
+/// The resources of a scalable target this service reaches OVER THE WIRE, resolved as a
+/// registration's precondition.
+pub mod remote_resources;
+
+/// The ONE in-process call this service makes to another emulated service.
+pub mod in_process_calls;
+
 /// The refusals whose wire identity this service's own error list does not express, and the
 /// error channel that carries them.
 pub mod wire_refusals;
@@ -367,6 +378,18 @@ pub struct ComAmazonawsApplicationautoscalingAnyscalefrontendserviceState {
     /// target was last moved to is the capacity it holds, so a second movement of the same
     /// target replaces the first rather than queueing behind it.
     pub pending_capacity: BTreeMap<TargetKey, i32>,
+    /// Until when each queued movement is still OFFERED to the resource it moved.
+    ///
+    /// A resource reached over the wire can decline a movement it cannot take YET — it is
+    /// being created, or another change of it is still settling — and a movement this service
+    /// has already recorded as an activity is owed to that resource, so a declined delivery is
+    /// offered again by the next pass rather than dropped
+    /// ([`policy_execution::deliver_remote_capacity`]). The deadline is what keeps that
+    /// bounded: past it the resource is one that is not taking the movement at all, and the
+    /// queue does not grow a permanent entry per such target.
+    ///
+    /// One entry per queued movement, written and dropped with the queue itself.
+    pub pending_capacity_until: BTreeMap<TargetKey, SystemTime>,
     /// When the capacity of each target whose resource is read OVER THE WIRE was last asked
     /// for, so the clock's passes do not re-ask the caller's own endpoint several times a
     /// second (`policy_execution::REMOTE_CAPACITY_READ_INTERVAL`), and so the reads one pass
@@ -425,6 +448,8 @@ impl ComAmazonawsApplicationautoscalingAnyscalefrontendserviceState {
         // The resource the target scales is owed this capacity: queued here, because the
         // owning service's store cannot be written under this service's lock.
         self.pending_capacity.insert(target.clone(), capacity);
+        self.pending_capacity_until
+            .insert(target.clone(), at + CAPACITY_DELIVERY_WINDOW);
         self.activities.push(ScalingActivityRecord {
             activity_id: activity_id.clone(),
             sequence,
@@ -468,10 +493,10 @@ impl ComAmazonawsApplicationautoscalingAnyscalefrontendserviceState {
     /// starts after `at`, which this movement cannot have displaced.
     ///
     /// The displaced activity keeps the `Description` of the change IT intended, and its
-    /// `StatusMessage` names the capacity that took effect instead — `capacity`, the one the
-    /// displacing movement set, stated as that movement's own description
-    /// ([`movement_description`]) states it: what this activity asked for is its description,
-    /// and what became of the scalable target is its message.
+    /// `StatusMessage` reports BOTH halves of the override ([`overridden_status_message`]):
+    /// the capacity this activity itself applied, and `capacity` — the one the displacing
+    /// movement set in its place. So a reader of the log learns what the overtaken movement
+    /// had done as well as what became of the scalable target.
     fn override_unfulfilled_activities(
         &mut self,
         target: &TargetKey,
@@ -505,7 +530,11 @@ impl ComAmazonawsApplicationautoscalingAnyscalefrontendserviceState {
             activity.awaiting_owner = false;
             activity.fulfilled_at = Some(at);
             activity.terminal_status_code = ACTIVITY_OVERRIDDEN.to_string();
-            activity.terminal_status_message = Some(movement_description(target, capacity));
+            activity.terminal_status_message = Some(overridden_status_message(
+                target,
+                activity.capacity,
+                capacity,
+            ));
         }
     }
 
@@ -686,6 +715,16 @@ pub const ACTIVITY_RETENTION: Duration = Duration::from_secs(6 * 7 * 24 * 60 * 6
 /// ([`capacity_fulfilment::settle_activity_fulfilments`]), so a capacity the owning service
 /// never reaches is one its movement never reports as fulfilled.
 pub const ACTIVITY_FULFILMENT: Duration = Duration::from_secs(3);
+
+/// How long a capacity movement keeps being OFFERED to a resource that has not taken it.
+///
+/// The EMULATOR's own bound. A resource reached over the wire can decline a movement it cannot
+/// take yet — one of this project's own transitions is still settling on it — and the movement
+/// is owed to it, so a declined delivery is offered again by the next pass of the clock. This
+/// bounds that: it is many times [`ACTIVITY_FULFILMENT`], so every transition this emulator
+/// gives a resource elapses inside it, and short enough that a resource which is not taking
+/// movements at all leaves no permanent entry in the queue.
+pub const CAPACITY_DELIVERY_WINDOW: Duration = Duration::from_secs(30);
 
 /// The non-terminal status a capacity movement carries until it is fulfilled, from the
 /// model's `ScalingActivityStatusCode` enum (`SCALING_ACTIVITY_STATUS_CODE_VALUES`).
@@ -1310,6 +1349,14 @@ pub fn scaling_policy_of(key: &PolicyKey, record: &ScalingPolicyRecord) -> Scali
 /// activities name the resource the property belongs to, the resource type opens the noun
 /// ([`RESOURCE_TYPE_IN_CAPACITY_NOUN`]).
 pub fn capacity_noun(scalable_dimension: &str) -> String {
+    // A namespace whose dimension does not NAME the capacity it scales says what it scales
+    // in its own words instead.
+    if let Some((_, noun)) = NAMESPACE_CAPACITY_NOUNS
+        .iter()
+        .find(|(namespace, _)| *namespace == dimension_namespace(scalable_dimension))
+    {
+        return (*noun).to_string();
+    }
     let property = scalable_dimension
         .rsplit(':')
         .next()
@@ -1343,6 +1390,18 @@ pub fn capacity_noun(scalable_dimension: &str) -> String {
 /// `ecs:service:DesiredCount` ("Setting desired count to 1.").
 const RESOURCE_TYPE_IN_CAPACITY_NOUN: &[&str] = &["cassandra"];
 
+/// The capacity noun a namespace's activities use where the dimension names no capacity to
+/// read one off.
+///
+/// `custom-resource:ResourceType:Property` is the one dimension whose resource type and
+/// scaling property are PLACEHOLDERS — "Custom resources are not supported with a resource
+/// type […] The unique identifier is defined by the service provider" (the model's own
+/// `ResourceId` documentation) — so reading "property" off it would name nothing. The capacity
+/// such a target scales is the one the custom-resource contract carries
+/// ([`custom_resource_endpoint`]): the resource's desired capacity, which is what an activity
+/// of that namespace says it is setting.
+const NAMESPACE_CAPACITY_NOUNS: &[(&str, &str)] = &[("custom-resource", "desired capacity")];
+
 /// The service namespace a `ScalableDimension` names: its first segment.
 fn dimension_namespace(scalable_dimension: &str) -> &str {
     scalable_dimension.split(':').next().unwrap_or_default()
@@ -1363,14 +1422,31 @@ pub fn movement_description(target: &TargetKey, capacity: i32) -> String {
 /// on, in the shape the model's own `DescribeScalingActivities` example carries
 /// ("Successfully set desired count to 1. Change successfully fulfilled by ecs.").
 ///
-/// One template, two readers: the movement that was fulfilled reports the capacity IT set,
-/// and a movement a later one took over reports instead the change that displaced it
-/// ([`ComAmazonawsApplicationautoscalingAnyscalefrontendserviceState::override_unfulfilled_activities`]).
+/// One capacity, one template: the movement names the capacity IT set, and a movement a later
+/// one took over reports that same clause beside what displaced it
+/// ([`overridden_status_message`]).
 pub fn fulfilled_status_message(target: &TargetKey, capacity: i32) -> String {
     format!(
         "Successfully set {} to {capacity}. Change successfully fulfilled by {}.",
         capacity_noun(&target.scalable_dimension),
         target.service_namespace
+    )
+}
+
+/// The `StatusMessage` of a capacity movement a LATER movement of the same scalable target
+/// displaced before the capacity it set was confirmed: the capacity this movement itself
+/// applied, and the capacity that was put in its place.
+///
+/// Two clauses, because an overtaken movement is two facts: what it did — the same
+/// "Successfully set …" clause a movement that was confirmed reports
+/// ([`fulfilled_status_message`]), since this movement did apply that capacity — and that the
+/// target was moved on from it before the change was confirmed, which names the capacity that
+/// displaced it. What this activity INTENDED stays its `Description`
+/// ([`movement_description`]).
+pub fn overridden_status_message(target: &TargetKey, capacity: i32, changed_to: i32) -> String {
+    format!(
+        "Successfully set {noun} to {capacity}. Found it was later changed to {changed_to}.",
+        noun = capacity_noun(&target.scalable_dimension)
     )
 }
 
@@ -1834,7 +1910,7 @@ pub fn check_resource_id_form(
 /// `function` and the unique identifier is the function name with a function version or
 /// alias name suffix that is not `$LATEST`. Example: `function:my-function:prod`" (the
 /// model's own `ResourceId` documentation).
-fn split_lambda_resource_id(resource_id: &str) -> Option<(&str, &str)> {
+pub fn split_lambda_resource_id(resource_id: &str) -> Option<(&str, &str)> {
     let rest = resource_id.strip_prefix("function:")?;
     let (function_name, qualifier) = rest.split_once(':')?;
     (!function_name.is_empty() && !qualifier.is_empty() && !qualifier.contains(':'))
@@ -1867,18 +1943,33 @@ pub fn check_provisionable_resource(
 ) -> Result<(), String> {
     match scalable_dimension {
         "lambda:function:ProvisionedConcurrency" => {
-            let qualifier = split_lambda_resource_id(resource_id).map(|(_, qualifier)| qualifier);
-            if qualifier.is_none_or(|qualifier| qualifier == LAMBDA_UNPUBLISHED_VERSION) {
-                return Err(format!(
-                    "ResourceId not valid for ScalableDimension {scalable_dimension}: \
-                     {resource_id} must name an alias or a published version of the function, \
-                     and {LAMBDA_UNPUBLISHED_VERSION} is neither"
-                ));
+            match split_lambda_resource_id(resource_id) {
+                // The refusal names the QUALIFIER and nothing else: what is unsupported is
+                // that qualifier, not the function it qualifies or the dimension that would
+                // have scaled it ([`unsupported_qualifier_message`]).
+                Some((_, qualifier)) if qualifier == LAMBDA_UNPUBLISHED_VERSION => {
+                    Err(unsupported_qualifier_message(qualifier))
+                }
+                // An id this cannot read names no qualifier at all, so there is no
+                // unsupported qualifier to report: it is the triple that describes no one
+                // resource, which is the refusal [`check_resource_id_form`] owns.
+                None => Err(UNSUPPORTED_TRIPLE_MESSAGE.to_string()),
+                Some(_) => Ok(()),
             }
-            Ok(())
         }
         _ => Ok(()),
     }
+}
+
+/// How this service refuses a resource id whose QUALIFIER names no capacity the dimension
+/// can scale.
+///
+/// The sentence is about the qualifier alone — it names neither the resource it qualifies nor
+/// the dimension the request asked to scale — because the qualifier is the whole of what is
+/// unsupported: every resource of the namespace carries the same set of them, so which
+/// resource was named adds nothing.
+pub fn unsupported_qualifier_message(qualifier: &str) -> String {
+    format!("{qualifier} is not a supported qualifier for Auto Scaling")
 }
 
 /// Whether `value` matches one [`RESOURCE_ID_FORMS`] template.

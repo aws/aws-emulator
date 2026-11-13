@@ -25,9 +25,16 @@
 //! Both are made over the IN-PROCESS callback transport
 //! (`::smithy_server_runtime::EmbeddedEmulator`), signed as every in-process caller signs
 //! (`::service_common::in_process_sigv4`) under the signing name an invoke endpoint
-//! authenticates: nothing here opens a socket or leaves the host, and an endpoint this
-//! emulator does not serve simply answers nothing, which resolves no capacity rather than
-//! failing a decision.
+//! authenticates: nothing here opens a socket or leaves the host.
+//!
+//! Being able to make those two requests is the PRECONDITION of registering such a target,
+//! because they are the whole of what scaling one does — so [`probe_capacity`] reports which
+//! of three things asking the endpoint for its capacity learnt, and the registration answers
+//! each differently ([`super::remote_resources`]): an endpoint that served the document
+//! resolves its capacity, one that answered the invocation with a refusal refuses the
+//! registration ([`missing_invoke_permissions_message`]), and an address nothing on this
+//! engine serves resolves nothing at all — the same answer this service gives for any other
+//! namespace whose owning store it cannot reach.
 
 use ::serde_json::Value;
 
@@ -44,13 +51,6 @@ const ACTUAL_CAPACITY: &str = "actualCapacity";
 /// The member that reports the capacity it was last asked for, and the one a request to move
 /// it carries. Read as the resource's capacity only where it reports no [`ACTUAL_CAPACITY`].
 const DESIRED_CAPACITY: &str = "desiredCapacity";
-
-/// How much of an endpoint's answer this reader copies and parses.
-///
-/// The EMULATOR's own bound: the document is a handful of members, and the endpoint is one the
-/// CALLER named, so the bytes a read of it costs are fixed here rather than by whatever that
-/// endpoint answers.
-const MAX_ANSWER_BYTES: usize = 64 * 1024;
 
 /// The host and path a `custom-resource` `ResourceId` addresses.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -85,6 +85,80 @@ pub fn endpoint_of(resource_id: &str) -> Option<Endpoint> {
     })
 }
 
+/// What asking the endpoint behind a `custom-resource` target for its capacity learnt.
+///
+/// The three outcomes are three different facts, and a registration answers each of them
+/// differently ([`super::remote_resources`]), so they are not collapsed into one `Option`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Reached {
+    /// The endpoint SERVED the capacity document, carrying the capacity it reports when it
+    /// reports one this reader can read.
+    Served(Option<i32>),
+    /// The endpoint refused to be INVOKED at all: the address serves nothing to this caller,
+    /// which is the one answer that says the contract's calls cannot be made.
+    Refused,
+    /// Nothing was learnt: the resource id addresses no endpoint, nothing on this engine
+    /// serves that address, or the endpoint answered something that is neither the document
+    /// nor a refusal of the invocation.
+    Unserved,
+}
+
+/// The actions the Application Auto Scaling custom-resource contract exercises on the
+/// endpoint: the `PATCH` that moves its capacity and the `GET` that reads it, as the
+/// `execute-api` service publishes an invoke permission
+/// (`execute-api:Invoke`, per method).
+const REQUIRED_INVOKE_ACTIONS: [&str; 2] = ["execute-api:Invoke:PATCH", "execute-api:Invoke:GET"];
+
+/// How a registration refuses a `custom-resource` target whose endpoint it could not invoke.
+///
+/// Invoking the endpoint is the whole of what registering such a target does, so an endpoint
+/// that answers the invocation with a refusal is one the caller cannot exercise the contract's
+/// actions on — and the refusal says which actions those are. They are the contract's, not the
+/// request's, so the sentence carries no value of the call.
+pub fn missing_invoke_permissions_message() -> String {
+    format!(
+        "User is missing the following permissions: {}",
+        REQUIRED_INVOKE_ACTIONS.join(", ")
+    )
+}
+
+/// Ask the endpoint behind a `custom-resource` target for its capacity, reporting WHICH of
+/// the three outcomes the invocation had.
+pub async fn probe_capacity(
+    callback: &::smithy_server_runtime::EmbeddedEmulator,
+    region: &str,
+    resource_id: &str,
+) -> Reached {
+    let Some(endpoint) = endpoint_of(resource_id) else {
+        return Reached::Unserved;
+    };
+    let Some(answer) = call(callback, region, "GET", &endpoint, Vec::new()).await else {
+        // The request could not be made at all, which is a fact about this process rather
+        // than about the endpoint.
+        return Reached::Unserved;
+    };
+    if answer.is_success() {
+        return Reached::Served(reported_capacity(&answer.payload));
+    }
+    // ONE class of answer says the contract's calls cannot be made: the endpoint declining to
+    // serve this caller at all, which is the status an invoke of an api, a stage or a method
+    // that does not serve it earns and the one an unauthorized invoke earns
+    // ([`NOT_INVOCABLE_STATUSES`]). Every other answer leaves the registration answered on
+    // its own terms — the emulator's own front door refusing a call no mounted service served
+    // (`::service_common::in_process_refusal`), a fault of the endpoint's own backend behind a
+    // served invocation, and anything else it chose to answer, none of which is a statement
+    // about the caller's permission to invoke it.
+    if !answer.unserved() && NOT_INVOCABLE_STATUSES.contains(&answer.status) {
+        return Reached::Refused;
+    }
+    Reached::Unserved
+}
+
+/// The statuses an endpoint answers a caller it does not serve: the `403` an invoke endpoint
+/// gives for an api, a stage or a method it does not serve and for a caller not authorized to
+/// invoke it, and the `401` an endpoint that authenticates nobody of this caller's gives.
+const NOT_INVOCABLE_STATUSES: [u16; 2] = [401, 403];
+
 /// The capacity the resource behind a `custom-resource` target reports right now, or `None`
 /// when this emulator could not read it.
 pub async fn read_capacity(
@@ -92,18 +166,35 @@ pub async fn read_capacity(
     region: &str,
     resource_id: &str,
 ) -> Option<i32> {
-    let endpoint = endpoint_of(resource_id)?;
-    let (status, payload) = call(callback, region, "GET", &endpoint, Vec::new()).await?;
-    if !(200..300).contains(&status) {
-        return None;
+    match probe_capacity(callback, region, resource_id).await {
+        Reached::Served(capacity) => capacity,
+        Reached::Refused | Reached::Unserved => None,
     }
-    let document: Value = ::serde_json::from_slice(&payload).ok()?;
-    let capacity = document
-        .get(ACTUAL_CAPACITY)
-        .and_then(Value::as_f64)
-        .or_else(|| document.get(DESIRED_CAPACITY).and_then(Value::as_f64))?;
+}
+
+/// The capacity a served document reports, when it reports one this reader can read.
+///
+/// The document is the CALLER's own application's, so a capacity it spells as text is the
+/// number that text spells: the member is read as a number first and as the decimal it is
+/// written as otherwise, which is how the same value reaches this reader from an endpoint that
+/// renders its document with the quotes a JSON template puts round every value.
+fn reported_capacity(payload: &[u8]) -> Option<i32> {
+    let document: Value = ::serde_json::from_slice(payload).ok()?;
+    let capacity = reported_number(&document, ACTUAL_CAPACITY)
+        .or_else(|| reported_number(&document, DESIRED_CAPACITY))?;
     (capacity.is_finite() && capacity >= 0.0 && capacity <= f64::from(i32::MAX))
         .then(|| capacity.round() as i32)
+}
+
+/// The number `member` of `document` carries, as a number or as the decimal it spells.
+fn reported_number(document: &Value, member: &str) -> Option<f64> {
+    let value = document.get(member)?;
+    value.as_f64().or_else(|| {
+        value
+            .as_str()
+            .map(str::trim)
+            .and_then(|text| text.parse::<f64>().ok())
+    })
 }
 
 /// Ask the resource behind a `custom-resource` target to move to `capacity`, answering
@@ -120,21 +211,32 @@ pub async fn set_capacity(
     let Some(endpoint) = endpoint_of(resource_id) else {
         return false;
     };
-    let body = ::serde_json::json!({DESIRED_CAPACITY: f64::from(capacity)}).to_string();
+    let body = capacity_document(capacity);
     let answered = call(callback, region, "PATCH", &endpoint, body.into_bytes()).await;
-    answered.is_some_and(|(status, _)| (200..300).contains(&status))
+    answered.is_some_and(|answer| answer.is_success())
 }
 
-/// Make one request on the endpoint over the in-process transport, answering its status and
-/// body — or `None` when the request could not be made or served at all.
+/// The document a request to MOVE the resource's capacity carries: the one member the
+/// contract names, as the number the endpoint reports its capacity as.
+fn capacity_document(capacity: i32) -> String {
+    ::serde_json::json!({DESIRED_CAPACITY: f64::from(capacity)}).to_string()
+}
+
+/// Make one request on the endpoint over the in-process transport, answering what it
+/// answered — or `None` when the request could not be made at all.
+///
+/// Everything a call of another emulated service takes is the one in-process caller this
+/// service has ([`super::in_process_calls`]), under the signing name an invoke endpoint
+/// authenticates; what this adds is the address the resource id names and the media type the
+/// capacity document travels in.
 async fn call(
     callback: &::smithy_server_runtime::EmbeddedEmulator,
     region: &str,
     method: &str,
     endpoint: &Endpoint,
     body: Vec<u8>,
-) -> Option<(u16, Vec<u8>)> {
-    let mut request = ::http::Request::builder()
+) -> Option<super::in_process_calls::Answered> {
+    let request = ::http::Request::builder()
         .method(method)
         .uri(&endpoint.path)
         .header("host", &endpoint.host)
@@ -142,42 +244,7 @@ async fn call(
         .header("accept", APPLICATION_JSON)
         .body(body)
         .ok()?;
-    // The emulator verifies every request signature, so this call carries one too: the
-    // credential the framework hands this service, signed through the tree's one in-process
-    // signer, under the signing name an invoke endpoint authenticates.
-    ::service_common::in_process_sigv4::sign_callback_request(
-        &mut request,
-        INVOKE_SIGNING_NAME,
-        region,
-        callback,
-    )
-    .await
-    .ok()?;
-    let (parts, body) = request.into_parts();
-    let request = ::http::Request::from_parts(
-        parts,
-        ::aws_smithy_types::body::SdkBody::from(::bytes::Bytes::from(body)),
-    );
-    let request = ::aws_smithy_runtime_api::http::Request::try_from(request).ok()?;
-    let connector = callback.http_connector();
-    let answer = {
-        use ::aws_smithy_runtime_api::client::http::HttpConnector;
-        HttpConnector::call(&connector, request).await.ok()?
-    };
-    let status = answer.status().as_u16();
-    // The answer comes from an endpoint the CALLER named, so only the prefix a capacity
-    // document can possibly occupy is copied and parsed: everything past that cap is dropped,
-    // which leaves a long body an answer this reader cannot read rather than an allocation
-    // the request chose the size of.
-    let payload = answer
-        .body()
-        .bytes()
-        .unwrap_or_default()
-        .iter()
-        .take(MAX_ANSWER_BYTES)
-        .copied()
-        .collect();
-    Some((status, payload))
+    super::in_process_calls::call(callback, INVOKE_SIGNING_NAME, region, request).await
 }
 
 #[cfg(test)]
@@ -237,6 +304,70 @@ mod tests {
             });
             assert_eq!(
                 actual, expected,
+                "case {case:?}: expected {expected:?}, got {actual:?}"
+            );
+        }
+    }
+
+    /// RULE: a request to move the resource's capacity carries exactly the one member the
+    /// custom-resource contract names, as the number the endpoint reports its capacity as.
+    #[test]
+    fn a_capacity_change_carries_the_one_member_the_contract_names() {
+        /// (case, the capacity, the document sent for it)
+        type Row<'a> = (&'a str, i32, &'a str);
+        let rows: &[Row<'_>] = &[
+            ("a capacity of one", 1, r#"{"desiredCapacity":1.0}"#),
+            ("the floor a registration pulled up to", 3, r#"{"desiredCapacity":3.0}"#),
+            ("no capacity at all", 0, r#"{"desiredCapacity":0.0}"#),
+            ("a large capacity", 1200, r#"{"desiredCapacity":1200.0}"#),
+        ];
+        for (case, capacity, expected) in rows {
+            let actual = capacity_document(*capacity);
+            assert_eq!(
+                actual, *expected,
+                "case {case:?}: expected {expected:?}, got {actual:?}"
+            );
+        }
+    }
+
+    /// RULE: the capacity a served document reports is its `actualCapacity`, falling back to
+    /// the `desiredCapacity` an endpoint that reports only that one carries — read as a number
+    /// or as the decimal it spells.
+    #[test]
+    fn the_capacity_is_the_one_the_served_document_reports() {
+        /// (case, the document, the capacity it reports)
+        type Row<'a> = (&'a str, &'a str, Option<i32>);
+        let rows: &[Row<'_>] = &[
+            (
+                "the documented body, whose capacity is a number",
+                r#"{"actualCapacity":2.0,"desiredCapacity":2.0,"scalingStatus":"Successful"}"#,
+                Some(2),
+            ),
+            (
+                "a document whose values are quoted, as a JSON template renders them",
+                r#"{"actualCapacity":"3","desiredCapacity":"3"}"#,
+                Some(3),
+            ),
+            (
+                "an endpoint reporting only the capacity it was asked for",
+                r#"{"desiredCapacity":7}"#,
+                Some(7),
+            ),
+            (
+                "the capacity it IS wins over the one it was asked for",
+                r#"{"actualCapacity":4,"desiredCapacity":9}"#,
+                Some(4),
+            ),
+            ("a fractional capacity, which rounds", r#"{"actualCapacity":2.6}"#, Some(3)),
+            ("no capacity member at all", r#"{"scalingStatus":"Pending"}"#, None),
+            ("a capacity that is no number", r#"{"actualCapacity":"many"}"#, None),
+            ("a negative capacity", r#"{"actualCapacity":-1}"#, None),
+            ("a body that is no document", "not json", None),
+        ];
+        for (case, document, expected) in rows {
+            let actual = reported_capacity(document.as_bytes());
+            assert_eq!(
+                actual, *expected,
                 "case {case:?}: expected {expected:?}, got {actual:?}"
             );
         }

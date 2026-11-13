@@ -73,6 +73,18 @@ service-com-amazonaws-ec2-amazonec2 = { workspace = true }
 # Keyspaces' own auto scaling is implemented on top of this service, so its crate already
 # depends on this one.
 service-com-amazonaws-keyspaces-keyspacesservice = { workspace = true }
+# AWS Lambda, for the `lambda` scalable target whose function VERSION OR ALIAS lives there:
+# a registration resolves that qualifier by calling the owning service, so the suite that
+# pins that rule mounts it beside this service on one engine. A DEV dependency for the same
+# reason as Amazon Keyspaces above — the resolution is a call, not a read of that crate's
+# state type.
+service-com-amazonaws-lambda-awsgirapiservice = { workspace = true }
+# Amazon API Gateway, for the `custom-resource` scalable target that IS an endpoint: the
+# contract's GET and PATCH are invoked on a deployed REST API stage, so the suite that pins
+# the reachability precondition stands that endpoint up through API Gateway's own API on the
+# same engine. A DEV dependency: nothing in `src/` reads its state — the endpoint is reached
+# over the wire, at the address the resource id names.
+service-com-amazonaws-apigateway-backplanecontrolservice = { workspace = true }
 
 [lints]
 workspace = true

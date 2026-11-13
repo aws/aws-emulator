@@ -24,10 +24,11 @@
 //! * a reference naming a variable, a method or a name outside that set — a `$context`
 //!   member this call has no value for, a stage variable the stage does not define, or one
 //!   of the `$util` transformations whose exact output AWS's own documentation does not
-//!   state (`escapeJavaScript`, `parseJson`, `validateProperty`), so a rendering of one
-//!   would be guesswork. The two `$util` conversions that ARE stated exactly — the
-//!   `application/x-www-form-urlencoded` encode and decode — are performed, by the
-//!   maintained coder for that format;
+//!   state (`parseJson`, `validateProperty`), so a rendering of one would be guesswork. The
+//!   `$util` conversions whose output a published standard DOES state exactly are performed:
+//!   the `application/x-www-form-urlencoded` encode and decode, by the maintained coder for
+//!   that format, and the JavaScript string escape, by the rule that language's own grammar
+//!   gives for a string literal;
 //! * a `$input` reference to the payload where the call has no payload the template can
 //!   read (see [`TemplateInputs::payload`]);
 //! * a DIRECTIVE (`#set`, `#if`, `#foreach`, …), which is the half of the language that is
@@ -609,11 +610,12 @@ impl Render<'_> {
                     .ok_or_else(unresolved)
             }
             // "$util" — "contains utility functions", each documented with the conversion
-            // it performs. The two whose output that documentation STATES exactly are the
-            // two form-encoding conversions, and each is performed by the maintained coder
-            // for that format rather than by a rule written here; every other `$util`
-            // method (`escapeJavaScript`, `parseJson`, `validateProperty`) stays
-            // unresolved, for the reason the module docs give.
+            // it performs. The three whose output a published standard STATES exactly are
+            // performed — the two form-encoding conversions by the maintained coder for that
+            // format, and the JavaScript string escape by the rule that language's own
+            // grammar gives ([`escaped_as_javascript`]); every other `$util` method
+            // (`parseJson`, `validateProperty`) stays unresolved, for the reason the module
+            // docs give.
             "util" => match reference.steps.as_slice() {
                 [Step::Call(method, arguments)] => {
                     let text = self.one_argument(arguments)?.ok_or_else(unresolved)?;
@@ -629,6 +631,11 @@ impl Render<'_> {
                         // which resolves every escape and folds `+` to a space as that
                         // format's rule is.
                         "urlDecode" => Ok(::smithy_server_runtime::percent_decode(&text)),
+                        // "$util.escapeJavaScript() — Escapes the characters in a string
+                        // using JavaScript string rules", which is what lets a template put
+                        // a caller's own text inside a quoted string of the document it
+                        // renders.
+                        "escapeJavaScript" => Ok(escaped_as_javascript(&text)),
                         _ => Err(unresolved()),
                     }
                 }
@@ -697,6 +704,38 @@ fn parameter(inputs: &TemplateInputs, name: &str) -> Option<String> {
         .map(|(_, value)| value.clone())
 }
 
+/// `text` with the characters a JavaScript string literal cannot carry as they stand
+/// replaced by their escapes, which is what `$util.escapeJavaScript` performs.
+///
+/// The rule is ECMAScript's own string-literal grammar, which states exactly which
+/// characters need an escape and what each escape is: the quote characters and the escape
+/// character itself, the five escapes the grammar names (`\b`, `\t`, `\n`, `\f`, `\r`), and
+/// every other control character as the `\uXXXX` the grammar spells it with. The forward
+/// slash is escaped too, because a rendering of this is embedded in a document a script may
+/// carry and `</` has to stay inert there. Nothing else is touched: a template that escapes
+/// text and one that writes it put the same characters on the wire.
+fn escaped_as_javascript(text: &str) -> String {
+    let mut escaped = String::with_capacity(text.len());
+    for character in text.chars() {
+        match character {
+            '"' => escaped.push_str("\\\""),
+            '\'' => escaped.push_str("\\'"),
+            '\\' => escaped.push_str("\\\\"),
+            '/' => escaped.push_str("\\/"),
+            '\u{8}' => escaped.push_str("\\b"),
+            '\t' => escaped.push_str("\\t"),
+            '\n' => escaped.push_str("\\n"),
+            '\u{c}' => escaped.push_str("\\f"),
+            '\r' => escaped.push_str("\\r"),
+            other if other.is_control() => {
+                escaped.push_str(&format!("\\u{:04X}", u32::from(other)));
+            }
+            other => escaped.push(other),
+        }
+    }
+    escaped
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -757,6 +796,14 @@ mod tests {
             ("$input.path('$.qty')", "2"),
             ("$input.path('$.nested.deep')", "value"),
             ("$input.json('$.missing')", ""),
+            // The two form-encoding conversions and the JavaScript string escape, which is
+            // what puts a caller's own text inside a quoted string of a rendered document.
+            ("$util.urlEncode('a b&c')", "a+b%26c"),
+            ("$util.urlDecode('a+b%26c')", "a b&c"),
+            (
+                r#"{"lastBody":"$util.escapeJavaScript($input.body)"}"#,
+                r#"{"lastBody":"{\"id\":\"a1\",\"qty\":2,\"nested\":{\"deep\":\"value\"}}"}"#,
+            ),
             // The stage and the context.
             ("$stageVariables.backend", "beta"),
             ("$stageVariables.get('backend')", "beta"),
@@ -787,12 +834,38 @@ mod tests {
         }
     }
 
+    /// RULE: `$util.escapeJavaScript` replaces exactly the characters a JavaScript string
+    /// literal cannot carry as they stand, each with the escape that grammar names.
+    #[test]
+    fn the_javascript_escape_replaces_what_a_string_literal_cannot_carry() {
+        /// (case, the text, its escaping)
+        type Row<'a> = (&'a str, &'a str, &'a str);
+        let rows: &[Row<'_>] = &[
+            ("text needing no escape at all", "a-b_c 1", "a-b_c 1"),
+            ("a quoted document", r#"{"a":1}"#, r#"{\"a\":1}"#),
+            ("an apostrophe", "it's", r"it\'s"),
+            ("a backslash", r"a\b", r"a\\b"),
+            ("a forward slash", "a/b", r"a\/b"),
+            ("the named control escapes", "a\tb\nc\rd", r"a\tb\nc\rd"),
+            ("a control character the grammar spells", "a\u{1}b", r"a\u0001b"),
+            ("text past ASCII, which needs none", "café", "café"),
+            ("nothing at all", "", ""),
+        ];
+        for (case, text, expected) in rows {
+            let actual = escaped_as_javascript(text);
+            assert_eq!(
+                actual, *expected,
+                "case {case:?}: expected {expected:?}, got {actual:?}"
+            );
+        }
+    }
+
     #[test]
     fn a_reference_nothing_resolves_leaves_the_template_unrendered() {
         let cases: &[&str] = &[
             // A variable outside the documented set, and a transformation this emulator
             // states rather than performs.
-            "$util.escapeJavaScript($input.body)",
+            "$util.parseJson($input.body)",
             "$whatever.body",
             // A member of a documented variable that this call has no value for.
             "$context.status",

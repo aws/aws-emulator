@@ -355,11 +355,14 @@ async fn a_scalable_target_is_only_in_the_region_it_was_registered_in() {
 }
 
 /// One row of the qualifier table: the `ResourceId` a `lambda` registration carries, and
-/// whether the capacity it names exists.
+/// whether the capacity it names exists — with, for a row it does not, the sentence the
+/// registration is refused with.
 struct QualifierRow {
     case: &'static str,
     resource_id: &'static str,
     accepted: bool,
+    /// The refusal's message, for a row that is refused.
+    refusal: &'static str,
 }
 
 /// The qualifier forms.
@@ -369,51 +372,68 @@ struct QualifierRow {
 /// that is not `$LATEST`" — so an alias and a published version name a capacity, and the
 /// unpublished version names none. The rows the issue did not cite are the published
 /// version, the second function's alias and the id whose qualifier is empty.
+///
+/// Which refusal a row gets follows what it got wrong: an id of the documented FORM whose
+/// qualifier can carry no provisioned concurrency is refused for that qualifier, and an id
+/// that is not of the form at all is the triple that describes no one resource.
 const QUALIFIER_ROWS: &[QualifierRow] = &[
     QualifierRow {
         case: "an alias",
         resource_id: "function:ingest:prod",
         accepted: true,
+        refusal: "",
     },
     QualifierRow {
         case: "a published version",
         resource_id: "function:ingest:3",
         accepted: true,
+        refusal: "",
     },
     QualifierRow {
         case: "an alias of another function",
         resource_id: "function:web-api:blue",
         accepted: true,
+        refusal: "",
     },
     QualifierRow {
         case: "the unpublished version",
         resource_id: "function:ingest:$LATEST",
         accepted: false,
+        refusal: UNSUPPORTED_QUALIFIER,
     },
     QualifierRow {
         case: "the unpublished version of another function",
         resource_id: "function:web-api:$LATEST",
         accepted: false,
+        refusal: UNSUPPORTED_QUALIFIER,
     },
     QualifierRow {
         case: "an unqualified function",
         resource_id: "function:ingest",
         accepted: false,
+        refusal: UNSUPPORTED_TRIPLE,
     },
     QualifierRow {
         case: "a qualifier that is empty",
         resource_id: "function:ingest:",
         accepted: false,
+        refusal: UNSUPPORTED_TRIPLE,
     },
 ];
+
+/// The sentence a (namespace, resource id, dimension) triple that does not describe one
+/// resource is refused with. Entirely fixed text: what is unsupported is the combination.
+const UNSUPPORTED_TRIPLE: &str =
+    "Unsupported service namespace, resource type or scalable dimension";
+
+/// The sentence a resource id whose QUALIFIER carries no provisioned concurrency is refused
+/// with: the qualifier, and that it is not one Auto Scaling supports. It names neither the
+/// function nor the dimension — the qualifier is the whole of what is unsupported.
+const UNSUPPORTED_QUALIFIER: &str = "$LATEST is not a supported qualifier for Auto Scaling";
 
 #[tokio::test]
 async fn provisioned_concurrency_is_only_scalable_on_a_version_or_an_alias() {
     const DIMENSION: &str = "lambda:function:ProvisionedConcurrency";
-    /// The sentence a (namespace, resource id, dimension) triple that does not describe one
-    /// resource is refused with.
-    const UNSUPPORTED_TRIPLE: &str =
-        "Unsupported service namespace, resource type or scalable dimension";
 
     for row in QUALIFIER_ROWS {
         let case = row.case;
@@ -450,15 +470,14 @@ async fn provisioned_concurrency_is_only_scalable_on_a_version_or_an_alias() {
                 "ValidationException",
                 "case {case:?}: expected a ValidationException, got {body:?}"
             );
-            // An id that is not of the documented FORM is refused as a triple that does not
-            // describe one resource, which names none of the three members; one of the right
-            // form whose qualifier can carry no provisioned concurrency is refused by that
-            // rule, which names the id the request supplied.
+            // Each refusal states the rule that was broken and nothing else: the qualifier
+            // that carries no provisioned concurrency, or the triple that describes no one
+            // resource.
             let message = error_message(&body);
-            assert!(
-                message == UNSUPPORTED_TRIPLE || message.contains(row.resource_id),
-                "case {case:?}: expected either {UNSUPPORTED_TRIPLE:?} or a refusal naming the \
-                 resource id, got {body:?}"
+            assert_eq!(
+                message, row.refusal,
+                "case {case:?}: expected the refusal {:?}, got {body:?}",
+                row.refusal
             );
             assert!(
                 registered.is_empty(),

@@ -115,6 +115,8 @@ mod domain_name_collection;
 mod domain_name_create_bounds;
 #[path = "all/domain_name_lifecycle.rs"]
 mod domain_name_lifecycle;
+#[path = "all/dynamodb_service_integration.rs"]
+mod dynamodb_service_integration;
 #[path = "all/epoch_second_timestamps.rs"]
 mod epoch_second_timestamps;
 #[path = "all/execute_api_data_plane.rs"]

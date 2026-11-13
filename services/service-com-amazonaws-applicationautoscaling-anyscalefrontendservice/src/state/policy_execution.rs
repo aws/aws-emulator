@@ -87,6 +87,14 @@ use super::{
     service_state, ComAmazonawsApplicationautoscalingAnyscalefrontendserviceState, PolicyKey,
     TargetKey,
 };
+// Which namespaces' resources are reached over the wire, which names are theirs and which
+// half of a two-part capacity a dimension scales: the ONE list of them
+// ([`super::remote_resources`]), so a registration's resolution and this delivery cannot
+// disagree about it.
+use super::remote_resources::{
+    is_remote_capacity_namespace as is_remote_namespace, reads_the_capacity, CASSANDRA_NAMESPACE,
+    CUSTOM_RESOURCE_NAMESPACE,
+};
 use crate::ops::types::{
     NotScaledReason, StepScalingPolicyConfiguration, TargetTrackingScalingPolicyConfiguration,
 };
@@ -336,6 +344,14 @@ async fn refresh_remote_capacities(
         store
             .remote_capacity_read_at
             .retain(|key, _| registered.contains(key));
+        // An offer deadline belongs to a QUEUED movement, so one whose movement has been
+        // taken, replaced or dropped — including a movement of a target that has since been
+        // deregistered — leaves nothing to offer: the index holds one entry per queued
+        // movement and no more.
+        let queued: BTreeSet<TargetKey> = store.pending_capacity.keys().cloned().collect();
+        store
+            .pending_capacity_until
+            .retain(|key, _| queued.contains(key));
         // Oldest read first, so the pass's budget cannot leave one target unread for ever.
         let mut due: Vec<(Option<SystemTime>, TargetKey)> = store
             .targets
@@ -356,25 +372,10 @@ async fn refresh_remote_capacities(
         due.into_iter().map(|(_, key)| key).collect()
     };
     for key in due {
-        let reported = match key.service_namespace.as_str() {
-            CUSTOM_RESOURCE_NAMESPACE => {
-                super::custom_resource_endpoint::read_capacity(callback, region, &key.resource_id)
-                    .await
-            }
-            CASSANDRA_NAMESPACE => {
-                let reads =
-                    super::dimension_scaling_property(&key.scalable_dimension)
-                        == READ_CAPACITY_PROPERTY;
-                super::keyspaces_tables::read_table_capacity(
-                    callback,
-                    region,
-                    &key.resource_id,
-                    reads,
-                )
-                .await
-            }
-            _ => None,
-        };
+        // The same read a registration of such a target resolves its resource with
+        // ([`super::remote_resources`]), which is the one place that knows how each of those
+        // namespaces is asked.
+        let reported = super::remote_resources::read_remote_capacity(callback, region, &key).await;
         let mut store = state.lock();
         store.remote_capacity_read_at.insert(key.clone(), now);
         if let (Some(capacity), Some(target)) = (reported, store.targets.get_mut(&key)) {
@@ -383,13 +384,21 @@ async fn refresh_remote_capacities(
     }
 }
 
-/// Write every queued capacity movement whose resource is an ENDPOINT, in the Region that
-/// endpoint serves the target.
+/// Write every queued capacity movement whose resource is reached OVER THE WIRE, in the
+/// Region that resource lives in.
 ///
 /// The queue is the same one [`deliver_pending_capacity`] drains, and the two share it by
 /// namespace: a movement this emulator can write into the owning service's store is taken
-/// there, and one that has to be sent to the caller's own endpoint is left queued for here.
-/// Delivery is at-most-once either way — a taken movement is gone from the queue.
+/// there, and one that has to be SENT to the service or the endpoint that owns the resource
+/// is left queued for here. A delivered movement is gone from the queue, so no resource is
+/// moved twice for one decision.
+///
+/// A movement the resource DECLINES is offered again by the next pass, until the resource
+/// takes it or the offer's own window runs out (`super::CAPACITY_DELIVERY_WINDOW`): the
+/// capacity is owed to that resource — this service has already recorded the movement as an
+/// activity — and a resource that is still settling a change of its own declines until it has
+/// settled. Past the window the resource is one that is not taking the movement at all, and
+/// the refusal is reported where a developer can see it rather than passing silently.
 async fn deliver_remote_capacity(
     state: &::engine::ServiceState<ComAmazonawsApplicationautoscalingAnyscalefrontendserviceState>,
     region: &str,
@@ -425,55 +434,56 @@ async fn deliver_remote_capacity(
                 .await
             }
             CASSANDRA_NAMESPACE => {
-                let reads = super::dimension_scaling_property(&target.scalable_dimension)
-                    == READ_CAPACITY_PROPERTY;
                 super::keyspaces_tables::set_table_capacity(
                     callback,
                     region,
                     &target.resource_id,
-                    reads,
+                    reads_the_capacity(&target.scalable_dimension),
                     capacity,
                 )
                 .await
             }
             _ => false,
         };
-        if !delivered {
-            // The resource did not take the movement this service already recorded as an
-            // activity — the endpoint refused it, or nothing on this engine serves it. The
-            // movement is not re-queued (the alarm or the schedule that asked for it is what
-            // asks again), and the refusal is reported where a developer can see it rather
-            // than passing silently.
-            ::tracing::warn!(
-                namespace = %target.service_namespace,
-                resource = %target.resource_id,
-                capacity,
-                "the resource this scalable target scales did not take the capacity movement \
-                 this service performed"
-            );
+        if delivered {
+            state.lock().pending_capacity_until.remove(&target);
+            continue;
         }
+        if offer_again(&mut state.lock(), &target, capacity, SystemTime::now()) {
+            continue;
+        }
+        ::tracing::warn!(
+            namespace = %target.service_namespace,
+            resource = %target.resource_id,
+            capacity,
+            "the resource this scalable target scales did not take the capacity movement \
+             this service performed"
+        );
     }
 }
 
-/// The namespace whose resources are the caller's own endpoints
-/// ([`super::custom_resource_endpoint`]).
-const CUSTOM_RESOURCE_NAMESPACE: &str = "custom-resource";
-
-/// The namespace whose resources are Amazon Keyspaces tables, which are reached by CALLING
-/// that service ([`super::keyspaces_tables`]) rather than by reading its store.
-const CASSANDRA_NAMESPACE: &str = "cassandra";
-
-/// The scaling property that names the READ half of a provisioned-throughput capacity
-/// specification; its sibling names the write half.
-const READ_CAPACITY_PROPERTY: &str = "ReadCapacityUnits";
-
-/// Whether a namespace's resources are reached over the wire rather than in a store this
-/// emulator holds, which is what decides WHICH of the two deliveries takes a movement of one.
-fn is_remote_namespace(service_namespace: &str) -> bool {
-    matches!(
-        service_namespace,
-        CUSTOM_RESOURCE_NAMESPACE | CASSANDRA_NAMESPACE
-    )
+/// Put a declined movement back on the queue, answering whether it was — which it is not once
+/// the offer's window has run out, nor when a NEWER movement of the same target is already
+/// queued, since that one is the capacity the target now holds.
+fn offer_again(
+    store: &mut ComAmazonawsApplicationautoscalingAnyscalefrontendserviceState,
+    target: &TargetKey,
+    capacity: i32,
+    now: SystemTime,
+) -> bool {
+    if store.pending_capacity.contains_key(target) {
+        return false;
+    }
+    if store
+        .pending_capacity_until
+        .get(target)
+        .is_none_or(|until| *until <= now)
+    {
+        store.pending_capacity_until.remove(target);
+        return false;
+    }
+    store.pending_capacity.insert(target.clone(), capacity);
+    true
 }
 
 /// Write every queued capacity movement into the service that owns the resource it moved.
@@ -493,10 +503,22 @@ fn deliver_pending_capacity<Eng: Send + Sync + 'static>(
 ) {
     let pending = {
         let mut store = state.lock();
-        let (local, remote) = ::std::mem::take(&mut store.pending_capacity)
-            .into_iter()
-            .partition(|(target, _)| !is_remote_namespace(&target.service_namespace));
-        store.pending_capacity = remote;
+        // The movements whose resource this emulator writes in a store, taken out of the
+        // queue; the rest stay queued for the delivery that can await a call
+        // ([`deliver_remote_capacity`]).
+        let taken: Vec<TargetKey> = store
+            .pending_capacity
+            .keys()
+            .filter(|target| !is_remote_namespace(&target.service_namespace))
+            .cloned()
+            .collect();
+        let mut local: Vec<(TargetKey, i32)> = Vec::with_capacity(taken.len());
+        for target in taken {
+            store.pending_capacity_until.remove(&target);
+            if let Some(capacity) = store.pending_capacity.remove(&target) {
+                local.push((target, capacity));
+            }
+        }
         local
     };
     for (target, capacity) in pending {
@@ -617,8 +639,14 @@ fn set_scaling_clock(
     }
 }
 
-/// Whether this store still holds work a later pass could reach — a policy an alarm could
-/// fire, or any scheduled action — and, when it does not, RELEASES the clock's claim.
+/// Whether this store still holds work a later pass could reach — a capacity movement a
+/// resource is still owed, a policy an alarm could fire, or any scheduled action — and, when
+/// it does not, RELEASES the clock's claim.
+///
+/// A queued movement counts because the resource it moves may be one only a CALL can reach
+/// ([`deliver_remote_capacity`]): the capacity was decided and the activity recorded, and
+/// until that call is made the resource has not been moved at all, so a clock that stood down
+/// with one queued would leave the movement undelivered for ever.
 ///
 /// A scheduled action counts whether or not its next occurrence is still ahead: whether one
 /// is takes the schedule, the time zone and the clock to decide, per action, and this is asked
@@ -638,6 +666,9 @@ fn still_wanted_or_release(
         .policies
         .values()
         .any(|record| is_alarm_driven(&record.policy_type))
+        // A movement nothing has delivered yet is owed to the resource it moved, and for a
+        // resource reached over the wire this clock is what delivers it.
+        || !store.pending_capacity.is_empty()
         // A scheduled action is driven by the CLOCK rather than by a call: a client that
         // queues one watches the resource it scales, not this service, so without the clock
         // the occurrence would wait for an Application Auto Scaling call that never comes.

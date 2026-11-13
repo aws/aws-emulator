@@ -174,6 +174,25 @@ pub(crate) fn gateway_with_iam_logs_and_lambda() -> Gateway {
     gateway
 }
 
+/// One emulator with this service, Amazon DynamoDB and AWS IAM mounted on ONE shared engine.
+///
+/// An `AWS` integration whose `uri` names a table action makes that call against the service
+/// that OWNS the table, in process, under the role its `credentials` names — so a suite that
+/// drives such an integration needs the table service to answer the call and IAM to hold the
+/// role whose policies decide whether it is made. Built on the one constructor above, so this
+/// service is mounted and the router configured exactly once in this target.
+pub(crate) fn gateway_with_dynamodb_and_iam() -> Gateway {
+    let mut gateway = Gateway::new();
+    let engine = Arc::clone(&gateway.engine);
+    gateway.router.register_service(
+        service_com_amazonaws_dynamodb_dynamodb_20120810::EmulatedService::new(Arc::clone(&engine)),
+    );
+    gateway.router.register_service(
+        service_com_amazonaws_iam_awsidentitymanagementv20100508::EmulatedService::new(engine),
+    );
+    gateway
+}
+
 /// One emulator with this service AND Amazon EC2 mounted on ONE shared engine.
 ///
 /// A domain name access association's `accessAssociationSource` is resolved against the VPC

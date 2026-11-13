@@ -419,7 +419,7 @@ async fn a_template_this_emulator_does_not_render_is_a_configuration_error() {
         ("a comment directive", "## a comment"),
         (
             "a transformation this emulator does not perform",
-            r#"{"escaped":"$util.escapeJavaScript($input.body)"}"#,
+            r#"{"parsed":"$util.parseJson($input.body)"}"#,
         ),
         (
             "a variable outside the documented set",

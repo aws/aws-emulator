@@ -354,19 +354,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         let resolved_capacity =
             crate::state::resolve_target_resource(&*self.engine, &key).map_err(validation)?;
-        // The one namespace whose resource is resolved by CALLING the service that owns it
-        // rather than by reading its store: see `crate::state::keyspaces_tables`. Asked with
-        // this service's store NOT held, exactly as the store-reading resolvers are.
-        if key.service_namespace == "cassandra" {
-            crate::state::keyspaces_tables::resolve_cassandra_table(
-                ctx,
-                &region,
-                &key.resource_id,
-                &key.scalable_dimension,
-            )
-            .await
-            .map_err(validation)?;
-        }
+        // The namespaces whose resource is resolved by CALLING the service that owns it
+        // rather than by reading its store: see `crate::state::remote_resources`. Asked with
+        // this service's store NOT held, exactly as the store-reading resolvers are, and the
+        // capacity it answers is the capacity the registered window is enforced on below.
+        let remote_capacity =
+            crate::state::remote_resources::resolve_remote_resource(ctx.callback(), &region, &key)
+                .await
+                .map_err(validation)?;
+        let resolved_capacity = resolved_capacity.or_else(|| remote_capacity.map(i64::from));
 
         let now = ::std::time::SystemTime::now();
         let mut guard = state.lock();

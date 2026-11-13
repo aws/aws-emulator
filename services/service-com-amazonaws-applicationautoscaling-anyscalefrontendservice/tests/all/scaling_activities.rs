@@ -102,7 +102,8 @@ struct MovementRow {
     patch: fn() -> Value,
     /// Where the capacity lands once the window is enforced.
     capacity: i64,
-    /// The dimension's scaling property, in words.
+    /// The capacity the activity's text names, in words: the dimension's scaling property,
+    /// or the capacity the namespace's own contract carries where the dimension names none.
     noun: &'static str,
     /// What caused the movement, built from the request that caused it.
     cause: &'static str,
@@ -181,7 +182,8 @@ const MOVEMENT_CATALOG: &[MovementRow] = &[
         noun: "volume size",
         cause: "minimum capacity was set to 250",
     },
-    // The namespace a caller brings its own resource to.
+    // The namespace a caller brings its own resource to, whose dimension names no capacity of
+    // its own: the activity names the capacity the custom-resource contract carries instead.
     MovementRow {
         namespace: "custom-resource",
         resource_id: "https://example.test/scalableResource/1",
@@ -190,7 +192,7 @@ const MOVEMENT_CATALOG: &[MovementRow] = &[
         max: 5,
         patch: || json!({"MinCapacity": 4}),
         capacity: 4,
-        noun: "property",
+        noun: "desired capacity",
         cause: "minimum capacity was set to 4",
     },
     // A three-word property.

@@ -12,7 +12,7 @@
 //!   earlier one of the same target has not reached fulfilment yet takes that earlier
 //!   movement's capacity over: the displaced activity ends where the displacing one starts,
 //!   reports the status the model keeps for an overtaken activity, and its `StatusMessage`
-//!   names the capacity that took effect instead of the one it asked for;
+//!   names both the capacity it had applied and the one that took effect instead;
 //! * a movement that DID reach fulfilment before the next one started keeps the status it
 //!   reported — a terminal status is terminal, so a later movement never rewrites it;
 //! * the newest movement of a target is never an overtaken one, and neither status changes
@@ -249,11 +249,19 @@ fn fulfilled_message(row: &SupersessionRow, capacity: i64) -> String {
     )
 }
 
-/// The `StatusMessage` of an activity a later movement took over: it names the capacity that
-/// took effect instead of the one this activity asked for, which is the capacity the movement
-/// that displaced it set.
-fn overridden_message(row: &SupersessionRow, displacing_capacity: i64) -> String {
-    format!("Setting {} to {displacing_capacity}.", row.noun)
+/// The `StatusMessage` of an activity a later movement took over: BOTH halves of the
+/// override — the capacity this activity itself applied, and the capacity that was put in its
+/// place before this one was confirmed.
+fn overridden_message(
+    row: &SupersessionRow,
+    own_capacity: i64,
+    displacing_capacity: i64,
+) -> String {
+    format!(
+        "Successfully set {} to {own_capacity}. Found it was later changed to \
+         {displacing_capacity}.",
+        row.noun
+    )
 }
 
 /// A reported timestamp, in seconds since the epoch.
@@ -336,7 +344,8 @@ async fn a_movement_a_later_one_displaces_before_fulfilment_is_reported_overridd
                      started, to report {OVERRIDDEN}, got {activity:?}",
                     displaced_at - started
                 );
-                let expected_message = overridden_message(row, displacing_capacity);
+                let expected_message =
+                    overridden_message(row, movement.capacity, displacing_capacity);
                 assert_eq!(
                     activity["StatusMessage"],
                     json!(expected_message),

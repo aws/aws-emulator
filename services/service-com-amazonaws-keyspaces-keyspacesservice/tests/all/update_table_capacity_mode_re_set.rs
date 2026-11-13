@@ -186,7 +186,12 @@ async fn given_scaled_table(emulator: &Emulator, row: &Row) {
             );
         }
     }
-    tokio::time::sleep(settle_wait()).await;
+    // The table is updatable once the owning service reports it ACTIVE again — after its
+    // own creation transition and after the capacity Application Auto Scaling moves it to
+    // when a registered floor is above the capacity the table was created with.
+    emulator
+        .given_table_active(row.case, row.keyspace, row.table)
+        .await;
 }
 
 /// The auto scaling settings Amazon Keyspaces reports for a table, and the table's own

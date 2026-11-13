@@ -5,15 +5,16 @@
 //!
 //! The rule: an `AWS` integration names another service's action
 //! (`arn:aws:apigateway:{region}:{subdomain}:path|action/{service_api}`,
-//! `Integration$uri`), and a call this emulator cannot make against the service that `uri`
-//! names produces no backend answer — so the method is answered as an integration that
-//! could not be performed, through the api's own `API_CONFIGURATION_ERROR` gateway response
+//! `Integration$uri`), and a call this emulator cannot make — because the `uri` places none,
+//! or because this emulator mounts no such service to answer it — produces no backend answer,
+//! so the method is answered as an integration that could not be performed, through the api's
+//! own `API_CONFIGURATION_ERROR` gateway response
 //! (`500` with `{"message":"Internal server error"}`), and NEVER with a status or a body
 //! invented for a call nothing made. That is the other half of the rule the cross-service
 //! suite `core/router/tests/all/apigateway_s3_service_integration.rs` pins: there the
 //! action IS one this emulator makes, and what the stage answers is the answer the service
-//! gave. Only this crate's emulator can pin the half below, because here no object store is
-//! mounted at all.
+//! gave. Only this crate's emulator can pin the half below, because here no object store and
+//! no table store is mounted at all.
 //!
 //! The rows vary what the rule generalises over: which part of the `uri` puts the call out
 //! of reach (another service's subdomain, a form that is neither of the two documented
@@ -55,7 +56,8 @@ async fn an_aws_integration_naming_a_call_this_emulator_cannot_make_is_a_configu
 
     let rows = [
         Row {
-            case: "another service's action, which this data plane does not call",
+            case: "an action of a service this emulator does not mount, so nothing answers the \
+                   integration request",
             path_part: "another-service",
             uri: "arn:aws:apigateway:us-east-1:dynamodb:action/PutItem",
             integration_verb: "POST",

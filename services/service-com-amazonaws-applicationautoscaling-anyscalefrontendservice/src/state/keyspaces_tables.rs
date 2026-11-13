@@ -61,16 +61,21 @@ pub fn split_cassandra_resource_id(resource_id: &str) -> Option<(&str, &str)> {
 
 /// Resolve the table a `cassandra` scalable target names, in Amazon Keyspaces itself.
 ///
-/// * `Ok(())` — the table exists with provisioned throughput, or this emulator could not
-///   reach the owning service at all, which resolves nothing rather than refusing;
+/// * `Ok(Some(units))` — the table exists with provisioned throughput, and this is the
+///   capacity it provisions for the half of its specification the dimension scales;
+/// * `Ok(None)` — this emulator could not reach the owning service, or that service reported
+///   no capacity for that half, which resolves nothing rather than refusing;
 /// * `Err(message)` — the table cannot carry this target, as the `ValidationException`
 ///   message naming why.
+///
+/// ONE call answers all three: the capacity specification `GetTable` reports carries the mode
+/// that decides the registration and the units the registered window is enforced on.
 pub async fn resolve_cassandra_table(
-    ctx: &::smithy_server_runtime::OperationContext<'_>,
+    callback: &::smithy_server_runtime::EmbeddedEmulator,
     region: &str,
     resource_id: &str,
     scalable_dimension: &str,
-) -> Result<(), String> {
+) -> Result<Option<i32>, String> {
     let Some((keyspace, table)) = split_cassandra_resource_id(resource_id) else {
         return Err(format!(
             "ResourceId not valid for the cassandra service namespace: {resource_id} must name \
@@ -78,13 +83,16 @@ pub async fn resolve_cassandra_table(
         ));
     };
     let request = ::serde_json::json!({"keyspaceName": keyspace, "tableName": table});
-    match get_table(ctx.callback(), region, &request).await {
+    match get_table(callback, region, &request).await {
         // The table resolved: what decides the registration is the capacity mode it is in.
         // A mode the answer does not report is one this reader cannot judge, so it resolves
         // nothing rather than refusing. The refusal names the TABLE and the mode its
         // throughput must be in for a target to scale it.
         Ok(answered) => match reported_throughput_mode(&answered) {
-            None | Some(PROVISIONED_THROUGHPUT_MODE) => Ok(()),
+            None | Some(PROVISIONED_THROUGHPUT_MODE) => Ok(provisioned_units(
+                &answered,
+                super::remote_resources::reads_the_capacity(scalable_dimension),
+            )),
             Some(_) => Err(super::scalable_target_validation_failed(&format!(
                 "Table {table} must be in {PROVISIONED_THROUGHPUT_MODE} throughput mode"
             ))),
@@ -101,7 +109,7 @@ pub async fn resolve_cassandra_table(
         // Anything else is a fact about this process rather than about the request — the
         // owning service is not mounted on this engine, or its answer could not be read — so
         // the resource is UNRESOLVED and the registration is answered on its own terms.
-        Err(_) => Ok(()),
+        Err(_) => Ok(None),
     }
 }
 
@@ -132,6 +140,11 @@ pub async fn read_table_capacity(
     let (keyspace, table) = split_cassandra_resource_id(resource_id)?;
     let identity = ::serde_json::json!({"keyspaceName": keyspace, "tableName": table});
     let answered = get_table(callback, region, &identity).await.ok()?;
+    provisioned_units(&answered, reads)
+}
+
+/// The units the capacity specification of an answered table provisions for one half of it.
+fn provisioned_units(answered: &Value, reads: bool) -> Option<i32> {
     let member = if reads {
         READ_CAPACITY_UNITS
     } else {
@@ -204,6 +217,11 @@ async fn get_table(
 }
 
 /// Call one Amazon Keyspaces operation in-process and read the document it answers.
+///
+/// The request is the one that api takes — its operation in the `X-Amz-Target` header and the
+/// input document as the body — and everything a call of another emulated service takes
+/// beyond that (the signature, the dispatch, the reading of a refusal's own code) is the one
+/// in-process caller this service has ([`super::in_process_calls`]).
 async fn call(
     callback: &::smithy_server_runtime::EmbeddedEmulator,
     region: &str,
@@ -214,7 +232,7 @@ async fn call(
         code: "InternalFailure".to_string(),
     };
     let body = ::serde_json::to_vec(request).map_err(|_| unreachable())?;
-    let mut call = ::http::Request::builder()
+    let call = ::http::Request::builder()
         .method("POST")
         .uri("/")
         .header(
@@ -228,45 +246,15 @@ async fn call(
         )
         .body(body)
         .map_err(|_| unreachable())?;
-    // The emulator verifies every request signature, so an in-process call carries one too:
-    // the credential the framework hands this handler, signed through the tree's one
-    // in-process signer.
-    ::service_common::in_process_sigv4::sign_callback_request(
-        &mut call,
-        KEYSPACES_SIGNING_NAME,
-        region,
-        callback,
-    )
-    .await
-    .map_err(|_| unreachable())?;
-    let (parts, body) = call.into_parts();
-    let call = ::http::Request::from_parts(
-        parts,
-        ::aws_smithy_types::body::SdkBody::from(::bytes::Bytes::from(body)),
-    );
-    let call = ::aws_smithy_runtime_api::http::Request::try_from(call).map_err(|_| unreachable())?;
-    let connector = callback.http_connector();
-    let answer = {
-        use ::aws_smithy_runtime_api::client::http::HttpConnector;
-        HttpConnector::call(&connector, call)
-            .await
-            .map_err(|_| unreachable())?
-    };
-    let status = answer.status().as_u16();
-    let payload = answer.body().bytes().ok_or_else(unreachable)?.to_vec();
-    let document: Value = ::serde_json::from_slice(&payload).unwrap_or(Value::Null);
-    if (200..300).contains(&status) {
-        return Ok(document);
+    let answered = super::in_process_calls::call(callback, KEYSPACES_SIGNING_NAME, region, call)
+        .await
+        .ok_or_else(unreachable)?;
+    if answered.is_success() {
+        return Ok(answered.document().unwrap_or(Value::Null));
     }
-    // An awsJson error names its shape in `__type` (or in the `x-amzn-errortype` header,
-    // which this reader does not need): the code is the last segment of that shape id.
-    let code = document
-        .get("__type")
-        .and_then(Value::as_str)
-        .and_then(|shape| shape.rsplit(['#', '/']).next())
-        .unwrap_or_default()
-        .to_string();
-    Err(Refused { code })
+    Err(Refused {
+        code: answered.code,
+    })
 }
 
 #[cfg(test)]

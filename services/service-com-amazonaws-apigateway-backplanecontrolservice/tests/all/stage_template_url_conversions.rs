@@ -1,16 +1,17 @@
 // SPDX-License-Identifier: CC0-1.0
 
-//! The two `$util` conversions a mapping template may apply: the
-//! `application/x-www-form-urlencoded` ENCODE and DECODE.
+//! The `$util` conversions a mapping template may apply: the
+//! `application/x-www-form-urlencoded` ENCODE and DECODE, and the JavaScript string ESCAPE.
 //!
 //! RULE: a mapping template is rendered by resolving its references against the call, and a
-//! `$util` method whose conversion AWS's documentation states EXACTLY is one of those
-//! references — `$util.urlEncode(String)` "converts a string into
-//! 'application/x-www-form-urlencoded' format" and `$util.urlDecode(String)` "decodes an
-//! 'application/x-www-form-urlencoded' string back into its original form" — so the text it
-//! produces is that format's own encoding of the value, whatever the value carries. A
-//! `$util` method whose output the documentation does not state is a reference this emulator
-//! resolves nothing for, so the template is not rendered and the stage answers the api's
+//! `$util` method whose conversion is stated EXACTLY is one of those references —
+//! `$util.urlEncode(String)` "converts a string into 'application/x-www-form-urlencoded'
+//! format", `$util.urlDecode(String)` "decodes an 'application/x-www-form-urlencoded' string
+//! back into its original form" and `$util.escapeJavaScript()` "escapes the characters in a
+//! string using JavaScript string rules" — so the text it produces is that format's or that
+//! language's own encoding of the value, whatever the value carries. A `$util` method whose
+//! output the documentation does not state is a reference this emulator resolves nothing for,
+//! so the template is not rendered and the stage answers the api's
 //! `API_CONFIGURATION_ERROR` gateway response rather than a body built from a guess.
 //!
 //! This is the half of the rule that needs no other service: the template under test is an
@@ -22,8 +23,9 @@
 //!
 //! The rows vary what the rule generalises over: WHICH conversion is applied, and the value
 //! it is applied to — one needing no escaping, one carrying the characters that are
-//! significant in that format (`&`, `=`, `+`, `%`, a space), one carrying characters outside
-//! ASCII, the empty value, and a round trip of the two conversions.
+//! significant in that format (`&`, `=`, `+`, `%`, a space) or in a string literal (a quote,
+//! a backslash), one carrying characters outside ASCII, the empty value, and a round trip of
+//! the two form conversions.
 
 use serde_json::json;
 
@@ -110,8 +112,22 @@ fn rows() -> Vec<Row> {
             expected: Some("MessageBody=a%26b"),
         },
         Row {
-            case: "a $util method whose output the documentation does not state",
+            case: "the JavaScript escape of a value a quoted string can carry as it stands",
             template: "$util.escapeJavaScript($input.params('v'))",
+            sent: "plain",
+            expected: Some("plain"),
+        },
+        Row {
+            case: "the JavaScript escape of the characters a string literal cannot carry",
+            template: "$util.escapeJavaScript($input.params('v'))",
+            // The query string carries the escaped quote and backslash, so the value the
+            // template escapes is the text `a"b\c`.
+            sent: "a%22b%5Cc",
+            expected: Some(r#"a\"b\\c"#),
+        },
+        Row {
+            case: "a $util method whose output the documentation does not state",
+            template: "$util.parseJson($input.params('v'))",
             sent: "plain",
             expected: None,
         },

@@ -97,11 +97,13 @@ use crate::state::MethodEntry;
 
 use super::super::mapping_template::TemplateInputs;
 use super::{
-    default_integration_response, mapped_response_headers, response_body, IntegratedResponse,
-    MethodRequest, UnservedIntegration, API_CONFIGURATION_ERROR, JSON_CONTENT_TYPE,
-    METHOD_REQUEST_HEADER_PREFIX, METHOD_REQUEST_PATH_PREFIX, METHOD_REQUEST_QUERY_PREFIX,
+    default_integration_response, mapped_response_headers, request_mapping,
+    rendered_mapping_template, response_body, IntegratedResponse, MethodRequest, RequestMapping,
+    UnservedIntegration, API_CONFIGURATION_ERROR, JSON_CONTENT_TYPE, METHOD_REQUEST_HEADER_PREFIX,
+    METHOD_REQUEST_PATH_PREFIX, METHOD_REQUEST_QUERY_PREFIX, UNSUPPORTED_MEDIA_TYPE,
 };
 
+mod dynamodb;
 mod sqs;
 
 /// The integration type whose `uri` names an AWS service action: `AWS`, "for integrating
@@ -391,6 +393,9 @@ fn addressed_call(
     if let Some(queue) = sqs::addressed_queue(integration, default_region, call) {
         return Some(queue.map(ServiceCall::Queue));
     }
+    if let Some(table) = dynamodb::addressed_table(integration, default_region, call) {
+        return Some(table.map(ServiceCall::Table));
+    }
     None
 }
 
@@ -406,6 +411,8 @@ enum ServiceCall {
     Bucket(BucketCall),
     /// An Amazon SQS queue action.
     Queue(sqs::QueueCall),
+    /// An Amazon DynamoDB table action.
+    Table(dynamodb::TableCall),
 }
 
 /// What an Amazon S3 integration `uri` addresses: the bucket itself, or an object in it.
@@ -422,15 +429,21 @@ impl ServiceCall {
             Self::Object(object) => &object.region,
             Self::Bucket(bucket) => &bucket.region,
             Self::Queue(queue) => queue.region(),
+            Self::Table(table) => table.region(),
         }
     }
 
     /// The IAM action a call of it is authorized by.
-    fn iam_action(&self) -> &'static str {
+    ///
+    /// Owned, because one of these services names the action the `uri` CARRIES rather than one
+    /// of a fixed set: Amazon DynamoDB's api is reached by naming its operation, so the action
+    /// a call of it is authorized by is that operation's own name.
+    fn iam_action(&self) -> String {
         match self {
-            Self::Object(object) => object.action.iam_action(),
-            Self::Bucket(bucket) => bucket.action.iam_action(),
-            Self::Queue(queue) => queue.iam_action(),
+            Self::Object(object) => object.action.iam_action().to_string(),
+            Self::Bucket(bucket) => bucket.action.iam_action().to_string(),
+            Self::Queue(queue) => queue.iam_action().to_string(),
+            Self::Table(table) => table.iam_action(),
         }
     }
 
@@ -441,12 +454,17 @@ impl ServiceCall {
             Self::Object(object) => object.object_arn(),
             Self::Bucket(bucket) => bucket.bucket_arn(),
             Self::Queue(queue) => queue.queue_arn(),
+            Self::Table(table) => table.table_arn(),
         }
     }
 
     /// The refusal the service answers a call the caller may not make with, in that
     /// service's own error envelope and naming the resource the call addressed.
-    fn access_denied(&self) -> Answered {
+    ///
+    /// `principal` is the role the call would have been made under, for the service that words
+    /// its refusal with the principal as IAM does; the services whose envelope names only the
+    /// resource do not carry it.
+    fn access_denied(&self, principal: &str) -> Answered {
         match self {
             Self::Object(object) => Answered {
                 status: ACCESS_DENIED_STATUS,
@@ -467,6 +485,7 @@ impl ServiceCall {
                 ),
             },
             Self::Queue(queue) => sqs::access_denied(queue),
+            Self::Table(table) => dynamodb::access_denied(table, principal),
         }
     }
 
@@ -480,6 +499,7 @@ impl ServiceCall {
             Self::Object(object) => answered_by_s3(ctx, object, call).await,
             Self::Bucket(bucket) => answered_by_s3_bucket(ctx, bucket).await,
             Self::Queue(queue) => sqs::answered(ctx, queue, call).await,
+            Self::Table(table) => dynamodb::answered(ctx, table).await,
         }
     }
 }
@@ -495,7 +515,9 @@ async fn served(
 ) -> Result<IntegratedResponse, UnservedIntegration> {
     let answered = match authorization(ctx, integration, target).await {
         Authorization::Unassumable(reason) => return Err(unanswered(&reason)),
-        Authorization::Withheld => target.access_denied(),
+        Authorization::Withheld => {
+            target.access_denied(integration.credentials.as_deref().unwrap_or_default())
+        }
         Authorization::Admitted => target.answered(ctx, call).await?,
     };
     mapped(method, integration, call, answered)
@@ -550,12 +572,13 @@ async fn authorization(
         return Authorization::Admitted;
     };
     let resource = target.resource_arn();
-    let request = iam::Request::new(target.iam_action(), &resource, &[]);
+    let action = target.iam_action();
+    let request = iam::Request::new(&action, &resource, &[]);
     if iam::identity_decision(&documents, &request) == Decision::Allowed {
         return Authorization::Admitted;
     }
     ::tracing::warn!(
-        action = %target.iam_action(),
+        %action,
         "the integration's execution role may not make this call, so the service refuses it"
     );
     Authorization::Withheld
@@ -828,6 +851,44 @@ fn unanswered(reason: &str) -> UnservedIntegration {
         refusal: API_CONFIGURATION_ERROR,
         reason: reason.to_string(),
     }
+}
+
+/// The body the integration request carries: the request template this call selects RENDERED,
+/// which is the text API Gateway sends the backend, or the method request's own payload where
+/// no template maps it and the `passthroughBehavior` lets it through.
+///
+/// One reading for every service this module calls, because it is the one rule
+/// `Integration$requestTemplates` and `Integration$passthroughBehavior` state between them,
+/// whatever wire form the rendered text is in.
+fn integration_request_body(
+    integration: &GetIntegrationOutput,
+    call: &MethodRequest,
+) -> Result<Vec<u8>, UnservedIntegration> {
+    let body = match request_mapping(integration, call) {
+        RequestMapping::Mapped(template) => rendered_mapping_template(template, &call.inputs)
+            .map(String::into_bytes)
+            .map_err(|reason| {
+                unanswered(&format!(
+                    "the {media} request template of {bytes} bytes is not one this emulator \
+                     renders: {reason}",
+                    media = call.media_type(),
+                    bytes = template.len()
+                ))
+            })?,
+        RequestMapping::PassedThrough => call.inputs.payload.clone().unwrap_or_default(),
+        RequestMapping::Unsupported => {
+            return Err(UnservedIntegration {
+                refusal: UNSUPPORTED_MEDIA_TYPE,
+                reason: format!(
+                    "no integration request template maps {}, and the integration's \
+                     passthroughBehavior does not pass an unmapped body through",
+                    call.media_type()
+                ),
+            })
+        }
+    };
+    bounded(body.len())?;
+    Ok(body)
 }
 
 /// `Ok` while `bytes` is within what one integration answer may carry

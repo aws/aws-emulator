@@ -259,6 +259,40 @@ impl Emulator {
             "case {case:?}: expected CreateTable to answer 200, got {status} {body}"
         );
     }
+
+    /// Wait until Amazon Keyspaces reports the table ACTIVE, which is the status an update
+    /// of it requires ("The operation tried to access a nonexistent resource […] its status
+    /// might not be ACTIVE", `UpdateTable`'s `ConflictException`).
+    ///
+    /// A table is UPDATING until the clock that owes the transition reaches it, and the
+    /// capacity change Application Auto Scaling makes when a registered FLOOR is above the
+    /// table's own capacity is such an update — so a suite that drives several updates in a
+    /// row waits for the CONDITION rather than for a span of its own.
+    pub(crate) async fn given_table_active(&self, case: &str, keyspace: &str, table: &str) {
+        /// How long the wait may take at most: far past every transition this emulator
+        /// gives a table, so a loaded machine still reaches it.
+        const WITHIN: std::time::Duration = std::time::Duration::from_secs(30);
+        /// How long one look waits before the next.
+        const EVERY: std::time::Duration = std::time::Duration::from_millis(100);
+
+        let deadline = std::time::Instant::now() + WITHIN;
+        loop {
+            let (status, body) = self
+                .keyspaces(
+                    "GetTable",
+                    json!({"keyspaceName": keyspace, "tableName": table}),
+                )
+                .await;
+            if status == 200 && body["status"] == json!("ACTIVE") {
+                return;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "case {case:?}: expected the table to be ACTIVE again, last saw {status} {body}"
+            );
+            tokio::time::sleep(EVERY).await;
+        }
+    }
 }
 
 /// The settings that turn a capacity's auto scaling ON, as a request carries them.
@@ -598,7 +632,8 @@ async fn update_table_re_registers_and_deregisters_the_capacity_it_configures() 
             })),
         )
         .await;
-    tokio::time::sleep(keyspaces::TRANSIENT_STATUS_SPAN + std::time::Duration::from_millis(250))
+    emulator
+        .given_table_active("both capacities configured", keyspace, table)
         .await;
 
     // Each row: what the update configures, and the window every cassandra target must
@@ -730,8 +765,10 @@ async fn update_table_re_registers_and_deregisters_the_capacity_it_configures() 
             "case {case:?}: expected {} policy/policies, got {policies:?}",
             expected.len()
         );
-        tokio::time::sleep(keyspaces::TRANSIENT_STATUS_SPAN + std::time::Duration::from_millis(250))
-            .await;
+        // The next row updates the same table, which the owning service admits only once
+        // this row's own change — and the capacity Application Auto Scaling moves the table
+        // to when the registered floor is above it — has settled.
+        emulator.given_table_active(case, keyspace, table).await;
     }
 
     // And a table moved OUT of provisioned capacity mode has no provisioned throughput

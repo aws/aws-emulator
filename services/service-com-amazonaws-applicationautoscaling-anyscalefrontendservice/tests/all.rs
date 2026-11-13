@@ -21,10 +21,14 @@ mod concurrent_policy_alarm_consistency;
 mod control_plane_rules;
 #[path = "all/customized_metric_alarms.rs"]
 mod customized_metric_alarms;
+#[path = "all/custom_resource_endpoint_targets.rs"]
+mod custom_resource_endpoint_targets;
 #[path = "all/emulator.rs"]
 mod emulator;
 #[path = "all/keyspaces_table_resolution.rs"]
 mod keyspaces_table_resolution;
+#[path = "all/lambda_qualifier_resolution.rs"]
+mod lambda_qualifier_resolution;
 #[path = "all/metric_driven_ecs_scaling.rs"]
 mod metric_driven_ecs_scaling;
 #[path = "all/movement_fulfilment.rs"]
@@ -45,6 +49,8 @@ mod recorded_refusal_wording;
 mod refusal_messages;
 #[path = "all/refusal_texts.rs"]
 mod refusal_texts;
+#[path = "all/registration_capacity_floor.rs"]
+mod registration_capacity_floor;
 #[path = "all/registration_preconditions.rs"]
 mod registration_preconditions;
 #[path = "all/request_authorization.rs"]

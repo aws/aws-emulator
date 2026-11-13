@@ -49,10 +49,7 @@ use ::smithy_server_runtime::OperationContext;
 use crate::ops::types::GetIntegrationOutput;
 use crate::service::mapping_template::TemplateInputs;
 
-use super::super::{
-    rendered_mapping_template, request_mapping, MethodRequest, RequestMapping, UnservedIntegration,
-    INTEGRATION_REQUEST_QUERY_PREFIX, UNSUPPORTED_MEDIA_TYPE,
-};
+use super::super::{MethodRequest, UnservedIntegration, INTEGRATION_REQUEST_QUERY_PREFIX};
 use super::{
     bounded, mapped_value, refusal_of, substituted, unanswered, Answered, ACCESS_DENIED_CODE,
     ACCESS_DENIED_STATUS, ACTION_FORM_PREFIX, APIGATEWAY_VENDOR, PATH_FORM_PREFIX,
@@ -444,37 +441,17 @@ fn mapped_query_parameters(
         .collect()
 }
 
-/// The body the integration request carries: the request template this call selects
-/// RENDERED, which is the text API Gateway sends the backend, or the method request's own
-/// payload where no template maps it and the `passthroughBehavior` lets it through.
+/// The body the integration request carries, bounded again by what this module reads one AS:
+/// the service's own wire form, which it parses to learn the call.
+///
+/// The rendering itself is the parent module's ([`super::integration_request_body`]), because
+/// it is the rule `Integration$requestTemplates` and `Integration$passthroughBehavior` state
+/// for every service this data plane calls.
 fn integration_request_body(
     integration: &GetIntegrationOutput,
     call: &MethodRequest,
 ) -> Result<Vec<u8>, UnservedIntegration> {
-    let body = match request_mapping(integration, call) {
-        RequestMapping::Mapped(template) => rendered_mapping_template(template, &call.inputs)
-            .map(String::into_bytes)
-            .map_err(|reason| {
-                unanswered(&format!(
-                    "the {media} request template of {bytes} bytes is not one this emulator \
-                     renders: {reason}",
-                    media = call.media_type(),
-                    bytes = template.len()
-                ))
-            })?,
-        RequestMapping::PassedThrough => call.inputs.payload.clone().unwrap_or_default(),
-        RequestMapping::Unsupported => {
-            return Err(UnservedIntegration {
-                refusal: UNSUPPORTED_MEDIA_TYPE,
-                reason: format!(
-                    "no integration request template maps {}, and the integration's \
-                     passthroughBehavior does not pass an unmapped body through",
-                    call.media_type()
-                ),
-            })
-        }
-    };
-    bounded(body.len())?;
+    let body = super::integration_request_body(integration, call)?;
     if body.len() > MAX_FORM_BYTES {
         return Err(unanswered(&format!(
             "the integration request of {bytes} bytes is larger than the {MAX_FORM_BYTES} \
