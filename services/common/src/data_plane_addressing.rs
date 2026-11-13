@@ -19,10 +19,12 @@
 //! ([`first_segment`]), the host without its userinfo or port ([`host_only`]), the port a
 //! client addressed ([`addressed_port`]), whether a host names a SERVICE at all
 //! ([`names_a_service`]) — which is what separates the emulator's own endpoint from
-//! another service's — and the address of the endpoint this emulator answers on, which is
-//! what a DISCOVERY operation publishes for a plane served at the front door
-//! ([`emulator_endpoint_authority`]), or the one a service ANNOUNCES to a caller that
-//! resolves AWS's own hosts ([`served_endpoint_authority`]).
+//! another service's — whether a host is one AWS itself publishes an endpoint at
+//! ([`addresses_an_aws_endpoint`]), which is what separates an endpoint of AWS's from an
+//! ordinary hostname an operator points a client at, and the address of the endpoint this
+//! emulator answers on, which is what a DISCOVERY operation publishes for a plane served at
+//! the front door ([`emulator_endpoint_authority`]), or the one a service ANNOUNCES to a
+//! caller that resolves AWS's own hosts ([`served_endpoint_authority`]).
 //!
 //! Services still carrying their own copy of these: this module postdates them, and
 //! `grep -rln 'EMULATOR_PATH_NAMESPACE' services/*/src` lists them (today the API Gateway,
@@ -281,6 +283,46 @@ pub fn service_named_by_host(host: &str) -> Option<String> {
     ::emulator_server::service_from_host(&headers)
 }
 
+/// The DNS zones AWS publishes its OWN service endpoints in: the `dnsSuffix` its
+/// partitions declare (`amazonaws.com`, and `amazonaws.com.cn` for China) and the
+/// suffixes it serves dual-stack and short-form endpoints under (`api.aws`, `on.aws`).
+///
+/// A host under one of them is an endpoint AWS itself publishes, so its first label names
+/// the SERVICE that answers there — which is the only thing about a host that names a
+/// service. [`names_a_service`] asks the front door's own host reader, and that reader
+/// takes the first label of ANY host: it answers `Some` for an ordinary hostname an
+/// operator points a client at (a compose service name, a reverse proxy, a corporate DNS
+/// name) as well, and such a key names nothing. A service that has to tell "somebody
+/// else's endpoint" from "a host naming no service at all" reads this.
+///
+/// A domain a SERVICE assigns a resource (a distribution's `cloudfront.net` name, say) is
+/// not here: this is the list of endpoint zones, and a service that also excludes its own
+/// assigned-domain zone adds it where that question is asked.
+///
+/// Services still carrying their own copy of this list, to be MIGRATED onto this one (they
+/// predate it): the two readers in
+/// `services/service-com-amazonaws-cloudfront-cloudfront2020-05-31/src/service/`. Nothing
+/// new writes the list again — call this module.
+pub const AWS_ENDPOINT_DNS_SUFFIXES: [&str; 4] = [
+    ".amazonaws.com",
+    ".amazonaws.com.cn",
+    ".api.aws",
+    ".on.aws",
+];
+
+/// Whether `host` is an endpoint AWS itself publishes: a host under one of
+/// [`AWS_ENDPOINT_DNS_SUFFIXES`].
+///
+/// Any userinfo and `:port` are removed first ([`host_only`]) and the comparison ignores
+/// case, since a `Host` header carries whatever case the client wrote.
+#[must_use]
+pub fn addresses_an_aws_endpoint(host: &str) -> bool {
+    let host = host_only(host).to_ascii_lowercase();
+    AWS_ENDPOINT_DNS_SUFFIXES
+        .iter()
+        .any(|suffix| host.ends_with(suffix))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -433,6 +475,41 @@ mod tests {
                 answered.as_deref(),
                 *expected,
                 "case ({uri:?}, {header:?}): expected {expected:?}, got {answered:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_host_is_an_aws_endpoint_only_inside_a_zone_aws_publishes_endpoints_in() {
+        // The rows span every suffix the list carries, each with and without a port or a
+        // deeper label, against the hosts that are NOT AWS's: an ordinary operator
+        // hostname, a single-label name, a loopback address, a bracketed IPv6 literal, a
+        // host that merely CONTAINS a suffix without ending in it, and a host whose name
+        // is the suffix itself with no service label in front of it.
+        let cases: &[(&str, bool)] = &[
+            ("iam.amazonaws.com", true),
+            ("s3.us-west-2.amazonaws.com", true),
+            ("S3.US-WEST-2.AMAZONAWS.COM", true),
+            ("portal.sso.us-east-1.amazonaws.com:443", true),
+            ("dynamodb.cn-north-1.amazonaws.com.cn", true),
+            ("lambda.us-east-1.api.aws", true),
+            ("console.us-east-1.on.aws", true),
+            ("user@s3.us-west-2.amazonaws.com:8443", true),
+            ("emulator.corp.local", false),
+            ("host.docker.internal:9297", false),
+            ("aws:9297", false),
+            ("localhost:9297", false),
+            ("127.0.0.1:9297", false),
+            ("[::1]:9297", false),
+            ("amazonaws.com.evil.example", false),
+            ("amazonaws.com", false),
+            ("", false),
+        ];
+        for (host, expected) in cases {
+            let answered = addresses_an_aws_endpoint(host);
+            assert_eq!(
+                answered, *expected,
+                "case {host:?}: expected addresses_an_aws_endpoint {expected}, got {answered}"
             );
         }
     }

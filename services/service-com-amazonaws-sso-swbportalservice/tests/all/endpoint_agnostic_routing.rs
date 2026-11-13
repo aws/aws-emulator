@@ -4,9 +4,11 @@
 //!
 //! RULE: every portal operation is `@optionalAuth` with an empty `@auth` and the
 //! protocol is `restJson1`, so a portal request carries no SigV4 credential scope and
-//! no `X-Amz-Target`; when the host it is addressed to names no service either, the
-//! request's own modelled signature — the (method, path) pair of one of the four
-//! `@http` bindings — is what attributes it to this service. So each of the four
+//! no `X-Amz-Target`; when the host it is addressed to names no service either — which
+//! every host that is not a service's published endpoint does, an ordinary operator
+//! hostname included, whatever routing key the framework's host-style tier takes off its
+//! first label — the request's own modelled signature — the (method, path) pair of one of
+//! the four `@http` bindings — is what attributes it to this service. So each of the four
 //! operations answers its modelled result (its own 200 from state, or 401
 //! `UnauthorizedException` for a token that names no usable session) whatever endpoint
 //! host the client was pointed at, including none at all.
@@ -38,17 +40,23 @@ const ACCOUNT_EMAIL: &str = "production@example.com";
 const ROLE_NAME: &str = "AdministratorAccess";
 
 /// The endpoints a client can be pointed at, as `(case, Host)`. Rows span what the
-/// host-style routing tier can make of a host: a loopback name with and without a port,
-/// a loopback IP, a private IP, no `Host` header at all (an origin-form request with no
-/// authority), and — the one row that DOES name this service — the real portal
-/// endpoint. None of the first five names any service, which is exactly the case the
-/// rule covers.
+/// host-style routing tier can make of a host: the ones it resolves NO key from (a
+/// loopback name with and without a port, a loopback IP, a private IP, no `Host` header
+/// at all — an origin-form request with no authority), the ordinary hostnames it DOES
+/// resolve a key from while that key names no service (a single-label compose service
+/// name, a container hostname, a corporate DNS name, a reverse proxy), and — the one row
+/// that does name this service — the real portal endpoint. Only the last names a service,
+/// which is exactly the case the rule covers.
 const ENDPOINTS: &[(&str, Option<&str>)] = &[
     ("the emulator's own loopback endpoint", Some("localhost:9297")),
     ("a loopback name with no port", Some("localhost")),
     ("a loopback IP with a port", Some("127.0.0.1:9297")),
     ("a private IP endpoint", Some("10.0.0.5:8080")),
     ("no Host header at all", None),
+    ("a single-label compose service name", Some("aws:9297")),
+    ("a container hostname", Some("host.docker.internal:9297")),
+    ("a corporate DNS name", Some("emulator.corp.local:9297")),
+    ("a reverse proxy in front of the emulator", Some("gateway.internal")),
     (
         "the modelled portal endpoint",
         Some("portal.sso.us-east-1.amazonaws.com"),
@@ -513,9 +521,29 @@ async fn a_request_for_another_service_or_an_unmodelled_route_is_not_claimed() {
             &[],
         ),
         (
-            "a host that merely starts with this endpoint's prefix",
+            "another service's endpoint host in another partition",
             Method::GET,
             "/assignment/accounts",
+            Some("dynamodb.cn-north-1.amazonaws.com.cn"),
+            &[],
+        ),
+        (
+            "another service's dual-stack endpoint host",
+            Method::POST,
+            "/logout",
+            Some("lambda.us-east-1.api.aws"),
+            &[],
+        ),
+        (
+            // A host that merely STARTS with this endpoint's prefix is not this
+            // endpoint, so it claims no path of its own: it is an ordinary hostname,
+            // served on the routes this model binds (`endpoint_host_claiming.rs`) and
+            // nowhere else — where the real portal endpoint answers its own routing
+            // failure for an unmodelled path, this one reaches no service at all.
+            "a host that merely starts with this endpoint's prefix, on a path this model \
+             does not bind",
+            Method::GET,
+            "/assignment/nope",
             Some("portal.ssoother.example.com"),
             &[],
         ),

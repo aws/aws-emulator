@@ -19661,6 +19661,7 @@ dependencies = [
  "service-com-amazonaws-organizations-awsorganizationsv20161128",
  "service-com-amazonaws-ssoadmin-swbexternalservice",
  "service-com-amazonaws-ssooidc-awsssooidcservice",
+ "service-common",
  "sha2 0.10.9",
  "tokio",
  "tracing",

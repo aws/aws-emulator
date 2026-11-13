@@ -134,6 +134,14 @@ impl Portal {
     pub(crate) async fn logout(&self, token: Option<&str>) -> Response<Bytes> {
         self.send(Method::POST, "/logout", token).await
     }
+
+    /// Dispatch a request the CALLER built, for a suite whose subject is the shape of the
+    /// request itself — the endpoint host it is addressed to, say — rather than the
+    /// operation it names. The helpers above address [`PORTAL_HOST`]; this is the same
+    /// router and the same seeded state, handed a request nothing here spelled.
+    pub(crate) async fn dispatch(&self, request: Request<Bytes>) -> Response<Bytes> {
+        self.router.dispatch(request).await
+    }
 }
 
 pub(crate) fn body_text(response: &Response<Bytes>) -> String {

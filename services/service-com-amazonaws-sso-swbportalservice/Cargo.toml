@@ -31,6 +31,10 @@ service-com-amazonaws-ssoadmin-swbexternalservice = { workspace = true }
 # An assigned account's display name and email address are the organization's records of
 # that account, which is what `AccountInfo` reports them from.
 service-com-amazonaws-organizations-awsorganizationsv20161128 = { workspace = true }
+# `can_handle`: the ONE reading of whether an endpoint host is one AWS itself publishes a
+# service endpoint at, which is what tells another service's endpoint from an ordinary
+# hostname an operator points a client at.
+service-common = { path = "../common" }
 # Encodes the opaque pagination cursors `src/state.rs` issues (hex in, hex out).
 hex = { workspace = true }
 # Digests the access token into a pagination cursor's scope, so a cursor is bound to
