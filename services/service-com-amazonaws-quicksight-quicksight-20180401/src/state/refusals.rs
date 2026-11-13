@@ -13,11 +13,15 @@
 //! * a group, which QuickSight's identity path serves, is named by its name
 //!   together with the account it belongs to.
 //!
+//! A refusal about an allowance names the resource whose allowance ran out, and
+//! that resource is the parent the counted children hang on, not the child the
+//! refused call named.
+//!
 //! The ARN is built from the serving region and the request's own path labels by
 //! the builders beside these in [`crate::state`], so the resource a message names
 //! is the resource the request addressed.
 
-use super::{data_source_arn, folder_arn};
+use super::{data_set_arn, data_source_arn, folder_arn};
 
 /// The resource kind a folder refusal names.
 const FOLDER: &str = "Folder";
@@ -59,6 +63,25 @@ pub fn data_source_not_found_message(
     arn_not_found_message(
         DATA_SOURCE,
         &data_source_arn(region, aws_account_id, data_source_id),
+    )
+}
+
+/// The per-data-set ceiling `CreateRefreshSchedule` reports once a data set already
+/// holds every refresh schedule it may hold.
+///
+/// The exhausted resource is the data set the schedules refresh, so the sentence
+/// carries the allowance and that data set's ARN — QuickSight's refresh path calls a
+/// data set it prepares for SPICE a prepared data source — rather than the schedule
+/// the refused call named. No trailing period.
+pub fn refresh_schedule_limit_message(
+    region: &str,
+    aws_account_id: &str,
+    data_set_id: &str,
+    max: usize,
+) -> String {
+    format!(
+        "Reached max limit of {max} refresh schedules for preparedDataSource {}",
+        data_set_arn(region, aws_account_id, data_set_id)
     )
 }
 

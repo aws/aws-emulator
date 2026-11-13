@@ -31,6 +31,8 @@ mod mutation_response_status;
 mod namespace_lifecycle;
 #[path = "all/refresh_schedule_lifecycle.rs"]
 mod refresh_schedule_lifecycle;
+#[path = "all/refresh_schedule_quota_refusal.rs"]
+mod refresh_schedule_quota_refusal;
 #[path = "all/refusal_messages.rs"]
 mod refusal_messages;
 #[path = "all/search_data_sets.rs"]

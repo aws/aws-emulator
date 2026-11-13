@@ -59,7 +59,10 @@ const REFRESH_ON_DAY_REQUIRED_INTERVALS: &[&str] = &["WEEKLY", "MONTHLY"];
 /// How many refresh schedules one data set may hold. Source: the
 /// `CreateRefreshSchedule` documentation — "You can create up to 5 different schedules
 /// for a single dataset".
-const MAX_SCHEDULES_PER_DATA_SET: usize = 5;
+///
+/// `pub(crate)` so the suite about the wording of that allowance's refusal reads the
+/// same allowance rather than restating it.
+pub(crate) const MAX_SCHEDULES_PER_DATA_SET: usize = 5;
 
 fn refresh_schedule_arn(account: &str, data_set_id: &str, schedule_id: &str) -> String {
     format!(
@@ -88,9 +91,21 @@ fn relational_table_map(data_source_arn: &str) -> Value {
 /// Create one data source and one data set under `account`, so a row has a data set to
 /// hang refresh schedules on.
 async fn data_set_fixture(harness: &Harness, account: &str, data_set_id: &str) {
+    data_set_fixture_in(harness, REGION, account, data_set_id).await;
+}
+
+/// [`data_set_fixture`], signed for `region`: a row that drives one emulator from two
+/// regions needs its data set created in the region it will address it from.
+pub(crate) async fn data_set_fixture_in(
+    harness: &Harness,
+    region: &str,
+    account: &str,
+    data_set_id: &str,
+) {
     let data_source_id = format!("src-{data_set_id}");
     let (status, body) = harness
-        .call(
+        .call_in_region(
+            region,
             "POST",
             &format!("/accounts/{account}/data-sources"),
             Some(json!({
@@ -110,7 +125,8 @@ async fn data_set_fixture(harness: &Harness, account: &str, data_set_id: &str) {
         .to_string();
 
     let (status, body) = harness
-        .call(
+        .call_in_region(
+            region,
             "POST",
             &format!("/accounts/{account}/data-sets"),
             Some(json!({
@@ -133,8 +149,21 @@ async fn create_schedule(
     data_set_id: &str,
     schedule: Value,
 ) -> (u16, Value) {
+    create_schedule_in(harness, REGION, account, data_set_id, schedule).await
+}
+
+/// [`create_schedule`], signed for `region`: the handler takes the region of the ARNs it
+/// mints and reports from the request's credential scope.
+pub(crate) async fn create_schedule_in(
+    harness: &Harness,
+    region: &str,
+    account: &str,
+    data_set_id: &str,
+    schedule: Value,
+) -> (u16, Value) {
     harness
-        .call(
+        .call_in_region(
+            region,
             "POST",
             &format!("/accounts/{account}/data-sets/{data_set_id}/refresh-schedules"),
             Some(json!({ "Schedule": schedule })),
@@ -172,7 +201,7 @@ fn refresh_on_day(interval: &str) -> Option<Value> {
 
 /// The simplest schedule body on `interval`: a full refresh, which every interval but
 /// the sub-30-minute ones supports, carrying the `RefreshOnDay` the interval requires.
-fn daily_schedule(schedule_id: &str, interval: &str) -> Value {
+pub(crate) fn daily_schedule(schedule_id: &str, interval: &str) -> Value {
     let mut frequency = json!({ "Interval": interval });
     if let Some(day) = refresh_on_day(interval) {
         frequency["RefreshOnDay"] = day;

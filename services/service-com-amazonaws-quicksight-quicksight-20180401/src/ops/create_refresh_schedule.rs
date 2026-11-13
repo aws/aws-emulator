@@ -300,13 +300,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .into());
         }
 
+        // The documented allowance is per data set, so the resource it ran out on is
+        // the data set these schedules refresh: the refusal names that data set by its
+        // ARN, through the shared template beside the crate's other refusal wordings.
         let existing = store.refresh_schedules_in(&input.aws_account_id, &input.data_set_id);
         if existing.len() >= crate::state::MAX_REFRESH_SCHEDULES_PER_DATA_SET {
             return Err(CreateRefreshScheduleErrorModeled::LimitExceededException(
                 LimitExceededException {
-                    message: Some(format!(
-                        "You can create up to {} different schedules for a single dataset.",
-                        crate::state::MAX_REFRESH_SCHEDULES_PER_DATA_SET
+                    message: Some(crate::state::refresh_schedule_limit_message(
+                        &region,
+                        &input.aws_account_id,
+                        &input.data_set_id,
+                        crate::state::MAX_REFRESH_SCHEDULES_PER_DATA_SET,
                     )),
                     resource_type: None,
                     request_id: Some(request_id),
