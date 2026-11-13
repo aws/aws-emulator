@@ -327,10 +327,6 @@ mod cloudformation_opensearch_domain_deployments;
 mod cloudformation_opensearch_vpc_endpoint_access;
 #[path = "all/cloudformation_search_indexing_pipeline_outputs.rs"]
 mod cloudformation_search_indexing_pipeline_outputs;
-#[path = "all/cloudformation_monitored_alb_search_estate.rs"]
-mod cloudformation_monitored_alb_search_estate;
-#[path = "all/cloudformation_domain_endpoint_outputs.rs"]
-mod cloudformation_domain_endpoint_outputs;
 #[path = "all/cloudformation_ec2_ebs_instance_estate.rs"]
 mod cloudformation_ec2_ebs_instance_estate;
 // the sorted `k…` span (beside the other kinesis suites) are both regions concurrently
@@ -1767,6 +1763,18 @@ mod apigateway_vpc_link_private_integration;
 // single service crate's test target can drive it.
 #[path = "all/cognito_signed_session_leading_keys_partition.rs"]
 mod cognito_signed_session_leading_keys_partition;
+// RUNNING function's own Secrets Manager read follows the document in force on its execution
+// role AT THE INSTANT OF THE CALL — served, refused once the grant is withdrawn, served again
+// once it is put back — spans IAM (the role and the document a PutRolePolicy rewrites), STS
+// (the session the call is signed with), CloudFormation (which archives the handler into a
+// package), AWS Lambda (the handler and the SDK it is given) and AWS Secrets Manager (the
+// decision and the value) at once, so no single service crate's test target can ask it.
+#[path = "all/lambda_in_function_secretsmanager_grant_revocation.rs"]
+mod lambda_in_function_secretsmanager_grant_revocation;
+#[path = "all/cloudformation_monitored_alb_search_estate.rs"]
+mod cloudformation_monitored_alb_search_estate;
+#[path = "all/cloudformation_domain_endpoint_outputs.rs"]
+mod cloudformation_domain_endpoint_outputs;
 // Declared in the appended tail, which is where every new suite inserts its lines: a
 // CloudFormation-deployed REST API gated by a TOKEN Lambda authorizer whose invocation is
 // admitted by the role its authorizerCredentials names spans CloudFormation (which deploys the
