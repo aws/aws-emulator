@@ -125,6 +125,26 @@ pub(super) fn naming_rules(resource_type: &str) -> Option<NameRules> {
         // full ARN — "If you specify only the function name, it is limited to 64 characters
         // in length" (`FunctionName`, AWS Lambda API reference).
         "AWS::Lambda::Function" => rules(64, Characters::AsGenerated),
+        // AWS Lambda `AddPermission.StatementId`: `StatementId`, `@length(min: 1, max: 100)`
+        // with pattern `^([a-zA-Z0-9-_]+)$` (AWS Lambda's own Smithy model). The statement a
+        // stack declares is added under THIS resource's generated identifier — its physical
+        // id is the statement id — so that identifier is held to the same bound every other
+        // generated name is: a generated name is already inside the character set, since
+        // letters, digits and the hyphen are all admitted, but may be longer than the bound.
+        "AWS::Lambda::Permission" => rules(100, Characters::AsGenerated),
+        // The same service's `PublishLayerVersion.LayerName`: `LayerName`,
+        // `@length(min: 1, max: 140)`, whose bare-name branch is `[a-zA-Z0-9-_]+` (that same
+        // model) — the layer a version is published under is the generated name wherever the
+        // declaration states none, and such a name may be longer than the bound.
+        "AWS::Lambda::LayerVersion" => rules(140, Characters::AsGenerated),
+        // AWS Step Functions `CreateStateMachine.name` and `CreateActivity.name`: each
+        // `Name`, `@length(min: 1, max: 80)` (that service's own Smithy model). A name "must
+        // not contain" white space, brackets, wildcards, that member's listed special
+        // characters, control characters or surrogates (`CreateStateMachineInput$name`) —
+        // none of which a generated name carries — so the bound is what one may break.
+        STEP_FUNCTIONS_STATE_MACHINE | STEP_FUNCTIONS_ACTIVITY => {
+            rules(80, Characters::AsGenerated)
+        }
         // AppConfig `CreateApplication.Name`, `CreateEnvironment.Name` and
         // `CreateDeploymentStrategy.Name`: each `Name`, `@length(min: 1, max: 64)`
         // (AppConfig's own Smithy model), which a generated name is already inside

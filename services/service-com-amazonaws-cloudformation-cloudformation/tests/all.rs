@@ -185,6 +185,8 @@ mod forced_stack_deletion;
 mod foreach_expanded_output_values;
 #[path = "all/gated_update_terminal_status.rs"]
 mod gated_update_terminal_status;
+#[path = "all/generated_ids_fit_the_owning_api.rs"]
+mod generated_ids_fit_the_owning_api;
 #[path = "all/generated_physical_names.rs"]
 mod generated_physical_names;
 #[path = "all/generated_template_body.rs"]
