@@ -4,6 +4,13 @@
 //! IMPLEMENTED: registers one Query Editor (QEV2) IAM Identity Center application. This is
 //! the ONLY file to touch for this operation.
 //!
+//! The managed application it registers is a resource of the IAM Identity Center
+//! instance `IdcInstanceArn` names, so the create performs `sso:CreateApplication` in
+//! that instance on the caller's behalf: an instance the account's IAM Identity Center
+//! does not hold has no application namespace to register one in, and the denial is
+//! relayed on this operation's `DependentServiceAccessDeniedFault` channel
+//! (`crate::state::identity_center`).
+//!
 //! ## Shape of an operation
 //!
 //! Each operation is a struct that owns the shared engine and implements
@@ -207,6 +214,17 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         }
 
         let region = st::request_region(ctx);
+
+        // The managed application this create registers is a resource OF the IAM
+        // Identity Center instance the request names, so the create performs
+        // `sso:CreateApplication` in that instance on the caller's behalf. Asked
+        // before this store is locked — it reads the OWNING service's store — and
+        // answered below, after this service's own preconditions.
+        let dependent_denial = st::identity_center::sso_create_application_denial(
+            &*self.engine,
+            &input.idc_instance_arn,
+        );
+
         let mut store = state.lock();
 
         // "Use a different application name or describe existing applications to
@@ -246,6 +264,20 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 },
             )
             .into());
+        }
+
+        // The dependent service denied the registration, so there is no managed
+        // application to back this one and nothing is stored: the denial is relayed
+        // on the modelled `DependentServiceAccessDeniedFault` channel (HTTP 403).
+        if let Some(message) = dependent_denial {
+            return Err(
+                CreateQev2IdcApplicationErrorModeled::DependentServiceAccessDeniedFault(
+                    DependentServiceAccessDeniedFault {
+                        message: Some(message),
+                    },
+                )
+                .into(),
+            );
         }
 
         // The record every later `DescribeQev2IdcApplications` reports verbatim:

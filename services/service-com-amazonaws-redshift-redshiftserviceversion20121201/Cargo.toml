@@ -80,6 +80,12 @@ service-com-amazonaws-redshiftdata-redshiftdata = { workspace = true }
 # `GetMetricStatistics` reads — through that crate's `state` seam
 # (`state::cluster_metrics`), rather than into a second store here.
 service-com-amazonaws-cloudwatch-graniteserviceversion20100801 = { workspace = true }
+# An IAM Identity Center application is a resource OF an Identity Center instance,
+# so whether the instance a `CreateRedshiftIdcApplication` /
+# `CreateQev2IdcApplication` names exists is a question only the service that owns
+# the account's instances can answer; its store is read (never written) through
+# that crate's `state` seam (`state::identity_center`).
+service-com-amazonaws-ssoadmin-swbexternalservice = { workspace = true }
 
 [build-dependencies]
 emulator-core-build-support = { workspace = true }

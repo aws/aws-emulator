@@ -17882,6 +17882,7 @@ dependencies = [
  "service-com-amazonaws-redshiftserverless-redshiftserverless",
  "service-com-amazonaws-s3-amazons3",
  "service-com-amazonaws-sns-amazonsimplenotificationservice",
+ "service-com-amazonaws-ssoadmin-swbexternalservice",
  "service-common",
  "sha2 0.10.9",
  "tokio",

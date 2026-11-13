@@ -91,6 +91,8 @@ mod hsm_client_certificates;
 mod hsm_configurations;
 #[path = "all/identity_center_auth_token.rs"]
 mod identity_center_auth_token;
+#[path = "all/identity_center_dependency.rs"]
+mod identity_center_dependency;
 #[path = "all/lakehouse_configuration.rs"]
 mod lakehouse_configuration;
 #[path = "all/maintenance_track_refusal_wording.rs"]

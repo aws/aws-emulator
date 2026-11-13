@@ -81,6 +81,11 @@ pub mod serverless;
 /// against the service that owns the table or bucket it names.
 pub mod zero_etl_source;
 
+/// The IAM Identity Center instance an application registration creates its
+/// managed application in, resolved against the service that owns the account's
+/// instances, and the denial a registration naming another instance carries.
+pub mod identity_center;
+
 /// The store's own operations, on the state struct this module declares.
 mod store;
 /// The wording of the resource-policy ARN resolution in

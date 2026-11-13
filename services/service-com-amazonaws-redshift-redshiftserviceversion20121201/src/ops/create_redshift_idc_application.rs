@@ -4,6 +4,13 @@
 //! IMPLEMENTED: creates one Redshift IAM Identity Center application. This is
 //! the ONLY file to touch for this operation.
 //!
+//! The managed application it registers is a resource of the IAM Identity Center
+//! instance `IdcInstanceArn` names, so the create performs `sso:CreateApplication` in
+//! that instance on the caller's behalf: an instance the account's IAM Identity Center
+//! does not hold has no application namespace to register one in, and the denial is
+//! relayed on this operation's `DependentServiceAccessDeniedFault` channel
+//! (`crate::state::identity_center`).
+//!
 //! ## Shape of an operation
 //!
 //! Each operation is a struct that owns the shared engine and implements
@@ -239,6 +246,19 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         }
 
         let region = st::request_region(ctx);
+
+        // The managed application this create registers is a resource OF the IAM
+        // Identity Center instance the request names, so the create performs
+        // `sso:CreateApplication` in that instance on the caller's behalf. Asked
+        // before this store is locked — it reads the OWNING service's store — and
+        // answered below, after this service's own preconditions, which is where a
+        // dependent call sits: a request this service refuses on its own terms
+        // never reaches IAM Identity Center.
+        let dependent_denial = st::identity_center::sso_create_application_denial(
+            &*self.engine,
+            &input.idc_instance_arn,
+        );
+
         let mut store = state.lock();
 
         // Identity before capacity: the NAME is what an account's applications
@@ -264,6 +284,20 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 CreateRedshiftIdcApplicationErrorModeled::RedshiftIdcApplicationQuotaExceededFault(
                     RedshiftIdcApplicationQuotaExceededFault {
                         message: Some(st::redshift_idc_application_quota_exceeded()),
+                    },
+                )
+                .into(),
+            );
+        }
+
+        // The dependent service denied the registration, so there is no managed
+        // application to back this one and nothing is stored: the denial is relayed
+        // on the modelled `DependentServiceAccessDeniedFault` channel (HTTP 403).
+        if let Some(message) = dependent_denial {
+            return Err(
+                CreateRedshiftIdcApplicationErrorModeled::DependentServiceAccessDeniedFault(
+                    DependentServiceAccessDeniedFault {
+                        message: Some(message),
                     },
                 )
                 .into(),

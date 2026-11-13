@@ -29,10 +29,15 @@ use service_com_amazonaws_redshift_redshiftserviceversion20121201::state;
 
 use crate::cluster_lifecycle::{all_text, Answer, Emulator};
 
-/// An IAM Identity Center instance ARN in the form the service's own ARNs take:
-/// the instance is a global IAM Identity Center resource, so its ARN carries no
-/// Region or account.
-const IDC_INSTANCE_ARN: &str = "arn:aws:sso:::instance/ssoins-1111111111111111";
+/// An IAM Identity Center instance ARN the ACCOUNT holds, read from the shared
+/// harness: the instance is a global IAM Identity Center resource, so its ARN
+/// carries no Region or account, and the managed application a create registers
+/// can only be created in an instance the account holds.
+const IDC_INSTANCE_ARN: &str = crate::cluster_lifecycle::IDENTITY_CENTER_INSTANCES[0];
+
+/// A SECOND instance the account holds, so a row can vary the instance a create
+/// names.
+const OTHER_IDC_INSTANCE_ARN: &str = crate::cluster_lifecycle::IDENTITY_CENTER_INSTANCES[1];
 
 /// The members of a `Qev2IdcApplication` this suite compares between a write's
 /// answer and a later read's, so the two records cannot disagree.
@@ -195,10 +200,10 @@ fn create_cases() -> Vec<CreateCase> {
             tags: vec![("owner", "alice"), ("env", "prod"), ("cost-center", "42")],
         },
         CreateCase {
-            case: "an instance ARN carrying an account segment",
+            case: "another instance the account holds",
             name: "second-instance-app".to_string(),
             display_name: "SecondInstance".to_string(),
-            instance_arn: "arn:aws:sso::000000000000:instance/ssoins-2222222222222222",
+            instance_arn: OTHER_IDC_INSTANCE_ARN,
             tags: Vec::new(),
         },
     ]
@@ -941,6 +946,29 @@ async fn applications_are_paginated_over_the_documented_window() {
     }
 }
 
+/// One row of the instance-ARN table: the value the create names its instance by,
+/// and the answer it earns — `code` is the error code it is refused with, or
+/// `None` when it is served.
+struct InstanceCase {
+    case: &'static str,
+    instance_arn: String,
+    status: u16,
+    code: Option<&'static str>,
+}
+
+impl InstanceCase {
+    /// A row refused for the FORM of its value, which is this service's own
+    /// `InvalidParameterValue`.
+    fn refused(case: &'static str, instance_arn: String) -> Self {
+        Self {
+            case,
+            instance_arn,
+            status: 400,
+            code: Some("InvalidParameterValue"),
+        }
+    }
+}
+
 /// `IdcInstanceArn` names an IAM Identity Center instance, so a value that is
 /// not an ARN at all — or is longer than an ARN can be — is refused and nothing
 /// is stored.
@@ -963,40 +991,60 @@ async fn an_idc_instance_arn_that_is_not_an_arn_is_refused_and_stores_nothing() 
     // The rows differ along the form and the size of the value: empty (the
     // modelled minimum length is 0, so the boundary validator admits it), a bare
     // word, an ARN missing its resource portion, an ARN missing a partition, an
-    // ARN at the length bound and one past it, and a well-formed instance ARN,
-    // which must be admitted.
-    let rows: Vec<(&str, String, bool)> = vec![
-        ("an empty instance ARN", String::new(), false),
-        ("a bare word", "ssoins-1111111111111111".to_string(), false),
-        ("an ARN with too few segments", "arn:aws:sso".to_string(), false),
-        ("an ARN with an empty resource", "arn:aws:sso::::".to_string(), false),
-        (
+    // ARN at the length bound and one past it, and a well-formed instance ARN of
+    // an instance the account holds, which must be admitted. Each row carries the
+    // refusal it earns, or `None` when it is served: a value that is no ARN at all
+    // is refused for its FORM, while an ARN the form rule admits that names no
+    // instance of the account passes that rule and is then denied by the IAM
+    // Identity Center registration the create performs (the rule
+    // [`crate::identity_center_dependency`] is about).
+    let rows: Vec<InstanceCase> = vec![
+        InstanceCase::refused("an empty instance ARN", String::new()),
+        InstanceCase::refused("a bare word", "ssoins-1111111111111111".to_string()),
+        InstanceCase::refused("an ARN with too few segments", "arn:aws:sso".to_string()),
+        InstanceCase::refused(
+            "an ARN with an empty resource",
+            "arn:aws:sso::::".to_string(),
+        ),
+        InstanceCase::refused(
             "an ARN with no partition",
             "arn::sso:::instance/ssoins-1".to_string(),
-            false,
         ),
-        ("an ARN at the length bound", at_bound, true),
-        ("an ARN one character past the length bound", past_bound, false),
-        (
-            "a well-formed instance ARN",
-            IDC_INSTANCE_ARN.to_string(),
-            true,
-        ),
+        InstanceCase {
+            case: "an ARN at the length bound",
+            instance_arn: at_bound,
+            status: 403,
+            code: Some("DependentServiceAccessDenied"),
+        },
+        InstanceCase::refused("an ARN one character past the length bound", past_bound),
+        InstanceCase {
+            case: "a well-formed instance ARN of an instance the account holds",
+            instance_arn: IDC_INSTANCE_ARN.to_string(),
+            status: 200,
+            code: None,
+        },
     ];
 
     let mut admitted_names: Vec<String> = Vec::new();
-    for (index, (case, instance_arn, admitted)) in rows.into_iter().enumerate() {
+    for (index, row) in rows.into_iter().enumerate() {
+        let InstanceCase {
+            case,
+            instance_arn,
+            status,
+            code,
+        } = row;
         let name = format!("instance-case-{index}");
         let answer = create_application(&emulator, &name, "Instance", &instance_arn, &[]).await;
-        if admitted {
-            assert_eq!(
-                answer.status, 200,
-                "case {case}: expected 200, got {} with body {}",
-                answer.status, answer.body
-            );
-            admitted_names.push(name);
-        } else {
-            assert_refused(case, &answer, 400, "InvalidParameterValue");
+        match code {
+            None => {
+                assert_eq!(
+                    answer.status, status,
+                    "case {case}: expected {status}, got {} with body {}",
+                    answer.status, answer.body
+                );
+                admitted_names.push(name);
+            }
+            Some(code) => assert_refused(case, &answer, status, code),
         }
     }
 

@@ -49,6 +49,62 @@ pub(crate) const POLL_INTERVAL: Duration = Duration::from_millis(25);
 /// where reading settles the resource leaves no attempt a window at all.
 const TRANSIENT_ATTEMPTS: usize = 64;
 
+/// The IAM Identity Center instances the ACCOUNT holds in every suite of this
+/// crate.
+///
+/// An IAM Identity Center application is a resource of its instance, so a create
+/// that registers one can only name an instance the account holds
+/// (`src/state/identity_center.rs`) — a suite that registers an application names
+/// one of these, seeded into the Identity Center store the way that service's own
+/// `CreateInstance` writes them, which is where this crate's gate reads them. An
+/// ARN outside this list names no instance of the account, which is the refusal
+/// [`crate::identity_center_dependency`] pins.
+///
+/// The forms differ along what the owning service's `InstanceArn` pattern admits
+/// (`^arn:[\w-]+:sso:::instance/(sso)?ins-[a-zA-Z0-9-.]{16}$`): both spellings of
+/// the instance id and the punctuation it allows.
+pub(crate) const IDENTITY_CENTER_INSTANCES: [&str; 4] = [
+    "arn:aws:sso:::instance/ssoins-1111111111111111",
+    "arn:aws:sso:::instance/ssoins-2222222222222222",
+    "arn:aws:sso:::instance/ins-abcdef0123456789",
+    "arn:aws:sso:::instance/ssoins-a.b-c.d-e.f-g1h2",
+];
+
+/// Put the account's IAM Identity Center instances into the Identity Center store
+/// in `engine`, exactly where that service's own `CreateInstance` writes them.
+///
+/// Seeded at mount, before any request, because the managed application a Redshift
+/// IAM Identity Center application is backed by is created in an instance the
+/// ACCOUNT holds and a create naming any other instance is refused — so a suite
+/// about those applications needs the instances it names to exist, the same way it
+/// needs a cluster to exist before it modifies one. `ambient_instance_enabled` is
+/// set with them: the account's enablement is then decided, so the instances it
+/// holds are exactly these.
+fn seed_identity_center_instances(engine: &Arc<engine::InMemoryEngine>) {
+    use service_com_amazonaws_ssoadmin_swbexternalservice::state as identity_center;
+
+    let state = engine.state::<identity_center::ComAmazonawsSsoadminSwbexternalserviceState>();
+    let mut guard = state.lock();
+    for instance_arn in IDENTITY_CENTER_INSTANCES {
+        let instance_id = instance_arn
+            .rsplit('/')
+            .next()
+            .expect("the seeded instance ARN names an instance");
+        let instance = identity_center::Instance::active(
+            instance_id,
+            identity_center::SEED_IDENTITY_STORE_ID,
+            identity_center::SEED_INSTANCE_TYPE,
+            Some(identity_center::SEED_INSTANCE_NAME.to_string()),
+            ::aws_smithy_types::DateTime::from_secs(1_700_000_000),
+            REGION,
+        );
+        guard
+            .instances
+            .insert(instance.instance_arn.clone(), instance);
+    }
+    guard.ambient_instance_enabled = true;
+}
+
 /// One emulator: a single shared engine behind a router mounting Redshift and
 /// Amazon EC2 — the service that owns the subnets a cluster subnet group is made
 /// of — and optionally the KMS service a handler resolves a key through.
@@ -402,6 +458,7 @@ impl Emulator {
     /// so a suite about that case needs an emulator without it.
     pub(crate) fn without_subnet_owner() -> Self {
         let engine: Arc<engine::InMemoryEngine> = Arc::new(engine::InMemoryEngine::new());
+        seed_identity_center_instances(&engine);
         let mut router = MultiServiceRouter::new();
         router.set_request_authentication(false);
         router.register_service(EmulatedService::new(Arc::clone(&engine)));
@@ -412,6 +469,7 @@ impl Emulator {
         // The one shared engine, exactly as `router/src/lib.rs` builds it: every
         // request in this suite observes the same store.
         let engine: Arc<engine::InMemoryEngine> = Arc::new(engine::InMemoryEngine::new());
+        seed_identity_center_instances(&engine);
         let mut router = MultiServiceRouter::new();
         router.set_request_authentication(false);
         router.register_service(EmulatedService::new(Arc::clone(&engine)));

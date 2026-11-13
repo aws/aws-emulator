@@ -26,10 +26,15 @@ use service_com_amazonaws_redshift_redshiftserviceversion20121201::state;
 
 use crate::cluster_lifecycle::{all_text, Answer, Emulator};
 
-/// An IAM Identity Center instance ARN in the form the service's own ARNs take:
-/// the instance is a global IAM Identity Center resource, so its ARN carries no
-/// Region or account.
-const IDC_INSTANCE_ARN: &str = "arn:aws:sso:::instance/ssoins-1111111111111111";
+/// An IAM Identity Center instance ARN the ACCOUNT holds, read from the shared
+/// harness: the instance is a global IAM Identity Center resource, so its ARN
+/// carries no Region or account, and the managed application a create registers
+/// can only be created in an instance the account holds.
+const IDC_INSTANCE_ARN: &str = crate::cluster_lifecycle::IDENTITY_CENTER_INSTANCES[0];
+
+/// A SECOND instance the account holds, so a row can vary the instance a create
+/// names.
+const OTHER_IDC_INSTANCE_ARN: &str = crate::cluster_lifecycle::IDENTITY_CENTER_INSTANCES[1];
 
 /// The IAM role an application assumes to invoke the IAM Identity Center API.
 const IAM_ROLE_ARN: &str = "arn:aws:iam::000000000000:role/RedshiftIdcRole";
@@ -313,7 +318,7 @@ fn create_cases() -> Vec<CreateCase> {
             ..CreateCase::required("a Lake Formation service integration", "integrated-app", "Integrated")
         },
         CreateCase {
-            instance_arn: "arn:aws:sso::000000000000:instance/ssoins-2222222222222222",
+            instance_arn: OTHER_IDC_INSTANCE_ARN,
             iam_role_arn: "arn:aws:iam::000000000000:role/service-role/OtherRedshiftIdcRole",
             ..CreateCase::required("another instance and a path-qualified role", "second-instance-app", "SecondInstance")
         },
