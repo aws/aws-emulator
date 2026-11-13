@@ -60,7 +60,10 @@
 //!   this host's own for every invocation this emulator serves. A run can therefore be
 //!   judged against a clock whose span the host's own speed cannot spend, which is what lets
 //!   a run asked about one of the bounds below be answered by THAT bound rather than by its
-//!   deadline on a host slow enough to spend it.
+//!   deadline on a host slow enough to spend it. Such a clock states the HOST time one run
+//!   may take beside it ([`Clock::within`]), which [`Bounds::step`] and the watch below read
+//!   from this host's own clock — so the host a run of caller-supplied code runs on is
+//!   bounded whichever clock that run's deadline is read against.
 //! * MEMORY is sampled from outside the guest — this thread's faulted pages and the
 //!   process's resident size — because the interpreter exposes no allocation seam; a sample
 //!   past the run's own ceiling ends the run, and so does one showing the run has grown the
@@ -918,7 +921,7 @@ fn prepare(
     // by. The import machinery answers from there first, and the name is NOT in the native
     // module table ([`ALLOWED_NATIVE_MODULES`]), so there is no other module of that name
     // to be had: a guest that drops this one cannot import a second.
-    modules.set_item(HOST_MODULE, host_module(vm, session).into(), vm)?;
+    modules.set_item(HOST_MODULE, host_module(vm, session)?.into(), vm)?;
     // A built-in module can no longer be CREATED: every one the guest can reach is the
     // patched object already in `sys.modules`, and a guest that drops one cannot build
     // itself an unpatched replacement. `is_builtin` stays, because the import system asks
@@ -936,7 +939,11 @@ fn prepare(
         "create_dynamic",
         "exec_dynamic",
     ] {
-        let _ = importer.set_attr(name, refusing.clone(), vm);
+        // Checked: a creation call left in place would let a guest build itself an unpatched
+        // native module, so one that could not be replaced refuses the run.
+        let refusing: PyObjectRef = refusing.clone().into();
+        importer.set_attr(name, refusing.clone(), vm)?;
+        installed_refusal(vm, &importer, name, &refusing, "_imp")?;
     }
     // `os` decides which operating-system module to build itself on from this tuple, so it
     // names the one this emulator supplies.
@@ -1047,38 +1054,74 @@ fn install_codec_registry(vm: &VirtualMachine) -> PyResult<()> {
 /// however it was reached opens nothing. The guest sees the names it expects — `open`,
 /// `io.open`, `_io.FileIO` — and the call raises. The rest of `_io` (the in-memory streams the
 /// standard library is built on) is left exactly as it is.
+///
+/// Every one of those installations is CHECKED, and a failure refuses the whole run: a patch
+/// whose result was thrown away would leave this emulator running caller-supplied code in an
+/// interpreter that can still open a host file, and no later reading would say so. The names
+/// are read back afterwards and each must answer the refusal this function installed
+/// ([`installed_refusal`]).
 fn refuse_host_file_access(vm: &VirtualMachine) -> PyResult<()> {
     // `io` is loaded FIRST, so the standard library's own stream classes are bound and
     // registered from the real module before anything on it is replaced.
-    let _ = vm.import("io", 0);
+    vm.import("io", 0)?;
     let refusing = vm.new_function("open", |_args: FuncArgs, vm: &VirtualMachine| {
         Err::<PyObjectRef, _>(vm.new_os_error(
             "a Lambda function in this emulator cannot open a file of the host".to_owned(),
         ))
     });
+    let refusing: PyObjectRef = refusing.into();
     // The TYPE, before the name it is read off is replaced: its construction is what opens a
-    // host file, so that is where the refusal goes.
-    if let Ok(raw_file) = vm.import("_io", 0).and_then(|module| module.get_attr("FileIO", vm)) {
+    // host file, so that is where the refusal goes — in a build of the interpreter that
+    // registers such a type at all. This one does not (`_io` carries no `FileIO`), so there
+    // is no type in the graph to reach; where there is one, the refusal going on it is
+    // CHECKED like every other patch here. That the type behind a host file refuses however
+    // it is reached is pinned from guest code by
+    // [`tests::the_type_behind_a_host_file_refuses_however_it_is_reached`].
+    if let Ok(raw_file) = vm.import("_io", 0)?.get_attr("FileIO", vm) {
         for slot in ["__new__", "__init__"] {
-            let _ = raw_file.set_attr(slot, refusing.clone(), vm);
+            raw_file.set_attr(slot, refusing.clone(), vm)?;
         }
     }
     let targets: [(&str, &[&str]); 2] = [
         ("_io", &["open", "open_code", "FileIO"]),
         ("io", &["open", "open_code", "FileIO"]),
     ];
-    for (module, attributes) in targets {
-        if let Ok(module) = vm.import(module, 0) {
-            for attribute in attributes {
-                let _ = module.set_attr(*attribute, refusing.clone(), vm);
-            }
+    for (name, attributes) in targets {
+        let module = vm.import(name, 0)?;
+        for attribute in attributes {
+            module.set_attr(*attribute, refusing.clone(), vm)?;
+            installed_refusal(vm, &module, attribute, &refusing, name)?;
         }
     }
     let builtins = vm.builtins.as_object();
     for attribute in ["open", "open_code"] {
-        let _ = builtins.set_attr(attribute, refusing.clone(), vm);
+        builtins.set_attr(attribute, refusing.clone(), vm)?;
+        installed_refusal(vm, builtins, attribute, &refusing, "builtins")?;
     }
     Ok(())
+}
+
+/// Read `attribute` of `holder` back and answer whether it IS the refusal that was just put
+/// there — the host's own confirmation that a containment patch took effect.
+///
+/// A patch that was applied and did not take — a name the interpreter would not let this host
+/// replace — is a containment hole no later reading would report, so it is an error here and
+/// the run is refused before any guest code is driven ([`prepare`]).
+fn installed_refusal(
+    vm: &VirtualMachine,
+    holder: &::rustpython_vm::PyObject,
+    attribute: &'static str,
+    refusing: &PyObjectRef,
+    held_by: &str,
+) -> PyResult<()> {
+    let held = holder.get_attr(attribute, vm)?;
+    if held.is(refusing) {
+        return Ok(());
+    }
+    Err(vm.new_runtime_error(format!(
+        "the refusal this emulator installs on {held_by}.{attribute} did not take effect, so \
+         no function is run in this interpreter"
+    )))
 }
 
 /// Replace the interpreter's own `sleep` with one clamped to what the run has left, on the
@@ -1094,14 +1137,22 @@ fn clamp_guest_sleep(vm: &VirtualMachine, session: &Arc<Session>) -> PyResult<()
         bounded_sleep(&sleeping.bounds(), seconds);
         Ok::<PyObjectRef, ::rustpython_vm::builtins::PyBaseExceptionRef>(vm.ctx.none())
     });
-    if let Ok(clock) = vm.import("time", 0) {
-        let _ = clock.set_attr("sleep", clamped, vm);
-    }
-    Ok(())
+    let clamped: PyObjectRef = clamped.into();
+    // Checked: an unclamped `sleep` would let a guest wait past what its run has left, so a
+    // replacement that did not take effect refuses the run.
+    let clock = vm.import("time", 0)?;
+    clock.set_attr("sleep", clamped.clone(), vm)?;
+    installed_refusal(vm, &clock, "sleep", &clamped, "time")
 }
 
 /// Wait for `seconds`, but never past what the run has left: a blocking wait the guest
 /// asked for cannot outlast the run's deadline.
+///
+/// The wait is spent through the run's OWN clock ([`Clock::wait`]), which is where a span of
+/// a run's time passes: against this host's own clock — what every invocation this emulator
+/// serves is bounded against — the thread really waits, and against a clock the host drives
+/// the span is spent on that clock, so the wait costs the run the span it asked for rather
+/// than a span of this host's time.
 ///
 /// A value that is not a finite number of seconds is no wait at all, so nothing is waited
 /// for: the guest decides how long to ask for, never how the host reads it.
@@ -1110,7 +1161,7 @@ fn bounded_sleep(bounds: &Arc<Bounds>, seconds: f64) {
         return;
     }
     let asked = Duration::from_secs_f64(seconds.min(MAX_GUEST_SLEEP_SECONDS));
-    ::std::thread::sleep(asked.min(bounds.remaining()));
+    bounds.clock.wait(asked.min(bounds.remaining()));
 }
 
 /// The longest a guest may ask to wait for in one call, before the run's own remaining
@@ -1279,9 +1330,16 @@ fn install_trace_hook(
     let setter = vm.sys_module.as_object().get_attr("settrace", vm)?;
     setter.call((hook,), vm)?;
     // With these gone, no guest call can reach the interpreter's trace slot at all: the
-    // hook that spends the budget is the only one there will be for this run.
+    // hook that spends the budget is the only one there will be for this run. Each name is
+    // read back, so one that could not be taken away refuses the run rather than leaving the
+    // guest a call that clears every bound.
     for name in ["settrace", "setprofile", "gettrace", "getprofile"] {
         let _ = vm.sys_module.as_object().del_attr(name, vm);
+        if vm.sys_module.as_object().get_attr(name, vm).is_ok() {
+            return Err(vm.new_runtime_error(format!(
+                "sys.{name} could not be taken away, so no function is run in this interpreter"
+            )));
+        }
     }
     Ok(())
 }
@@ -1299,7 +1357,21 @@ type TraceCell = ::std::rc::Rc<::std::cell::RefCell<Option<PyObjectRef>>>;
 fn clamp_recursion(vm: &VirtualMachine, limit: usize) -> PyResult<()> {
     let setter = vm.sys_module.as_object().get_attr("setrecursionlimit", vm)?;
     setter.call((limit,), vm)?;
+    // Checked, like every containment patch here: a call left in place would let a guest
+    // raise the limit the host clamped, so one that could not be taken away refuses the run.
     let _ = vm.sys_module.as_object().del_attr("setrecursionlimit", vm);
+    if vm
+        .sys_module
+        .as_object()
+        .get_attr("setrecursionlimit", vm)
+        .is_ok()
+    {
+        return Err(vm.new_runtime_error(
+            "sys.setrecursionlimit could not be taken away, so no function is run in this \
+             interpreter"
+                .to_owned(),
+        ));
+    }
     Ok(())
 }
 
@@ -1315,7 +1387,7 @@ fn clamp_recursion(vm: &VirtualMachine, limit: usize) -> PyResult<()> {
 /// functions reads the invocation being served from the environment's [`Session`], so the log
 /// it writes, the bounds it spends and the seam it reaches are the invocation's own however
 /// many invocations the environment has served.
-fn host_module(vm: &VirtualMachine, session: &Arc<Session>) -> PyRef<PyModule> {
+fn host_module(vm: &VirtualMachine, session: &Arc<Session>) -> PyResult<PyRef<PyModule>> {
     let module = vm.new_module(HOST_MODULE, vm.ctx.new_dict(), None);
     let logging = Arc::clone(session);
     set_function(vm, &module, "log", move |args: FuncArgs, vm: &VirtualMachine| {
@@ -1526,8 +1598,31 @@ fn host_module(vm: &VirtualMachine, session: &Arc<Session>) -> PyRef<PyModule> {
                 .into())
         },
     );
-    module
+    // CHECKED, once for the whole surface: the runtime source is driven through these
+    // functions, so one that did not take its place is reported here rather than left for
+    // guest code to meet as a missing name.
+    for name in HOST_MODULE_FUNCTIONS {
+        if module.as_object().get_attr(*name, vm).is_err() {
+            return Err(vm.new_runtime_error(format!(
+                "the host function {HOST_MODULE}.{name} could not be installed, so no function \
+                 is run in this interpreter"
+            )));
+        }
+    }
+    Ok(module)
 }
+
+/// The whole of what guest code can call of this process ([`host_module`]), which is also
+/// what that function checks it really installed.
+const HOST_MODULE_FUNCTIONS: &[&str] = &[
+    "log",
+    "sleep",
+    "aws",
+    "db_auth_token",
+    "request",
+    "presign",
+    "pagination",
+];
 
 /// What the guest reads back from one AWS SDK call: the service's own answer, or the
 /// reason no call was made.
@@ -1640,7 +1735,7 @@ fn narrow_posix(vm: &VirtualMachine) -> PyResult<()> {
     // `os` builds the sets that say which of its calls take a directory descriptor or
     // follow symbolic links out of this list. It is EMPTY, which is what says that none of
     // them does: there is no host descriptor and no host link to follow.
-    let _ = system.set_attr("_have_functions", vm.ctx.new_list(Vec::new()), vm);
+    system.set_attr("_have_functions", vm.ctx.new_list(Vec::new()), vm)?;
     for name in REFUSED_POSIX_CALLS {
         let refusing = vm.new_function(name, |_args: FuncArgs, vm: &VirtualMachine| {
             Err::<PyObjectRef, _>(vm.new_os_error(
@@ -1648,7 +1743,11 @@ fn narrow_posix(vm: &VirtualMachine) -> PyResult<()> {
                     .to_owned(),
             ))
         });
-        let _ = system.set_attr(*name, refusing, vm);
+        let refusing: PyObjectRef = refusing.into();
+        // Checked, like every containment patch here: a name that kept its host-reaching
+        // call refuses the run rather than being left reachable.
+        system.set_attr(*name, refusing.clone(), vm)?;
+        installed_refusal(vm, &system, name, &refusing, "posix")?;
     }
     Ok(())
 }
@@ -1669,21 +1768,25 @@ fn refuse_guest_threads(vm: &VirtualMachine) -> PyResult<()> {
             ))
         },
     );
-    if let Ok(threads) = vm.import("_thread", 0) {
-        for attribute in [
-            "start_new_thread",
-            "start_new",
-            "start_joinable_thread",
-            "interrupt_main",
-            "_set_sentinel",
-        ] {
-            let _ = threads.set_attr(attribute, refusing.clone(), vm);
-        }
+    let refusing: PyObjectRef = refusing.into();
+    let threads = vm.import("_thread", 0)?;
+    for attribute in [
+        "start_new_thread",
+        "start_new",
+        "start_joinable_thread",
+        "interrupt_main",
+        "_set_sentinel",
+    ] {
+        threads.set_attr(attribute, refusing.clone(), vm)?;
+        installed_refusal(vm, &threads, attribute, &refusing, "_thread")?;
     }
     Ok(())
 }
 
 /// Put one host function on `module` under `name`.
+///
+/// Whether every one of them really took its place is checked once, by [`host_module`], which
+/// refuses the run when one did not.
 fn set_function<F>(
     vm: &VirtualMachine,
     module: &PyRef<PyModule>,
@@ -1863,6 +1966,13 @@ impl Bounds {
         if self.stopped().is_some() {
             return;
         }
+        // The HOST's own time this run may take, which is the bound a run whose own clock
+        // this host's time does not move is bounded on this host by — and the reading that
+        // notices one sitting in a long NATIVE call, because no traced event is coming.
+        if self.clock.past_host_ceiling() {
+            self.breach(Stop::HostCeiling);
+            return;
+        }
         if self.clock.now() >= self.deadline() {
             self.breach(Stop::Deadline);
             return;
@@ -1885,6 +1995,11 @@ impl Bounds {
         }
         if self.steps.fetch_sub(1, Ordering::Relaxed) == 0 {
             return Some(self.breach(Stop::Steps));
+        }
+        // The host time this run may take, read from this host's own clock whatever clock the
+        // run's deadline is read against ([`Clock::within`]).
+        if self.clock.past_host_ceiling() {
+            return Some(self.breach(Stop::HostCeiling));
         }
         if self.clock.now() >= self.deadline() {
             return Some(self.breach(Stop::Deadline));
@@ -2455,6 +2570,57 @@ mod tests {
             "case {case}: expected the latched step stop to win, got {:?}",
             finished.completion
         );
+    }
+
+    /// The HOST's own time one run may take is a bound of its own: the bounds read it at
+    /// every traced event and from the watch over the run, and latch it — which is what
+    /// bounds the host a run judged against a clock the host does not move runs on.
+    ///
+    /// Read from the bounds themselves rather than through a run, because what is pinned is
+    /// WHERE the ceiling is enforced: the two places a run can be stopped on time
+    /// ([`Bounds::step`], the trace hook's own call, and [`Bounds::watch`], the host's watch
+    /// over a run that has stopped delivering events). The rows differ along which of them
+    /// reads it and along whether the clock states a ceiling at all; a clock that stands
+    /// still is used throughout, so no deadline can answer a row instead and nothing waits
+    /// for a span of this host's time.
+    #[test]
+    fn the_bounds_stop_a_run_on_the_host_time_it_may_take() {
+        // (case, the clock the run is judged against, the stop its first event must answer)
+        let cases: &[(&str, Clock, Option<Stop>)] = &[
+            (
+                "a ceiling this run has already taken",
+                Clock::still().within(Duration::ZERO),
+                Some(Stop::HostCeiling),
+            ),
+            (
+                "an hour of host time left to take",
+                Clock::still().within(Duration::from_secs(3_600)),
+                None,
+            ),
+            ("no ceiling stated at all", Clock::still(), None),
+        ];
+        for (case, clock, expected) in cases {
+            let mut whole = budget();
+            // Far more steps than the one event below spends, so the step budget answers no
+            // row.
+            whole.steps = 2_000_000_000;
+            let stepped = Bounds::new(&whole, clock.clone());
+            assert_eq!(
+                stepped.step(),
+                *expected,
+                "case {case}: expected one traced event to answer {expected:?}"
+            );
+
+            // The same reading, taken by the host's own watch over a run that is delivering
+            // no events at all.
+            let watched = Bounds::new(&whole, clock.clone());
+            watched.watch();
+            assert_eq!(
+                watched.stopped(),
+                *expected,
+                "case {case}: expected the watch over the run to latch {expected:?}"
+            );
+        }
     }
 
     /// The deadline is the host's too: a sleep the guest asks for never outlasts the run.

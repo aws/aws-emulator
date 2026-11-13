@@ -440,6 +440,7 @@ fn notebook_bound_reason(stop: Stop) -> String {
         Stop::Steps => "did more work than an execution may do",
         Stop::Memory => "needed more memory than an execution may use",
         Stop::Response => "produced more output than an execution may produce",
+        Stop::HostCeiling => "took more of this emulator's host time than an execution may take",
     };
     format!("The notebook was stopped: it {bound}.")
 }

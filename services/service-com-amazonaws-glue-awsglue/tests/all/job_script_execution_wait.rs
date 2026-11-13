@@ -1,29 +1,31 @@
 // SPDX-License-Identifier: CC0-1.0
 
-//! End-to-end and seam tests for HOW LONG the call that performs a job run's script waits
-//! for it, and therefore for what a run whose script really finished reports.
+//! End-to-end and seam tests for WHICH BOUNDS decide what a job run reports, and therefore
+//! for what a run whose script really finished reports.
 //!
 //! The rule under test, in one sentence: a run's terminal state is what its own execution
-//! came to, so the wait that decides a script was "terminated for taking too long" has to
-//! cover every span the ENGINE may take — the execution environment it builds before a line
-//! of the script is read as much as the script's own wall clock — because the environment is
-//! the host's work and no script controls it.
+//! came to, so every bound that decides it is a count of the RUN's own doings — the traced
+//! events it delivers and the waits it asks for — while the spans of the HOST's own time on
+//! the path bound what the emulator spends and report no outcome of the script at all.
 //!
-//! What goes wrong when it does not: a wait of the script's own ceiling and the stop grace
-//! alone runs out while the interpreter is still being stood up on a busy host, and the run
-//! is then reported in the state `Job$Timeout` documents for a script that ran past nothing.
-//! That is an outcome no execution produced, and it is the same reading the engine would have
-//! answered the real one with.
+//! What goes wrong when it does not: a bound read against this host's own clock runs out while
+//! the interpreter is still being stood up, or while the script is still working, on a busy
+//! host — and the run is then reported in the state `Job$Timeout` documents for a script that
+//! ran past nothing. That is an outcome no execution produced, and whether it happens is
+//! decided by how loaded the host is rather than by the script.
 //!
-//! The first test pins the wait against the engine's own span over the `Timeout` values a job
-//! may carry; the second drives the rule end to end, where a script whose MODULES are
-//! imported before it runs — work the engine does in the phase it bounds on its own span —
-//! still reports what the script itself came to.
+//! The first test pins those bounds against each other over the `Timeout` values a job may
+//! carry; the second drives the rule end to end, where a script whose MODULES are imported
+//! before it runs — work the engine does in the phase it bounds on its own span — still
+//! reports what the script itself came to.
+
+use std::time::Duration;
 
 use serde_json::Value;
 use service_com_amazonaws_glue_awsglue::state::{
-    job_script_budget, job_script_execution_wait, JOB_RUN_STATE_SUCCEEDED,
-    JOB_SCRIPT_ABANDON_GRACE, MAX_TIMEOUT_MINUTES,
+    job_script_budget, JOB_RUN_STATE_SUCCEEDED, JOB_SCRIPT_CALL_CEILING, JOB_SCRIPT_CLOCK_TICK,
+    JOB_SCRIPT_HOST_CEILING, JOB_SCRIPT_HOST_WAIT, JOB_SCRIPT_RUN_CEILING, MAX_JOB_SCRIPT_STEPS,
+    MAX_TIMEOUT_MINUTES,
 };
 use service_com_amazonaws_lambda_awsgirapiservice::state::execution::INIT_PHASE_LIMIT;
 use serde_json::json;
@@ -33,7 +35,7 @@ use crate::job_script_execution::{
 };
 use crate::wire::ok;
 
-/// The `Timeout` values the wait is pinned over: the shortest the model admits
+/// The `Timeout` values the bounds are pinned over: the shortest the model admits
 /// (`Timeout`'s `@range(min: 1)`), one in between, the longest it documents
 /// ([`MAX_TIMEOUT_MINUTES`], the seven days `Job$Timeout` admits), and one outside that range
 /// altogether, which bounds nothing and so leaves the emulator's own ceiling in charge.
@@ -45,26 +47,61 @@ const TIMEOUT_ROWS: &[(&str, i32)] = &[
 ];
 
 #[test]
-fn the_wait_for_one_execution_covers_the_whole_span_the_engine_may_take() {
+fn what_decides_a_runs_outcome_is_the_runs_own_doings_and_not_the_hosts_clock() {
     for (case, minutes) in TIMEOUT_ROWS {
-        let waited = job_script_execution_wait(*minutes);
-        // The span the ENGINE may take for the same budget: the phase it builds the execution
-        // environment in, which it bounds on its own span, and then the script's own wall
-        // clock.
-        let script = job_script_budget(*minutes).wall_clock;
-        let engine_span = INIT_PHASE_LIMIT.saturating_add(script);
+        // The span ONE run of a script is given, which is a span of the run's own time.
+        let span = job_script_budget(*minutes).wall_clock;
         assert!(
-            waited > engine_span,
-            "case {case:?}: the wait must cover the engine's own span for the budget \
-             ({engine_span:?} = {INIT_PHASE_LIMIT:?} standing the environment up plus \
-             {script:?} of script) before a run may be reported as terminated, and it is \
-             {waited:?}"
+            span > Duration::ZERO && span <= JOB_SCRIPT_RUN_CEILING,
+            "case {case:?}: no stored Timeout may set the span one run of a script is given — \
+             it is this emulator's own ceiling ({JOB_SCRIPT_RUN_CEILING:?}) at most — and it \
+             is {span:?}"
         );
+        // Every traced event the script delivers moves the run's own clock by one tick, so
+        // the whole step budget has to spend less of that clock than the span: that is what
+        // leaves a script that computes without end to be answered by its step budget — a
+        // count of its own work — and leaves the span itself for the waits a script asks for.
+        let spent_by_the_step_budget = JOB_SCRIPT_CLOCK_TICK
+            .saturating_mul(u32::try_from(MAX_JOB_SCRIPT_STEPS).unwrap_or(u32::MAX));
         assert!(
-            waited <= engine_span.saturating_add(JOB_SCRIPT_ABANDON_GRACE),
-            "case {case:?}: the wait must stay inside the engine's span plus the grace a \
-             script is given to stop ({JOB_SCRIPT_ABANDON_GRACE:?}), so a call is not held \
-             open past it, and it is {waited:?}"
+            spent_by_the_step_budget < span,
+            "case {case:?}: the whole step budget ({MAX_JOB_SCRIPT_STEPS} events at \
+             {JOB_SCRIPT_CLOCK_TICK:?} each = {spent_by_the_step_budget:?}) must spend less of \
+             the run's own clock than the {span:?} span it is given"
+        );
+        // The HOST's own time one run may take, which the engine stops the run on: it covers
+        // the whole span the ENGINE may take in the run's own time — the phase it stands the
+        // execution environment up in, which it bounds on its own span, and then the script's
+        // own — so a script that finished is never stopped before it has answered, however
+        // much slower this host is than the span suggests.
+        let engine_span = INIT_PHASE_LIMIT.saturating_add(span);
+        assert!(
+            JOB_SCRIPT_HOST_CEILING > engine_span,
+            "case {case:?}: the host time one run may take ({JOB_SCRIPT_HOST_CEILING:?}) must \
+             cover the engine's own span for the budget ({engine_span:?} = \
+             {INIT_PHASE_LIMIT:?} standing the environment up plus {span:?} of script) before \
+             a run is stopped on it"
+        );
+        // The call waits for that ceiling AND for the engine's own stop to land, so a thread
+        // the call gives up on is one the engine has already stopped.
+        assert!(
+            JOB_SCRIPT_HOST_WAIT > JOB_SCRIPT_HOST_CEILING,
+            "case {case:?}: the call's wait ({JOB_SCRIPT_HOST_WAIT:?}) must outlast the host \
+             time one run may take ({JOB_SCRIPT_HOST_CEILING:?}), so the engine's own stop \
+             lands before the call stops waiting"
+        );
+        // And the whole of what one request can be held for stays a small multiple of that
+        // span, so a call is answered rather than held open for the life of the process. The
+        // multiple is this test's own bound on how generous those spans may become, not the
+        // source's.
+        let longest_a_request_may_be_held = JOB_SCRIPT_CALL_CEILING.saturating_add(JOB_SCRIPT_HOST_WAIT);
+        let bound_on_holding_a_request = engine_span.saturating_mul(10);
+        assert!(
+            longest_a_request_may_be_held <= bound_on_holding_a_request,
+            "case {case:?}: the longest one request can be held \
+             ({longest_a_request_may_be_held:?} = {JOB_SCRIPT_CALL_CEILING:?} of starting \
+             scripts plus {JOB_SCRIPT_HOST_WAIT:?} waiting for the last) must stay inside ten \
+             times the engine's own span ({bound_on_holding_a_request:?})"
         );
     }
 }

@@ -1049,6 +1049,12 @@ impl Bounds {
         if self.checks.fetch_sub(1, Ordering::Relaxed) == 0 {
             return Some(self.breach(Stop::Steps));
         }
+        // The HOST time one run may take, which a clock the host drives states beside its own
+        // ([`Clock::within`]) and which is read from this host's own clock whatever this run's
+        // deadline is read against.
+        if self.clock.past_host_ceiling() {
+            return Some(self.breach(Stop::HostCeiling));
+        }
         if self.clock.now() >= self.deadline() {
             return Some(self.breach(Stop::Deadline));
         }

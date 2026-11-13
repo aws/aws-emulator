@@ -10,14 +10,26 @@
 //! rather than a call to the host buried inside each check.
 //!
 //! Every invocation this emulator serves is bounded against this host's own clock
-//! ([`Clock::host`]), which is what [`super::python::run`] and [`super::node::run`] pass and
-//! what the operation path therefore always uses: no request chooses a run's clock, and no
-//! configuration selects one. A run driven to establish that ONE named bound is what stops it
-//! is bounded against a clock whose span this host's speed cannot spend: one that stands
-//! STILL ([`Clock::still`]), against which a deadline never falls, so only a bound that is
-//! not a span of time can answer the run; or one its own READINGS drive ([`Clock::driven`]),
-//! against which a deadline falls after a number of readings — the run's traced events and
-//! the host's own samples of it — rather than after a span of this host's time.
+//! ([`Clock::host`]), which is what [`super::python::run`] and [`super::node::run`] pass: no
+//! request chooses a run's clock, and no configuration selects one. A run driven to establish
+//! that ONE named bound is what stops it is bounded against a clock whose span this host's
+//! speed cannot spend: one that stands STILL ([`Clock::still`]), against which a deadline
+//! never falls, so only a bound that is not a span of time can answer the run; or one its own
+//! READINGS drive ([`Clock::driven`]), against which a deadline falls after a number of
+//! readings — the run's traced events and the host's own samples of it — rather than after a
+//! span of this host's time.
+//!
+//! A clock the host drives therefore leaves this HOST's own time unbounded, which is why a
+//! clock that reaches a request path carries a CEILING on it ([`Clock::within`]): the run is
+//! stopped once it has taken more of this host's time than that, whatever its own clock
+//! reads, so a run whose own time this host's clock does not move is still bounded on this
+//! host — by a bound of its own ([`super::outcome::Stop::HostCeiling`]) rather than by the
+//! deadline, which keeps what the run REPORTS a matter of what it did.
+//!
+//! A WAIT the run asked for is spent through the clock too ([`Clock::wait`]), because waiting
+//! is how time passes: on this host's own clock the thread really waits, and on a clock the
+//! host drives the span is advanced on the clock instead — so the wait costs the RUN the span
+//! it asked for and none of this host's time.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -37,6 +49,18 @@ pub struct Clock {
     /// How many readings it has answered, which is what drives it. Shared between the run's
     /// own thread and the host's watch over it, which read the same clock.
     readings: Arc<AtomicU64>,
+    /// How much of this clock's time the WAITS the run asked for have spent ([`Clock::wait`]),
+    /// in nanoseconds. Shared with every holder of the clock, like the readings above, and
+    /// read by none of them: a clock this host's own time moves does its waiting instead.
+    waited: Arc<AtomicU64>,
+    /// How much of THIS HOST's own time a run bounded against this clock may take
+    /// ([`Clock::within`]), or `None` for a clock with no ceiling of its own — this host's
+    /// own, whose readings are this host's time already, and a clock used only to drive a run
+    /// from a test.
+    host_ceiling: Option<Duration>,
+    /// When this clock was built, in THIS HOST's own time, which is what the ceiling above is
+    /// measured from.
+    built_at: Instant,
 }
 
 impl Clock {
@@ -49,6 +73,9 @@ impl Clock {
             base: None,
             tick: Duration::ZERO,
             readings: Arc::new(AtomicU64::new(0)),
+            waited: Arc::new(AtomicU64::new(0)),
+            host_ceiling: None,
+            built_at: Instant::now(),
         }
     }
 
@@ -65,6 +92,9 @@ impl Clock {
             base: Some(Instant::now()),
             tick: Duration::ZERO,
             readings: Arc::new(AtomicU64::new(0)),
+            waited: Arc::new(AtomicU64::new(0)),
+            host_ceiling: None,
+            built_at: Instant::now(),
         }
     }
 
@@ -72,15 +102,38 @@ impl Clock {
     ///
     /// A span of such a clock is a NUMBER of readings rather than a span of this host's
     /// time, so a deadline read against it falls after the run has delivered that many
-    /// traced events — the same number on an idle host and on a loaded one. For DRIVING a
-    /// run, like [`Self::still`], and reached from no request path either.
+    /// traced events — the same number on an idle host and on a loaded one. None of this
+    /// host's time moves it, so a run bounded against one on a REQUEST path states what it
+    /// may take of this host besides ([`Self::within`]).
     #[must_use]
     pub fn driven(tick: Duration) -> Self {
         Self {
             base: Some(Instant::now()),
             tick,
             readings: Arc::new(AtomicU64::new(0)),
+            waited: Arc::new(AtomicU64::new(0)),
+            host_ceiling: None,
+            built_at: Instant::now(),
         }
+    }
+
+    /// The same clock, with a CEILING on how much of THIS HOST's own time a run bounded
+    /// against it may take.
+    ///
+    /// A clock the host drives leaves this host's time unbounded: the deadline it reads
+    /// against cannot be spent by the host's own clock, and nor can the host's watch over the
+    /// run spend it. So a run on a request path states the host time it may take HERE, and is
+    /// stopped once it has taken it ([`Self::past_host_ceiling`]) — which is what keeps the
+    /// CPU one run of caller-supplied code may take bounded, whether it is spending traced
+    /// events or sitting in one long native call that delivers none.
+    ///
+    /// It is a bound of its own and not the run's deadline, so what a run REPORTS still says
+    /// what the run DID: a run stopped here is one this emulator gave up on
+    /// ([`super::outcome::Stop::HostCeiling`]), not one its own span ran out on.
+    #[must_use]
+    pub fn within(mut self, host_ceiling: Duration) -> Self {
+        self.host_ceiling = Some(host_ceiling);
+        self
     }
 
     /// The instant this clock reads NOW, which on a driven clock is also the reading that
@@ -91,9 +144,51 @@ impl Clock {
             return Instant::now();
         };
         let readings = self.readings.fetch_add(1, Ordering::Relaxed);
-        base + self
+        let driven = self
             .tick
-            .saturating_mul(u32::try_from(readings).unwrap_or(u32::MAX))
+            .saturating_mul(u32::try_from(readings).unwrap_or(u32::MAX));
+        // The waits the run asked for are time this clock has passed as much as its readings
+        // are ([`Self::wait`]).
+        base + driven.saturating_add(Duration::from_nanos(self.waited.load(Ordering::Relaxed)))
+    }
+
+    /// Spend `span` of this clock's own time, which is what a WAIT the run asked for costs
+    /// it.
+    ///
+    /// Time passes on this HOST's own clock by waiting, so a run bounded against it — every
+    /// invocation this emulator serves — really waits, and its own deadline then falls where
+    /// that wait took it. None of this host's time moves a clock the host drives
+    /// ([`Self::still`], [`Self::driven`]), so the span is ADVANCED on that clock instead: the
+    /// wait costs the run the span it asked for, the run's deadline falls after the waits it
+    /// really asked for, and how fast this host happens to be running spends neither.
+    ///
+    /// The caller decides how long a run may be made to wait for — the span handed here is
+    /// already clamped to what the run has left — and no guest code reaches this.
+    pub fn wait(&self, span: Duration) {
+        if self.base.is_none() {
+            ::std::thread::sleep(span);
+            return;
+        }
+        let nanos = u64::try_from(span.as_nanos()).unwrap_or(u64::MAX);
+        let _ = self
+            .waited
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |waited| {
+                Some(waited.saturating_add(nanos))
+            });
+    }
+
+    /// Whether a run bounded against this clock has taken more of THIS HOST's own time than
+    /// it may ([`Self::within`]).
+    ///
+    /// Read by the HOST — from the run's own thread at every traced event and from the watch
+    /// over that run, which is what notices a run sitting in a long native call — and read
+    /// from this host's own clock whatever this one reads, so no guest code and no clock of
+    /// the run's own moves it. A clock that states no ceiling answers `false`: this host's own
+    /// clock bounds its runs by their deadline already.
+    #[must_use]
+    pub fn past_host_ceiling(&self) -> bool {
+        self.host_ceiling
+            .is_some_and(|ceiling| self.built_at.elapsed() >= ceiling)
     }
 }
 
@@ -159,6 +254,135 @@ mod tests {
         assert_eq!(
             read_elsewhere, taken,
             "expected every reader of a still clock to read {taken:?}, got {read_elsewhere:?}"
+        );
+    }
+
+    /// A clock states what a run bounded against it may take of THIS HOST's own time, and
+    /// answers whether the run has taken it — one row per kind of clock and per ceiling,
+    /// including the kinds that state none.
+    #[test]
+    fn a_clock_answers_whether_its_run_has_taken_the_host_time_it_may() {
+        // (case, the clock, the span a run of it asks to wait for, whether the ceiling is
+        // taken). A ceiling of nothing is already spent when the clock is built, and one of
+        // an hour is not spent inside any run of this test. The row about THIS HOST's own
+        // clock asks to wait for nothing, because a wait of that clock's time is a real one.
+        let cases: &[(&str, Clock, Duration, bool)] = &[
+            (
+                "this host's own clock, which states no ceiling",
+                Clock::host(),
+                Duration::ZERO,
+                false,
+            ),
+            (
+                "a still clock with no ceiling stated",
+                Clock::still(),
+                Duration::from_secs(600),
+                false,
+            ),
+            (
+                "a driven clock with no ceiling stated",
+                Clock::driven(Duration::from_millis(1)),
+                Duration::from_secs(600),
+                false,
+            ),
+            (
+                "a driven clock whose ceiling is already spent",
+                Clock::driven(Duration::from_millis(1)).within(Duration::ZERO),
+                Duration::from_secs(600),
+                true,
+            ),
+            (
+                "a driven clock with an hour of host time to spend",
+                Clock::driven(Duration::from_millis(1)).within(Duration::from_secs(3_600)),
+                Duration::from_secs(600),
+                false,
+            ),
+            (
+                "a still clock whose ceiling is already spent",
+                Clock::still().within(Duration::ZERO),
+                Duration::from_secs(600),
+                true,
+            ),
+        ];
+        for (case, clock, asked, past) in cases {
+            // The waits and readings a run takes are its OWN time: on a clock the host
+            // drives they spend no host time, so they move this answer for no row.
+            clock.wait(*asked);
+            let _ = clock.now();
+            assert_eq!(
+                clock.past_host_ceiling(),
+                *past,
+                "case {case}: expected past_host_ceiling to answer {past}"
+            );
+        }
+    }
+
+    /// A WAIT spends the time of a clock the host drives by ADVANCING it, so what the run
+    /// asked to wait for is time that clock has passed — one row per kind of such clock, and
+    /// one per shape of what is asked for.
+    #[test]
+    fn a_wait_spends_the_time_of_a_clock_the_host_drives() {
+        // (case, the clock, the spans asked for in turn, what they add up to)
+        let cases: &[(&str, Clock, &[Duration], Duration)] = &[
+            (
+                "one span on a clock that stands still",
+                Clock::still(),
+                &[Duration::from_secs(600)],
+                Duration::from_secs(600),
+            ),
+            (
+                "many small spans on a clock that stands still",
+                Clock::still(),
+                &[
+                    Duration::from_millis(250),
+                    Duration::from_millis(250),
+                    Duration::from_millis(500),
+                ],
+                Duration::from_secs(1),
+            ),
+            (
+                "nothing asked for at all",
+                Clock::still(),
+                &[Duration::ZERO],
+                Duration::ZERO,
+            ),
+            (
+                "one span on a clock its readings drive",
+                // A tick of nothing, so what the readings below add is nothing and the
+                // reading answers the waits alone.
+                Clock::driven(Duration::ZERO),
+                &[Duration::from_secs(30)],
+                Duration::from_secs(30),
+            ),
+        ];
+        for (case, clock, asked, total) in cases {
+            let first = clock.now();
+            for span in *asked {
+                clock.wait(*span);
+            }
+            let moved = clock.now().saturating_duration_since(first);
+            assert_eq!(
+                moved, *total,
+                "case {case}: expected the waits to move the clock by {total:?}, got {moved:?}"
+            );
+        }
+    }
+
+    /// A wait is spent on the clock of EVERY holder of it, which is what the run's own thread
+    /// and the host's watch over that run read.
+    #[test]
+    fn a_wait_is_spent_on_the_clock_every_reader_holds() {
+        let clock = Clock::still();
+        let first = clock.now();
+        let span = Duration::from_secs(5);
+        let shared = clock.clone();
+        ::std::thread::spawn(move || shared.wait(span))
+            .join()
+            .expect("the waiting thread ended");
+        let moved = clock.now().saturating_duration_since(first);
+        assert_eq!(
+            moved, span,
+            "expected the wait taken elsewhere to move this clock by {span:?}, got {moved:?}"
         );
     }
 

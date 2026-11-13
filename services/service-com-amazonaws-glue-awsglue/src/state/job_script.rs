@@ -44,11 +44,32 @@
 //! reachable from the script: how many scripts run at once
 //! ([`MAX_CONCURRENT_JOB_SCRIPT_RUNS`], with a bounded wait for a permit), how many one call
 //! performs ([`MAX_JOB_SCRIPT_RUNS_PER_CALL`]) and for how long
-//! ([`JOB_SCRIPT_CALL_CEILING`]), how long one script may run
-//! ([`JOB_SCRIPT_RUN_CEILING`], which also clamps the job's own `Timeout`), how large the
-//! script may be ([`MAX_JOB_SCRIPT_BYTES`], enforced by the ranged read), and the step,
-//! memory, recursion, log and answer ceilings the interpreter is given
-//! ([`job_script_budget`]).
+//! ([`JOB_SCRIPT_CALL_CEILING`]), how long one script's own run may last
+//! ([`JOB_SCRIPT_RUN_CEILING`], which also clamps the job's own `Timeout`), how much of THIS
+//! HOST's time one run may take ([`JOB_SCRIPT_HOST_CEILING`], which the engine stops the run
+//! on) and how long the call waits for the thread it runs on ([`JOB_SCRIPT_HOST_WAIT`]), how
+//! large the script may be ([`MAX_JOB_SCRIPT_BYTES`], enforced by the ranged read), and the
+//! step ([`MAX_JOB_SCRIPT_STEPS`]), memory, recursion, log and answer ceilings the interpreter
+//! is given ([`job_script_budget`]).
+//!
+//! # What decides the state a run comes to rest in
+//!
+//! What the run REPORTS is decided by what the EXECUTION did and never by how fast this host
+//! happened to be running it: the span a script's own run may last is read against a clock
+//! the RUN drives ([`python::Clock::driven`], one tick [`JOB_SCRIPT_CLOCK_TICK`] per traced
+//! event it delivers) and spent by the waits the script itself asks for, so a script that ran
+//! to its end is reported on what it came to however long this host took over it, a script
+//! that WAITS past that span is the one reported as terminated for taking too long, and a
+//! script that computes without end is answered by its step budget.
+//!
+//! THIS HOST is bounded separately, and by a bound that reports no outcome of the script: the
+//! same clock states the host time one run may take ([`python::Clock::within`]), which the
+//! engine reads from this host's own clock at every traced event and from its own watch over
+//! the run — so a script spending events, and one sitting in a long native call that delivers
+//! none, are both stopped. A run stopped there is one this emulator gave up on, reported in
+//! the state a service error puts a run in ([`job_run_script_host_ceiling_reached`]), as is
+//! one whose thread had still not answered when the call stopped waiting for it
+//! ([`job_run_script_unanswered`]).
 //!
 //! # What a script can and cannot reach
 //!
@@ -83,43 +104,80 @@ use super::*;
 /// is enforced by the RANGED read, so nothing larger is ever buffered.
 pub const MAX_JOB_SCRIPT_BYTES: usize = 1024 * 1024;
 
-/// The longest ONE execution of a job script may take, whatever the job's `Timeout` says.
+/// The longest ONE run of a job script may last in the RUN'S OWN time, whatever the job's
+/// `Timeout` says.
 ///
 /// CHOSEN, not an AWS duration: `Timeout` is stated in minutes and may be as long as seven
-/// days, and the execution happens inside the call that begins the run — so this is the
-/// wall clock this emulator gives a script, and the job's own `Timeout` is clamped DOWN to
-/// it before it bounds anything ([`job_script_budget`]). Because the shortest `Timeout` the
-/// model admits is one minute (`Timeout`'s `@range(min: 1)`), this ceiling is what binds
-/// every run today, and a script that runs past it is reported in the state `Job$Timeout`
-/// documents for a run that was terminated for taking too long.
+/// days, and the execution happens inside the call that begins the run — so this is the span
+/// this emulator gives a script, and the job's own `Timeout` is clamped DOWN to it before it
+/// bounds anything ([`job_script_budget`]). Because the shortest `Timeout` the model admits
+/// is one minute (`Timeout`'s `@range(min: 1)`), this ceiling is what binds every run today,
+/// and a script that runs past it is reported in the state `Job$Timeout` documents for a run
+/// that was terminated for taking too long.
+///
+/// It is a span of the RUN's own time rather than of this host's: it is read against a clock
+/// the run itself drives ([`JOB_SCRIPT_CLOCK_TICK`]) and spent by the waits the script asks
+/// for, so what a run comes to rest in is the same on an idle host and on a loaded one, and
+/// the host's own speed is not what decides whether a script was terminated. What the run may
+/// take of THIS host is bounded beside it ([`JOB_SCRIPT_HOST_CEILING`]).
 pub const JOB_SCRIPT_RUN_CEILING: Duration = Duration::from_secs(5);
 
-/// How long after its budget is spent a script's thread is still waited for.
+/// How far ONE reading of a job script run's clock moves it.
 ///
-/// The interpreter's stop lands at the next traced event, so the wait is the budget plus
-/// this, after which the run is reported on what the bound it ran past says rather than
-/// waiting for the thread.
-pub const JOB_SCRIPT_ABANDON_GRACE: Duration = Duration::from_secs(2);
+/// The span a script's run may last ([`JOB_SCRIPT_RUN_CEILING`]) is spent by what the RUN
+/// does, and a traced event is one of those: the engine reads the run's clock once per event
+/// the script delivers and once per sample the host's watch takes over it. The tick is sized
+/// so that the whole step budget ([`MAX_JOB_SCRIPT_STEPS`]) spends well under that span —
+/// which is what leaves a script that computes without end to be answered by the step budget,
+/// a count of its OWN work, and leaves the span itself for the waits a script asks for.
+pub const JOB_SCRIPT_CLOCK_TICK: Duration = Duration::from_nanos(100);
 
-/// The longest the call that performs ONE execution waits for the thread that execution runs
-/// on, for a job whose `Timeout` is `timeout_minutes`.
+/// How much of THIS HOST's own time ONE run of a job script may take, past which the engine
+/// stops it whatever its own clock reads.
 ///
-/// What is waited for is the whole span the ENGINE may take, not the script's own ceiling
-/// alone: the execution environment the script runs in — the interpreter, the runtime and the
-/// import of the script's entry module — is built before a line of the script is read, and the
-/// engine bounds that phase on a span of its own ([`INIT_PHASE_LIMIT`]) rather than on the
-/// script's wall clock. A wait of the script's ceiling and the grace alone gives up on an
-/// execution whose script has not been reached yet, and reports the state a script TERMINATED
-/// for taking too long comes to rest in for one that ran past nothing — an outcome no
-/// execution produced. The grace ([`JOB_SCRIPT_ABANDON_GRACE`]) is still on top, because the
-/// engine's own stop lands at the next traced event.
-#[must_use]
-pub fn job_script_execution_wait(timeout_minutes: i32) -> Duration {
-    job_script_budget(timeout_minutes)
-        .wall_clock
-        .saturating_add(INIT_PHASE_LIMIT)
-        .saturating_add(JOB_SCRIPT_ABANDON_GRACE)
-}
+/// CHOSEN: the span above is the RUN's own time, so it bounds no CPU of this host — a script
+/// spending traced events, or sitting in one long native call that delivers none, would hold
+/// a thread of this process for as long as the host took over it. This is the bound that
+/// stops it: the engine reads it from this host's own clock at every traced event and from the
+/// host's own watch over the run ([`python::Clock::within`]), so a run of caller-supplied code
+/// is bounded on this host however its own time is read.
+///
+/// It is generous beside the span the engine's phases take in the run's own time
+/// ([`INIT_PHASE_LIMIT`] standing the execution environment up, then
+/// [`JOB_SCRIPT_RUN_CEILING`] of script) — this host may need several times as long of its own
+/// for the same work when it is loaded, and a script that FINISHED must be reported on what it
+/// came to rather than on the host's load — and it is many times the host time the whole step
+/// budget spends ([`MAX_JOB_SCRIPT_STEPS`]), so a script that computes without end is still
+/// answered by that budget rather than by this ceiling.
+///
+/// A run this ceiling stops is one this emulator GAVE UP ON: it is reported in the state a run
+/// that ended on a service error reports, carrying [`job_run_script_host_ceiling_reached`],
+/// never as one terminated for taking too long — nothing of the script's own span ran out.
+pub const JOB_SCRIPT_HOST_CEILING: Duration = INIT_PHASE_LIMIT
+    .saturating_add(JOB_SCRIPT_RUN_CEILING)
+    .saturating_mul(HOST_CEILING_OVER_THE_ENGINE_SPAN);
+
+/// How many times the engine's own spans the host ceiling allows for
+/// ([`JOB_SCRIPT_HOST_CEILING`]).
+const HOST_CEILING_OVER_THE_ENGINE_SPAN: u32 = 3;
+
+/// How long the call that performs ONE execution waits for the thread that execution runs on.
+///
+/// The host ceiling above plus the grace the engine's own stop needs to land: the stop is
+/// latched by the host and RAISED at the next traced event the interpreter delivers, so a
+/// thread the engine has stopped answers a moment after the ceiling rather than at it. A
+/// thread that has still not answered by then is given up on and the run reported as one this
+/// emulator has no outcome for ([`job_run_script_unanswered`]) — never as one terminated for
+/// taking too long, because nothing of the script's own span ran out. The thread keeps its
+/// permit until it ends, which the ceiling above is what bounds.
+pub const JOB_SCRIPT_HOST_WAIT: Duration =
+    JOB_SCRIPT_HOST_CEILING.saturating_add(JOB_SCRIPT_STOP_GRACE);
+
+/// How long the engine's own stop is given to land, once the host ceiling has latched it.
+///
+/// CHOSEN: the stop is raised at the next traced event, which a running script delivers at
+/// once; this is what the call allows for it before it stops waiting.
+pub const JOB_SCRIPT_STOP_GRACE: Duration = Duration::from_secs(5);
 
 /// How many job scripts run at once in this process.
 ///
@@ -131,11 +189,10 @@ pub const MAX_CONCURRENT_JOB_SCRIPT_RUNS: usize = 2;
 /// How long a run waits for one of [`MAX_CONCURRENT_JOB_SCRIPT_RUNS`], at most.
 ///
 /// CHOSEN: the wait is bounded, so the call that began the run answers either way, and it is
-/// narrowed further by what the CALL has left of [`JOB_SCRIPT_CALL_CEILING`] once the
-/// script's own ceiling is allowed for — so waiting for an interpreter cannot take a request
-/// past that span. A run that waited the whole wait has not been performed at all: it stays
-/// [`JobRunEntry::awaiting_script`], so a later call performs it rather than this one
-/// reporting an outcome nothing produced.
+/// narrowed further by what the CALL has left of [`JOB_SCRIPT_CALL_CEILING`] — so waiting for
+/// an interpreter cannot take a request past that span. A run that waited the whole wait has
+/// not been performed at all: it stays [`JobRunEntry::awaiting_script`], so a later call
+/// performs it rather than this one reporting an outcome nothing produced.
 pub const JOB_SCRIPT_PERMIT_WAIT: Duration = Duration::from_secs(5);
 
 /// The permits [`MAX_CONCURRENT_JOB_SCRIPT_RUNS`] hands out, for the whole process: the
@@ -160,15 +217,15 @@ pub const MAX_JOB_SCRIPT_RUNS_PER_CALL: usize = 8;
 /// How long ONE call spends performing owed scripts before it leaves the rest to the next
 /// call.
 ///
-/// CHOSEN: the ceiling on what a REQUEST costs, beside the ceiling on what one script costs
-/// ([`JOB_SCRIPT_RUN_CEILING`]). A further script is started only while a whole one still
-/// fits inside this span, the wait for an interpreter is narrowed to what is left of it
-/// ([`JOB_SCRIPT_PERMIT_WAIT`]), and no script in flight is ever cancelled — so a run is
-/// never left claimed by an execution nobody is waiting for, and the longest a call can be
+/// CHOSEN: the ceiling on what a REQUEST costs, beside the ceiling on what one script's own
+/// run costs ([`JOB_SCRIPT_RUN_CEILING`]). A further script is STARTED only while the call
+/// has not already spent this span, the wait for an interpreter is narrowed to what is left
+/// of it ([`JOB_SCRIPT_PERMIT_WAIT`]), and no script in flight is ever cancelled — so a run
+/// is never left claimed by an execution nobody is waiting for, and the longest a call can be
 /// held is this span plus what the LAST execution it began is waited for
-/// ([`job_script_execution_wait`]) rather than the product of the per-script ceiling and
+/// ([`JOB_SCRIPT_HOST_WAIT`]) rather than the product of that wait and
 /// [`MAX_JOB_SCRIPT_RUNS_PER_CALL`].
-pub const JOB_SCRIPT_CALL_CEILING: Duration = Duration::from_secs(10);
+pub const JOB_SCRIPT_CALL_CEILING: Duration = Duration::from_secs(5);
 
 /// How many jobs ONE call performs owed scripts for, for the same reason.
 pub const MAX_JOBS_PER_SCRIPT_CALL: usize = 8;
@@ -178,9 +235,18 @@ pub const MAX_JOBS_PER_SCRIPT_CALL: usize = 8;
 /// `RecursionError` rather than touching the thread's guard page.
 const JOB_SCRIPT_STACK_BYTES: usize = 16 * 1024 * 1024;
 
-/// How many traced events one script may execute. CHOSEN: large enough for any ETL script a
-/// client runs here, small enough that a loop with no exit ends inside the ceiling above.
-const MAX_JOB_SCRIPT_STEPS: u64 = 20_000_000;
+/// How many traced events one script may execute.
+///
+/// CHOSEN: large enough for any ETL script a client runs here — it is several times the
+/// events the scripts of this crate's own suites deliver, the AWS SDK calls they make
+/// included — and small enough that a loop with no exit ends in a small part of the host time
+/// one run may take ([`JOB_SCRIPT_HOST_CEILING`]), so such a loop is answered by THIS budget
+/// rather than by that ceiling. It is a count of the script's OWN work, so it is the same
+/// count on an idle host and on a loaded one, which is what makes the answer to a script that
+/// computes without end the same on both. The span the run's clock gives it allows for this
+/// whole budget ([`JOB_SCRIPT_CLOCK_TICK`]), so a script that spends the budget is reported on
+/// the budget it ran past rather than on the clock.
+pub const MAX_JOB_SCRIPT_STEPS: u64 = 1_000_000;
 
 /// How much memory one script may add to this process. CHOSEN, for the same reason.
 const MAX_JOB_SCRIPT_MEMORY_BYTES: u64 = 512 * 1024 * 1024;
@@ -271,8 +337,8 @@ pub fn job_run_language_not_runnable(language: &str) -> String {
     )
 }
 
-/// `JobRun$ErrorMessage` of a run whose script ran past the wall clock this emulator gives
-/// a script ([`JOB_SCRIPT_RUN_CEILING`]).
+/// `JobRun$ErrorMessage` of a run whose script ran past the span this emulator gives one run
+/// of a job script ([`JOB_SCRIPT_RUN_CEILING`]).
 ///
 /// The run reaches the state `JobRun$Timeout` documents — "terminated and enters `TIMEOUT`
 /// status" — and the message names the ceiling that stopped it rather than the job's own
@@ -283,6 +349,37 @@ pub fn job_run_script_ceiling_reached() -> String {
         "The job script was stopped after {} seconds, the longest this emulator runs a job \
          script for.",
         JOB_SCRIPT_RUN_CEILING.as_secs()
+    )
+}
+
+/// `JobRun$ErrorMessage` of a run whose script's thread had still not answered when the call
+/// that performs it gave up waiting ([`JOB_SCRIPT_HOST_WAIT`]).
+///
+/// Nothing of the script was stopped and no execution answered, so the run reports the state
+/// a run that ended on a SERVICE error reports ([`JOB_RUN_STATE_ERROR`]) and says that this
+/// emulator has no outcome for it — rather than claiming the script was terminated for taking
+/// too long, which is an outcome no execution produced.
+#[must_use]
+pub fn job_run_script_unanswered() -> String {
+    format!(
+        "The job script's execution did not answer within {} seconds, so this emulator has no \
+         outcome to report for the job run.",
+        JOB_SCRIPT_HOST_WAIT.as_secs()
+    )
+}
+
+/// `JobRun$ErrorMessage` of a run the engine stopped because it had taken the host time one
+/// run of a job script may take ([`JOB_SCRIPT_HOST_CEILING`]).
+///
+/// The script was stopped by this emulator rather than by anything of the run's own, so the
+/// message says so and the run ends in the state a service error puts it in: the script's own
+/// span had not run out, and what it would have come to is not known.
+#[must_use]
+pub fn job_run_script_host_ceiling_reached() -> String {
+    format!(
+        "The job script was stopped after taking {} seconds of this emulator's own time, so \
+         this emulator has no outcome to report for the job run.",
+        JOB_SCRIPT_HOST_CEILING.as_secs()
     )
 }
 
@@ -415,7 +512,10 @@ impl JobScriptPlan {
 /// answer ceilings every run here is given.
 ///
 /// The clamp is what keeps a stored `Timeout` — up to the seven days `Job$Timeout` admits —
-/// from setting the lifetime of a thread of this process.
+/// from setting the span one run of a script is given. The span is the RUN's own time, read
+/// against the clock [`run_script`] hands the engine, so no stored value sets the lifetime of
+/// a thread of this process either: how long THIS host is held is the backstop's
+/// ([`JOB_SCRIPT_HOST_WAIT`]).
 #[must_use]
 pub fn job_script_budget(timeout_minutes: i32) -> python::Budget {
     python::Budget {
@@ -448,10 +548,10 @@ fn configured_timeout(timeout_minutes: i32) -> Duration {
 /// NOTHING IS SPAWNED: each script is compiled and executed inside this process by the
 /// embedded interpreter, contained and bounded as the module docs set out. What ONE call
 /// costs is bounded twice over — at most [`MAX_JOB_SCRIPT_RUNS_PER_CALL`] scripts, and a
-/// further one started only while a whole [`JOB_SCRIPT_RUN_CEILING`] still fits inside
+/// further one started only while the call has not already spent
 /// [`JOB_SCRIPT_CALL_CEILING`] — so a slow or looping script cannot hold the request that
 /// called this open beyond that span and what the last execution it began is waited for
-/// ([`job_script_execution_wait`]), and the runs it did not reach stay owed rather than being
+/// ([`JOB_SCRIPT_HOST_WAIT`]), and the runs it did not reach stay owed rather than being
 /// reported as anything.
 ///
 /// A run that FAILED and still has retry budget owes the service a further attempt
@@ -472,7 +572,7 @@ pub async fn perform_owed_job_runs<Eng: ::std::marker::Send + ::std::marker::Syn
     let mut performed = 0usize;
     for job_name in job_names.iter().take(MAX_JOBS_PER_SCRIPT_CALL) {
         while performed < MAX_JOB_SCRIPT_RUNS_PER_CALL
-            && began.elapsed().saturating_add(JOB_SCRIPT_RUN_CEILING) <= JOB_SCRIPT_CALL_CEILING
+            && began.elapsed() < JOB_SCRIPT_CALL_CEILING
         {
             // What the next owed execution is, resolved under the guard; the guard is
             // released before anything is run.
@@ -557,9 +657,9 @@ pub async fn perform_owed_job_runs<Eng: ::std::marker::Send + ::std::marker::Syn
 /// stopped it at.
 ///
 /// `left_of_the_call` is what the CALL still has of [`JOB_SCRIPT_CALL_CEILING`], which caps
-/// the wait for a permit: the script's own ceiling plus that wait cannot then take the call
-/// past its own span, so the longest a request is held is that span plus what the execution
-/// it began is waited for ([`job_script_execution_wait`]).
+/// the wait for a permit: waiting for an interpreter cannot then take the call past its own
+/// span, so the longest a request is held is that span plus what the execution it began is
+/// waited for ([`JOB_SCRIPT_HOST_WAIT`]).
 async fn perform_job_script<Eng: ::std::marker::Send + ::std::marker::Sync + 'static>(
     engine: &Eng,
     ctx: &smithy_server_runtime::OperationContext<'_>,
@@ -659,14 +759,12 @@ async fn perform_job_script<Eng: ::std::marker::Send + ::std::marker::Sync + 'st
     };
 
     // How many scripts run at once is bounded, and the wait for a permit is bounded twice:
-    // by its own span and by what the CALL has left once the script's own ceiling is
-    // allowed for — so a request is never held past [`JOB_SCRIPT_CALL_CEILING`] waiting for
-    // an interpreter. A run that waited the whole wait has not been performed.
+    // by its own span and by what the CALL has left — so a request is never held past
+    // [`JOB_SCRIPT_CALL_CEILING`] waiting for an interpreter. A run that waited the whole
+    // wait has not been performed.
     // The permit is OWNED and travels with the script's own thread, so it is given back when
     // that thread ends rather than when this caller stops waiting for it.
-    let permit_wait = JOB_SCRIPT_PERMIT_WAIT.min(
-        left_of_the_call.saturating_sub(JOB_SCRIPT_RUN_CEILING),
-    );
+    let permit_wait = JOB_SCRIPT_PERMIT_WAIT.min(left_of_the_call);
     let permit = match ::tokio::time::timeout(
         permit_wait,
         ::std::sync::Arc::clone(&JOB_SCRIPT_RUN_PERMITS).acquire_owned(),
@@ -771,9 +869,15 @@ async fn read_script(
 /// Run `source` as the job's script, on a thread of its own, and answer what it came to.
 ///
 /// The interpreter is synchronous and CPU-bound, so it runs on a thread with a stack of its
-/// own rather than on the async runtime, and the caller's wait for it is bounded by
-/// [`job_script_execution_wait`] — the engine's whole span for this budget, the grace
-/// included.
+/// own rather than on the async runtime, and the caller's wait for it is the host backstop
+/// ([`JOB_SCRIPT_HOST_WAIT`]).
+///
+/// The span the engine bounds the run itself by is read against a clock the RUN drives
+/// ([`JOB_SCRIPT_CLOCK_TICK`]) rather than against this host's: what the run comes to rest in
+/// is then decided by what the script did — the events it delivered and the waits it asked
+/// for — and not by how fast this host happened to be running it. That same clock states what
+/// the run may take of THIS host ([`JOB_SCRIPT_HOST_CEILING`]), which is the bound the engine
+/// stops it on.
 ///
 /// `permit` is this run's share of [`MAX_CONCURRENT_JOB_SCRIPT_RUNS`] and is MOVED into that
 /// thread, so it is given back when the thread ends — a run the caller has given up waiting
@@ -819,20 +923,29 @@ async fn run_script(
         .spawn(move || {
             // Held for as long as the script runs, whoever is still waiting for it.
             let _permit = permit;
-            let finished = python::run(&python::Run {
-                modules: &modules,
-                handler: &handler,
-                // A Glue job script reads its parameters off its command line, so the run
-                // is given no environment of its own.
-                environment: &::std::collections::BTreeMap::new(),
-                event: Some(&event),
-                request_id: &run_id,
-                invoked_function_arn: "",
-                client_context: None,
-                tenant_id: None,
-                budget,
-                aws: access.as_ref(),
-            });
+            let finished = python::run_against(
+                &python::Run {
+                    modules: &modules,
+                    handler: &handler,
+                    // A Glue job script reads its parameters off its command line, so the run
+                    // is given no environment of its own.
+                    environment: &::std::collections::BTreeMap::new(),
+                    event: Some(&event),
+                    request_id: &run_id,
+                    invoked_function_arn: "",
+                    client_context: None,
+                    tenant_id: None,
+                    budget,
+                    aws: access.as_ref(),
+                },
+                // The clock the run's own span is read against: one the RUN drives, a tick
+                // per traced event it delivers and the waits it asks for, so the state the
+                // run comes to rest in is what the script came to rather than what this
+                // host's load made of it — stating what the run may take of THIS host
+                // besides, which is the bound the engine stops it on whatever its own clock
+                // reads.
+                &python::Clock::driven(JOB_SCRIPT_CLOCK_TICK).within(JOB_SCRIPT_HOST_CEILING),
+            );
             let _ = sender.send(finished);
         });
     if let Err(error) = spawned {
@@ -840,15 +953,16 @@ async fn run_script(
             "the thread the job script runs on could not be started: {error}"
         ));
     }
-    let wait = job_script_execution_wait(plan.timeout_minutes);
-    match ::tokio::time::timeout(wait, receiver).await {
+    match ::tokio::time::timeout(JOB_SCRIPT_HOST_WAIT, receiver).await {
         Ok(Ok(finished)) => read_outcome(&finished.completion),
         Ok(Err(_)) => JobRunOutcome::EndedInError(
             "the thread the job script ran on ended without reporting".to_string(),
         ),
-        // The script is still going a grace period past the whole span the engine may take:
-        // it is given up on, and what the run reports is the wall clock it ran past.
-        Err(_elapsed) => timed_out(),
+        // The thread has still not answered a grace period past the host time one run may
+        // take — which the engine has by then stopped the run on — so it is given up on and
+        // the run reports that this emulator has no outcome for it. Nothing of the script's
+        // own span ran out, so it is not reported as terminated for taking too long.
+        Err(_elapsed) => JobRunOutcome::EndedInError(job_run_script_unanswered()),
     }
 }
 
@@ -875,6 +989,13 @@ fn read_outcome(completion: &python::Completion) -> JobRunOutcome {
         python::Completion::Stopped(python::Stop::Response) => JobRunOutcome::Failed(
             job_run_script_bound_reached("the size of the value a job script may answer with"),
         ),
+        // Not a bound of the script's own run: the host time one run may take
+        // ([`JOB_SCRIPT_HOST_CEILING`]) is this emulator giving up on the execution, so the
+        // run ends in the state a SERVICE error puts it in rather than in one that says the
+        // script was terminated or failed.
+        python::Completion::Stopped(python::Stop::HostCeiling) => {
+            JobRunOutcome::EndedInError(job_run_script_host_ceiling_reached())
+        }
         python::Completion::Internal(detail) => JobRunOutcome::EndedInError(detail.clone()),
     }
 }
@@ -889,8 +1010,13 @@ fn script_failure(error_type: &str, error_message: &str) -> String {
     format!("{error_type}: {error_message}")
 }
 
-/// What a run whose script ran past its wall clock reports: the modelled `TIMEOUT` state,
-/// carrying the ceiling that stopped it ([`job_run_script_ceiling_reached`]).
+/// What a run whose script ran past the span its own run may last reports: the modelled
+/// `TIMEOUT` state, carrying the ceiling that stopped it
+/// ([`job_run_script_ceiling_reached`]).
+///
+/// The span is the RUN's own ([`JOB_SCRIPT_RUN_CEILING`]), so this is reported for a script
+/// that really ran past it — one that WAITED past it — and not for one this host was slow to
+/// get through.
 fn timed_out() -> JobRunOutcome {
     JobRunOutcome::TimedOut(job_run_script_ceiling_reached())
 }
@@ -979,3 +1105,117 @@ def getResolvedOptions(args, options):
         resolved[name] = named[name]
     return resolved
 "#;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// What the run REPORTS for each thing the engine can answer with: the script's own
+    /// outcome for everything the script itself did, and the state a SERVICE error puts a run
+    /// in for the bound that is this emulator giving up on the host time one run may take —
+    /// which is never reported as a run terminated for taking too long.
+    ///
+    /// One row per completion the engine has, so a bound added to the engine has to be
+    /// answered here too.
+    #[test]
+    fn a_host_give_up_is_not_reported_as_a_run_terminated_for_taking_too_long() {
+        // (case, what the engine answered, the state the run comes to rest in, its reason)
+        let cases: Vec<(&str, python::Completion, &str, Option<String>)> = vec![
+            (
+                "a script that ran to its end",
+                python::Completion::Returned("null".to_string()),
+                JOB_RUN_STATE_SUCCEEDED,
+                None,
+            ),
+            (
+                "a script that raised",
+                python::Completion::Raised {
+                    error_type: "ValueError".to_string(),
+                    error_message: "the input partition is malformed".to_string(),
+                    stack_trace: Vec::new(),
+                },
+                JOB_RUN_STATE_FAILED,
+                Some("ValueError: the input partition is malformed".to_string()),
+            ),
+            (
+                "a script that ran past the span its own run may last",
+                python::Completion::Stopped(python::Stop::Deadline),
+                JOB_RUN_STATE_TIMEOUT,
+                Some(job_run_script_ceiling_reached()),
+            ),
+            (
+                "a script that spent its step budget",
+                python::Completion::Stopped(python::Stop::Steps),
+                JOB_RUN_STATE_FAILED,
+                Some(job_run_script_bound_reached(
+                    "the step budget this emulator gives a job script",
+                )),
+            ),
+            (
+                "a script that spent its memory ceiling",
+                python::Completion::Stopped(python::Stop::Memory),
+                JOB_RUN_STATE_FAILED,
+                Some(job_run_script_bound_reached(
+                    "the memory ceiling this emulator gives a job script",
+                )),
+            ),
+            (
+                "a script that answered with more than one may",
+                python::Completion::Stopped(python::Stop::Response),
+                JOB_RUN_STATE_FAILED,
+                Some(job_run_script_bound_reached(
+                    "the size of the value a job script may answer with",
+                )),
+            ),
+            (
+                "a run this emulator gave up on at the host time one run may take",
+                python::Completion::Stopped(python::Stop::HostCeiling),
+                JOB_RUN_STATE_ERROR,
+                Some(job_run_script_host_ceiling_reached()),
+            ),
+            (
+                "an interpreter that could not be driven at all",
+                python::Completion::Internal("the interpreter could not be built".to_string()),
+                JOB_RUN_STATE_ERROR,
+                Some("the interpreter could not be built".to_string()),
+            ),
+        ];
+        for (case, completion, state, reason) in cases {
+            let outcome = read_outcome(&completion);
+            assert_eq!(
+                outcome.job_run_state(),
+                state,
+                "case {case:?}: expected the run to come to rest in {state}, got {outcome:?}"
+            );
+            assert_eq!(
+                outcome.error_message(),
+                reason,
+                "case {case:?}: expected the reason {reason:?}, got {outcome:?}"
+            );
+        }
+    }
+
+    /// And the run of a thread the call gave up waiting for reports the same service error
+    /// rather than a terminated script: nothing of the script's own span ran out, so its
+    /// reason says this emulator has no outcome for the run.
+    #[test]
+    fn a_thread_that_never_answered_is_reported_as_a_run_with_no_outcome() {
+        let reason = job_run_script_unanswered();
+        let outcome = JobRunOutcome::EndedInError(reason.clone());
+        assert_eq!(
+            outcome.job_run_state(),
+            JOB_RUN_STATE_ERROR,
+            "a run nothing answered for ends in {JOB_RUN_STATE_ERROR}, got {outcome:?}"
+        );
+        assert_eq!(
+            outcome.error_message(),
+            Some(reason),
+            "the run carries the reason this emulator has no outcome for it, got {outcome:?}"
+        );
+        assert_ne!(
+            outcome.job_run_state(),
+            JOB_RUN_STATE_TIMEOUT,
+            "a thread the call gave up on is not a script terminated for taking too long"
+        );
+    }
+}

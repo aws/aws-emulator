@@ -39,6 +39,13 @@ pub enum Stop {
     Memory,
     /// The handler's response is larger than one may be.
     Response,
+    /// The run took more of THIS HOST's own time than a run bounded against its clock may
+    /// ([`super::run_clock::Clock::within`]).
+    ///
+    /// Not the run's own deadline: it is what bounds the host a run whose own time this
+    /// host's clock does not move runs on, so a run stopped here is one this emulator gave up
+    /// on rather than one whose own span ran out.
+    HostCeiling,
 }
 
 impl Stop {
@@ -50,6 +57,7 @@ impl Stop {
             Self::Steps => "the invocation ran past its step budget",
             Self::Memory => "the invocation ran past its memory ceiling",
             Self::Response => "the response is larger than the invocation may return",
+            Self::HostCeiling => "the invocation took more host time than one run may take",
         }
     }
 }

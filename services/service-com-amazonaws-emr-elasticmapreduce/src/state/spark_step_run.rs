@@ -467,6 +467,9 @@ fn read_outcome(completion: &python::Completion) -> StepOutcome {
                 python::Stop::Response => {
                     "the size of the value an application may answer with"
                 }
+                python::Stop::HostCeiling => {
+                    "the host time this emulator gives one run of an application"
+                }
             }),
         ),
         // The interpreter itself could not be built or driven: that is not the

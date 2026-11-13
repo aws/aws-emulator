@@ -245,6 +245,8 @@ mod job_run_retries;
 mod job_run_state_change_events;
 #[path = "all/job_runs.rs"]
 mod job_runs;
+#[path = "all/job_script_bounds.rs"]
+mod job_script_bounds;
 #[path = "all/job_script_execution.rs"]
 mod job_script_execution;
 #[path = "all/job_script_execution_wait.rs"]
