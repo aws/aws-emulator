@@ -27,6 +27,8 @@ mod delete_profile_object_type;
 mod domain_profile_lifecycle;
 #[path = "all/merge_profiles.rs"]
 mod merge_profiles;
+#[path = "all/modelled_refusal_envelope.rs"]
+mod modelled_refusal_envelope;
 #[path = "all/profile_collection_messages.rs"]
 mod profile_collection_messages;
 #[path = "all/profile_keys.rs"]
@@ -39,6 +41,8 @@ mod profile_object_type_identity;
 mod profile_object_types;
 #[path = "all/profile_objects.rs"]
 mod profile_objects;
+#[path = "all/profile_string_alternatives.rs"]
+mod profile_string_alternatives;
 #[path = "all/recommender_schemas.rs"]
 mod recommender_schemas;
 #[path = "all/state_roundtrip.rs"]

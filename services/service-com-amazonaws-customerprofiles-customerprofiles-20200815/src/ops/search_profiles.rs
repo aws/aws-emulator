@@ -173,27 +173,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let _ = ctx;
         let state = crate::state::service_state(&*self.engine).ok_or_else(unavailable)?;
 
-        // One search is "a minimum of 1 key-value(s) pair and up to 5": the required
-        // `KeyName`/`Values` pair, then each `AdditionalSearchKeys` entry. The model
-        // bounds the number of keys but not the length of a key's value list, so the
-        // total is capped here and an oversized search is refused BEFORE any lookup
-        // runs — the message names the member and the limit.
+        // A search takes ONE value per key name: `Values` carries no modelled maximum, and
+        // the service refuses a key handed any other number of values before it looks
+        // anything up, naming the key and the number the request carried for it. The rule
+        // holds for the required `KeyName`/`Values` pair and for every
+        // `AdditionalSearchKeys` entry alike, so both are checked over one list.
         let additional = input.additional_search_keys.unwrap_or_default();
-        let total_values = input.values.len()
-            + additional
-                .iter()
-                .map(|key| key.values.len())
-                .sum::<usize>();
-        if total_values > crate::state::MAX_SEARCH_VALUES {
-            return Err(SearchProfilesErrorModeled::BadRequestException(BadRequestException {
-                message: Some(format!(
-                    "A search may carry at most {} values across Values and \
-                     AdditionalSearchKeys; this request carried {total_values}",
-                    crate::state::MAX_SEARCH_VALUES
-                )),
-            })
-            .into());
-        }
         let search_keys: Vec<(String, Vec<String>)> =
             ::std::iter::once((input.key_name, input.values))
                 .chain(
@@ -202,6 +187,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                         .map(|additional| (additional.key_name, additional.values)),
                 )
                 .collect();
+        if let Some((key_name, values)) = search_keys
+            .iter()
+            .find(|(_, values)| values.len() != VALUES_PER_SEARCH_KEY)
+        {
+            return Err(SearchProfilesErrorModeled::BadRequestException(BadRequestException {
+                message: Some(format!(
+                    "Expected {VALUES_PER_SEARCH_KEY} values for key name {key_name} but got {}",
+                    values.len()
+                )),
+            })
+            .into());
+        }
 
         // Everything that needs the store happens inside this block, so the shared
         // state lock is released before the response is built: the only work done
@@ -209,6 +206,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // profiles.
         let (page, next_token) = {
             let store = state.lock();
+            // A `NextToken` names a position inside itself, so a read that honoured any
+            // value of the right shape would resume at a position it never offered. This
+            // one resumes only at a position it ISSUED: the token carries an authenticator
+            // over its cursor under this store's own secret, and a value that secret did
+            // not mint is refused before the domain is even resolved.
+            let resume = match input.next_token.as_deref() {
+                Some(token) => Some(
+                    crate::state::page_cursor(store.page_tokens, token)
+                        .ok_or_else(invalid_page)?,
+                ),
+                None => None,
+            };
             let domain = store.domains.get(&input.domain_name).ok_or_else(|| {
                 SearchProfilesError::from(SearchProfilesErrorModeled::ResourceNotFoundException(
                     ResourceNotFoundException {
@@ -239,9 +248,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // ids walk through the cursor; a profile a page skipped costs nothing.
             let (ids, next_token) = crate::state::paginate(
                 matched.into_iter().map(|profile_id| (profile_id.clone(), profile_id)),
-                input.next_token.as_deref(),
+                resume.as_deref(),
                 input.max_results,
             );
+            // The cursor the page stopped at travels back as a token this store can
+            // recognise when it is handed the next call.
+            let next_token =
+                next_token.map(|cursor| crate::state::page_token(store.page_tokens, &cursor));
             let page: Vec<(Profile, Vec<(String, String)>)> = ids
                 .iter()
                 .filter_map(|profile_id| {
@@ -272,6 +285,28 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 /// The `LogicalOperator` that keeps only profiles every search key matches.
 const LOGICAL_OPERATOR_AND: &str = "AND";
 
+/// How many values one search key name takes.
+///
+/// `SearchProfilesRequest$Values` is a `requestValueList` with no modelled maximum
+/// (`smithy_query(query="operation", operation="SearchProfiles")`), so the one-value-per-key
+/// rule is the service's own and is enforced here, ahead of any lookup.
+const VALUES_PER_SEARCH_KEY: usize = 1;
+
+/// The request named a page this search cannot resume: a `NextToken` it did not issue.
+///
+/// One sentence for the whole pagination argument — the token and the page size together —
+/// because that is how the service words it; the page size's own modelled bounds are
+/// refused ahead of any handler, so what reaches this is the token.
+fn invalid_page() -> SearchProfilesError {
+    SearchProfilesErrorModeled::BadRequestException(BadRequestException {
+        message: Some(format!(
+            "{} failed due to the nextToken or the maxResults is invalid",
+            <SearchProfiles<()> as smithy_server_runtime::Operation>::NAME
+        )),
+    })
+    .into()
+}
+
 /// The store is unreachable — a server fault, not a bad request.
 fn unavailable() -> SearchProfilesError {
     SearchProfilesErrorModeled::InternalServerException(crate::state::store_unavailable()).into()
@@ -284,8 +319,8 @@ fn unavailable() -> SearchProfilesError {
 /// (`own_keys`, from `Domain::profile_index_keys`): the standard keys its own attributes
 /// populate, plus every key value `AddProfileKey` associated with it. The keys that found
 /// it are therefore the requested pairs that appear in that set. Computed once per profile
-/// ON THE PAGE, and the page is bounded by `MaxResults` while the requested values are
-/// bounded by [`crate::state::MAX_SEARCH_VALUES`].
+/// ON THE PAGE, and the page is bounded by `MaxResults` while the requested pairs are
+/// bounded by the model's own `AdditionalSearchKeys` maximum and [`VALUES_PER_SEARCH_KEY`].
 fn found_by_items(
     search_keys: &[(String, Vec<String>)],
     own_keys: &[(String, String)],

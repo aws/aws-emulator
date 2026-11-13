@@ -210,6 +210,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         }
 
         let profile_id = crate::state::new_profile_id();
+        // The string ALTERNATIVE of a member stated in its enumerated form carries the same
+        // value: a profile holds one party type and one gender, whichever member the write
+        // stated it in (`crate::state::string_alternative`). Resolved before the record is
+        // built, because the enumerated member moves into it.
+        let party_type_string =
+            crate::state::string_alternative(&input.party_type, input.party_type_string);
+        let gender_string = crate::state::string_alternative(&input.gender, input.gender_string);
         let profile = Profile {
             profile_id: Some(profile_id.clone()),
             account_number: input.account_number,
@@ -236,8 +243,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // `FoundByItems` reports which search keys matched one search, so it
             // belongs to a `SearchProfiles` response, not to the stored profile.
             found_by_items: None,
-            party_type_string: input.party_type_string,
-            gender_string: input.gender_string,
+            party_type_string,
+            gender_string,
             profile_type: input.profile_type,
             engagement_preferences: input.engagement_preferences,
         };

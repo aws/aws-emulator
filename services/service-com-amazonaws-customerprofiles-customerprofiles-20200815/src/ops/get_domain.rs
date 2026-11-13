@@ -203,7 +203,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             data_store: domain.data_store_response(now),
             created_at: crate::state::to_date_time(domain.created_at),
             last_updated_at: crate::state::to_date_time(domain.last_updated_at),
-            tags: domain.tags.clone(),
+            tags: domain.reported_tags(),
         })
     }
 }

@@ -226,6 +226,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         apply(&mut profile.email_address, input.email_address);
         apply(&mut profile.personal_email_address, input.personal_email_address);
         apply(&mut profile.business_email_address, input.business_email_address);
+        // Each of the two renderings of one value is its own updatable member here: an
+        // update names the members it changes, so a request that states the enumerated form
+        // alone leaves the string alternative exactly as it was stored. (A CREATE has no
+        // stored value to keep, so it states both — `crate::state::string_alternative`.)
         apply(&mut profile.party_type_string, input.party_type_string);
         apply(&mut profile.gender_string, input.gender_string);
         apply(&mut profile.profile_type, input.profile_type);

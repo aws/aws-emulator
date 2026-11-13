@@ -220,6 +220,13 @@ pub struct ComAmazonawsCustomerprofilesCustomerprofiles20200815State {
     /// Every domain this emulator holds, keyed by `DomainName` — the name is the
     /// domain's identity (`@httpLabel` on every domain-scoped operation).
     pub domains: BTreeMap<String, Domain>,
+    /// The secret this store's continuation tokens are authenticated under, so a
+    /// `NextToken` a caller BUILT is told from one a read ISSUED ([`page_cursor`]).
+    ///
+    /// Drawn from the system's randomness when the store is created and never reported:
+    /// `PageTokenKey`'s own `Debug` renders nothing of it, so this state's `Debug` carries
+    /// no key material either.
+    pub page_tokens: ::service_common::page_tokens::PageTokenKey,
 }
 
 /// One span of asynchronous work the clock owes a resource: when the call that started
@@ -711,6 +718,17 @@ impl Domain {
     /// `Matching` as the wire reports it.
     pub fn matching_response(&self) -> Option<MatchingResponse> {
         self.matching.clone()
+    }
+
+    /// `Tags` as a domain projection reports it: the tag map this domain carries, PRESENT
+    /// and empty for a domain that carries none.
+    ///
+    /// Unlike the domain's other optional members — `DefaultEncryptionKey`,
+    /// `DeadLetterQueueUrl`, `Matching`, `RuleBasedMatching`, each absent from the response
+    /// when it was never set — the tag map is always reported, so a caller that indexes
+    /// `Tags` can tell "this domain carries no tags" from "tags were not reported".
+    pub fn reported_tags(&self) -> Option<HashMap<String, String>> {
+        Some(self.tags.clone().unwrap_or_default())
     }
 
     /// `RuleBasedMatching` as the wire reports it: the stored configuration with
@@ -1664,6 +1682,10 @@ pub fn ingest_profile_object(
 /// item whose cursor is not before it, so an item deleted between two pages is skipped
 /// rather than shifting the window. The returned token is the cursor of the first item
 /// that did not fit, and is `None` when the page is the last one.
+///
+/// The CURSOR is what this takes and hands back, never the `NextToken` a caller sees: a
+/// read whose tokens are authenticated ([`page_token`], [`page_cursor`]) resolves the one
+/// into the other around this call.
 pub fn paginate<T>(
     items: impl IntoIterator<Item = (String, T)>,
     next_token: Option<&str>,
@@ -1683,6 +1705,47 @@ pub fn paginate<T>(
         page.push(item);
     }
     (page, token)
+}
+
+/// The `NextToken` a read hands back for `cursor`, authenticated under this store's own
+/// secret: the authenticator over the cursor and the cursor itself
+/// (`service_common::page_tokens`), rendered as the hexadecimal text an opaque token
+/// travels as.
+///
+/// A continuation token is opaque, not confidential — the cursor inside it is a position
+/// this service already reported — so nothing here hides it. What a caller cannot do is
+/// produce the authenticator for a position of its own, which is what makes [`page_cursor`]
+/// able to refuse a token this store never issued.
+///
+/// THE READS THAT TAKE IT: `SearchProfiles`, whose recorded refusal of a token it did not
+/// issue is what this stands up. This service's other paginated reads still hand back their
+/// bare cursor and are to be migrated onto this pair as each one's own refusal is recorded.
+pub fn page_token(key: ::service_common::page_tokens::PageTokenKey, cursor: &str) -> String {
+    ::hex::encode(key.mint(cursor))
+}
+
+/// The cursor `token` names, or `None` for any value this store did not issue: text that is
+/// not the hexadecimal rendering [`page_token`] writes, and one whose authenticator does not
+/// match the cursor it travels with.
+pub fn page_cursor(
+    key: ::service_common::page_tokens::PageTokenKey,
+    token: &str,
+) -> Option<String> {
+    key.cursor_of(&::hex::decode(token).ok()?)
+}
+
+/// The value a profile's STRING alternative carries, for a write that states the member in
+/// its enumerated form, its string form, or neither.
+///
+/// `Profile$PartyTypeString` is documented as "An alternative to PartyType which accepts
+/// any string as input", and `GenderString` is the same alternative to `Gender`
+/// (`smithy_query(query="doc", shape="Profile", member="PartyTypeString")`): the two members
+/// are two renderings of ONE value a profile carries, not two values. So a write that states
+/// the enumerated member states that same value as the string form — the enum's own member
+/// IS a string the wider member admits — and a read reports both; a write that states the
+/// string form keeps exactly what it sent, since nothing narrows the wider member.
+pub fn string_alternative(stated: &Option<String>, alternative: Option<String>) -> Option<String> {
+    alternative.or_else(|| stated.clone())
 }
 
 /// How far through a span that started at `started_at` and falls due at `due_at` the

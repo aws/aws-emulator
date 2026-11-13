@@ -59,6 +59,19 @@ impl Emulator {
         path: &str,
         body: Option<Value>,
     ) -> (u16, Value) {
+        let (status, _, value) = self.send_parts(method, path, body).await;
+        (status, value)
+    }
+
+    /// As [`Self::send`], and with the `x-amzn-errortype` header the response carried —
+    /// the header a restJson1 client resolves an error SHAPE from, so a suite that asserts
+    /// WHICH shape a refusal names reads it here rather than from the body alone.
+    pub(crate) async fn send_parts(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<Value>,
+    ) -> (u16, String, Value) {
         let payload = match &body {
             Some(value) => bytes::Bytes::from(serde_json::to_vec(value).expect("serialize body")),
             None => bytes::Bytes::new(),
@@ -72,13 +85,19 @@ impl Emulator {
             .expect("build request");
         let response = self.router.dispatch(request).await;
         let status = response.status().as_u16();
+        let error_type = response
+            .headers()
+            .get("x-amzn-errortype")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default()
+            .to_string();
         let body = response.body();
         let value = if body.is_empty() {
             Value::Null
         } else {
             serde_json::from_slice(body).unwrap_or(Value::Null)
         };
-        (status, value)
+        (status, error_type, value)
     }
 
     pub(crate) async fn post(&self, path: &str, body: Value) -> (u16, Value) {
@@ -932,39 +951,40 @@ async fn input_outside_a_modelled_constraint_is_refused_as_bad_request() {
             Some(json!({ "ProfileId": "not-a-uuid" })),
             400,
         ),
-        // `Values` carries no modelled length, so the service caps the total number of
-        // search values a request may carry at MAX_SEARCH_VALUES (100) and refuses past
-        // it. Both the cap and one past it are rows.
+        // `Values` carries no modelled length, and the service takes exactly ONE value per
+        // key name: one value is served and any other number is refused, for the required
+        // pair and for an `AdditionalSearchKeys` entry alike.
         (
-            "search-values-at-the-cap",
+            "search-values-one-per-key",
             "POST",
             "/domains/bounds/profiles/search".to_string(),
             Some(json!({
                 "KeyName": "_email",
-                "Values": (0..100).map(|index| format!("v{index}")).collect::<Vec<String>>(),
+                "Values": ["a@example.com"],
+                "AdditionalSearchKeys": [{ "KeyName": "_phone", "Values": ["15550100"] }],
             })),
             200,
         ),
         (
-            "search-values-above-the-cap",
+            "search-values-two-for-one-key",
             "POST",
             "/domains/bounds/profiles/search".to_string(),
             Some(json!({
                 "KeyName": "_email",
-                "Values": (0..101).map(|index| format!("v{index}")).collect::<Vec<String>>(),
+                "Values": ["a@example.com", "b@example.com"],
             })),
             400,
         ),
         (
-            "search-values-above-the-cap-across-keys",
+            "search-values-two-for-an-additional-key",
             "POST",
             "/domains/bounds/profiles/search".to_string(),
             Some(json!({
                 "KeyName": "_email",
-                "Values": (0..60).map(|index| format!("v{index}")).collect::<Vec<String>>(),
+                "Values": ["a@example.com"],
                 "AdditionalSearchKeys": [{
                     "KeyName": "_phone",
-                    "Values": (0..60).map(|index| format!("p{index}")).collect::<Vec<String>>(),
+                    "Values": ["15550100", "15550101"],
                 }],
             })),
             400,

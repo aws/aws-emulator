@@ -40,8 +40,11 @@
 //! and is reached, not edited, through the one `definition` method below. You
 //! do not write it; editing the entry would let this file drift from the model.
 
+pub mod modelled_refusal;
+pub mod unreadable_values;
+
 use smithy_server_runtime::{
-    http, ErasedOperation, Refusal, Refused, Service,
+    http, ErasedOperation, OperationRoutingTable, Refusal, Refused, Service,
 };
 use std::sync::Arc;
 
@@ -52,6 +55,13 @@ use std::sync::Arc;
 /// router builds one shared engine and hands it to `new`.
 pub struct EmulatedService<Eng: Send + Sync + 'static> {
     entry: crate::ServiceDefinition<Eng>,
+    /// The same modelled operations the generated table holds, each wrapped in
+    /// [`modelled_refusal::ModelledRefusal`] so a request refused before its handler runs
+    /// is answered as this service's own `BadRequestException` rather than in the
+    /// framework's pre-dispatch envelope, which names no `Message`. Keyed by the routing
+    /// key the protocol resolves — the key the generated table uses — and built from the
+    /// SAME shared engine, so a wrapped operation reads and writes the one store.
+    refused_as_modelled: OperationRoutingTable,
 }
 
 impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
@@ -59,8 +69,10 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
     /// generated [`ServiceDefinition`], which constructs each operation from it; the
     /// operation's behaviour lives in that operation's own `impl Operation`.
     pub fn new(engine: Arc<Eng>) -> Self {
+        let refused_as_modelled = modelled_refusal::table(&engine);
         Self {
             entry: crate::ServiceDefinition::new(engine),
+            refused_as_modelled,
         }
     }
 }
@@ -87,24 +99,27 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
         &self,
         req: &aws_smithy_runtime_api::http::Request,
     ) -> Option<&dyn ErasedOperation> {
-        // Return `Some(op)` to serve a request the model's routing key cannot name
-        // correctly; `None` (the default) lets the generated routing table resolve
-        // it. `req` is the whole request, so a decision that depends on the body —
-        // the `Action` form field on a query protocol, say — is reachable here.
-        let _ = req;
-        None
+        // NOT a re-route: the key is the one the generated table's own protocol resolves,
+        // and the operation it names is the one served — wrapped in
+        // `modelled_refusal::ModelledRefusal` so a request refused BEFORE the handler runs
+        // is answered as this service's modelled `BadRequestException`, whose prose member
+        // the model spells `Message`, rather than in the framework's pre-dispatch envelope.
+        // A key the model does not name resolves to `None` here exactly as it does in the
+        // generated table, so the router's routing-error path is unchanged.
+        let key = self.entry.protocol().routing_key(req).ok()?;
+        self.refused_as_modelled.get(key)
     }
 
     fn override_refusal(&self, refusal: &Refusal) -> Option<Refused> {
         // Customer Profiles states an input it will not accept as `BadRequestException`
         // ("The input you provided is invalid.") — the one client-input error every
         // operation in this model declares; the model declares no `ValidationException`
-        // at all. So a request the framework refuses before a handler runs (a required
-        // member absent, a `DomainName` outside `^[a-zA-Z0-9_-]+$` or 1..64, a
-        // `DefaultExpirationDays` outside 1..1098, a `MaxResults` outside 1..100) is
-        // reworded to that code, keeping the framework's description of WHAT was
-        // refused as the message. The status stays with the protocol: restJson1 renders
-        // a refusal as HTTP 400, which is `BadRequestException`'s modelled status.
+        // at all. `modelled_refusal::ModelledRefusal` answers such a refusal itself, as
+        // that modelled SHAPE, so this seam only words whatever refusal the FRAMEWORK
+        // still renders for a request that layer did not reach. Wording it from the same
+        // violations keeps the two from disagreeing on the code; the status stays with the
+        // protocol: restJson1 renders a refusal as HTTP 400, which is
+        // `BadRequestException`'s modelled status.
         match refusal {
             Refusal::Invalid(violations) => Some(Refused {
                 code: "BadRequestException".to_string(),

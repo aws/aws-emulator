@@ -7,6 +7,10 @@ publish = false
 build = "build.rs"
 
 [dependencies]
+# `service/modelled_refusal` and `service/unreadable_values`: the tree's shared statements
+# of a constraint-violation message, of a value a modelled member cannot be read from, and
+# of the collecting walk the violations of one request come out of.
+service-common = { path = "../common" }
 engine = { workspace = true }
 smithy-macros = { workspace = true }
 aws-smithy-schema = { workspace = true }
