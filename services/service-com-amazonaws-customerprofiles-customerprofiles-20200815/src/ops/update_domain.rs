@@ -209,13 +209,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let mut store = state.lock();
         // This operation updates an EXISTING domain — the name cannot be changed after a
         // domain is created, and no name creates one here — so a name the store does not
-        // hold is `ResourceNotFoundException`, worded as every domain-scoped operation
-        // words it, with the name taken from the request.
+        // hold is `ResourceNotFoundException`. This operation's refusal carries NO prose:
+        // the optional `Message` member is left off the body entirely, rather than filled
+        // from the sentence the domain-scoped READS word their own refusal with.
         let domain = store.domains.get_mut(&input.domain_name).ok_or_else(|| {
             UpdateDomainError::from(UpdateDomainErrorModeled::ResourceNotFoundException(
-                ResourceNotFoundException {
-                    message: Some(crate::state::domain_not_found(&input.domain_name)),
-                },
+                crate::state::not_found_without_message(),
             ))
         })?;
 

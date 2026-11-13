@@ -13,7 +13,7 @@
 //! table — built from the Smithy model at compile time. You do not edit the
 //! entry; you edit the behavioral seams below.
 //!
-//! Five opt-in seams are yours to change; every one defaults to the framework's
+//! Six opt-in seams are yours to change; every one defaults to the framework's
 //! own behaviour, so an unedited service still routes and answers correctly:
 //!
 //! - `can_handle` — which requests this service claims. The default matches the
@@ -26,6 +26,9 @@
 //! - `override_refusal` — how this service words a request the framework refused
 //!   before any handler ran. The default returns `None`, keeping the framework's
 //!   wording. See the inline note on that method for how to reword.
+//! - `override_protocol` — the wire protocol the modelled sequence is driven
+//!   through. This service returns its own `restJson1` (`wire`), whose error
+//!   document always reports the error shape's `Message` member.
 //! - `override_routing_error` — how this service words a request that reached it
 //!   but named no modeled operation. The default returns `None`, so the entry
 //!   renders the protocol-correct default (query -> 400 InvalidAction, awsJson ->
@@ -42,6 +45,7 @@
 
 pub mod modelled_refusal;
 pub mod unreadable_values;
+pub mod wire;
 
 use smithy_server_runtime::{
     http, ErasedOperation, OperationRoutingTable, Refusal, Refused, Service,
@@ -62,6 +66,11 @@ pub struct EmulatedService<Eng: Send + Sync + 'static> {
     /// key the protocol resolves — the key the generated table uses — and built from the
     /// SAME shared engine, so a wrapped operation reads and writes the one store.
     refused_as_modelled: OperationRoutingTable,
+    /// The wire protocol the modelled sequence is driven through: `restJson1` as the model
+    /// declares it, with an error document that reports its shape's `Message` member even
+    /// for a refusal that words none ([`wire`]). Built once, here, because
+    /// `override_protocol` hands back a borrow of it.
+    wire_protocol: wire::MessageReportedRestJson,
 }
 
 impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
@@ -73,6 +82,7 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
         Self {
             entry: crate::ServiceDefinition::new(engine),
             refused_as_modelled,
+            wire_protocol: wire::MessageReportedRestJson::new(),
         }
     }
 }
@@ -130,6 +140,14 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
             // is already what a caller needs.
             _ => None,
         }
+    }
+
+    fn override_protocol(&self) -> Option<&dyn smithy_server_runtime::ServerHttpProtocol> {
+        // The model's own `restJson1`, with the one rendering this service owns: an error
+        // document reports its shape's `Message` member — as JSON `null` for a refusal that
+        // words no sentence — so "no message" and "no such member" stay distinguishable on
+        // the wire. Routing, request reading and every success body are the framework's.
+        Some(&self.wire_protocol)
     }
 
     fn override_routing_error(

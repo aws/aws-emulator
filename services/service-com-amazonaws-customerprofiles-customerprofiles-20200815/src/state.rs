@@ -1908,10 +1908,19 @@ pub fn clear_if_empty(value: String) -> Option<String> {
     (!value.is_empty()).then_some(value)
 }
 
+/// The `ResourceNotFoundException` an operation answers with when the service sends that
+/// refusal carrying no prose at all. The model leaves `Message` optional, so the member
+/// is OMITTED from the body rather than filled from one of the sentences below: whether a
+/// refusal carries a sentence is a property of the OPERATION that raises it, and an
+/// operation that sends none must not invent one.
+pub fn not_found_without_message() -> crate::ops::types::ResourceNotFoundException {
+    crate::ops::types::ResourceNotFoundException { message: None }
+}
+
 /// The `ResourceNotFoundException` message for a domain this emulator does not hold, as
 /// the service words that refusal: the resource kind and the name the request carried.
-/// Every domain-scoped operation answers with this, so the same absent name reads the
-/// same whichever of them was called.
+/// The domain-scoped operations whose refusal DOES carry a sentence answer with this, so
+/// the same absent name reads the same whichever of them was called.
 pub fn domain_not_found(domain_name: &str) -> String {
     format!("Domain {domain_name} is not found")
 }

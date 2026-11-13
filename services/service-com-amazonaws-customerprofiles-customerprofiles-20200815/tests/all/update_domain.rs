@@ -7,8 +7,8 @@
 //! members documented to be cleared by an empty string, moves `LastUpdatedAt` to the
 //! instant of the call while `CreatedAt` stays where the create put it, and answers from
 //! that record — so a later `GetDomain` reports the same thing. A name the store does not
-//! hold is `ResourceNotFoundException` (404), worded as every domain-scoped operation
-//! words it, and creates nothing.
+//! hold is `ResourceNotFoundException` (404) whose `Message` member is reported as JSON
+//! `null` — this operation's refusal words no sentence — and creates nothing.
 //!
 //! Every test drives the service through the real HTTP surface — the same
 //! `MultiServiceRouter` the emulator binary mounts — and asserts the rule over a SET of
@@ -405,18 +405,20 @@ async fn updating_an_absent_domain_is_resource_not_found() {
             "ResourceNotFoundException",
             "case {case:?}: expected ResourceNotFoundException, got {body:?}"
         );
-        // Every domain-scoped operation words this refusal the same way, with the name
-        // taken from the request.
+        // This operation's refusal words no sentence: the `Message` member is reported as
+        // JSON null. The envelope is asserted over a table of absent names in
+        // `tests/all/update_domain_not_found_envelope.rs`.
         assert_eq!(
-            body.get("Message").and_then(Value::as_str),
-            Some(format!("Domain {case} is not found").as_str()),
-            "case {case:?}: expected the service's wording for an absent domain, got {body:?}"
+            body.get("Message"),
+            Some(&Value::Null),
+            "case {case:?}: expected the update's refusal to report a null Message, got {body:?}"
         );
         let (status, read) = emulator.send("GET", &format!("/domains/{case}"), None).await;
         assert_eq!(
             (status, read.get("Message").and_then(Value::as_str)),
             (404, Some(format!("Domain {case} is not found").as_str())),
-            "case {case:?}: expected a read of the same absent domain to word it the same, got {status} {read:?}"
+            "case {case:?}: expected a read of the same absent domain to carry the domain \
+             sentence, got {status} {read:?}"
         );
         // The read above is also proof the refused update did not conjure the domain: it
         // still answers 404.
