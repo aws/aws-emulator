@@ -13,9 +13,10 @@ use std::collections::{BTreeMap, HashMap};
 use std::time::{Duration, SystemTime};
 
 use crate::ops::types::{
-    AgentSpace, Asset, AssetFile, AssetFileBody, AssetVersionMetadata, IamAuthConfiguration,
-    IdcAuthConfiguration, IdpAuthConfiguration, Recommendation, RecommendationContent, Recurrence,
-    ReferenceOutput, ScheduleCondition, ScheduleSpec, Task, Trigger, TriggerCondition,
+    AgentSpace, Asset, AssetFile, AssetFileBody, AssetFileSummary, AssetVersionMetadata,
+    IamAuthConfiguration, IdcAuthConfiguration, IdpAuthConfiguration, Recommendation,
+    RecommendationContent, Recurrence, ReferenceOutput, ScheduleCondition, ScheduleSpec, Task,
+    Trigger, TriggerCondition,
 };
 
 /// The most AgentSpaces this emulator stores for the account before
@@ -1029,6 +1030,20 @@ impl AssetFileRecord {
         }
     }
 
+    /// The modelled `AssetFileSummary` for this record: every member of
+    /// [`AssetFileRecord::to_api`] except the content itself, which a listing does
+    /// not carry. Rendered here so a listing and a read of one file cannot
+    /// disagree about the file's path, metadata, revision or timestamps.
+    pub fn to_summary(&self) -> AssetFileSummary {
+        AssetFileSummary {
+            path: self.path.clone(),
+            metadata: self.metadata_to_api(),
+            version: self.version,
+            created_at: to_date_time(self.created_at),
+            updated_at: to_date_time(self.updated_at),
+        }
+    }
+
     /// The metadata document served for this file: the members the caller
     /// described it with, completed with the media type of the content stored for
     /// it ([`metadata_with_maintained`]).
@@ -1496,6 +1511,18 @@ pub fn decode_version_token(token: &str) -> Option<i32> {
     let body = token.strip_prefix(PAGE_TOKEN_PREFIX)?;
     let cursor = String::from_utf8(hex::decode(body).ok()?).ok()?;
     cursor.parse().ok()
+}
+
+/// The file of an asset a pagination token this service issued over one asset's
+/// files resumes after, or `None` when the token is not one it issued.
+///
+/// A cursor in that listing names a file of the asset by its path, so a token that
+/// decodes to anything that cannot name one ([`names_a_file_of_the_asset`]) is a
+/// token this service did not issue rather than a resume point past every file.
+pub fn decode_asset_file_token(token: &str) -> Option<String> {
+    let body = token.strip_prefix(PAGE_TOKEN_PREFIX)?;
+    let cursor = String::from_utf8(hex::decode(body).ok()?).ok()?;
+    names_a_file_of_the_asset(&cursor).then_some(cursor)
 }
 
 /// The cursor a token carries, or `None` when the token is not one this service

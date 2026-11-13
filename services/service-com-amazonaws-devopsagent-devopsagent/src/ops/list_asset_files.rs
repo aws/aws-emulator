@@ -1,15 +1,8 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op ListAssetFiles
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `ListAssetFiles`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
-//!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`ListAssetFiles::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! IMPLEMENTED: reports the files of one asset's content from [`crate::state`], a page
+//! at a time, and writes nothing.
 //!
 //! ## Shape of an operation
 //!
@@ -126,6 +119,13 @@ impl From<ListAssetFilesErrorModeled> for ListAssetFilesError {
 /// [`smithy_server_runtime::Operation`]. Generic over the engine type `Eng`, so this
 /// crate names no concrete engine type: a migrated service that needs state picks a
 /// concrete engine where it mounts the service, not here.
+/// The page size a request that names no `maxResults` is served.
+///
+/// CHOSEN: `maxResults` carries `@range(1..100)` and no `@default`, so the model
+/// states no default; the largest page it admits is what a request that asks for no
+/// bound gets.
+const DEFAULT_MAX_RESULTS: usize = 100;
+
 pub struct ListAssetFiles<Eng> {
     engine: ::std::sync::Arc<Eng>,
 }
@@ -156,18 +156,100 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `ListAssetFiles` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(ListAssetFilesErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
+        let _ = ctx;
+        let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
+            ListAssetFilesErrorModeled::InternalServerException(InternalServerException {
+                message: "the DevOps Agent state store is unavailable".to_string(),
+            })
+        })?;
+
+        // `maxResults` carries `@range(1..100)`, so a value outside the range is
+        // refused before this handler runs; a request that names none is served
+        // `DEFAULT_MAX_RESULTS`.
+        let page_size = input
+            .max_results
+            .map_or(DEFAULT_MAX_RESULTS, |max| max.max(1) as usize);
+
+        // A `nextToken` this service did not issue cannot name a position in the
+        // listing: refuse it with the modelled client error.
+        let resume_after = match input.next_token.as_deref() {
+            None => None,
+            Some(token) => Some(crate::state::decode_asset_file_token(token).ok_or_else(|| {
+                ListAssetFilesErrorModeled::ValidationException(ValidationException {
+                    message: "nextToken is not a pagination token issued by this service"
+                        .to_string(),
+                    field_list: Some(vec![ValidationExceptionField {
+                        path: "nextToken".to_string(),
+                        message: "malformed pagination token".to_string(),
+                    }]),
+                })
+            })?),
+        };
+
+        // `@readonly`: the listing is computed from state and writes nothing.
+        let store = state.lock();
+
+        // The asset plane authorises the caller against the named Agent Space before it
+        // can know whether anything inside it exists, so an `agentSpaceId` that names
+        // no space is an authorization failure; only inside a space the caller reaches
+        // is a missing asset reported as one.
+        let space = store.agent_spaces.get(&input.agent_space_id).ok_or_else(|| {
+            ListAssetFilesErrorModeled::AccessDeniedException(AccessDeniedException {
+                message: crate::state::ACCESS_DENIED_MESSAGE.to_string(),
+            })
+        })?;
+        let asset = space.assets.get(&input.asset_id).ok_or_else(|| {
+            ListAssetFilesErrorModeled::ResourceNotFoundException(ResourceNotFoundException {
+                message: crate::state::asset_not_found_message(&input.asset_id),
+            })
+        })?;
+
+        // `assetVersion` asks for the files as of one specific revision of the asset;
+        // omitted, the revision the asset is at is listed. A version the asset does
+        // not have — one it never reached, or one no longer retained — names no
+        // revision, so it is reported as missing rather than answered with a
+        // different one.
+        let files = match input.asset_version {
+            Some(asset_version) => asset.files_at(asset_version).ok_or_else(|| {
+                ListAssetFilesErrorModeled::ResourceNotFoundException(ResourceNotFoundException {
+                    message: crate::state::asset_version_not_found_message(
+                        &input.asset_id,
+                        asset_version,
+                    ),
+                })
+            })?,
+            None => &asset.files,
+        };
+
+        // A file of an asset is identified by its path, so the listing is ordered by
+        // path: that is a total order over the files of one revision, which is what
+        // lets a cursor name a position in it that stays meaningful while files are
+        // created and deleted around it.
         //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("ListAssetFiles"))
+        // The cursor is exclusive, and the position is found by comparison rather
+        // than by an index baked into the token, so a cursor whose file is gone
+        // resumes at the next path still stored.
+        let mut page = files
+            .range::<str, _>((
+                match resume_after.as_deref() {
+                    None => ::std::ops::Bound::Unbounded,
+                    Some(cursor) => ::std::ops::Bound::Excluded(cursor),
+                },
+                ::std::ops::Bound::Unbounded,
+            ))
+            .map(|(_, file)| file);
+        let items: Vec<AssetFileSummary> = page
+            .by_ref()
+            .take(page_size)
+            .map(crate::state::AssetFileRecord::to_summary)
+            .collect();
+        // A `nextToken` is issued only when a file follows the page just served, so
+        // the last page of a listing carries none.
+        let next_token = items
+            .last()
+            .filter(|_| page.next().is_some())
+            .map(|last| crate::state::encode_next_token(&last.path));
+
+        Ok(ListAssetFilesOutput { items, next_token })
     }
 }
