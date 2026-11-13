@@ -137,6 +137,8 @@ mod dynamodb_table_settings;
 mod ec2_network_identifiers_feed_rds;
 #[path = "all/ec2_network_stack_resources.rs"]
 mod ec2_network_stack_resources;
+#[path = "all/ec2_refused_resource_sdk_diagnostic.rs"]
+mod ec2_refused_resource_sdk_diagnostic;
 #[path = "all/ec2_security_group_stack_resources.rs"]
 mod ec2_security_group_stack_resources;
 #[path = "all/ec2_vpc_gateway_stack_resources.rs"]

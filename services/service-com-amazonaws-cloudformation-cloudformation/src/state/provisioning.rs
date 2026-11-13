@@ -3864,6 +3864,18 @@ const SDK_SERVICE_NAMES: &[(&str, &str, SdkDiagnostic)] = &[
     // ValidationException; Request ID: …)" (RequestToken: …, HandlerErrorCode:
     // InvalidRequest)`).
     ("braket", "Braket", SdkDiagnostic::Operation),
+    // Amazon EC2's SDK names it by that model's own `sdkId` (`EC2`,
+    // `smithy_query(query="service_info")` on that service's model) written as one word with a
+    // capital initial, exactly as Amazon RDS's below is, and words the diagnostic with the
+    // refused call's error CODE and the PROXY it was made through — as the recorded
+    // `ResourceStatusReason` of an `AWS::EC2::LaunchTemplate` whose declared name Amazon EC2
+    // already holds a template under carries it (in the behavioral corpus, check
+    // `cloudformation__ec2.deploy-ec2-launch-template-duplicate-name-rejected`, whose reason
+    // reads `Resource handler returned message: "<the service's sentence> (Service: Ec2;
+    // Status Code: 400; Error Code: InvalidLaunchTemplateName.AlreadyExistsException; Request
+    // ID: …; Proxy: null)" (RequestToken: …, HandlerErrorCode: AlreadyExists)`). Every type
+    // this emulator provisions over this signing name is that service's.
+    ("ec2", "Ec2", SdkDiagnostic::Proxied),
     // Elastic Load Balancing v2's SDK names it `ElasticLoadBalancingV2` — that model's own
     // `awsService.cloudFormationName`, which is also the name its SDK client carries
     // (`smithy_query(query="service_info")`: `sdkId: "Elastic Load Balancing v2"`,
@@ -3925,6 +3937,11 @@ enum SdkDiagnostic {
     /// comma-separated envelope [`SdkDiagnostic::Attempts`] opens with, and NOTHING after it:
     /// the SDK of such a service words no attempt count at all.
     Envelope,
+    /// `(Service: <service>; Status Code: <status>; Error Code: <code>; Request ID: <id>;
+    /// Proxy: null)` — semicolon-separated like [`SdkDiagnostic::Operation`], naming the error
+    /// code the call was refused with but not the call, and closing with the PROXY the SDK made
+    /// the request through: `null` for the direct call this emulator's in-process dispatch is.
+    Proxied,
 }
 
 /// The services whose answers carry an EXTENDED request id beside the request id, which
@@ -4004,8 +4021,18 @@ fn sdk_diagnostic(
             "(Service: {service}, Status Code: {status}, {})",
             sdk_request_ids(signing_name),
         )),
+        SdkDiagnostic::Proxied => Some(format!(
+            "(Service: {service}; Status Code: {status}; Error Code: {code}; {}; \
+             Proxy: {SDK_DIRECT_CALL_PROXY})",
+            sdk_request_ids(signing_name),
+        )),
     }
 }
+
+/// The PROXY an SDK that words one states for a call it made DIRECTLY, with no proxy
+/// configured — which is every call this emulator's in-process dispatch makes
+/// ([`in_process_calls::dispatch`]).
+const SDK_DIRECT_CALL_PROXY: &str = "null";
 
 /// How many attempts an AWS SDK makes at a call whose refusal it classifies as worth
 /// retrying: its default maximum, reached because every attempt was refused the same way.

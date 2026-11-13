@@ -107,12 +107,13 @@ const ABSENT_GROUP_TEMPLATE: &str = r#"{"Resources":{
       "Engine":"mysql","DBInstanceClass":"db.t3.micro",
       "DBSubnetGroupName":"rds-diag-no-such-group"}}}}"#;
 
-/// The control row's template: a subnet in a VPC Amazon EC2 holds nothing for. EC2 refuses
-/// the create, and this emulator has no record of how that service's SDK words a diagnostic,
-/// so the reason carries that service's sentence and nothing more.
-const ABSENT_VPC_TEMPLATE: &str = r#"{"Resources":{
-    "Subnet":{"Type":"AWS::EC2::Subnet","Properties":{
-      "VpcId":"vpc-0123456789abcdef0","CidrBlock":"10.0.1.0/24"}}}}"#;
+/// The control row's template: a repository whose declared name Amazon ECR's own
+/// `RepositoryName` pattern does not admit (that pattern is lower case only). ECR refuses the
+/// create, and this emulator has no record of how that service's SDK words a diagnostic, so
+/// the reason carries that service's sentence and nothing more.
+const REFUSED_REPOSITORY_TEMPLATE: &str = r#"{"Resources":{
+    "Registry":{"Type":"AWS::ECR::Repository","Properties":{
+      "RepositoryName":"RdsDiagRefusedImages"}}}}"#;
 
 /// The class a refusal of the REQUEST falls in, and the class of one about a resource that is
 /// not there — both values of the model's `HandlerErrorCode` enum.
@@ -159,13 +160,15 @@ const ROWS: &[Row] = &[
         class: NOT_FOUND,
     },
     Row {
-        case: "a subnet in a VPC the owning service does not hold",
-        stack: "rds-diag-absent-vpc",
-        template: ABSENT_VPC_TEMPLATE,
-        logical_id: "Subnet",
+        case: "a repository whose declared name the owning service will not take",
+        stack: "rds-diag-unrecorded-wording",
+        template: REFUSED_REPOSITORY_TEMPLATE,
+        logical_id: "Registry",
         diagnostic: None,
-        sentence: Some("vpc-0123456789abcdef0"),
-        class: NOT_FOUND,
+        // That service's own sentence names the MEMBER the declaration got wrong, which is
+        // what reaches the reason when no diagnostic is appended to it.
+        sentence: Some("at 'repositoryName' failed to satisfy constraint"),
+        class: INVALID_REQUEST,
     },
 ];
 
