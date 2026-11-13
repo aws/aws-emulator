@@ -6,6 +6,13 @@
 //! fails the whole call, and a problem with ONE secret is an entry in `Errors`
 //! inside a 200.
 //!
+//! Reading one secret's value needs the authority a read of THAT secret needs, so
+//! each selection is judged on its own ([`crate::state::authorization`]) and a
+//! secret the caller may not read is an `AccessDeniedException` entry in `Errors`
+//! rather than a value in the answer. Selecting with filters enumerates the
+//! account's secrets, which needs the authority the listing needs, so a caller
+//! without it is refused the whole call.
+//!
 //! Each value is held under its own secret's KMS key, so answering with it means
 //! decrypting it under that key ([`crate::state::envelope`]): a key KMS will not
 //! decrypt with fails THAT secret alone, as a `DecryptionFailure` entry in
@@ -145,6 +152,36 @@ impl From<BatchGetSecretValueErrorModeled> for BatchGetSecretValueError {
     }
 }
 
+/// The `InvalidParameterException` message for a request that carries NEITHER way of
+/// choosing the secrets to answer for: "You must include Filters or SecretIdList"
+/// (`BatchGetSecretValueRequest$SecretIdList`, this service's Smithy model). Fixed
+/// text, carrying no part of the request.
+const NO_SELECTOR_MESSAGE: &str = "You must specify a list of Secret IDs or a filter value.";
+
+/// The `InvalidParameterException` message for a request that carries BOTH of them —
+/// "but not both" (same member) — naming the two selections the way the service's own
+/// prose does rather than by their member identifiers.
+const BOTH_SELECTORS_MESSAGE: &str =
+    "You can't specify a secret ID list and filters in the same request.";
+
+/// The `InvalidParameterException` message for a `MaxResults` the request has no
+/// selection to page over: "To use this parameter, you must also use the Filters
+/// parameter." (`BatchGetSecretValueRequest$MaxResults`, this service's Smithy model.)
+const MAX_RESULTS_WITHOUT_FILTERS_MESSAGE: &str = "Max results can only be used with filters.";
+
+/// The operation a read of ONE secret's value is
+/// ([`crate::ops::get_secret_value::GetSecretValue`]), whose action this batched read
+/// is judged against for each secret it answers for: "you must have
+/// secretsmanager:GetSecretValue for each secret" (`BatchGetSecretValue`, this
+/// service's Smithy model).
+const GET_SECRET_VALUE_OPERATION: &str = "GetSecretValue";
+
+/// The operation that enumerates the account's secrets
+/// ([`crate::ops::list_secrets::ListSecrets`]), whose action the FILTER form of this
+/// read is judged against in addition to its own: "If you use filters, you must also
+/// have secretsmanager:ListSecrets" (same place).
+const LIST_SECRETS_OPERATION: &str = "ListSecrets";
+
 /// The `BatchGetSecretValue` operation.
 ///
 /// Owns the shared engine (the constructor seam) and implements
@@ -201,17 +238,29 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let ids = input.secret_id_list.as_deref();
         let filters = input.filters.as_deref();
         match (ids, filters) {
-            (None, None) => {
-                return Err(invalid_parameter(
-                    "You must specify a list of Secret IDs or a filter value.",
-                ));
-            }
-            (Some(_), Some(_)) => {
-                return Err(invalid_parameter(
-                    "You can't specify both SecretIdList and Filters in the same request.",
-                ));
-            }
+            (None, None) => return Err(invalid_parameter(NO_SELECTOR_MESSAGE)),
+            (Some(_), Some(_)) => return Err(invalid_parameter(BOTH_SELECTORS_MESSAGE)),
             _ => {}
+        }
+        // "To use this parameter, you must also use the Filters parameter."
+        // (`BatchGetSecretValueRequest$MaxResults`, this service's Smithy model.) A
+        // page size bounds a selection the SERVICE made from the account's secrets;
+        // a caller that spelled the ids out has bounded it already, so the two
+        // members cannot hold together and the whole call is refused.
+        if input.max_results.is_some() && filters.is_none() {
+            return Err(invalid_parameter(MAX_RESULTS_WITHOUT_FILTERS_MESSAGE));
+        }
+        // "If you use filters, you must also have secretsmanager:ListSecrets": the
+        // filter form SELECTS over the account's secrets, which is the enumeration
+        // that action governs, so a caller using it is judged against that action as
+        // well — and one it refuses enumerates nothing.
+        if filters.is_some() {
+            crate::state::authorization::authorize(
+                &*self.engine,
+                ctx,
+                LIST_SECRETS_OPERATION,
+                crate::state::authorization::ANY_RESOURCE,
+            )?;
         }
         if let Some(ids) = ids {
             // The batch is bounded at `SECRETS_PER_BATCH` ids; past that the
@@ -240,10 +289,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         let state = crate::state::service_state(&*self.engine).ok_or_else(state_unavailable)?;
         let region = crate::state::request_region(ctx.parts());
-        // Each selection's answer, decided under the store's guard and carried out
-        // of it: opening a sealed value is a call to KMS, which cannot be made
-        // while the guard is held.
-        let (pending, mut errors, next_token) = {
+        // What this call selects and where the next page resumes, decided under the
+        // store's guard and carried out of it: neither the authorization decision
+        // each selection is taken under nor the KMS call that opens a sealed value
+        // can be made while the guard is held.
+        let (page, next_token) = {
             let mut store = state.lock();
             // The only writes this read performs, both changes the clock has
             // already made due whether or not anybody called: dropping secrets
@@ -314,19 +364,55 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 .unwrap_or(crate::state::SECRETS_PER_BATCH)
                 .clamp(1, crate::state::SECRETS_PER_BATCH);
 
-            let mut pending = Vec::new();
-            let mut errors = Vec::new();
-            for secret_id in selected.iter().skip(start).take(page_size) {
-                match entry_for(&store, &region, secret_id) {
-                    Ok(entry) => pending.push(entry),
-                    Err(error) => errors.push(error),
-                }
-            }
+            let page: Vec<String> = selected
+                .iter()
+                .skip(start)
+                .take(page_size)
+                .cloned()
+                .collect();
             let next_token = selected
-                .get(start + pending.len() + errors.len())
+                .get(start + page.len())
                 .map(|cursor| crate::state::encode_next_token(cursor));
-            (pending, errors, next_token)
+            (page, next_token)
         };
+
+        // Each selection's answer: the version holding its current value, or the
+        // per-entry error that secret alone failed with.
+        //
+        // "you must have secretsmanager:GetSecretValue for each secret", so the read
+        // of one selected secret is judged exactly as the single read judges it —
+        // against that secret, under the identity-based policies in force AND that
+        // secret's own resource-based policy. A secret the caller may not read is one
+        // entry in `Errors` inside the 200, and its value is never opened: "If
+        // Secrets Manager encounters errors such as AccessDeniedException while
+        // attempting to retrieve any of the secrets, you can see the errors in Errors
+        // in the response." The decision reads this service's store itself, so it is
+        // taken with no guard held.
+        let mut pending = Vec::new();
+        let mut errors = Vec::new();
+        for secret_id in &page {
+            if let Err(denied) = crate::state::authorization::authorize_secret(
+                &*self.engine,
+                ctx,
+                GET_SECRET_VALUE_OPERATION,
+                Some(secret_id.as_str()),
+            ) {
+                errors.push(APIErrorType {
+                    secret_id: Some(secret_id.clone()),
+                    error_code: Some(crate::scaffolded::ACCESS_DENIED_CODE.to_string()),
+                    message: Some(denied.message),
+                });
+                continue;
+            }
+            let resolved = {
+                let store = state.lock();
+                entry_for(&store, &region, secret_id)
+            };
+            match resolved {
+                Ok(entry) => pending.push(entry),
+                Err(error) => errors.push(error),
+            }
+        }
 
         // Each selected value is held under its own secret's key, so answering with
         // it means decrypting it under that key. A key KMS will not decrypt with

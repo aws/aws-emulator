@@ -178,7 +178,7 @@ async fn a_batched_read_needs_exactly_one_selector() {
     // The rows run over what the request carries beside the selectors, since the
     // selection is refused before anything else in the request is read.
     const NEITHER: &str = "You must specify a list of Secret IDs or a filter value.";
-    const BOTH: &str = "You can't specify both SecretIdList and Filters in the same request.";
+    const BOTH: &str = "You can't specify a secret ID list and filters in the same request.";
     let name = "batch-selector";
     let rows: [(&str, Value, &str); 5] = [
         ("neither selector", json!({}), NEITHER),
@@ -218,6 +218,62 @@ async fn a_batched_read_needs_exactly_one_selector() {
         assert_eq!(
             message, expected,
             "case {case:?}: expected {expected:?}, got {message:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_page_size_is_refused_without_the_filter_form() {
+    // "To use this parameter, you must also use the Filters parameter."
+    // (`BatchGetSecretValueRequest$MaxResults`, this service's Smithy model.) A
+    // page size bounds a selection the service made, so a caller that spelled the
+    // ids out has nothing for it to bound. The rows run over the page size — each
+    // published bound of `MaxResultsBatchType` (1..20) and a size between them —
+    // and over how many ids the list carries.
+    const MAX_RESULTS_WITH_A_LIST: &str = "Max results can only be used with filters.";
+    let router = emulator();
+    let case = "setup";
+    create(&router, "capped-one", "one", case).await;
+    create(&router, "capped-two", "two", case).await;
+
+    for page_size in [1usize, 7, SECRETS_PER_BATCH] {
+        for ids in [vec!["capped-one"], vec!["capped-one", "capped-two"]] {
+            let case = format!("MaxResults {page_size} beside {} id(s)", ids.len());
+            let (code, message) = err(
+                &router,
+                "BatchGetSecretValue",
+                json!({"SecretIdList": ids, "MaxResults": page_size}),
+                &case,
+            )
+            .await;
+            assert_eq!(
+                code, "InvalidParameterException",
+                "case {case:?}: expected InvalidParameterException, got {code:?} with message \
+                 {message:?}"
+            );
+            assert_eq!(
+                message, MAX_RESULTS_WITH_A_LIST,
+                "case {case:?}: expected {MAX_RESULTS_WITH_A_LIST:?}, got {message:?}"
+            );
+        }
+        // The INVARIANT the refusal must not disturb: the same page size is what the
+        // FILTER form pages its selection by.
+        let case = format!("MaxResults {page_size} beside a filter");
+        let paged = ok(
+            &router,
+            "BatchGetSecretValue",
+            json!({
+                "Filters": [{"Key": "name", "Values": ["capped-"]}],
+                "MaxResults": page_size,
+            }),
+            &case,
+        )
+        .await;
+        let answered = values_of(&paged, &case).len();
+        let expected = page_size.min(2);
+        assert_eq!(
+            answered, expected,
+            "case {case:?}: expected a page of {expected} entries, got {paged}"
         );
     }
 }

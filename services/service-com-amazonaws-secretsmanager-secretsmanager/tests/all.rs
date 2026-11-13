@@ -21,6 +21,8 @@ mod conditioned_authorization;
 mod identity_based_authorization;
 #[path = "all/secret_batch_get.rs"]
 mod secret_batch_get;
+#[path = "all/secret_batch_get_authorization.rs"]
+mod secret_batch_get_authorization;
 #[path = "all/secret_client_request_token.rs"]
 mod secret_client_request_token;
 #[path = "all/secret_conditioned_wildcard_attach.rs"]
