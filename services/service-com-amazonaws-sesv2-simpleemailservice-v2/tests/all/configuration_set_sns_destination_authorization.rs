@@ -16,13 +16,17 @@
 //! back with the topic the definition named.
 //!
 //! The table below spans what the rule generalises over: the effect and the shape of the
-//! statements the topic's policy carries (the action spelled out, spelled with a wildcard
-//! and spelled as every action; the principal named as this service, as another service,
-//! as every principal and as the account root; the resource named as this topic and as
-//! another; a deny beside an allow), the condition keys a statement scopes itself by (the
-//! account the events come from, the configuration set they come from, and another
-//! account), and whether the topic carries a policy of its own at all. The recorded case
-//! is one row of it.
+//! statements the topic's policy carries (the action spelled out, spelled in another letter
+//! case, spelled with a wildcard, listed beside another action, spelled as every action and
+//! spelled as every action but a named one; the principal named as this service, listed
+//! beside another service, named as every principal but a named one, named as another
+//! service, as every principal and as the account root; the resource named as this topic,
+//! listed beside another, matched by a wildcard and named as another; a deny beside an
+//! allow), the condition keys a statement scopes itself by and the operator it compares them
+//! with (the account the events come from, the owner of the resource they come from, the
+//! configuration set they come from — by equality and by ARN pattern — another configuration
+//! set and another account), and whether the topic carries a policy of its own at all. The
+//! recorded case is one row of it.
 //!
 //! The last cases carry the same rule onto the rest of the surface: the refusal is lifted
 //! the moment the policy stops denying the publish, an update that would make an existing
@@ -337,6 +341,146 @@ const POLICY_CASES: &[PolicyCase] = &[
         refused: true,
     },
     PolicyCase {
+        case: "a deny whose action element lists the publish among other actions",
+        set: "action-list-set",
+        topic: "action-list-topic",
+        policy: Some(|target| {
+            policy(json!([{
+                "Effect": "Deny",
+                "Principal": {"Service": SES_SERVICE_PRINCIPAL},
+                "Action": ["sns:Subscribe", "sns:Publish"],
+                "Resource": target.topic_arn,
+            }]))
+        }),
+        refused: true,
+    },
+    PolicyCase {
+        // An action name is compared case-insensitively, so the letter case a policy
+        // spells the publish in decides nothing.
+        case: "a deny spelling the publish in another letter case",
+        set: "action-case-set",
+        topic: "action-case-topic",
+        policy: Some(|target| {
+            policy(json!([{
+                "Effect": "Deny",
+                "Principal": {"Service": SES_SERVICE_PRINCIPAL},
+                "Action": "SNS:PUBLISH",
+                "Resource": target.topic_arn,
+            }]))
+        }),
+        refused: true,
+    },
+    PolicyCase {
+        case: "a deny of every action but another one, which the publish is not",
+        set: "not-action-set",
+        topic: "not-action-topic",
+        policy: Some(|target| {
+            policy(json!([{
+                "Effect": "Deny",
+                "Principal": {"Service": SES_SERVICE_PRINCIPAL},
+                "NotAction": "sns:Subscribe",
+                "Resource": target.topic_arn,
+            }]))
+        }),
+        refused: true,
+    },
+    PolicyCase {
+        case: "a deny whose principal element lists this service among others",
+        set: "principal-list-set",
+        topic: "principal-list-topic",
+        policy: Some(|target| {
+            policy(json!([{
+                "Effect": "Deny",
+                "Principal": {"Service": ["events.amazonaws.com", SES_SERVICE_PRINCIPAL]},
+                "Action": "sns:Publish",
+                "Resource": target.topic_arn,
+            }]))
+        }),
+        refused: true,
+    },
+    PolicyCase {
+        case: "a deny of every principal but another service, which this one is not",
+        set: "not-principal-set",
+        topic: "not-principal-topic",
+        policy: Some(|target| {
+            policy(json!([{
+                "Effect": "Deny",
+                "NotPrincipal": {"Service": "events.amazonaws.com"},
+                "Action": "sns:Publish",
+                "Resource": target.topic_arn,
+            }]))
+        }),
+        refused: true,
+    },
+    PolicyCase {
+        case: "a deny whose resource element lists this topic among others",
+        set: "resource-list-set",
+        topic: "resource-list-topic",
+        policy: Some(|target| {
+            policy(json!([{
+                "Effect": "Deny",
+                "Principal": {"Service": SES_SERVICE_PRINCIPAL},
+                "Action": "sns:Publish",
+                "Resource": [
+                    format!("arn:aws:sns:{REGION}:210987654321:somebody-elses-topic"),
+                    target.topic_arn.clone(),
+                ],
+            }]))
+        }),
+        refused: true,
+    },
+    PolicyCase {
+        case: "a deny naming the account's topics by a wildcard",
+        set: "resource-wildcard-set",
+        topic: "resource-wildcard-topic",
+        policy: Some(|target| {
+            policy(json!([{
+                "Effect": "Deny",
+                "Principal": {"Service": SES_SERVICE_PRINCIPAL},
+                "Action": "sns:Publish",
+                "Resource": format!("arn:aws:sns:{REGION}:{}:*", target.account_id),
+            }]))
+        }),
+        refused: true,
+    },
+    PolicyCase {
+        case: "a deny scoped to the owner of the resource the events come from",
+        set: "source-owner-set",
+        topic: "source-owner-topic",
+        policy: Some(|target| {
+            policy(json!([{
+                "Effect": "Deny",
+                "Principal": {"Service": SES_SERVICE_PRINCIPAL},
+                "Action": "sns:Publish",
+                "Resource": target.topic_arn,
+                "Condition": {"StringEquals": {"aws:SourceOwner": target.account_id}},
+            }]))
+        }),
+        refused: true,
+    },
+    PolicyCase {
+        case: "a deny scoped to this account's configuration sets by a pattern",
+        set: "source-arn-pattern-set",
+        topic: "source-arn-pattern-topic",
+        policy: Some(|target| {
+            policy(json!([{
+                "Effect": "Deny",
+                "Principal": {"Service": SES_SERVICE_PRINCIPAL},
+                "Action": "sns:Publish",
+                "Resource": target.topic_arn,
+                "Condition": {
+                    "ArnLike": {
+                        "aws:SourceArn": format!(
+                            "arn:aws:ses:*:{}:configuration-set/*",
+                            target.account_id,
+                        ),
+                    },
+                },
+            }]))
+        }),
+        refused: true,
+    },
+    PolicyCase {
         case: "a policy allowing this service the publish and nothing else",
         set: "allowed-set",
         topic: "allowed-topic",
@@ -410,6 +554,53 @@ const POLICY_CASES: &[PolicyCase] = &[
                 "Action": "sns:Publish",
                 "Resource": target.topic_arn,
                 "Condition": {"StringEquals": {"aws:SourceAccount": "210987654321"}},
+            }]))
+        }),
+        refused: false,
+    },
+    PolicyCase {
+        case: "a deny scoped to another configuration set than the events come from",
+        set: "other-source-arn-set",
+        topic: "other-source-arn-topic",
+        policy: Some(|target| {
+            policy(json!([{
+                "Effect": "Deny",
+                "Principal": {"Service": SES_SERVICE_PRINCIPAL},
+                "Action": "sns:Publish",
+                "Resource": target.topic_arn,
+                "Condition": {
+                    "StringEquals": {
+                        "aws:SourceArn": configuration_set_arn("a-set-nothing-publishes-from"),
+                    },
+                },
+            }]))
+        }),
+        refused: false,
+    },
+    PolicyCase {
+        case: "a deny of every action but the publish, which is the one action asked for",
+        set: "not-action-covering-set",
+        topic: "not-action-covering-topic",
+        policy: Some(|target| {
+            policy(json!([{
+                "Effect": "Deny",
+                "Principal": {"Service": SES_SERVICE_PRINCIPAL},
+                "NotAction": "sns:Publish",
+                "Resource": target.topic_arn,
+            }]))
+        }),
+        refused: false,
+    },
+    PolicyCase {
+        case: "a deny of every principal but this service, which is the one asking",
+        set: "not-principal-covering-set",
+        topic: "not-principal-covering-topic",
+        policy: Some(|target| {
+            policy(json!([{
+                "Effect": "Deny",
+                "NotPrincipal": {"Service": SES_SERVICE_PRINCIPAL},
+                "Action": "sns:Publish",
+                "Resource": target.topic_arn,
             }]))
         }),
         refused: false,
