@@ -24,6 +24,13 @@
 //!   can therefore tell a bad recovery-point reference from a bad restore-job
 //!   reference.
 //!
+//! The `Metadata` is read the same way as the recovery point: it is an INPUT to
+//! the restore, so metadata that carries no value for a key the resource type's
+//! restore requires is refused as that member's value
+//! ([`crate::state::rejected_restore_metadata`]) and nothing is stored — the
+//! restore of a type whose target the metadata does not name has nothing to
+//! create, and a start the service accepts is one whose restore has a target.
+//!
 //! Ahead of both stands the authorization decision on the point the request
 //! names ([`crate::state::authorized_recovery_point`]): an ARN of another
 //! account is refused `AccessDeniedException` (HTTP 403) before the store is
@@ -365,6 +372,23 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> StartRestoreJob<E
             .clone()
             .or_else(|| point.resource_type.clone());
 
+        // What the restore of THAT type cannot be performed without: metadata
+        // that carries no value for a key the type requires is refused as that
+        // member's value, before anything is written, so a start the service
+        // accepts is one whose restore has a target
+        // (`crate::state::restore_metadata`).
+        let metadata: ::std::collections::BTreeMap<String, String> =
+            input.metadata.clone().into_iter().collect();
+        if let Some(refusal) = crate::state::rejected_restore_metadata(
+            resource_type.as_deref(),
+            &recovery_point_arn,
+            &metadata,
+        ) {
+            return Err(
+                StartRestoreJobErrorModeled::InvalidParameterValueException(refusal).into(),
+            );
+        }
+
         // The store is in memory and every request can add to it, so the
         // number of restore jobs it keeps is bounded; AWS refuses a restore
         // it will not start with the same modelled class.
@@ -400,7 +424,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> StartRestoreJob<E
                 .checked_add(crate::state::RESTORE_JOB_SETTLE_AFTER)
                 .unwrap_or(now),
             completion_date: None,
-            metadata: input.metadata.clone().into_iter().collect(),
+            metadata: metadata.clone(),
             // No validation result has been recorded for this restore yet:
             // `PutRestoreValidationResult` is what records one.
             validation_status: None,

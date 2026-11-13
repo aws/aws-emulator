@@ -11,6 +11,8 @@
 // points it into `tests/all/`.
 #[path = "all/backup_job_listing.rs"]
 mod backup_job_listing;
+#[path = "all/backup_job_resource_resolution.rs"]
+mod backup_job_resource_resolution;
 #[path = "all/backup_job_role_outcome.rs"]
 mod backup_job_role_outcome;
 #[path = "all/backup_plan.rs"]
@@ -67,8 +69,12 @@ mod restore_access_vault;
 mod resource_tags;
 #[path = "all/restore_job.rs"]
 mod restore_job;
+#[path = "all/restore_job_listing.rs"]
+mod restore_job_listing;
 #[path = "all/restore_job_state_change_events.rs"]
 mod restore_job_state_change_events;
+#[path = "all/restore_metadata_validation.rs"]
+mod restore_metadata_validation;
 #[path = "all/scheduled_runs_preview.rs"]
 mod scheduled_runs_preview;
 #[path = "all/state_roundtrip.rs"]

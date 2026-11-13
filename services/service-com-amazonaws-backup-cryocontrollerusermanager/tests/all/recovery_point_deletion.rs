@@ -125,6 +125,49 @@ pub(crate) async fn start_point(
     string_at(&started, "RecoveryPointArn")
 }
 
+/// Start one backup job in `vault` and wait until the recovery point it wrote reports the
+/// status that makes it readable and restorable.
+///
+/// The wait is on the CONDITION — the clock owes the point its completion a fixed span
+/// after the backup started, and a read materialises it — with room well past that span, so
+/// a case never turns on how fast the host runs. A read of a point whose backup is still
+/// running is refused exactly as a read of one that does not exist is, so an unsettled
+/// point is simply looked at again.
+///
+/// `pub(crate)` for the sibling suites whose subject is what a client does with a FINISHED
+/// recovery point rather than the backup that wrote it.
+pub(crate) async fn completed_point(
+    router: &MultiServiceRouter,
+    vault: &str,
+    resource_arn: &str,
+) -> String {
+    let arn = start_point(router, vault, resource_arn, None).await;
+    for _ in 0..POINT_POLLS {
+        let (status, read) = call(
+            router,
+            "GET",
+            &format!("/backup-vaults/{vault}/recovery-points/{arn}"),
+            None,
+        )
+        .await;
+        if status == 200 && string_at(&read, "Status") == POINT_STATUS_COMPLETED {
+            return arn;
+        }
+        ::tokio::time::sleep(POINT_POLL_WAIT).await;
+    }
+    panic!(
+        "setup {resource_arn:?}: the recovery point {arn} never became readable and completed"
+    );
+}
+
+/// `RecoveryPointStatus` of a point whose backup has finished (model enum
+/// `RecoveryPointStatus`).
+const POINT_STATUS_COMPLETED: &str = "COMPLETED";
+
+/// How long [`completed_point`] waits in all, and how long each look waits before the next.
+const POINT_POLLS: usize = 150;
+const POINT_POLL_WAIT: Duration = Duration::from_millis(100);
+
 /// Move a stored recovery point's creation instant `days` into the past, so the
 /// retention its lifecycle sets has already elapsed.
 pub(crate) fn age_point(engine: &engine::InMemoryEngine, arn: &str, days: u64) {

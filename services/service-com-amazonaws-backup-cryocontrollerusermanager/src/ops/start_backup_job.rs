@@ -214,15 +214,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // that refusal as `MissingParameterValueException`.
         let region = crate::state::request_region(ctx);
         // WHAT THE JOB WILL COME TO, decided BEFORE it is stored: the backup is
-        // performed under the role the request named, so a role that is not
-        // allowed to create the recovery point of that resource ends the job in
-        // the terminal FAILED state carrying the denial
-        // (`crate::state::job_outcome`). Asked here, with no store guard held,
+        // performed under the role the request named and against the resource it
+        // named, so a backup that role may not perform, or that has no such
+        // resource to capture, ends the job in the terminal FAILED state carrying
+        // why (`crate::state::job_outcome`). Asked here, with no store guard held,
         // and handed to the store below, so the job is stored WITH the outcome it
         // is owed and no instant exists at which it could settle without one.
         // The call itself is accepted either way: what this decides is only which
         // terminal state the clock owes.
-        let withheld = crate::state::withheld_backup_denial(
+        let withheld = crate::state::withheld_backup(
             ctx,
             &region,
             &input.iam_role_arn,
@@ -245,10 +245,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> StartBackupJob<En
     /// Store the job `input` asks for, the recovery point it writes and the state
     /// its later moves are published against (`crate::state::events`).
     ///
-    /// `withheld` is why the backup cannot be performed at all, as the role
-    /// question answered it: a job stored with one writes NO recovery point, since
-    /// a backup nothing performs produces none, and the clock settles it `FAILED`
-    /// with that reason.
+    /// `withheld` is why the backup cannot be performed at all, as the role and
+    /// resource questions answered it: a job stored with one writes NO recovery
+    /// point, since a backup nothing performs produces none, and the clock settles
+    /// it `FAILED` with that reason.
     ///
     /// Separate from `handle` so this store's lock lives for exactly this call: the
     /// publication `handle` makes afterwards awaits, and a guard must not be held
@@ -258,7 +258,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> StartBackupJob<En
         &self,
         input: StartBackupJobInput,
         region: &str,
-        withheld: Option<String>,
+        withheld: Option<crate::state::BackupFailure>,
     ) -> Result<StartBackupJobOutput, StartBackupJobError> {
         let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
             StartBackupJobErrorModeled::ServiceUnavailableException(ServiceUnavailableException {
@@ -477,10 +477,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> StartBackupJob<En
             iam_role_arn: input.iam_role_arn,
             state: crate::state::BACKUP_JOB_STATE_CREATED.to_string(),
             status_message: None,
-            // Why the backup cannot be performed, as the role question answered
-            // it before this job was stored: the terminal state the clock owes
-            // this job follows it (`crate::state::job_outcome`).
-            failure_status_message: withheld,
+            // A job that has not failed carries no message category, the way it
+            // carries no status message: both are recorded when it settles FAILED.
+            message_category: None,
+            // Why the backup cannot be performed, as the role and resource
+            // questions answered it before this job was stored: the terminal state
+            // the clock owes this job follows it (`crate::state::job_outcome`).
+            failure: withheld,
             percent_done: crate::state::PERCENT_DONE_NONE.to_string(),
             backup_size_in_bytes: 0,
             bytes_transferred: 0,
@@ -508,7 +511,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> StartBackupJob<En
         // the job. The job still reports the `RecoveryPointArn` this call answered
         // with, which resolves to nothing — as the recovery point of a failed job
         // does.
-        if job.failure_status_message.is_none() {
+        if job.failure.is_none() {
             store
                 .recovery_points_by_vault
                 .entry(vault.name.clone())

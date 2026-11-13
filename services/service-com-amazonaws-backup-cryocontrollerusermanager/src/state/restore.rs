@@ -156,6 +156,49 @@ impl RestoreJobRecord {
             RESTORE_JOB_PERCENT_DONE_NONE
         }
     }
+
+    /// The members a LISTING of this job reports, computed from the stored record — the
+    /// same members, read off the same fields, that `DescribeRestoreJob` answers with, so a
+    /// listed job and a described one can never disagree about one restore.
+    ///
+    /// The members left unset are the ones nothing in this slice records, for the reasons
+    /// the read states: a restore started directly has no restore testing plan behind it
+    /// and no parent or nested jobs, no estimate of its remaining time, and no deletion of
+    /// the resource it created.
+    pub fn listed(&self) -> crate::ops::types::RestoreJobsListMember {
+        crate::ops::types::RestoreJobsListMember {
+            // The one account whose resources this emulator holds, which is the account
+            // the job belongs to.
+            account_id: Some(::engine::emulator_account_id().to_string()),
+            restore_job_id: Some(self.restore_job_id.clone()),
+            recovery_point_arn: Some(self.recovery_point_arn.clone()),
+            source_resource_arn: Some(self.source_resource_arn.clone()),
+            backup_vault_arn: Some(self.backup_vault_arn.clone()),
+            creation_date: Some(::aws_smithy_types::DateTime::from(self.creation_date)),
+            completion_date: self
+                .completion_date
+                .map(::aws_smithy_types::DateTime::from),
+            status: Some(self.status.clone()),
+            status_message: self.status_message.clone(),
+            percent_done: Some(self.percent_done().to_string()),
+            // The restore moved no bytes, because the backup it reads copied none.
+            backup_size_in_bytes: Some(0),
+            iam_role_arn: self.iam_role_arn.clone(),
+            created_resource_arn: self.created_resource_arn.clone(),
+            resource_type: self.resource_type.clone(),
+            recovery_point_creation_date: Some(::aws_smithy_types::DateTime::from(
+                self.recovery_point_creation_date,
+            )),
+            validation_status: self.validation_status.clone(),
+            validation_status_message: self.validation_status_message.clone(),
+            is_parent: false,
+            expected_completion_time_minutes: None,
+            parent_job_id: None,
+            created_by: None,
+            deletion_status: None,
+            deletion_status_message: None,
+        }
+    }
 }
 
 impl ComAmazonawsBackupCryocontrollerusermanagerState {

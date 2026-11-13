@@ -115,6 +115,10 @@ async fn restore_dynamodb_table(
     copy_source_tags: bool,
 ) -> RestoreOutcome {
     let Some(target_table_name) = metadata_value(metadata, METADATA_TARGET_TABLE_NAME) else {
+        // A start whose metadata names no target table is refused when it is made
+        // ([`super::rejected_restore_metadata`]), so no stored job reaches here
+        // without one; a restore that has no target still creates nothing rather
+        // than choosing a name of its own.
         return RestoreOutcome::Failed(format!(
             "the restore metadata names no {METADATA_TARGET_TABLE_NAME}, so there is no table to \
              create"
@@ -224,7 +228,14 @@ async fn restore_dynamodb_table(
 
 /// The value the restore metadata carries under `name`, matched
 /// case-insensitively — see [`METADATA_TARGET_TABLE_NAME`].
-fn metadata_value<'m>(metadata: &'m BTreeMap<String, String>, name: &str) -> Option<&'m str> {
+///
+/// `pub(crate)` because the SYNCHRONOUS refusal of metadata that names no such key reads it
+/// through the same step the restore does ([`super::rejected_restore_metadata`]), so the
+/// refusal and the restore can never disagree about which keys a request carries.
+pub(crate) fn metadata_value<'m>(
+    metadata: &'m BTreeMap<String, String>,
+    name: &str,
+) -> Option<&'m str> {
     metadata
         .iter()
         .find(|(key, _)| key.eq_ignore_ascii_case(name))
@@ -234,12 +245,17 @@ fn metadata_value<'m>(metadata: &'m BTreeMap<String, String>, name: &str) -> Opt
 
 /// The table name a DynamoDB table ARN names: the resource field is
 /// `table/<name>`.
-fn table_name_of(resource_arn: &str) -> Option<&str> {
+///
+/// `pub(crate)` because asking DynamoDB whether it HOLDS that table reads the ARN through
+/// the same step ([`super::protected_resource_answer`]).
+pub(crate) fn table_name_of(resource_arn: &str) -> Option<&str> {
     let resource = resource_arn.splitn(6, ':').nth(5)?;
     resource.strip_prefix("table/").filter(|name| !name.is_empty())
 }
 
-/// The Amazon DynamoDB client a restore is performed through.
+/// The Amazon DynamoDB client a restore is performed through, and that the lookup of a
+/// protected table asks ([`super::protected_resource_answer`]) — ONE construction of the
+/// hop for both directions of the same question.
 ///
 /// Configured as every other in-process client in this tree is
 /// (`::service_common::eventbridge_client`): the callback routes IN PROCESS to
@@ -255,7 +271,10 @@ fn table_name_of(resource_arn: &str) -> Option<&str> {
 /// be compiled into every one of them for the sake of this one constructor.
 /// The sibling copy in the Redshift crate's zero-ETL source lookup is the other
 /// service that asks DynamoDB something, and it is configured identically.
-fn dynamodb_client(callback: &EmbeddedEmulator, region: &str) -> ::aws_sdk_dynamodb::Client {
+pub(crate) fn dynamodb_client(
+    callback: &EmbeddedEmulator,
+    region: &str,
+) -> ::aws_sdk_dynamodb::Client {
     let config = ::aws_sdk_dynamodb::Config::builder()
         .behavior_version(::aws_sdk_dynamodb::config::BehaviorVersion::latest())
         .region(::aws_sdk_dynamodb::config::Region::new(region.to_string()))

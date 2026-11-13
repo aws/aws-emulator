@@ -40,7 +40,7 @@ use crate::job_state_change_events::{
     delivered, given_queue, given_rule, of_type, BACKUP_JOB_STATE_CHANGE, COMPLETED, EVENT_SOURCE,
 };
 use crate::recovery_point_deletion::start_point;
-use crate::restore_job::source_table;
+use crate::restore_job::{drop_table, source_table};
 use crate::vault_and_backup_job::{call, create_vault, string_at, ACCOUNT, REGION};
 
 /// The `detail-type` AWS Backup publishes a restore job's state changes under, spelled out
@@ -363,13 +363,19 @@ async fn a_restore_that_creates_nothing_publishes_its_failure() {
     for (case, resource_type, target) in cases {
         let router = emulator();
         // The source table exists only for the DynamoDB rows that CAN be restored; here
-        // the backup is of a resource of the row's own type, which no table backs.
+        // the backup is of a resource of the row's own type, and the DynamoDB row's table
+        // is dropped once its backup is taken — a backup started for a table DynamoDB
+        // reports absent captures nothing and writes no recovery point to restore from.
+        let dropped_table = (resource_type == "DynamoDB").then_some("orders-dropped");
         let resource_arn = match resource_type {
             "EFS" => format!("arn:aws:elasticfilesystem:{REGION}:{ACCOUNT}:file-system/fs-1"),
             "S3" => format!("arn:aws:s3:::{ACCOUNT}-orders"),
-            _ => format!("arn:aws:dynamodb:{REGION}:{ACCOUNT}:table/never-created"),
+            _ => given_table(&router, "orders-dropped").await,
         };
         let point = settled_point(&router, case, &resource_arn).await;
+        if let Some(table) = dropped_table {
+            drop_table(&router, table).await;
+        }
 
         let (url, arn) = given_queue(&router, case, "restore-failures").await;
         given_rule(

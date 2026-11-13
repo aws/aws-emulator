@@ -304,13 +304,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> ListBackupJobs<En
                         // Nothing in this slice composes backup jobs, so no
                         // stored job has a parent to match.
                         && input.by_parent_job_id.is_none()
-                        // A job this slice runs records no `MessageCategory`,
-                        // so a filter naming one selects no job; the two values
-                        // the model documents as standing for every category
-                        // filter nothing out.
+                        // A job carries a `MessageCategory` only once it has
+                        // failed in one, so a filter naming a category selects
+                        // the jobs recorded in it; the two values the model
+                        // documents as standing for every category filter
+                        // nothing out.
                         && input.by_message_category.as_deref().is_none_or(|category| {
                             category == MESSAGE_CATEGORY_WILDCARD
                                 || category == MESSAGE_CATEGORY_AGGREGATE_ALL
+                                || job.message_category.as_deref() == Some(category)
                         })
                 })
                 .collect()
@@ -383,6 +385,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> ListBackupJobs<En
                 start_by: job.start_by.map(::aws_smithy_types::DateTime::from),
                 state: Some(job.state.clone()),
                 status_message: job.status_message.clone(),
+                // Read off the stored job, as `DescribeBackupJob` reads it, so the
+                // listed and the described job report one category.
+                message_category: job.message_category.clone(),
                 percent_done: Some(job.percent_done.clone()),
                 backup_size_in_bytes: Some(job.backup_size_in_bytes),
                 bytes_transferred: Some(job.bytes_transferred),
@@ -391,9 +396,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> ListBackupJobs<En
                 is_parent: job.is_parent,
                 // Left unset for the reasons `DescribeBackupJob` states: a job
                 // started directly has no backup plan behind it and no parent
-                // or child jobs, and vault lock, backup type, message
-                // categories and the separate initiation instant are reached
-                // only by operations still at 501 or by machinery this slice
+                // or child jobs, and vault lock, backup type and the separate
+                // initiation instant are reached only by operations still at 501
+                // or by machinery this slice
                 // does not have.
                 initiation_date: None,
                 created_by: None,
@@ -401,7 +406,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> ListBackupJobs<En
                 backup_type: None,
                 parent_job_id: None,
                 resource_name: None,
-                message_category: None,
             })
             .collect();
         // Every job this report settled is a transition the account's event bus is

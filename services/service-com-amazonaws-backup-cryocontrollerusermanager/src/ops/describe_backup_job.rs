@@ -302,6 +302,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> DescribeBackupJob
             start_by: job.start_by.map(::aws_smithy_types::DateTime::from),
             state: Some(job.state.clone()),
             status_message: job.status_message.clone(),
+            // The class the job's `StatusMessage` belongs to, as the settle that
+            // recorded that message recorded it: a job that has not failed reports
+            // neither.
+            message_category: job.message_category.clone(),
             percent_done: Some(job.percent_done.clone()),
             backup_size_in_bytes: Some(job.backup_size_in_bytes),
             bytes_transferred: Some(job.bytes_transferred),
@@ -310,9 +314,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> DescribeBackupJob
             is_parent: job.is_parent,
             // A job started directly by `StartBackupJob` has no backup plan
             // behind it and no parent or child jobs, and vault lock, backup
-            // type, message categories and the separate initiation instant are
-            // reached only by operations still at 501 or by machinery this
-            // slice does not have.
+            // type and the separate initiation instant are reached only by
+            // operations still at 501 or by machinery this slice does not have.
             initiation_date: None,
             created_by: None,
             vault_lock_state: None,
@@ -321,7 +324,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> DescribeBackupJob
             number_of_child_jobs: None,
             child_jobs_in_state: None,
             resource_name: None,
-            message_category: None,
         };
         // A transition the clock owed is a transition the account's event bus is
         // owed too: this read materialised it, so this read is what queues it

@@ -1,15 +1,17 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op ListRestoreJobs
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `ListRestoreJobs`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`ListRestoreJobs::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! Pages the restore jobs this account holds, in the order they were started, after
+//! applying the `By*` filters the model declares. Every transition the clock has already
+//! made due is materialised first, through the same step `DescribeRestoreJob` uses
+//! ([`crate::state::ComAmazonawsBackupCryocontrollerusermanagerState::settle_restore_jobs`]),
+//! and every listed job is projected through the one projection that read answers from
+//! ([`crate::state::RestoreJobRecord::listed`]), so a listed job and a described one can
+//! never disagree.
+//!
+//! A restore the service REFUSED is no job at all, so nothing is listed for it: the page
+//! reports exactly the jobs `StartRestoreJob` stored.
 //!
 //! ## Shape of an operation
 //!
@@ -177,18 +179,168 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `ListRestoreJobs` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(ListRestoreJobsErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("ListRestoreJobs"))
+        // The listing itself holds this store's lock; the publication below does not, so
+        // no lock is held across an await.
+        let output = self.listed_jobs(input)?;
+        crate::state::publish_job_state_changes(ctx, &*self.engine).await;
+        Ok(output)
+    }
+}
+
+impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> ListRestoreJobs<Eng> {
+    /// Report the page `input` asks for, materialising the transitions the clock already
+    /// owed the jobs it reports and queueing the events those transitions owe
+    /// (`crate::state::events`).
+    ///
+    /// Separate from `handle` so this store's lock lives for exactly this call: the
+    /// publication `handle` makes afterwards awaits, and a guard must not be held across an
+    /// await.
+    fn listed_jobs(
+        &self,
+        input: ListRestoreJobsInput,
+    ) -> Result<ListRestoreJobsOutput, ListRestoreJobsError> {
+        let now = ::std::time::SystemTime::now();
+        // A page size outside the model's `@range` is this service's own
+        // `InvalidParameterValueException`, answered before anything is read so the body is
+        // the modelled shape carrying `Code` and `Message`.
+        if let Some(refusal) = crate::state::rejected_max_results(input.max_results) {
+            return Err(
+                ListRestoreJobsErrorModeled::InvalidParameterValueException(refusal).into(),
+            );
+        }
+        // The model types `ByRestoreTestingPlanArn` as `ARN` with no pattern, so the
+        // framework cannot refuse a malformed one; AWS does, rather than answering an empty
+        // page for a filter it could never match. The check and its sentence are this
+        // service's one ARN rule.
+        if let Some(refusal) = input
+            .by_restore_testing_plan_arn
+            .as_deref()
+            .and_then(|arn| crate::state::rejected_arn("ByRestoreTestingPlanArn", arn))
+        {
+            return Err(
+                ListRestoreJobsErrorModeled::InvalidParameterValueException(refusal).into(),
+            );
+        }
+        let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
+            ListRestoreJobsErrorModeled::ServiceUnavailableException(ServiceUnavailableException {
+                message: Some("the backup vault store is unavailable".to_string()),
+                ..Default::default()
+            })
+        })?;
+
+        let mut store = state.lock();
+        // Every stored job is reported here, so this is the one write this report performs:
+        // a job whose settle instant has passed finished then, whether or not anybody
+        // looked.
+        store.settle_restore_jobs(now);
+
+        // The instant filters are closed over as `SystemTime`, the form the stored dates
+        // are held in.
+        let created_before = input
+            .by_created_before
+            .and_then(|at| ::std::time::SystemTime::try_from(at).ok());
+        let created_after = input
+            .by_created_after
+            .and_then(|at| ::std::time::SystemTime::try_from(at).ok());
+        let complete_before = input
+            .by_complete_before
+            .and_then(|at| ::std::time::SystemTime::try_from(at).ok());
+        let complete_after = input
+            .by_complete_after
+            .and_then(|at| ::std::time::SystemTime::try_from(at).ok());
+        // This emulator holds exactly one account's jobs, so any other account id names an
+        // account it holds no jobs of.
+        let own_account = input
+            .by_account_id
+            .as_deref()
+            .is_none_or(|account| account == ::engine::emulator_account_id());
+
+        let mut matching: Vec<&crate::state::RestoreJobRecord> = if own_account {
+            store
+                .restore_jobs
+                .values()
+                .filter(|job| {
+                    input
+                        .by_resource_type
+                        .as_deref()
+                        .is_none_or(|ty| job.resource_type.as_deref() == Some(ty))
+                        && input
+                            .by_status
+                            .as_deref()
+                            .is_none_or(|asked| job.status == asked)
+                        && created_before.is_none_or(|before| job.creation_date <= before)
+                        && created_after.is_none_or(|after| job.creation_date >= after)
+                        // A job that has not ended has no completion instant, so a filter
+                        // on one selects none of them.
+                        && complete_before
+                            .is_none_or(|before| job.completion_date.is_some_and(|at| at <= before))
+                        && complete_after
+                            .is_none_or(|after| job.completion_date.is_some_and(|at| at >= after))
+                        // Nothing in this slice starts a restore from a restore testing
+                        // plan, nor nests one restore job in another, so a filter naming
+                        // either selects no job.
+                        && input.by_restore_testing_plan_arn.is_none()
+                        && input.by_parent_job_id.is_none()
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        // The order a caller pages through: the order the restores were started, with the
+        // job id breaking a tie between two started in the same instant. ONE total order is
+        // what makes the id-valued cursor below resolve to the same position on every
+        // request.
+        matching.sort_by(|left, right| {
+            left.creation_date
+                .cmp(&right.creation_date)
+                .then_with(|| left.restore_job_id.cmp(&right.restore_job_id))
+        });
+
+        // The cursor names the first item of the page being asked for.
+        let start = match input.next_token.as_deref() {
+            None => 0,
+            Some(token) => {
+                let key = crate::state::decode_page_token(token);
+                let position =
+                    key.and_then(|key| matching.iter().position(|job| job.restore_job_id == key));
+                let Some(position) = position else {
+                    return Err(ListRestoreJobsErrorModeled::InvalidParameterValueException(
+                        InvalidParameterValueException {
+                            message: Some(
+                                "NextToken does not name a page of this result set".to_string(),
+                            ),
+                            ..Default::default()
+                        },
+                    )
+                    .into());
+                };
+                position
+            }
+        };
+        // No `MaxResults` means one page: the model's own maximum. A page size the model's
+        // `@range(1..1000)` refuses was answered above, so the clamp here only applies the
+        // default.
+        let page_size = input
+            .max_results
+            .and_then(|max| usize::try_from(max).ok())
+            .unwrap_or(crate::state::MAX_PAGE_SIZE)
+            .clamp(1, crate::state::MAX_PAGE_SIZE);
+        let end = start.saturating_add(page_size).min(matching.len());
+        let next_token = matching
+            .get(end)
+            .map(|job| crate::state::encode_page_token(&job.restore_job_id));
+
+        let restore_jobs: Vec<RestoreJobsListMember> =
+            matching[start..end].iter().map(|job| job.listed()).collect();
+        // Every job this report settled is a transition the account's event bus is owed:
+        // the borrow of the store the page was projected from is released first, then the
+        // changes are queued (`crate::state::events`).
+        drop(matching);
+        store.record_job_state_changes();
+
+        Ok(ListRestoreJobsOutput {
+            restore_jobs: Some(restore_jobs),
+            next_token,
+        })
     }
 }

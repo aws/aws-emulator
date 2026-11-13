@@ -75,7 +75,10 @@ const RESTORE_POLL_WAIT: std::time::Duration = std::time::Duration::from_millis(
 /// Read the restore job until it reports a terminal status, and answer that
 /// read. A restore runs as its own task, so a case waits for it the way a
 /// client does rather than assuming it has finished.
-async fn settled_restore(router: &MultiServiceRouter, job_id: &str) -> Value {
+///
+/// `pub(crate)` for the sibling suite covering the LISTING of these jobs
+/// (`restore_job_listing.rs`), which waits for the same condition.
+pub(crate) async fn settled_restore(router: &MultiServiceRouter, job_id: &str) -> Value {
     for _ in 0..RESTORE_POLLS {
         let (status, read) = describe_restore(router, job_id).await;
         assert_eq!(
@@ -137,7 +140,11 @@ async fn put_validation(
 
 /// How many restore jobs the store holds — the state a refused start must not
 /// have written to.
-fn stored_restore_jobs(engine: &engine::InMemoryEngine) -> usize {
+///
+/// `pub(crate)` for the sibling suite covering the metadata a start has to carry
+/// (`restore_metadata_validation.rs`), which asserts the same "nothing was
+/// stored" through this one seam.
+pub(crate) fn stored_restore_jobs(engine: &engine::InMemoryEngine) -> usize {
     let state = engine.state::<BackupState>();
     let count = state.lock().restore_jobs.len();
     count
@@ -284,7 +291,12 @@ async fn a_recovery_point_arn_that_is_not_an_arn_is_a_bad_parameter_value() {
 
 /// One emulator: Backup and DynamoDB mounted on ONE shared engine, so a restore
 /// performed against DynamoDB reaches the same store a DynamoDB client reads.
-fn emulator() -> MultiServiceRouter {
+///
+/// `pub(crate)` for the sibling suite covering what a backup job's terminal state
+/// follows (`backup_job_resource_resolution.rs`): the protected resource is
+/// resolved against the service that owns it, so that suite needs the same two
+/// services on one engine rather than a second copy of this router.
+pub(crate) fn emulator() -> MultiServiceRouter {
     let engine = Arc::new(engine::InMemoryEngine::new());
     let mut router = MultiServiceRouter::new();
     router.set_request_authentication(false);
@@ -365,6 +377,53 @@ pub(crate) async fn source_table(
         "TableArn",
     )
 }
+
+/// Delete the DynamoDB table `name` through that service's own wire, and wait until that
+/// service reports it gone.
+///
+/// Both ends of the deletion are waited for as CONDITIONS, because a table of that service
+/// is `CREATING` for a span before it can be deleted and `DELETING` for a span before it is
+/// gone: the delete is re-asked while the table is still being created, and the table is
+/// read back until the service answers that it holds no such table.
+///
+/// `pub(crate)` for the sibling suites: a case that needs a protected resource the owning
+/// service NO LONGER holds backs the table up while it is there and drops it afterwards,
+/// because a backup started for a table DynamoDB reports absent produces no recovery point
+/// at all.
+pub(crate) async fn drop_table(router: &MultiServiceRouter, name: &str) {
+    let mut deleted = None;
+    for _ in 0..TABLE_POLLS {
+        let (status, answer) = dynamodb(router, "DeleteTable", json!({"TableName": name})).await;
+        if status == 200 {
+            deleted = Some(answer);
+            break;
+        }
+        ::tokio::time::sleep(TABLE_POLL_WAIT).await;
+    }
+    assert!(
+        deleted.is_some(),
+        "setup: DeleteTable {name} should succeed once the table is no longer being created"
+    );
+    for _ in 0..TABLE_POLLS {
+        let (status, read) = dynamodb(router, "DescribeTable", json!({"TableName": name})).await;
+        if status != 200 {
+            assert!(
+                read.to_string().contains("ResourceNotFoundException"),
+                "setup: DescribeTable {name} must answer that the table is gone, got {status} \
+                 {read:?}"
+            );
+            return;
+        }
+        ::tokio::time::sleep(TABLE_POLL_WAIT).await;
+    }
+    panic!("setup: the table {name} was never reported gone");
+}
+
+/// How long the waits above take in all, and how long each look waits before the next: well
+/// past the span that service's own clock takes to create or delete a table, so a loaded
+/// host does not fail a case.
+const TABLE_POLLS: usize = 150;
+const TABLE_POLL_WAIT: std::time::Duration = std::time::Duration::from_millis(100);
 
 /// A restore of a DynamoDB table recovery point CREATES that table in DynamoDB:
 /// the job reports the ARN DynamoDB answered with, DynamoDB itself reports the
@@ -478,36 +537,53 @@ async fn a_restore_creates_the_table_in_the_service_that_owns_it() {
 ///
 /// The rows span types the recovery-point side does store but the restore side
 /// cannot re-create, and the type whose restore CAN be performed but whose
-/// source table is not there to read.
+/// source table is not there to read — that last one is backed up while the
+/// table exists and the table is dropped before the restore, since a backup
+/// started for a table DynamoDB reports absent captures nothing and writes no
+/// recovery point to restore from.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_restore_that_creates_nothing_ends_in_the_modelled_failure_status() {
-    let cases: Vec<(&str, String, Option<&str>)> = vec![
+    // (case, the table to create and then drop, the protected resource when no
+    // table backs the row, the type the start names)
+    let cases: Vec<(&str, Option<&str>, String, Option<&str>)> = vec![
         (
             "an EFS file system",
+            None,
             format!("arn:aws:elasticfilesystem:{REGION}:{ACCOUNT}:file-system/fs-01"),
             Some("EFS"),
         ),
         (
             "an S3 bucket",
+            None,
             "arn:aws:s3:::demo-bucket".to_string(),
             Some("S3"),
         ),
         (
             "a DynamoDB table that is no longer there",
-            format!("arn:aws:dynamodb:{REGION}:{ACCOUNT}:table/never-created"),
+            Some("orders-dropped"),
+            String::new(),
             Some("DynamoDB"),
         ),
     ];
 
-    for (case, resource, resource_type) in cases {
+    for (case, dropped_table, named_resource, resource_type) in cases {
         let router = emulator();
         let (status, created) = create_vault(&router, "restore-source", "{}").await;
         assert_eq!(
             status, 200,
             "case {case:?}: setup CreateBackupVault should succeed, got {status} {created:?}"
         );
+        // A row whose restore needs a source table that is GONE backs up the
+        // table while DynamoDB still holds it.
+        let resource = match dropped_table {
+            Some(table) => source_table(&router, table, false).await,
+            None => named_resource,
+        };
         let point = start_point(&router, "restore-source", &resource, None).await;
         sleep(PAST_SETTLE);
+        if let Some(table) = dropped_table {
+            drop_table(&router, table).await;
+        }
 
         let (status, started) =
             start_restore(&router, &start_body(&point, resource_type, "restored")).await;

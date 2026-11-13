@@ -80,11 +80,16 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 mod events;
 pub use events::*;
 
-/// What a started backup job comes to: whether the role it runs under may perform the
-/// backup, which is what selects its terminal state. Re-exported for the reason given on
-/// `events`.
+/// What a started backup job comes to: whether the backup it was started for can be
+/// performed at all, which is what selects its terminal state. Re-exported for the reason
+/// given on `events`.
 mod job_outcome;
 pub use job_outcome::*;
+
+/// Whether the protected resource a job was started for exists at all, as the service that
+/// owns it answers. Re-exported for the reason given on `events`.
+mod protected_resource;
+pub use protected_resource::*;
 
 /// The restore jobs this service stores, and the resolution steps the calls that
 /// name one share. Re-exported for the reason given on `events`.
@@ -95,6 +100,11 @@ pub use restore::*;
 /// owns it. Re-exported for the reason given on `events`.
 mod restore_execution;
 pub use restore_execution::*;
+
+/// What a restore's `Metadata` has to carry for the type of resource it restores, which a
+/// start that carries less is refused for. Re-exported for the reason given on `events`.
+mod restore_metadata;
+pub use restore_metadata::*;
 
 /// The tiering configurations this service stores, and the two projections its
 /// reads answer from. Re-exported for the reason given on `events`.
@@ -2296,16 +2306,20 @@ pub struct BackupJob {
     pub iam_role_arn: String,
     pub state: String,
     pub status_message: Option<String>,
-    /// Why this job can create no recovery point, decided from the permissions of
-    /// the role it runs under before the job was stored ([`job_outcome`]).
+    /// The class a failed job's `StatusMessage` belongs to, recorded when the job
+    /// settles `FAILED` for the same reason that message is: `None` for a job that
+    /// has not failed, so neither can be reported without the other.
+    pub message_category: Option<String>,
+    /// Why this job can create no recovery point, decided before the job was
+    /// stored ([`job_outcome`]).
     ///
     /// Its PRESENCE is what makes the terminal state the clock owes this job
     /// [`BACKUP_JOB_STATE_FAILED`] rather than [`BACKUP_JOB_STATE_COMPLETED`], and
-    /// its sentence is the `StatusMessage` that state carries — so a job can never
-    /// report a failure with no reason, nor a reason it did not fail for. It is
-    /// also why no recovery point was stored for the job at all. `None` for a job
-    /// nothing shows cannot be performed.
-    pub failure_status_message: Option<String>,
+    /// what it carries is the `StatusMessage` and the `MessageCategory` that state
+    /// reports — so a job can never report a failure with no reason, nor a reason it
+    /// did not fail for. It is also why no recovery point was stored for the job at
+    /// all. `None` for a job nothing shows cannot be performed.
+    pub failure: Option<BackupFailure>,
     pub percent_done: String,
     /// The emulator copies no bytes, so a job it ran moved nothing: this stays
     /// 0 rather than reporting a size no backup produced.
@@ -3373,10 +3387,10 @@ impl ComAmazonawsBackupCryocontrollerusermanagerState {
     /// with the store.
     ///
     /// WHICH terminal state is owed was decided when the job was started: a job
-    /// whose role withholds the backup it was started for carries the reason
-    /// ([`BackupJob::failure_status_message`]) and settles `FAILED` with that
-    /// reason as its `StatusMessage`, having transferred nothing; every other job
-    /// settles `COMPLETED`.
+    /// whose backup could not be performed at all carries why
+    /// ([`BackupJob::failure`]) and settles `FAILED` with that reason as its
+    /// `StatusMessage` and that class as its `MessageCategory`, having transferred
+    /// nothing; every other job settles `COMPLETED`.
     pub fn settle_job(&mut self, job_id: &str, now: SystemTime) {
         let Some(job) = self.backup_jobs.get_mut(job_id) else {
             return;
@@ -3385,7 +3399,7 @@ impl ComAmazonawsBackupCryocontrollerusermanagerState {
             return;
         }
         job.completion_date = Some(job.settles_at);
-        let Some(reason) = job.failure_status_message.clone() else {
+        let Some(failure) = job.failure.clone() else {
             job.state = BACKUP_JOB_STATE_COMPLETED.to_string();
             job.percent_done = PERCENT_DONE_COMPLETE.to_string();
             job.bytes_transferred = job.backup_size_in_bytes;
@@ -3395,7 +3409,8 @@ impl ComAmazonawsBackupCryocontrollerusermanagerState {
         // moved, and no recovery point was ever written for it (`StartBackupJob`
         // stores one only for a job that can produce it).
         job.state = BACKUP_JOB_STATE_FAILED.to_string();
-        job.status_message = Some(reason);
+        job.status_message = Some(failure.status_message);
+        job.message_category = Some(failure.message_category);
     }
 
     /// The same for every stored job, for an operation that reports them all:
