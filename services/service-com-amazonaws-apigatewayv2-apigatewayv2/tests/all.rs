@@ -125,6 +125,8 @@ mod http_api_servable_stage;
 mod http_api_service_action_integration;
 #[path = "all/http_api_signed_invoke.rs"]
 mod http_api_signed_invoke;
+#[path = "all/http_api_stage_metrics.rs"]
+mod http_api_stage_metrics;
 #[path = "all/http_api_step_functions_subtype.rs"]
 mod http_api_step_functions_subtype;
 #[path = "all/integration_deletion.rs"]

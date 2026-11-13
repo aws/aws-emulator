@@ -147,6 +147,9 @@ mod access_logs;
 /// What the stage PUBLISHES about a request it served: the CloudWatch counters and
 /// measurements of that request.
 mod request_metrics;
+/// WHERE those datapoints land — the CloudWatch metric store — and the alarm wake-up each one
+/// written there owes.
+mod metrics;
 // `pub(crate)` for the three steps BOTH data planes of this service perform, so the rule
 // each states is written once and the two protocols cannot drift apart:
 //

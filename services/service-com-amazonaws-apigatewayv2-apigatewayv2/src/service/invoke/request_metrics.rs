@@ -31,7 +31,8 @@
 //! shared engine, so one metric has one home and the publisher and its readers cannot drift.
 //! They never travel over `PutMetricData`, which refuses a publish into a namespace the
 //! services own ("you should not specify a namespace that begins with `AWS/`",
-//! `PutMetricDataInput$Namespace`).
+//! `PutMetricDataInput$Namespace`). Storing them is also what owes every alarm over these
+//! series its evaluation, which is why the write itself is [`super::metrics`]'.
 
 use std::time::Duration;
 
@@ -123,11 +124,9 @@ pub(super) fn published<Eng: Send + Sync + 'static>(
     let Some(planned) = planned(engine, req, response, latency) else {
         return;
     };
-    let Some(state) = cloudwatch::state::service_state(engine) else {
-        return;
-    };
     let timestamp_secs = cloudwatch::state::now_secs();
-    let mut store = state.lock();
+    let mut data: Vec<super::metrics::Datapoint> =
+        Vec::with_capacity(planned.series.len() * planned.observations.len());
     for dimensions in &planned.series {
         for observation in &planned.observations {
             let key = cloudwatch::state::MetricKey {
@@ -144,16 +143,12 @@ pub(super) fn published<Eng: Send + Sync + 'static>(
                 unit: Some(observation.unit.to_string()),
                 storage_resolution: STANDARD_STORAGE_RESOLUTION_SECONDS,
             };
-            if store.append_datapoints(key, vec![datum]).is_err() {
-                ::tracing::warn!(
-                    api_id = %planned.api_id,
-                    metric = %observation.metric_name,
-                    "the CloudWatch metric store is at capacity, so this request was not \
-                     counted"
-                );
-            }
+            data.push((key, datum));
         }
     }
+    // The one write this plane's datapoints go through, which is also what makes every alarm
+    // over the series they land in due for its evaluation ([`super::metrics`]).
+    super::metrics::stored(engine, &planned.api_id, data);
 }
 
 /// One observation of one metric: its value and the unit that value is in.
