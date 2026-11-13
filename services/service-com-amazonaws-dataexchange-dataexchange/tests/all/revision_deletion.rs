@@ -12,12 +12,14 @@
 //! The rule under test: `DeleteRevision` removes the named revision of the named
 //! data set — with everything the record holds, its assets and its tags — and
 //! answers 204 with no body; every later reader then reports it absent, while every
-//! other revision, of this data set and of any other, is untouched. A well-formed id
-//! naming no data set, or no revision of it, is the modelled 404.
+//! other revision, of this data set and of any other, is untouched. A revision in the
+//! state the model's `Finalized` documentation calls read-only cannot be removed at
+//! all, which is the modelled 409. A well-formed id naming no data set, or no revision
+//! of it, is the modelled 404.
 //!
 //! The rows span what the rule generalises over: how many revisions the data set
 //! holds, which position in the creation order is deleted, what the deleted record
-//! carries (comment, tags, assets, `Finalized`), and which named resource is absent.
+//! carries (comment, tags, assets), and which named resource is absent.
 
 use std::sync::Arc;
 
@@ -39,6 +41,11 @@ const NEVER_CREATED: &str = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
 /// Source: `smithy_query(query="shape", shape="ResourceType")`.
 const RESOURCE_TYPE_REVISION: &str = "REVISION";
 const RESOURCE_TYPE_DATA_SET: &str = "DATA_SET";
+
+/// The whole `Message` AWS answers an action on a finalized revision with — fixed text
+/// with no variable part, stated here independently of the constant the crate
+/// implements it with.
+const FINALIZED_ACTION_MESSAGE: &str = "Cannot take action on a Finalized Revision.";
 
 /// `DELETE /v1/data-sets/{DataSetId}/revisions/{RevisionId}`.
 async fn delete_revision(
@@ -121,12 +128,12 @@ struct DeleteCase {
     comment: Option<&'static str>,
     tags: Option<Value>,
     assets: usize,
-    finalized: bool,
 }
 
 /// The rows differ along the count of revisions, the position deleted (only / first /
-/// middle / last), and the state of the deleted record: bare, commented, tagged,
-/// holding assets, and finalized (the model's "read-only state").
+/// middle / last), and the state of the deleted record: bare, commented, tagged and
+/// holding assets. A finalized revision cannot be deleted at all, which
+/// [`deleting_a_finalized_revision_is_refused`] is about.
 fn delete_cases() -> Vec<DeleteCase> {
     vec![
         DeleteCase {
@@ -136,7 +143,6 @@ fn delete_cases() -> Vec<DeleteCase> {
             comment: None,
             tags: None,
             assets: 0,
-            finalized: false,
         },
         DeleteCase {
             case: "the first of two, commented",
@@ -145,7 +151,6 @@ fn delete_cases() -> Vec<DeleteCase> {
             comment: Some("first cut of the monthly feed"),
             tags: None,
             assets: 0,
-            finalized: false,
         },
         DeleteCase {
             case: "the middle of three, tagged",
@@ -154,7 +159,6 @@ fn delete_cases() -> Vec<DeleteCase> {
             comment: None,
             tags: Some(json!({ "team": "data", "tier": "gold" })),
             assets: 0,
-            finalized: false,
         },
         DeleteCase {
             case: "the last of five, holding one asset",
@@ -163,16 +167,14 @@ fn delete_cases() -> Vec<DeleteCase> {
             comment: Some(""),
             tags: Some(json!({ "регион": "eu" })),
             assets: 1,
-            finalized: false,
         },
         DeleteCase {
-            case: "a finalized revision holding several assets",
+            case: "the middle of four, holding several assets",
             revisions: 4,
             position: 2,
             comment: Some("published"),
             tags: Some(json!({ "team": "data" })),
             assets: 3,
-            finalized: true,
         },
     ]
 }
@@ -192,7 +194,6 @@ async fn deleting_a_revision_removes_only_that_revision() {
         comment,
         tags,
         assets,
-        finalized,
     } in delete_cases()
     {
         let data_set_id = create_data_set(&router, case, "d", "S3_SNAPSHOT", None)
@@ -219,20 +220,6 @@ async fn deleting_a_revision_removes_only_that_revision() {
         let target_id = ids[position].clone();
         if assets > 0 {
             import_assets(&engine, &data_set_id, &target_id, assets);
-        }
-        if finalized {
-            let updated = call(
-                &router,
-                "PATCH",
-                &format!("/v1/data-sets/{data_set_id}/revisions/{target_id}"),
-                Some(json!({ "Finalized": true })),
-            )
-            .await;
-            assert_eq!(
-                updated.status, 200,
-                "case {case}: expected 200 finalizing the revision under test, got {} body {:?}",
-                updated.status, updated.body
-            );
         }
 
         let deleted = delete_revision(&router, &data_set_id, &target_id).await;
@@ -314,6 +301,99 @@ async fn deleting_a_revision_removes_only_that_revision() {
             "case {case}: expected the data set to survive the revision delete, got {} \
              body {:?}",
             data_set.status, data_set.body
+        );
+    }
+}
+
+/// RULE: a revision in the state the model's `Finalized` documentation calls read-only
+/// cannot be removed: the delete is refused with the modelled 409 `ConflictException`
+/// carrying the fixed sentence for this error class and naming the revision, and the
+/// revision — with everything it holds — is still there afterwards.
+///
+/// The rows differ along what the finalized revision holds and how many revisions the
+/// data set has, because the refusal is about the revision's state and nothing else.
+#[tokio::test]
+async fn deleting_a_finalized_revision_is_refused() {
+    let (router, engine) = harness();
+
+    for (case, revisions, assets) in [
+        ("the only revision, holding one asset", 1usize, 1usize),
+        ("one of three, holding several assets", 3, 3),
+    ] {
+        let data_set_id = create_data_set(&router, case, "d", "S3_SNAPSHOT", None)
+            .await
+            .string("Id");
+        let mut ids = Vec::new();
+        for _ in 0..revisions {
+            ids.push(
+                create_revision(&router, &data_set_id, Some("published"), None, case)
+                    .await
+                    .string("Id"),
+            );
+        }
+        let target_id = ids[revisions - 1].clone();
+        import_assets(&engine, &data_set_id, &target_id, assets);
+        let finalized = call(
+            &router,
+            "PATCH",
+            &format!("/v1/data-sets/{data_set_id}/revisions/{target_id}"),
+            Some(json!({ "Finalized": true })),
+        )
+        .await;
+        assert_eq!(
+            finalized.status, 200,
+            "case {case}: expected 200 finalizing the revision, got {} body {:?}",
+            finalized.status, finalized.body
+        );
+
+        let refused = delete_revision(&router, &data_set_id, &target_id).await;
+        assert_eq!(
+            refused.status, 409,
+            "case {case}: expected 409 deleting a finalized revision, got {} body {:?}",
+            refused.status, refused.body
+        );
+        assert_eq!(
+            refused.error.as_deref(),
+            Some("ConflictException"),
+            "case {case}: expected ConflictException, got {:?}",
+            refused.error
+        );
+        assert_eq!(
+            refused.string("Message"),
+            FINALIZED_ACTION_MESSAGE,
+            "case {case}: expected the fixed refusal sentence, got {:?}",
+            refused.body
+        );
+        assert_eq!(
+            refused.member("ResourceId").as_str(),
+            Some(target_id.as_str()),
+            "case {case}: expected ResourceId to name the revision, got {:?}",
+            refused.member("ResourceId")
+        );
+        assert_eq!(
+            refused.member("ResourceType"),
+            &json!(RESOURCE_TYPE_REVISION),
+            "case {case}: expected ResourceType {RESOURCE_TYPE_REVISION}, got {:?}",
+            refused.member("ResourceType")
+        );
+
+        // Nothing was removed: state still holds the record, and both readers still
+        // report it.
+        assert_eq!(
+            stored(&engine, &data_set_id, &target_id),
+            Some(true),
+            "case {case}: expected the refused delete to leave the revision in state"
+        );
+        let kept = get_revision(&router, &data_set_id, &target_id).await;
+        assert_eq!(
+            kept.status, 200,
+            "case {case}: expected the revision to still read back, got {} body {:?}",
+            kept.status, kept.body
+        );
+        assert_eq!(
+            listed_revision_ids(&router, &data_set_id).await.len(),
+            revisions,
+            "case {case}: expected every revision to survive the refused delete"
         );
     }
 }

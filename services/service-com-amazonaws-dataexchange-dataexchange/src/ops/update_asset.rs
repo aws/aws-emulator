@@ -1,15 +1,13 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op UpdateAsset
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `UpdateAsset`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
-//!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`UpdateAsset::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! IMPLEMENTED: writes the requested `Name` onto the stored asset of the revision the
+//! route addresses and answers 200 with that record as it now stands, so every later
+//! read of the asset reports the new name. Renaming an asset of a finalized revision —
+//! the state the model's `Finalized` documentation calls read-only — is refused with
+//! the modelled `ConflictException` (409) and changes nothing, and an id naming no data
+//! set, no revision of it or no asset of that revision is the modelled 404. This is the
+//! ONLY file to touch for this operation.
 //!
 //! ## Shape of an operation
 //!
@@ -181,18 +179,98 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `UpdateAsset` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(UpdateAssetErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("UpdateAsset"))
+        let _ = ctx;
+        let Some(state) = crate::state::service_state(&*self.engine) else {
+            return Err(UpdateAssetErrorModeled::InternalServerException(
+                crate::state::store_unavailable(),
+            )
+            .into());
+        };
+
+        let (record, data_set_id, revision_id) = {
+            let mut store = state.lock();
+            // An asset exists once the import that produces it has run, and an
+            // execution's outcome is owed by the clock whether or not anybody polled
+            // the job: materialising what is already due is what makes the asset this
+            // route addresses the same asset every other reader of it sees.
+            store.settle_jobs(crate::state::now());
+
+            // `DataSetId`, `RevisionId` and `AssetId` are all `@httpLabel` with pattern
+            // ^[a-zA-Z0-9]{30,40}$, so an identifier of the wrong shape was already
+            // refused as a 400 before this handler ran; reaching here, each is
+            // well-formed but may name nothing.
+            let revision = match store.revision_mut(&input.data_set_id, &input.revision_id) {
+                Ok(revision) => revision,
+                Err(missing) => {
+                    return Err(UpdateAssetErrorModeled::ResourceNotFoundException(missing).into())
+                }
+            };
+
+            // The model's own `Finalized` documentation calls a finalized revision
+            // "this read-only state", so changing an asset of one conflicts with the
+            // revision's current state. A revoked revision is finalized too, so this
+            // covers it. Checked before anything is written, so a refused rename leaves
+            // the asset — its `Name` and its `UpdatedAt` — exactly as it was.
+            if revision.finalized {
+                return Err(UpdateAssetErrorModeled::ConflictException(
+                    crate::state::revision_conflict(
+                        &input.revision_id,
+                        crate::state::REVISION_ACTION_REFUSED_MESSAGE,
+                    ),
+                )
+                .into());
+            }
+
+            // Where the asset lives, taken off the stored revision rather than echoed
+            // from the route, so the answer is the store's account of it.
+            let revision_id = revision.id.clone();
+            let data_set_id = revision.data_set_id.clone();
+            let Some(stored) = revision.asset_mut(&input.asset_id) else {
+                return Err(UpdateAssetErrorModeled::ResourceNotFoundException(
+                    crate::state::asset_not_found(&input.asset_id),
+                )
+                .into());
+            };
+
+            // `Name` is the one member this operation writes, and it is `@required`, so
+            // it arrives on every request. The model bounds it with neither a pattern
+            // nor a length, so the store's own cap on caller-sized text is what bounds
+            // the record this write leaves behind — the same cap the data set's `Name`
+            // carries. Checked AFTER the lookups, so an id that names nothing still
+            // answers its 404 rather than a 400 about the body.
+            if let Err(message) =
+                crate::state::bound_chars("Name", &input.name, crate::state::MAX_NAME_CHARS)
+            {
+                return Err(UpdateAssetErrorModeled::ValidationException(
+                    crate::state::invalid_request(message),
+                )
+                .into());
+            }
+
+            // A name that already matches is not a change, so `UpdatedAt` moves only
+            // when the record really did — the rule every update of this service
+            // follows.
+            if stored.name != input.name {
+                stored.name = input.name;
+                stored.updated_at = crate::state::now();
+            }
+            (stored.clone(), data_set_id, revision_id)
+        };
+
+        Ok(UpdateAssetOutput {
+            asset_details: Some(record.details()),
+            arn: Some(record.arn),
+            asset_type: Some(record.asset_type),
+            created_at: Some(record.created_at),
+            data_set_id: Some(data_set_id),
+            id: Some(record.id),
+            name: Some(record.name),
+            revision_id: Some(revision_id),
+            // An asset of a data set this account owns is not the entitled copy of
+            // another account's asset, so it corresponds to no owned asset: the member
+            // is answered only to an owner reading the entitled copy.
+            source_id: None,
+            updated_at: Some(record.updated_at),
+        })
     }
 }

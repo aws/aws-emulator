@@ -185,56 +185,47 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // `/v1/data-sets/{DataSetId}/revisions/{RevisionId}/assets/{AssetId}` and the
         // store keeps the assets inside their revision — so the lookup is scoped to the
         // named revision of the named data set: an asset of some OTHER revision is as
-        // absent here as one that was never imported.
+        // absent here as one that was never imported. `crate::state` holds that lookup
+        // once, so every operation on this route resolves the route the same way.
         // The answer is composed while the store is held, so the asset's CONTENT is
         // never copied out of it: only the members this operation reports are, and the
         // bytes an asset holds are not among them.
         let answered = {
             let store = state.lock();
-            let Some(data_set) = store.data_sets.get(&input.data_set_id) else {
-                return Err(GetAssetErrorModeled::ResourceNotFoundException(
-                    crate::state::data_set_not_found(&input.data_set_id),
-                )
-                .into());
+            let revision = match store.revision(&input.data_set_id, &input.revision_id) {
+                Ok(revision) => revision,
+                Err(missing) => {
+                    return Err(GetAssetErrorModeled::ResourceNotFoundException(missing).into())
+                }
             };
-            let Some(revision) = data_set.revisions.get(&input.revision_id) else {
-                return Err(GetAssetErrorModeled::ResourceNotFoundException(
-                    crate::state::revision_not_found(&input.revision_id),
-                )
-                .into());
-            };
-            revision
-                .assets
-                .iter()
-                .find(|asset| asset.id == input.asset_id)
-                .map(|stored| GetAssetOutput {
-                    arn: Some(stored.arn.clone()),
-                    // The ONE detail member the asset's `AssetType` names, filled from
-                    // what the import that created it recorded; see
-                    // `crate::state::Asset::details`.
-                    asset_details: Some(stored.details()),
-                    asset_type: Some(stored.asset_type.clone()),
-                    created_at: Some(stored.created_at),
-                    // The asset is held by the revision of the data set the route
-                    // named, so those are the ids it is associated with.
-                    data_set_id: Some(input.data_set_id.clone()),
-                    id: Some(stored.id.clone()),
-                    name: Some(stored.name.clone()),
-                    revision_id: Some(input.revision_id.clone()),
-                    // An asset of a data set this account owns is not the entitled copy
-                    // of another account's asset, so it corresponds to no owned asset:
-                    // the member is answered only to an owner reading the entitled copy,
-                    // which is what `ListRevisionAssets` answers too.
-                    source_id: None,
-                    // An asset carries no tags: the resources whose tags this emulator
-                    // holds are the ones a tagging call can address
-                    // (`crate::state::ComAmazonawsDataexchangeDataexchangeState::resource_tags`),
-                    // and a resource with no tags answers no `Tags` member at all rather
-                    // than an empty map, which is what `GetRevision` and `GetDataSet`
-                    // already do.
-                    tags: None,
-                    updated_at: Some(stored.updated_at),
-                })
+            revision.asset(&input.asset_id).map(|stored| GetAssetOutput {
+                arn: Some(stored.arn.clone()),
+                // The ONE detail member the asset's `AssetType` names, filled from
+                // what the import that created it recorded; see
+                // `crate::state::Asset::details`.
+                asset_details: Some(stored.details()),
+                asset_type: Some(stored.asset_type.clone()),
+                created_at: Some(stored.created_at),
+                // The asset is held by the revision of the data set the route
+                // named, so those are the ids it is associated with.
+                data_set_id: Some(input.data_set_id.clone()),
+                id: Some(stored.id.clone()),
+                name: Some(stored.name.clone()),
+                revision_id: Some(input.revision_id.clone()),
+                // An asset of a data set this account owns is not the entitled copy
+                // of another account's asset, so it corresponds to no owned asset:
+                // the member is answered only to an owner reading the entitled copy,
+                // which is what `ListRevisionAssets` answers too.
+                source_id: None,
+                // An asset carries no tags: the resources whose tags this emulator
+                // holds are the ones a tagging call can address
+                // (`crate::state::ComAmazonawsDataexchangeDataexchangeState::resource_tags`),
+                // and a resource with no tags answers no `Tags` member at all rather
+                // than an empty map, which is what `GetRevision` and `GetDataSet`
+                // already do.
+                tags: None,
+                updated_at: Some(stored.updated_at),
+            })
         };
 
         answered.ok_or_else(|| {

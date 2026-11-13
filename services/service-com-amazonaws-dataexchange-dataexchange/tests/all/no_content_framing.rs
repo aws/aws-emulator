@@ -15,11 +15,9 @@
 //!
 //! The table spans what the rule generalises over: EVERY operation of this service whose
 //! modelled output is empty, whose success is the no-content status and that is served —
-//! `CancelJob`, four of the five deletes and the two tag mutations — whatever the resource
-//! it acts on, the method it is bound to (`DELETE` and `POST`), and whether the request
-//! carried a body of its own. `DeleteAsset` is the one member of that class with no row: it
-//! is still a scaffold answering 501, which its own open stub issue owns, so there is no
-//! success of it to frame. The repeated-call rows pin that the framing is a property of the
+//! `CancelJob`, all five deletes and the two tag mutations — whatever the resource it acts
+//! on, the method it is bound to (`DELETE` and `POST`), and whether the request carried a
+//! body of its own. The repeated-call rows pin that the framing is a property of the
 //! answer and not of the first call. The contrasting table is the other half of the rule:
 //! the creates, the readers and the modelled refusals, which all carry content.
 
@@ -34,6 +32,7 @@ use crate::data_sets::{call, create_data_set, harness, REGION};
 use crate::event_actions::entitle_data_set;
 use crate::jobs::create_job;
 use crate::resource_tags::percent_encode;
+use crate::revision_finalization::import_assets;
 use crate::revisions::create_revision;
 use crate::signed_url_uploads::base64_md5;
 
@@ -151,8 +150,7 @@ async fn data_set_with_revision(
 ///
 /// Source for the class: the operations whose `output_shape` is `Unit` and whose
 /// `http { code }` is the no-content status — `smithy_query(query="operation",
-/// operation="CancelJob,DeleteAsset,DeleteDataGrant,DeleteDataSet,DeleteEventAction,DeleteRevision,TagResource,UntagResource")`
-/// — less `DeleteAsset`, which is still a scaffold (see the module docs).
+/// operation="CancelJob,DeleteAsset,DeleteDataGrant,DeleteDataSet,DeleteEventAction,DeleteRevision,TagResource,UntagResource")`.
 async fn no_content_cases(
     router: &MultiServiceRouter,
     engine: &Arc<engine::InMemoryEngine>,
@@ -195,6 +193,38 @@ async fn no_content_cases(
         label: "DeleteRevision".to_string(),
         method: "DELETE",
         uri: format!("/v1/data-sets/{revision_data_set}/revisions/{revision_id}"),
+        body: None,
+    });
+
+    // DeleteAsset: an asset of a revision of its own data set. An asset only ever arrives
+    // in a revision through an import job, so the record is written through the shared
+    // engine the way `revision_finalization.rs` does, and its id is read back through the
+    // list reader.
+    let (asset_data_set, asset_revision) =
+        data_set_with_revision(router, "delete-asset", "S3_SNAPSHOT").await;
+    import_assets(engine, &asset_data_set, &asset_revision, 1);
+    let listed = call(
+        router,
+        "GET",
+        &format!("/v1/data-sets/{asset_data_set}/revisions/{asset_revision}/assets"),
+        None,
+    )
+    .await;
+    let asset_id = listed.member("Assets")[0]["Id"]
+        .as_str()
+        .unwrap_or_else(|| {
+            panic!(
+                "case \"DeleteAsset\": expected the imported asset to be listed, got {:?}",
+                listed.body
+            )
+        })
+        .to_string();
+    cases.push(Case {
+        label: "DeleteAsset".to_string(),
+        method: "DELETE",
+        uri: format!(
+            "/v1/data-sets/{asset_data_set}/revisions/{asset_revision}/assets/{asset_id}"
+        ),
         body: None,
     });
 

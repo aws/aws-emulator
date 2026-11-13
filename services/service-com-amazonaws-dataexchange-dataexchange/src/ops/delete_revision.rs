@@ -187,6 +187,25 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             )
             .into());
         };
+        // The model's own `Finalized` documentation calls a finalized revision "this
+        // read-only state", so removing one conflicts with its current state: once a
+        // revision is finalized its data is published to whoever is entitled to it, and
+        // withdrawing that is what `RevokeRevision` is for. A revoked revision is
+        // finalized too, so this covers it. Checked before anything is removed, so a
+        // refused delete leaves the data set holding every revision it held.
+        if data_set
+            .revisions
+            .get(&input.revision_id)
+            .is_some_and(|revision| revision.finalized)
+        {
+            return Err(DeleteRevisionErrorModeled::ConflictException(
+                crate::state::revision_conflict(
+                    &input.revision_id,
+                    crate::state::REVISION_ACTION_REFUSED_MESSAGE,
+                ),
+            )
+            .into());
+        }
         // Removing the revision removes the assets and the tags it holds with it: they
         // live on the record, so nothing is left behind for a later reader to find.
         if data_set.revisions.remove(&input.revision_id).is_none() {

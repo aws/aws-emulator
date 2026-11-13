@@ -229,6 +229,23 @@ pub struct Revision {
     pub updated_at: DateTime,
 }
 
+impl Revision {
+    /// The asset `asset_id` names among the ones this revision holds, or `None` when
+    /// it holds no asset with that identifier.
+    ///
+    /// An asset is addressed only within its revision — its route is
+    /// `/v1/data-sets/{DataSetId}/revisions/{RevisionId}/assets/{AssetId}` — so this
+    /// is where every asset lookup goes, and the scan is bounded by the revision.
+    pub fn asset(&self, asset_id: &str) -> Option<&Asset> {
+        self.assets.iter().find(|asset| asset.id == asset_id)
+    }
+
+    /// The same lookup as [`Self::asset`], for a write to the asset.
+    pub fn asset_mut(&mut self, asset_id: &str) -> Option<&mut Asset> {
+        self.assets.iter_mut().find(|asset| asset.id == asset_id)
+    }
+}
+
 /// One stored job: what the caller asked for, in the response form every job
 /// operation reports it in, plus where it is in its lifecycle.
 ///
@@ -719,6 +736,43 @@ impl ComAmazonawsDataexchangeDataexchangeState {
                 .find(|revision| revision.arn == resource_arn)
                 .map(|revision| &mut revision.tags)
         })
+    }
+
+    /// The revision the `{DataSetId}/{RevisionId}` pair of a route addresses, or the
+    /// modelled 404 for whichever of the two the store does not hold.
+    ///
+    /// A revision is addressed only WITHIN its data set, so a data set that is not
+    /// there is reported before the revision is looked for at all — the two 404s name
+    /// different resources, and a caller has to be told which identifier missed.
+    pub fn revision(
+        &self,
+        data_set_id: &str,
+        revision_id: &str,
+    ) -> Result<&Revision, ResourceNotFoundException> {
+        let data_set = self
+            .data_sets
+            .get(data_set_id)
+            .ok_or_else(|| data_set_not_found(data_set_id))?;
+        data_set
+            .revisions
+            .get(revision_id)
+            .ok_or_else(|| revision_not_found(revision_id))
+    }
+
+    /// The same lookup as [`Self::revision`], for a write into the revision.
+    pub fn revision_mut(
+        &mut self,
+        data_set_id: &str,
+        revision_id: &str,
+    ) -> Result<&mut Revision, ResourceNotFoundException> {
+        let data_set = self
+            .data_sets
+            .get_mut(data_set_id)
+            .ok_or_else(|| data_set_not_found(data_set_id))?;
+        data_set
+            .revisions
+            .get_mut(revision_id)
+            .ok_or_else(|| revision_not_found(revision_id))
     }
 }
 

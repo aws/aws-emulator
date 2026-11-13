@@ -1782,10 +1782,6 @@ mod cognito_signed_session_leading_keys_partition;
 // decision and the value) at once, so no single service crate's test target can ask it.
 #[path = "all/lambda_in_function_secretsmanager_grant_revocation.rs"]
 mod lambda_in_function_secretsmanager_grant_revocation;
-#[path = "all/cloudformation_monitored_alb_search_estate.rs"]
-mod cloudformation_monitored_alb_search_estate;
-#[path = "all/cloudformation_domain_endpoint_outputs.rs"]
-mod cloudformation_domain_endpoint_outputs;
 // Declared in the appended tail, which is where every new suite inserts its lines: a
 // CloudFormation-deployed REST API gated by a TOKEN Lambda authorizer whose invocation is
 // admitted by the role its authorizerCredentials names spans CloudFormation (which deploys the
@@ -1824,3 +1820,10 @@ mod apigateway_dynamodb_service_integration;
 // can wire it and then read the group back.
 #[path = "all/logs_vended_group_lambda_subscriber_permission.rs"]
 mod logs_vended_group_lambda_subscriber_permission;
+// Declared in the appended tail, which is where every new suite inserts its lines. Both
+// suites exist under tests/all/ and had lost their declaration when two branches removed
+// the same duplicated pair, which compiles them nowhere.
+#[path = "all/cloudformation_monitored_alb_search_estate.rs"]
+mod cloudformation_monitored_alb_search_estate;
+#[path = "all/cloudformation_domain_endpoint_outputs.rs"]
+mod cloudformation_domain_endpoint_outputs;
