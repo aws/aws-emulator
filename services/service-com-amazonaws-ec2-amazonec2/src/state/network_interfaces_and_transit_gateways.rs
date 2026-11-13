@@ -527,11 +527,27 @@ impl ComAmazonawsEc2Amazonec2State {
             .entry(spec.instance_id)
             .or_default()
             .insert(network_interface_id.to_string());
+        self.owe_network_interface_attachment_completion(network_interface_id);
+        Some(attachment_id)
+    }
+
+    /// Record that the clock owes the attachment of the interface `network_interface_id`
+    /// its completion: [`ATTACHMENT_STATUS_ATTACHED`] one [`TRANSITION_DELAY`] from now.
+    ///
+    /// The ONE place an attachment's completion is owed, so an attachment a LAUNCH makes
+    /// (`super::launched_primary_interfaces` and `super::launched_interfaces`) and one
+    /// `AttachNetworkInterface` makes reach `attached` over the same span, and a caller that
+    /// reads either straight afterwards still sees the `attaching` state it was answered
+    /// with. The instant is RECORDED rather than slept for and
+    /// [`Self::settle_due_network_interface_attachment_moves`] applies it.
+    pub(super) fn owe_network_interface_attachment_completion(
+        &mut self,
+        network_interface_id: &str,
+    ) {
         self.network_interface_attachment_move_at.insert(
             network_interface_id.to_string(),
             PendingStateMove::starting_now(ATTACHMENT_STATUS_ATTACHED),
         );
-        Some(attachment_id)
     }
 
     /// Apply every move the clock owes a network interface's attachment that has come due by

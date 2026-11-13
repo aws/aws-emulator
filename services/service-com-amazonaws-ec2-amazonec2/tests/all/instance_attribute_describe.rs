@@ -37,6 +37,7 @@ use ec2::state::{
     ComAmazonawsEc2Amazonec2State as Ec2State, DEFAULT_DISABLE_API_STOP, DEFAULT_INSTANCE_TYPE,
     DEFAULT_SHUTDOWN_BEHAVIOR, DEFAULT_SOURCE_DEST_CHECK, IMAGE_SRIOV_NET_SUPPORT_SIMPLE,
     INSTANCE_ID_PREFIX, INSTANCE_IDS_PARAMETER, ImageSpec, LINUX_ROOT_DEVICE_NAME,
+    TRANSITION_DELAY,
 };
 use service_com_amazonaws_ec2_amazonec2 as ec2;
 use smithy_server_runtime::MultiServiceRouter;
@@ -98,6 +99,35 @@ async fn describe(
     let mut params = vec![p("InstanceId", instance_id), p("Attribute", attribute)];
     params.extend_from_slice(extra);
     call(router, REGION, "DescribeInstanceAttribute", &params).await
+}
+
+/// Look again until the instance `instance_id` reports the block device mapping its launch
+/// gave it, or a generous deadline passes.
+///
+/// "Any block device mapping entries for the instance" are the volumes the instance HOLDS,
+/// and the volumes of a launch are attached as part of that launch completing — so an
+/// instance still `pending` reports none and the mapping rows below ask about one whose
+/// launch has completed. The condition is looked at AGAIN in a loop rather than waited out,
+/// so nothing here depends on how fast the host runs; the deadline is a multiple of the
+/// service's own transition span, far enough out that a loaded host is never the reason it
+/// fails.
+async fn past_the_launch(case: &str, router: &MultiServiceRouter, instance_id: &str) {
+    let deadline = std::time::Instant::now() + TRANSITION_DELAY * 40;
+    loop {
+        let (status, body) = describe(router, instance_id, "blockDeviceMapping", &[]).await;
+        assert_eq!(
+            status, 200,
+            "case {case:?}: the mapping read must succeed, got {status} with body {body}"
+        );
+        if !set_texts(case, &body, "blockDeviceMapping", "deviceName").is_empty() {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "case {case:?}: the launch's own volumes must reach the instance, got body {body}"
+        );
+        tokio::time::sleep(TRANSITION_DELAY / 10).await;
+    }
 }
 
 /// Launch one instance with `params` beside `ImageId`, and answer its id.
@@ -327,6 +357,10 @@ fn value(
 async fn reports_the_one_named_attribute_out_of_the_stored_instance() {
     let (router, engine) = super::ec2_query::emulator();
     let instances = launched(&router, &engine).await;
+    // The block device mapping rows below ask about the volumes each launch gave its
+    // instance, which reach it as that launch completes.
+    past_the_launch("the configured launch", &router, &instances.configured).await;
+    past_the_launch("the plain launch", &router, &instances.plain).await;
 
     // The groups a launch that named none is given: its VPC's default group, carried by the
     // instance's primary network interface. Read off `DescribeInstances`, so the expectation

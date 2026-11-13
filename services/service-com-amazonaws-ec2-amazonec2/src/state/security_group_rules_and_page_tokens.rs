@@ -1430,18 +1430,30 @@ impl ComAmazonawsEc2Amazonec2State {
             private_dns_name: primary_address
                 .as_deref()
                 .map(|address| private_dns_name(address, &spec.region)),
-            // A public hostname exists only for an interface with a public address.
-            public_dns_name: None,
+            // "A public hostname" (`NetworkInterface$PublicDnsName`): the name of the public
+            // address the interface holds, which an interface holding none has as the EMPTY
+            // name — the member is reported either way, the same reading the instance's own
+            // `PublicDnsName` takes. A public address assigned later brings its name with it
+            // ([`Self::assign_amazon_public_ipv4`]).
+            public_dns_name: Some(String::new()),
             public_ip_dns_name_options: None,
             private_ip_address: primary_address,
             private_ip_addresses: Some(private_ip_addresses),
             // "The alias or Amazon Web Services account ID of the principal or service that
-            // created the network interface" (`NetworkInterface$RequesterId`): reported for
-            // an interface an AWS service created to serve a resource of the account, and
-            // `None` for one the caller created for itself. An interface a service created
-            // is the one that service manages, so `RequesterManaged` follows from the same
-            // member rather than being decided twice.
-            requester_id: spec.requester.clone(),
+            // created the network interface" (`NetworkInterface$RequesterId`): the ALIAS of
+            // the service that created the interface to serve a resource of the account,
+            // and — for one the caller created for itself — the PRINCIPAL that created it,
+            // which is the one IAM principal this emulator's credential speaks for
+            // ([`::service_common::caller_principal::ambient_user_id`], the same id STS
+            // reports as the caller), reported as the unique id IAM gives it. An interface a
+            // service created is the one that service MANAGES, so `RequesterManaged` follows
+            // from whether there was such a service rather than from the member being
+            // present.
+            requester_id: Some(
+                spec.requester
+                    .clone()
+                    .unwrap_or_else(::service_common::caller_principal::ambient_user_id),
+            ),
             requester_managed: Some(spec.requester.is_some()),
             // "Indicates whether source/destination checking is enabled": on by default,
             // the value an interface has to be changed away from to do NAT.

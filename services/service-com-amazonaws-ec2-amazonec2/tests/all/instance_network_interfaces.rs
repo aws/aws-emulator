@@ -377,8 +377,9 @@ async fn every_launched_instance_reports_its_primary_network_interface() {
             );
             assert_eq!(
                 interface.attachment_status.as_deref(),
-                Some("attached"),
-                "case {case:?}: the launch's own attachment is attached, got {interface:?}"
+                Some("attaching"),
+                "case {case:?}: the launch's own attachment is still being made when the \
+                 launch answers, got {interface:?}"
             );
             assert_eq!(
                 interface.delete_on_termination.as_deref(),

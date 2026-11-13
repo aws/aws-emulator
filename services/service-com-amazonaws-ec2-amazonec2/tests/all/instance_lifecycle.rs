@@ -693,9 +693,13 @@ async fn a_clock_owed_transition_lands_only_once_it_is_due() {
         "case launch: a describe straight after the launch still sees pending"
     );
     assert_eq!(
-        describe_one(&ec2, &instance_id).await.private_dns_name,
-        None,
-        "case launch: the private DNS name is not available until the instance runs"
+        describe_one(&ec2, &instance_id)
+            .await
+            .private_dns_name
+            .as_deref(),
+        Some("ip-172-31-0-4.us-west-2.compute.internal"),
+        "case launch: the private hostname names the address the launch assigned, so a \
+         describe straight after the launch already reports it"
     );
     past_the_transition().await;
     let running = describe_one(&ec2, &instance_id).await;

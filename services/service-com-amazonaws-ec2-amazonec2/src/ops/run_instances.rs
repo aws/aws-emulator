@@ -814,6 +814,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // batch against the account's own IMDS defaults and the AMI's `ImdsSupport`, so
         // every instance of one launch reports the same detail. A word outside its modelled
         // catalog refuses the launch HERE, before the first write.
+        //
+        // The AMI's own IMDS requirement is read through the store's ONE reading of it
+        // ([`crate::state::ComAmazonawsEc2Amazonec2State::image_imds_support`]), so a launch
+        // from an image this store does not hold runs under the requirement the images this
+        // crate publishes carry rather than under none.
+        let image_imds_support = store.image_imds_support(Some(&image_id));
         let detail: InstanceDetail = InstanceDetail::launched(InstanceDetailSpec {
             metadata_options: input.metadata_options.as_ref(),
             enclave_options: input.enclave_options.as_ref(),
@@ -834,10 +840,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 .and_then(|placement| placement.tenancy.as_deref()),
             placement_group_name: placement_group_name.as_deref(),
             account_metadata_defaults: store.instance_metadata_defaults(),
-            image_imds_support: store
-                .images
-                .get(&image_id)
-                .and_then(|image| image.imds_support.as_deref()),
+            image_imds_support: image_imds_support.as_deref(),
         })?;
         // "The IDs of the security groups. You can create a security group using
         // CreateSecurityGroup" (`RunInstancesRequest$SecurityGroupIds`) and "[Default VPC] The

@@ -25,7 +25,7 @@ use crate::ops::types::{
 };
 
 use super::{
-    ATTACHMENT_STATUS_ATTACHED, ComAmazonawsEc2Amazonec2State, DEFAULT_SECURITY_GROUP_NAME,
+    ATTACHMENT_STATUS_ATTACHING, ComAmazonawsEc2Amazonec2State, DEFAULT_SECURITY_GROUP_NAME,
     NETWORK_INTERFACE_ATTACHMENT_ID_PREFIX, NetworkInterfaceAttachmentSpec, NetworkInterfaceSpec,
     PRIMARY_NETWORK_INTERFACE_DEVICE_INDEX, public_dns_name, system_time_to_date_time,
 };
@@ -121,10 +121,10 @@ impl ComAmazonawsEc2Amazonec2State {
     ///
     /// Each entry is created or attached through the one seam for its kind, so nothing about
     /// an interface is derived twice: a created one goes in through
-    /// [`Self::insert_network_interface`] already attached at its device index (the launch
-    /// makes the attachment, so there is no separate attach to wait for), and an existing one
-    /// goes through [`Self::start_network_interface_attachment`], which is where an
-    /// attachment the clock still owes its completion is recorded.
+    /// [`Self::insert_network_interface`] attached at its device index, and an existing one
+    /// goes through [`Self::start_network_interface_attachment`]. Either way the attachment
+    /// is `attaching` and the clock owes it its completion
+    /// ([`Self::owe_network_interface_attachment_completion`]).
     pub(super) fn mint_launched_interfaces(
         &mut self,
         instance_id: &str,
@@ -166,7 +166,11 @@ impl ComAmazonawsEc2Amazonec2State {
                         network_card_index: Some(interface.network_card_index),
                         instance_id: Some(instance_id.to_string()),
                         instance_owner_id: Some(::engine::emulator_account_id().to_string()),
-                        status: Some(ATTACHMENT_STATUS_ATTACHED.to_string()),
+                        // An attachment is BEING MADE when the call that makes it answers,
+                        // exactly as it is for the primary interface of a launch that named
+                        // none and for `AttachNetworkInterface`; the completion the clock
+                        // owes it is recorded below.
+                        status: Some(ATTACHMENT_STATUS_ATTACHING.to_string()),
                         ena_srd_specification: interface.ena_srd_specification.clone(),
                         ena_queue_count: interface.ena_queue_count,
                     };
@@ -188,6 +192,10 @@ impl ComAmazonawsEc2Amazonec2State {
                         stored_all = false;
                         continue;
                     };
+                    // Through the one seam an owed attachment completion is recorded by, so
+                    // an interface a launch creates and attaches reaches `attached` over the
+                    // same span as one attached by a later call.
+                    self.owe_network_interface_attachment_completion(&created);
                     created
                 }
             };

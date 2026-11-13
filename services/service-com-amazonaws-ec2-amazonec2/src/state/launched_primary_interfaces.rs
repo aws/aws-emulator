@@ -23,7 +23,7 @@ use std::time::SystemTime;
 use crate::ops::types::{GroupIdentifier, NetworkInterfaceAttachment};
 
 use super::{
-    ATTACHMENT_STATUS_ATTACHED, AMAZON_ASSIGNED_IP_OWNER_ID, ComAmazonawsEc2Amazonec2State,
+    ATTACHMENT_STATUS_ATTACHING, AMAZON_ASSIGNED_IP_OWNER_ID, ComAmazonawsEc2Amazonec2State,
     InstanceStateName, NETWORK_INTERFACE_ATTACHMENT_ID_PREFIX,
     NETWORK_INTERFACE_TYPE_INTERFACE, NetworkInterfaceSpec,
     PRIMARY_NETWORK_INTERFACE_DEVICE_INDEX, Subnet, region_of_zone_name, system_time_to_date_time,
@@ -135,7 +135,14 @@ impl ComAmazonawsEc2Amazonec2State {
             network_card_index: Some(0),
             instance_id: Some(instance_id.to_string()),
             instance_owner_id: Some(::engine::emulator_account_id().to_string()),
-            status: Some(ATTACHMENT_STATUS_ATTACHED.to_string()),
+            // "attaching" (`AttachmentStatus`): an attachment is BEING MADE when the call
+            // that makes it answers, so the launch's own interface is attaching and the
+            // clock owes it `attached` below — the same reading an attachment
+            // `AttachNetworkInterface` makes takes
+            // ([`ComAmazonawsEc2Amazonec2State::start_network_interface_attachment`]), so a
+            // caller that reads the instance straight after its launch still sees the
+            // transient state it waits on.
+            status: Some(ATTACHMENT_STATUS_ATTACHING.to_string()),
             // ENA Express is a setting of an attachment something asked for; a launch here
             // asks for none.
             ena_srd_specification: None,
@@ -162,6 +169,11 @@ impl ComAmazonawsEc2Amazonec2State {
             // this record here.
             tags: Vec::new(),
         });
+        // The completion the clock owes that attachment, recorded through the one seam
+        // every attachment of this store records it through.
+        if let Some(network_interface_id) = network_interface_id.as_deref() {
+            self.owe_network_interface_attachment_completion(network_interface_id);
+        }
         // The address goes to the interface this created, out of Amazon's own pool, through
         // the one place such an address is assigned ([`Self::assign_amazon_public_ipv4`]) —
         // so the instance, its interface's association and `DescribeNetworkInterfaces` all

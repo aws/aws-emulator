@@ -41,12 +41,15 @@ use crate::ops::types::{
 use crate::scaffolded::Scaffolded;
 
 use super::{
-    AccountInstanceMetadataDefaults, ComAmazonawsEc2Amazonec2State, DEFAULT_DISABLE_API_STOP,
+    AccountInstanceMetadataDefaults, BOOT_MODE_UEFI_PREFERRED, ComAmazonawsEc2Amazonec2State,
+    DEFAULT_DISABLE_API_STOP,
     DEFAULT_SHUTDOWN_BEHAVIOR, HOSTNAME_TYPE_IP_NAME,
     IMAGE_HYPERVISOR_XEN, IMAGE_ROOT_DEVICE_TYPE_EBS, IMAGE_VIRTUALIZATION_TYPE_HVM,
-    IMDS_SUPPORT_V2, ImageSpec, InstanceRecord, MAX_METADATA_HOP_LIMIT, MIN_METADATA_HOP_LIMIT,
+    IMDS_SUPPORT_V2, ImageSpec, InstanceRecord, InstanceStateName, MAX_METADATA_HOP_LIMIT,
+    MIN_METADATA_HOP_LIMIT,
     TRANSITION_DELAY, catalog_member, due_instant, echoed_resource_id, image_creation_time,
-    instance_type_record, invalid_parameter_value, region_of_zone_name, unmanaged_operator,
+    instance_type_record, invalid_parameter_value, region_of_zone_name, supported_boot_modes,
+    unmanaged_operator,
     zone_id_for_zone_name,
 };
 
@@ -615,23 +618,54 @@ impl ComAmazonawsEc2Amazonec2State {
         // facts of the AMI, reported only for an AMI that carries them.
         view.platform = image.and_then(|image| image.platform.clone());
         view.tpm_support = image.and_then(|image| image.tpm_support.clone());
-        // "The boot mode that was specified by the AMI" (`Instance$BootMode`) — absent for
-        // an AMI that specifies none — and "the boot mode that is used to boot the instance
-        // at launch or start" (`Instance$CurrentInstanceBootMode`), which is UEFI exactly
-        // where the AMI requires it: `uefi-preferred` means the AMI "supports both UEFI and
-        // Legacy BIOS", so an instance of it boots the legacy mode.
-        let boot_mode = image.and_then(|image| image.boot_mode.clone());
-        view.current_instance_boot_mode = Some(
-            if boot_mode.as_deref() == Some(INSTANCE_BOOT_MODE_UEFI) {
-                INSTANCE_BOOT_MODE_UEFI.to_string()
-            } else {
-                INSTANCE_BOOT_MODE_LEGACY_BIOS.to_string()
-            },
-        );
+        // "The boot mode that was specified by the AMI" (`Instance$BootMode`) — the mode
+        // the image the instance was launched from declares, and, for an AMI this store
+        // does not hold, the mode of the EBS-backed x86_64 HVM Linux image this crate
+        // publishes by default ([`BOOT_MODE_UEFI_PREFERRED`]), the same fallback the
+        // instance's other AMI-derived facts above take and the same reading
+        // [`ComAmazonawsEc2Amazonec2State::instance_sriov_net_support`] takes.
+        let boot_mode = match image {
+            Some(image) => image.boot_mode.clone(),
+            None => Some(BOOT_MODE_UEFI_PREFERRED.to_string()),
+        };
+        // "The boot mode that is used to boot the instance at launch or start"
+        // (`Instance$CurrentInstanceBootMode`): the mode the AMI REQUIRES where it requires
+        // one, and — for an AMI that "supports both UEFI and Legacy BIOS"
+        // (`uefi-preferred`) — the mode its INSTANCE TYPE offers, which is UEFI for a type
+        // that supports it and the legacy BIOS for one that does not (the EC2 User Guide's
+        // "Boot modes": Graviton types support UEFI only, the Nitro x86 types support both,
+        // and a pre-Nitro type only the legacy BIOS). Read off the one derivation of an
+        // instance type's supported boot modes this crate has
+        // ([`supported_boot_modes`]), so the instance report and
+        // `DescribeInstanceTypes`' own `SupportedBootModes` cannot disagree about one type.
+        let type_supports_uefi = instance_type_record(&instance.instance_type).is_some_and(|record| {
+            supported_boot_modes(&record.architecture, record.nitro)
+                .iter()
+                .any(|mode| mode == INSTANCE_BOOT_MODE_UEFI)
+        });
+        let boots_uefi = match boot_mode.as_deref() {
+            Some(INSTANCE_BOOT_MODE_UEFI) => true,
+            Some(BOOT_MODE_UEFI_PREFERRED) => type_supports_uefi,
+            _ => false,
+        };
+        view.current_instance_boot_mode = Some(if boots_uefi {
+            INSTANCE_BOOT_MODE_UEFI.to_string()
+        } else {
+            INSTANCE_BOOT_MODE_LEGACY_BIOS.to_string()
+        });
         view.boot_mode = boot_mode;
 
-        view.block_device_mappings =
-            Some(self.instance_block_device_mappings(&instance.instance_id, now));
+        // "Any block device mapping entries for the instance"
+        // (`Instance$BlockDeviceMappings`): the volumes the instance HOLDS, which a launch
+        // still running holds none of — the root volume of a launch is attached as part of
+        // that launch completing, so an instance still `pending` reports NO entry rather
+        // than one for a volume it has not been given yet, and reports every entry once the
+        // launch has carried it to `running`.
+        view.block_device_mappings = Some(if instance.state == InstanceStateName::Pending {
+            Vec::new()
+        } else {
+            self.instance_block_device_mappings(&instance.instance_id, now)
+        });
 
         // "The CPU options for the instance" (`Instance$CpuOptions`): the cores and threads
         // per core of its own instance type, read off the one derivation of an instance

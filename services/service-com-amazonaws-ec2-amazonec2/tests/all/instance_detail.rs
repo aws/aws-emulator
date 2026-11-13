@@ -456,19 +456,40 @@ async fn describe_instances_reports_the_fixed_detail_derived_from_state() {
                      expected {expected:?}, got {actual:?}"
                 );
             }
-            // "`uefi-preferred` … the AMI supports both UEFI and Legacy BIOS", so an
-            // instance of such an AMI boots the legacy mode.
-            let expected_boot_mode = if catalog.boot_mode.as_deref() == Some(BOOT_MODE_UEFI_PREFERRED)
-            {
-                "legacy-bios"
-            } else {
-                "uefi"
+            // "`uefi-preferred` … the AMI supports both UEFI and Legacy BIOS", so which mode
+            // such an instance boots is the INSTANCE TYPE's own question — compared against
+            // the boot modes `DescribeInstanceTypes` publishes for that type rather than
+            // against a value written here.
+            let published = ok(
+                &router,
+                case,
+                "DescribeInstanceTypes",
+                &indexed("InstanceType", &[row.instance_type]),
+            )
+            .await;
+            let published = document(case, &published);
+            let supported: Vec<String> = published
+                .descendants()
+                .find(|node| node.is_element() && node.tag_name().name() == "supportedBootModes")
+                .map(|set| {
+                    set.children()
+                        .filter(roxmltree::Node::is_element)
+                        .map(|item| item.text().unwrap_or_default().to_string())
+                        .collect()
+                })
+                .unwrap_or_default();
+            let expected_boot_mode = match catalog.boot_mode.as_deref() {
+                Some(BOOT_MODE_UEFI_PREFERRED) if !supported.iter().any(|mode| mode == "uefi") => {
+                    "legacy-bios"
+                }
+                _ => "uefi",
             };
             assert_eq!(
                 reported.current_instance_boot_mode.as_deref(),
                 Some(expected_boot_mode),
-                "case {case:?}: expected currentInstanceBootMode {expected_boot_mode:?}, \
-                 got {:?}",
+                "case {case:?}: expected currentInstanceBootMode {expected_boot_mode:?} for an \
+                 AMI of boot mode {:?} on a type supporting {supported:?}, got {:?}",
+                catalog.boot_mode,
                 reported.current_instance_boot_mode
             );
             assert!(
@@ -1263,11 +1284,15 @@ async fn metadata_options_follow_the_launch_and_settle() {
 
     let rows = vec![
         MetadataRow {
+            // An AMI this store does not hold publishes no `ImdsSupport` of its own, so
+            // the instance runs under the requirement the images this crate publishes
+            // carry — IMDSv2, which is "`HttpTokens` automatically set to `required` and
+            // `HttpPutResponseHopLimit` set to `2`" (`RegisterImageRequest$ImdsSupport`).
             case: "an AMI nothing holds, nothing asked for",
             from_catalog: false,
             extra: Vec::new(),
-            expected_tokens: HTTP_TOKENS_OPTIONAL,
-            expected_hop_limit: "1".to_string(),
+            expected_tokens: HTTP_TOKENS_REQUIRED,
+            expected_hop_limit: IMDS_V2_METADATA_HOP_LIMIT.to_string(),
             expected_endpoint: "enabled",
             expected_protocol_ipv6: "disabled",
             expected_tags: "disabled",

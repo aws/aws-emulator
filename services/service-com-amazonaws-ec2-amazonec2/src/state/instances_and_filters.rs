@@ -1884,6 +1884,27 @@ impl ComAmazonawsEc2Amazonec2State {
         )
     }
 
+    /// The `Image$ImdsSupport` an instance launched from `image_id` runs under: "if `v2.0`,
+    /// it indicates that IMDSv2 is specified in the AMI", which is what decides the
+    /// `HttpTokens` and `HttpPutResponseHopLimit` an instance whose launch asked for neither
+    /// runs with ([`InstanceDetail::launched`](crate::state::InstanceDetail::launched)).
+    ///
+    /// An AMI this store does not hold reports the value the CURRENT EBS-backed Linux
+    /// images this crate publishes carry ([`IMDS_SUPPORT_V2`] — every Amazon Linux 2023 row
+    /// of the published catalogue requires IMDSv2), the same fallback the instance's other
+    /// AMI-derived facts take (`super::instance_detail` and
+    /// [`Self::instance_sriov_net_support`]): an instance IS launched from such an image,
+    /// so it reports that image's facts rather than the facts of no image at all.
+    ///
+    /// The ONE reading of that fact, so the launch path and anything else that asks about
+    /// an AMI's IMDS requirement cannot answer differently.
+    pub fn image_imds_support(&self, image_id: Option<&str>) -> Option<String> {
+        match image_id.and_then(|id| self.images.get(id)) {
+            Some(image) => image.imds_support.clone(),
+            None => Some(IMDS_SUPPORT_V2.to_string()),
+        }
+    }
+
     /// The product codes one instance carries: "the product codes attached to this
     /// instance, if applicable" (`Instance$ProductCodes`).
     ///
@@ -2139,12 +2160,12 @@ impl ComAmazonawsEc2Amazonec2State {
             // instance rather than reporting an address EC2 has already freed for reuse.
             private_ip_address: (instance.state != InstanceStateName::Terminated)
                 .then(|| instance.private_ip.clone()),
-            // Documented on `Instance$privateDnsName`: "This name is not available
-            // until the instance enters the running state." It names the private address
-            // above, so an instance that no longer reports one reports no name for it
-            // either.
-            private_dns_name: (instance.state != InstanceStateName::Pending
-                && instance.state != InstanceStateName::Terminated)
+            // Documented on `Instance$privateDnsName`: the private hostname names the
+            // private address the instance HOLDS, which is assigned by the launch, so the
+            // name is reported from the launch's own answer on. A TERMINATED instance holds
+            // no address any more (its interfaces were deleted with it), so it reports no
+            // name for one either.
+            private_dns_name: (instance.state != InstanceStateName::Terminated)
                 .then(|| instance.private_dns_name.clone()),
             public_ip_address: instance.public_ip.clone(),
             launch_time: Some(system_time_to_date_time(instance.launch_time)),
@@ -2172,7 +2193,11 @@ impl ComAmazonawsEc2Amazonec2State {
             // The launch's own list stands in for an instance this store holds no interface
             // for.
             security_groups: Some(self.instance_security_groups(instance)),
-            client_token: instance.client_token.clone(),
+            // "The idempotency token you provided when you launched the instance, if
+            // applicable" (`Instance$ClientToken`): the token the launch carried, and the
+            // EMPTY value for a launch that carried none — the member is reported either
+            // way, as EC2 renders it for every instance.
+            client_token: Some(instance.client_token.clone().unwrap_or_default()),
             // "The product codes attached to this instance, if applicable"
             // (`Instance$ProductCodes`): the codes of the AMI it was launched from, so an
             // instance report and `ConfirmProductInstance` cannot disagree about one
@@ -2216,20 +2241,13 @@ impl ComAmazonawsEc2Amazonec2State {
             reservation_id: Some(reservation.reservation_id.clone()),
             owner_id: Some(reservation.owner_id.clone()),
             requester_id: reservation.requester_id.clone(),
-            // "Describes a launch request for one or more instances, and includes owner,
-            // requester, and SECURITY GROUP INFORMATION THAT APPLIES TO ALL INSTANCES IN
-            // THE LAUNCH REQUEST" (`Reservation`): the groups every instance this
-            // reservation reports holds, read off the one projection of an instance's
-            // groups ([`Self::instance_security_groups`]) rather than a second copy on the
-            // reservation — so the launch's own groups are reported here and a group only
-            // some of the instances hold is not. Each instance's groups are read ONCE, and
-            // a reservation reporting none (every instance of it terminated, its interfaces
-            // gone with them) reports the empty set rather than leaving the member out.
-            groups: Some(Self::groups_common_to(
-                instances
-                    .iter()
-                    .map(|instance| self.instance_security_groups(instance)),
-            )),
+            // "Not supported" (`Reservation$Groups`): the member is the EC2-Classic group
+            // list, which no reservation of a VPC launch carries — a VPC instance's groups
+            // live on its primary network interface and are reported there
+            // ([`Self::instance_security_groups`]). So the reservation reports the EMPTY
+            // list EC2 renders for it, present rather than left out, instead of a second
+            // copy of the instances' own groups.
+            groups: Some(Vec::new()),
             instances: Some(
                 instances
                     .iter()
@@ -2237,33 +2255,6 @@ impl ComAmazonawsEc2Amazonec2State {
                     .collect(),
             ),
         })
-    }
-
-    /// The groups every one of `held` carries, in the order the first of them carries
-    /// them — the groups one launch gave all of its instances.
-    ///
-    /// Each entry of `held` is one instance's groups as
-    /// [`Self::instance_security_groups`] reads them, consumed once, so a reservation pays
-    /// one projection per instance. An EMPTY sequence (a reservation reporting no
-    /// instances) has no common group.
-    fn groups_common_to(
-        held: impl Iterator<Item = Vec<GroupIdentifier>>,
-    ) -> Vec<GroupIdentifier> {
-        let mut common: Option<Vec<GroupIdentifier>> = None;
-        for groups in held {
-            common = Some(match common {
-                None => groups,
-                Some(current) => current
-                    .into_iter()
-                    .filter(|group| {
-                        groups
-                            .iter()
-                            .any(|also_held| also_held.group_id == group.group_id)
-                    })
-                    .collect(),
-            });
-        }
-        common.unwrap_or_default()
     }
 
     /// The modelled `Reservation` for `reservation_id` with every instance it holds.

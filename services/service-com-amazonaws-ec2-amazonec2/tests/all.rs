@@ -2041,3 +2041,10 @@ mod instance_guest_console_user_data;
 // it leaves alone. Declared at the tail of this file, which is where every new ec2 suite
 #[path = "all/update_security_group_rule_descriptions_egress.rs"]
 mod update_security_group_rule_descriptions_egress;
+// How an instance, a network interface and a volume attachment are projected: the empty
+// reservation groupSet, the `attaching` attachment a launch makes and the volumes it hands
+// the instance as it completes, an interface's public hostname and requester, the zone a
+// reported volume attachment carries, and the boot mode an instance's AMI and its own type
+// give it. Declared at the tail of this file, which is where every new ec2 suite lands.
+#[path = "all/instance_eni_and_volume_projections.rs"]
+mod instance_eni_and_volume_projections;

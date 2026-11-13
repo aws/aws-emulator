@@ -544,37 +544,35 @@ async fn a_launch_reports_its_reservation_groups_and_every_instance_member() {
             "case {case:?}: expected {count} instance(s), got {reservation:?}"
         );
 
-        // The reservation's groups are the groups of its instances — the launch request's
-        // own — reported as a LIST with one entry per group rather than as nothing at all.
+        // "Not supported" (`Reservation$Groups`): the reservation's own groupSet is the
+        // retired EC2-Classic member, so it is reported EMPTY whatever groups the launch
+        // named — a VPC instance's groups live on its primary network interface and are
+        // reported there, as the instance's own groupSet.
+        assert!(
+            reservation.groups.is_empty(),
+            "case {case:?}: the reservation's groupSet is empty, got {:?}",
+            reservation.groups
+        );
         let instance_groups = reservation.instances[0].groups.clone();
         assert_eq!(
-            reservation.groups, instance_groups,
-            "case {case:?}: the reservation reports the groups that apply to all its \
-             instances, got {reservation:?}"
-        );
-        assert_eq!(
-            reservation.groups.len(),
+            instance_groups.len(),
             named.len().max(1),
-            "case {case:?}: expected {} group(s) in the reservation's groupSet, got {:?}",
-            named.len().max(1),
-            reservation.groups
+            "case {case:?}: expected {} group(s) in the instance's groupSet, got {instance_groups:?}",
+            named.len().max(1)
         );
         for group in named {
             assert!(
-                reservation
-                    .groups
+                instance_groups
                     .iter()
                     .any(|(group_id, _)| group_id == &group_ids[*group]),
-                "case {case:?}: expected the named group {} among {:?}",
-                group_ids[*group],
-                reservation.groups
+                "case {case:?}: expected the named group {} among {instance_groups:?}",
+                group_ids[*group]
             );
         }
-        for (group_id, group_name) in &reservation.groups {
+        for (group_id, group_name) in &instance_groups {
             assert!(
                 !group_id.is_empty() && !group_name.is_empty(),
-                "case {case:?}: each group is reported by id AND name, got {:?}",
-                reservation.groups
+                "case {case:?}: each group is reported by id AND name, got {instance_groups:?}"
             );
         }
 
@@ -631,12 +629,13 @@ async fn a_launch_reports_its_reservation_groups_and_every_instance_member() {
                     "case {case:?}: the placement must carry {member}, got {instance:?}"
                 );
             }
-            // "This name is not available until the instance enters the running state"
-            // (`Instance$PrivateDnsName`), so a pending instance reports none.
+            // The private hostname names the private IPv4 address the LAUNCH assigned the
+            // instance, so the launch's own answer already carries it.
             assert_eq!(
-                instance.private_dns_name, None,
-                "case {case:?}: a pending instance reports no private DNS name, got \
-                 {instance:?}"
+                instance.private_dns_name.as_deref().map(str::is_empty),
+                Some(false),
+                "case {case:?}: the launch reports the private hostname of the address it \
+                 assigned, got {instance:?}"
             );
             // A subnet that maps public IPv4 addresses on launch gives its instances one,
             // and the public DNS name names exactly that address.
@@ -709,7 +708,8 @@ async fn a_launch_reports_its_reservation_groups_and_every_instance_member() {
                  {instance:?}"
             );
             assert_eq!(
-                instance.groups, reservation.groups,
+                instance.groups,
+                reservation.instances[0].groups,
                 "case {case:?}: the instance keeps the groups its launch gave it, got \
                  {instance:?}"
             );
