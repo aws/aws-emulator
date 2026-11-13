@@ -1,15 +1,11 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op UpdatePackage
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `UpdatePackage`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`UpdatePackage::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! Updates the supported fields of one software package in place: `description`
+//! replaces the stored summary, `defaultVersionName` promotes one of the package's own
+//! versions to be its default and `unsetDefaultVersion` removes that designation — so
+//! `GetPackage` reads back exactly what this call changed and nothing else.
 //!
 //! ## Shape of an operation
 //!
@@ -154,18 +150,76 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `UpdatePackage` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(UpdatePackageErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("UpdatePackage"))
+        // No region is read here: the package's ARN was minted by the create, and this
+        // call changes none of its identity.
+        let _ = ctx;
+        let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
+            UpdatePackageErrorModeled::InternalServerException(InternalServerException {
+                message: Some("the IoT emulator has no state store attached".to_string()),
+            })
+        })?;
+
+        // "You cannot name a defaultVersion and set unsetDefaultVersion equal to true at
+        // the same time" (`UpdatePackageRequest$defaultVersionName`): the two members
+        // give the same field opposite instructions, so the request itself is not valid
+        // — a 400 `ValidationException`, decided before anything is read or written.
+        // `unsetDefaultVersion` absent or `false` asks for no removal at all, so it is
+        // only `true` that conflicts.
+        if input.default_version_name.is_some() && input.unset_default_version == Some(true) {
+            return Err(crate::scaffolded::Scaffolded::validation(
+                "defaultVersionName and unsetDefaultVersion cannot be set at the same time",
+            ));
+        }
+
+        let mut store = state.lock();
+
+        // The package's name is its identity, so a name the catalog does not hold has
+        // nothing to update: the modelled `ResourceNotFoundException` (HTTP 404, "The
+        // specified resource does not exist"), never a 200 that wrote nothing.
+        let package = store.packages.get_mut(&input.package_name).ok_or_else(|| {
+            UpdatePackageErrorModeled::ResourceNotFoundException(ResourceNotFoundException {
+                message: Some(crate::state::missing_package_message(&input.package_name)),
+            })
+        })?;
+
+        // A default version is one of THIS package's versions — the designation names
+        // the pair `(packageName, versionName)` — so a version the package does not hold
+        // cannot be promoted: the same 404 the version's own readers answer, and the
+        // record is left exactly as it was.
+        if let Some(version_name) = input.default_version_name.as_deref() {
+            if !package.versions.contains_key(version_name) {
+                return Err(UpdatePackageErrorModeled::ResourceNotFoundException(
+                    ResourceNotFoundException {
+                        message: Some(crate::state::missing_package_version_message(
+                            &input.package_name,
+                            version_name,
+                        )),
+                    },
+                )
+                .into());
+            }
+        }
+
+        // Each supplied member replaces the stored value and an absent one leaves it
+        // alone: this operation updates the fields of a package that already exists, so
+        // it is never a re-create of the record.
+        if let Some(description) = input.description {
+            package.description = Some(description);
+        }
+        if let Some(version_name) = input.default_version_name {
+            package.default_version_name = Some(version_name);
+        } else if input.unset_default_version == Some(true) {
+            // "Indicates whether you want to remove the named default package version
+            // from the software package" — the designation goes away, the version itself
+            // stays, and a package that had no default already is left with none.
+            package.default_version_name = None;
+        }
+        // "The date that the package was last updated": this call is that update, so the
+        // stamp moves while the creation date stays where the create put it.
+        package.last_modified_date = ::std::time::SystemTime::now();
+
+        // `UpdatePackageResponse` binds no members, so a successful update answers 200
+        // with nothing in it; what it changed is read back through `GetPackage`.
+        Ok(UpdatePackageOutput {})
     }
 }

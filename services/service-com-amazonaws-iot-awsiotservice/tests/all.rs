@@ -63,6 +63,8 @@ mod ota_update_deployment;
 mod ota_update_job_document;
 #[path = "all/package_catalog.rs"]
 mod package_catalog;
+#[path = "all/package_default_version.rs"]
+mod package_default_version;
 #[path = "all/package_deletion.rs"]
 mod package_deletion;
 #[path = "all/package_version_update.rs"]
