@@ -27,11 +27,18 @@
 //! role a `permissionModel` names against the account's IAM records in the same shared
 //! engine, which is what `CreateService` and `UpdateService` have to know before they
 //! write.
+//!
+//! [`not_found`] holds the refusal every operation that resolves an ARN answers with when
+//! the ARN names nothing stored, so the whole crate words it once.
 
 mod invoker_role;
+mod not_found;
 mod policies;
 
 pub use invoker_role::{invoker_role_rejection, unassumable_message, SERVICE_PRINCIPAL};
+pub use not_found::{
+    arn_resource_id, resource_not_found, POLICY_RESOURCE_TYPE, SERVICE_RESOURCE_TYPE,
+};
 pub use policies::{
     mint_policy_arn, PolicyRecord, MAX_POLICIES, POLICY_RESOURCE, POLICY_VALUE_SOURCE_CROSS_ACCOUNT,
     POLICY_VALUE_SOURCE_SELF,
@@ -297,8 +304,8 @@ impl ServiceRecord {
         Some(self.associated_systems.clone())
     }
 
-    /// `TagMap` is constrained `len 1..50`, so an untagged service reports no `tags`
-    /// member at all rather than an empty map.
+    /// A service's `tags` member is the set of tags it carries, so an untagged service
+    /// reports the EMPTY map rather than withholding the member — see [`tag_map_view`].
     fn tags_view(&self) -> Option<HashMap<String, String>> {
         tag_map_view(&self.tags)
     }
@@ -488,13 +495,11 @@ pub fn to_date_time(instant: SystemTime) -> ::aws_smithy_types::DateTime {
 
 /// Stored tags as the modelled `TagMap` the wire carries.
 ///
-/// `TagMap` is constrained `len 1..50`, so an untagged resource reports no `tags` member
-/// at all rather than an empty map. Shared by every tagged resource in this store, so
-/// one rule covers them all.
+/// The member is ALWAYS reported: a resource's tag map is the set of tags it carries, and
+/// a resource carrying none has the EMPTY map rather than an unknown one, so a client that
+/// enumerates or diffs tags never has to tell "no tags" from "not told". Shared by every
+/// tagged resource in this store, so one rule covers them all.
 pub(crate) fn tag_map_view(tags: &BTreeMap<String, String>) -> Option<HashMap<String, String>> {
-    if tags.is_empty() {
-        return None;
-    }
     Some(
         tags.iter()
             .map(|(key, value)| (key.clone(), value.clone()))

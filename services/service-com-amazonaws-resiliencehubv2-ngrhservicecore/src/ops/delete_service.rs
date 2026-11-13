@@ -151,11 +151,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let mut store = state.lock();
         let Some(record) = store.services.remove(&input.service_arn) else {
             return Err(DeleteServiceErrorModeled::ResourceNotFoundException(
-                ResourceNotFoundException {
-                    message: format!("No service found for {}", input.service_arn),
-                    resource_id: Some(input.service_arn.clone()),
-                    resource_type: Some("Service".to_string()),
-                },
+                crate::state::resource_not_found(
+                    crate::state::SERVICE_RESOURCE_TYPE,
+                    &input.service_arn,
+                ),
             )
             .into());
         };

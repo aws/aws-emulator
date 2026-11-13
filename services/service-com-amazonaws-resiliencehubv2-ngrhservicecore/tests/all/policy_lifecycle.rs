@@ -25,7 +25,9 @@
 use std::sync::Arc;
 
 use serde_json::{json, Value};
-use service_com_amazonaws_resiliencehubv2_ngrhservicecore::state::POLICY_RESOURCE;
+use service_com_amazonaws_resiliencehubv2_ngrhservicecore::state::{
+    POLICY_RESOURCE, POLICY_RESOURCE_TYPE,
+};
 use service_com_amazonaws_resiliencehubv2_ngrhservicecore::EmulatedService;
 use smithy_server_runtime::MultiServiceRouter;
 
@@ -55,8 +57,12 @@ const ECHOED_MEMBERS: [&str; 8] = [
     "multiRegion",
     "dataRecovery",
     "kmsKeyId",
-    "tags",
+    TAG_MAP_MEMBER,
 ];
+
+/// `Policy$tags` — the member carrying the policy's tag map, which is reported whether or
+/// not the policy carries any tags.
+const TAG_MAP_MEMBER: &str = "tags";
 
 /// The values `MultiAzDisasterRecoveryApproach` and `MultiRegionDisasterRecoveryApproach`
 /// accept on the wire.
@@ -350,7 +356,15 @@ fn assert_projects_request(case: &str, request: &Value, policy: &Value) {
     for member in ECHOED_MEMBERS {
         let supplied = &request[member];
         let answered = &policy[member];
-        if supplied.is_null() {
+        // A tag map is the SET of tags the policy carries, so a policy created without
+        // tags carries the EMPTY map; every other member the request did not supply is
+        // absent.
+        let expected = match (member, supplied.is_null()) {
+            (TAG_MAP_MEMBER, true) => json!({}),
+            (_, true) => Value::Null,
+            _ => supplied.clone(),
+        };
+        if expected.is_null() {
             assert!(
                 answered.is_null(),
                 "case {case:?}: {member} was not supplied, so it must be absent, got \
@@ -358,8 +372,8 @@ fn assert_projects_request(case: &str, request: &Value, policy: &Value) {
             );
         } else {
             assert_eq!(
-                answered, supplied,
-                "case {case:?}: expected {member} {supplied:?}, got {answered:?}"
+                answered, &expected,
+                "case {case:?}: expected {member} {expected:?}, got {answered:?}"
             );
         }
     }
@@ -617,13 +631,35 @@ async fn an_arn_naming_no_stored_policy_is_not_found() {
             "ResourceNotFoundException",
             "case {arn:?}: expected ResourceNotFoundException, got {body:?}"
         );
-        assert_eq!(
-            body["resourceId"].as_str(),
-            Some(arn.as_str()),
-            "case {arn:?}: expected the refusal to carry the requested id, got {:?}",
-            body["resourceId"]
-        );
+        assert_refuses_as_not_found(&arn, &body);
     }
+}
+
+/// Assert `body` identifies the missing policy the way the rule requires: `resourceId` is
+/// the resource segment of the requested ARN, `resourceType` names the resource's type,
+/// and `message` is that type, " not found: " and the same identifier.
+fn assert_refuses_as_not_found(arn: &str, body: &Value) {
+    let resource_id = arn.splitn(6, ':').nth(5).unwrap_or(arn);
+    assert_eq!(
+        body["resourceId"].as_str(),
+        Some(resource_id),
+        "case {arn:?}: expected the refusal to identify the policy as {resource_id:?}, \
+         got {:?}",
+        body["resourceId"]
+    );
+    assert_eq!(
+        body["resourceType"].as_str(),
+        Some(POLICY_RESOURCE_TYPE),
+        "case {arn:?}: expected resourceType {POLICY_RESOURCE_TYPE:?}, got {:?}",
+        body["resourceType"]
+    );
+    let expected = format!("{POLICY_RESOURCE_TYPE} not found: {resource_id}");
+    assert_eq!(
+        body["message"].as_str(),
+        Some(expected.as_str()),
+        "case {arn:?}: expected message {expected:?}, got {:?}",
+        body["message"]
+    );
 }
 
 #[tokio::test]

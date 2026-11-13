@@ -19,6 +19,8 @@ mod effective_policy_values;
 mod invoker_role_trust;
 #[path = "all/policy_lifecycle.rs"]
 mod policy_lifecycle;
+#[path = "all/policy_update_and_deletion.rs"]
+mod policy_update_and_deletion;
 #[path = "all/service_function_lifecycle.rs"]
 mod service_function_lifecycle;
 #[path = "all/service_lifecycle.rs"]

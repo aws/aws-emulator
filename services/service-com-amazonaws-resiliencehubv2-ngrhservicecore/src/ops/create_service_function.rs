@@ -261,9 +261,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 /// The refusal for a `serviceArn` that names no stored service: a service function is
 /// created within a service, so without that service there is nothing to create it in.
 fn service_not_found(service_arn: &str) -> CreateServiceFunctionErrorModeled {
-    CreateServiceFunctionErrorModeled::ResourceNotFoundException(ResourceNotFoundException {
-        message: format!("No service found for {service_arn}"),
-        resource_id: Some(service_arn.to_string()),
-        resource_type: Some("Service".to_string()),
-    })
+    CreateServiceFunctionErrorModeled::ResourceNotFoundException(
+        crate::state::resource_not_found(crate::state::SERVICE_RESOURCE_TYPE, service_arn),
+    )
 }

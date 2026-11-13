@@ -280,7 +280,6 @@ async fn a_created_service_is_stored_and_reads_back_identically() {
             "description",
             "policyArn",
             "kmsKeyId",
-            "tags",
             "associatedSystems",
             "reportConfiguration",
         ] {
@@ -298,6 +297,14 @@ async fn a_created_service_is_stored_and_reads_back_identically() {
                 );
             }
         }
+        // A tag map is the SET of tags the service carries, so a service created without
+        // tags carries the EMPTY map rather than withholding the member.
+        let expected_tags = body.get("tags").cloned().unwrap_or_else(|| json!({}));
+        assert_eq!(
+            service["tags"], expected_tags,
+            "case {label}: expected tags {expected_tags:?}, got {:?}",
+            service["tags"]
+        );
         assert_eq!(
             service["assessmentStatus"], "NOT_STARTED",
             "case {label}: a new service has not been assessed, got {:?}",
