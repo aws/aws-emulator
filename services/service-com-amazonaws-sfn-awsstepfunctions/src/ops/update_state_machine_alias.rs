@@ -257,36 +257,58 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         }
 
         // The routing configuration is judged by the ONE rule every operation that
-        // takes one judges it by, and then by the rule that is this operation's own: an
-        // alias points at versions of the state machine it belongs to, so an update may
-        // not repoint it at another state machine's versions.
+        // takes one judges it by, and then by the rule that is this operation's own:
+        // an alias points into the versions of the state machine it belongs to, so a
+        // repoint resolves every entry UNDER that state machine, where a version of
+        // any other state machine resolves nothing at all.
         if let Some(routing_configuration) = &input.routing_configuration {
-            let pointed_at =
-                match store.read_routing_configuration(routing_configuration, &endpoint_region) {
-                    Ok(arn) => arn,
-                    Err(crate::state::RoutingRejection::InvalidArn(message)) => {
-                        return Err(UpdateStateMachineAliasErrorModeled::InvalidArn(InvalidArn {
-                            message: Some(message),
+            if let Err(rejection) = store.read_routing_configuration_of(
+                routing_configuration,
+                &endpoint_region,
+                &state_machine_arn,
+            ) {
+                return Err(match rejection {
+                    // The entry names a version of another state machine. The alias's
+                    // own state machine is the only one this resolves under, so the
+                    // refusal is the resource-resolution failure the service states as
+                    // a sentence of its own — whether or not that version exists
+                    // somewhere else, which is why nothing about it is interpolated
+                    // into the message; the entry travels in `resourceName`.
+                    crate::state::AliasRoutingRejection::OutsideStateMachine(version_arn) => {
+                        UpdateStateMachineAliasErrorModeled::ResourceNotFound(ResourceNotFound {
+                            message: Some(crate::state::RESOURCE_DOES_NOT_EXIST.to_string()),
+                            resource_name: Some(version_arn),
                         })
-                        .into())
+                        .into()
                     }
-                    Err(crate::state::RoutingRejection::InvalidRouting(message)) => {
-                        return Err(invalid_routing(message))
-                    }
-                    Err(crate::state::RoutingRejection::VersionNotFound(version_arn)) => {
-                        return Err(UpdateStateMachineAliasErrorModeled::ResourceNotFound(
-                            ResourceNotFound {
-                                message: Some(
-                                    crate::state::ROUTING_CONFIGURATION_VERSION_NOT_FOUND
-                                        .to_string(),
-                                ),
-                                resource_name: Some(version_arn),
-                            },
-                        )
-                        .into())
-                    }
-                    Err(crate::state::RoutingRejection::Deleting(machine_arn)) => {
-                        return Err(
+                    crate::state::AliasRoutingRejection::Shared(shared) => match shared {
+                        crate::state::RoutingRejection::InvalidArn(message) => {
+                            UpdateStateMachineAliasErrorModeled::InvalidArn(InvalidArn {
+                                message: Some(message),
+                            })
+                            .into()
+                        }
+                        crate::state::RoutingRejection::InvalidRouting(message) => {
+                            invalid_routing(message)
+                        }
+                        // A version of the alias's own state machine that was never
+                        // published: the rule broken is the routing configuration's
+                        // own — every entry must reference a version that already
+                        // exists — so the refusal states THAT rule, exactly as
+                        // `CreateStateMachineAlias` states it.
+                        crate::state::RoutingRejection::VersionNotFound(version_arn) => {
+                            UpdateStateMachineAliasErrorModeled::ResourceNotFound(
+                                ResourceNotFound {
+                                    message: Some(
+                                        crate::state::ROUTING_CONFIGURATION_VERSION_NOT_FOUND
+                                            .to_string(),
+                                    ),
+                                    resource_name: Some(version_arn),
+                                },
+                            )
+                            .into()
+                        }
+                        crate::state::RoutingRejection::Deleting(machine_arn) => {
                             UpdateStateMachineAliasErrorModeled::StateMachineDeleting(
                                 StateMachineDeleting {
                                     message: Some(crate::state::resource_error_message(
@@ -295,16 +317,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                                     )),
                                 },
                             )
-                            .into(),
-                        )
-                    }
-                };
-            if pointed_at != state_machine_arn {
-                return Err(invalid_routing(format!(
-                    "the routing configuration names versions of state machine {pointed_at}, \
-                     and alias {} points at versions of {state_machine_arn}",
-                    input.state_machine_alias_arn
-                )));
+                            .into()
+                        }
+                    },
+                });
             }
         }
 

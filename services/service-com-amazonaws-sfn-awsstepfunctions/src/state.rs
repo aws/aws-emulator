@@ -3291,6 +3291,22 @@ pub enum RoutingRejection {
     Deleting(String),
 }
 
+/// Why the routing configuration of an alias that ALREADY belongs to a state machine
+/// cannot be repointed; see
+/// [`ComAmazonawsSfnAwsstepfunctionsState::read_routing_configuration_of`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AliasRoutingRejection {
+    /// A rule every operation that takes a routing configuration judges by — the
+    /// ARNs, the one state machine the entries must agree on, the weights, and a
+    /// version the store does not hold ([`RoutingRejection`]).
+    Shared(RoutingRejection),
+    /// An entry naming a version of a state machine OTHER than the one the alias
+    /// belongs to: an alias points into ONE state machine's versions, so its own
+    /// state machine resolves nothing under that ARN — the modelled
+    /// `ResourceNotFound`, naming the entry's ARN.
+    OutsideStateMachine(String),
+}
+
 /// The parts of a state machine ARN this service reads.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StateMachineArn {

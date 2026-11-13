@@ -98,7 +98,14 @@ async fn create_alias(emulator: &Emulator, name: &str, routing: &[Value]) -> Str
 /// version ARN and the unqualified ARN run different configurations.
 ///
 /// Returns `(unqualifiedArn, version1Arn, version2Arn)`.
-async fn machine_with_two_versions(emulator: &Emulator, name: &str) -> (String, String, String) {
+///
+/// `pub(crate)`, not private:
+/// `tests/all/alias_repoint_version_resolution.rs` repoints aliases between two such
+/// state machines rather than carrying a second copy of the publish path.
+pub(crate) async fn machine_with_two_versions(
+    emulator: &Emulator,
+    name: &str,
+) -> (String, String, String) {
     let machine = create_machine(emulator, name, &definition(1)).await;
     let first = publish(emulator, &machine).await;
     update(emulator, &machine, &definition(2)).await;
@@ -108,7 +115,9 @@ async fn machine_with_two_versions(emulator: &Emulator, name: &str) -> (String, 
 }
 
 /// The `version` the execution's output carries, which says which definition ran.
-fn ran_version(described: &Value) -> i64 {
+///
+/// `pub(crate)` for the same reason as [`machine_with_two_versions`].
+pub(crate) fn ran_version(described: &Value) -> i64 {
     let output = described
         .get("output")
         .and_then(Value::as_str)

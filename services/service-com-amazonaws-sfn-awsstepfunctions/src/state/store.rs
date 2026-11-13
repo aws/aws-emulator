@@ -1688,69 +1688,68 @@ impl ComAmazonawsSfnAwsstepfunctionsState {
     /// configuration cannot be pointed at.
     ///
     /// The ONE place the routing-configuration rules live, so every operation that
-    /// takes one judges it identically: each entry names a state machine VERSION of
-    /// this service in the endpoint's region, "if you specify the ARN of a second
-    /// version, it must belong to the same state machine as the first version", "the
-    /// sum of the weights in the routing configuration must be equal to 100", and a
-    /// version the store does not hold is a resource that cannot be found. The ARNs
-    /// are judged BEFORE the store is consulted, like every other ARN here, so a
+    /// takes one judges it identically: [`routing_shape`] judges what the REQUEST
+    /// carries — the ARNs, the one state machine they must agree on and the weights —
+    /// and [`Self::routing_versions_held`] what the store holds under it. The ARNs are
+    /// therefore judged BEFORE the store is consulted, like every other ARN here, so a
     /// defect in an ARN is never reported as a version that is absent.
+    ///
+    /// This is the reader of an operation that resolves the alias's state machine FROM
+    /// the configuration (`CreateStateMachineAlias`, which takes no `stateMachineArn`);
+    /// one repointing an alias that already belongs to a state machine resolves the
+    /// configuration under THAT state machine — see
+    /// [`Self::read_routing_configuration_of`].
     pub fn read_routing_configuration(
         &self,
         routing: &[RoutingConfigurationListItem],
         endpoint_region: &str,
     ) -> Result<String, RoutingRejection> {
-        let mut owner: Option<String> = None;
-        for item in routing {
-            let arn = item.state_machine_version_arn.as_str();
-            let parsed =
-                read_state_machine_arn(arn, endpoint_region).map_err(RoutingRejection::InvalidArn)?;
-            // A routing configuration routes to VERSIONS: an unqualified ARN, a
-            // map-run labeled one and an alias ARN each name something that is not
-            // a version, so none of them is a configuration this can be applied to.
-            let version = parsed
-                .qualifier
-                .as_deref()
-                .filter(|_| parsed.label().is_none())
-                .and_then(qualifier_version);
-            if version.is_none() {
-                return Err(RoutingRejection::InvalidRouting(format!(
-                    "{arn} is not the ARN of a state machine version"
-                )));
-            }
-            // The version's own state machine is its ARN without the qualifier the
-            // reader above just took off the end.
-            let machine = arn
-                .rsplit_once(':')
-                .map(|(machine, _)| machine.to_string())
+        let owner = routing_shape(routing, endpoint_region)?;
+        self.routing_versions_held(routing, &owner)?;
+        Ok(owner)
+    }
+
+    /// `routing` judged as the NEW configuration of the alias that belongs to
+    /// `state_machine_arn`.
+    ///
+    /// An alias is a pointer into ONE state machine's versions, so a repoint resolves
+    /// every entry UNDER the state machine the alias belongs to and nowhere else: an
+    /// entry naming a version of any other state machine resolves nothing there,
+    /// whether or not that version exists elsewhere, which makes it a resource that
+    /// cannot be found ([`AliasRoutingRejection::OutsideStateMachine`]) and not a
+    /// request whose shape is wrong. Every other rule is the shared one above.
+    pub fn read_routing_configuration_of(
+        &self,
+        routing: &[RoutingConfigurationListItem],
+        endpoint_region: &str,
+        state_machine_arn: &str,
+    ) -> Result<(), AliasRoutingRejection> {
+        let owner =
+            routing_shape(routing, endpoint_region).map_err(AliasRoutingRejection::Shared)?;
+        if owner != state_machine_arn {
+            // WHICH entry resolved nothing: the first that is not a version of the
+            // alias's own state machine. The shape rule has already refused a
+            // configuration whose entries name two state machines, so every entry
+            // here names the same foreign one.
+            let unresolved = routing
+                .iter()
+                .map(|item| item.state_machine_version_arn.clone())
+                .find(|arn| version_state_machine(arn) != state_machine_arn)
                 .unwrap_or_default();
-            match owner.as_deref() {
-                Some(first) if first != machine => {
-                    return Err(RoutingRejection::InvalidRouting(format!(
-                        "every version of a routing configuration must belong to one state \
-                         machine, got {first} and {machine}"
-                    )))
-                }
-                Some(_) => {}
-                None => owner = Some(machine),
-            }
+            return Err(AliasRoutingRejection::OutsideStateMachine(unresolved));
         }
-        let Some(owner) = owner else {
-            // UNREACHABLE through the wire: `routingConfiguration` is modelled
-            // 1..2, so the centralized walk has already refused an empty list.
-            return Err(RoutingRejection::InvalidRouting(
-                "routingConfiguration must name at least one state machine version".to_string(),
-            ));
-        };
+        self.routing_versions_held(routing, &owner)
+            .map_err(AliasRoutingRejection::Shared)
+    }
 
-        let weights: Vec<i32> = routing.iter().map(|item| item.weight).collect();
-        let total = weights.iter().copied().fold(0_i32, i32::saturating_add);
-        if total != ROUTING_WEIGHT_TOTAL {
-            return Err(RoutingRejection::InvalidRouting(routing_weight_sum_message(
-                &weights,
-            )));
-        }
-
+    /// The STORE's part of the routing rules: every entry names a version the store
+    /// holds, and the state machine `owner` those versions belong to is not being
+    /// deleted.
+    fn routing_versions_held(
+        &self,
+        routing: &[RoutingConfigurationListItem],
+        owner: &str,
+    ) -> Result<(), RoutingRejection> {
         for item in routing {
             if !self
                 .state_machine_versions
@@ -1766,12 +1765,12 @@ impl ComAmazonawsSfnAwsstepfunctionsState {
         // configuration.
         if self
             .state_machines
-            .get(&owner)
+            .get(owner)
             .is_some_and(StateMachine::is_deleting)
         {
-            return Err(RoutingRejection::Deleting(owner));
+            return Err(RoutingRejection::Deleting(owner.to_string()));
         }
-        Ok(owner)
+        Ok(())
     }
 
     /// What the state machine ARN `arn` refers to, or `None` when the store holds no
@@ -2845,6 +2844,74 @@ impl ComAmazonawsSfnAwsstepfunctionsState {
         executions.sort_by(|left, right| newest_first(left, right));
         executions
     }
+}
+
+/// The state machine every version of `routing` belongs to, read from the REQUEST
+/// alone — nothing of the store is consulted.
+///
+/// The rules of a routing configuration's own shape, in the order the service judges
+/// them: each entry names a state machine VERSION of this service in the endpoint's
+/// region, "if you specify the ARN of a second version, it must belong to the same
+/// state machine as the first version", and "the sum of the weights in the routing
+/// configuration must be equal to 100".
+fn routing_shape(
+    routing: &[RoutingConfigurationListItem],
+    endpoint_region: &str,
+) -> Result<String, RoutingRejection> {
+    let mut owner: Option<String> = None;
+    for item in routing {
+        let arn = item.state_machine_version_arn.as_str();
+        let parsed =
+            read_state_machine_arn(arn, endpoint_region).map_err(RoutingRejection::InvalidArn)?;
+        // A routing configuration routes to VERSIONS: an unqualified ARN, a
+        // map-run labeled one and an alias ARN each name something that is not
+        // a version, so none of them is a configuration this can be applied to.
+        let version = parsed
+            .qualifier
+            .as_deref()
+            .filter(|_| parsed.label().is_none())
+            .and_then(qualifier_version);
+        if version.is_none() {
+            return Err(RoutingRejection::InvalidRouting(format!(
+                "{arn} is not the ARN of a state machine version"
+            )));
+        }
+        let machine = version_state_machine(arn);
+        match owner.as_deref() {
+            Some(first) if first != machine => {
+                return Err(RoutingRejection::InvalidRouting(format!(
+                    "every version of a routing configuration must belong to one state \
+                     machine, got {first} and {machine}"
+                )))
+            }
+            Some(_) => {}
+            None => owner = Some(machine.to_string()),
+        }
+    }
+    let Some(owner) = owner else {
+        // UNREACHABLE through the wire: `routingConfiguration` is modelled
+        // 1..2, so the centralized walk has already refused an empty list.
+        return Err(RoutingRejection::InvalidRouting(
+            "routingConfiguration must name at least one state machine version".to_string(),
+        ));
+    };
+
+    let weights: Vec<i32> = routing.iter().map(|item| item.weight).collect();
+    let total = weights.iter().copied().fold(0_i32, i32::saturating_add);
+    if total != ROUTING_WEIGHT_TOTAL {
+        return Err(RoutingRejection::InvalidRouting(routing_weight_sum_message(
+            &weights,
+        )));
+    }
+    Ok(owner)
+}
+
+/// The state machine a VERSION ARN belongs to: that ARN without the `:<version>`
+/// qualifier on the end of it.
+fn version_state_machine(version_arn: &str) -> &str {
+    version_arn
+        .rsplit_once(':')
+        .map_or(version_arn, |(machine, _)| machine)
 }
 
 /// How `ListExecutions` orders two executions: "results are sorted by time, with the

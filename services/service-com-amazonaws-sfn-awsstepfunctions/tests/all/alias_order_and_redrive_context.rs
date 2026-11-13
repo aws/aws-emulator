@@ -440,13 +440,19 @@ async fn an_update_refuses_what_no_record_can_answer_for() {
             "ValidationException",
         ),
         (
+            // An alias points into the versions of the state machine it belongs to,
+            // so a repoint resolves every entry UNDER that state machine, where
+            // another state machine's version resolves nothing at all — the
+            // resource-resolution failure, not a defect in the request's shape. The
+            // wording and the rest of the rule are
+            // `tests/all/alias_repoint_version_resolution.rs`.
             "a version of another state machine",
             json!({
                 "stateMachineAliasArn": &alias,
                 "routingConfiguration": [route(&format!("{other}:1"), 100)],
             }),
             400,
-            "ValidationException",
+            "ResourceNotFound",
         ),
     ];
 
