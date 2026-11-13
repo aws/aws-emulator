@@ -35,6 +35,8 @@ mod key_modes_of_use_discriminator;
 mod key_state_refusal;
 #[path = "all/key_usage_and_replication.rs"]
 mod key_usage_and_replication;
+#[path = "all/resource_policy.rs"]
+mod resource_policy;
 #[path = "all/resource_tags.rs"]
 mod resource_tags;
 #[path = "all/state_roundtrip.rs"]

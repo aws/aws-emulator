@@ -1,15 +1,14 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op PutResourcePolicy
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `PutResourcePolicy`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
+//! Attaches or replaces the resource-based policy a key carries — this is the ONLY file
+//! to touch for this operation.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`PutResourcePolicy::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! What this body decides, beyond the modelled constraints the centralized walk already
+//! refused: that the ARN names a key this account holds, that the document is a
+//! resource-based policy this service attaches, and that it would not open the key to the
+//! public. Each of those readings lives in [`crate::state::attachable_policy`], shared
+//! with every other reader of a policy document in this crate.
 //!
 //! ## Shape of an operation
 //!
@@ -188,18 +187,53 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `PutResourcePolicy` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(PutResourcePolicyErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("PutResourcePolicy"))
+        // `ResourceArn`'s own pattern and 70..150 length and `Policy`'s 1..20480 length
+        // and character pattern are modelled, so the centralized walk refuses anything
+        // outside them before this body runs. What is left is what the model cannot say:
+        // that the ARN names a stored key, and what the document says.
+        let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
+            PutResourcePolicyErrorModeled::InternalServerException(InternalServerException {
+                message: Some("the payment cryptography key store is unavailable".to_string()),
+            })
+        })?;
+
+        let mut store = state.lock();
+        let key = store.key_mut(&input.resource_arn).ok_or_else(|| {
+            PutResourcePolicyErrorModeled::ResourceNotFoundException(ResourceNotFoundException {
+                resource_id: Some(input.resource_arn.clone()),
+            })
+        })?;
+
+        // Judged before anything is written, so a document this service will not attach
+        // leaves the key the policy it already had.
+        let attached = crate::state::attachable_policy(&input.policy).map_err(
+            |rejection| match rejection {
+                crate::state::PolicyRejection::Malformed(why) => PutResourcePolicyError::from(
+                    PutResourcePolicyErrorModeled::ValidationException(ValidationException {
+                        message: Some(why),
+                    }),
+                ),
+                crate::state::PolicyRejection::Public => PutResourcePolicyError::from(
+                    PutResourcePolicyErrorModeled::PublicPolicyException(PublicPolicyException {
+                        message: Some(crate::state::PUBLIC_POLICY_MESSAGE.to_string()),
+                    }),
+                ),
+            },
+        )?;
+
+        // "Attaches or replaces a resource-based policy" (this operation's own
+        // documentation): the document is written onto the one stored key record, so
+        // whatever policy that key carried before is gone and `GetResourcePolicy` answers
+        // this one.
+        key.resource_policy = Some(attached.clone());
+        let resource_arn = key.key_arn.clone();
+
+        crate::state::record_mutation(ctx.parts(), Self::NAME, &resource_arn);
+        // Answered from the record as it now stands: the ARN the policy was stored under
+        // and the document as it is stored, so a caller's next read sees this same text.
+        Ok(PutResourcePolicyOutput {
+            resource_arn,
+            policy: attached,
+        })
     }
 }

@@ -186,14 +186,14 @@ const CASES: &[Case] = &[
         // routing table can resolve.
         name: "a control-plane operation that is still a stub",
         host: "controlplane.payment-cryptography.us-east-1.amazonaws.com",
-        target: "PaymentCryptographyControlPlane.GetResourcePolicy",
+        target: "PaymentCryptographyControlPlane.DeleteResourcePolicy",
         method: "POST",
         uri_path: "/",
         content_type: JSON_1_0,
         body: r#"{"ResourceArn":"arn:aws:payment-cryptography:us-east-1:000000000000:key/abcdefghij123456"}"#,
         who: "the control plane",
         status: 501,
-        marker: "operation GetResourcePolicy is scaffolded",
+        marker: "operation DeleteResourcePolicy is scaffolded",
     },
     Case {
         // The data plane's own traffic, under the same signing name and with no

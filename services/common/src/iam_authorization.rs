@@ -145,7 +145,9 @@ const STRING_OPERATORS: &[&str] = &[
 /// for every other key, absence from the context means this emulator does not model the key
 /// rather than that the request carried no value for it, and reading the first as the second
 /// would turn an undecided clause into a decided one.
-const NULL_OPERATOR: &str = "Null";
+/// `pub(crate)` so the reading of whether a condition clause narrows a grant to a named
+/// caller ([`super::public_resource_policy`]) names the same operator this evaluator does.
+pub(crate) const NULL_OPERATOR: &str = "Null";
 
 /// The ARN condition operators this evaluator decides, which is how a resource policy
 /// scopes a grant to the resource a request came FROM (`aws:SourceArn`). Like the string
@@ -285,7 +287,7 @@ fn in_network(stated: &str, actual: &str) -> bool {
 /// ([`Request::published`]); for every other key the clause stays undecided, because there
 /// absence means this emulator does not model the key rather than that the request carries
 /// no value for it.
-const IF_EXISTS_SUFFIX: &str = "IfExists";
+pub(crate) const IF_EXISTS_SUFFIX: &str = "IfExists";
 
 /// The characters a condition-key FAMILY's members are named after it by, which is what a
 /// published name ending in one declares the whole family of: IAM's tag families name a
@@ -1421,7 +1423,7 @@ fn conditions_hold(
 /// state a numeric or a boolean one as the JSON number or boolean that names it ("Bool":
 /// {"aws:SecureTransport": true}) — the same value, so the two spellings decide alike. A
 /// composite value (an object, a list of lists) names none.
-fn clause_values(value: &::serde_json::Value) -> Vec<String> {
+pub(crate) fn clause_values(value: &::serde_json::Value) -> Vec<String> {
     match value {
         ::serde_json::Value::Array(many) => many.iter().filter_map(scalar_text).collect(),
         one => scalar_text(one).into_iter().collect(),
@@ -1467,7 +1469,7 @@ fn publishes(request: &Request<'_>, key: &str) -> bool {
 /// The set qualifier a condition clause's key may be written with, for a request key that
 /// carries SEVERAL values.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SetQualifier {
+pub(crate) enum SetQualifier {
     /// Every value the request carries for the key must satisfy the clause.
     ForAllValues,
     /// At least one value the request carries for the key must satisfy it.
@@ -1477,7 +1479,7 @@ enum SetQualifier {
 /// Split a condition clause's name into its set qualifier, if it carries one, and the
 /// operator itself: `ForAllValues:StringEquals` is `StringEquals` under
 /// [`SetQualifier::ForAllValues`].
-fn split_set_qualifier(clause: &str) -> (Option<SetQualifier>, &str) {
+pub(crate) fn split_set_qualifier(clause: &str) -> (Option<SetQualifier>, &str) {
     for (prefix, qualifier) in [
         ("ForAllValues:", SetQualifier::ForAllValues),
         ("ForAnyValue:", SetQualifier::ForAnyValue),

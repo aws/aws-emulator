@@ -1206,7 +1206,7 @@ impl Provisioner {
             Self::AutoScalingGroup => {
                 create_auto_scaling_group(ctx, region, resource, propagated).await
             }
-            Self::S3Bucket => create_bucket(ctx, region, resource, propagated).await,
+            Self::S3Bucket => Box::pin(create_bucket(ctx, region, resource, propagated)).await,
             // `AWS::S3::BucketPolicy` publishes `Bucket` and `PolicyDocument` and no
             // `Tags`: a bucket's policy is no taggable resource, so no tags are
             // propagated to one.

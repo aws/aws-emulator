@@ -541,6 +541,10 @@ pub mod no_content_responses;
 /// The ONE way a service tells a continuation token it ISSUED from one a caller built,
 /// for every paginated read whose `NextToken` carries the position inside it.
 pub mod page_tokens;
+/// The ONE reading of whether a resource-based policy document grants PUBLIC access — a
+/// grant to a principal nobody named — for every service that refuses such a document or
+/// reports a policy's reach.
+pub mod public_resource_policy;
 /// A floating-point member of a response rendered the way AWS renders one — with a
 /// fractional part — which the framework's XML writer drops for a whole value.
 pub mod query_decimal_floats;

@@ -56,11 +56,18 @@ mod dukpt;
 mod key_export;
 /// The ASC X9.143 (TR-31) key block an exported key is wrapped in.
 mod key_block;
+/// Which resource-based policy documents this service attaches to a key, and how it
+/// refuses the rest.
+mod resource_policy;
 /// The asymmetric key pair an asymmetric key is, and the certificate signing request
 /// made from it.
 mod key_pair;
 /// One protected operation's Multi-Party Approval team association.
 mod mpa_association;
+
+pub use resource_policy::{
+    attachable_policy, PolicyRejection, NO_POLICY_DOCUMENT, PUBLIC_POLICY_MESSAGE,
+};
 
 pub use key_pair::{AsymmetricKeyPair, CertificateRequestRejection};
 pub use mpa_association::{
@@ -459,6 +466,18 @@ pub struct StoredKey {
     /// and false from the moment a call writes a configuration onto this key.
     pub uses_default_replication_regions: bool,
     pub tags: BTreeMap<String, String>,
+    /// The resource-based policy attached to this key, if any.
+    ///
+    /// `PutResourcePolicy` writes it and `DeleteResourcePolicy` clears it, so the member
+    /// is present exactly while some call has attached a document of its own — and a key
+    /// no call has attached one to reports the empty document
+    /// ([`StoredKey::resource_policy_document`]) rather than refusing the read. It lives
+    /// on the key record rather than in a map beside it
+    /// because the policy is attached to the key and shares its lifetime, and it is NOT
+    /// reported by the readers of the key itself: `Key` models no policy member, the model
+    /// stating that a key's policy "is managed via the separate Get/Put/DeleteResourcePolicy
+    /// operations and is not returned by GetKey".
+    pub resource_policy: Option<String>,
     /// The generated secret. Never returned and never logged: it is the source of
     /// the key check value and of nothing else in this slice. Its own `Debug` is
     /// redacted, so no formatter — a `tracing` field, a test assertion message, a
@@ -498,6 +517,18 @@ impl ::std::fmt::Debug for KeyMaterial {
 }
 
 impl StoredKey {
+    /// The resource-based policy this key carries, as a read reports it: the document some
+    /// `PutResourcePolicy` call attached, or [`resource_policy::NO_POLICY_DOCUMENT`] for a
+    /// key no call has attached one to.
+    ///
+    /// One reading for every reporter of this key's policy, so none of them has to decide
+    /// again what a key with no attached document reports.
+    pub fn resource_policy_document(&self) -> String {
+        self.resource_policy
+            .clone()
+            .unwrap_or_else(|| resource_policy::NO_POLICY_DOCUMENT.to_string())
+    }
+
     /// This key's check value under `kcv_algorithm`, computed from its own stored
     /// material.
     ///
@@ -1073,6 +1104,9 @@ impl ComAmazonawsPaymentcryptographyPaymentcryptographycontrolplaneState {
             replication_regions,
             uses_default_replication_regions,
             tags,
+            // A created key carries no policy of its own: one is attached by the call that
+            // asks for it, and `CreateKey` takes no policy document.
+            resource_policy: None,
             material,
             key_pair,
         };

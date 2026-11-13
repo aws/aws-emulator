@@ -185,7 +185,11 @@ pub fn non_arn_resource(text: &str) -> Option<String> {
 /// The statements `document` declares: the entries of its `Statement` list, or the one
 /// statement written as the object itself rather than as a list. Empty for a document
 /// that is not an object or declares no statement.
-fn statements(document: &::serde_json::Value) -> Vec<&::serde_json::Value> {
+///
+/// `pub(crate)` so the reading of WHO a document's grants reach
+/// ([`super::public_resource_policy`]) walks the same statements this grammar does, rather
+/// than carrying a second reading of that element.
+pub(crate) fn statements(document: &::serde_json::Value) -> Vec<&::serde_json::Value> {
     match document.get("Statement") {
         Some(::serde_json::Value::Array(entries)) => entries.iter().collect(),
         Some(statement @ ::serde_json::Value::Object(_)) => vec![statement],
