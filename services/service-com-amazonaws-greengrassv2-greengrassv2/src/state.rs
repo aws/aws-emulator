@@ -31,6 +31,10 @@ use crate::ops::types::{
 /// owns it.
 pub mod iot_target;
 
+/// May the caller perform the action it asked for? Decided from the IAM policies in force
+/// on the principal its credentials speak for.
+pub mod authorization;
+
 /// This service's ARN namespace (`OPERATIONS.md`: ARN namespace `greengrass`).
 pub const ARN_NAMESPACE: &str = "greengrass";
 
@@ -798,6 +802,23 @@ pub fn component_version_arn(region: &str, name: &str, version: &str) -> String 
         ARN_NAMESPACE,
         region,
         &format!("components:{name}:versions:{version}"),
+    )
+}
+
+/// The deployment ARN that names a deployment of this account — the `deployments:` form of
+/// the model's `GenericV2ARN`, which is the ARN the tagging route takes for one
+/// ([`NamedResource`]).
+pub fn deployment_arn(region: &str, deployment_id: &str) -> String {
+    ::engine::emulator_arn(ARN_NAMESPACE, region, &format!("deployments:{deployment_id}"))
+}
+
+/// The core-device ARN that names a core device of this account — the `coreDevices:` form
+/// of the model's `GenericV2ARN` ([`NamedResource`]).
+pub fn core_device_arn(region: &str, core_device_thing_name: &str) -> String {
+    ::engine::emulator_arn(
+        ARN_NAMESPACE,
+        region,
+        &format!("coreDevices:{core_device_thing_name}"),
     )
 }
 

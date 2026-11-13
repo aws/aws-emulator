@@ -148,8 +148,20 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        let _ = ctx;
         use crate::state as st;
+
+        // IAM decides first, before the fleet is read: a caller whose identity-based
+        // policies do not allow this action on the core device the request names is refused
+        // 403 and learns nothing about what is deployed to that device
+        // (`st::authorization`).
+        let region = st::request_region(ctx.parts());
+        st::authorization::authorize(
+            &*self.engine,
+            ctx,
+            Self::NAME,
+            &st::core_device_arn(&region, &input.core_device_thing_name),
+        )
+        .map_err(ListEffectiveDeploymentsErrorModeled::AccessDeniedException)?;
 
         let Some(state) = st::service_state(&*self.engine) else {
             return Err(ListEffectiveDeploymentsErrorModeled::InternalServerException(

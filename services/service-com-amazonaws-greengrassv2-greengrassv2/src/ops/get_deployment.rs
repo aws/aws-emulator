@@ -167,8 +167,20 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        let _ = ctx;
         use crate::state as st;
+
+        // IAM decides first, before the deployment history is read: a caller whose
+        // identity-based policies do not allow this action on the deployment the request
+        // names is refused 403 and learns nothing about whether that deployment exists
+        // (`st::authorization`).
+        let region = st::request_region(ctx.parts());
+        st::authorization::authorize(
+            &*self.engine,
+            ctx,
+            Self::NAME,
+            &st::deployment_arn(&region, &input.deployment_id),
+        )
+        .map_err(GetDeploymentErrorModeled::AccessDeniedException)?;
 
         let Some(state) = st::service_state(&*self.engine) else {
             return Err(GetDeploymentErrorModeled::InternalServerException(

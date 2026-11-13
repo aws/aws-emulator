@@ -170,6 +170,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
     ) -> Result<Self::Output, Self::Error> {
         use crate::state as st;
 
+        // IAM decides first, before the catalog is touched: a caller whose identity-based
+        // policies do not allow this action on the component version the request names is
+        // refused 403, nothing is deleted, and it learns nothing about whether that version
+        // exists (`st::authorization`). The resource is the ARN the request itself carried.
+        st::authorization::authorize(&*self.engine, ctx, Self::NAME, &input.arn)
+            .map_err(DeleteComponentErrorModeled::AccessDeniedException)?;
+
         let Some(state) = st::service_state(&*self.engine) else {
             return Err(DeleteComponentErrorModeled::InternalServerException(
                 InternalServerException {

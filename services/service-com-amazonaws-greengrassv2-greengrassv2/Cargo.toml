@@ -7,8 +7,17 @@ publish = false
 build = "build.rs"
 
 [dependencies]
-# The request-claim rule for the two services that share the `greengrass` signing name.
+# The request-claim rule for the two services that share the `greengrass` signing name,
+# and `iam_authorization` + `iam_role`: the shared evaluation of IAM policy documents
+# against an action on a resource, and which IAM entity a principal ARN names, so this
+# service's authorization gate (`src/state/authorization.rs`) reads a document exactly as
+# every other service does.
 service-common = { path = "../common" }
+# The STS store, for the identity an access key id speaks for: the principal
+# `sts:GetCallerIdentity` answers for the credentials a request signed with.
+service-com-amazonaws-sts-awssecuritytokenservicev20110615 = { workspace = true }
+# The IAM store, for the identity-based policy documents in force on that principal.
+service-com-amazonaws-iam-awsidentitymanagementv20100508 = { workspace = true }
 engine = { workspace = true }
 smithy-macros = { workspace = true }
 aws-smithy-schema = { workspace = true }

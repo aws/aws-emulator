@@ -169,6 +169,19 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
     ) -> Result<Self::Output, Self::Error> {
         use crate::state as st;
 
+        // IAM decides first, before the deployment history is touched: a caller whose
+        // identity-based policies do not allow this action on the deployment the request
+        // names is refused 403, nothing is removed, and it learns nothing about whether
+        // that deployment exists (`st::authorization`).
+        let region = st::request_region(ctx.parts());
+        st::authorization::authorize(
+            &*self.engine,
+            ctx,
+            Self::NAME,
+            &st::deployment_arn(&region, &input.deployment_id),
+        )
+        .map_err(DeleteDeploymentErrorModeled::AccessDeniedException)?;
+
         let Some(state) = st::service_state(&*self.engine) else {
             return Err(DeleteDeploymentErrorModeled::InternalServerException(
                 InternalServerException {

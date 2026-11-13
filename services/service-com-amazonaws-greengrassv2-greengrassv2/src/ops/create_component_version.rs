@@ -263,6 +263,19 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let validated_at =
             ::std::time::SystemTime::now().max(now + st::MIN_VALIDATION_GAP);
 
+        // IAM decides whether this caller may publish this version, and it decides before
+        // the catalog is touched: the resource the request addresses is the component the
+        // recipe names, so this gate follows the parse that read that name and precedes
+        // every read and write of the store. A caller no identity-based policy allows is
+        // refused 403 and nothing is recorded for it.
+        st::authorization::authorize(
+            &*self.engine,
+            ctx,
+            Self::NAME,
+            &st::component_name_arn(&region, &recipe.component_name),
+        )
+        .map_err(CreateComponentVersionErrorModeled::AccessDeniedException)?;
+
         let mut store = state.lock();
         store.expire_tokens(now);
 

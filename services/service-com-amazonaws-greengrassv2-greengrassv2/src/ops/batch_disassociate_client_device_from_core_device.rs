@@ -148,6 +148,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
     ) -> Result<Self::Output, Self::Error> {
         use crate::state as st;
 
+        // IAM decides first, before any association is touched: a caller whose
+        // identity-based policies do not allow this action on the core device the request
+        // names is refused 403 and no entry is applied (`st::authorization`).
+        let region = st::request_region(ctx.parts());
+        st::authorization::authorize(
+            &*self.engine,
+            ctx,
+            Self::NAME,
+            &st::core_device_arn(&region, &input.core_device_thing_name),
+        )
+        .map_err(BatchDisassociateClientDeviceFromCoreDeviceErrorModeled::AccessDeniedException)?;
+
         let Some(state) = st::service_state(&*self.engine) else {
             return Err(
                 BatchDisassociateClientDeviceFromCoreDeviceErrorModeled::InternalServerException(

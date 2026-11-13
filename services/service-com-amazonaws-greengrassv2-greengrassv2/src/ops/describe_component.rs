@@ -154,8 +154,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        let _ = ctx;
         use crate::state as st;
+
+        // IAM decides first, before the catalog is read: a caller whose identity-based
+        // policies do not allow this action on the component version the request names is
+        // refused 403 and learns nothing about whether that version exists
+        // (`st::authorization`). The resource is the ARN the request itself carried.
+        st::authorization::authorize(&*self.engine, ctx, Self::NAME, &input.arn)
+            .map_err(DescribeComponentErrorModeled::AccessDeniedException)?;
 
         let Some(state) = st::service_state(&*self.engine) else {
             return Err(DescribeComponentErrorModeled::InternalServerException(

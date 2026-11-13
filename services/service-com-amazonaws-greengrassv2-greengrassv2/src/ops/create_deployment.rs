@@ -211,6 +211,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         let region = st::request_region(ctx.parts());
 
+        // IAM decides first, before the target is resolved and before anything is
+        // recorded: the resource this request addresses is the IoT thing or thing group
+        // the deployment is created FOR, and a caller whose identity-based policies do not
+        // allow this action on it is refused 403 — so an unauthorized caller learns
+        // nothing about whether that target exists (`st::authorization`).
+        st::authorization::authorize(&*self.engine, ctx, Self::NAME, &input.target_arn)
+            .map_err(CreateDeploymentErrorModeled::AccessDeniedException)?;
+
         // A deployment is applied TO a target, so the target has to exist: the record
         // belongs to the IoT control plane, which is asked about it before anything is
         // written here — the deployment and the IoT job that applies it are both minted

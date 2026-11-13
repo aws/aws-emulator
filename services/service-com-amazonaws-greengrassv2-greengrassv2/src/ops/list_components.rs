@@ -147,8 +147,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        let _ = ctx;
         use crate::state as st;
+
+        // IAM decides first, before the catalog is read: this listing addresses no
+        // component of its own, so the resource the decision is taken on is IAM's own
+        // any-resource (`st::authorization`).
+        st::authorization::authorize(
+            &*self.engine,
+            ctx,
+            Self::NAME,
+            st::authorization::ANY_RESOURCE,
+        )
+        .map_err(ListComponentsErrorModeled::AccessDeniedException)?;
 
         let Some(state) = st::service_state(&*self.engine) else {
             return Err(ListComponentsErrorModeled::InternalServerException(
