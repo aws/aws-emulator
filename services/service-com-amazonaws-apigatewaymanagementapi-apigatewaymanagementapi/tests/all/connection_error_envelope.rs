@@ -101,7 +101,7 @@ const ENDPOINTS: [(&str, &str, &str); 3] = [
     ),
 ];
 
-/// Connection-id forms.
+/// Connection-id forms of the shape API Gateway MINTS.
 ///
 /// `GetConnectionRequest.ConnectionId` targets `__string` with `@httpLabel` and
 /// `@required` and NO `@pattern` or `@length`
@@ -219,7 +219,7 @@ async fn a_malformed_connection_id_is_refused_in_the_same_envelope() {
                 );
                 assert!(
                     mgmt::state::connection(&*engine, connection_id).is_none(),
-                    "case {method} {path}: a failed call must not register the id it \
+                    "case {method} {path}: a failed call must not register the value it \
                      refused"
                 );
             }

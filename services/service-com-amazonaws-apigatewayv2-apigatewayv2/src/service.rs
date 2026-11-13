@@ -129,6 +129,7 @@
 //! callback path and the SDK connector, both of which serve `dispatch`'s response unchanged)
 //! delivers, and is pinned by `tests/all/empty_answer_framing.rs`.
 
+mod connections_endpoint;
 mod data_plane;
 mod invoke;
 mod jwt;
@@ -283,6 +284,11 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
     /// generated [`ServiceDefinition`], which constructs each operation from it; the
     /// operation's behaviour lives in that operation's own `impl Operation`.
     pub fn new(engine: Arc<Eng>) -> Self {
+        // Who judges the `@connections` endpoint a request was addressed through: the stages
+        // in those paths are THIS service's records, and the service that serves
+        // `@connections` cannot read this store, so the reading is installed for it here —
+        // once, when this service is built. See [`connections_endpoint`].
+        connections_endpoint::install(&*engine);
         Self {
             entry: crate::ServiceDefinition::new(Arc::clone(&engine)),
             data_plane: HttpApiDataPlane {

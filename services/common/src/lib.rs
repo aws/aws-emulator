@@ -293,6 +293,11 @@ pub mod agentcore_resources;
 /// cannot otherwise see.
 pub mod arc_managed_resources;
 pub mod arn;
+/// Who judges the `@connections` endpoint a request was addressed through — whether its
+/// invoke path names a stage an api of this emulator has DEPLOYED — installed by the
+/// service that owns apis and stages and called by the service that serves `@connections`,
+/// which cannot read that owner's store.
+pub mod execute_api_connections_endpoint;
 /// Serving an operation AUDITED: the ONE wrapper that records every call a service serves
 /// as a management event, so no operation has to record its own and none is forgotten.
 pub mod audited_operation;

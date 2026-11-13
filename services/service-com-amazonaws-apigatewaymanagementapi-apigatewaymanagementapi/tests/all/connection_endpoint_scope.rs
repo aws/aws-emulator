@@ -31,7 +31,7 @@ use engine::InMemoryEngine;
 
 use service_com_amazonaws_apigatewaymanagementapi_apigatewaymanagementapi as mgmt;
 
-use crate::support::{call_at, error_code, minted, HOST};
+use crate::support::{call_with_headers, error_code, minted, HOST};
 
 /// The two addresses that ARE api endpoints in these cases, as a core-owned listener
 /// reports one (`host:port`), and one address that is no api's endpoint at all.
@@ -114,7 +114,8 @@ async fn a_connection_is_addressed_only_at_the_endpoint_it_was_established_at() 
             );
 
             let path = format!("{STAGE_PREFIX}/@connections/{connection_id}");
-            let (status, body) = call_at(&engine, endpoint, method, &path, payload).await;
+            let (status, headers, body) =
+                call_with_headers(&engine, endpoint, method, &path, payload).await;
             if served {
                 let expected = if method == "DELETE" { 204 } else { 200 };
                 assert_eq!(
@@ -129,9 +130,10 @@ async fn a_connection_is_addressed_only_at_the_endpoint_it_was_established_at() 
                      got {status} {body:?}"
                 );
                 assert_eq!(
-                    error_code(&body),
+                    error_code(&headers),
                     "GoneException",
-                    "case {case:?}: expected GoneException, got {body:?}"
+                    "case {case:?}: expected GoneException, got {}",
+                    error_code(&headers)
                 );
             }
 

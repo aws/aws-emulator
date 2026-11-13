@@ -19,6 +19,8 @@ mod connection_error_envelope;
 mod connection_id_validity;
 #[path = "all/connection_lifecycle.rs"]
 mod connection_lifecycle;
+#[path = "all/connections_error_layer.rs"]
+mod connections_error_layer;
 #[path = "all/invoke_path_routing.rs"]
 mod invoke_path_routing;
 #[path = "all/probe.rs"]

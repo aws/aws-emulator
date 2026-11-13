@@ -35,10 +35,21 @@
 //!   body). The default returns `None`, keeping the entry's protocol-correct
 //!   rendering. Return `Some(resp)` to reword it if desired.
 //!
+//! - `override_protocol` — this service's wire protocol for the dispatch sequence.
+//!   It serves the model's own `restJson1`, with the ERROR BODY this service is
+//!   recorded answering: see [`rest_json_error_body`].
+//!
 //! The model-derived half of this service — its identity, wire protocol, routing
 //! table, and the default error renderers — lives in the generated `ServiceDefinition`
 //! and is reached, not edited, through the one `definition` method below. You
 //! do not write it; editing the entry would let this file drift from the model.
+
+/// The ENDPOINT a `@connections` request was addressed through, and the refusal an endpoint
+/// serving no deployed stage earns.
+mod connections_endpoint;
+/// What this service's error body carries on the wire: the error shape's own modelled
+/// members and nothing else.
+mod rest_json_error_body;
 
 use smithy_server_runtime::{http, BoxFuture, ErasedOperation, Refusal, Refused, Service};
 use std::sync::Arc;
@@ -141,6 +152,36 @@ fn request_at_modeled_path(
     at_modeled_path_with(req, aws_smithy_types::body::SdkBody::from(body))
 }
 
+/// The invoke-path PREFIX this request carries in front of the modeled
+/// `/@connections/{ConnectionId}` binding — the deployed stage, or the base path a custom
+/// domain maps — or `None` when the path carries no `@connections` segment at all.
+///
+/// The empty prefix is the modeled path itself. The prefix is what names the STAGE a request
+/// was addressed through, which is what decides whether the endpoint serves anything at all
+/// ([`connections_endpoint`]).
+fn invoke_path_prefix(uri: &str) -> Option<String> {
+    let addressed: http::Uri = uri.parse().ok()?;
+    let path = addressed.path_and_query()?.path();
+    let segment_at = path.find(CONNECTIONS_SEGMENT)?;
+    Some(path[..segment_at].to_string())
+}
+
+/// The endpoint HOST this request named: the authority of an absolute request URI, or the
+/// `Host` header an origin-form request carries it in.
+fn endpoint_host(req: &aws_smithy_runtime_api::http::Request) -> Option<String> {
+    if let Some(authority) = req
+        .uri()
+        .parse::<http::Uri>()
+        .ok()
+        .and_then(|uri| uri.authority().map(ToString::to_string))
+    {
+        return Some(authority);
+    }
+    req.headers()
+        .get(http::header::HOST.as_str())
+        .map(ToString::to_string)
+}
+
 /// Whether this service serves the request these `parts` came from.
 ///
 /// This service signs as `execute-api` — a signing name it SHARES with the Amazon
@@ -191,11 +232,45 @@ fn can_handle_parts(parts: &http::request::Parts) -> bool {
 /// router builds one shared engine and hands it to `new`.
 pub struct EmulatedService<Eng: Send + Sync + 'static> {
     entry: crate::ServiceDefinition<Eng>,
+    /// The one shared engine, held here because the ENDPOINT a request was addressed
+    /// through is judged in [`Service::override_operation`] — before any operation runs —
+    /// and that judgement reads the shared engine ([`connections_endpoint`]).
+    engine: Arc<Eng>,
+    /// This service's `restJson1`, with the error body it is recorded answering; see
+    /// [`rest_json_error_body`]. Built once, here, because [`Service::override_protocol`]
+    /// hands back a borrow of it.
+    protocol: rest_json_error_body::ConnectionsRestJson,
+    /// Refuses a request whose endpoint serves no deployed stage; see [`UndeployedEndpoint`].
+    undeployed_endpoint: UndeployedEndpoint,
     /// Answers an over-limit `PostToConnection`; see [`OversizedPayload`].
     oversized_payload: OversizedPayload,
     /// Serves a request addressed through the owning API's invoke path; see
     /// [`InvokePathPrefixed`].
     invoke_path_prefixed: InvokePathPrefixed,
+}
+
+/// Refuses a `@connections` request addressed through an endpoint that serves NO deployed
+/// stage, with the modelled `ForbiddenException` (403) and the sentence API Gateway words
+/// that refusal in — see [`connections_endpoint`] for the rule and for who decides it.
+///
+/// WHY this is a seam and not a line in a handler: the stage is part of the ENDPOINT, not of
+/// the request the model describes (no operation of this service takes an api or a stage
+/// member), so the decision belongs before dispatch — ahead of the payload gate, the
+/// `ConnectionId`'s own form and the connection store alike, which is the order AWS resolves
+/// them in. [`Service::override_operation`] is the seam for a request the model's routing key
+/// cannot answer correctly, and this is one: the model routes it to a handler that would
+/// report on a connection the caller may not reach through this endpoint.
+struct UndeployedEndpoint;
+
+impl ErasedOperation for UndeployedEndpoint {
+    fn run<'r>(
+        &'r self,
+        _svc: &'r dyn Service,
+        _req: &'r aws_smithy_runtime_api::http::Request,
+        _ctx: &'r smithy_server_runtime::OperationContext<'r>,
+    ) -> BoxFuture<'r, aws_smithy_runtime_api::http::Response> {
+        Box::pin(async move { connections_endpoint::forbidden() })
+    }
 }
 
 /// Serves a request whose path carries the owning API's invoke-path prefix in front of
@@ -258,7 +333,9 @@ impl ErasedOperation for InvokePathPrefixed {
 /// so a restJson1 client resolves no modelled error from it and reports the status itself as
 /// the error code. It is answered BEFORE the `ConnectionId` is read for the same reason:
 /// the request is refused on its size by the endpoint, whatever the id says, which is why
-/// `override_operation` routes it here ahead of everything else.
+/// `override_operation` routes it here ahead of everything else — behind only the endpoint's
+/// own stage authority ([`UndeployedEndpoint`]), since an endpoint that serves nothing
+/// refuses the request before its payload is read at all.
 struct OversizedPayload;
 
 impl ErasedOperation for OversizedPayload {
@@ -301,7 +378,10 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
     /// operation's behaviour lives in that operation's own `impl Operation`.
     pub fn new(engine: Arc<Eng>) -> Self {
         Self {
-            entry: crate::ServiceDefinition::new(engine),
+            entry: crate::ServiceDefinition::new(Arc::clone(&engine)),
+            engine,
+            protocol: rest_json_error_body::ConnectionsRestJson::new(),
+            undeployed_endpoint: UndeployedEndpoint,
             oversized_payload: OversizedPayload,
             invoke_path_prefixed: InvokePathPrefixed,
         }
@@ -332,9 +412,23 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
         // it. `req` is the whole request, so a decision that depends on the body —
         // the `Action` form field on a query protocol, say — is reachable here.
         //
-        // Two cases need it.
+        // Three cases need it.
         //
-        // The first is the invoke-path prefix every caller of this API sends in front
+        // The first is the ENDPOINT the request was addressed through: these operations are
+        // served on the owning api's own invoke endpoint, so the path carries that api's
+        // stage, and an addressing that names no DEPLOYED stage is refused before anything
+        // else is judged — see [`UndeployedEndpoint`] and [`connections_endpoint`].
+        if let Some(prefix) = invoke_path_prefix(req.uri()) {
+            if connections_endpoint::addresses_nothing(
+                &*self.engine,
+                endpoint_host(req).as_deref(),
+                &prefix,
+            ) {
+                return Some(&self.undeployed_endpoint as &dyn ErasedOperation);
+            }
+        }
+
+        // The second is the invoke-path prefix every caller of this API sends in front
         // of the modeled binding (`…/{stage}/@connections/{id}`), which the model's
         // routing key cannot match. Which operation the request names is read off the
         // request addressed at its modeled path; the serve rewrites it again, with the
@@ -343,7 +437,7 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
         let prefixed = routing_view.is_some();
         let addressed = routing_view.as_ref().unwrap_or(req);
 
-        // The second is a `PostToConnection` whose `Data` payload is past the modeled
+        // The third is a `PostToConnection` whose `Data` payload is past the modeled
         // `@length` maximum. See [`OversizedPayload`] for what the `@connections` endpoint
         // answers such a request and why the handler cannot. Both the operation name and
         // the bound are read from the model, not spelled out.
@@ -396,10 +490,16 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
         // modeled operation — neither `override_operation` nor the generated
         // routing table resolved it. Returning `None` renders the protocol-correct
         // default for this service's envelope (query -> 400 InvalidAction text/xml,
-        // awsJson -> 404, rpcv2Cbor -> 404, rest -> 501). Return `Some(resp)` to
-        // word that routing failure in your own envelope instead.
-        let _ = req;
-        None
+        // awsJson -> 404, rpcv2Cbor -> 404, rest -> 501).
+        //
+        // The default IS this service's answer; what it renders is handed back with the
+        // ERROR BODY this service is recorded answering, because the shared renderer writes
+        // the AWS JSON family's shape discriminator into every body it renders and a
+        // `restJson1` body carries the error shape's own modelled members alone. See
+        // [`rest_json_error_body`] for the rule and for the one class no seam can reach.
+        Some(rest_json_error_body::with_served_error_body(
+            self.entry.routing_error_response(req),
+        ))
     }
 
     fn override_framework_error(
@@ -414,5 +514,16 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
         // consume it on `None`.
         let _ = error;
         None
+    }
+
+    fn override_protocol(&self) -> Option<&dyn smithy_server_runtime::ServerHttpProtocol> {
+        // The model's own `restJson1`, with the ERROR BODY this service is recorded
+        // answering: a failure's body carries the error shape's own modelled members and
+        // nothing else, so a memberless `GoneException` or `ForbiddenException` is the empty
+        // JSON document and the shape travels in `x-amzn-errortype` alone. The shared
+        // framework renderer writes the AWS JSON family's `__type` discriminator into every
+        // body it renders, and it is not this crate's to change; see
+        // [`rest_json_error_body`] for the rule, why it matters and where else it is applied.
+        Some(&self.protocol)
     }
 }

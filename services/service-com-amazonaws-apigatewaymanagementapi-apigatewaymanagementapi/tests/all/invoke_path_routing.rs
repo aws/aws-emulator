@@ -34,7 +34,10 @@ use serde_json::Value;
 
 use service_com_amazonaws_apigatewaymanagementapi_apigatewaymanagementapi as mgmt;
 
-use crate::support::{as_wire_timestamp, call_at, error_code, minted, register, HOST};
+use crate::support::{
+    as_wire_timestamp, call_at, call_with_headers, error_code, ids_api_gateway_does_not_mint,
+    minted, register, HOST,
+};
 
 /// The `Data` maximum this service's model declares (`@length(min: 0, max: 131072)` on
 /// the `Data` blob). Read from the crate constant so the two cannot disagree.
@@ -65,6 +68,10 @@ struct Row {
 /// The table. Stage names may use letters, digits, `_` and `-`, so one row spells a
 /// stage out of each of those classes; `/v1/socket` is the two-segment form a custom
 /// domain's base-path mapping produces; the empty prefix is the modelled path.
+///
+/// Every connection's id is the token [`crate::support::minted`] makes of its name, since a
+/// value of another shape is refused before any connection is looked up, whatever the
+/// prefix.
 const ROWS: &[Row] = &[
     Row {
         case: "the modelled path with no invoke prefix at all",
@@ -317,7 +324,7 @@ async fn delete_connection_through_the_invoke_path_removes_the_connection() {
             ("POST", b"after the delete".to_vec()),
             ("DELETE", Vec::new()),
         ] {
-            let (status, body) = call_at(
+            let (status, headers, body) = call_with_headers(
                 &engine,
                 row.host,
                 method,
@@ -331,10 +338,11 @@ async fn delete_connection_through_the_invoke_path_removes_the_connection() {
                 row.case
             );
             assert_eq!(
-                error_code(&body),
+                error_code(&headers),
                 "GoneException",
-                "case {:?}: {method} after the delete must answer GoneException, got {body:?}",
-                row.case
+                "case {:?}: {method} after the delete must answer GoneException, got {}",
+                row.case,
+                error_code(&headers)
             );
         }
     }
@@ -347,30 +355,36 @@ async fn the_modelled_failures_answer_the_same_under_an_invoke_prefix() {
         let connection_id = row.connection_id();
 
         // An id that could never have been minted is refused as an invalid
-        // `ConnectionId`, whatever the prefix.
-        let (status, body) = call_at(
+        // `ConnectionId`, whatever the prefix. The value comes from the shared catalog of
+        // forms API Gateway does not mint.
+        let (another_form, malformed_id) = ids_api_gateway_does_not_mint()
+            .into_iter()
+            .next()
+            .expect("the catalog of values API Gateway does not mint is not empty");
+        let (status, headers, body) = call_with_headers(
             &engine,
             row.host,
             "GET",
-            &row.path("never-registered"),
+            &row.path(&malformed_id),
             Vec::new(),
         )
         .await;
         assert_eq!(
             status, 400,
-            "case {:?}: a malformed id must answer 400, got {status} {body:?}",
+            "case {:?}: {another_form} ({malformed_id}) must answer 400, got {status} {body:?}",
             row.case
         );
         assert_eq!(
-            error_code(&body),
+            error_code(&headers),
             "BadRequestException",
-            "case {:?}: a malformed id must answer BadRequestException, got {body:?}",
-            row.case
+            "case {:?}: {another_form} must answer BadRequestException, got {}",
+            row.case,
+            error_code(&headers)
         );
 
         // A well-formed id naming no open connection is the modelled Gone, whatever the
         // prefix.
-        let (status, body) = call_at(
+        let (status, headers, body) = call_with_headers(
             &engine,
             row.host,
             "GET",
@@ -384,15 +398,16 @@ async fn the_modelled_failures_answer_the_same_under_an_invoke_prefix() {
             row.case
         );
         assert_eq!(
-            error_code(&body),
+            error_code(&headers),
             "GoneException",
-            "case {:?}: a well-formed unknown id must answer GoneException, got {body:?}",
-            row.case
+            "case {:?}: a well-formed unknown id must answer GoneException, got {}",
+            row.case,
+            error_code(&headers)
         );
 
         // A payload one byte past the modelled maximum is the endpoint's own 413, judged
         // before the connection is resolved — so the prefix cannot change it either.
-        let (status, body) = call_at(
+        let (status, _headers, body) = call_with_headers(
             &engine,
             row.host,
             "POST",
@@ -405,6 +420,9 @@ async fn the_modelled_failures_answer_the_same_under_an_invoke_prefix() {
             "case {:?}: a payload past the maximum must answer 413, got {status} {body:?}",
             row.case
         );
+        // The endpoint's own refusal carries no error envelope at all, which
+        // `connection_error_envelope` pins; what matters here is that the prefix does not
+        // change it.
         let stored = mgmt::state::connection(&*engine, &connection_id)
             .unwrap_or_else(|| panic!("case {:?}: the connection must still exist", row.case));
         assert_eq!(

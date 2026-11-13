@@ -12,8 +12,9 @@
 //!   as the restJson1 default epoch-seconds number.
 //! * the `@jsonName`s the model declares (`connectedAt`, `identity`, `lastActiveAt`,
 //!   `sourceIp`, `userAgent`) are the keys on the wire.
-//! * a modelled error renders as `{"__type":"<Shape>", …}` with that shape's
-//!   `@httpError` status.
+//! * a modelled error renders with that shape's `@httpError` status, its shape named in
+//!   `x-amzn-errortype` and a body carrying the shape's own modelled members — so a
+//!   memberless one carries none at all.
 //!
 //! The router, request builder and response readers live in `crate::support`.
 
@@ -24,7 +25,7 @@ use engine::InMemoryEngine;
 
 use service_com_amazonaws_apigatewaymanagementapi_apigatewaymanagementapi as mgmt;
 
-use crate::support::{call, minted, register};
+use crate::support::{call, call_with_headers, error_code, minted, register, HOST};
 
 /// Registration instants and the RFC 3339 text a `@timestampFormat("date-time")` member
 /// renders them as. Written out by hand (the format is the model's, not this crate's)
@@ -106,7 +107,7 @@ async fn modeled_errors_render_with_their_own_status_and_type() {
         Deleted,
     }
 
-    // (case, method, request body length, target, expected status, expected __type)
+    // (case, method, request body length, target, expected status, expected error shape)
     let table: [(&str, &str, usize, Target, u16, &str); 6] = [
         (
             "get on an id that could never have been minted",
@@ -179,17 +180,30 @@ async fn modeled_errors_render_with_their_own_status_and_type() {
                 gone
             }
         };
-        let (status, body) = call(&engine, method, &connection_id, vec![b'x'; body_len]).await;
+        let (status, headers, body) = call_with_headers(
+            &engine,
+            HOST,
+            method,
+            &format!("/@connections/{connection_id}"),
+            vec![b'x'; body_len],
+        )
+        .await;
         assert_eq!(
             status, expected_status,
             "case {case:?}: expected HTTP {expected_status}, got {status} with body {body:?}"
         );
+        assert_eq!(
+            error_code(&headers),
+            expected_type,
+            "case {case:?}: expected the error shape {expected_type:?} in x-amzn-errortype, \
+             got {}",
+            error_code(&headers)
+        );
         let value: serde_json::Value = serde_json::from_slice(&body)
             .unwrap_or_else(|e| panic!("case {case:?}: error body must be JSON ({e}): {body:?}"));
-        assert_eq!(
-            value.get("__type").and_then(serde_json::Value::as_str),
-            Some(expected_type),
-            "case {case:?}: expected __type {expected_type:?}, got {value}"
+        assert!(
+            value.get("__type").is_none(),
+            "case {case:?}: a restJson1 error body names no shape, got {value}"
         );
     }
 }

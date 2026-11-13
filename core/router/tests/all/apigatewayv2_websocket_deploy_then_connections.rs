@@ -18,7 +18,10 @@
 //!    200/200/204 for a registered connection, the modelled `GoneException` (410) once it
 //!    is deleted or for a well-formed id the registry does not hold, and the
 //!    invalid-`ConnectionId` refusal (400 `BadRequestException`) for an id that could
-//!    never have been minted.
+//!    never have been minted. A request through a stage the api never DEPLOYED is refused
+//!    403 `ForbiddenException` instead, which is the one answer that needs both services:
+//!    the stages are API Gateway V2's records and the refusal is the management API's
+//!    envelope.
 //!
 //! Two services, one engine, one router, so this is a router suite: the deploy half is
 //! served by the API Gateway V2 crate (signing name `apigateway`) and the data-plane
@@ -27,10 +30,9 @@
 //! A connection comes into being in real AWS when a client completes a WebSocket
 //! handshake against the invoke endpoint — a data-plane event no modelled operation of
 //! either service serves — so it is registered here through the management API's
-//! documented registration seam, the one seam that makes a connection exist. Creating
-//! the *stage* a real client would deploy to is `CreateStage`, still a scaffold stub
-//! with an issue of its own; the stage segment of the invoke path is therefore written
-//! as the client sends it, which is all the `@connections` operations read of it.
+//! documented registration seam, the one seam that makes a connection exist. The STAGE a
+//! real client deploys to is created through `CreateStage`, because the stage segment of
+//! the invoke path is what decides whether that endpoint serves anything at all.
 //!
 //! Assembling the router costs stack, so it runs on an explicitly sized thread for the
 //! same reason `boot_serve.rs` does.
@@ -219,15 +221,11 @@ fn as_str(case: &str, what: &str, body: &Value, member: &str) -> String {
         .unwrap_or_else(|| panic!("case {case:?}: {what} must carry {member:?}, got {body}"))
 }
 
-/// The `__type` discriminator of a restJson1 error body.
-fn error_code(body: &str) -> String {
-    serde_json::from_str::<Value>(body)
-        .ok()
-        .as_ref()
-        .and_then(|value| value.get("__type"))
-        .and_then(Value::as_str)
-        .unwrap_or("<no __type>")
-        .to_string()
+/// The error SHAPE a restJson1 failure names: the `x-amzn-errortype` response header, where
+/// a restJson1 client resolves it. NOT the body — a restJson1 error body carries the error
+/// shape's own modelled members and nothing else, so a memberless shape's body is `{}`.
+fn error_code(headers: &http::HeaderMap) -> String {
+    header(headers, "x-amzn-errortype")
 }
 
 #[test]
@@ -364,7 +362,29 @@ fn a_websocket_api_deploys_and_its_connections_endpoint_serves_the_registry() {
                         row.case
                     );
 
-                    // 3. The @connections endpoint of that api, at its invoke URL.
+                    // 3. The STAGE the client's invoke URL names, with that deployment
+                    //    released to it. The stage is what makes the api's `@connections`
+                    //    endpoint serve anything at all: an addressing whose stage no api
+                    //    has deployed is not the caller's to invoke (the 403 below).
+                    let stage = control_plane(
+                        &router,
+                        row.case,
+                        "CreateStage",
+                        "POST",
+                        &format!("/v2/apis/{api_id}/stages"),
+                        &json!({ "stageName": row.stage, "deploymentId": deployment_id }),
+                        201,
+                    )
+                    .await;
+                    assert_eq!(
+                        stage.get("stageName").and_then(Value::as_str),
+                        Some(row.stage),
+                        "case {:?}: expected the stage {:?} to be created, got {stage}",
+                        row.case,
+                        row.stage
+                    );
+
+                    // 4. The @connections endpoint of that api, at its invoke URL.
                     let host = format!("{api_id}.execute-api.{REGION}.amazonaws.com");
                     let connected_at = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
                     assert!(
@@ -438,7 +458,7 @@ fn a_websocket_api_deploys_and_its_connections_endpoint_serves_the_registry() {
                     // An id that could never have been minted names no connection
                     // anywhere, so it is refused as an invalid `ConnectionId` — the
                     // endpoint is answering from the value and not from the path.
-                    let (status, text) = call(
+                    let (status, headers, text) = call_with_headers(
                         &router,
                         EXECUTE_API_AUTHORIZATION,
                         &host,
@@ -453,7 +473,7 @@ fn a_websocket_api_deploys_and_its_connections_endpoint_serves_the_registry() {
                         row.case
                     );
                     assert_eq!(
-                        error_code(&text),
+                        error_code(&headers),
                         "BadRequestException",
                         "case {:?}: a malformed id must answer BadRequestException, got \
                          {text}",
@@ -463,7 +483,7 @@ fn a_websocket_api_deploys_and_its_connections_endpoint_serves_the_registry() {
                     // A WELL-FORMED id the registry does not hold is the modelled Gone
                     // instead: it could have named a connection, and a caller prunes its
                     // own record on that answer.
-                    let (status, text) = call(
+                    let (status, headers, text) = call_with_headers(
                         &router,
                         EXECUTE_API_AUTHORIZATION,
                         &host,
@@ -479,12 +499,50 @@ fn a_websocket_api_deploys_and_its_connections_endpoint_serves_the_registry() {
                         row.case
                     );
                     assert_eq!(
-                        error_code(&text),
+                        error_code(&headers),
                         "GoneException",
                         "case {:?}: a well-formed id naming no connection must answer \
                          GoneException, got {text}",
                         row.case
                     );
+
+                    // The STAGE is part of the endpoint: a stage this api never deployed
+                    // serves nothing, whichever operation the request names — and the LIVE
+                    // connection above is what shows the refusal is decided before the
+                    // connection store is consulted.
+                    for undeployed in ["nope", "Prod", "staging"] {
+                        for method in ["GET", "POST", "DELETE"] {
+                            let (status, headers, text) = call_with_headers(
+                                &router,
+                                EXECUTE_API_AUTHORIZATION,
+                                &host,
+                                method,
+                                &format!("/{undeployed}/@connections/{}", row.connection_id),
+                                Vec::new(),
+                            )
+                            .await;
+                            assert_eq!(
+                                status, 403,
+                                "case {:?}: {method} through the undeployed stage \
+                                 {undeployed:?} must answer 403, got {status} {text}",
+                                row.case
+                            );
+                            assert_eq!(
+                                error_code(&headers),
+                                "ForbiddenException",
+                                "case {:?}: {method} through {undeployed:?} must answer \
+                                 ForbiddenException, got {status} {text}",
+                                row.case
+                            );
+                            assert_eq!(
+                                serde_json::from_str::<Value>(&text).ok(),
+                                Some(json!({ "message": "Forbidden" })),
+                                "case {:?}: expected the sentence API Gateway refuses an \
+                                 endpoint with, got {text}",
+                                row.case
+                            );
+                        }
+                    }
 
                     let (status, text) = call(
                         &router,
@@ -501,7 +559,7 @@ fn a_websocket_api_deploys_and_its_connections_endpoint_serves_the_registry() {
                          got {status} {text}",
                         row.case
                     );
-                    let (status, text) = call(
+                    let (status, headers, text) = call_with_headers(
                         &router,
                         EXECUTE_API_AUTHORIZATION,
                         &host,
@@ -513,6 +571,23 @@ fn a_websocket_api_deploys_and_its_connections_endpoint_serves_the_registry() {
                     assert_eq!(
                         status, 410,
                         "case {:?}: the deleted connection must answer 410, got {status} {text}",
+                        row.case
+                    );
+                    assert_eq!(
+                        error_code(&headers),
+                        "GoneException",
+                        "case {:?}: the deleted connection must answer GoneException, got \
+                         {status} {text}",
+                        row.case
+                    );
+                    // `GoneException` declares no members, so there is nothing to serialize
+                    // into its body: it is the empty JSON document exactly, and the shape
+                    // travels in `x-amzn-errortype` alone.
+                    assert_eq!(
+                        serde_json::from_str::<Value>(&text).ok(),
+                        Some(json!({})),
+                        "case {:?}: a memberless error shape carries no body member, got \
+                         {text}",
                         row.case
                     );
                 }
@@ -547,12 +622,16 @@ fn the_two_execute_api_services_route_apart_under_one_signing_name() {
         /// an operation that is still scaffolded. `None` pins only that exactly one
         /// service claimed the request.
         status: Option<u16>,
+        /// The error SHAPE that owning service names, beside `status`.
+        error_code: Option<&'static str>,
     }
 
-    // `@connections` rows address an id that could never have been MINTED — the shape
-    // decides the refusal before any registry is consulted — so the management API's own
-    // answer is its invalid-`ConnectionId` refusal (400 `BadRequestException`), an answer
-    // only that service can give.
+    // This emulator holds NO api, so no stage of one is deployed: a `@connections` row
+    // addressed through an invoke path (a stage, a custom domain's base path) is refused by
+    // the management API as an endpoint that serves nothing (403 `ForbiddenException`),
+    // while one at the MODELLED path addresses no stage and is refused on the
+    // `ConnectionId`'s own shape instead — it could never have been MINTED — with 400
+    // `BadRequestException`. Either way the answer is one only that service can give.
     const CLAIMS: &[Claim] = &[
         Claim {
             name: "GetConnection at the modelled path",
@@ -561,6 +640,7 @@ fn the_two_execute_api_services_route_apart_under_one_signing_name() {
             path: "/@connections/no-such-connection",
             body: "",
             status: Some(400),
+            error_code: Some("BadRequestException"),
         },
         Claim {
             name: "GetConnection through a stage invoke path",
@@ -568,7 +648,8 @@ fn the_two_execute_api_services_route_apart_under_one_signing_name() {
             method: "GET",
             path: "/prod/@connections/no-such-connection",
             body: "",
-            status: Some(400),
+            status: Some(403),
+            error_code: Some("ForbiddenException"),
         },
         Claim {
             name: "PostToConnection through a stage invoke path",
@@ -576,7 +657,8 @@ fn the_two_execute_api_services_route_apart_under_one_signing_name() {
             method: "POST",
             path: "/prod/@connections/no-such-connection",
             body: "hello",
-            status: Some(400),
+            status: Some(403),
+            error_code: Some("ForbiddenException"),
         },
         Claim {
             name: "DeleteConnection through a custom domain base path",
@@ -584,7 +666,8 @@ fn the_two_execute_api_services_route_apart_under_one_signing_name() {
             method: "DELETE",
             path: "/v1/socket/@connections/no-such-connection",
             body: "",
-            status: Some(400),
+            status: Some(403),
+            error_code: Some("ForbiddenException"),
         },
         Claim {
             name: "the participant service's own path space",
@@ -593,6 +676,7 @@ fn the_two_execute_api_services_route_apart_under_one_signing_name() {
             path: "/participant/connection",
             body: r#"{"Type":["WEBSOCKET"]}"#,
             status: None,
+            error_code: None,
         },
         Claim {
             name: "another of the participant service's paths",
@@ -601,6 +685,7 @@ fn the_two_execute_api_services_route_apart_under_one_signing_name() {
             path: "/participant/transcript",
             body: "{}",
             status: None,
+            error_code: None,
         },
     ];
 
@@ -652,9 +737,8 @@ fn the_two_execute_api_services_route_apart_under_one_signing_name() {
                         // refusal this test exists for answered `500 AmbiguousService` in
                         // an `application/x-amz-json-1.1` body, so the media type and the
                         // error shape are as much a part of the fix as the status. Both
-                        // are the management API's restJson1 answer — `BadRequestException`
-                        // is the shape all three `@connections` operations refuse a
-                        // `ConnectionId` that could never have been minted with.
+                        // are the management API's restJson1 answer — the shape that
+                        // service refuses this addressing with.
                         assert_eq!(
                             header(&headers, "content-type"),
                             "application/json",
@@ -663,14 +747,16 @@ fn the_two_execute_api_services_route_apart_under_one_signing_name() {
                             claim.name,
                             header(&headers, "content-type")
                         );
-                        assert_eq!(
-                            header(&headers, "x-amzn-errortype"),
-                            "BadRequestException",
-                            "case {:?}: expected x-amzn-errortype to name the owning \
-                             service's BadRequestException, got {:?} with {status} {text}",
-                            claim.name,
-                            header(&headers, "x-amzn-errortype")
-                        );
+                        if let Some(expected_code) = claim.error_code {
+                            assert_eq!(
+                                error_code(&headers),
+                                expected_code,
+                                "case {:?}: expected x-amzn-errortype to name the owning \
+                                 service's {expected_code}, got {:?} with {status} {text}",
+                                claim.name,
+                                error_code(&headers)
+                            );
+                        }
                     }
                 }
             });

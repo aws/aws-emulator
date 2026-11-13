@@ -199,14 +199,15 @@ struct Answer {
 }
 
 impl Answer {
-    /// The `__type` a restJson1 error body carries, or `"<no __type>"`.
-    fn code(&self) -> String {
+    /// Whether the body names an error SHAPE at all.
+    ///
+    /// A restJson1 failure names its shape in `x-amzn-errortype` and its BODY carries the
+    /// error shape's own modelled members and nothing else, so the AWS-JSON-family `__type`
+    /// discriminator is never in it (the management API's `rest_json_error_body` rule). A
+    /// body that carries one is the defect this reads for.
+    fn names_a_shape_in_the_body(&self) -> bool {
         let value: Value = serde_json::from_slice(&self.body).unwrap_or(Value::Null);
-        value
-            .get("__type")
-            .and_then(Value::as_str)
-            .unwrap_or("<no __type>")
-            .to_string()
+        value.get("__type").is_some()
     }
 
     /// The `message` a restJson1 error body carries, or `"<no message>"`.
@@ -419,10 +420,10 @@ async fn a_connections_call_on_the_apis_socket_is_answered_from_the_registry() {
                 "case {case:?}: expected x-amzn-errortype {expected_shape:?}, got {:?}",
                 answer.error_type
             );
-            assert_eq!(
-                answer.code(),
-                expected_shape,
-                "case {case:?}: expected the error body to name {expected_shape:?}, got {:?}",
+            assert!(
+                !answer.names_a_shape_in_the_body(),
+                "case {case:?}: a restJson1 body carries the error shape's own members and \
+                 not the shape, which travels in x-amzn-errortype, got {:?}",
                 String::from_utf8_lossy(&answer.body)
             );
             if expected_shape == "BadRequestException" {

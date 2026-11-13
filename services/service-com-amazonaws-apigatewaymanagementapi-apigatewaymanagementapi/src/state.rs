@@ -34,6 +34,14 @@
 //! which addresses are such endpoints; a request that arrived at an address that is no
 //! api's endpoint addresses the registry as a whole.
 //!
+//! # The STAGE an endpoint serves
+//!
+//! That same endpoint carries the api's STAGE in its path, and a stage no api has deployed
+//! serves nothing at all: such a request is refused `403 ForbiddenException` before any of
+//! the above is read. Which stages are deployed is API Gateway V2's record, so the reading
+//! is asked for through [`connections_endpoint_authority`] and
+//! [`crate::service`] performs it before it dispatches a request.
+//!
 //! # The registration seam, and the rule it follows
 //!
 //! None of the three modeled operations CREATES a connection: in real AWS a
@@ -50,7 +58,8 @@
 //!   stops existing the moment `DeleteConnection` removes it. There is deliberately
 //!   NO auto-registration on first reference: auto-registration would make
 //!   `GetConnection` answer 200 for an id that never existed, which is the one
-//!   answer the real service never gives.
+//!   answer the real service never gives. A well-formed id no connection owns is
+//!   `GoneException`, which is the answer the real service does give.
 //! * `ConnectedAt` is fixed when the connection is registered and never moves
 //!   again — re-registering an id that is already present changes nothing.
 //! * `LastActiveAt` moves only when data actually flows to the connection, i.e. on a
@@ -355,6 +364,38 @@ pub fn service_state<Eng: Send + Sync + 'static>(
     (engine as &dyn ::std::any::Any)
         .downcast_ref::<::engine::InMemoryEngine>()
         .map(::engine::InMemoryEngine::state::<ComAmazonawsApigatewaymanagementapiApigatewaymanagementapiState>)
+}
+
+/// The SHARED cell naming who judges the `@connections` ENDPOINT a request was addressed
+/// through: call it with a handler's `&*self.engine`.
+///
+/// These operations are served on the owning api's own invoke endpoint, so a request carries
+/// that api's stage in its path, and whether a stage is DEPLOYED is API Gateway V2's record
+/// — a store this service cannot read, since that service depends on this one for the
+/// registry above. So the owner of stages installs its own reading into this cell
+/// ([`::service_common::execute_api_connections_endpoint`]) and
+/// [`crate::service`] asks it before it dispatches a request.
+///
+/// LOCK ORDER: this cell is released before the reading it holds is called, and nothing here
+/// holds the registry while asking, so this service's store and the owner's are never held
+/// together.
+///
+/// Answer `None` for an engine that carries no state at all: nothing judges the addressing,
+/// which is how an emulator the owner of stages is not mounted in reads.
+pub fn connections_endpoint_authority<Eng: Send + Sync + 'static>(
+    engine: &Eng,
+) -> Option<
+    ::engine::ServiceState<
+        ::service_common::execute_api_connections_endpoint::ConnectionsEndpointAuthority,
+    >,
+> {
+    (engine as &dyn ::std::any::Any)
+        .downcast_ref::<::engine::InMemoryEngine>()
+        .map(
+            ::engine::InMemoryEngine::state::<
+                ::service_common::execute_api_connections_endpoint::ConnectionsEndpointAuthority,
+            >,
+        )
 }
 
 /// The answer for a request whose engine does not carry this service's registry at

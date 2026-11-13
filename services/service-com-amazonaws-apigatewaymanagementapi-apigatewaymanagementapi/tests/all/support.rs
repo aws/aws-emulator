@@ -95,14 +95,71 @@ pub async fn call_with_headers(
     (status, headers, response.into_body())
 }
 
-/// The `__type` discriminator of a restJson1 error body (`{"__type":"<Code>", …}`).
-pub fn error_code(body: &Bytes) -> String {
+/// The error SHAPE a restJson1 failure names, read where a restJson1 client reads it: the
+/// `x-amzn-errortype` response header.
+///
+/// NOT the body. A restJson1 error body carries the error shape's own modelled members and
+/// nothing else — no shape discriminator — so the shape travels in this header alone (the
+/// service's `rest_json_error_body` rule), and a memberless shape's body is `{}`.
+pub fn error_code(headers: &http::HeaderMap) -> String {
+    headers
+        .get("x-amzn-errortype")
+        .map(|value| String::from_utf8_lossy(value.as_bytes()).to_string())
+        .unwrap_or_else(|| "<no x-amzn-errortype>".to_string())
+}
+
+/// The `message` member an error body carries, or `"<no message>"`.
+pub fn error_message(body: &Bytes) -> String {
     let value: serde_json::Value = serde_json::from_slice(body).unwrap_or(serde_json::Value::Null);
     value
-        .get("__type")
+        .get("message")
         .and_then(serde_json::Value::as_str)
-        .unwrap_or("<no __type>")
+        .unwrap_or("<no message>")
         .to_string()
+}
+
+/// A response body rendered for an assertion message.
+pub fn rendered(body: &Bytes) -> String {
+    String::from_utf8_lossy(body).to_string()
+}
+
+/// Connection-id forms of the shape API Gateway MINTS: the standard-alphabet base64,
+/// canonically padded, of an 11-byte token — the 16-character single-padded form its own
+/// ids have (`mgmt::state::CONNECTION_ID_BYTES`). Named once here so every suite drives the
+/// same catalog; `connections_error_layer` asserts each one IS well formed.
+///
+/// None of these carries `+` or `/`, so a suite can write one into a request path as it
+/// stands; the percent-encoded form is driven by `connections_error_layer`.
+pub const MINTED_IDS: [(&str, &str); 6] = [
+    ("the padded base64 form AWS mints", "Lx9ZKcvPmjQCJhA="),
+    ("an all-A token", "AAAAAAAAAAAAAAA="),
+    ("an all-z token", "zzzzzzzzzzzzzz8="),
+    ("a token of digits and letters", "0123456789abcQ4="),
+    ("an upper-case token", "ZZZZZZZZZZZZZZw="),
+    ("the form the recorded calls use", "Fabc1cWIPHcCJ7A="),
+];
+
+/// How long an "overlong" malformed id is: far past the 16 characters a minted id has, so no
+/// decoding of it can produce an 11-byte token.
+const OVERLONG_ID_CHARS: usize = 200;
+
+/// `ConnectionId` values that are NOT the form API Gateway mints, each with the way it
+/// differs: too short, outside the base64 alphabet, unpadded, a base64url spelling, a token
+/// of the wrong length, and an overlong value.
+pub fn ids_api_gateway_does_not_mint() -> Vec<(String, String)> {
+    [
+        ("a single character", "x".to_string()),
+        ("characters outside the base64 alphabet", "cid-with-dashes".to_string()),
+        ("unpadded base64", "0123456789abcdef".to_string()),
+        ("a base64url spelling", "a-b_c9DEF0123A4=".to_string()),
+        ("base64 of a shorter token", "AAAAAAAAAAA=".to_string()),
+        ("base64 of a longer token", "AAAAAAAAAAAAAAAAAAAA".to_string()),
+        ("an overlong id", "A".repeat(OVERLONG_ID_CHARS)),
+        ("the empty-looking padding alone", "====".to_string()),
+    ]
+    .into_iter()
+    .map(|(case, id)| (case.to_string(), id))
+    .collect()
 }
 
 /// A stored instant rendered the way the modelled `__timestampIso8601`

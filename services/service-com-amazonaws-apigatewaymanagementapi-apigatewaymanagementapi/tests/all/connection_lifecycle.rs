@@ -25,7 +25,10 @@ use engine::InMemoryEngine;
 
 use service_com_amazonaws_apigatewaymanagementapi_apigatewaymanagementapi as mgmt;
 
-use crate::support::{as_wire_timestamp, call, error_code, minted, register};
+use crate::support::{
+    as_wire_timestamp, call, call_with_headers, error_code, ids_api_gateway_does_not_mint, minted,
+    rendered, register, HOST,
+};
 
 /// The `Data` maximum this service's model declares (`@length(min: 0, max: 131072)` on
 /// the `Data` blob). Read from the crate constant so the two cannot disagree.
@@ -123,7 +126,7 @@ async fn registered_connections_round_trip_through_get_connection() {
                 "case {:?}: PostToConnection #{index} ({} bytes) must answer 200, got {status} {}",
                 case.name,
                 payload.len(),
-                error_code(&body)
+                rendered(&body)
             );
             assert!(
                 body.is_empty(),
@@ -141,7 +144,7 @@ async fn registered_connections_round_trip_through_get_connection() {
             200,
             "case {:?}: GetConnection must answer 200, got {status} {}",
             case.name,
-            error_code(&body)
+            rendered(&body)
         );
 
         let stored = mgmt::state::connection(&*engine, &case.connection_id)
@@ -313,7 +316,7 @@ async fn the_data_size_table_pins_the_modeled_length_bound() {
             status,
             200,
             "case {name:?} ({size} bytes): must be delivered with 200, got {status} {}",
-            error_code(&body)
+            rendered(&body)
         );
         let stored = mgmt::state::connection(&*engine, &connection_id).expect("still registered");
         assert_eq!(
@@ -341,7 +344,7 @@ async fn the_data_size_table_pins_the_modeled_length_bound() {
             status,
             413,
             "case {name:?} ({size} bytes): must be refused with 413, got {status} {}",
-            error_code(&body)
+            rendered(&body)
         );
         // The refusal is the `@connections` endpoint's own, in front of the modelled
         // operations, so it carries no error envelope to decode; `connection_error_envelope`
@@ -390,7 +393,7 @@ async fn delivered_payloads_are_retained_within_the_declared_bound() {
                 status,
                 200,
                 "case {count}: delivery #{index} must answer 200, got {status} {}",
-                error_code(&body)
+                rendered(&body)
             );
         }
 
@@ -451,7 +454,7 @@ async fn delete_connection_removes_the_record_and_every_later_call_is_gone() {
             204,
             "case {:?}: DeleteConnection must answer 204, got {status} {}",
             case.name,
-            error_code(&body)
+            rendered(&body)
         );
         assert!(
             body.is_empty(),
@@ -470,19 +473,27 @@ async fn delete_connection_removes_the_record_and_every_later_call_is_gone() {
             ("POST", b"hi".to_vec()),
             ("DELETE", Vec::new()),
         ] {
-            let (status, body) = call(&engine, method, &case.connection_id, payload).await;
+            let (status, headers, body) = call_with_headers(
+                &engine,
+                HOST,
+                method,
+                &format!("/@connections/{}", case.connection_id),
+                payload,
+            )
+            .await;
             assert_eq!(
                 status,
                 410,
                 "case {:?}: {method} after delete must answer 410, got {status} {}",
                 case.name,
-                error_code(&body)
+                rendered(&body)
             );
             assert_eq!(
-                error_code(&body),
+                error_code(&headers),
                 "GoneException",
-                "case {:?}: {method} after delete must name GoneException, got {body:?}",
-                case.name
+                "case {:?}: {method} after delete must name GoneException, got {}",
+                case.name,
+                error_code(&headers)
             );
         }
     }
@@ -510,21 +521,18 @@ async fn an_unknown_connection_id_is_refused_by_its_shape_for_every_operation() 
     );
 
     // (the id, the status and code it must be refused with). The malformed rows span the
-    // alphabet, the padding, the decoded length and length extremes; the well-formed ones
-    // are tokens of the minted shape that name no open connection.
-    let unknown: [(String, u16, &str); 7] = [
-        ("never-existed".to_string(), 400, "BadRequestException"),
-        ("abc123".to_string(), 400, "BadRequestException"),
-        ("0".to_string(), 400, "BadRequestException"),
-        (
-            "f1e2d3c4-b5a6-4789-9012-000000000000".to_string(),
-            400,
-            "BadRequestException",
-        ),
+    // alphabet, the padding, the decoded length and length extremes — the shared catalog of
+    // values API Gateway does not mint, plus the well-formed tokens that name no open
+    // connection.
+    let mut unknown: Vec<(String, u16, &str)> = ids_api_gateway_does_not_mint()
+        .into_iter()
+        .map(|(_case, id)| (id, 400u16, "BadRequestException"))
+        .collect();
+    unknown.extend([
         (minted("never-minted"), 410, "GoneException"),
         ("AAAAAAAAAAAAAAA=".to_string(), 410, "GoneException"),
         (minted("Registered"), 410, "GoneException"),
-    ];
+    ]);
 
     for (id, expected_status, expected_code) in unknown {
         for (method, payload) in [
@@ -532,18 +540,21 @@ async fn an_unknown_connection_id_is_refused_by_its_shape_for_every_operation() 
             ("POST", b"data".to_vec()),
             ("DELETE", Vec::new()),
         ] {
-            let (status, body) = call(&engine, method, &id, payload).await;
+            let (status, headers, body) =
+                call_with_headers(&engine, HOST, method, &format!("/@connections/{id}"), payload)
+                    .await;
             assert_eq!(
                 status,
                 expected_status,
                 "case {id:?}: {method} on an id naming no open connection must answer \
                  {expected_status}, got {status} {}",
-                error_code(&body)
+                rendered(&body)
             );
             assert_eq!(
-                error_code(&body),
+                error_code(&headers),
                 expected_code,
-                "case {id:?}: {method} must name {expected_code}, got {body:?}"
+                "case {id:?}: {method} must name {expected_code}, got {}",
+                error_code(&headers)
             );
         }
         assert!(

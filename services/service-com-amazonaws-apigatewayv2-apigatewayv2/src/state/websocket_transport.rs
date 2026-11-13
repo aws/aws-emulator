@@ -167,6 +167,13 @@ mod tests {
                 minted.ends_with('='),
                 "case {case}: expected the single base64 padding character, got {minted:?}"
             );
+            // And it is a value the `@connections` management API accepts as a connection
+            // id at all: that service refuses a value of another form before it looks a
+            // connection up, so an id minted here has to pass its reading.
+            assert!(
+                ::service_com_amazonaws_apigatewaymanagementapi_apigatewaymanagementapi::state::is_well_formed_connection_id(&minted),
+                "case {case}: the management API must accept the minted id {minted:?}"
+            );
             assert!(
                 !seen.contains(&minted),
                 "case {case}: expected a new ConnectionId, got the already-minted {minted:?}"

@@ -4630,6 +4630,38 @@ pub fn service_state<Eng: Send + Sync + 'static>(
         .map(::engine::InMemoryEngine::state::<ComAmazonawsApigatewayv2Apigatewayv2State>)
 }
 
+/// The SHARED cell naming who judges a `@connections` endpoint addressing: call it with a
+/// handler's `&*self.engine`.
+///
+/// The three `@connections` operations are served on an api's own invoke endpoint, so such a
+/// request carries one of THIS service's stages in its path; the service that models those
+/// operations cannot read this store (it is a dependency of this crate, not the other way
+/// round), so this service installs its own reading into the cell
+/// ([`crate::service::connections_endpoint`]) and that service calls it. One cell, so there
+/// is no copy of which stages are deployed to go stale — the engine keys state by TYPE, so a
+/// cell of either service's own would be invisible to the other.
+///
+/// LOCK ORDER: the asking service releases this cell before it calls the reading, and the
+/// reading then takes [`service_state`], so nothing holds one store while taking another.
+///
+/// Answer `None` by leaving the cell unwritten: an engine that carries no state at all judges
+/// no addressing, which that service reads as "nothing judges this one".
+pub fn connections_endpoint_authority<Eng: Send + Sync + 'static>(
+    engine: &Eng,
+) -> Option<
+    ::engine::ServiceState<
+        ::service_common::execute_api_connections_endpoint::ConnectionsEndpointAuthority,
+    >,
+> {
+    (engine as &dyn ::std::any::Any)
+        .downcast_ref::<::engine::InMemoryEngine>()
+        .map(
+            ::engine::InMemoryEngine::state::<
+                ::service_common::execute_api_connections_endpoint::ConnectionsEndpointAuthority,
+            >,
+        )
+}
+
 /// The SHARED certificate-association directory in the shared engine: call it with a
 /// handler's `&*self.engine`.
 ///

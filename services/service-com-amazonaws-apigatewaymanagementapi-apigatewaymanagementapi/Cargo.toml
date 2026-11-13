@@ -8,6 +8,10 @@ build = "build.rs"
 
 [dependencies]
 engine = { workspace = true }
+# The tree's shared helpers: the cell naming who judges the `@connections` ENDPOINT a
+# request was addressed through (`execute_api_connections_endpoint`), which the service
+# that owns apis and stages installs its own reading into.
+service-common = { path = "../common" }
 smithy-macros = { workspace = true }
 aws-smithy-schema = { workspace = true }
 aws-smithy-schema-server = { workspace = true }

@@ -2,8 +2,9 @@
 
 //! The TWO places a rendered JSON failure names its error SHAPE — the body's `__type`
 //! discriminator and the `x-amzn-errortype` header a REST client resolves the shape from —
-//! and the ONE restatement of that shape, for a service whose wire names a different shape
-//! there from the one the layer that rendered the failure wrote.
+//! and the ONE restatement of that shape: either naming a DIFFERENT shape than the layer
+//! that rendered the failure wrote, or DROPPING the body's discriminator for a service whose
+//! protocol names the shape in the header alone.
 //!
 //! # Why a service needs this
 //!
@@ -16,17 +17,22 @@
 //! has to restate the shape later, where the operation that answered is known.
 //!
 //! Restating it means writing it in BOTH places, or a client that reads the header and one
-//! that reads the body disagree about what was refused. That is the whole of this module;
-//! WHICH shape replaces which is the service's fact, read off its recordings, so the caller
-//! states the pair.
+//! that reads the body disagree about what was refused. That is the whole of
+//! [`with_restated_error_shape`]; WHICH shape replaces which is the service's fact, read off
+//! its recordings, so the caller states the pair.
+//!
+//! The other reading is [`without_error_shape_in_body`]: the shared renderer writes the
+//! discriminator into every JSON error body it renders, which is right for the AWS JSON
+//! family and wrong for `restJson1`, where the shape travels in the header and the body
+//! carries the error shape's own modelled members and nothing else. A `restJson1` service
+//! corrects that at the seams it owns over the answers it writes.
 //!
 //! # What it does not touch
 //!
 //! The status, the detail text and every other member stay with the renderer that wrote them
 //! (the member that text travels in is [`crate::error_detail_member`]'s), and a success is
-//! returned byte for byte. Only a failure whose body names the `from` shape is rewritten, so
-//! an error a handler serialized from its model's own shape, and a failure of any other
-//! class, keep the shape they named.
+//! returned byte for byte. Only a failure whose body names a shape is rewritten, so a failure
+//! of any other class keeps the body it was rendered with.
 //!
 //! # The FORM that header names a shape in
 //!
@@ -90,6 +96,77 @@ pub fn restated_error_shape(body: &[u8], from: &str, to: &str) -> Option<Vec<u8>
     serde_json::to_vec(&document).ok()
 }
 
+/// `body` with the error SHAPE DISCRIMINATOR dropped, or `None` when it carries none — or is
+/// not a JSON object at all.
+///
+/// For a `restJson1` service the discriminator does not belong in the body: that protocol
+/// names the shape in [`ERROR_TYPE_HEADER`], so the body carries the error shape's own
+/// modelled members and nothing else, and a shape that declares none serializes as the empty
+/// JSON document. The member belongs to the AWS JSON protocol family, which has no such
+/// header; a client generated from a `restJson1` model cannot read it.
+///
+/// Every other member is written back as it was, so only the discriminator goes.
+#[must_use]
+pub fn error_body_without_shape(body: &[u8]) -> Option<Vec<u8>> {
+    let mut document: Value = serde_json::from_slice(body).ok()?;
+    let object = document.as_object_mut()?;
+    object.remove(SHAPE_DISCRIMINATOR)?;
+    serde_json::to_vec(&document).ok()
+}
+
+/// `resp` as a `restJson1` service answers it: a failure whose body carries the error shape's
+/// own modelled members and nothing else ([`error_body_without_shape`]), with the shape named
+/// in [`ERROR_TYPE_HEADER`] alone.
+///
+/// A response that is not a failure, and one whose body names no shape, is returned untouched
+/// — status, headers and every byte of the body exactly as the renderer wrote them.
+#[must_use]
+pub fn without_error_shape_in_body(resp: RtResponse) -> RtResponse {
+    with_rewritten_error_body(resp, error_body_without_shape).0
+}
+
+/// `resp` with its error body replaced by what `rewrite` makes of it and the advertised
+/// length corrected to match, and whether that rewrite happened.
+///
+/// A response that is not a failure, one whose body is not in memory, and one `rewrite`
+/// answers `None` for are returned untouched, with `false`. A length header value the HTTP
+/// layer will not carry is REMOVED rather than left describing the body before the rewrite, so
+/// the two can never disagree — and never turned into a transport failure, which on an error
+/// path would replace a modelled 4xx with a 500 an SDK retries.
+fn with_rewritten_error_body(
+    mut resp: RtResponse,
+    rewrite: impl FnOnce(&[u8]) -> Option<Vec<u8>>,
+) -> (RtResponse, bool) {
+    if resp.status().as_u16() < FIRST_ERROR_STATUS {
+        return (resp, false);
+    }
+    let rewritten = {
+        // An error body is built in memory by its renderer, so the bytes are readable here; a
+        // streamed body is not an error body and is left alone.
+        let Some(bytes) = resp.body().bytes() else {
+            return (resp, false);
+        };
+        match rewrite(bytes) {
+            Some(rewritten) => rewritten,
+            None => return (resp, false),
+        }
+    };
+    // Only a renderer that advertised a length needs it corrected; the framework's error
+    // renderers set `content-type` alone and leave framing to the transport.
+    if resp.headers().get("content-length").is_some() {
+        let length = rewritten.len().to_string();
+        if resp
+            .headers_mut()
+            .try_insert("content-length", length)
+            .is_err()
+        {
+            resp.headers_mut().remove("content-length");
+        }
+    }
+    *resp.body_mut() = SdkBody::from(rewritten);
+    (resp, true)
+}
+
 /// `resp` as the serving service answers it: a failure that named `from` names `to` instead,
 /// in its body and in its [`ERROR_TYPE_HEADER`] alike ([`restated_error_shape`]).
 ///
@@ -99,40 +176,15 @@ pub fn restated_error_shape(body: &[u8], from: &str, to: &str) -> Option<Vec<u8>
 /// transport failure, which on an error path would replace a modelled 4xx with a 500 an SDK
 /// retries.
 #[must_use]
-pub fn with_restated_error_shape(mut resp: RtResponse, from: &str, to: &str) -> RtResponse {
-    if resp.status().as_u16() < FIRST_ERROR_STATUS {
-        return resp;
-    }
-    let rewritten = {
-        // An error body is built in memory by its renderer, so the bytes are readable here; a
-        // streamed body is not an error body and is left alone.
-        let Some(bytes) = resp.body().bytes() else {
-            return resp;
-        };
-        match restated_error_shape(bytes, from, to) {
-            Some(rewritten) => rewritten,
-            None => return resp,
-        }
-    };
-    // Only a renderer that advertised a length needs it corrected; the framework's error
-    // renderers set `content-type` alone and leave framing to the transport.
-    if resp.headers().get("content-length").is_some() {
-        let length = rewritten.len().to_string();
-        // A decimal length is always a valid header value, so this cannot fail today; if it
-        // ever did, the header is REMOVED rather than left describing the body before the
-        // rewrite, so the two can never disagree.
-        if resp
+pub fn with_restated_error_shape(resp: RtResponse, from: &str, to: &str) -> RtResponse {
+    // The header moves only where the BODY was restated, so the two always name one shape.
+    let (mut resp, restated) =
+        with_rewritten_error_body(resp, |body| restated_error_shape(body, from, to));
+    if restated {
+        let _ = resp
             .headers_mut()
-            .try_insert("content-length", length)
-            .is_err()
-        {
-            resp.headers_mut().remove("content-length");
-        }
+            .try_insert(ERROR_TYPE_HEADER, to.to_string());
     }
-    let _ = resp
-        .headers_mut()
-        .try_insert(ERROR_TYPE_HEADER, to.to_string());
-    *resp.body_mut() = SdkBody::from(rewritten);
     resp
 }
 
@@ -400,6 +452,49 @@ mod tests {
         }
     }
 
+    /// RULE for a `restJson1` service: the body carries the error shape's own modelled
+    /// members and nothing else, so the discriminator goes and the shape stays in the header.
+    /// The rows span what the rule generalises over — a shape with no members, one with a
+    /// sentence, one carrying several members, and a namespaced discriminator.
+    #[test]
+    fn the_shape_is_dropped_from_the_body_and_kept_in_the_header() {
+        for (case, body, expected) in [
+            (
+                "a memberless shape",
+                format!(r#"{{"__type":"{RENDERED}"}}"#),
+                serde_json::json!({}),
+            ),
+            (
+                "a shape carrying a sentence",
+                format!(r#"{{"__type":"{RENDERED}","message":"no"}}"#),
+                serde_json::json!({ "message": "no" }),
+            ),
+            (
+                "a shape carrying several members",
+                format!(r#"{{"__type":"{RENDERED}","message":"no","retryable":false}}"#),
+                serde_json::json!({ "message": "no", "retryable": false }),
+            ),
+            (
+                "a namespaced shape",
+                format!(r#"{{"__type":"com.amazonaws.example#{RENDERED}"}}"#),
+                serde_json::json!({}),
+            ),
+        ] {
+            let answered = without_error_shape_in_body(response(410, &body, RENDERED));
+            let document = decoded(&answered);
+            assert_eq!(
+                document, expected,
+                "case {case:?}: expected the body {expected}, got {document}"
+            );
+            assert_eq!(
+                answered.headers().get(ERROR_TYPE_HEADER),
+                Some(RENDERED),
+                "case {case:?}: the shape must stay in the header, got {:?}",
+                answered.headers().get(ERROR_TYPE_HEADER)
+            );
+        }
+    }
+
     /// A Smithy service shape id, as a generated identity states one.
     const SHAPE_ID: &str = "com.amazonaws.example#ExampleServiceLambda";
 
@@ -454,6 +549,49 @@ mod tests {
                 answered.headers().get(ERROR_TYPE_HEADER)
             );
         }
+    }
+
+    /// Nothing to drop: a success, a failure whose body names no shape, one that is not a
+    /// JSON object and one that is not JSON at all are answered byte for byte.
+    #[test]
+    fn a_body_that_names_no_shape_is_answered_unchanged() {
+        for (case, status, body) in [
+            ("a success", 200, format!(r#"{{"__type":"{RENDERED}"}}"#)),
+            ("no shape at all", 410, "{}".to_string()),
+            ("a sentence alone", 400, r#"{"message":"no"}"#.to_string()),
+            ("not an object", 400, r#"["x"]"#.to_string()),
+            ("not JSON", 400, "<Error/>".to_string()),
+        ] {
+            let answered = without_error_shape_in_body(response(status, &body, RENDERED));
+            assert_eq!(
+                answered.body().bytes().expect("an in-memory body"),
+                body.as_bytes(),
+                "case {case:?}: expected the body unchanged"
+            );
+        }
+    }
+
+    /// A rewritten body's advertised length describes the bytes that were written.
+    #[test]
+    fn a_rewritten_body_is_described_by_its_advertised_length() {
+        let body = format!(r#"{{"__type":"{RENDERED}"}}"#);
+        let mut resp = response(410, &body, RENDERED);
+        resp.headers_mut()
+            .insert("content-length", body.len().to_string());
+        let answered = without_error_shape_in_body(resp);
+        let bytes = answered.body().bytes().expect("an in-memory body").to_vec();
+        assert_eq!(
+            bytes,
+            b"{}".to_vec(),
+            "expected a body carrying no members, got {:?}",
+            String::from_utf8_lossy(&bytes)
+        );
+        assert_eq!(
+            answered.headers().get("content-length"),
+            Some(bytes.len().to_string().as_str()),
+            "the advertised length must describe the rewritten body, got {:?}",
+            answered.headers().get("content-length")
+        );
     }
 
     /// Nothing to qualify: a success, and a failure whose renderer named no shape or an empty
