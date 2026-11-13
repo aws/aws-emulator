@@ -445,6 +445,136 @@ impl Fleet {
     }
 }
 
+/// Every lower/upper capability pair a fleet configuration declares, as
+/// `(member, min, max)`, where `member` is the pair's own path in the request.
+///
+/// The model declares one `min`/`max` structure per capability range
+/// (`smithy_query(query="closure", operation="CreateFleet")`: `VCpuCountRange`,
+/// `MemoryMiBRange`, `AcceleratorCountRange`, `AcceleratorTotalMemoryMiBRange`), plus the
+/// same pair on every `FleetAmountCapability` the configuration's custom amounts carry.
+/// Only `min` is required in each, so a pair with no upper bound is open-ended rather than
+/// inverted. The bounds are reported as `f64` because an amount capability's are floats
+/// while the counts are integers.
+///
+/// Shared by every operation that takes a `FleetConfiguration` — the configuration a
+/// create stores and the configuration an update replaces it with are the same shape, so
+/// the pairs they are checked on come from one place.
+pub fn fleet_capability_ranges(
+    configuration: &crate::ops::types::FleetConfiguration,
+) -> Vec<(String, f64, Option<f64>)> {
+    use crate::ops::types::FleetConfiguration;
+
+    let mut ranges: Vec<(String, f64, Option<f64>)> = Vec::new();
+    // The path the request nests these capabilities under, so a refusal names the member
+    // the caller sent rather than a bare structure name.
+    let capabilities_path = match configuration {
+        FleetConfiguration::customerManaged(_) => {
+            "configuration.customerManaged.workerCapabilities"
+        }
+        FleetConfiguration::serviceManagedEc2(_) => {
+            "configuration.serviceManagedEc2.instanceCapabilities"
+        }
+    };
+    let mut push_count = |member: &str, min: i32, max: Option<i32>| {
+        ranges.push((
+            format!("{capabilities_path}.{member}"),
+            f64::from(min),
+            max.map(f64::from),
+        ));
+    };
+    let custom_amounts = match configuration {
+        FleetConfiguration::customerManaged(managed) => {
+            let capabilities = &managed.worker_capabilities;
+            push_count(
+                "vCpuCount",
+                capabilities.v_cpu_count.min,
+                capabilities.v_cpu_count.max,
+            );
+            push_count(
+                "memoryMiB",
+                capabilities.memory_mi_b.min,
+                capabilities.memory_mi_b.max,
+            );
+            if let Some(count) = &capabilities.accelerator_count {
+                push_count("acceleratorCount", count.min, count.max);
+            }
+            if let Some(memory) = &capabilities.accelerator_total_memory_mi_b {
+                push_count("acceleratorTotalMemoryMiB", memory.min, memory.max);
+            }
+            capabilities.custom_amounts.as_deref()
+        }
+        FleetConfiguration::serviceManagedEc2(managed) => {
+            let capabilities = &managed.instance_capabilities;
+            push_count(
+                "vCpuCount",
+                capabilities.v_cpu_count.min,
+                capabilities.v_cpu_count.max,
+            );
+            push_count(
+                "memoryMiB",
+                capabilities.memory_mi_b.min,
+                capabilities.memory_mi_b.max,
+            );
+            if let Some(count) = capabilities
+                .accelerator_capabilities
+                .as_ref()
+                .and_then(|accelerators| accelerators.count.as_ref())
+            {
+                push_count("acceleratorCount", count.min, count.max);
+            }
+            capabilities.custom_amounts.as_deref()
+        }
+    };
+    // A custom amount is one entry of a list, so its path carries that entry's index.
+    for (index, amount) in custom_amounts.unwrap_or_default().iter().enumerate() {
+        ranges.push((
+            format!("{capabilities_path}.customAmounts[{index}]"),
+            f64::from(amount.min),
+            amount.max.map(f64::from),
+        ));
+    }
+    ranges
+}
+
+/// The refusal a lower/upper pair of a fleet request earns when its lower bound is above
+/// its upper bound.
+///
+/// Each bound satisfies its own modeled `@range` on its own — the relation BETWEEN them is
+/// what no boundary validator can check — so this is the handler's refusal, naming the pair
+/// at fault and the window the caller asked for. Shared by every operation that takes a
+/// `FleetConfiguration`, so one inverted pair is worded one way wherever it arrives.
+pub fn inverted_range(
+    member: &str,
+    min: f64,
+    max: f64,
+) -> crate::ops::types::ValidationException {
+    field_validation_failed(
+        member,
+        &format!("{member}.min ({min}) must be less than or equal to {member}.max ({max})"),
+    )
+}
+
+/// The refusal a fleet request earns when the worker-count window it asks for is not a
+/// window.
+///
+/// A fleet's `minWorkerCount` is the floor the service scales it to and its
+/// `maxWorkerCount` the ceiling it never passes, so a minimum above the maximum describes
+/// no fleet. Both bounds satisfy `MinZeroMaxInteger` (`range 0..2147483647`) on their own,
+/// so the relation is the handler's to refuse; the message names the window the fleet would
+/// be left with.
+pub fn inverted_worker_count_window(
+    min_worker_count: i32,
+    max_worker_count: i32,
+) -> crate::ops::types::ValidationException {
+    field_validation_failed(
+        "minWorkerCount",
+        &format!(
+            "minWorkerCount ({min_worker_count}) must be less than or equal to \
+             maxWorkerCount ({max_worker_count})"
+        ),
+    )
+}
+
 /// A persisted worker, as `CreateWorker` registered it under its fleet.
 #[derive(Debug, Clone)]
 pub struct Worker {

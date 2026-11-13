@@ -45,5 +45,7 @@ mod resource_not_found_wording;
 mod state_roundtrip;
 #[path = "all/storage_profile.rs"]
 mod storage_profile;
+#[path = "all/update_fleet.rs"]
+mod update_fleet;
 #[path = "all/worker.rs"]
 mod worker;

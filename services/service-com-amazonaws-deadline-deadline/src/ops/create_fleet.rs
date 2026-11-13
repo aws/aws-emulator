@@ -160,89 +160,6 @@ impl<Eng> CreateFleet<Eng> {
     }
 }
 
-/// Every lower/upper capability pair the fleet's configuration declares, as
-/// `(member, min, max)`, where `member` is the pair's own path in the request.
-///
-/// The model declares one `min`/`max` structure per capability range
-/// (`smithy_query(query="closure", operation="CreateFleet")`: `VCpuCountRange`,
-/// `MemoryMiBRange`, `AcceleratorCountRange`, `AcceleratorTotalMemoryMiBRange`), plus the
-/// same pair on every `FleetAmountCapability` the configuration's custom amounts carry.
-/// Only `min` is required in each, so a pair with no upper bound is open-ended rather than
-/// inverted. The bounds are reported as `f64` because an amount capability's are floats
-/// while the counts are integers.
-fn capability_ranges(configuration: &FleetConfiguration) -> Vec<(String, f64, Option<f64>)> {
-    let mut ranges: Vec<(String, f64, Option<f64>)> = Vec::new();
-    // The path the request nests these capabilities under, so a refusal names the member
-    // the caller sent rather than a bare structure name.
-    let capabilities_path = match configuration {
-        FleetConfiguration::customerManaged(_) => {
-            "configuration.customerManaged.workerCapabilities"
-        }
-        FleetConfiguration::serviceManagedEc2(_) => {
-            "configuration.serviceManagedEc2.instanceCapabilities"
-        }
-    };
-    let mut push_count = |member: &str, min: i32, max: Option<i32>| {
-        ranges.push((
-            format!("{capabilities_path}.{member}"),
-            f64::from(min),
-            max.map(f64::from),
-        ));
-    };
-    let custom_amounts = match configuration {
-        FleetConfiguration::customerManaged(managed) => {
-            let capabilities = &managed.worker_capabilities;
-            push_count(
-                "vCpuCount",
-                capabilities.v_cpu_count.min,
-                capabilities.v_cpu_count.max,
-            );
-            push_count(
-                "memoryMiB",
-                capabilities.memory_mi_b.min,
-                capabilities.memory_mi_b.max,
-            );
-            if let Some(count) = &capabilities.accelerator_count {
-                push_count("acceleratorCount", count.min, count.max);
-            }
-            if let Some(memory) = &capabilities.accelerator_total_memory_mi_b {
-                push_count("acceleratorTotalMemoryMiB", memory.min, memory.max);
-            }
-            capabilities.custom_amounts.as_deref()
-        }
-        FleetConfiguration::serviceManagedEc2(managed) => {
-            let capabilities = &managed.instance_capabilities;
-            push_count(
-                "vCpuCount",
-                capabilities.v_cpu_count.min,
-                capabilities.v_cpu_count.max,
-            );
-            push_count(
-                "memoryMiB",
-                capabilities.memory_mi_b.min,
-                capabilities.memory_mi_b.max,
-            );
-            if let Some(count) = capabilities
-                .accelerator_capabilities
-                .as_ref()
-                .and_then(|accelerators| accelerators.count.as_ref())
-            {
-                push_count("acceleratorCount", count.min, count.max);
-            }
-            capabilities.custom_amounts.as_deref()
-        }
-    };
-    // A custom amount is one entry of a list, so its path carries that entry's index.
-    for (index, amount) in custom_amounts.unwrap_or_default().iter().enumerate() {
-        ranges.push((
-            format!("{capabilities_path}.customAmounts[{index}]"),
-            f64::from(amount.min),
-            amount.max.map(f64::from),
-        ));
-    }
-    ranges
-}
-
 impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_runtime::Operation
     for CreateFleet<Eng>
 {
@@ -267,14 +184,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // validator cannot catch this: it is a relation between two members.
         if input.min_worker_count > input.max_worker_count {
             return Err(CreateFleetErrorModeled::ValidationException(
-                crate::state::field_validation_failed(
-                    "minWorkerCount",
-                    // Both bounds come from the request, so the message names the window
-                    // the caller actually asked for.
-                    &format!(
-                        "minWorkerCount ({}) must be less than or equal to maxWorkerCount ({})",
-                        input.min_worker_count, input.max_worker_count
-                    ),
+                // Both bounds come from the request, so the message names the window the
+                // caller actually asked for.
+                crate::state::inverted_worker_count_window(
+                    input.min_worker_count,
+                    input.max_worker_count,
                 ),
             )
             .into());
@@ -284,17 +198,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // amounts it names. Each bound satisfies its own modeled range, so a pair whose
         // lower bound exceeds its upper bound is refused here too, naming the pair at
         // fault.
-        for (member, min, max) in capability_ranges(&input.configuration) {
+        for (member, min, max) in crate::state::fleet_capability_ranges(&input.configuration) {
             if let Some(max) = max {
                 if min > max {
                     return Err(CreateFleetErrorModeled::ValidationException(
-                        crate::state::field_validation_failed(
-                            &member,
-                            &format!(
-                                "{member}.min ({min}) must be less than or equal to \
-                                 {member}.max ({max})"
-                            ),
-                        ),
+                        crate::state::inverted_range(&member, min, max),
                     )
                     .into());
                 }

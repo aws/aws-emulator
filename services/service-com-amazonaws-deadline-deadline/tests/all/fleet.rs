@@ -27,7 +27,9 @@ use serde_json::{json, Value};
 use crate::farm_queue_job::{absent_id, error_code, is_resource_id, string_at, Emulator};
 
 /// The value at a dotted member path, e.g. `customerManaged.workerCapabilities.osFamily`.
-fn at<'a>(body: &'a Value, path: &str) -> Option<&'a Value> {
+///
+/// `pub(crate)` so every suite in this test target walks a response the same way.
+pub(crate) fn at<'a>(body: &'a Value, path: &str) -> Option<&'a Value> {
     let mut cursor = body;
     for member in path.split('.') {
         cursor = cursor.get(member)?;

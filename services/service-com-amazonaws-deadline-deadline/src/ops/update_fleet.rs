@@ -1,15 +1,9 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op UpdateFleet
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `UpdateFleet`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
-//!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`UpdateFleet::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! Applies the members the request carries to the fleet `CreateFleet` persisted under its
+//! farm, leaving every member the request leaves out as it was, and refuses with the
+//! modelled 404 when the farm or the fleet the path names is not held.
 //!
 //! ## Shape of an operation
 //!
@@ -174,18 +168,117 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `UpdateFleet` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(UpdateFleetErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("UpdateFleet"))
+        // A configuration this request would replace the fleet's with has to hold together
+        // the same way the one a create stores does: every lower/upper capability pair it
+        // declares is a window, and each bound satisfies its own modeled range on its own,
+        // so the relation between them is refused here. Nothing is read or written until
+        // the body is clear, exactly as in `create_fleet.rs`.
+        if let Some(configuration) = input.configuration.as_ref() {
+            for (member, min, max) in crate::state::fleet_capability_ranges(configuration) {
+                if let Some(max) = max {
+                    if min > max {
+                        return Err(UpdateFleetErrorModeled::ValidationException(
+                            crate::state::inverted_range(&member, min, max),
+                        )
+                        .into());
+                    }
+                }
+            }
+        }
+
+        let Some(state) = crate::state::service_state(&*self.engine) else {
+            return Err(UpdateFleetErrorModeled::InternalServerErrorException(
+                crate::state::state_unavailable(),
+            )
+            .into());
+        };
+        let mut store = state.lock();
+
+        // `clientToken` is `@idempotencyToken` — the token the server recognizes retries of
+        // the same request by. An update is addressed at ONE fleet, so the token is scoped to
+        // the fleet rather than to its farm: the same token spent on two fleets of one farm is
+        // two updates, and a later retry of either is still recognized as the retry it is. It
+        // is read before the fleet is borrowed and acted on below, once the fleet it names is
+        // known to be held.
+        let token = input
+            .client_token
+            .as_deref()
+            .map(|token| crate::state::idempotency_key(Self::NAME, &input.fleet_id, token));
+        let remembered = token
+            .as_deref()
+            .and_then(|key| store.remembered_resource(key).map(str::to_string));
+
+        // A fleet is reached only through its own farm, so each missing level of the path is
+        // a 404 naming that level and nothing is written.
+        if store.farm(&input.farm_id).is_none() {
+            return Err(UpdateFleetErrorModeled::ResourceNotFoundException(
+                crate::state::not_found(crate::state::RESOURCE_TYPE_FARM, &input.farm_id),
+            )
+            .into());
+        }
+        let updated_by = crate::state::caller_principal(ctx);
+        let Some(fleet) = store.fleet_mut(&input.farm_id, &input.fleet_id) else {
+            return Err(UpdateFleetErrorModeled::ResourceNotFoundException(
+                crate::state::not_found(crate::state::RESOURCE_TYPE_FLEET, &input.fleet_id),
+            )
+            .into());
+        };
+
+        // A retry of an update already applied to this very fleet answers as that update
+        // did and writes nothing again, so the fleet keeps the `updatedAt` of the call the
+        // caller actually made.
+        if remembered.as_deref() == Some(input.fleet_id.as_str()) {
+            return Ok(UpdateFleetOutput {});
+        }
+
+        // The window the fleet would be LEFT with: a bound the request omits keeps the value
+        // the fleet already holds, so an update that moves only one of the two is checked
+        // against the other as stored. A window that is not a window is refused with the
+        // fleet — and every other member this request asked to change — left exactly as it
+        // was.
+        let min_worker_count = input.min_worker_count.unwrap_or(fleet.min_worker_count);
+        let max_worker_count = input.max_worker_count.unwrap_or(fleet.max_worker_count);
+        if min_worker_count > max_worker_count {
+            return Err(UpdateFleetErrorModeled::ValidationException(
+                crate::state::inverted_worker_count_window(min_worker_count, max_worker_count),
+            )
+            .into());
+        }
+
+        // Every member the request carries is applied, and every member it leaves out keeps
+        // the value the fleet holds: this operation is a PATCH of the fleet and only
+        // `farmId` and `fleetId` are required of it
+        // (`smithy_query(query="operation", operation="UpdateFleet")`).
+        fleet.min_worker_count = min_worker_count;
+        fleet.max_worker_count = max_worker_count;
+        if let Some(display_name) = input.display_name {
+            fleet.display_name = display_name;
+        }
+        if let Some(description) = input.description {
+            fleet.description = description;
+        }
+        if let Some(role_arn) = input.role_arn {
+            fleet.role_arn = role_arn;
+        }
+        if let Some(configuration) = input.configuration {
+            fleet.configuration = configuration;
+        }
+        if let Some(host_configuration) = input.host_configuration {
+            // The model documents how a script is taken off a fleet: this operation with
+            // `hostConfiguration.scriptBody` set to the empty string
+            // (`smithy_query(query="shape", shape="HostConfiguration")`). So an empty body
+            // leaves the fleet with no host configuration at all, rather than with a script
+            // of no text that a worker would still run.
+            fleet.host_configuration =
+                (!host_configuration.script_body.is_empty()).then_some(host_configuration);
+        }
+        fleet.updated_at = Some(::std::time::SystemTime::now());
+        fleet.updated_by = Some(updated_by);
+
+        if let Some(key) = token {
+            store.remember_resource(key, &input.fleet_id);
+        }
+
+        Ok(UpdateFleetOutput {})
     }
 }
