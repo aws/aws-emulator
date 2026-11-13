@@ -28,6 +28,26 @@ hex = { workspace = true }
 # The SQL parser for `ExecuteQuery`: the IoT SiteWise query language is SQL, so its
 # statements are parsed by a real parser rather than matched on as text.
 sqlparser = "0.59"
+# The arithmetic/boolean expression engine a transform's and a metric's formula is
+# evaluated by, so a computed property's value is really computed from its inputs
+# rather than matched on the formula's text.
+#
+# Capability class: an EXPRESSION EVALUATOR over numbers the caller's asset model
+# names — not an execution substrate with a host surface. It has no statements,
+# no loops, no recursion of its own, no I/O, no clock and no host bindings: the
+# only thing it can do is reduce one bounded expression to one value, over the
+# variables and the functions this crate binds into its context
+# (`src/state/property_computation.rs`). With `default-features = false` its three
+# optional features are all off — `regex` (so no caller text is ever compiled into
+# a pattern), `rand` and `serde` — which leaves it with ZERO transitive
+# dependencies, no `build.rs`, no FFI and no C to compile; the workspace's
+# `unsafe_code = "forbid"` is untouched. Evaluation is bounded by the expression
+# length the model fixes (1024 characters) and by the data points a series holds,
+# both cited at the call sites.
+#
+# Pinned below 12 deliberately: 11.3.1 is MIT, and 12 relicensed to AGPL-3.0-only.
+# No advisory is published against this crate at this version.
+evalexpr = { version = "11.3", default-features = false }
 # `iso8601_span`: the ISO 8601 duration a tumbling window's interval and offset
 # may be spelled as, read through the workspace's one maintained reading of that
 # grammar rather than a second one here.

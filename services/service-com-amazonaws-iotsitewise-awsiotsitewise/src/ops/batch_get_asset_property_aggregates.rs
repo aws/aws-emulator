@@ -259,7 +259,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 }
             };
 
-            let aggregated = crate::state::aggregated_values(&store, &stream, &query);
+            let aggregated = crate::state::aggregated_values(&store, &stream, &query, now);
             // The first entry of a resumed page starts where the previous one
             // stopped; every later entry starts at its first data point.
             let from = if at == cursor.entry {

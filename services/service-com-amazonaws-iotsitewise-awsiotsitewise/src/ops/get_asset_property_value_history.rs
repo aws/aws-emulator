@@ -264,8 +264,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             }
         };
 
-        let mut selected: Vec<AssetPropertyValue> =
-            crate::state::history_values(&store, &stream, &query);
+        let mut selected: Vec<AssetPropertyValue> = crate::state::history_values(
+            &store,
+            &stream,
+            &query,
+            ::std::time::SystemTime::now(),
+        );
 
         // Which enumeration a token of this read belongs to: the stream read and the
         // query that selects and orders its samples — the window, the quality filter

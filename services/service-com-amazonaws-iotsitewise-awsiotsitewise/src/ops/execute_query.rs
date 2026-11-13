@@ -3014,6 +3014,10 @@ fn materialise(
         None => Cell::Null,
     };
     let mut rows: Vec<Vec<Cell>> = Vec::new();
+    // What a formula property's series is computed as of: a metric's window is a
+    // data point once the clock has passed its end, so the view reads the same
+    // data points the data-plane reads report at this instant.
+    let now = ::std::time::SystemTime::now();
     let columns: &'static [ViewColumn] = match view {
         "asset" => {
             for asset in store.assets.values() {
@@ -3056,7 +3060,7 @@ fn materialise(
             // alike: a disassociated series has no asset property to hang off, and
             // its samples are data this service holds just as much as a property's.
             for (series, asset_id, property_id, alias) in series_keys(store) {
-                let held = store.series(&series);
+                let held = store.resolved_series(&series, now);
                 let samples: Vec<&AssetPropertyValue> = if latest_only {
                     held.last().into_iter().collect()
                 } else {
@@ -3098,7 +3102,7 @@ fn materialise(
                     ) else {
                         continue;
                     };
-                    for window in crate::state::aggregated_values(store, &series, &query) {
+                    for window in crate::state::aggregated_values(store, &series, &query, now) {
                         let number = |value: Option<f64>| value.map_or(Cell::Null, Cell::Double);
                         let row = vec![
                             asset_id.clone(),

@@ -376,7 +376,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     .join(", ")
             ))
         })?;
-        let aggregated = crate::state::aggregated_values(&store, &stream, &query);
+        let aggregated = crate::state::aggregated_values(
+            &store,
+            &stream,
+            &query,
+            ::std::time::SystemTime::now(),
+        );
         drop(store);
 
         // Which enumeration a token of this read belongs to: the stream read and the

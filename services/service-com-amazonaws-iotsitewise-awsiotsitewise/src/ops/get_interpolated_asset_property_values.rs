@@ -359,15 +359,16 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // disagrees, and it wins.)
         let last_index = u64::try_from((end - start) / interval).unwrap_or(0);
 
-        // The data points an interpolation may use: the samples of the stream that
-        // was resolved — read through the shared `series` reader, so a disassociated
-        // stream's samples are as reachable as an associated one's — filtered to the
-        // requested quality. "If not specified, the window ranges between the start
-        // time minus the interval and the end time plus the interval" — with an
-        // explicit window each interval carries its own bounds, so the series is
-        // narrowed here only when the request gave none.
-        let mut samples: Vec<Sample<'_>> = store
-            .series(&stream)
+        // The data points an interpolation may use: the data points of the stream
+        // that was resolved — read through the shared `resolved_series` reader, so a
+        // disassociated stream's samples are as reachable as an associated one's and
+        // a formula property's computed data points are interpolated exactly as an
+        // ingested series is — filtered to the requested quality. "If not specified,
+        // the window ranges between the start time minus the interval and the end
+        // time plus the interval" — with an explicit window each interval carries its
+        // own bounds, so the series is narrowed here only when the request gave none.
+        let resolved = store.resolved_series(&stream, ::std::time::SystemTime::now());
+        let mut samples: Vec<Sample<'_>> = resolved
             .iter()
             .filter(|value| crate::state::quality_of(value) == input.quality)
             .map(|value| {

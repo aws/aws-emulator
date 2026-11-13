@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op GetAssetPropertyValue
-//! IMPLEMENTED: this operation reports the latest stored value of an asset property
-//! from the shared engine store (`crate::state`); this is the ONLY file to touch for it.
+//! IMPLEMENTED: this operation reports the latest value of an asset property from the
+//! shared engine store (`crate::state`) — the newest sample ingested into its data
+//! stream, or the newest value its formula computes when the property's definition
+//! carries one; this is the ONLY file to touch for it.
 //!
 //! ## Shape of an operation
 //!
@@ -220,9 +222,16 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         };
 
         // The latest value is the last element of the ascending series; a stream
-        // nothing has been written to simply has no `propertyValue`.
+        // nothing has been written to — and a formula property whose formula has
+        // computed nothing yet — simply has no `propertyValue`. The series comes
+        // from the one reader every data-plane read of this service takes, so a
+        // `transform` or `metric` property reports the value its formula computes
+        // and a measurement reports its newest ingested sample.
         Ok(GetAssetPropertyValueOutput {
-            property_value: store.series(&stream).last().cloned(),
+            property_value: store
+                .resolved_series(&stream, ::std::time::SystemTime::now())
+                .last()
+                .cloned(),
         })
     }
 }

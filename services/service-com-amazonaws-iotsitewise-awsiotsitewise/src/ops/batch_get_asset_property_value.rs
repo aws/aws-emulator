@@ -196,7 +196,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // depends on a bound a caller could stretch.
         let mut skipped_entries = Vec::with_capacity(start.min(input.entries.len()));
         for entry in input.entries.iter().take(start) {
-            let (completion_status, error_info) = match resolve_entry(&store, entry) {
+            let (completion_status, error_info) = match resolve_entry(&store, entry, now) {
                 Ok(_) => (COMPLETION_SUCCESS, None),
                 Err((error_code, _)) => (
                     COMPLETION_ERROR,
@@ -221,7 +221,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let mut spent = 0usize;
         let mut at = start;
         while let Some(entry) = input.entries.get(at) {
-            let resolved = resolve_entry(&store, entry);
+            let resolved = resolve_entry(&store, entry, now);
             let cost = entry_bytes(entry, &resolved);
             // The first entry of a page always goes in, so one entry larger than the
             // whole budget still makes progress instead of stalling the walk.
@@ -291,8 +291,8 @@ const COMPLETION_SUCCESS: &str = "SUCCESS";
 /// `BatchEntryCompletionStatus` value a skipped entry that had not resolved reports.
 const COMPLETION_ERROR: &str = "ERROR";
 
-/// Resolve one entry to the latest stored value of the property it names — `None`
-/// when the property exists but nothing has been written to it — or to the
+/// Resolve one entry to the latest value of the property it names — `None`
+/// when the property exists but holds no data point — or to the
 /// `BatchGetAssetPropertyValueErrorCode` and message the entry should report.
 ///
 /// The asset label goes through [`crate::state::ComAmazonawsIotsitewiseAwsiotsitewiseState::resolve_asset_id`],
@@ -301,6 +301,7 @@ const COMPLETION_ERROR: &str = "ERROR";
 fn resolve_entry(
     store: &crate::state::ComAmazonawsIotsitewiseAwsiotsitewiseState,
     entry: &BatchGetAssetPropertyValueEntry,
+    now: ::std::time::SystemTime,
 ) -> Result<Option<AssetPropertyValue>, (&'static str, String)> {
     // "To identify an asset property, you must specify one of the following: the
     // assetId and propertyId of an asset property; a propertyAlias."
@@ -347,8 +348,11 @@ fn resolve_entry(
         }
     };
 
-    // The latest value is the last element of the ascending series.
-    Ok(store.series(&stream).last().cloned())
+    // The latest value is the last element of the ascending series, read through
+    // the one reader every data-plane read of this service takes, so a `transform`
+    // or `metric` property reports the value its formula computes exactly as
+    // `GetAssetPropertyValue` reports it.
+    Ok(store.resolved_series(&stream, now).last().cloned())
 }
 
 /// `BatchGetAssetPropertyValueErrorCode` value for an entry naming no stored

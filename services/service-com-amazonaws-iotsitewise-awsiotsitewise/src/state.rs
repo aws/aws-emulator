@@ -148,6 +148,10 @@ use crate::ops::types::{
 //   import, export and enrichment job records.
 // * `property_formulas` — what a write holds a property definition to before
 //   anything is stored: its name, its variables, its formula and its window.
+// * `property_computation` — what the series of a `transform` or `metric`
+//   property IS: the values its formula computes from the properties its
+//   variables name, over the tumbling-window grid and the formula language its
+//   own two parts hold.
 // * `paths` — the structured `path` a read reports for a property or a composite
 //   model, the notification block a reported asset property carries, and which
 //   of a model's composite models are built-in.
@@ -157,6 +161,7 @@ mod computation_models;
 mod jobs;
 mod paths;
 mod pipeline_task_records;
+mod property_computation;
 mod property_formulas;
 mod storage_configuration;
 mod store;
@@ -168,6 +173,7 @@ pub use computation_models::*;
 pub use jobs::*;
 pub use paths::*;
 pub use pipeline_task_records::*;
+pub use property_computation::*;
 pub use property_formulas::*;
 pub use storage_configuration::*;
 pub use workspace_records::*;
@@ -3841,11 +3847,16 @@ impl<'a> HistoryQuery<'a> {
     }
 }
 
-/// The stored samples of the stream `stream` names that `query` selects, in the
+/// The samples of the stream `stream` names that `query` selects, in the
 /// order it asks for — what either history reader reports for one data stream,
 /// associated with an asset property or not.
 ///
-/// The stored series is kept sorted ascending by timestamp, so the range and the
+/// The series is the one every data-plane read of this service takes
+/// ([`ComAmazonawsIotsitewiseAwsiotsitewiseState::resolved_series`]), so a
+/// property whose definition carries a formula reports the data points that
+/// formula computes as of `now` and an ingested stream reports its samples.
+///
+/// The series is kept sorted ascending by timestamp, so the range and the
 /// quality filter select from it in order and ASCENDING needs no sort at all; a
 /// series is bounded at [`MAX_SAMPLES_PER_SERIES`], so the work one read can ask
 /// for is bounded however wide a range it names.
@@ -3853,9 +3864,10 @@ pub fn history_values(
     store: &ComAmazonawsIotsitewiseAwsiotsitewiseState,
     stream: &SeriesKey,
     query: &HistoryQuery<'_>,
+    now: SystemTime,
 ) -> Vec<AssetPropertyValue> {
     let mut selected: Vec<AssetPropertyValue> = store
-        .series(stream)
+        .resolved_series(stream, now)
         .iter()
         .filter(|sample| {
             let at = timestamp_nanos(&sample.timestamp);
@@ -4004,13 +4016,14 @@ impl<'a> AggregateQuery<'a> {
 /// aggregate operation reports for one data stream, associated with an asset
 /// property or not.
 ///
-/// DERIVED, never stored: the samples `BatchPutAssetPropertyValue` wrote are
-/// bucketed into the epoch-aligned windows `query` names and each bucket is
-/// reduced to the aggregates the caller asked for, stamped with the instant the
-/// window it summarises ENDS. A window that no in-range
-/// sample of the asked-for quality falls in is not reported at all, so the length
-/// of the answer is a function of the stored data and not of the width of the
-/// queried range.
+/// DERIVED, never stored: the data points the stream holds — the samples
+/// `BatchPutAssetPropertyValue` wrote, or the ones a formula property's formula
+/// computes as of `now` — are bucketed into the epoch-aligned windows `query`
+/// names and each bucket is reduced to the aggregates the caller asked for,
+/// stamped with the instant the window it summarises ENDS. A window that no
+/// in-range sample of the asked-for quality falls in is not reported at all, so
+/// the length of the answer is a function of the stored data and not of the width
+/// of the queried range.
 ///
 /// The pass is over the SAMPLES, not over the windows the range spans: a series is
 /// bounded at [`MAX_SAMPLES_PER_SERIES`], so the work one query can ask for is
@@ -4019,8 +4032,9 @@ pub fn aggregated_values(
     store: &ComAmazonawsIotsitewiseAwsiotsitewiseState,
     stream: &SeriesKey,
     query: &AggregateQuery<'_>,
+    now: SystemTime,
 ) -> Vec<AggregatedValue> {
-    let series = store.series(stream);
+    let series = store.resolved_series(stream, now);
     if series.is_empty() {
         return Vec::new();
     }
@@ -4028,7 +4042,7 @@ pub fn aggregated_values(
     // The series is kept sorted ascending, so one window's samples are contiguous
     // and a single `last_mut()` bucket is all the grouping needs.
     let mut windows: Vec<(i64, Bucket)> = Vec::new();
-    for sample in series {
+    for sample in series.iter() {
         let at = timestamp_nanos(&sample.timestamp);
         if at <= query.start_exclusive_nanos || at > query.end_inclusive_nanos {
             continue;
