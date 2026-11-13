@@ -71,6 +71,8 @@ mod emulator;
 mod list_connections_environment_filter;
 #[path = "all/list_tags_for_resource.rs"]
 mod list_tags_for_resource;
+#[path = "all/page_cursors_are_only_what_the_listing_minted.rs"]
+mod page_cursors_are_only_what_the_listing_minted;
 #[path = "all/proposal_parameters_are_captured.rs"]
 mod proposal_parameters_are_captured;
 #[path = "all/provider_member_constraints.rs"]

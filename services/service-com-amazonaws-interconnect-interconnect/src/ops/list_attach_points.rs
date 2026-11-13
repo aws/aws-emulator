@@ -142,9 +142,21 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
     ) -> Result<Self::Output, Self::Error> {
         let region = crate::state::request_region(ctx);
         // The attach points come from the service that owns the account's gateways and
-        // the Environment from the called Region's catalog, so this operation reads
-        // nothing of this service's own store.
-        let _ = &self.engine;
+        // the Environment from the called Region's catalog, so this operation reads none
+        // of this service's own records. The store is reached for ONE thing: the secret
+        // its page cursors are authenticated under, which is what tells a `nextToken`
+        // this endpoint issued from one a caller built. `PageTokenKey` is `Copy`, so the
+        // guard is released here and nothing of it is held across the await below.
+        let Some(state) = crate::state::service_state(&*self.engine) else {
+            return Err(ListAttachPointsErrorModeled::InterconnectServerException(
+                InterconnectServerException {
+                    message: "the Interconnect connection store is not mounted on this engine"
+                        .to_string(),
+                },
+            )
+            .into());
+        };
+        let token_key = state.lock().page_token_key;
 
         // The attach points are listed FOR an Environment, so the catalog record the
         // `environmentId` names is what the listing is scoped by — looked up in the
@@ -170,12 +182,17 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         };
 
         // A cursor this operation did not issue is refused, rather than answered
-        // with an empty page the caller cannot tell from "no more results".
+        // with an empty page the caller cannot tell from "no more results" — or with a
+        // silently restarted walk. The position travels INSIDE the token, so what tells
+        // one this endpoint issued from one a caller assembled is the authenticator over
+        // it, computed under the secret this store drew and never reveals. The scope the
+        // authenticator covers names this operation, the Region it answered in and the
+        // Environment the listing was scoped by, because those three decide the sequence
+        // a cursor names a position in.
+        let scope = crate::state::attach_point_cursor_scope(&region, &input.environment_id);
         let cursor = match input.next_token.as_deref() {
             Some(token) => {
-                let Some(key) =
-                    crate::state::decode_cursor(token, crate::state::ATTACH_POINT_CURSOR_TAG)
-                else {
+                let Some(key) = crate::state::decode_cursor(&token_key, token, &scope) else {
                     return Err(ListAttachPointsErrorModeled::InterconnectValidationException(
                         InterconnectValidationException {
                             message: crate::state::cursor_not_issued_message("ListAttachPoints"),
@@ -183,7 +200,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     )
                     .into());
                 };
-                Some(key.to_string())
+                Some(key)
             }
             None => None,
         };
@@ -242,7 +259,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             keyed,
             cursor.as_deref(),
             input.max_results,
-            crate::state::ATTACH_POINT_CURSOR_TAG,
+            &token_key,
+            &scope,
         );
         Ok(ListAttachPointsOutput {
             attach_points,

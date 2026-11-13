@@ -210,12 +210,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // this request was signed for — a connection belongs to the Region it was
         // created in — so the page counts, the cursors and the filters all operate
         // over this endpoint's own set and not over every Region's.
-        let matching: Vec<(String, ConnectionSummary)> = {
+        let (matching, token_key) = {
             let mut store = state.lock();
             // Same clock-owed settle as GetConnection: a page must not report
             // `deleting` for a connection whose `deleted` was already due.
             store.materialise_due_transitions(::std::time::Instant::now());
-            store
+            let matching: Vec<(String, ConnectionSummary)> = store
                 .connections_in(&region)
                 .map(|(id, stored)| (id, &stored.connection))
                 .filter(|(_, connection)| {
@@ -235,16 +235,23 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                         })
                 })
                 .map(|(id, connection)| (id.clone(), crate::state::summary_of(connection)))
-                .collect()
+                .collect();
+            // Taken off the store with the records this page reports, so the cursor the
+            // page hands back is authenticated under the secret THIS store holds:
+            // `PageTokenKey` is `Copy`, so nothing of the guard outlives the block.
+            (matching, store.page_token_key)
         };
 
         // A cursor this operation did not issue is refused, rather than answered
-        // with an empty page the caller cannot tell from "no more results".
+        // with an empty page the caller cannot tell from "no more results" — or with a
+        // silently restarted walk. The position a cursor names travels INSIDE the token,
+        // so what tells one this endpoint issued from one a caller assembled is the
+        // authenticator over it, computed under the secret this store drew and never
+        // reveals: a token whose shape merely looks right names no position at all.
+        let scope = crate::state::connection_cursor_scope(&region);
         let cursor = match input.next_token.as_deref() {
             Some(token) => {
-                let Some(key) =
-                    crate::state::decode_cursor(token, crate::state::CONNECTION_CURSOR_TAG)
-                else {
+                let Some(key) = crate::state::decode_cursor(&token_key, token, &scope) else {
                     return Err(ListConnectionsErrorModeled::InterconnectValidationException(
                         InterconnectValidationException {
                             message: crate::state::cursor_not_issued_message("ListConnections"),
@@ -252,7 +259,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     )
                     .into());
                 };
-                Some(key.to_string())
+                Some(key)
             }
             None => None,
         };
@@ -261,7 +268,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             matching,
             cursor.as_deref(),
             input.max_results,
-            crate::state::CONNECTION_CURSOR_TAG,
+            &token_key,
+            &scope,
         );
         Ok(ListConnectionsOutput {
             connections: Some(connections),

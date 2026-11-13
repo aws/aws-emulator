@@ -32,13 +32,17 @@ uuid = { version = "1", features = ["v4"] }
 # Reads the base64 an `activationKey` is written in: the member carries the partner
 # portal's encoded capture, so text that does not decode is a fault in the request.
 base64 = "0.22"
+# `page_tokens::PageTokenKey`: the workspace's one way a listing authenticates the page
+# cursors it issues, so a `nextToken` this service did not mint names no position.
+service-common = { path = "../common" }
+# The hex a minted page cursor is rendered as on the wire.
+hex = { workspace = true }
 
 [build-dependencies]
 emulator-core-build-support = { workspace = true }
 
 [dev-dependencies]
 sha2 = { workspace = true }
-hex = { workspace = true }
 # The Interconnect tests mount the Direct Connect service beside Interconnect on one
 # engine, because an attach point is one of that service's gateways: `ListAttachPoints`
 # reports what Direct Connect holds, so the suites create the gateways there.

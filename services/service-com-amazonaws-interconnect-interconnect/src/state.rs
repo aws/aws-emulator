@@ -37,6 +37,10 @@ use crate::ops::types::{
     Provider, RemoteAccountIdentifier,
 };
 
+/// The secret a listing's page cursors are authenticated under, which is what lets a
+/// paginated read tell a `nextToken` it ISSUED from one a caller assembled.
+pub use ::service_common::page_tokens::PageTokenKey;
+
 /// The region an ARN carries when the request is unsigned, so no SigV4 credential
 /// scope names one. Matches the region the emulator's own clients default to.
 pub const DEFAULT_REGION: &str = "us-east-1";
@@ -345,6 +349,11 @@ pub struct ComAmazonawsInterconnectInterconnectState {
     /// is resolved through [`Self::proposal_in`], so a key whose connection belongs to
     /// another Region, or has had a `DeleteConnection` made on it, resolves to nothing.
     pub activation_keys: BTreeMap<String, String>,
+    /// The secret this store's page cursors are authenticated under, drawn from the
+    /// system's randomness when the store is created ([`PageTokenKey`]): it is what lets
+    /// a listing tell a `nextToken` it issued from one a caller built
+    /// ([`decode_cursor`]). Held only in memory, never reported and never logged.
+    pub page_token_key: PageTokenKey,
 }
 
 impl Default for ComAmazonawsInterconnectInterconnectState {
@@ -353,6 +362,8 @@ impl Default for ComAmazonawsInterconnectInterconnectState {
             connections: BTreeMap::new(),
             idempotency_tokens: BTreeMap::new(),
             activation_keys: BTreeMap::new(),
+            // One key per store, from the system's randomness: see `PageTokenKey`.
+            page_token_key: PageTokenKey::new(),
         }
     }
 }
@@ -1861,13 +1872,72 @@ pub const CONNECTION_CURSOR_TAG: &str = "conn:";
 /// The tag `ListAttachPoints` stamps on the cursors it issues.
 pub const ATTACH_POINT_CURSOR_TAG: &str = "ap:";
 
-/// Read the key out of a page cursor this operation issued.
+/// Separator between the fields of the payload a cursor authenticates: the scope of the
+/// listing that issued it, then the key the page it ended ran to.
 ///
-/// `None` for anything else — a hand-made token, or one from the other list
-/// operation — which the handler refuses with the modelled validation error rather
-/// than silently answering with an empty page.
-pub fn decode_cursor<'a>(token: &'a str, tag: &str) -> Option<&'a str> {
-    token.strip_prefix(tag).filter(|key| !key.is_empty())
+/// A unit separator appears in none of those fields — a Region id, an `environmentId`, a
+/// `ConnectionId` and a gateway identifier are all written in identifier characters — so
+/// the payload is read back field for field exactly as it was minted, and a key carrying
+/// one is refused rather than split.
+const CURSOR_FIELD_SEPARATOR: char = '\u{1f}';
+
+/// The scope a `ListConnections` cursor is issued under: this operation's tag and the
+/// regional endpoint that served the page.
+///
+/// A cursor names the last key of ONE walked sequence, and the sequence this listing
+/// walks is the connections of the Region the request was signed for, so a cursor issued
+/// by another Region's endpoint names a position in a sequence this one never walked.
+pub fn connection_cursor_scope(region: &str) -> String {
+    format!("{CONNECTION_CURSOR_TAG}{region}")
+}
+
+/// The scope a `ListEnvironments` cursor is issued under: this operation's tag and the
+/// regional endpoint that served the page, whose catalog is the sequence it walked.
+pub fn environment_cursor_scope(region: &str) -> String {
+    format!("{ENVIRONMENT_CURSOR_TAG}{region}")
+}
+
+/// The scope a `ListAttachPoints` cursor is issued under: this operation's tag, the
+/// regional endpoint that served the page, and the Environment the listing was scoped
+/// by — the attach points of one Environment are the sequence it walked, so a cursor
+/// from a listing of another Environment is not one this listing issued.
+pub fn attach_point_cursor_scope(region: &str, environment_id: &str) -> String {
+    format!("{ATTACH_POINT_CURSOR_TAG}{region}{CURSOR_FIELD_SEPARATOR}{environment_id}")
+}
+
+/// Render the key a page ended on as the opaque `nextToken` that listing hands back: the
+/// key and its `scope` behind the authenticator THIS store holds the secret for
+/// ([`PageTokenKey::mint`]), in hex.
+///
+/// The position travels inside the token — nothing is kept on the side to look up — so
+/// what stops a caller naming a position this listing never offered is that it cannot
+/// produce the authenticator over it.
+pub fn encode_cursor(token_key: &PageTokenKey, scope: &str, last_key: &str) -> String {
+    ::hex::encode(token_key.mint(&format!(
+        "{scope}{CURSOR_FIELD_SEPARATOR}{last_key}"
+    )))
+}
+
+/// Read the key out of a page cursor the listing of `scope` issued.
+///
+/// `None` for every other value, which the handler refuses with the modelled validation
+/// error rather than silently answering with an empty page or restarting the walk: a
+/// token that is not hex, one too short to carry an authenticator, one whose
+/// authenticator THIS store's secret does not verify (a hand-made token included,
+/// however exactly it has an issued token's shape), one minted under another scope — a
+/// sibling listing's, another Region's endpoint's, another Environment's — and one whose
+/// key is empty or carries the field separator.
+///
+/// A token naming a key the sequence no longer holds IS one this listing issued, and
+/// resumes after that key: a record deleted between two pages must not break the page
+/// after it.
+pub fn decode_cursor(token_key: &PageTokenKey, token: &str, scope: &str) -> Option<String> {
+    let payload = token_key.cursor_of(&::hex::decode(token).ok()?)?;
+    let key = payload.strip_prefix(&format!("{scope}{CURSOR_FIELD_SEPARATOR}"))?;
+    if key.is_empty() || key.contains(CURSOR_FIELD_SEPARATOR) {
+        return None;
+    }
+    Some(key.to_string())
 }
 
 /// How a list operation words a `nextToken` it did not issue, naming the operation
@@ -1889,13 +1959,15 @@ pub fn cursor_not_issued_message(operation: &str) -> String {
 /// the next page starts at the first key strictly greater than it — so a page is
 /// never repeated or skipped even if the record a token names was deleted or
 /// evicted by then. The returned token is `None` exactly when the page ran to the
-/// end of the sequence; when there is one, it carries `token_tag` so the next call
-/// can tell a cursor this operation issued from one it did not.
+/// end of the sequence; when there is one, it is minted under `scope` and this
+/// store's secret ([`encode_cursor`]), so the next call can tell a cursor this
+/// listing issued from one it did not.
 pub fn paginate<T>(
     items: Vec<(String, T)>,
     cursor: Option<&str>,
     max_results: Option<i32>,
-    token_tag: &str,
+    token_key: &PageTokenKey,
+    scope: &str,
 ) -> (Vec<T>, Option<String>) {
     let start = match cursor {
         Some(key_after) => items
@@ -1919,7 +1991,7 @@ pub fn paginate<T>(
         page.push(item);
     }
     let token = if rest.next().is_some() {
-        last_key.map(|key| format!("{token_tag}{key}"))
+        last_key.map(|key| encode_cursor(token_key, scope, &key))
     } else {
         None
     };

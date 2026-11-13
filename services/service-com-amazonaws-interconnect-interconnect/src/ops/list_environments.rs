@@ -143,8 +143,20 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let region = crate::state::request_region(ctx);
         // Environments are AWS-managed (the model binds no `CreateEnvironment`), so the
         // catalog is the fixed function `crate::state::environment_catalog` of that
-        // Region and nothing of this service's own store is read or written here.
-        let _ = &self.engine;
+        // Region and nothing of this service's own records is read or written here. The
+        // store is reached for ONE thing: the secret its page cursors are authenticated
+        // under, which is what tells a `nextToken` this endpoint issued from one a
+        // caller built. `PageTokenKey` is `Copy`, so the guard is released here.
+        let Some(state) = crate::state::service_state(&*self.engine) else {
+            return Err(ListEnvironmentsErrorModeled::InterconnectServerException(
+                InterconnectServerException {
+                    message: "the Interconnect connection store is not mounted on this engine"
+                        .to_string(),
+                },
+            )
+            .into());
+        };
+        let token_key = state.lock().page_token_key;
 
         // The `provider` filter carries a union whose members are constrained in the
         // model, and nothing before the handler holds a member one level down to those
@@ -199,15 +211,17 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .collect();
 
         // A cursor this operation did not issue is refused, rather than answered
-        // with an empty page the caller cannot tell from "no more results". A cursor
-        // carries the last `environmentId` handed out, and this endpoint only ever
-        // handed out ids of its OWN Region's catalog, so one naming an Environment
-        // this Region does not offer is not a cursor it issued either.
+        // with an empty page the caller cannot tell from "no more results" — or with a
+        // silently restarted walk. The position travels INSIDE the token, so what tells
+        // one this endpoint issued from one a caller assembled is the authenticator over
+        // it, computed under the secret this store drew and never reveals. The scope the
+        // authenticator covers names this operation AND the Region it answered in,
+        // because the sequence a cursor names a position in is this Region's own
+        // catalog: a cursor another Region's endpoint issued is not one this one did.
+        let scope = crate::state::environment_cursor_scope(&region);
         let cursor = match input.next_token.as_deref() {
             Some(token) => {
-                let key = crate::state::decode_cursor(token, crate::state::ENVIRONMENT_CURSOR_TAG)
-                    .filter(|key| crate::state::environment_in_region(&region, key).is_some());
-                let Some(key) = key else {
+                let Some(key) = crate::state::decode_cursor(&token_key, token, &scope) else {
                     return Err(ListEnvironmentsErrorModeled::InterconnectValidationException(
                         InterconnectValidationException {
                             message: crate::state::cursor_not_issued_message("ListEnvironments"),
@@ -215,7 +229,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     )
                     .into());
                 };
-                Some(key.to_string())
+                Some(key)
             }
             None => None,
         };
@@ -224,7 +238,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             matching,
             cursor.as_deref(),
             input.max_results,
-            crate::state::ENVIRONMENT_CURSOR_TAG,
+            &token_key,
+            &scope,
         );
         Ok(ListEnvironmentsOutput {
             environments,
