@@ -78,3 +78,26 @@ The echoed values ('vpce-0000000000absent', 't9.nonexistent.search') are this re
 3. Replay fixture es-vpc-endpoint-errors step task#8 (DELETE /2015-01-01/es/vpcEndpoints/{VpcEndpointId}) and compare it again — the value arrives on a URI label here.
 4. Replay fixture es-engine-version-and-instance-catalog step task#5 (GET /2021-01-01/opensearch/instanceTypeLimits/{EngineVersion}/{InstanceType} with an instanceType outside the enum) and diff the enumerated value set in `message` against the recording.
 5. All four steps must pass before this issue is closed.
+
+## Status at close
+
+Causes 1, 2 and 3 are fixed: steps 1-3 replay clean (`es|DescribeVpcEndpoints`,
+`es|UpdateVpcEndpoint` and `es|DeleteVpcEndpoint` report `fixed`). A `@pattern` clause now
+quotes the expression the API publishes for the member's shape, and a constraint broken by a
+collection's elements is stated at the collection member over the element shape's whole set,
+quoting the collection the request carried.
+
+Cause 4's rule is implemented — the clause enumerates the accepted-value list the SERVICE
+publishes (its instance-type catalog) instead of the older snapshot this model carries — but
+its replay key `es|DescribeInstanceTypeLimits|4xx->4xx|$.message` is STILL OPEN, on two
+residuals outside the refusal seam:
+
+* the catalog's exact membership, which is
+  `20261101T032039Z-es-listinstancetypedetails-serves-a-legacy-instance-type-catalog.md`'s
+  subject — the replay still reports `es|ListInstanceTypeDetails|2xx->2xx|$.InstanceTypeDetails[*]`
+  as an open cause of the same fixture, so the catalog is not yet the one AWS publishes and no
+  message rendering it can be either. That issue is this cause's blocking dependency;
+* the ORDER inside the bracketed set, which matches no order computable from the values: the
+  recording's first eight values are not bucket-monotone under the fleet's hashed value-set
+  order at any table width (16-2048), on either the value or the enum-name spelling, plain or
+  Java-spread.

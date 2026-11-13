@@ -1583,6 +1583,32 @@ pub fn unanchored_keeping_inner_anchors(regex: &str) -> String {
     regex.to_string()
 }
 
+/// [`unanchored_keeping_inner_anchors`], declining the drop for an expression the service
+/// PUBLISHES exactly as the model writes it.
+///
+/// A service's `@pattern` clause quotes the expression that service publishes for the
+/// member's SHAPE — the `Pattern` its API reference documents — and one API can publish both
+/// forms: the expression inside the whole-value pair for one shape, and the model's own text,
+/// anchors included, for another. Which of the two a shape is published with cannot be read
+/// off the text, because both are spelled `^…$` in the model, so it is reference data about
+/// the shape: `published_as_declared` is the service's list of the expressions it publishes
+/// as declared, keyed by the EXPRESSION, since what is published belongs to the shape and so
+/// holds for every member targeting it — in any operation, in whatever binding carried the
+/// value, and inside the constraint set stated at a collection of them.
+///
+/// THE HOME for that rule, so the services recorded stating both forms share one reading of
+/// it and only their own rows live in their own crates. Everything else is
+/// [`unanchored_keeping_inner_anchors`]'s, called rather than restated: an expression the
+/// list does not name is quoted exactly as that rendering quotes it, and the CHECK is always
+/// the model's pattern as written.
+#[must_use]
+pub fn unanchored_unless_published_as_declared(regex: &str, published_as_declared: &[&str]) -> String {
+    if published_as_declared.contains(&regex) {
+        return regex.to_string();
+    }
+    unanchored_keeping_inner_anchors(regex)
+}
+
 /// The path of `element_member` on element `position` (0-BASED) of the list member
 /// `list_member`, as the framework's own constraint walk spells one: the list member, the
 /// element's 1-based position and the collection step, then the element's member —
@@ -2956,7 +2982,8 @@ mod tests {
         echo_held_to, rendered_blob, rendered_declared_structure, rendered_entries, rendered_map,
         rendered_map_in_key_order, rendered_record, rendered_sequence, rendered_structure,
         unanchored, unanchored_grouping_alternation,
-        unanchored_keeping_inner_anchors, Composite, RenderedChild, Submitted, SubmittedEcho,
+        unanchored_keeping_inner_anchors, unanchored_unless_published_as_declared, Composite,
+        RenderedChild, Submitted, SubmittedEcho,
         SubmittedValues, MAX_RECORDED_BYTES, MAX_RECORDED_DEPTH, MAX_RECORDED_LEAVES,
         MAX_RECORDED_RENDERED_BYTES, MAX_RECORDED_RENDERINGS, MAX_RENDERED_CHILDREN,
         MAX_RESTORED_ECHO, MAX_RESTORED_TOTAL, UNSET_MEMBER,
@@ -4342,6 +4369,68 @@ mod tests {
                 actual, stated,
                 "case {case:?}: expected unanchored_keeping_inner_anchors {stated:?}, got \
                  {actual:?}"
+            );
+        }
+    }
+
+    /// RULE: [`super::unanchored_unless_published_as_declared`] quotes an expression the
+    /// service's own list names exactly as the model writes it, and defers to
+    /// [`super::unanchored_keeping_inner_anchors`] for every other expression — so the list
+    /// decides nothing but its own rows.
+    ///
+    /// The rows span what the rule generalises over: a listed expression and an unlisted one
+    /// over the same shape of text, a listed expression that rendering would have left alone
+    /// anyway, an expression that only LOOKS like a listed one (the same text without its
+    /// pair), and the empty list, which is every service that publishes no expression as
+    /// declared.
+    #[test]
+    fn a_published_expression_is_quoted_as_the_model_declares_it() {
+        let published: &[&str] = &[r"^aos-[a-zA-Z0-9]*$", "^a$|^b$"];
+        // (case, the list, the model's pattern, what the rendering states)
+        let rows: [(&str, &[&str], &str, &str); 6] = [
+            (
+                "an expression the list names",
+                published,
+                r"^aos-[a-zA-Z0-9]*$",
+                r"^aos-[a-zA-Z0-9]*$",
+            ),
+            (
+                "an expression of the same shape the list does not name",
+                published,
+                r"^vpce-[a-zA-Z0-9]*$",
+                r"vpce-[a-zA-Z0-9]*",
+            ),
+            (
+                "a listed expression the other rendering would keep anyway",
+                published,
+                "^a$|^b$",
+                "^a$|^b$",
+            ),
+            (
+                "the listed expression without its pair, which is a different expression",
+                published,
+                r"aos-[a-zA-Z0-9]*",
+                r"aos-[a-zA-Z0-9]*",
+            ),
+            (
+                "no expression published as declared",
+                &[],
+                r"^aos-[a-zA-Z0-9]*$",
+                r"aos-[a-zA-Z0-9]*",
+            ),
+            (
+                "no expression published as declared, over a self-anchored alternation",
+                &[],
+                "^a$|^b$",
+                "^a$|^b$",
+            ),
+        ];
+
+        for (case, list, pattern, stated) in rows {
+            let actual = unanchored_unless_published_as_declared(pattern, list);
+            assert_eq!(
+                actual, stated,
+                "case {case:?}: expected {stated:?}, got {actual:?}"
             );
         }
     }

@@ -49,3 +49,5 @@ mod refusal_value_echo;
 mod shared_es_signing_name_claim;
 #[path = "all/state_roundtrip.rs"]
 mod state_roundtrip;
+#[path = "all/vpc_endpoint_id_expression.rs"]
+mod vpc_endpoint_id_expression;

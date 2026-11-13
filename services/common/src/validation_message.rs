@@ -1586,6 +1586,37 @@ pub fn aws_validation_refusal_over_elements_withholding(
     )
 }
 
+/// [`aws_validation_refusal_over_elements_quoting`], with the members whose value the
+/// refusal WITHHOLDS chosen by the caller too — the entry point for a service whose
+/// recordings show BOTH the collection a grouped clause quotes and a member stated without
+/// the value it submitted.
+///
+/// The two choices are the ones [`aws_validation_refusal_over_elements_quoting`] and
+/// [`aws_validation_refusal_over_elements_withholding`] take one each, composed over the one
+/// [`grouped_refusal`] body: a grouped clause quotes the collection `quoted_collection`
+/// answers for and states no value where it answers `None`, and every OTHER clause drops its
+/// value half where `withholds_value` answers `true` for its member path. A grouped clause is
+/// never asked the second question, so the two rules compose rather than overlap, and
+/// everything neither covers — the grouping, the element sets read off `input_schemas`, the
+/// envelope, the member paths, the `@pattern` rendering and every other requirement — is that
+/// same body's and the framework's.
+pub fn aws_validation_refusal_over_elements_quoting_withholding(
+    refusal: &Refusal,
+    input_schemas: &[&'static Schema],
+    quote_pattern: impl Fn(&str) -> String,
+    quoted_collection: impl Fn(&str) -> Option<String>,
+    withholds_value: impl Fn(&str) -> bool,
+) -> Option<Refused> {
+    grouped_refusal(
+        refusal,
+        input_schemas,
+        &quote_pattern,
+        &quoted_collection,
+        &withholds_value,
+        &|_| None,
+    )
+}
+
 /// [`aws_validation_refusal_over_elements_stating`], with the members whose value the
 /// refusal WITHHOLDS chosen by the caller too — the entry point for a service that states
 /// BOTH halves at once: the nested requirement of a grouped clause, and the value half of

@@ -3,26 +3,30 @@
 //! End-to-end tests for how this API QUOTES a `@pattern` requirement when it refuses a
 //! value at the boundary.
 //!
-//! The rule: a pattern clause states the expression a value has to satisfy, WITHOUT the
-//! whole-value pair the model wraps that expression in — a model writes `^…$` to demand a
-//! total match, and the service publishes what is inside it. The check is unchanged: the
-//! boundary still runs the model's pattern as written, so the same values are refused;
-//! only the clause's quoting differs, and a caller that lifts the advertised expression
-//! out of the message gets one it can apply itself.
+//! The rule: a pattern clause states the expression the service PUBLISHES for the member's
+//! shape — the `Pattern` the API reference documents for it. For most of this surface that
+//! is the expression WITHOUT the whole-value pair the model wraps it in: a model writes
+//! `^…$` to demand a total match, and the service publishes what is inside it. The check is
+//! unchanged either way: the boundary still runs the model's pattern as written, so the same
+//! values are refused; only the clause's quoting differs, and a caller that lifts the
+//! published expression out of the message gets one it can apply itself.
 //!
-//! The pair is dropped only where what it encloses carries NO anchor of its own. An
-//! expression that anchors its own BRANCHES (an alternation of `^…$` branches) is a
-//! whole-value expression already — the two ends of its text are the first and last
-//! branch's anchors — so it is quoted exactly as the model declares it: dropping those
-//! ends would state a requirement of no branch. The version row below is that case and is
-//! asserted as such.
+//! The pair is kept in two cases. One is textual: an expression that anchors its own
+//! BRANCHES (an alternation of `^…$` branches) is a whole-value expression already — the two
+//! ends of its text are the first and last branch's anchors — so it is quoted exactly as the
+//! model declares it, since dropping those ends would state a requirement of no branch. The
+//! version row below is that case. The other is the shape's own published text: a VPC
+//! endpoint id is documented `^aos-[a-zA-Z0-9]*$`, anchors included, and the two rows for it
+//! assert that — the published expression is reference data about the shape rather than
+//! something recoverable from the model's text, since both renderings are spelled `^…$`
+//! there. The collection-member half of the same rule is
+//! [`super::vpc_endpoint_id_expression`].
 //!
 //! Each row's modelled expression is the model's, read with
 //! `smithy_query(query="shape",shape="DomainName,PackageName,ElasticsearchVersionString,\
 //! UserPoolId,IdentityPoolId,AWSAccount,VpcEndpointId")`, and the rows span what the rule
 //! generalises over: the member's shape, where the value is bound (a URI label, a top-level
-//! body member, a member nested in a structure, an element of a list), and the HTTP method
-//! of the route.
+//! body member, a member nested in a structure), and the HTTP method of the route.
 
 use serde_json::{json, Value};
 
@@ -159,23 +163,36 @@ fn cases() -> Vec<Case> {
             quoted: r"[0-9]+",
         },
         Case {
-            // An ELEMENT of a list member.
-            case: "DescribeVpcEndpoints' VpcEndpointIds element",
+            // A shape the API publishes WITH the pair, bound to a body member.
+            case: "UpdateVpcEndpoint's VpcEndpointId member",
             method: "POST",
-            path: "/2015-01-01/es/vpcEndpoints/describe".to_string(),
-            body: Some(json!({"VpcEndpointIds": ["bad-endpoint-id"]})),
+            path: "/2015-01-01/es/vpcEndpoints/update".to_string(),
+            body: Some(json!({
+                "VpcEndpointId": "bad-endpoint-id",
+                "VpcOptions": {"SubnetIds": ["subnet-0000000000000000a"]}
+            })),
             modelled: r"^aos-[a-zA-Z0-9]*$",
-            quoted: r"aos-[a-zA-Z0-9]*",
+            quoted: r"^aos-[a-zA-Z0-9]*$",
+        },
+        Case {
+            // The same shape on a URI label, so the published text is the shape's and not
+            // the binding's.
+            case: "DeleteVpcEndpoint's VpcEndpointId label",
+            method: "DELETE",
+            path: "/2015-01-01/es/vpcEndpoints/bad-endpoint-id".to_string(),
+            body: None,
+            modelled: r"^aos-[a-zA-Z0-9]*$",
+            quoted: r"^aos-[a-zA-Z0-9]*$",
         },
     ]
 }
 
-/// RULE: a `@pattern` refusal quotes the expression the service advertises — the model's
-/// text without the whole-value pair the model wrapped it in, and the model's text
-/// unchanged where what that pair encloses anchors its own branches — on every member of
-/// this API's input surface.
+/// RULE: a `@pattern` refusal quotes the expression the service publishes for the member's
+/// shape — the model's text without the whole-value pair the model wrapped it in, and the
+/// model's text unchanged for a shape whose published expression carries that pair — on
+/// every member of this API's input surface.
 #[tokio::test]
-async fn a_pattern_refusal_quotes_the_expression_without_the_modelled_pair() {
+async fn a_pattern_refusal_quotes_the_expression_the_api_publishes() {
     let router = router();
 
     for Case {

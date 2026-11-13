@@ -39,63 +39,50 @@
 //! table, and the default error renderers — lives in the generated `ServiceDefinition`
 //! and is reached, not edited, through the one `definition` method below. You
 //! do not write it; editing the entry would let this file drift from the model.
+//!
+//! ## This service's edited seam: how a broken constraint is stated
+//!
+//! This API words a constraint refusal from the REQUEST — the member path, the value as
+//! submitted, and the requirement as the service itself publishes it. One part of that
+//! sentence the refusal seam cannot produce on its own: the value a clause states at a
+//! COLLECTION member when one of its ELEMENTS failed. AWS reports such a failure at the
+//! collection and echoes the collection the request carried, while the violation carries
+//! the offending element alone, and
+//! [`Service::override_refusal`](smithy_server_runtime::Service::override_refusal) is handed
+//! the violations without the request they were found in.
+//!
+//! [`StatedPerOperation`] is where it comes from: each modelled operation is served wrapped
+//! in it, the wrapper asks `service_common::validation` for the framework's OWN violations
+//! against that operation's input schema together with the request's own lists, and
+//! [`validation`] turns them into the sentence. `override_refusal` states a refusal that
+//! reaches the centralized walk anyway through that same module, so the wording lives in ONE
+//! place and a clause there simply has no collection to quote.
 
+mod validation;
+
+use aws_smithy_runtime_api::http::{Request as RtRequest, Response as RtResponse};
+use aws_smithy_schema_server::ProtocolError;
 use smithy_server_runtime::{
-    http, ErasedOperation, Refusal, Refused, Service,
+    http, BoxFuture, ErasedOperation, Operation, OperationContext, OperationRoutingTable, Refusal,
+    Refused, ServerHttpProtocol, Service, Violation,
 };
-use std::collections::BTreeSet;
+use std::collections::HashMap;
 use std::sync::Arc;
 
-/// The members of `refusal` whose clauses state NO submitted value: the ones the request
-/// broke SEVERAL constraints of.
-///
-/// This front door echoes the value a member submitted while it has ONE thing to say
-/// about that member, and states the member and its requirements alone once it has
-/// several: what distinguishes the clauses of such a report is the requirement each
-/// names, and the value is the same in all of them. A member with one violation keeps the
-/// echo, whatever it carried and wherever it was bound — a URI label, a query parameter,
-/// a body member nested in a structure.
-///
-/// Empty for a refusal that is not a constraint report, which keeps every clause the
-/// framework's.
-fn members_stated_without_their_value(refusal: &Refusal) -> BTreeSet<String> {
-    let Refusal::Invalid(violations) = refusal else {
-        return BTreeSet::new();
+/// Wire one `crate::ops::<module>::<Operation>` per line into `table`, each wrapped in
+/// [`StatedPerOperation`] and keyed by its operation shape name — the routing key
+/// `ServerHttpProtocol::routing_key` resolves and the generated table is keyed by.
+macro_rules! wrap_operations {
+    ($table:expr, $engine:expr, $($module:ident :: $operation:ident),+ $(,)?) => {
+        $(
+            $table.add_operation(
+                stringify!($operation),
+                ::std::boxed::Box::new(StatedPerOperation::new(
+                    crate::ops::$module::$operation::new(::std::sync::Arc::clone(&$engine)),
+                )) as ::std::boxed::Box<dyn ErasedOperation>,
+            );
+        )+
     };
-    let mut seen: BTreeSet<&str> = BTreeSet::new();
-    let mut several: BTreeSet<String> = BTreeSet::new();
-    for violation in violations {
-        if !seen.insert(violation.path.as_str()) {
-            several.insert(violation.path.clone());
-        }
-    }
-    several
-}
-
-/// `refusal` with every enumerated value set it reports listed in the order this front
-/// door states one.
-///
-/// The ORDER is the order a hash table over the admitted values is walked
-/// ([`::service_common::validation_message::in_hashed_enum_order`], the fleet's one home
-/// for it), which is the order a recorded refusal of this surface lists a set in — the
-/// model declares `EngineType` `[OpenSearch, Elasticsearch]`
-/// (`smithy_query(query="shape",shape="EngineType")`) and codegen hands the walk the
-/// values sorted, so neither of those orders is what a clause states. MEMBERSHIP is
-/// untouched, and so is every other part of the violation: only the order inside the
-/// bracketed set changes.
-///
-/// Anything that is not a constraint report is handed back as it came, so the entry point
-/// above still answers `None` for it.
-fn in_hashed_value_set_order(refusal: &Refusal) -> Refusal {
-    let Refusal::Invalid(violations) = refusal else {
-        return refusal.clone();
-    };
-    Refusal::Invalid(
-        violations
-            .iter()
-            .map(::service_common::validation_message::in_hashed_enum_order)
-            .collect(),
-    )
 }
 
 /// Whether the request these `parts` came from resolves to this service's signing name
@@ -118,6 +105,12 @@ fn claims_own_path_space(parts: &http::request::Parts, signing_name: &str) -> bo
 /// router builds one shared engine and hands it to `new`.
 pub struct EmulatedService<Eng: Send + Sync + 'static> {
     entry: crate::ServiceDefinition<Eng>,
+    /// The same modelled operations the generated table holds, each wrapped in
+    /// [`StatedPerOperation`] so a refused request is worded the way this service words it.
+    /// Keyed by the routing key the protocol resolves — the key the generated table uses —
+    /// and built from the SAME shared engine, so a wrapped operation reads and writes the
+    /// one store.
+    stated: OperationRoutingTable,
 }
 
 impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
@@ -125,9 +118,150 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
     /// generated [`ServiceDefinition`], which constructs each operation from it; the
     /// operation's behaviour lives in that operation's own `impl Operation`.
     pub fn new(engine: Arc<Eng>) -> Self {
+        let mut stated = OperationRoutingTable::new();
+        // EVERY modelled operation, one per file in `src/ops/`, because the rule is the
+        // service's and not one operation's: an operation whose input declares no
+        // constraint simply never has a violation to state, which the wrapper reads off
+        // that operation's own input schema. A still-scaffolded operation is wrapped too —
+        // the framework refuses a bad request before any handler runs, so its refusals are
+        // this service's words even while its success path is a 501. An operation added
+        // later is added here as well, or it answers a refusal in the framework's wording
+        // rather than this service's; `tests` below fails when one is missing.
+        wrap_operations!(
+            stated,
+            engine,
+            accept_inbound_cross_cluster_search_connection::AcceptInboundCrossClusterSearchConnection,
+            add_tags::AddTags,
+            associate_package::AssociatePackage,
+            authorize_vpc_endpoint_access::AuthorizeVpcEndpointAccess,
+            cancel_domain_config_change::CancelDomainConfigChange,
+            cancel_elasticsearch_service_software_update::CancelElasticsearchServiceSoftwareUpdate,
+            create_elasticsearch_domain::CreateElasticsearchDomain,
+            create_outbound_cross_cluster_search_connection::CreateOutboundCrossClusterSearchConnection,
+            create_package::CreatePackage,
+            create_vpc_endpoint::CreateVpcEndpoint,
+            delete_elasticsearch_domain::DeleteElasticsearchDomain,
+            delete_inbound_cross_cluster_search_connection::DeleteInboundCrossClusterSearchConnection,
+            delete_outbound_cross_cluster_search_connection::DeleteOutboundCrossClusterSearchConnection,
+            delete_package::DeletePackage,
+            delete_vpc_endpoint::DeleteVpcEndpoint,
+            describe_domain_auto_tunes::DescribeDomainAutoTunes,
+            describe_domain_change_progress::DescribeDomainChangeProgress,
+            describe_elasticsearch_domain::DescribeElasticsearchDomain,
+            describe_elasticsearch_domain_config::DescribeElasticsearchDomainConfig,
+            describe_elasticsearch_domains::DescribeElasticsearchDomains,
+            describe_elasticsearch_instance_type_limits::DescribeElasticsearchInstanceTypeLimits,
+            describe_inbound_cross_cluster_search_connections::DescribeInboundCrossClusterSearchConnections,
+            describe_outbound_cross_cluster_search_connections::DescribeOutboundCrossClusterSearchConnections,
+            describe_packages::DescribePackages,
+            describe_reserved_elasticsearch_instance_offerings::DescribeReservedElasticsearchInstanceOfferings,
+            describe_reserved_elasticsearch_instances::DescribeReservedElasticsearchInstances,
+            describe_vpc_endpoints::DescribeVpcEndpoints,
+            dissociate_package::DissociatePackage,
+            get_compatible_elasticsearch_versions::GetCompatibleElasticsearchVersions,
+            get_package_version_history::GetPackageVersionHistory,
+            get_upgrade_history::GetUpgradeHistory,
+            get_upgrade_status::GetUpgradeStatus,
+            list_domain_names::ListDomainNames,
+            list_domains_for_package::ListDomainsForPackage,
+            list_elasticsearch_instance_types::ListElasticsearchInstanceTypes,
+            list_elasticsearch_versions::ListElasticsearchVersions,
+            list_packages_for_domain::ListPackagesForDomain,
+            list_tags::ListTags,
+            list_vpc_endpoint_access::ListVpcEndpointAccess,
+            list_vpc_endpoints::ListVpcEndpoints,
+            list_vpc_endpoints_for_domain::ListVpcEndpointsForDomain,
+            purchase_reserved_elasticsearch_instance_offering::PurchaseReservedElasticsearchInstanceOffering,
+            reject_inbound_cross_cluster_search_connection::RejectInboundCrossClusterSearchConnection,
+            remove_tags::RemoveTags,
+            revoke_vpc_endpoint_access::RevokeVpcEndpointAccess,
+            start_elasticsearch_service_software_update::StartElasticsearchServiceSoftwareUpdate,
+            update_elasticsearch_domain_config::UpdateElasticsearchDomainConfig,
+            update_package::UpdatePackage,
+            update_vpc_endpoint::UpdateVpcEndpoint,
+            upgrade_elasticsearch_domain::UpgradeElasticsearchDomain,
+        );
         Self {
             entry: crate::ServiceDefinition::new(engine),
+            stated,
         }
+    }
+}
+
+/// One modelled operation, served so that a refused request is stated the way this service
+/// states it: a collection-element failure reported at its collection, quoting the
+/// collection the REQUEST carried.
+///
+/// Nothing else is re-implemented. A request this wrapper does not refuse is handed to the
+/// generated [`ErasedOperation::run`], which owns deserialize -> validate -> handle ->
+/// serialize, telemetry and every modelled error. The violations come from the framework's
+/// own machinery ([`stated_refusal`]), so this cannot refuse a request the framework's own
+/// walk would accept, nor accept one it would refuse. The cost is that a request this
+/// wrapper does not refuse is read twice, once here and once in the operation's own
+/// sequence, because the framework hands no already-built input to an operation.
+struct StatedPerOperation<O> {
+    operation: O,
+}
+
+impl<O> StatedPerOperation<O> {
+    /// Wrap one operation, already constructed from the shared engine.
+    fn new(operation: O) -> Self {
+        Self { operation }
+    }
+}
+
+/// This service's answer to every modelled constraint `req` breaks, for the operation `O`:
+/// the violations the framework's own walk finds, and the wording [`validation`] gives them.
+/// `None` when the request breaks none — and for a failure that is NOT a refusal (a body the
+/// codec cannot read at all, a member of the wrong type), which the framework's own walk
+/// answers in its own envelope.
+///
+/// The collecting half is the tree's shared one,
+/// `service_common::validation::refusing_violations_with_lists`: one read of the request
+/// yields the framework's own violations (the protocol's deserializer for an absent
+/// `@required` member, `constraints::validate` over the built input) with each value echo
+/// restored to the bytes the caller sent, plus the request's own lists — the value a clause
+/// stated at a COLLECTION member needs and no violation carries. Nothing is re-checked here,
+/// and no second copy of that walk lives in this crate: both halves are bounded where those
+/// bounds are stated.
+fn stated_refusal<O: Operation>(
+    protocol: &dyn ServerHttpProtocol,
+    req: &RtRequest,
+) -> Option<(Vec<Violation>, Refused)> {
+    let (violations, lists) =
+        ::service_common::validation::refusing_violations_with_lists::<O>(protocol, req);
+    let stated = validation::refusal(&violations, || lists)?;
+    Some((violations, stated))
+}
+
+impl<O> ErasedOperation for StatedPerOperation<O>
+where
+    O: Operation + ErasedOperation,
+{
+    fn run<'r>(
+        &'r self,
+        svc: &'r dyn Service,
+        req: &'r RtRequest,
+        ctx: &'r OperationContext<'r>,
+    ) -> BoxFuture<'r, RtResponse> {
+        Box::pin(async move {
+            // The definition is read, used and dropped inside each statement:
+            // `&dyn ErasedServiceDefinition` is not `Sync`, so holding it across the await
+            // below would make this future non-`Send`.
+            let refused = stated_refusal::<O>(svc.definition().protocol(), req);
+            if let Some((violations, stated)) = refused {
+                return svc
+                    .definition()
+                    .refusal_response(ProtocolError::Invalid(violations), Some(stated), req);
+            }
+            self.operation.run(svc, req, ctx).await
+        })
+    }
+
+    /// The wrapped operation's modelled auth schemes: wrapping an operation must not change
+    /// which schemes sign it.
+    fn auth_schemes(&self) -> Option<&'static [&'static str]> {
+        self.operation.auth_schemes()
     }
 }
 
@@ -171,56 +305,32 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
         &self,
         req: &aws_smithy_runtime_api::http::Request,
     ) -> Option<&dyn ErasedOperation> {
-        // Return `Some(op)` to serve a request the model's routing key cannot name
-        // correctly; `None` (the default) lets the generated routing table resolve
-        // it. `req` is the whole request, so a decision that depends on the body —
-        // the `Action` form field on a query protocol, say — is reachable here.
-        let _ = req;
-        None
+        // NOT a re-route: the key is the one the generated table's own protocol resolves,
+        // and the operation it names is the one served — wrapped in `StatedPerOperation` so
+        // a refused request is worded the way this service words it, with the collection a
+        // clause states read from the request. A key the model does not name resolves to
+        // `None` here exactly as it does in the generated table, so the router's
+        // routing-error path is unchanged.
+        let key = self.entry.protocol().routing_key(req).ok()?;
+        self.stated.get(key)
     }
 
     fn override_refusal(&self, refusal: &Refusal) -> Option<Refused> {
         // The centralized walk calls this on a framework-level refusal (an absent
         // required member, or a value outside a declared bound) to let this service
-        // reword it.
-        //
-        // This API states a constraint refusal in the AWS envelope the framework
-        // already renders, with ONE rendering of its own: a `@pattern` requirement
-        // quotes the expression a value has to satisfy, not the whole-value pair the
-        // model wraps that expression in — a model's `^…$` is how it demands a total
-        // match, and the service publishes the expression inside it. An expression
-        // that anchors its own BRANCHES is a whole-value expression already (the two
-        // ends of its text are the first and last branch's anchors), so it is quoted
-        // as the model declares it: dropping those ends would state a requirement of
-        // no branch. Both renderings are recorded on this surface — see
-        // `crate::state::quoted_pattern`, the one home for the choice, which the
-        // handler-stated clauses reach too. The CHECK is unchanged (the boundary still
-        // runs the model's pattern as written); only the quoting differs, and the code
-        // travels with the message as it must.
-        //
-        // The other thing that is this service's own is the VALUE half of a clause: a
-        // member the request broke SEVERAL constraints of is stated without the value it
-        // submitted ([`members_stated_without_their_value`]).
-        //
-        // And one ORDER: an enumerated type's value set is listed the way this front door
-        // walks its own hash table over the admitted values
-        // ([`in_hashed_enum_order`]) — neither the order the model declares them in nor
-        // lexicographic. The order belongs to the TYPE and is COMPUTED from the values, so
-        // a type the model gains is listed in its own place with no table naming it, and
-        // the set a caller is refused on by the boundary reads like the one a HANDLER
-        // states for a map key it cannot reach (`crate::state::request_constraints`).
-        //
-        // The words are the fleet's one home for them rather than a copy here, so this
-        // service's refusals cannot drift from another's.
+        // reword it. It is handed the violations ALONE — no request — so it cannot state
+        // the collection a failed element belongs to; `StatedPerOperation` answers a
+        // modelled operation's refusals before this walk is reached, with that in hand. A
+        // refusal that gets here anyway is still stated by this service, through the SAME
+        // module, so the wording cannot differ between the two paths — it just has only
+        // the violations to state from.
         //
         // An authentication refusal keeps the framework's wording: it is not an
         // input-constraint failure.
-        let without_value = members_stated_without_their_value(refusal);
-        ::service_common::validation_message::aws_validation_refusal_withholding_with(
-            &in_hashed_value_set_order(refusal),
-            crate::state::quoted_pattern,
-            |path| without_value.contains(path),
-        )
+        match refusal {
+            Refusal::Invalid(violations) => validation::refusal(violations, HashMap::new),
+            _ => None,
+        }
     }
 
     fn override_routing_error(
@@ -249,5 +359,73 @@ impl<Eng: Send + Sync + 'static> Service for EmulatedService<Eng> {
         // consume it on `None`.
         let _ = error;
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! The one thing about the wiring above that a wire test cannot see: that the
+    //! hand-maintained `wrap_operations!` list is the WHOLE surface.
+
+    use super::*;
+
+    /// This service's Smithy model, as it ships beside this crate. Read at test time rather
+    /// than embedded: it is megabytes of JSON that no non-test build needs.
+    const MODEL_PATH: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/smithy-model/com-amazonaws-elasticsearchservice-amazonelasticsearchservice2015.json"
+    );
+
+    /// RULE applied to the whole surface: every operation the model declares is served
+    /// behind [`StatedPerOperation`], under the same key the generated routing table is
+    /// keyed by.
+    ///
+    /// The names come from the MODEL rather than from a second hand list, so an operation
+    /// added to the model and not to `wrap_operations!` fails here instead of silently
+    /// answering a refusal in the framework's wording — and a key spelled differently from
+    /// the generated table's fails here instead of silently never being reached by
+    /// `override_operation`.
+    #[test]
+    fn every_modelled_operation_is_served_with_this_services_refusal_wording() {
+        let model = std::fs::read_to_string(MODEL_PATH)
+            .expect("the model that generated this crate ships beside it");
+        let model: serde_json::Value =
+            serde_json::from_str(&model).expect("the model that generated this crate is JSON");
+        let shapes = model["shapes"]
+            .as_object()
+            .expect("a Smithy model declares shapes");
+        let operations: Vec<&str> = shapes
+            .iter()
+            .filter(|(_, shape)| shape["type"] == "operation")
+            .filter_map(|(id, _)| id.rsplit('#').next())
+            .collect();
+        assert!(
+            !operations.is_empty(),
+            "case the model's surface: a service model declares operations"
+        );
+
+        let service = EmulatedService::new(Arc::new(engine::InMemoryEngine::new()));
+        let mut served = 0_usize;
+        for operation in operations {
+            if service.entry.routing_table().get(operation).is_none() {
+                // An operation the model BINDS and this crate generated no handler for is
+                // served by nothing, so there is nothing to wrap: the generated table does
+                // not hold it either, and a request naming it takes the router's
+                // routing-error path.
+                continue;
+            }
+            served += 1;
+            assert!(
+                service.stated.get(operation).is_some(),
+                "case {operation}: every operation the generated table serves is served \
+                 behind StatedPerOperation; this one is missing from wrap_operations!, so \
+                 it answers a refusal in the framework's wording instead of this service's"
+            );
+        }
+        assert!(
+            served >= 50,
+            "case the served surface: expected every generated operation to be checked, got \
+             {served}"
+        );
     }
 }

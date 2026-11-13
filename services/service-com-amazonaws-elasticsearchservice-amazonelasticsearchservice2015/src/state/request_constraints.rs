@@ -39,22 +39,62 @@ use ::service_common::validation_message::{map_key_requirements_refusal, require
 
 use crate::ops::types::{LogPublishingOption, LOG_TYPE_VALUES};
 
-/// How this API quotes a `@pattern` requirement in a refusal: the expression the SERVICE
-/// advertises, which is the model's text without the whole-value pair the model wrapped it
-/// in — and the model's text unchanged where what that pair encloses carries an anchor of
-/// its OWN, because the two ends of such a text are the first and last BRANCH's anchors
-/// and dropping them would state a requirement of no branch.
+/// The syntax a VPC endpoint id has to satisfy, as this model declares it
+/// (`smithy_query(query="shape",shape="VpcEndpointId")`): the service's own `aos-` prefix
+/// followed by an alphanumeric run.
+///
+/// Listed in [`PUBLISHED_AS_DECLARED`] because the API publishes this expression WITH the
+/// pair: the `Pattern` the AWS API reference documents for a VPC endpoint id is
+/// `^aos-[a-zA-Z0-9]*$`, anchors included, and a recorded refusal of a value outside it
+/// quotes exactly that.
+pub const VPC_ENDPOINT_ID_PATTERN: &str = r"^aos-[a-zA-Z0-9]*$";
+
+/// The model `@pattern` texts this API publishes EXACTLY as the model writes them, anchors
+/// included.
+///
+/// WHY A TABLE and not a rule over the text: the expression a clause quotes is the one the
+/// SERVICE publishes for that member's shape — the `Pattern` its API reference documents —
+/// and for part of this surface that text is the model's own while for the rest it is the
+/// model's text without the whole-value pair ([`quoted_pattern`]). Which of the two a shape
+/// is published with is not recoverable from the text: both are spelled `^…$` in the model,
+/// so it is reference data about the shape, read off what the API publishes for it. The
+/// EXPRESSION is the key rather than the member path, because what is published belongs to
+/// the shape: every member targeting it — in any operation, bound to a URI label, to a body
+/// member or to an element of a list — quotes the one expression alike, and so does the
+/// element set stated at a collection of them.
 ///
 /// Recorded both ways on this surface: `DomainName`'s `^[a-z][a-z0-9\-]+$` is published
-/// `[a-z][a-z0-9\-]+`, while the branch-anchored alternations
-/// (`ElasticsearchVersionString`, the package id below) are published exactly as the model
-/// declares them.
+/// `[a-z][a-z0-9\-]+` (AWS documents that member's `Pattern` without the pair) while
+/// [`VPC_ENDPOINT_ID_PATTERN`] is published as declared. A shape absent from here is
+/// published without the pair, which is every other shape of this model.
+pub const PUBLISHED_AS_DECLARED: &[&str] = &[VPC_ENDPOINT_ID_PATTERN];
+
+/// How this API quotes a `@pattern` requirement in a refusal: the expression the SERVICE
+/// publishes for the member's shape.
 ///
-/// ONE home for the dialect, reached by the refusal seam (`crate::service`) and by the
-/// handler-stated clauses here alike, so the boundary and a handler cannot quote one
-/// member's expression two ways. The CHECK is always the model's pattern as written.
+/// For a shape [`PUBLISHED_AS_DECLARED`] names, that is the model's text verbatim. For every
+/// other shape it is the model's text without the whole-value pair the model wrapped it in —
+/// and the model's text unchanged where what that pair encloses carries an anchor of its
+/// OWN, because the two ends of such a text are the first and last BRANCH's anchors and
+/// dropping them would state a requirement of no branch.
+///
+/// Recorded all three ways on this surface: `DomainName`'s `^[a-z][a-z0-9\-]+$` is published
+/// `[a-z][a-z0-9\-]+`, the branch-anchored alternations (`ElasticsearchVersionString`, the
+/// package id below) are published exactly as the model declares them, and so is the VPC
+/// endpoint id, which the pair-dropping rule would otherwise have stripped.
+///
+/// The RULE is the fleet's one home for it
+/// ([`::service_common::validation::unanchored_unless_published_as_declared`]), called rather
+/// than restated so this API cannot drift from another recorded stating both forms; what is
+/// this crate's is the row above, which is about this model's shapes. ONE home for the
+/// dialect, reached by the refusal seam (`crate::service`) and by the handler-stated clauses
+/// here alike, so the boundary and a handler cannot quote one member's expression two ways.
+/// The CHECK is always the model's pattern as written.
 pub fn quoted_pattern(pattern: &str) -> String {
-    ::service_common::validation::unanchored_keeping_inner_anchors(pattern)
+    ::service_common::validation::unanchored_unless_published_as_declared(
+        pattern,
+        PUBLISHED_AS_DECLARED,
+    )
 }
 
 /// The syntax a package id has to satisfy, as the shared package resource declares it

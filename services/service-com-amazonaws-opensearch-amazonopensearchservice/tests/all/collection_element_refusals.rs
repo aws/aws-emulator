@@ -72,13 +72,13 @@ const PACKAGE_USER_SET: &str = "Member must satisfy constraint: [Member must hav
 ///
 /// From the model: `VpcEndpointId` is `@length(min: 5, max: 256)` with
 /// `@pattern("^aos-[a-zA-Z0-9]*$")`
-/// (`smithy_query(query="shape",shape="VpcEndpoint")`) — one expression the model DID wrap,
-/// since what the pair encloses carries no anchor of its own, so the clause quotes it
-/// without that pair.
+/// (`smithy_query(query="shape",shape="VpcEndpoint")`) — an expression the API publishes
+/// WITH the pair (the `Pattern` its API reference documents for a VPC endpoint id is
+/// `^aos-[a-zA-Z0-9]*$`), so the clause quotes the model's text as written.
 const VPC_ENDPOINT_ID_SET: &str = "Member must satisfy constraint: [Member must have length \
                                    less than or equal to 256, Member must have length greater \
                                    than or equal to 5, Member must satisfy regular expression \
-                                   pattern: aos-[a-zA-Z0-9]*]";
+                                   pattern: ^aos-[a-zA-Z0-9]*$]";
 
 /// The `message` of a refusal, with the case named on failure.
 fn message(answer: &Answer, case: &str) -> String {

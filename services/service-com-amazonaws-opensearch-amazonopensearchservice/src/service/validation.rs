@@ -46,16 +46,18 @@
 //!
 //! # What a clause STATES, where that is not what the model declares
 //!
-//! A constraint clause reports the REQUIREMENT this service validates with, and three
+//! A constraint clause reports the REQUIREMENT this service validates with, and four
 //! renderings of it are the service's rather than the model's text:
 //!
-//! * a `@pattern` requirement quotes the expression the service advertises, which is the
-//!   model's text without the whole-value pair the model wrapped that expression in —
-//!   dropped only where what the pair encloses carries no anchor of its own, since an
-//!   expression whose branches are each anchored was a whole-value expression before any
-//!   wrapping ([`::service_common::validation::unanchored_keeping_inner_anchors`], this
-//!   tree's home for that rendering). The CHECK is unchanged — the boundary runs the
-//!   model's pattern as written — so only the quoting drops the pair;
+//! * a `@pattern` requirement quotes the expression the service PUBLISHES for the member's
+//!   shape ([`quoted_pattern`]): the model's text verbatim for a shape whose published
+//!   `Pattern` carries the whole-value pair ([`PUBLISHED_AS_DECLARED`]), and otherwise the
+//!   model's text without that pair — dropped only where what the pair encloses carries no
+//!   anchor of its own, since an expression whose branches are each anchored was a
+//!   whole-value expression before any wrapping
+//!   ([`::service_common::validation::unanchored_keeping_inner_anchors`], this tree's home
+//!   for that rendering). The CHECK is unchanged — the boundary runs the model's pattern as
+//!   written — so only the quoting differs;
 //! * an enumerated type's value set the walk reported is stated in the order this
 //!   service's front door walks its own hash table over the admissible values
 //!   ([`::service_common::validation_message::in_hashed_enum_order`], this tree's home for
@@ -67,6 +69,9 @@
 //!   an OPERATION declares itself, for a member the model types as a plain string, is
 //!   stated in the order that operation states it: that order is part of what it states,
 //!   and there is no model order to normalise;
+//! * the MEMBERSHIP of one such set is the service's too, for the instance-type set: it is
+//!   the catalog the service publishes rather than the older snapshot of it this model
+//!   carries ([`in_published_instance_types`]);
 //! * a member whose live validation surface the model has not caught up with states THAT
 //!   surface ([`STATED`]): the expression the service quotes, and a bound it states a
 //!   clause of its own for. Which members those are, and why each is there, is recorded
@@ -101,7 +106,6 @@ use aws_smithy_schema_server::constraints::{
     self, ElementConstraintsTrait, EnumTrait, LengthTrait, PatternTrait, RangeTrait,
 };
 use aws_smithy_schema_server::{Violation, ViolationKind};
-use service_common::validation::unanchored_keeping_inner_anchors;
 use service_common::validation_message::{in_hashed_enum_order, valueless_clause};
 use smithy_server_runtime::{Refusal, Refused};
 
@@ -176,25 +180,60 @@ fn render_bound(bound: f64) -> String {
     }
 }
 
+/// The syntax a VPC endpoint id has to satisfy, as this model declares it
+/// (`smithy_query(query="shape",shape="VpcEndpointId")`).
+///
+/// Listed in [`PUBLISHED_AS_DECLARED`] because the API publishes this expression WITH the
+/// pair: the `Pattern` the AWS API reference documents for a VPC endpoint id is
+/// `^aos-[a-zA-Z0-9]*$`, anchors included, and a recorded refusal of a value outside it
+/// quotes exactly that.
+const VPC_ENDPOINT_ID_PATTERN: &str = r"^aos-[a-zA-Z0-9]*$";
+
+/// The model `@pattern` texts this API publishes EXACTLY as the model writes them, anchors
+/// included.
+///
+/// WHY A TABLE and not a rule over the text: the expression a clause quotes is the one the
+/// SERVICE publishes for that member's shape — the `Pattern` its API reference documents —
+/// and for part of this surface that text is the model's own while for the rest it is the
+/// model's text without the whole-value pair ([`quoted_pattern`]). Which of the two a shape
+/// is published with is not recoverable from the text: both are spelled `^…$` in the model,
+/// so it is reference data about the shape. The EXPRESSION is the key rather than the member
+/// path, because what is published belongs to the shape: every member targeting it — in any
+/// operation, bound to a URI label, to a body member or to an element of a list — quotes the
+/// one expression alike, and so does the element set stated at a collection of them.
+///
+/// A shape absent from here is published without the pair, which is every other shape of
+/// this model whose expression carries no anchor of its own.
+const PUBLISHED_AS_DECLARED: &[&str] = &[VPC_ENDPOINT_ID_PATTERN];
+
+/// How this API quotes a `@pattern` requirement: the expression the SERVICE publishes for
+/// the member's shape.
+///
+/// For a shape [`PUBLISHED_AS_DECLARED`] names, that is the model's text verbatim. For every
+/// other shape it is the model's text without the whole-value pair the model wrapped that
+/// expression in — dropped only where what the pair encloses carries no anchor of its OWN,
+/// since an expression whose BRANCHES are each anchored (`^[0-9]{12}$|^GLOBAL$`) was already
+/// a whole-value expression before any wrapping.
+///
+/// The RULE is the fleet's one home for it
+/// ([`::service_common::validation::unanchored_unless_published_as_declared`], over
+/// [`::service_common::validation::unanchored_keeping_inner_anchors`]), called rather than
+/// restated here so this service cannot drift from the others recorded stating either form;
+/// what is this crate's is the row above, which is about this model's shapes.
+fn quoted_pattern(regex: &str) -> String {
+    ::service_common::validation::unanchored_unless_published_as_declared(
+        regex,
+        PUBLISHED_AS_DECLARED,
+    )
+}
+
 /// One violation as this service STATES it: the framework's own structure, with the
-/// `@pattern` rendering every clause of this service uses applied — the expression the
-/// service advertises, which is the model's text without the whole-value pair the model
-/// wrapped that expression in.
+/// `@pattern` rendering every clause of this service uses applied ([`quoted_pattern`]).
 ///
-/// The pair is the model's wrapping only where what it encloses carries no anchor of its
-/// OWN: an expression whose BRANCHES are each anchored (`^[0-9]{12}$|^GLOBAL$`) was
-/// already a whole-value expression before any wrapping, and this service's refusals quote
-/// such a text exactly as the model declares it. That is
-/// [`::service_common::validation::unanchored_keeping_inner_anchors`], this tree's home
-/// for that rendering, called rather than restated here so this service cannot drift from
-/// the others recorded stating it.
-///
-/// The CHECK is untouched either way: the boundary runs the model's pattern as written.
+/// The CHECK is untouched: the boundary runs the model's pattern as written.
 fn restated(violation: &Violation) -> Violation {
     let quoted = match &violation.kind {
-        ViolationKind::Pattern(regex) => {
-            Some(ViolationKind::Pattern(unanchored_keeping_inner_anchors(regex)))
-        }
+        ViolationKind::Pattern(regex) => Some(ViolationKind::Pattern(quoted_pattern(regex))),
         _ => None,
     };
     match quoted {
@@ -867,12 +906,14 @@ pub(crate) fn published_pattern_report(path: &str, value: &str, expression: &str
 /// on this service's `restJson1` protocol — carrying [`envelope`]'s message, so the code
 /// a client branches on travels with the message it is given.
 ///
-/// What the message states is decided in four steps, in this order: a request whose IAM
+/// What the message states is decided in five steps, in this order: a request whose IAM
 /// role ARN cannot be read as one is answered with [`invalid_role_arn`] alone, because
-/// that step runs before the input's constraints are reported on; every enumerated type's
+/// that step runs before the input's constraints are reported on; the instance-type value
+/// set is stated as the catalog the service publishes
+/// ([`in_published_instance_types`]); every enumerated type's
 /// value set the walk reported is stated in the order this service states it
 /// ([`in_hashed_enum_order`]); every `@pattern` is
-/// quoted as the service advertises it ([`restated`]); and every member [`STATED`] records
+/// quoted as the service publishes it ([`restated`]); and every member [`STATED`] records
 /// a surface for states that surface instead of the model's. The clauses are then worded
 /// by [`worded`], the one wording every refusal of this service goes through, over the
 /// members this report states without their value
@@ -894,12 +935,59 @@ pub(super) fn aws_validation_refusal(refusal: &Refusal) -> Option<Refused> {
     worded(
         violations
             .iter()
-            .map(in_hashed_enum_order)
+            .map(in_published_instance_types)
+            .map(|violation| in_hashed_enum_order(&violation))
             .map(|violation| restated(&violation))
             .flat_map(|violation| stated_violations(&violation))
             .collect(),
         &members_stated_without_their_value(violations),
     )
+}
+
+/// The instance types the service publishes, resolved ONCE per process: the catalog is
+/// reference data rather than anything a request carries, so the walk over it and its
+/// ordering are not work a refusal pays per violation.
+static PUBLISHED_INSTANCE_TYPES: LazyLock<Vec<&'static str>> =
+    LazyLock::new(crate::state::published_instance_types);
+
+/// `violation` with the INSTANCE-TYPE value set it reports replaced by the set the service
+/// publishes, and every other violation returned unchanged.
+///
+/// A refusal of a value outside an enumerated type names the values that type ADMITS, and
+/// for the instance types that list is the service's own published catalog
+/// ([`PUBLISHED_INSTANCE_TYPES`], over `crate::state::published_instance_types`) — the record
+/// of which instance types exist, which the operations resolving one against it refuse a
+/// value outside. The `OpenSearchPartitionInstanceType` value set this model carries is an
+/// older SNAPSHOT of that catalog (it stops before the seventh-generation Intel, Graviton4,
+/// dense-storage and second-generation OpenSearch-optimized families the catalog publishes),
+/// so a clause stating the snapshot would tell a caller that instance types the service does
+/// publish are invalid, and would omit the ones it has to choose from. The message is the
+/// only place the accepted list is stated, so it states the catalog.
+///
+/// Recognised by the value SET rather than by the member path — the same reading
+/// [`::service_common::validation_message::stated_enum_value_set`] applies — so every member
+/// targeting that enum is stated alike, in any operation, in whatever binding carried the
+/// value and at any depth. Nothing else about the violation moves: the member path, the
+/// echoed value and the requirement's wording stay the framework's, and the ORDER the set is
+/// listed in is still [`in_hashed_enum_order`]'s, applied after this.
+///
+/// WHAT THIS DOES NOT CHANGE, recorded rather than papered over: which values the boundary
+/// ADMITS. The walk in front of a handler checks a member against the enum codegen captured
+/// off the model, so a request naming an instance type only the catalog publishes is still
+/// refused before any handler runs; the admissible set is the model's until the model's enum
+/// carries the catalog, which no refusal wording can decide. The clause states what the
+/// service accepts because that is what the message is for — telling a caller which values
+/// to choose from.
+///
+/// The set is a CONSTANT of this service (its catalog), so the size of the clause this
+/// states is a constant of this crate rather than anything one request chooses, exactly as
+/// the modelled set it replaces was.
+fn in_published_instance_types(violation: &Violation) -> Violation {
+    let rows = [(
+        crate::ops::types::OPEN_SEARCH_PARTITION_INSTANCE_TYPE_VALUES,
+        PUBLISHED_INSTANCE_TYPES.as_slice(),
+    )];
+    ::service_common::validation_message::in_stated_enum_order(violation, &rows)
 }
 
 /// Every INPUT shape of this service, as the generated schema statics.

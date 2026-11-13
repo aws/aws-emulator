@@ -786,6 +786,25 @@ pub fn offered_instance_types(version: EngineVersion) -> Vec<&'static str> {
         .collect()
 }
 
+/// Every instance type the service PUBLISHES, whatever the release, in the order the
+/// catalog is published: family by family in [`catalog_rank`]'s order, each family's
+/// instance types smallest size first.
+///
+/// The service's own accepted-value list — a value outside it names no instance type at
+/// all ([`publishes_instance_type`]) — so it is what a refusal of an unknown instance
+/// type enumerates, and it carries the current-generation families the checked-in
+/// `OpenSearchPartitionInstanceType` value set (an older snapshot of the same catalog)
+/// does not list. [`offered_instance_types`] is the same catalog narrowed to one release;
+/// this is the set membership itself, which no release decides.
+pub fn published_instance_types() -> Vec<&'static str> {
+    let mut families: Vec<&'static CatalogFamily> = INSTANCE_TYPE_CATALOG.iter().collect();
+    families.sort_by_key(|entry| catalog_rank(entry));
+    families
+        .into_iter()
+        .flat_map(|entry| entry.instance_types.iter().copied())
+        .collect()
+}
+
 /// Whether the catalog publishes every value of `OpenSearchPartitionInstanceType`.
 ///
 /// The modelled value set is the model's own record of which instance types exist, so

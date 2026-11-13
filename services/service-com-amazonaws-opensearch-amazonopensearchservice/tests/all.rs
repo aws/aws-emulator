@@ -143,6 +143,8 @@ mod ebs_volume_size_limit;
 mod encryption_at_rest_key_resolution;
 #[path = "all/engine_version_resolution.rs"]
 mod engine_version_resolution;
+#[path = "all/exploratory_order.rs"]
+mod exploratory_order;
 #[path = "all/fgac_master_role_probe.rs"]
 mod fgac_master_role_probe;
 #[path = "all/fixed_sentence_refusals.rs"]
@@ -231,6 +233,8 @@ mod pagination_contract;
 mod published_catalog_order;
 #[path = "all/published_domain_address.rs"]
 mod published_domain_address;
+#[path = "all/published_instance_type_value_set.rs"]
+mod published_instance_type_value_set;
 #[path = "all/reference_catalogs.rs"]
 mod reference_catalogs;
 #[path = "all/reserved_instance_offerings.rs"]
