@@ -36,6 +36,10 @@ csv = "1.3"
 # linear in the subject and takes a compile-time size limit, so a caller-supplied
 # pattern cannot make one record's match unbounded.
 regex = "1.12"
+# `service-common` carries this tree's ONE caller-supplied-ARN parse, which the
+# integration-scoped refusals read the resource field of a requested `Arn` from
+# (`arn::resource`) rather than splitting the value here again.
+service-common = { path = "../common" }
 
 [build-dependencies]
 emulator-core-build-support = { workspace = true }

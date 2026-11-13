@@ -14,6 +14,9 @@
 #[path = "all/centralization_rules.rs"]
 mod centralization_rules;
 
+#[path = "all/delete_s3_table_integration.rs"]
+mod delete_s3_table_integration;
+
 #[path = "all/delete_telemetry_pipeline.rs"]
 mod delete_telemetry_pipeline;
 

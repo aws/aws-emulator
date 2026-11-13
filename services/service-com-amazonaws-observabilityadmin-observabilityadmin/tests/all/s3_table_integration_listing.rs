@@ -33,9 +33,10 @@
 //! 6. `DeleteS3TableIntegration` retires the one integration its `Arn` names in the
 //!    caller's region, after which neither a read nor a listing reports it, and the
 //!    other integrations are untouched;
-//! 7. an `Arn` that names no integration in the caller's region — a retired one, one
-//!    of another region, one of another account or partition — is refused with the
-//!    modelled 400 and retires nothing.
+//! 7. an `Arn` that is well formed but names no integration in the caller's region — a
+//!    retired one, one of another region, one of another account or partition — is
+//!    refused as a NOT-FOUND (the modelled 404) and retires nothing; the wording that
+//!    refusal carries is [`crate::delete_s3_table_integration`]'s.
 
 use serde_json::{json, Value};
 use service_com_amazonaws_observabilityadmin_observabilityadmin::state::{
@@ -600,8 +601,8 @@ async fn a_delete_retires_the_integration_and_leaves_the_rest() {
     }
 }
 
-/// An `Arn` that names no integration in the caller's own region is refused with the
-/// modelled 400 and retires nothing.
+/// An `Arn` that is well formed but names no integration in the caller's own region is
+/// refused as a NOT-FOUND (the modelled 404) and retires nothing.
 #[tokio::test]
 async fn a_delete_of_an_arn_that_names_nothing_is_refused_and_retires_nothing() {
     let emulator = emulator();
@@ -651,13 +652,13 @@ async fn a_delete_of_an_arn_that_names_nothing_is_refused_and_retires_nothing() 
     for (case, arn, region) in rows {
         let (status, response) = delete(&emulator, region, &arn).await;
         assert_eq!(
-            status, 400,
-            "case {case:?} ({arn}): expected 400, got {status} {response:?}"
+            status, 404,
+            "case {case:?} ({arn}): expected 404, got {status} {response:?}"
         );
         assert_eq!(
             error_code(&response),
-            "ValidationException",
-            "case {case:?}: expected ValidationException, got {response:?}"
+            "ResourceNotFoundException",
+            "case {case:?}: expected ResourceNotFoundException, got {response:?}"
         );
         assert_eq!(
             stored_count(&emulator),
@@ -677,14 +678,14 @@ async fn a_delete_of_an_arn_that_names_nothing_is_refused_and_retires_nothing() 
     );
     let (status, response) = delete(&emulator, HOME_REGION, &home).await;
     assert_eq!(
-        status, 400,
-        "case {:?}: expected the second delete to answer 400, got {status} {response:?}",
+        status, 404,
+        "case {:?}: expected the second delete to answer 404, got {status} {response:?}",
         "delete twice"
     );
     assert_eq!(
         error_code(&response),
-        "ValidationException",
-        "case {:?}: expected ValidationException, got {response:?}",
+        "ResourceNotFoundException",
+        "case {:?}: expected ResourceNotFoundException, got {response:?}",
         "delete twice"
     );
 }

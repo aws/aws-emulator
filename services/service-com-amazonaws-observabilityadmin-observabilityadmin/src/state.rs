@@ -318,6 +318,24 @@ pub const S3_TABLE_INTEGRATION_RESOURCE_TYPE: &str = "Integration";
 /// record answers: fixed text, with the requested ARN NOT interpolated.
 pub const INTEGRATION_NOT_FOUND_MESSAGE: &str = "Integration not found";
 
+/// The `ResourceNotFoundException` message a MUTATING S3 Table integration operation
+/// reports for an `Arn` no record answers: the integration it would have changed,
+/// named by the id its ARN carries, and the account that asked for it.
+///
+/// Its two variable parts are that id ([`arn_resource_id`], read off the request) and
+/// the requester's own 12-digit account id (`engine::emulator_account_id`, the
+/// identity every request here authenticates as); the rest is fixed text. It is
+/// deliberately a different sentence from the read path's
+/// [`INTEGRATION_NOT_FOUND_MESSAGE`], the same way a mutating telemetry-rule refusal
+/// words itself differently from that resource's read path
+/// ([`resource_does_not_exist_message`] beside [`RULE_NOT_FOUND_MESSAGE`]).
+pub fn integration_not_found_for_requester_message(
+    integration_id: &str,
+    requester_account_id: &str,
+) -> String {
+    format!("Integration {integration_id} from requesterAccountId {requester_account_id} not found")
+}
+
 /// The `ConflictException` message for a create while the account already holds an
 /// integration at the regional endpoint the request was signed for: the integration
 /// is a SINGLETON, and the whole sentence is fixed text.
@@ -2509,6 +2527,28 @@ pub fn s3_table_integration_arn(region: &str, id: &str) -> String {
         region,
         &format!("{S3_TABLE_INTEGRATION_ARN_RESOURCE_PREFIX}{id}"),
     )
+}
+
+/// The resource IDENTIFIER an ARN carries, which is what a refusal naming the
+/// resource by its own id reports.
+///
+/// The ARN's six fields are read by the tree's ONE parse
+/// (`service_common::arn::resource`, which keeps the resource field's own colons);
+/// the identifier is the TRAILING segment of that field, since AWS writes a resource
+/// as a bare identifier or as a resource type and an identifier separated by `/` or
+/// `:`. The modelled `ResourceArn` pattern
+/// (`^arn:aws([a-z0-9\-]+)?:([a-zA-Z0-9\-]+):([a-z0-9\-]+)?:([0-9]{12})?:(.+)$`)
+/// fixes the five leading fields and a non-empty resource field, so an `Arn` the
+/// constraint walk admitted always parses; a value that does not, or whose trailing
+/// segment is empty, answers the text it was given, which names no resource here
+/// anyway.
+pub fn arn_resource_id(arn: &str) -> &str {
+    let resource = ::service_common::arn::resource(arn).unwrap_or(arn);
+    resource
+        .rsplit(['/', ':'])
+        .next()
+        .filter(|identifier| !identifier.is_empty())
+        .unwrap_or(resource)
 }
 
 /// A newly minted id for a resource this service names itself.

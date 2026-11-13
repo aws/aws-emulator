@@ -10,9 +10,11 @@
 //!   within the region the caller signed for (`crate::state::s3_table_integration`,
 //!   the one lookup every integration-scoped operation goes through), so an ARN of
 //!   another partition, region, account or resource type names nothing here;
-//! * an `Arn` that names no stored integration is refused with the modelled
-//!   `ValidationException` (HTTP 400) — this operation models no not-found error, and
-//!   an ARN that resolves to no resource is a value the request cannot be served with;
+//! * an `Arn` that is well formed but names no stored integration is refused as a
+//!   NOT-FOUND (`ResourceNotFoundException`, HTTP 404), naming the integration by the
+//!   id its ARN carries and the account that asked; `ValidationException` (HTTP 400)
+//!   is kept for an `Arn` outside the modelled length and pattern, which the
+//!   centralized walk refuses before this body runs;
 //! * the delete removes the record and the ARN index entry together, so the handle
 //!   stops resolving at the instant the record stops existing and a later listing or
 //!   read reports neither.
@@ -80,6 +82,9 @@
 //! * `TooManyRequestsException` (HTTP 429) — The request throughput limit was exceeded.
 //! * `ValidationException` (HTTP 400) — Indicates input validation failed. Check your request
 //!   parameters and retry the request.
+//! * `ResourceNotFoundException` (HTTP 404) — widened in through `extra_errors` (see the
+//!   note on the error enum below): The specified resource (such as a telemetry rule) could
+//!   not be found.
 
 #[allow(unused_imports)]
 use super::types::*;
@@ -119,12 +124,23 @@ impl ::aws_smithy_schema::serde::SerializableStruct for DeleteS3TableIntegration
 // here — hence the `DeleteS3TableIntegrationError` alias below. An operation that models no errors
 // generates an UNINHABITED enum here, which is correct and expected: there is nothing
 // to construct until the model says otherwise.
-#[smithy_macros::operation_error("com.amazonaws.observabilityadmin#DeleteS3TableIntegration")]
+//
+// `ResourceNotFoundException` is widened in through `extra_errors`: `Arn` is the only
+// handle this operation takes and it names a resource that may not exist, so a
+// well-formed ARN resolving to no record is a not-found refusal and not an
+// input-validation failure. The shape is this SERVICE's own — 404, with
+// `Message`/`ResourceId`/`ResourceType` — and the sibling `GetS3TableIntegration`
+// lists it; only this operation's error list omits it.
+#[smithy_macros::operation_error(
+    "com.amazonaws.observabilityadmin#DeleteS3TableIntegration",
+    extra_errors = ["ResourceNotFoundException"]
+)]
 #[derive(Debug)]
 pub enum DeleteS3TableIntegrationErrorModeled {
     AccessDeniedException(AccessDeniedException),
     InternalServerException(InternalServerException),
     InvalidStateException(InvalidStateException),
+    ResourceNotFoundException(ResourceNotFoundException),
     ServiceQuotaExceededException(ServiceQuotaExceededException),
     TooManyRequestsException(TooManyRequestsException),
     ValidationException(ValidationException),
@@ -211,16 +227,28 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 region = %region,
                 "refused an S3 Table integration delete"
             );
-            return Err(DeleteS3TableIntegrationErrorModeled::ValidationException(
-                ValidationException {
-                    message: Some(format!(
-                        "Arn names no S3 Table integration in {region}: {}",
-                        input.arn
-                    )),
-                    ..Default::default()
-                },
-            )
-            .into());
+            // A well-formed handle that resolves to nothing is a not-found refusal:
+            // the integration it would have retired is named by the id its ARN
+            // carries and by the account that asked, both read off this request. The
+            // identifier the request supplied travels in `ResourceId`, the member
+            // modelled for it, the way every refusal here reports one.
+            return Err(
+                DeleteS3TableIntegrationErrorModeled::ResourceNotFoundException(
+                    ResourceNotFoundException {
+                        message: Some(
+                            crate::state::integration_not_found_for_requester_message(
+                                crate::state::arn_resource_id(&input.arn),
+                                ::engine::emulator_account_id(),
+                            ),
+                        ),
+                        resource_id: Some(input.arn),
+                        resource_type: Some(
+                            crate::state::S3_TABLE_INTEGRATION_RESOURCE_TYPE.to_string(),
+                        ),
+                    },
+                )
+                .into(),
+            );
         }
 
         // Audit record for a state-changing call: who asked, what changed, and how it
