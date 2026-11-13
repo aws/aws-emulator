@@ -69,6 +69,8 @@ mod pipe_state_reason;
 mod pipe_tagging;
 #[path = "all/pipe_target_parameter_refusal.rs"]
 mod pipe_target_parameter_refusal;
+#[path = "all/pipe_target_stage_observability.rs"]
+mod pipe_target_stage_observability;
 #[path = "all/pipe_unassumable_role.rs"]
 mod pipe_unassumable_role;
 #[path = "all/pipe_update.rs"]
