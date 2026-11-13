@@ -248,6 +248,116 @@ async fn a_name_already_held_is_refused_with_the_services_own_sentence() {
     }
 }
 
+/// RULE: a delete retires the named resource permanently — it leaves the store with
+/// everything held on it — so every later read or delete of that name resolves
+/// nothing and is refused with `ResourceNotFoundException` (404, `x-amzn-errortype`
+/// naming the shape), while the resources the delete did not name are untouched and
+/// the name itself becomes free to create again.
+///
+/// The table is every resource plane of this crate whose delete is implemented
+/// (geofence collection, tracker, route calculator); the names differ along the
+/// punctuation `ResourceName`'s `^[-._\w]+$` admits. The calculator the issue report
+/// replays is one row.
+#[tokio::test]
+async fn a_delete_retires_the_resource_it_names_on_every_plane() {
+    for plane in tagged_planes() {
+        let router = emulator();
+        // Three resources, so a delete is shown to retire the one it names and
+        // nothing else.
+        let names = ["retired", "kept.1", "kept_2"];
+        for name in names {
+            let mut body = (plane.create_body)(name);
+            body["Tags"] = json!({ "generation": "first" });
+            let created = call(&router, "POST", plane.create_path, Some(body)).await;
+            assert_eq!(
+                created.status, 200,
+                "case {:?}/{name}: the create must succeed, got {} {:?}",
+                plane.case, created.status, created.body
+            );
+        }
+
+        // A name nothing is stored under is refused rather than reported as deleted.
+        for missing in ["never-created", "RETIRED", "kept.3"] {
+            assert_refused(
+                &call(&router, "DELETE", &(plane.read_path)(missing), None).await,
+                404,
+                "ResourceNotFoundException",
+                &format!("{} not found: {missing}.", plane.phrase),
+                &format!("{}: delete a name nothing is stored under", plane.case),
+            );
+        }
+
+        let deleted = call(&router, "DELETE", &(plane.read_path)("retired"), None).await;
+        assert_eq!(
+            deleted.status, 200,
+            "case {:?}: the delete must succeed, got {} {:?}",
+            plane.case, deleted.status, deleted.body
+        );
+
+        // Every way back into the retired resource is refused, including a second
+        // delete of the same name.
+        assert_refused(
+            &call(&router, "GET", &(plane.read_path)("retired"), None).await,
+            404,
+            "ResourceNotFoundException",
+            &format!("{} not found: retired.", plane.phrase),
+            &format!("{}: read after delete", plane.case),
+        );
+        assert_refused(
+            &call(&router, "DELETE", &(plane.read_path)("retired"), None).await,
+            404,
+            "ResourceNotFoundException",
+            &format!("{} not found: retired.", plane.phrase),
+            &format!("{}: delete after delete", plane.case),
+        );
+
+        // The resources the delete did not name keep everything they held.
+        for name in ["kept.1", "kept_2"] {
+            let read = call(&router, "GET", &(plane.read_path)(name), None).await;
+            assert_eq!(
+                read.status, 200,
+                "case {:?}/{name}: a resource the delete did not name must still be readable, got {} {:?}",
+                plane.case, read.status, read.body
+            );
+            assert_eq!(
+                reported_tags(&read.json()),
+                Some(vec![("generation".to_string(), "first".to_string())]),
+                "case {:?}/{name}: a resource the delete did not name must keep its tags, got {:?}",
+                plane.case,
+                read.json().get("Tags")
+            );
+        }
+
+        // The retired name is free again, and what it reads back is the NEW
+        // resource: the tag map the deleted one held went with it.
+        let recreated = call(
+            &router,
+            "POST",
+            plane.create_path,
+            Some((plane.create_body)("retired")),
+        )
+        .await;
+        assert_eq!(
+            recreated.status, 200,
+            "case {:?}: re-creating a retired name must succeed, got {} {:?}",
+            plane.case, recreated.status, recreated.body
+        );
+        let read = call(&router, "GET", &(plane.read_path)("retired"), None).await;
+        assert_eq!(
+            read.status, 200,
+            "case {:?}: the re-created resource must be readable, got {} {:?}",
+            plane.case, read.status, read.body
+        );
+        assert_eq!(
+            reported_tags(&read.json()),
+            Some(Vec::new()),
+            "case {:?}: the re-created resource must hold none of the retired one's tags, got {:?}",
+            plane.case,
+            read.json().get("Tags")
+        );
+    }
+}
+
 /// RULE: a delete retires the resource permanently, so every later read of that name
 /// resolves nothing and is refused — and the resources the deleted one owned go with
 /// it.
