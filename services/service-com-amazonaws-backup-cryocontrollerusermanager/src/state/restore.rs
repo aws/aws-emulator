@@ -292,9 +292,10 @@ impl ComAmazonawsBackupCryocontrollerusermanagerState {
     /// applied to each vault's index, so a point settles identically whichever
     /// call materialises it.
     pub fn settle_recovery_points(&mut self, now: SystemTime) {
-        let vault_names: Vec<String> = self.recovery_points_by_vault.keys().cloned().collect();
-        for vault_name in vault_names {
-            self.settle_recovery_points_in(&vault_name, now);
+        let vault_keys: Vec<(String, String)> =
+            self.recovery_points_by_vault.keys().cloned().collect();
+        for (region, vault_name) in vault_keys {
+            self.settle_recovery_points_in(&region, &vault_name, now);
         }
     }
 }

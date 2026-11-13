@@ -326,7 +326,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> StartBackupJob<En
         // the oldest beyond the ceiling before recording another.
         store.prune_idempotency_tokens(now);
 
-        let Some(vault) = store.vaults.get(&input.backup_vault_name).cloned() else {
+        let Some(vault) = store.vault(region, &input.backup_vault_name).cloned() else {
             return Err(StartBackupJobErrorModeled::ResourceNotFoundException(
                 crate::state::backup_vault_not_found(&input.backup_vault_name),
             )
@@ -337,10 +337,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> StartBackupJob<En
         // materialised first, and a vault still in a non-terminal state is
         // refused for its STATE rather than reported as absent. A standard
         // vault reports no state at all and is ready from creation.
-        store.settle_vault(&input.backup_vault_name, now);
+        store.settle_vault(region, &input.backup_vault_name, now);
         let pending_state = store
-            .vaults
-            .get(&input.backup_vault_name)
+            .vault(region, &input.backup_vault_name)
             .and_then(|vault| vault.vault_state.clone())
             .filter(|state| state != crate::state::VAULT_STATE_AVAILABLE);
         if let Some(pending_state) = pending_state {
@@ -514,7 +513,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> StartBackupJob<En
         if job.failure.is_none() {
             store
                 .recovery_points_by_vault
-                .entry(vault.name.clone())
+                .entry(crate::state::vault_key(&vault.region, &vault.name))
                 .or_default()
                 .push(point.arn.clone());
             store.recovery_points.insert(point.arn.clone(), point);

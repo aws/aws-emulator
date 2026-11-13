@@ -44,6 +44,10 @@
 //! `recovery_points_by_vault` is the ONLY per-vault list: both
 //! `ListRecoveryPointsByBackupVault`'s page and `DescribeBackupVault`'s
 //! `NumberOfRecoveryPoints` are derived from it, so the two can never disagree.
+//! Both it and `vaults` are keyed by [`vault_key`] — the (region, name) pair a
+//! backup vault is identified by — so the same name in two regions is two
+//! independent vaults, each with its own recovery points and its own share of
+//! the vault allowance.
 //! [`VaultView`] is likewise the ONLY vault read projection: `DescribeBackupVault`
 //! and `ListBackupVaults` both answer from it, and [`RecoveryPointView`] is the
 //! ONLY recovery-point read projection: `DescribeRecoveryPoint` and
@@ -273,14 +277,25 @@ pub const DEFAULT_START_WINDOW_MINUTES: i64 = 8 * 60;
 /// sibling default of [`DEFAULT_START_WINDOW_MINUTES`].
 pub const DEFAULT_COMPLETION_WINDOW_MINUTES: i64 = 7 * 24 * 60;
 
-/// The most backup vaults this emulator keeps.
+/// The most backup vaults this emulator keeps IN ONE REGION of the account.
 ///
 /// An EMULATOR-CHOSEN ceiling, not an AWS quota: the store is in memory and
 /// every request can add to it, so the slice answers the modelled
 /// `LimitExceededException` past this point rather than growing without bound.
-/// AWS enforces a per-account vault quota of its own, so that modelled error is
-/// the right answer to the same request there.
+/// AWS enforces a per-account, per-region vault quota of its own, so that
+/// modelled error is the right answer to the same request there, and one
+/// region's vaults never consume another's allowance.
 pub const MAX_VAULTS: usize = 500;
+
+/// The most backup vaults this emulator keeps ACROSS every region of the
+/// account.
+///
+/// The region a vault is keyed under ([`vault_key`]) is a field of the caller's
+/// credential scope, so [`MAX_VAULTS`] alone would let the store grow with the
+/// regions a caller signs for; this is the ceiling on the store as a whole, for
+/// the reason given on [`MAX_DEFAULT_ENCRYPTION_KEYS`]. Also EMULATOR-CHOSEN,
+/// and past it the same modelled `LimitExceededException` is answered.
+pub const MAX_VAULTS_ALL_REGIONS: usize = 4 * MAX_VAULTS;
 
 /// The most recovery points this emulator keeps across all vaults. An
 /// EMULATOR-CHOSEN ceiling, for the reason given on [`MAX_VAULTS`]; AWS caps
@@ -465,6 +480,23 @@ pub const SECONDS_PER_DAY: u64 = 24 * 60 * 60;
 /// The ARN of a backup vault: `arn:aws:backup:<region>:<account>:backup-vault:<name>`.
 pub fn backup_vault_arn(region: &str, name: &str) -> String {
     ::engine::emulator_arn(ARN_NAMESPACE, region, &format!("backup-vault:{name}"))
+}
+
+/// The key a backup vault's record — and its recovery-point index — is stored
+/// under: the (region, name) pair that IDENTIFIES a vault.
+///
+/// "Backup vaults are identified by names that are unique to the account used
+/// to create them and the Amazon Web Services Region where they are created"
+/// (model doc for `BackupVaultName`), so a vault name is unique within one
+/// region of the account and the same name in another region is a different,
+/// independent vault. Every vault lookup, insert, delete and count therefore
+/// resolves within ONE region, which this one key is what makes true of all of
+/// them.
+///
+/// Region-first, so one region's vaults are contiguous in the store and a read
+/// of them is a range of the one map rather than a second index beside it.
+pub fn vault_key(region: &str, vault_name: &str) -> (String, String) {
+    (region.to_string(), vault_name.to_string())
 }
 
 /// The ARN of a KMS key: `arn:aws:kms:<region>:<account>:key/<key id>`.
@@ -2085,6 +2117,11 @@ pub const SUPPORTED_RESOURCE_TYPES: &[&str] = &[
 #[derive(Debug, Clone)]
 pub struct BackupVault {
     pub name: String,
+    /// The region this vault was created in, the other half of the key it is
+    /// stored under ([`vault_key`]): a backup vault's name identifies it within
+    /// one account AND one region, so the same name in another region is
+    /// another vault.
+    pub region: String,
     pub arn: String,
     /// The KMS key this vault is encrypted with. ALWAYS set: the model
     /// documents that "if you do not specify a key, Backup creates a KMS key
@@ -2631,6 +2668,11 @@ impl FrameworkRecord {
 #[derive(Debug, Clone)]
 pub struct LegalHoldRecord {
     pub id: String,
+    /// The region the hold was created in, which its ARN carries. A legal hold
+    /// restrains the recovery points of its OWN region: the vaults its
+    /// selection names are vaults of that region, since a vault name
+    /// identifies a vault only within one region ([`vault_key`]).
+    pub region: String,
     pub arn: String,
     pub title: String,
     pub description: String,
@@ -2695,11 +2737,20 @@ impl LegalHoldRecord {
     /// * `DateRange` is a window of creation instants, its `FromDate` "the
     ///   beginning date, inclusive" and its `ToDate` "the end date, inclusive".
     ///
+    /// A point of ANOTHER REGION is held by none of them: a hold is a regional
+    /// resource, and a vault name in its selection names a vault of the hold's
+    /// own region, so the region a point's vault belongs to is settled before
+    /// the selection is applied at all.
+    ///
     /// A point created after the hold was placed is held by none of them:
     /// "Future DateTime values are not permitted" for a selection's range (model
     /// doc for `DateRange`), so a selection names recovery points that already
     /// exist.
     pub fn holds(&self, point: &RecoveryPoint) -> bool {
+        let point_region = backup_vault_arn_parts(&point.backup_vault_arn).map(|parts| parts.region);
+        if point_region.as_deref() != Some(self.region.as_str()) {
+            return false;
+        }
         if point.creation_date > self.creation_date {
             return false;
         }
@@ -2731,14 +2782,17 @@ impl LegalHoldRecord {
 /// Per-service state for com-amazonaws-backup-cryocontrollerusermanager. A handler reaches it through [`service_state`].
 #[derive(Debug, Default)]
 pub struct ComAmazonawsBackupCryocontrollerusermanagerState {
-    /// Vaults by `BackupVaultName`. Bounded by [`MAX_VAULTS`].
-    pub vaults: BTreeMap<String, BackupVault>,
+    /// Vaults by the (region, name) pair a vault is identified by
+    /// ([`vault_key`]). Bounded by [`MAX_VAULTS`] per region.
+    pub vaults: BTreeMap<(String, String), BackupVault>,
     /// Recovery points by `RecoveryPointArn`. Bounded by [`MAX_RECOVERY_POINTS`].
     pub recovery_points: BTreeMap<String, RecoveryPoint>,
-    /// Per-vault recovery-point ARNs in insertion order — the single index both
-    /// the list operation and `NumberOfRecoveryPoints` read, so it holds exactly
-    /// the ARNs `recovery_points` does.
-    pub recovery_points_by_vault: BTreeMap<String, Vec<String>>,
+    /// Per-vault recovery-point ARNs in insertion order, keyed by the vault's
+    /// own [`vault_key`] — the single index both the list operation and
+    /// `NumberOfRecoveryPoints` read, so it holds exactly the ARNs
+    /// `recovery_points` does and one region's vault never reports another
+    /// region's points.
+    pub recovery_points_by_vault: BTreeMap<(String, String), Vec<String>>,
     /// Backup jobs by `BackupJobId`. Bounded by [`MAX_BACKUP_JOBS`].
     pub backup_jobs: BTreeMap<String, BackupJob>,
     /// Copy jobs by `CopyJobId`. Bounded by [`MAX_COPY_JOBS`].
@@ -3092,8 +3146,8 @@ impl ComAmazonawsBackupCryocontrollerusermanagerState {
     /// write a reporting operation performs — the vault was owed its
     /// availability at `settles_at` whether or not anybody called — and only
     /// the vault asked about is touched.
-    pub fn settle_vault(&mut self, vault_name: &str, now: SystemTime) {
-        if let Some(vault) = self.vaults.get_mut(vault_name) {
+    pub fn settle_vault(&mut self, region: &str, vault_name: &str, now: SystemTime) {
+        if let Some(vault) = self.vaults.get_mut(&vault_key(region, vault_name)) {
             if vault.vault_state.as_deref() == Some(VAULT_STATE_CREATING)
                 && vault.settles_at.is_some_and(|due| now >= due)
             {
@@ -3113,15 +3167,109 @@ impl ComAmazonawsBackupCryocontrollerusermanagerState {
     /// a list and a describe of the same vault can then never disagree about
     /// its state.
     pub fn settle_vaults(&mut self, now: SystemTime) {
-        let names: Vec<String> = self
+        let keys: Vec<(String, String)> = self
             .vaults
             .iter()
             .filter(|(_, vault)| vault.vault_state.as_deref() == Some(VAULT_STATE_CREATING))
-            .map(|(name, _)| name.clone())
+            .map(|(key, _)| key.clone())
             .collect();
-        for name in names {
-            self.settle_vault(&name, now);
+        for (region, name) in keys {
+            self.settle_vault(&region, &name, now);
         }
+    }
+
+    /// The vault the (region, name) pair a request resolves to names, if that
+    /// region of the account holds one.
+    ///
+    /// The ONE lookup every vault-keyed read goes through, so no call can
+    /// resolve a name against a region that does not hold it ([`vault_key`]).
+    pub fn vault(&self, region: &str, vault_name: &str) -> Option<&BackupVault> {
+        self.vaults.get(&vault_key(region, vault_name))
+    }
+
+    /// The same lookup for a call that WRITES the vault it resolves, so a
+    /// read-modify-write of one vault resolves it exactly as a read does.
+    pub fn vault_mut(&mut self, region: &str, vault_name: &str) -> Option<&mut BackupVault> {
+        self.vaults.get_mut(&vault_key(region, vault_name))
+    }
+
+    /// The vault a `BackupVaultArn` names, if this account holds one.
+    ///
+    /// A vault ARN carries the region as well as the name
+    /// ([`backup_vault_arn_parts`]), so it resolves to the one vault it names
+    /// even when another region holds a vault of the same name — which is what
+    /// lets a record that kept only the vault's ARN (a job, a recovery point)
+    /// find its own vault.
+    pub fn vault_by_arn(&self, backup_vault_arn: &str) -> Option<&BackupVault> {
+        let parts = backup_vault_arn_parts(backup_vault_arn)?;
+        self.vault(&parts.region, &parts.name)
+    }
+
+    /// Store a vault under its own key, with the empty recovery-point index
+    /// that vault starts life with — the ONE insert, so a vault and its index
+    /// are always keyed alike and a newly created vault holds no recovery
+    /// points.
+    pub fn insert_vault(&mut self, vault: BackupVault) {
+        let key = vault_key(&vault.region, &vault.name);
+        self.recovery_points_by_vault
+            .entry(key.clone())
+            .or_default();
+        self.vaults.insert(key, vault);
+    }
+
+    /// Remove a vault and the recovery-point index it owns, so the name is free
+    /// again in THAT region and nothing of the vault is left behind.
+    pub fn remove_vault(&mut self, region: &str, vault_name: &str) {
+        let key = vault_key(region, vault_name);
+        self.vaults.remove(&key);
+        self.recovery_points_by_vault.remove(&key);
+    }
+
+    /// Every vault this region of the account holds, in `BackupVaultName`
+    /// order.
+    ///
+    /// `vaults` is keyed region-first ([`vault_key`]), so one region's vaults
+    /// are a contiguous range of the one map and this walk is already in name
+    /// order — which is what makes a name-valued page cursor resolve to the
+    /// same position on every request.
+    pub fn vaults_in(&self, region: &str) -> impl Iterator<Item = &BackupVault> {
+        let region = region.to_string();
+        self.vaults
+            .range(vault_key(&region, "")..)
+            .take_while(move |((vault_region, _), _)| *vault_region == region)
+            .map(|(_, vault)| vault)
+    }
+
+    /// How many vaults this region of the account holds, which is what
+    /// [`MAX_VAULTS`] bounds: one region's vaults never consume another's
+    /// allowance.
+    pub fn vault_count_in(&self, region: &str) -> usize {
+        self.vaults_in(region).count()
+    }
+
+    /// Why this store will keep no further vault in `region`, or `None` while it
+    /// will — the ONE vault allowance decision, so all three vault creates
+    /// answer the same condition the same way.
+    ///
+    /// Two ceilings, because a vault's key has two halves ([`vault_key`]): the
+    /// per-region [`MAX_VAULTS`], which is the shape of the quota AWS enforces
+    /// per account and region, and [`MAX_VAULTS_ALL_REGIONS`] over the store as
+    /// a whole, because the region half comes from the caller's credential
+    /// scope and a per-region ceiling alone would let the store grow with the
+    /// regions a caller signs for.
+    pub fn exceeded_vault_allowance(&self, region: &str) -> Option<String> {
+        if self.vault_count_in(region) >= MAX_VAULTS {
+            return Some(format!(
+                "this emulator keeps at most {MAX_VAULTS} backup vaults per region"
+            ));
+        }
+        if self.vaults.len() >= MAX_VAULTS_ALL_REGIONS {
+            return Some(format!(
+                "this emulator keeps at most {MAX_VAULTS_ALL_REGIONS} backup vaults \
+                 across all regions"
+            ));
+        }
+        None
     }
 
     /// The KMS key this service encrypts a vault with when the create request
@@ -3166,7 +3314,7 @@ impl ComAmazonawsBackupCryocontrollerusermanagerState {
             encryption_key_type: vault.encryption_key_type.clone(),
             creation_date: vault.creation_date,
             creator_request_id: vault.creator_request_id.clone(),
-            number_of_recovery_points: self.recovery_point_count(&vault.name),
+            number_of_recovery_points: self.recovery_point_count(&vault.region, &vault.name),
             // A vault reports itself locked exactly while it holds a vault-lock
             // configuration, and reports that configuration's bounds.
             locked: vault.lock.is_some(),
@@ -3187,12 +3335,15 @@ impl ComAmazonawsBackupCryocontrollerusermanagerState {
     /// same set: a vault the list reports is exactly one the revoke can find.
     /// The source is matched by ARN rather than by name because the ARN is what
     /// the create was given, and it names the account and region as well as the
-    /// name. `vaults` is a `BTreeMap` keyed by name, so this walk is already in
-    /// name order \u2014 which is what makes a name-valued page cursor resolve to
-    /// the same position on every request.
+    /// name. The source's ARN names its region, and a restore access vault is
+    /// created in that region, so [`Self::vaults_in`] walks exactly the vaults
+    /// that can match, already in name order — which is what makes a
+    /// name-valued page cursor resolve to the same position on every request.
     pub fn restore_access_vaults_of(&self, source_backup_vault_arn: &str) -> Vec<&BackupVault> {
-        self.vaults
-            .values()
+        let region = backup_vault_arn_parts(source_backup_vault_arn)
+            .map(|parts| parts.region)
+            .unwrap_or_default();
+        self.vaults_in(&region)
             .filter(|vault| vault.vault_type == VAULT_TYPE_RESTORE_ACCESS_BACKUP_VAULT)
             .filter(|vault| {
                 vault.source_backup_vault_arn.as_deref() == Some(source_backup_vault_arn)
@@ -3243,23 +3394,25 @@ impl ComAmazonawsBackupCryocontrollerusermanagerState {
             encryption_key_type: point.encryption_key_type().to_string(),
             is_encrypted: point.is_encrypted,
             is_parent: point.is_parent,
-            vault_type: self.vault_type_of(&point.backup_vault_name),
+            vault_type: self.vault_type_of(&point.backup_vault_arn),
             index_status: point.index_status.clone(),
             storage_class: point.storage_class(now).to_string(),
         }
     }
 
     /// How many recovery points the named vault holds, derived from the index.
-    pub fn recovery_point_count(&self, vault_name: &str) -> i64 {
+    pub fn recovery_point_count(&self, region: &str, vault_name: &str) -> i64 {
         self.recovery_points_by_vault
-            .get(vault_name)
+            .get(&vault_key(region, vault_name))
             .map_or(0, |arns| i64::try_from(arns.len()).unwrap_or(i64::MAX))
     }
 
     /// Resolve the recovery point a (`BackupVaultName`, `RecoveryPointArn`) pair
-    /// addresses: one the named vault holds whose backup has settled.
+    /// addresses, within the region the request resolves to: one the named vault
+    /// holds whose backup has settled.
     ///
-    /// A vault this account does not hold, an ARN no stored recovery point
+    /// A vault this region of the account does not hold, an ARN no stored
+    /// recovery point
     /// answers to, an ARN another vault holds, and one whose backup has not
     /// reached a terminal state yet are ONE condition as far as a call that
     /// addresses a recovery point is concerned: the recovery point asked about is
@@ -3271,12 +3424,18 @@ impl ComAmazonawsBackupCryocontrollerusermanagerState {
     /// one, the reads included, resolves it here.
     pub fn stored_recovery_point(
         &self,
+        region: &str,
         vault_name: &str,
         recovery_point_arn: &str,
     ) -> Result<&RecoveryPoint, ResourceNotFoundException> {
+        let key = vault_key(region, vault_name);
+        let held = self
+            .recovery_points_by_vault
+            .get(&key)
+            .is_some_and(|arns| arns.iter().any(|arn| arn == recovery_point_arn));
         self.recovery_points
             .get(recovery_point_arn)
-            .filter(|point| point.backup_vault_name == vault_name)
+            .filter(|_| held)
             .filter(|point| point.status != RECOVERY_POINT_STATUS_CREATING)
             .ok_or_else(recovery_point_not_found)
     }
@@ -3297,8 +3456,7 @@ impl ComAmazonawsBackupCryocontrollerusermanagerState {
     /// stored point may be deleted. A vault with no lock retains nothing this way.
     pub fn lock_retains_recovery_point(&self, point: &RecoveryPoint, now: SystemTime) -> bool {
         let locked = self
-            .vaults
-            .get(&point.backup_vault_name)
+            .vault_by_arn(&point.backup_vault_arn)
             .is_some_and(|vault| vault.lock.is_some());
         locked
             && point
@@ -3311,9 +3469,12 @@ impl ComAmazonawsBackupCryocontrollerusermanagerState {
     /// record map and the per-vault index, so the index keeps holding exactly the
     /// ARNs `recovery_points` does and every count derived from it follows the
     /// deletion.
-    pub fn remove_recovery_point(&mut self, vault_name: &str, recovery_point_arn: &str) {
+    pub fn remove_recovery_point(&mut self, region: &str, vault_name: &str, recovery_point_arn: &str) {
         self.recovery_points.remove(recovery_point_arn);
-        if let Some(arns) = self.recovery_points_by_vault.get_mut(vault_name) {
+        if let Some(arns) = self
+            .recovery_points_by_vault
+            .get_mut(&vault_key(region, vault_name))
+        {
             arns.retain(|held| held != recovery_point_arn);
         }
     }
@@ -3323,8 +3484,10 @@ impl ComAmazonawsBackupCryocontrollerusermanagerState {
     /// AWS Backup authorizes a vault-scoped read against the named vault as the
     /// resource, so a caller that may not see that vault is refused for lack of
     /// privileges and told nothing about whether it exists. A vault is outside the
-    /// caller's visibility when the account the request is scoped to does not hold it
-    /// — it was never created, or it has been deleted — or when the request addresses
+    /// caller's visibility when the region of the account the request is scoped to
+    /// does not hold it
+    /// — it was never created in that region, or it has been deleted — or when the
+    /// request addresses
     /// another account's vault with `BackupVaultAccountId`; this emulator holds
     /// exactly one account's vaults ([`engine::emulator_account_id`]), so any other
     /// account id is another account's.
@@ -3333,12 +3496,12 @@ impl ComAmazonawsBackupCryocontrollerusermanagerState {
     /// this step whether an invisible vault exists, so no read can leak it.
     pub fn visible_vault(
         &self,
+        region: &str,
         vault_name: &str,
         vault_account_id: Option<&str>,
     ) -> Result<&BackupVault, crate::scaffolded::AccessDeniedException> {
         let own_account = Self::is_own_account(vault_account_id);
-        self.vaults
-            .get(vault_name)
+        self.vault(region, vault_name)
             .filter(|_| own_account)
             .ok_or_else(crate::scaffolded::AccessDeniedException::insufficient_privileges)
     }
@@ -3359,12 +3522,12 @@ impl ComAmazonawsBackupCryocontrollerusermanagerState {
     /// write, states the account it is scoped to.
     pub fn visible_vault_mut(
         &mut self,
+        region: &str,
         vault_name: &str,
         vault_account_id: Option<&str>,
     ) -> Result<&mut BackupVault, crate::scaffolded::AccessDeniedException> {
         let own_account = Self::is_own_account(vault_account_id);
-        self.vaults
-            .get_mut(vault_name)
+        self.vault_mut(region, vault_name)
             .filter(|_| own_account)
             .ok_or_else(crate::scaffolded::AccessDeniedException::insufficient_privileges)
     }
@@ -3441,8 +3604,10 @@ impl ComAmazonawsBackupCryocontrollerusermanagerState {
         }
         job.state = COPY_JOB_STATE_COMPLETED.to_string();
         job.completion_date = Some(job.settles_at);
-        let destination_vault = job.destination_backup_vault_name.clone();
-        self.settle_recovery_points_in(&destination_vault, now);
+        let destination = job.destination_backup_vault_arn.clone();
+        if let Some(parts) = backup_vault_arn_parts(&destination) {
+            self.settle_recovery_points_in(&parts.region, &parts.name, now);
+        }
     }
 
     /// The same for every stored copy job, for a caller that materialises what the
@@ -3470,7 +3635,7 @@ impl ComAmazonawsBackupCryocontrollerusermanagerState {
     /// destination vault with no lock reports no lock state at all, as a vault
     /// read reports no `VaultState` for a type that carries none.
     pub fn copy_job_view(&self, job: &CopyJobRecord) -> CopyJob {
-        let destination_vault = self.vaults.get(&job.destination_backup_vault_name);
+        let destination_vault = self.vault_by_arn(&job.destination_backup_vault_arn);
         CopyJob {
             account_id: Some(::engine::emulator_account_id().to_string()),
             copy_job_id: Some(job.copy_job_id.clone()),
@@ -3511,21 +3676,21 @@ impl ComAmazonawsBackupCryocontrollerusermanagerState {
 
     /// The `VaultType` of the vault a job or recovery point was stored in, or
     /// `None` when the account no longer holds that vault. Derived from the
-    /// stored vault, so a job read never states a type the vault disagrees
-    /// with.
-    pub fn vault_type_of(&self, vault_name: &str) -> Option<String> {
-        self.vaults
-            .get(vault_name)
+    /// stored vault the record's `BackupVaultArn` names, so a job read never
+    /// states a type the vault disagrees with and a same-named vault in another
+    /// region cannot answer for it.
+    pub fn vault_type_of(&self, backup_vault_arn: &str) -> Option<String> {
+        self.vault_by_arn(backup_vault_arn)
             .map(|vault| vault.vault_type.clone())
     }
 
     /// The same, for the recovery points of ONE vault: the `CREATING` ->
     /// `COMPLETED` transition, and the `PENDING` -> `ACTIVE` one for a point
     /// whose job was asked to build an index.
-    pub fn settle_recovery_points_in(&mut self, vault_name: &str, now: SystemTime) {
+    pub fn settle_recovery_points_in(&mut self, region: &str, vault_name: &str, now: SystemTime) {
         let arns = self
             .recovery_points_by_vault
-            .get(vault_name)
+            .get(&vault_key(region, vault_name))
             .cloned()
             .unwrap_or_default();
         for arn in arns {

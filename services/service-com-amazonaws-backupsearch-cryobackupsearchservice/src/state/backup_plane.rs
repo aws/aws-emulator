@@ -67,7 +67,7 @@ pub fn indexed_recovery_points<Eng: Send + Sync + 'static>(
     store
         .recovery_points_by_vault
         .iter()
-        .flat_map(|(vault_name, arns)| {
+        .flat_map(|((_region, vault_name), arns)| {
             arns.iter().filter_map(|arn| {
                 let point = store.recovery_points.get(arn)?;
                 searchable_backup(point).map(|backup| IndexedRecoveryPoint {

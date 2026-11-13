@@ -372,7 +372,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> ListBackupJobs<En
                 backup_vault_arn: Some(job.backup_vault_arn.clone()),
                 // Derived from the stored vault, through the same step
                 // `DescribeBackupJob` derives it with.
-                vault_type: store.vault_type_of(&job.backup_vault_name),
+                vault_type: store.vault_type_of(&job.backup_vault_arn),
                 recovery_point_arn: Some(job.recovery_point_arn.clone()),
                 recovery_point_lifecycle: job.lifecycle.clone(),
                 encryption_key_arn: job.encryption_key_arn.clone(),

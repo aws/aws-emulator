@@ -189,14 +189,17 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // this handler runs; `crate::service` words that refusal as
         // `MissingParameterValueException`. `SourceBackupVaultName` carries the
         // `BackupVaultName` pattern, so a name this service could not have
-        // stored is refused there too. Every ARN this handler mints carries the
+        // stored is refused there too. The SOURCE vault is named by name alone,
+        // so it is resolved in the Region of the call, which `ctx` carries; every
+        // ARN this handler mints carries the
         // region of the vault the resource belongs to, which is read off the
         // destination ARN rather than from `ctx`. The Region a copy job's state
         // changes are announced in is the Region of the vault it reads FROM, which
-        // the stored job carries, so this handler reads none from `ctx`.
+        // the stored job carries.
         // Starting the copy holds this store's lock; the publication below does
         // not, so no lock is held across an await.
-        let output = self.started_copy_job(input)?;
+        let region = crate::state::request_region(ctx);
+        let output = self.started_copy_job(input, &region)?;
         crate::state::publish_job_state_changes(ctx, &*self.engine).await;
         // The transition this copy job is owed falls due on the clock, not on the
         // next call: the pump publishes it when it does, so a client watching the
@@ -213,10 +216,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> StartCopyJob<Eng>
     ///
     /// Separate from `handle` so this store's lock lives for exactly this call: the
     /// publication `handle` makes afterwards awaits, and a guard must not be held
-    /// across an await.
+    /// across an await. `region` is the Region of the call, which is the region the
+    /// SOURCE vault — named by name alone — is resolved in.
     fn started_copy_job(
         &self,
         input: StartCopyJobInput,
+        region: &str,
     ) -> Result<StartCopyJobOutput, StartCopyJobError> {
         let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
             StartCopyJobErrorModeled::ServiceUnavailableException(ServiceUnavailableException {
@@ -279,26 +284,33 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> StartCopyJob<Eng>
         store.prune_idempotency_tokens(now);
 
         // The SOURCE end: the recovery point the copy reads, resolved by the
-        // (vault, ARN) pair that addresses one. Every way that pair can fail to
-        // name a stored recovery point — a vault this account does not hold, an
+        // (vault, ARN) pair that addresses one, within the Region of the call.
+        // Every way that pair can fail to
+        // name a stored recovery point — a vault this region of the account does
+        // not hold, an
         // ARN nothing answers to, an ARN another vault holds, one whose backup
         // has not finished — is the ONE condition `crate::state` already words.
         // The backup the clock has already finished is materialised first, so a
         // copy of it is not refused for a completion that was already due.
-        store.settle_recovery_points_in(&input.source_backup_vault_name, now);
+        store.settle_recovery_points_in(region, &input.source_backup_vault_name, now);
         let source_point = store
-            .stored_recovery_point(&input.source_backup_vault_name, &input.recovery_point_arn)
+            .stored_recovery_point(
+                region,
+                &input.source_backup_vault_name,
+                &input.recovery_point_arn,
+            )
             .cloned()
             .map_err(StartCopyJobErrorModeled::ResourceNotFoundException)?;
 
         // The DESTINATION end: the vault the ARN names, which this account has
-        // to hold for a copy to be put into it. This emulator holds exactly one
+        // to hold for a copy to be put into it. The ARN names the region as well
+        // as the name, so the vault is resolved in ITS own region — which is not
+        // this request's for a copy across regions. This emulator holds exactly one
         // account's vaults (`engine::emulator_account_id`), so an ARN naming
         // another account's vault names none of them.
         let own_account = destination.account_id == ::engine::emulator_account_id();
         let destination_vault = store
-            .vaults
-            .get(&destination.name)
+            .vault(&destination.region, &destination.name)
             .filter(|_| own_account)
             .cloned()
             .ok_or_else(|| {
@@ -311,10 +323,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> StartCopyJob<Eng>
         // first, and a vault still in a non-terminal state is refused for its
         // STATE rather than reported as absent. A standard vault reports no
         // state at all and is ready from creation.
-        store.settle_vault(&destination.name, now);
+        store.settle_vault(&destination.region, &destination.name, now);
         let pending_state = store
-            .vaults
-            .get(&destination.name)
+            .vault(&destination.region, &destination.name)
             .and_then(|vault| vault.vault_state.clone())
             .filter(|state| state != crate::state::VAULT_STATE_AVAILABLE);
         if let Some(pending_state) = pending_state {
@@ -452,7 +463,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> StartCopyJob<Eng>
 
         store
             .recovery_points_by_vault
-            .entry(destination_vault.name.clone())
+            .entry(crate::state::vault_key(
+                &destination_vault.region,
+                &destination_vault.name,
+            ))
             .or_default()
             .push(point.arn.clone());
         store.recovery_points.insert(point.arn.clone(), point);

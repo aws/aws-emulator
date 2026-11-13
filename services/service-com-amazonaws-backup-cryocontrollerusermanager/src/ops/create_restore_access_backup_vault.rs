@@ -209,14 +209,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // A source vault whose creation the clock has already settled can grant
         // restore access, so the transition owed at its `settles_at` is
         // materialised before the state guard below reads the state.
-        store.settle_vault(&source.name, now);
+        store.settle_vault(&source.region, &source.name, now);
         // The source vault is resolved by the WHOLE ARN: one whose account or
         // region is not the stored vault's names another account's or another
         // region's vault, which this emulator holds either way no more than a
         // vault that was never created.
         let source_vault = store
-            .vaults
-            .get(&source.name)
+            .vault(&source.region, &source.name)
             .filter(|vault| vault.arn == input.source_backup_vault_arn);
         let Some(source_vault) = source_vault else {
             return Err(
@@ -305,8 +304,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         if let Some(name) = replayed {
             // The stored vault as it stands NOW, including the state the clock
             // has since made due.
-            store.settle_vault(&name, now);
-            let existing = store.vaults.get(&name).expect("the vault resolved above");
+            store.settle_vault(&source.region, &name, now);
+            let existing = store
+                .vault(&source.region, &name)
+                .expect("the vault resolved above");
             return Ok(CreateRestoreAccessBackupVaultOutput {
                 restore_access_backup_vault_arn: Some(existing.arn.clone()),
                 restore_access_backup_vault_name: Some(existing.name.clone()),
@@ -321,11 +322,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             Some(name) => name,
             None => store.minted_restore_access_vault_name(now),
         };
-        // A vault name is unique across vault types, so a name this account
-        // already holds collides — the same answer `CreateBackupVault` gives,
+        // A vault name is unique across vault types within the region that
+        // holds it, so a name this region of the account already holds
+        // collides — the same answer `CreateBackupVault` gives,
         // because it is the same condition, and it discloses nothing about the
         // vault that is already there.
-        if store.vaults.contains_key(&name) {
+        if store.vault(&source.region, &name).is_some() {
             return Err(
                 CreateRestoreAccessBackupVaultErrorModeled::AlreadyExistsException(
                     crate::state::vault_already_exists(),
@@ -334,16 +336,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             );
         }
         // The store is in memory and every request can add to it, so the number
-        // of vaults it keeps is bounded. AWS answers the same modelled error
-        // once an account reaches its own vault quota.
-        if store.vaults.len() >= crate::state::MAX_VAULTS {
+        // of vaults it keeps is bounded — per region, counted in the source
+        // vault's own region, and over the store as a whole. Both are
+        // `crate::state`'s one decision, shared with the other vault creates.
+        if let Some(message) = store.exceeded_vault_allowance(&source.region) {
             return Err(
                 CreateRestoreAccessBackupVaultErrorModeled::LimitExceededException(
                     LimitExceededException {
-                        message: Some(format!(
-                            "this emulator keeps at most {} backup vaults",
-                            crate::state::MAX_VAULTS
-                        )),
+                        message: Some(message),
                         ..Default::default()
                     },
                 )
@@ -355,6 +355,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             name: name.clone(),
             // The vault belongs to the region of the vault it gives access to,
             // which the source ARN names.
+            region: source.region.clone(),
             arn: crate::state::backup_vault_arn(&source.region, &name),
             encryption_key_arn,
             customer_managed_key,
@@ -389,11 +390,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             vault_state: vault.vault_state.clone(),
             creation_date: Some(::aws_smithy_types::DateTime::from(vault.creation_date)),
         };
-        store
-            .recovery_points_by_vault
-            .entry(vault.name.clone())
-            .or_default();
-        store.vaults.insert(vault.name.clone(), vault);
+        store.insert_vault(vault);
         Ok(output)
     }
 }

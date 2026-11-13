@@ -157,7 +157,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        let _ = ctx;
+        let region = crate::state::request_region(ctx);
         let now = ::std::time::SystemTime::now();
         let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
             DisassociateBackupVaultMpaApprovalTeamErrorModeled::ServiceUnavailableException(
@@ -172,13 +172,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // The write this operation performs is the removal, so the transition
         // the clock owes the vault is materialised first: the vault it resolves
         // is the vault as it stands now.
-        store.settle_vault(&input.backup_vault_name, now);
+        store.settle_vault(&region, &input.backup_vault_name, now);
         // A vault-scoped call decides access before existence, through the step
         // every vault-scoped write shares: a vault outside the caller's
         // visibility is refused 403 `AccessDeniedException` rather than
         // reported as missing. This input models no `BackupVaultAccountId`, so
         // the vault is resolved in the caller's own account.
-        let vault = store.visible_vault_mut(&input.backup_vault_name, None)?;
+        let vault = store.visible_vault_mut(&region, &input.backup_vault_name, None)?;
         // The vault-type precondition, resolved BEFORE anything is cleared so a
         // refused request writes nothing.
         if vault.vault_type != crate::state::VAULT_TYPE_LOGICALLY_AIR_GAPPED_BACKUP_VAULT {

@@ -178,7 +178,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        let _ = ctx;
+        let region = crate::state::request_region(ctx);
         let now = ::std::time::SystemTime::now();
 
         // The model types `RecoveryPointArn` as `ARN` with no pattern, so the
@@ -215,13 +215,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // called, and a completed point is one this call can address. The same for
         // the legal holds, so a hold the clock has already placed restrains this
         // delete.
-        store.settle_recovery_points_in(&input.backup_vault_name, now);
+        store.settle_recovery_points_in(&region, &input.backup_vault_name, now);
         store.settle_legal_holds(now);
 
         // Resolved BEFORE anything is removed, so a refused request writes nothing.
-        let (retained, held) = match store
-            .stored_recovery_point(&input.backup_vault_name, &input.recovery_point_arn)
-        {
+        let (retained, held) = match store.stored_recovery_point(
+            &region,
+            &input.backup_vault_name,
+            &input.recovery_point_arn,
+        ) {
             Err(absent) => {
                 return Err(
                     DeleteRecoveryPointErrorModeled::ResourceNotFoundException(absent).into(),
@@ -251,7 +253,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .into());
         }
 
-        store.remove_recovery_point(&input.backup_vault_name, &input.recovery_point_arn);
+        store.remove_recovery_point(&region, &input.backup_vault_name, &input.recovery_point_arn);
         Ok(DeleteRecoveryPointOutput)
     }
 }

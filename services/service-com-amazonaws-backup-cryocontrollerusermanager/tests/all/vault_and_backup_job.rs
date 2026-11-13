@@ -91,10 +91,25 @@ pub(crate) async fn call_reported(
     path: &str,
     body: Option<&str>,
 ) -> (u16, String, Value) {
+    dispatch_signed(router, AUTHORIZATION, method, path, body).await
+}
+
+/// The ONE request this harness makes: one HTTP request carrying
+/// `authorization`, answered with the status, the error shape the response names
+/// and the parsed body. Every other caller in this test crate reaches the router
+/// through it, so there is one dispatch path rather than one per signing
+/// variant.
+async fn dispatch_signed(
+    router: &MultiServiceRouter,
+    authorization: &str,
+    method: &str,
+    path: &str,
+    body: Option<&str>,
+) -> (u16, String, Value) {
     let mut builder = http::Request::builder()
         .method(method)
         .uri(format!("http://localhost{path}"))
-        .header("authorization", AUTHORIZATION);
+        .header("authorization", authorization);
     if body.is_some() {
         builder = builder.header("content-type", "application/json");
     }
@@ -145,6 +160,47 @@ pub(crate) async fn create_vault(
 ) -> (u16, Value) {
     call(
         router,
+        "PUT",
+        &format!("/backup-vaults/{name}"),
+        Some(body),
+    )
+    .await
+}
+
+/// The SAME one-request harness as [`call`], with the SigV4 credential scope
+/// naming `region` instead of [`REGION`].
+///
+/// A backup vault is identified by its name within one account AND one Region,
+/// so a suite that works in more than one Region signs each request for the
+/// Region it is made in; there is ONE such harness for this service rather than
+/// one per file.
+pub(crate) async fn call_in_region(
+    router: &MultiServiceRouter,
+    region: &str,
+    method: &str,
+    path: &str,
+    body: Option<&str>,
+) -> (u16, Value) {
+    let authorization = format!(
+        "AWS4-HMAC-SHA256 Credential=AKIDTESTONLY/20260101/{region}/backup/aws4_request, \
+         SignedHeaders=host, Signature=00"
+    );
+    let (status, _errortype, parsed) =
+        dispatch_signed(router, &authorization, method, path, body).await;
+    (status, parsed)
+}
+
+/// `CreateBackupVault` through a client bound to `region`, so the vault belongs
+/// to that Region.
+pub(crate) async fn create_vault_in(
+    router: &MultiServiceRouter,
+    region: &str,
+    name: &str,
+    body: &str,
+) -> (u16, Value) {
+    call_in_region(
+        router,
+        region,
         "PUT",
         &format!("/backup-vaults/{name}"),
         Some(body),

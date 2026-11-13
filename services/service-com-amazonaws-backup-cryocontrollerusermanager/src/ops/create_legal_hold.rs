@@ -234,6 +234,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let record = crate::state::LegalHoldRecord {
             arn: crate::state::legal_hold_arn(&region, &id),
             id,
+            // A hold restrains the recovery points of the region it was created
+            // in, and the vault names its selection carries name vaults of that
+            // region.
+            region: region.clone(),
             title: input.title,
             description: input.description,
             creation_date: now,

@@ -155,7 +155,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        let _ = ctx;
+        let region = crate::state::request_region(ctx);
         let now = ::std::time::SystemTime::now();
         // A page size outside the model's `@range` is this service's own
         // `InvalidParameterValueException`, answered before anything is read so
@@ -178,12 +178,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // first: a list and a describe of the same vault then never disagree
         // about its state.
         store.settle_vaults(now);
-        // `store.vaults` is a `BTreeMap` keyed by `BackupVaultName`, so this
-        // walk is already in name order — which is what makes the name-valued
+        // A vault belongs to the region it was created in, so a list reports
+        // the vaults of the region this request resolves to and no other's.
+        // `crate::state::vaults_in` walks that region's range of the store,
+        // already in name order — which is what makes the name-valued
         // cursor below resolve to the same position on every request.
         let matching: Vec<&crate::state::BackupVault> = store
-            .vaults
-            .values()
+            .vaults_in(&region)
             .filter(|vault| {
                 input
                     .by_vault_type

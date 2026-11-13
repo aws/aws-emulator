@@ -93,6 +93,8 @@ mod vault_lock_refusal_order;
 mod vault_read_projection;
 #[path = "all/vault_read_visibility.rs"]
 mod vault_read_visibility;
+#[path = "all/vault_region_namespace.rs"]
+mod vault_region_namespace;
 #[path = "all/vault_type_and_parameter_refusals.rs"]
 mod vault_type_and_parameter_refusals;
 #[path = "all/plan_driven_job_event_delivery.rs"]

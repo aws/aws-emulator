@@ -245,11 +245,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .collect();
 
         let mut store = state.lock();
-        // A vault name is unique across vault types, so a repeat create naming a
-        // stored vault is answered from the stored one: a retry of the original
+        // A vault name is unique across vault types WITHIN one region of the
+        // account, so a repeat create naming a stored vault of that region is
+        // answered from the stored one: a retry of the original
         // request only when it carries the same idempotency token and the same
         // creation parameters, `AlreadyExistsException` otherwise.
-        if let Some(existing) = store.vaults.get(&input.backup_vault_name) {
+        if let Some(existing) = store.vault(&region, &input.backup_vault_name) {
             let named_key = existing.named_encryption_key_arn().map(ToString::to_string);
             let lock = existing.lock.as_ref();
             let is_retry = input.creator_request_id.is_some()
@@ -274,10 +275,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             }
             // A retry reports the vault as it stands now, including the state
             // the clock has since made due.
-            store.settle_vault(&input.backup_vault_name, now);
+            store.settle_vault(&region, &input.backup_vault_name, now);
             let existing = store
-                .vaults
-                .get(&input.backup_vault_name)
+                .vault(&region, &input.backup_vault_name)
                 .expect("the vault resolved just above");
             return Ok(CreateLogicallyAirGappedBackupVaultOutput {
                 backup_vault_name: Some(existing.name.clone()),
@@ -288,16 +288,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         }
 
         // The store is in memory and every request can add to it, so the number
-        // of vaults it keeps is bounded. AWS answers the same modelled error
-        // once an account reaches its own vault quota.
-        if store.vaults.len() >= crate::state::MAX_VAULTS {
+        // of vaults it keeps is bounded — per region and over the store as a
+        // whole. Both are `crate::state`'s one decision, shared with the other
+        // vault creates.
+        if let Some(message) = store.exceeded_vault_allowance(&region) {
             return Err(
                 CreateLogicallyAirGappedBackupVaultErrorModeled::LimitExceededException(
                     LimitExceededException {
-                        message: Some(format!(
-                            "this emulator keeps at most {} backup vaults",
-                            crate::state::MAX_VAULTS
-                        )),
+                        message: Some(message),
                         ..Default::default()
                     },
                 )
@@ -316,6 +314,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         };
         let vault = crate::state::BackupVault {
             name: input.backup_vault_name.clone(),
+            region: region.clone(),
             arn: crate::state::backup_vault_arn(&region, &input.backup_vault_name),
             encryption_key_arn,
             customer_managed_key,
@@ -366,11 +365,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             creation_date: Some(::aws_smithy_types::DateTime::from(vault.creation_date)),
             vault_state: vault.vault_state.clone(),
         };
-        store
-            .recovery_points_by_vault
-            .entry(vault.name.clone())
-            .or_default();
-        store.vaults.insert(vault.name.clone(), vault);
+        store.insert_vault(vault);
         Ok(output)
     }
 }

@@ -153,7 +153,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        let _ = ctx;
+        let region = crate::state::request_region(ctx);
         let now = ::std::time::SystemTime::now();
         // A page size outside the model's `@range` is this service's own
         // `InvalidParameterValueException`, answered before anything is read so
@@ -186,7 +186,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // in `state::visible_vault`, shared with every other vault-scoped
         // read; this input models no `BackupVaultAccountId`, so the vault is
         // resolved in the caller's own account.
-        let source_vault = store.visible_vault(&input.backup_vault_name, None)?;
+        let source_vault = store.visible_vault(&region, &input.backup_vault_name, None)?;
         let source_arn = source_vault.arn.clone();
         let source_type = source_vault.vault_type.clone();
         // Only a logically air-gapped vault can hold restore access vaults —

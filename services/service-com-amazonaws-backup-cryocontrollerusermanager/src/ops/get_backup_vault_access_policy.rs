@@ -135,7 +135,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        let _ = ctx;
+        let region = crate::state::request_region(ctx);
         let now = ::std::time::SystemTime::now();
         let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
             GetBackupVaultAccessPolicyErrorModeled::ServiceUnavailableException(
@@ -148,8 +148,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let mut store = state.lock();
         // The one write a read performs: the `CREATING` -> `AVAILABLE`
         // transition the clock had already made due for this vault.
-        store.settle_vault(&input.backup_vault_name, now);
-        let vault = store.visible_vault(&input.backup_vault_name, None)?;
+        store.settle_vault(&region, &input.backup_vault_name, now);
+        let vault = store.visible_vault(&region, &input.backup_vault_name, None)?;
         let Some(policy) = vault.access_policy.clone() else {
             return Err(GetBackupVaultAccessPolicyErrorModeled::ResourceNotFoundException(
                 crate::state::vault_access_policy_not_found(&vault.arn),

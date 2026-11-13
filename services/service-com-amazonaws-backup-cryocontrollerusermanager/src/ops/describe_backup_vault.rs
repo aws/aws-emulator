@@ -206,7 +206,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        let _ = ctx;
+        let region = crate::state::request_region(ctx);
         let now = ::std::time::SystemTime::now();
         let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
             DescribeBackupVaultErrorModeled::ServiceUnavailableException(
@@ -240,14 +240,16 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // The ONE write this reporting operation performs: a vault whose
         // `CREATING` -> `AVAILABLE` transition the clock has already made due
         // was owed it at that instant whether or not anybody described it.
-        store.settle_vault(&input.backup_vault_name, now);
+        store.settle_vault(&region, &input.backup_vault_name, now);
         // A vault-scoped read decides access before existence: a vault outside the
-        // caller's visibility (absent from this account, or addressed with another
+        // caller's visibility (absent from this region of this account, or
+        // addressed with another
         // account's `BackupVaultAccountId`) is refused with 403
         // `AccessDeniedException` rather than reported as missing, so the answer
         // discloses nothing about whether the vault exists. The decision lives in
         // `state::visible_vault`, shared with every other vault-scoped read.
         let vault = store.visible_vault(
+            &region,
             &input.backup_vault_name,
             input.backup_vault_account_id.as_deref(),
         )?;

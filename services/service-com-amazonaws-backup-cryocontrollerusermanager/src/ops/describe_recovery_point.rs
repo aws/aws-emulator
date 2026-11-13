@@ -259,7 +259,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        let _ = ctx;
+        let region = crate::state::request_region(ctx);
         let now = ::std::time::SystemTime::now();
 
         // The model types `RecoveryPointArn` as `ARN` with no pattern, so the
@@ -294,11 +294,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         // A vault-scoped read decides access before existence: see
         // `state::visible_vault`, the step every vault-scoped read shares. A
-        // vault this account does not hold, or one addressed with another
+        // vault this region of this account does not hold, or one addressed
+        // with another
         // account's `BackupVaultAccountId` (the `backupVaultAccountId` query
         // parameter, the documented cross-account path), is refused with 403
         // `AccessDeniedException` rather than reported as missing.
         store.visible_vault(
+            &region,
             &input.backup_vault_name,
             input.backup_vault_account_id.as_deref(),
         )?;
@@ -306,13 +308,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // Resolved first, so a refused request writes nothing. This is the one
         // write a read performs: a recovery point whose settle instant has
         // passed completed at that instant, whether or not anybody looked.
-        store.settle_recovery_points_in(&input.backup_vault_name, now);
+        store.settle_recovery_points_in(&region, &input.backup_vault_name, now);
 
         // The `Code` and the sentence belong to the CONDITION, not to this
         // operation, so both come from the service's one error vocabulary; the
         // sentence names no part of the request, because AWS's does not.
         let point = store
-            .stored_recovery_point(&input.backup_vault_name, &input.recovery_point_arn)
+            .stored_recovery_point(&region, &input.backup_vault_name, &input.recovery_point_arn)
             .map_err(DescribeRecoveryPointErrorModeled::ResourceNotFoundException)?;
         let view = store.recovery_point_view(point, now);
 

@@ -282,7 +282,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> DescribeBackupJob
             )
             .into());
         };
-        let vault_type = store.vault_type_of(&job.backup_vault_name);
+        let vault_type = store.vault_type_of(&job.backup_vault_arn);
 
         let output = DescribeBackupJobOutput {
             account_id: Some(::engine::emulator_account_id().to_string()),

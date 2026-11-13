@@ -3,9 +3,13 @@
 //! @op CreateBackupVault
 //!
 //! Inserts a vault record into [`crate::state`] and answers from it. A create
-//! naming a vault that already exists is a RETRY only when it repeats the
-//! stored `CreatorRequestId` and the rest of the stored creation parameters; any
-//! other repeat is refused with `AlreadyExistsException`.
+//! naming a vault that already exists IN THE REQUEST'S REGION is a RETRY only
+//! when it repeats the stored `CreatorRequestId` and the rest of the stored
+//! creation parameters; any other repeat is refused with
+//! `AlreadyExistsException`. The same name in another region names no vault
+//! here, so it creates a second, independent vault: a vault name is unique to
+//! the account AND the region it was created in (model doc for
+//! `BackupVaultName`).
 //!
 //! A request that names no `EncryptionKeyArn` still gets a key: the model
 //! documents that "if you do not specify a key, Backup creates a KMS key for you
@@ -206,7 +210,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .collect();
 
         let mut store = state.lock();
-        if let Some(existing) = store.vaults.get(&input.backup_vault_name) {
+        // A vault name is unique within ONE region of the account ("Backup
+        // vaults are identified by names that are unique to the account used to
+        // create them and the Amazon Web Services Region where they are
+        // created", model doc for `BackupVaultName`), so the collision is
+        // looked up in the region this request resolves to: the same name in
+        // another region names no vault here.
+        if let Some(existing) = store.vault(&region, &input.backup_vault_name) {
             let named_key = existing.named_encryption_key_arn().map(ToString::to_string);
             // A repeat create is a retry of the ORIGINAL request only when it
             // carries the same idempotency token and the same creation
@@ -234,15 +244,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         }
 
         // The store is in memory and every request can add to it, so the number
-        // of vaults it keeps is bounded. AWS answers the same modelled error
-        // once an account reaches its own vault quota.
-        if store.vaults.len() >= crate::state::MAX_VAULTS {
+        // of vaults it keeps is bounded — per region, the shape of the quota AWS
+        // enforces, and over the store as a whole. Both are
+        // `crate::state`'s one decision, shared with the other vault creates.
+        if let Some(message) = store.exceeded_vault_allowance(&region) {
             return Err(CreateBackupVaultErrorModeled::LimitExceededException(
                 LimitExceededException {
-                    message: Some(format!(
-                        "this emulator keeps at most {} backup vaults",
-                        crate::state::MAX_VAULTS
-                    )),
+                    message: Some(message),
                     ..Default::default()
                 },
             )
@@ -260,6 +268,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         };
         let vault = crate::state::BackupVault {
             name: input.backup_vault_name.clone(),
+            region: region.clone(),
             arn: crate::state::backup_vault_arn(&region, &input.backup_vault_name),
             encryption_key_arn,
             customer_managed_key,
@@ -292,11 +301,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             backup_vault_arn: Some(vault.arn.clone()),
             creation_date: Some(::aws_smithy_types::DateTime::from(vault.creation_date)),
         };
-        store
-            .recovery_points_by_vault
-            .entry(vault.name.clone())
-            .or_default();
-        store.vaults.insert(vault.name.clone(), vault);
+        store.insert_vault(vault);
         Ok(output)
     }
 }

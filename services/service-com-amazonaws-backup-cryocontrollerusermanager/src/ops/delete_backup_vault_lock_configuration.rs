@@ -173,7 +173,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        let _ = ctx;
+        let region = crate::state::request_region(ctx);
         let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
             DeleteBackupVaultLockConfigurationErrorModeled::ServiceUnavailableException(
                 ServiceUnavailableException {
@@ -190,7 +190,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // vault outside the caller's visibility is refused with 403
         // `AccessDeniedException` rather than reported as missing, and the two
         // vault-lock actions answer an invisible vault identically.
-        let vault = store.visible_vault_mut(&input.backup_vault_name, None)?;
+        let vault = store.visible_vault_mut(&region, &input.backup_vault_name, None)?;
 
         // "If the Vault Lock configuration is immutable, then you cannot delete
         // Vault Lock using API operations, and you will receive an

@@ -209,7 +209,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        let _ = ctx;
+        let region = crate::state::request_region(ctx);
         let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
             PutBackupVaultLockConfigurationErrorModeled::ServiceUnavailableException(
                 ServiceUnavailableException {
@@ -296,7 +296,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // The parameter checks above run first and are unaffected: each answers
         // the same `InvalidParameterValueException` whether or not the named
         // vault exists, so they disclose nothing either.
-        let vault = store.visible_vault_mut(&input.backup_vault_name, None)?;
+        let vault = store.visible_vault_mut(&region, &input.backup_vault_name, None)?;
 
         // "On and after the lock date, the Vault Lock becomes immutable and
         // cannot be changed or deleted" (model doc for `ChangeableForDays`), so

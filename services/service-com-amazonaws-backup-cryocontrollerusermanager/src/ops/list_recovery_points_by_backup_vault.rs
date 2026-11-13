@@ -175,7 +175,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        let _ = ctx;
+        let region = crate::state::request_region(ctx);
         let now = ::std::time::SystemTime::now();
         // A page size outside the model's `@range` is this service's own
         // `InvalidParameterValueException`, answered before the vault is
@@ -225,6 +225,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // documented cross-account path), is refused with 403 `AccessDeniedException`
         // rather than reported as missing.
         store.visible_vault(
+            &region,
             &input.backup_vault_name,
             input.backup_vault_account_id.as_deref(),
         )?;
@@ -232,7 +233,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // Validated and resolved first, so a refused request writes nothing.
         // This is the one write a read performs: a recovery point whose settle
         // instant has passed completed then, whether or not anybody looked.
-        store.settle_recovery_points_in(&input.backup_vault_name, now);
+        store.settle_recovery_points_in(&region, &input.backup_vault_name, now);
 
         // The two instant filters are closed over as `SystemTime`, the form the
         // stored creation date is held in.
@@ -244,7 +245,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .and_then(|at| ::std::time::SystemTime::try_from(at).ok());
         let matching: Vec<&crate::state::RecoveryPoint> = store
             .recovery_points_by_vault
-            .get(&input.backup_vault_name)
+            .get(&crate::state::vault_key(&region, &input.backup_vault_name))
             .map(::std::vec::Vec::as_slice)
             .unwrap_or_default()
             .iter()

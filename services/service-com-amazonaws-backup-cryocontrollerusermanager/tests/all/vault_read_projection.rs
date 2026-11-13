@@ -26,7 +26,8 @@ use serde_json::Value;
 use smithy_server_runtime::MultiServiceRouter;
 
 use super::vault_and_backup_job::{
-    call, create_vault, epoch_seconds, error_code, router, string_at, ACCOUNT, REGION,
+    call, call_in_region, create_vault, create_vault_in, epoch_seconds, error_code, router,
+    string_at, ACCOUNT, REGION,
 };
 
 /// Seconds in a day — `ChangeableForDays` is a day count, the `LockDate` an
@@ -255,26 +256,7 @@ async fn create_vault_in_region(
     region: &str,
     name: &str,
 ) -> (u16, Value) {
-    let authorization = format!(
-        "AWS4-HMAC-SHA256 Credential=AKIDTESTONLY/20260101/{region}/backup/aws4_request, \
-         SignedHeaders=host, Signature=00"
-    );
-    let request = http::Request::builder()
-        .method("PUT")
-        .uri(format!("http://localhost/backup-vaults/{name}"))
-        .header("authorization", authorization)
-        .header("content-type", "application/json")
-        .body(bytes::Bytes::from_static(b"{}"))
-        .expect("a well-formed test request");
-    let response = router.dispatch(request).await;
-    let status = response.status().as_u16();
-    let body = response.into_body();
-    let parsed = if body.is_empty() {
-        Value::Null
-    } else {
-        serde_json::from_slice(&body).unwrap_or(Value::Null)
-    };
-    (status, parsed)
+    create_vault_in(router, region, name, "{}").await
 }
 
 /// The region of the vault ARN and of the default key comes from the request's
@@ -319,8 +301,16 @@ async fn an_arn_carries_a_region_shaped_scope_or_the_default_region() {
             format!("arn:aws:backup:{expected_region}:{ACCOUNT}:backup-vault:{name}"),
             "case {case:?}: expected an ARN in {expected_region}, got {created:?}"
         );
-        let (status, described) =
-            call(&router, "GET", &format!("/backup-vaults/{name}"), None).await;
+        // A vault belongs to the Region it was created in, so it is described
+        // through a client in the Region its ARN carries.
+        let (status, described) = call_in_region(
+            &router,
+            expected_region,
+            "GET",
+            &format!("/backup-vaults/{name}"),
+            None,
+        )
+        .await;
         assert_eq!(
             status, 200,
             "case {case:?}: expected DescribeBackupVault 200, got {status} {described:?}"

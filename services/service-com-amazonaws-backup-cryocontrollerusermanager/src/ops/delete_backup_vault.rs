@@ -166,7 +166,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        let _ = ctx;
+        let region = crate::state::request_region(ctx);
         let now = ::std::time::SystemTime::now();
         let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
             DeleteBackupVaultErrorModeled::ServiceUnavailableException(ServiceUnavailableException {
@@ -195,7 +195,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 .into(),
             );
         }
-        if !store.vaults.contains_key(&input.backup_vault_name) {
+        // A vault is identified by its name within the region it was created
+        // in, so the delete resolves the name in the region this request
+        // resolves to: another region's vault of that name is not this one.
+        if store.vault(&region, &input.backup_vault_name).is_none() {
             return Err(DeleteBackupVaultErrorModeled::ResourceNotFoundException(
                 crate::state::backup_vault_not_found(&input.backup_vault_name),
             )
@@ -204,14 +207,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // A vault whose creation the clock has already settled is deletable, so
         // the transition owed at `settles_at` is materialised before the state
         // guard below reads the state.
-        store.settle_vault(&input.backup_vault_name, now);
+        store.settle_vault(&region, &input.backup_vault_name, now);
         // A vault still being created is not deletable yet: that is a refusal
         // the vault's STATE makes, so it is the modelled `InvalidRequestException`
         // with the `Code` AWS Backup puts on it, not an absent resource. The
         // distinction is what tells a client to retry once creation finishes.
         if store
-            .vaults
-            .get(&input.backup_vault_name)
+            .vault(&region, &input.backup_vault_name)
             .is_some_and(|vault| {
                 vault.vault_state.as_deref() == Some(crate::state::VAULT_STATE_CREATING)
             })
@@ -228,7 +230,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             )
             .into());
         }
-        let held = store.recovery_point_count(&input.backup_vault_name);
+        let held = store.recovery_point_count(&region, &input.backup_vault_name);
         if held > 0 {
             return Err(DeleteBackupVaultErrorModeled::InvalidRequestException(
                 InvalidRequestException {
@@ -243,10 +245,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .into());
         }
 
-        store.vaults.remove(&input.backup_vault_name);
-        store
-            .recovery_points_by_vault
-            .remove(&input.backup_vault_name);
+        store.remove_vault(&region, &input.backup_vault_name);
         Ok(DeleteBackupVaultOutput)
     }
 }

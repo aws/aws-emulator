@@ -159,7 +159,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        let _ = ctx;
+        let region = crate::state::request_region(ctx);
         let now = ::std::time::SystemTime::now();
 
         // The document is judged BEFORE the vault is resolved and before
@@ -200,8 +200,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // now. A vault-scoped write decides access before existence through the
         // step every such call shares; this input models no
         // `BackupVaultAccountId`.
-        store.settle_vault(&input.backup_vault_name, now);
-        let vault = store.visible_vault_mut(&input.backup_vault_name, None)?;
+        store.settle_vault(&region, &input.backup_vault_name, now);
+        let vault = store.visible_vault_mut(&region, &input.backup_vault_name, None)?;
         // A vault carries exactly one resource policy, so an accepted document
         // REPLACES whatever it carried.
         vault.access_policy = stored_policy;

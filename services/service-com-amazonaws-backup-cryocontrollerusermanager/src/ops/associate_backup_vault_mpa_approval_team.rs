@@ -173,7 +173,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        let _ = ctx;
+        let region = crate::state::request_region(ctx);
         let now = ::std::time::SystemTime::now();
         let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
             AssociateBackupVaultMpaApprovalTeamErrorModeled::ServiceUnavailableException(
@@ -206,7 +206,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // The write this operation performs is the association, so the
         // transition the clock owes the vault is materialised first: the vault
         // it resolves is the vault as it stands now.
-        store.settle_vault(&input.backup_vault_name, now);
+        store.settle_vault(&region, &input.backup_vault_name, now);
         // A vault-scoped call decides access before existence: a vault outside
         // the caller's visibility is refused with 403 `AccessDeniedException`
         // rather than reported as missing, so the answer discloses nothing
@@ -214,7 +214,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // `state::visible_vault_mut`, shared with every other vault-scoped
         // write; this input models no `BackupVaultAccountId`, so the vault is
         // resolved in the caller's own account.
-        let vault = store.visible_vault_mut(&input.backup_vault_name, None)?;
+        let vault = store.visible_vault_mut(&region, &input.backup_vault_name, None)?;
         // Multi-party approval is a facility of a LOGICALLY AIR-GAPPED vault:
         // it governs access to the recovery points such a vault holds, so a
         // vault of any other type supports no team at all — and the member that

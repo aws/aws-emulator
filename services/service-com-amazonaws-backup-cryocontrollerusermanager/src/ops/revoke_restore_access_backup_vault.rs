@@ -176,7 +176,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        let _ = ctx;
+        let region = crate::state::request_region(ctx);
         let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
             RevokeRestoreAccessBackupVaultErrorModeled::ServiceUnavailableException(
                 ServiceUnavailableException {
@@ -211,7 +211,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // vault-scoped call; this input models no `BackupVaultAccountId`, so
         // the vault is resolved in the caller's own account.
         let source_arn = store
-            .visible_vault(&input.backup_vault_name, None)?
+            .visible_vault(&region, &input.backup_vault_name, None)?
             .arn
             .clone();
         // The target must be one of the restore access vaults created against
@@ -237,8 +237,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // recovery-point index with it, so nothing is left for a later read to
         // resolve the name through. The SOURCE vault and its recovery points
         // are untouched — only the access to them is withdrawn.
-        store.vaults.remove(&name);
-        store.recovery_points_by_vault.remove(&name);
+        store.remove_vault(&region, &name);
         Ok(RevokeRestoreAccessBackupVaultOutput)
     }
 }

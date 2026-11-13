@@ -26,16 +26,17 @@
 //! behaviour a `backup` SDK client sees. The request harness is the shared one in
 //! `vault_and_backup_job.rs`.
 //!
-//! This emulator holds ONE account's vaults, keyed by `BackupVaultName`, so a
-//! destination ARN that names another region reaches the same stored vault; what
-//! the region in that ARN decides is where the copy it writes belongs, which is
-//! what the cross-region rows below assert.
+//! This emulator holds ONE account's vaults, keyed by Region AND
+//! `BackupVaultName`, so a destination ARN that names another Region reaches the
+//! vault of THAT Region; the region in that ARN also decides where the copy it
+//! writes belongs, which is what the cross-region rows below assert.
 
 use serde_json::{json, Value};
 use smithy_server_runtime::MultiServiceRouter;
 
 use crate::vault_and_backup_job::{
-    call, create_vault, error_code, router, start_job, string_at, ACCOUNT, PAST_SETTLE, REGION,
+    call, call_in_region, create_vault, create_vault_in, error_code, router, start_job, string_at,
+    ACCOUNT, PAST_SETTLE, REGION,
 };
 
 /// The source vault every case backs a resource up into.
@@ -80,9 +81,10 @@ async fn copy_job(router: &MultiServiceRouter, copy_job_id: &str) -> Value {
 }
 
 /// The recovery points a vault reports, through the implemented list read.
-async fn listed_points(router: &MultiServiceRouter, vault: &str) -> Vec<Value> {
-    let (status, listed) = call(
+async fn listed_points(router: &MultiServiceRouter, region: &str, vault: &str) -> Vec<Value> {
+    let (status, listed) = call_in_region(
         router,
+        region,
         "GET",
         &format!("/backup-vaults/{vault}/recovery-points"),
         None,
@@ -99,23 +101,32 @@ async fn listed_points(router: &MultiServiceRouter, vault: &str) -> Vec<Value> {
 }
 
 /// `NumberOfRecoveryPoints` as the vault read reports it.
-async fn counted_points(router: &MultiServiceRouter, vault: &str) -> i64 {
-    let (_, described) = call(router, "GET", &format!("/backup-vaults/{vault}"), None).await;
+async fn counted_points(router: &MultiServiceRouter, region: &str, vault: &str) -> i64 {
+    let (_, described) =
+        call_in_region(router, region, "GET", &format!("/backup-vaults/{vault}"), None).await;
     described
         .get("NumberOfRecoveryPoints")
         .and_then(Value::as_i64)
         .unwrap_or(-1)
 }
 
-/// Create both vaults a case copies between.
-async fn create_both_vaults(router: &MultiServiceRouter) {
-    for vault in [SOURCE_VAULT, DESTINATION_VAULT] {
-        let (status, created) = create_vault(router, vault, "{}").await;
-        assert_eq!(
-            status, 200,
-            "setup {vault:?}: CreateBackupVault should succeed, got {status} {created:?}"
-        );
-    }
+/// Create the source vault in [`REGION`] and the destination vault in the
+/// Region the case's destination ARN names: a vault is identified by its name
+/// within ONE Region, so the destination of a cross-Region copy has to exist in
+/// the Region that ARN carries.
+async fn create_both_vaults(router: &MultiServiceRouter, destination_region: &str) {
+    let (status, created) = create_vault(router, SOURCE_VAULT, "{}").await;
+    assert_eq!(
+        status, 200,
+        "setup {SOURCE_VAULT:?}: CreateBackupVault should succeed, got {status} {created:?}"
+    );
+    let (status, created) =
+        create_vault_in(router, destination_region, DESTINATION_VAULT, "{}").await;
+    assert_eq!(
+        status, 200,
+        "setup {DESTINATION_VAULT:?} in {destination_region}: CreateBackupVault should \
+         succeed, got {status} {created:?}"
+    );
 }
 
 /// Back `resource_arn` up into the source vault and return the recovery-point ARN
@@ -177,7 +188,7 @@ async fn a_started_copy_job_is_stored_and_read_back_from_the_destination_vault()
 
     for (case, resource_arn, lifecycle, destination_region) in cases {
         let router = router();
-        create_both_vaults(&router).await;
+        create_both_vaults(&router, destination_region).await;
         let source_point = settled_source_point(&router, &resource_arn).await;
         let destination_arn = vault_arn(destination_region, DESTINATION_VAULT);
 
@@ -282,7 +293,7 @@ async fn a_started_copy_job_is_stored_and_read_back_from_the_destination_vault()
         );
 
         // The destination vault holds the copy, and its own reads agree.
-        let points = listed_points(&router, DESTINATION_VAULT).await;
+        let points = listed_points(&router, destination_region, DESTINATION_VAULT).await;
         assert_eq!(
             points.len(),
             1,
@@ -304,12 +315,12 @@ async fn a_started_copy_job_is_stored_and_read_back_from_the_destination_vault()
             "case {case:?}: the copy protects the same resource, got {points:?}"
         );
         assert_eq!(
-            counted_points(&router, DESTINATION_VAULT).await,
+            counted_points(&router, destination_region, DESTINATION_VAULT).await,
             1,
             "case {case:?}: the destination vault counts the copy it holds"
         );
         assert_eq!(
-            counted_points(&router, SOURCE_VAULT).await,
+            counted_points(&router, REGION, SOURCE_VAULT).await,
             1,
             "case {case:?}: the source vault still holds exactly its own backup"
         );
@@ -322,7 +333,7 @@ async fn a_started_copy_job_is_stored_and_read_back_from_the_destination_vault()
 #[tokio::test]
 async fn a_copy_that_names_no_stored_resource_is_refused_as_not_found() {
     let router = router();
-    create_both_vaults(&router).await;
+    create_both_vaults(&router, REGION).await;
     let resource = format!("arn:aws:dynamodb:{REGION}:{ACCOUNT}:table/demo");
     let stored = settled_source_point(&router, &resource).await;
     // A backup started and NOT waited out, so a case can address a recovery point
@@ -412,7 +423,7 @@ async fn a_copy_that_names_no_stored_resource_is_refused_as_not_found() {
             (400, "ResourceNotFoundException", message),
             "case {case:?}: expected the not-found refusal, got {status} {refused:?}"
         );
-        let points = listed_points(&router, DESTINATION_VAULT).await;
+        let points = listed_points(&router, REGION, DESTINATION_VAULT).await;
         assert!(
             points.is_empty(),
             "case {case:?}: a refused copy must store nothing, got {points:?}"
@@ -426,7 +437,7 @@ async fn a_copy_that_names_no_stored_resource_is_refused_as_not_found() {
 #[tokio::test]
 async fn a_destination_that_is_not_a_backup_vault_arn_is_a_bad_parameter_value() {
     let router = router();
-    create_both_vaults(&router).await;
+    create_both_vaults(&router, REGION).await;
     let resource = format!("arn:aws:dynamodb:{REGION}:{ACCOUNT}:table/demo");
     let stored = settled_source_point(&router, &resource).await;
 
@@ -478,7 +489,7 @@ async fn a_destination_that_is_not_a_backup_vault_arn_is_a_bad_parameter_value()
             "case {case:?} ({destination_arn:?}): expected the parameter refusal, \
              got {status} {refused:?}"
         );
-        let points = listed_points(&router, DESTINATION_VAULT).await;
+        let points = listed_points(&router, REGION, DESTINATION_VAULT).await;
         assert!(
             points.is_empty(),
             "case {case:?}: a refused copy must store nothing, got {points:?}"
@@ -551,7 +562,7 @@ async fn a_destination_that_is_not_a_backup_vault_arn_is_a_bad_parameter_value()
 #[tokio::test]
 async fn a_replayed_idempotency_token_returns_the_first_copy_job() {
     let router = router();
-    create_both_vaults(&router).await;
+    create_both_vaults(&router, REGION).await;
     let (status, created) = create_vault(&router, "copy-elsewhere", "{}").await;
     assert_eq!(
         status, 200,
@@ -584,7 +595,7 @@ async fn a_replayed_idempotency_token_returns_the_first_copy_job() {
         string_at(&first, "CreationDate"),
         "a replay reports the first job's creation instant, got {replay:?}"
     );
-    let points = listed_points(&router, DESTINATION_VAULT).await;
+    let points = listed_points(&router, REGION, DESTINATION_VAULT).await;
     assert_eq!(
         points.len(),
         1,
@@ -601,7 +612,7 @@ async fn a_replayed_idempotency_token_returns_the_first_copy_job() {
         other_id, first_id,
         "a token reused on another call mints a new copy job, got {other:?}"
     );
-    let points = listed_points(&router, "copy-elsewhere").await;
+    let points = listed_points(&router, REGION, "copy-elsewhere").await;
     assert_eq!(
         points.len(),
         1,
@@ -621,7 +632,7 @@ async fn a_replayed_idempotency_token_returns_the_first_copy_job() {
         first_id,
         "an untokenised call is never a replay, got {third:?}"
     );
-    let points = listed_points(&router, DESTINATION_VAULT).await;
+    let points = listed_points(&router, REGION, DESTINATION_VAULT).await;
     assert_eq!(
         points.len(),
         2,
@@ -634,7 +645,7 @@ async fn a_replayed_idempotency_token_returns_the_first_copy_job() {
 #[tokio::test]
 async fn a_copy_job_id_nothing_answers_to_is_refused_as_not_found() {
     let router = router();
-    create_both_vaults(&router).await;
+    create_both_vaults(&router, REGION).await;
     let resource = format!("arn:aws:dynamodb:{REGION}:{ACCOUNT}:table/demo");
     let stored = settled_source_point(&router, &resource).await;
     let (status, started) = start_copy(

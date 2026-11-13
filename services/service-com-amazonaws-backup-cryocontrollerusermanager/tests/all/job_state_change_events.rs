@@ -32,6 +32,7 @@
 //! through the in-process callback and a rule on that bus delivers to an SQS queue target.
 
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 use smithy_server_runtime::MultiServiceRouter;
@@ -39,6 +40,13 @@ use smithy_server_runtime::MultiServiceRouter;
 use crate::vault_and_backup_job::{
     call, create_vault, start_job, string_at, ACCOUNT, PAST_SETTLE, REGION,
 };
+
+/// How long a poll loop looks for something the CLOCK owes before failing the case.
+///
+/// Generous on purpose: what the loop waits for falls due on the emulator's own clock,
+/// so the case waits for the CONDITION and this deadline only bounds a transition that
+/// is never published at all — a loaded or a slow host still sees one that is.
+const POLL_DEADLINE: Duration = Duration::from_secs(30);
 
 /// The `source` and the two `detail-type` values AWS Backup publishes its job state
 /// changes under, spelled out here rather than imported, so a wrong constant in the
@@ -57,6 +65,11 @@ pub(crate) const COMPLETED: &str = "COMPLETED";
 /// case copies into.
 const SOURCE_VAULT: &str = "events-source";
 const DESTINATION_VAULT: &str = "events-destination";
+
+/// The Region the cross-Region copy cases put their destination vault in. A
+/// vault is identified by its name within one Region, so the destination vault
+/// of such a copy is created through a client bound to this Region.
+const COPY_DESTINATION_REGION: &str = "us-east-1";
 
 /// The name of the rule every case's pattern is installed under, and of the rule whose
 /// pattern no AWS Backup event can match.
@@ -309,31 +322,85 @@ pub(crate) async fn delivered(router: &MultiServiceRouter, case: &str, url: &str
     delivered_in(router, REGION, case, url).await
 }
 
-/// Poll the queue at `url` until it has handed over at least `wanted` envelopes, or until
-/// the attempts run out.
+/// Poll the queue at `url` in `region` until it has handed over at least `wanted`
+/// envelopes, or until the deadline passes.
 ///
 /// Each attempt awaits, which is what lets the in-process clock pump make progress beside
-/// this test, and the loop is bounded so a transition that is never published fails the
-/// case rather than hanging it.
+/// this test, and the loop waits for the ENVELOPES rather than for a fixed span: a
+/// transition the clock has not published yet is looked for again, and one that is never
+/// published fails the case at [`POLL_DEADLINE`] rather than hanging it. A drain takes the
+/// messages it reports off the queue, so what each attempt collects is kept.
+async fn delivered_at_least_in(
+    router: &MultiServiceRouter,
+    region: &str,
+    case: &str,
+    url: &str,
+    wanted: usize,
+) -> Vec<Value> {
+    let deadline = Instant::now() + POLL_DEADLINE;
+    let mut bodies = Vec::new();
+    loop {
+        bodies.extend(delivered_in(router, region, case, url).await);
+        if bodies.len() >= wanted {
+            return bodies;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "case {case:?}: expected at least {wanted} envelope(s) on {url:?} within \
+             {POLL_DEADLINE:?}, got {bodies:?}"
+        );
+        // Hand the runtime back, so the in-process clock pump is polled between
+        // attempts rather than only when this task happens to block.
+        ::tokio::task::yield_now().await;
+    }
+}
+
+/// [`delivered_at_least_in`] in [`REGION`].
 async fn delivered_at_least(
     router: &MultiServiceRouter,
     case: &str,
     url: &str,
     wanted: usize,
 ) -> Vec<Value> {
-    /// How many drains one poll makes at most.
-    const MAX_POLLS: usize = 20;
-    let mut bodies = Vec::new();
-    for _ in 0..MAX_POLLS {
-        bodies.extend(delivered(router, case, url).await);
-        if bodies.len() >= wanted {
-            break;
+    delivered_at_least_in(router, REGION, case, url, wanted).await
+}
+
+/// The backup job `job_id` once it has reached its terminal state, looked for again until
+/// it has or until [`POLL_DEADLINE`] passes: the transition falls due on the emulator's
+/// clock, so the case waits for the STATE rather than for a span.
+async fn settled_backup_job(router: &MultiServiceRouter, case: &str, job_id: &str) -> Value {
+    let deadline = Instant::now() + POLL_DEADLINE;
+    loop {
+        let described = describe_backup_job(router, job_id).await;
+        if described.get("State").and_then(Value::as_str) == Some(COMPLETED) {
+            return described;
         }
-        // Hand the runtime back, so the in-process clock pump is polled between
-        // attempts rather than only when this task happens to block.
+        assert!(
+            Instant::now() < deadline,
+            "case {case:?}: expected the backup job to settle within {POLL_DEADLINE:?}, \
+             got {described}"
+        );
         ::tokio::task::yield_now().await;
     }
-    bodies
+}
+
+/// The copy job `copy_job_id` once it has reached its terminal state, looked for again
+/// until it has or until [`POLL_DEADLINE`] passes — the same wait
+/// [`settled_backup_job`] makes, for the other job kind.
+async fn settled_copy_job(router: &MultiServiceRouter, case: &str, copy_job_id: &str) -> Value {
+    let deadline = Instant::now() + POLL_DEADLINE;
+    loop {
+        let described = describe_copy_job(router, copy_job_id).await;
+        if described.get("State").and_then(Value::as_str) == Some(COMPLETED) {
+            return described;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "case {case:?}: expected the copy job to settle within {POLL_DEADLINE:?}, \
+             got {described}"
+        );
+        ::tokio::task::yield_now().await;
+    }
 }
 
 /// The ARN of a backup vault of this account in `region`, as the model documents the form
@@ -466,13 +533,28 @@ async fn a_settled_job_reaches_every_target_of_every_rule_whose_pattern_matches(
     for row in rows() {
         let case = row.case;
         let router = emulator();
-        for vault in [SOURCE_VAULT, DESTINATION_VAULT] {
-            let (status, created) = create_vault(&router, vault, "{}").await;
-            assert_eq!(
-                status, 200,
-                "case {case:?}: CreateBackupVault {vault:?} answered {status} {created}"
-            );
-        }
+        // A vault belongs to the Region it was created in, so each vault is
+        // created through a client in its own Region: the destination vault of
+        // a cross-Region copy has to exist in the Region its ARN names.
+        let (status, created) = create_vault(&router, SOURCE_VAULT, "{}").await;
+        assert_eq!(
+            status, 200,
+            "case {case:?}: CreateBackupVault {SOURCE_VAULT:?} answered {status} {created}"
+        );
+        let (status, created) = backup_in(
+            &router,
+            row.destination_region,
+            "PUT",
+            &format!("/backup-vaults/{DESTINATION_VAULT}"),
+            Some("{}"),
+        )
+        .await;
+        assert_eq!(
+            status, 200,
+            "case {case:?}: CreateBackupVault {DESTINATION_VAULT:?} in {} answered \
+             {status} {created}",
+            row.destination_region
+        );
 
         // ONE rule with TWO targets: a matched envelope is delivered to both of them.
         let (first_url, first_arn) = given_queue(&router, case, "matched-one").await;
@@ -514,8 +596,9 @@ async fn a_settled_job_reaches_every_target_of_every_rule_whose_pattern_matches(
         );
         let backup_job_id = string_at(&started, "BackupJobId");
         let recovery_point_arn = string_at(&started, "RecoveryPointArn");
-        std::thread::sleep(PAST_SETTLE);
-        let described = describe_backup_job(&router, &backup_job_id).await;
+        // The settle falls due on the clock, so the job is looked at again until it has
+        // reached its terminal state rather than after a fixed span.
+        let described = settled_backup_job(&router, case, &backup_job_id).await;
         assert_eq!(
             described.get("State").and_then(Value::as_str),
             Some(COMPLETED),
@@ -545,8 +628,7 @@ async fn a_settled_job_reaches_every_target_of_every_rule_whose_pattern_matches(
             "case {case:?}: StartCopyJob answered {status} {copy_started}"
         );
         let copy_job_id = string_at(&copy_started, "CopyJobId");
-        std::thread::sleep(PAST_SETTLE);
-        let copy_job = describe_copy_job(&router, &copy_job_id).await;
+        let copy_job = settled_copy_job(&router, case, &copy_job_id).await;
         assert_eq!(
             copy_job.get("State").and_then(Value::as_str),
             Some(COMPLETED),
@@ -554,9 +636,12 @@ async fn a_settled_job_reaches_every_target_of_every_rule_whose_pattern_matches(
         );
 
         // What each target received. Both targets of the matching rule are handed the
-        // SAME envelopes, and the rule that cannot match is handed none.
-        let first = delivered(&router, case, &first_url).await;
-        let second = delivered(&router, case, &second_url).await;
+        // SAME envelopes, and the rule that cannot match is handed none. Each queue is
+        // looked at again until it holds the envelopes the matched transitions owe it,
+        // so the drain waits for the publication rather than for a span.
+        let wanted_envelopes = row.expected.len();
+        let first = delivered_at_least(&router, case, &first_url, wanted_envelopes).await;
+        let second = delivered_at_least(&router, case, &second_url, wanted_envelopes).await;
         let other = delivered(&router, case, &other_url).await;
         assert_eq!(
             first, second,
@@ -776,13 +861,27 @@ async fn a_state_nothing_moved_into_publishes_nothing() {
 async fn the_clock_publishes_a_transition_with_no_call_to_read_it() {
     let case = "nobody reads the job";
     let router = emulator();
-    for vault in [SOURCE_VAULT, DESTINATION_VAULT] {
-        let (status, created) = create_vault(&router, vault, "{}").await;
-        assert_eq!(
-            status, 200,
-            "case {case:?}: CreateBackupVault {vault:?} answered {status} {created}"
-        );
-    }
+    // The copy's destination ARN below names another Region, and a vault
+    // belongs to the Region it was created in, so the destination vault is
+    // created through a client there.
+    let (status, created) = create_vault(&router, SOURCE_VAULT, "{}").await;
+    assert_eq!(
+        status, 200,
+        "case {case:?}: CreateBackupVault {SOURCE_VAULT:?} answered {status} {created}"
+    );
+    let (status, created) = backup_in(
+        &router,
+        COPY_DESTINATION_REGION,
+        "PUT",
+        &format!("/backup-vaults/{DESTINATION_VAULT}"),
+        Some("{}"),
+    )
+    .await;
+    assert_eq!(
+        status, 200,
+        "case {case:?}: CreateBackupVault {DESTINATION_VAULT:?} in \
+         {COPY_DESTINATION_REGION} answered {status} {created}"
+    );
     let (url, arn) = given_queue(&router, case, "unread-jobs").await;
     given_rule(
         &router,
@@ -810,7 +909,9 @@ async fn the_clock_publishes_a_transition_with_no_call_to_read_it() {
     );
     let backup_job_id = string_at(&started, "BackupJobId");
     let recovery_point_arn = string_at(&started, "RecoveryPointArn");
-    std::thread::sleep(PAST_SETTLE);
+    // Waited for by LOOKING AGAIN at the queue, never by reading the job: the drain is
+    // what this case is allowed to call, and it is repeated until the envelope the clock
+    // owes is there.
     let delivered = delivered_at_least(&router, case, &url, 1).await;
     let envelopes = of_type(&delivered, BACKUP_JOB_STATE_CHANGE);
     assert_eq!(
@@ -837,7 +938,7 @@ async fn the_clock_publishes_a_transition_with_no_call_to_read_it() {
             &json!({
                 "RecoveryPointArn": recovery_point_arn,
                 "SourceBackupVaultName": SOURCE_VAULT,
-                "DestinationBackupVaultArn": vault_arn("us-east-1", DESTINATION_VAULT),
+                "DestinationBackupVaultArn": vault_arn(COPY_DESTINATION_REGION, DESTINATION_VAULT),
                 "IamRoleArn": role(),
             })
             .to_string(),
@@ -849,7 +950,6 @@ async fn the_clock_publishes_a_transition_with_no_call_to_read_it() {
         "case {case:?}: StartCopyJob answered {status} {copy_started}"
     );
     let copy_job_id = string_at(&copy_started, "CopyJobId");
-    std::thread::sleep(PAST_SETTLE);
     let delivered = delivered_at_least(&router, case, &url, 1).await;
     let envelopes = of_type(&delivered, COPY_JOB_STATE_CHANGE);
     assert_eq!(
@@ -866,7 +966,7 @@ async fn the_clock_publishes_a_transition_with_no_call_to_read_it() {
         (
             json!(copy_job_id),
             json!(COMPLETED),
-            json!(vault_arn("us-east-1", DESTINATION_VAULT))
+            json!(vault_arn(COPY_DESTINATION_REGION, DESTINATION_VAULT))
         ),
         "case {case:?}: expected the copy's own id, terminal state and destination vault, \
          got {:?}",
@@ -875,7 +975,7 @@ async fn the_clock_publishes_a_transition_with_no_call_to_read_it() {
 }
 
 /// A job's events reach the bus of the Region the job BELONGS to — the Region of the vault
-/// it was taken into — and no other, whichever Region the call that started it was made in.
+/// it was taken into — and no other.
 #[tokio::test]
 async fn a_jobs_events_reach_the_bus_of_the_region_its_vault_belongs_to() {
     /// A Region that is not the one every other case works in, and not one any ARN in this
@@ -912,16 +1012,23 @@ async fn a_jobs_events_reach_the_bus_of_the_region_its_vault_belongs_to() {
     given_rule_in(&router, REGION, case, MATCHING_RULE, &pattern, &[home_arn]).await;
     given_rule_in(&router, ELSEWHERE, case, MATCHING_RULE, &pattern, &[other_arn]).await;
 
-    // The job is started by a client in REGION, into the vault that belongs to ELSEWHERE.
-    let resource_arn = format!("arn:aws:dynamodb:{REGION}:{ACCOUNT}:table/demo");
-    let (status, started) = start_job(
+    // The job is started by a client in ELSEWHERE, into the vault that belongs to it: a
+    // vault is identified by its name within ONE Region, so a backup into it is started
+    // in that Region.
+    let resource_arn = format!("arn:aws:dynamodb:{ELSEWHERE}:{ACCOUNT}:table/demo");
+    let (status, started) = backup_in(
         &router,
-        &json!({
-            "BackupVaultName": ELSEWHERE_VAULT,
-            "ResourceArn": resource_arn,
-            "IamRoleArn": role(),
-        })
-        .to_string(),
+        ELSEWHERE,
+        "PUT",
+        "/backup-jobs",
+        Some(
+            &json!({
+                "BackupVaultName": ELSEWHERE_VAULT,
+                "ResourceArn": resource_arn,
+                "IamRoleArn": role(),
+            })
+            .to_string(),
+        ),
     )
     .await;
     assert_eq!(
@@ -929,15 +1036,16 @@ async fn a_jobs_events_reach_the_bus_of_the_region_its_vault_belongs_to() {
         "case {case:?}: StartBackupJob answered {status} {started}"
     );
     let backup_job_id = string_at(&started, "BackupJobId");
-    std::thread::sleep(PAST_SETTLE);
-    let described = describe_backup_job(&router, &backup_job_id).await;
+    // The settle falls due on the clock, so the job is looked at again until it has
+    // reached its terminal state rather than after a fixed span.
+    let described = settled_backup_job(&router, case, &backup_job_id).await;
     assert_eq!(
         described.get("State").and_then(Value::as_str),
         Some(COMPLETED),
         "case {case:?}: the job must have settled, got {described}"
     );
 
-    let elsewhere = delivered_in(&router, ELSEWHERE, case, &other_url).await;
+    let elsewhere = delivered_at_least_in(&router, ELSEWHERE, case, &other_url, 1).await;
     assert_eq!(
         elsewhere.len(),
         1,
