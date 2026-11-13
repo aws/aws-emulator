@@ -25,6 +25,8 @@ mod cluster_stop;
 mod concurrent_cluster_modification;
 #[path = "all/create_cluster_service_rules.rs"]
 mod create_cluster_service_rules;
+#[path = "all/duplicate_name_conflict_wording.rs"]
+mod duplicate_name_conflict_wording;
 #[path = "all/error_resource_identity.rs"]
 mod error_resource_identity;
 #[path = "all/maintenance_and_restore.rs"]

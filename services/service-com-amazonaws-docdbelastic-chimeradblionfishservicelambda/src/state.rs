@@ -838,6 +838,21 @@ impl ResourceKind {
         }
     }
 
+    /// The sentence the service answers when the name a create asked for is already
+    /// taken by a resource of this kind.
+    ///
+    /// Like [`not_found_message`](Self::not_found_message) the WHOLE message is fixed
+    /// text, one sentence per resource class: neither the name the request asked for nor
+    /// the ARN of the resource already holding it is spliced into it — that ARN is
+    /// reported in `ConflictException$resourceId` — so the refusal a client matches,
+    /// logs or deduplicates on is the same sentence for every colliding request.
+    pub const fn duplicate_name_message(self) -> &'static str {
+        match self {
+            Self::Cluster => "A cluster already exists with given name",
+            Self::ClusterSnapshot => "A snapshot already exists with given name",
+        }
+    }
+
     /// The ARN of the resource of this kind with id `resource_id`, in `region`.
     pub fn arn(self, region: &str, resource_id: &str) -> String {
         docdb_elastic_arn(region, &format!("{}/{resource_id}", self.arn_segment()))
@@ -929,6 +944,22 @@ pub fn conflict(kind: ResourceKind, arn: &str, message: String) -> ConflictExcep
         resource_id: arn.to_string(),
         resource_type: kind.type_name().to_string(),
     }
+}
+
+/// The `ConflictException` (HTTP 409) for a create whose requested name is already held
+/// by the resource `existing_arn` of kind `kind`.
+///
+/// Every operation that mints a NAMED resource of a kind this service owns refuses a
+/// name already in use through this one constructor, so the duplicate-name conflict is
+/// worded identically wherever it is raised: the fixed sentence of the colliding
+/// resource's class ([`ResourceKind::duplicate_name_message`]), with the requested name
+/// nowhere in it and the ARN of the resource that already holds the name in `resourceId`.
+pub fn name_conflict(kind: ResourceKind, existing_arn: &str) -> ConflictException {
+    conflict(
+        kind,
+        existing_arn,
+        kind.duplicate_name_message().to_string(),
+    )
 }
 
 /// Refuse a modification of a cluster whose status does not admit one.

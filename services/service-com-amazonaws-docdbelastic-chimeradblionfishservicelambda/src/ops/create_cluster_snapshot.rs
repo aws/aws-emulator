@@ -195,14 +195,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .map_err(CreateClusterSnapshotErrorModeled::ServiceQuotaExceededException)?;
         if let Some(existing_arn) = guard.snapshot_names.get(&input.snapshot_name) {
             return Err(CreateClusterSnapshotErrorModeled::ConflictException(
-                state::conflict(
-                    state::ResourceKind::ClusterSnapshot,
-                    existing_arn,
-                    format!(
-                        "A cluster snapshot named {} already exists",
-                        input.snapshot_name
-                    ),
-                ),
+                state::name_conflict(state::ResourceKind::ClusterSnapshot, existing_arn),
             )
             .into());
         }

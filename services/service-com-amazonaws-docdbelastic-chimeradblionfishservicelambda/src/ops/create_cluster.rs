@@ -255,11 +255,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         state::ensure_cluster_capacity(guard.clusters.len())
             .map_err(CreateClusterErrorModeled::ServiceQuotaExceededException)?;
         if let Some(existing_arn) = guard.cluster_names.get(&cluster_name) {
-            return Err(CreateClusterErrorModeled::ConflictException(state::conflict(
-                state::ResourceKind::Cluster,
-                existing_arn,
-                format!("An elastic cluster named {cluster_name} already exists"),
-            ))
+            return Err(CreateClusterErrorModeled::ConflictException(
+                state::name_conflict(state::ResourceKind::Cluster, existing_arn),
+            )
             .into());
         }
 
