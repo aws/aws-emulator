@@ -200,12 +200,14 @@ async fn import_asset(
 /// record straight through the shared engine instead — the way `revision_finalization.rs`
 /// writes a revision's assets — which keeps a table of many assets cheap AND is what
 /// shows the answer is composed from the stored record.
-fn store_assets(
+/// Hands back the ids it minted, in the order the names were given, so a caller that
+/// has to address one of the stored assets (`tests/all/asset_deletion.rs`) can.
+pub(crate) fn store_assets(
     engine: &Arc<engine::InMemoryEngine>,
     data_set_id: &str,
     revision_id: &str,
     names: &[&str],
-) {
+) -> Vec<String> {
     let state = dataexchange::state::service_state(&**engine).expect("the dataexchange store");
     let mut store = state.lock();
     let data_set = store
@@ -218,8 +220,10 @@ fn store_assets(
         .revisions
         .get_mut(revision_id)
         .expect("the revision the test just created");
+    let mut minted = Vec::with_capacity(names.len());
     for name in names {
         let asset_id = dataexchange::state::mint_id();
+        minted.push(asset_id.clone());
         revision.assets.push(dataexchange::state::Asset {
             arn: dataexchange::state::asset_arn(REGION, data_set_id, revision_id, &asset_id),
             id: asset_id,
@@ -232,6 +236,34 @@ fn store_assets(
             updated_at: imported_at,
         });
     }
+    minted
+}
+
+/// The ids of the assets a revision holds, in the order the store keeps them, read
+/// straight off the store — so an assertion is about what a call persisted and not only
+/// about what a reader says.
+///
+/// `pub(crate)` so the suites that assert on persisted assets
+/// (`tests/all/asset_deletion.rs`) read them through this one store walk.
+pub(crate) fn stored_asset_ids(
+    engine: &Arc<engine::InMemoryEngine>,
+    data_set_id: &str,
+    revision_id: &str,
+) -> Vec<String> {
+    let state = dataexchange::state::service_state(&**engine).expect("the dataexchange store");
+    let store = state.lock();
+    store
+        .data_sets
+        .get(data_set_id)
+        .and_then(|data_set| data_set.revisions.get(revision_id))
+        .map(|revision| {
+            revision
+                .assets
+                .iter()
+                .map(|asset| asset.id.clone())
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// How many assets the revision holds, read straight off the store — so a read can be
@@ -241,18 +273,15 @@ fn stored_asset_count(
     data_set_id: &str,
     revision_id: &str,
 ) -> usize {
-    let state = dataexchange::state::service_state(&**engine).expect("the dataexchange store");
-    let store = state.lock();
-    store
-        .data_sets
-        .get(data_set_id)
-        .and_then(|data_set| data_set.revisions.get(revision_id))
-        .map_or(0, |revision| revision.assets.len())
+    stored_asset_ids(engine, data_set_id, revision_id).len()
 }
 
 /// `ListRevisionAssets` on a revision, with `query` appended verbatim (empty for a
 /// request that carries no query string at all).
-async fn list_assets(
+///
+/// `pub(crate)` so every suite that reads a revision's assets back
+/// (`tests/all/asset_deletion.rs`) sends the same request shape.
+pub(crate) async fn list_assets(
     router: &MultiServiceRouter,
     data_set_id: &str,
     revision_id: &str,
@@ -268,7 +297,7 @@ async fn list_assets(
 }
 
 /// The `Assets` the answer carries.
-fn entries(answer: &Answer) -> Vec<Value> {
+pub(crate) fn entries(answer: &Answer) -> Vec<Value> {
     answer
         .member("Assets")
         .as_array()

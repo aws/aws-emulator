@@ -176,7 +176,10 @@ async fn update_asset(
 }
 
 /// `DeleteAsset` on one asset of a revision.
-async fn delete_asset(
+///
+/// `pub(crate)` so the suite that spans the deletion catalog in breadth
+/// (`tests/all/asset_deletion.rs`) sends the same request shape.
+pub(crate) async fn delete_asset(
     router: &MultiServiceRouter,
     data_set_id: &str,
     revision_id: &str,
@@ -339,7 +342,14 @@ async fn import_asset(
 
 /// Finalize the revision, the state the model's `Finalized` documentation calls
 /// read-only.
-async fn finalize_revision(router: &MultiServiceRouter, data_set_id: &str, revision_id: &str) {
+///
+/// `pub(crate)` so the suite that spans the deletion catalog
+/// (`tests/all/asset_deletion.rs`) puts a revision into that state the same way.
+pub(crate) async fn finalize_revision(
+    router: &MultiServiceRouter,
+    data_set_id: &str,
+    revision_id: &str,
+) {
     let answer = call(
         router,
         "PATCH",

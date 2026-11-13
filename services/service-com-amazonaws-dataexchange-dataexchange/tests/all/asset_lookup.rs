@@ -118,7 +118,10 @@ fn import_cases() -> Vec<ImportCase> {
 }
 
 /// `GetAsset` on one asset of one revision of one data set.
-async fn get_asset(
+///
+/// `pub(crate)` so the suites that read an asset back through this operation
+/// (`tests/all/asset_deletion.rs`) share this one request shape.
+pub(crate) async fn get_asset(
     router: &MultiServiceRouter,
     data_set_id: &str,
     revision_id: &str,
