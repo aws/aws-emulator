@@ -14,12 +14,13 @@
 //!    made, the KIND of resource its ARN names (every taggable type of this service), and
 //!    the shape of the request — how many pairs or keys it carries, whether they are
 //!    already recorded on the resource, and whether it changes the stored set at all.
-//! 2. The missing-resource refusal of EVERY operation of the family is `404
-//!    ResourceNotFoundException` whose `Message` is the fixed text of that failure class on
-//!    the tag path, with no variable part: no ARN, no account id and no bracketed class
-//!    tag inside the sentence — the ARN travels in `ResourceId` and the kind in
-//!    `ResourceType` instead. The rows differ along the FORM of the unresolvable ARN: one
-//!    per taggable kind, a stored resource's ARN under another account and in another
+//! 2. The missing-resource refusal of EVERY operation of the family is the shared tagging
+//!    frontend's `404 NotFoundException` — not the `ResourceNotFoundException` this
+//!    service's model declares for these three operations and the rest of the service
+//!    answers — whose `Message` is the fixed text of that failure class, with no variable
+//!    part: no ARN, no account id and no bracketed class tag, and no member of the body
+//!    echoing the request at all. The rows differ along the FORM of the unresolvable ARN:
+//!    one per taggable kind, a stored resource's ARN under another account and in another
 //!    Region, an Amazon Web Services official lens ARN, an ARN of another service, and a
 //!    value that is not an ARN at all.
 //!
@@ -34,17 +35,18 @@ use std::collections::BTreeMap;
 use serde_json::Value;
 
 use super::resource_tagging::tag;
-use super::resource_tags::{create_tagged, list_tags, reported_tags, tags_of, Kind, KINDS};
+use super::resource_tags::{
+    create_tagged, list_tags, reported_tags, tags_of, Kind, TAGGING_NOT_FOUND_CODE,
+    TAGGING_NOT_FOUND_MESSAGE, KINDS,
+};
 use super::untag_resource::untag;
 use super::workload_harness::Client;
 
 use service_com_amazonaws_wellarchitected_wellarchitectedapiservicelambda::state;
 
-/// The whole `Message` the tag family's missing-resource refusal carries: the fixed text
-/// of that failure class on this service's tag path, as the service words it, with no
-/// variable part. Spelled out here rather than read off the implementation, so this suite
-/// pins the wording itself.
-const NOT_FOUND_MESSAGE: &str = "Resource was not found";
+/// The whole `Message` the tag family's missing-resource refusal carries, under the alias
+/// the shared tag helpers hold it under ([`TAGGING_NOT_FOUND_MESSAGE`]).
+const NOT_FOUND_MESSAGE: &str = TAGGING_NOT_FOUND_MESSAGE;
 
 /// The tags every resource in the tables below is created with: enough distinct keys for a
 /// row to name one, several or all of them.
@@ -198,9 +200,10 @@ async fn every_tag_write_is_answered_no_content_and_the_read_is_not() {
     );
 }
 
-/// Rule 2: the family's missing-resource refusal carries the FIXED text of its failure
-/// class — the same `Message` from every operation of the family and for every form of
-/// unresolvable ARN, with the ARN and the account nowhere inside the sentence.
+/// Rule 2: the family's missing-resource refusal is the tagging frontend's own error shape
+/// and carries the FIXED text of its failure class — the same code and the same `Message`
+/// from every operation of the family and for every form of unresolvable ARN, with nothing
+/// of the request anywhere in the body.
 #[tokio::test]
 async fn the_tag_family_words_a_missing_resource_with_its_fixed_text() {
     let client = Client::new();
@@ -282,8 +285,8 @@ async fn the_tag_family_words_a_missing_resource_with_its_fixed_text() {
                 "case {shape:?}/{operation}: expected HTTP 404, got {answer:?}"
             );
             assert_eq!(
-                answer.error_code, "ResourceNotFoundException",
-                "case {shape:?}/{operation}: expected ResourceNotFoundException, got {answer:?}"
+                answer.error_code, TAGGING_NOT_FOUND_CODE,
+                "case {shape:?}/{operation}: expected {TAGGING_NOT_FOUND_CODE}, got {answer:?}"
             );
             let message = answer
                 .body
@@ -310,21 +313,16 @@ async fn the_tag_family_words_a_missing_resource_with_its_fixed_text() {
                 "case {shape:?}/{operation}: the message carries no bracketed class tag, got \
                  {message:?}"
             );
-            // The ARN and the kind are reported in their own members instead.
-            assert_eq!(
-                answer.body.get("ResourceId").and_then(Value::as_str),
-                Some(arn.as_str()),
-                "case {shape:?}/{operation}: ResourceId is the ARN as sent, got {answer:?}"
-            );
-            assert!(
-                answer
-                    .body
-                    .get("ResourceType")
-                    .and_then(Value::as_str)
-                    .is_some_and(|value| !value.is_empty()),
-                "case {shape:?}/{operation}: ResourceType names the kind looked for, got \
-                 {answer:?}"
-            );
+            // Nor does any other member of the body: the frontend's refusal names the
+            // failure class and nothing the caller sent.
+            let body = answer.body.to_string();
+            for (what, fragment) in [("the ARN", arn.as_str()), ("the account", account)] {
+                assert!(
+                    !body.contains(fragment),
+                    "case {shape:?}/{operation}: the body must not disclose {what}, got \
+                     {answer:?}"
+                );
+            }
         }
     }
 

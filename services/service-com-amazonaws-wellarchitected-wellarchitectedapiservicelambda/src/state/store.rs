@@ -514,7 +514,7 @@ impl ComAmazonawsWellarchitectedWellarchitectedapiservicelambdaState {
     /// resource this store holds.
     ///
     /// A tag operation names its resource by ARN ALONE, across every taggable resource
-    /// type of the service ([`TAGGABLE_RESOURCE_KINDS`]), so ONE lookup spans them all:
+    /// type of the service, so ONE lookup spans them all:
     /// the workloads, the custom lenses, the Well-Architected Tool profiles, the review
     /// templates and the agent profiles. Resolved in one place so every operation that
     /// reads or writes a resource's tags agrees about what an ARN names.

@@ -24,13 +24,16 @@ pub(crate) struct Client {
     engine: Arc<engine::InMemoryEngine>,
 }
 
-/// One HTTP answer: the status, the parsed JSON body (`Value::Null` for an empty body)
-/// and the wire error code when the answer is a failure.
+/// One HTTP answer: the status, the parsed JSON body (`Value::Null` for an empty body),
+/// the wire error code when the answer is a failure, and the `x-amzn-errortype` header
+/// EXACTLY as the answer carried it (empty when it carried none), for a suite about the
+/// form of that header rather than the shape it names.
 #[derive(Debug)]
 pub(crate) struct Answer {
     pub(crate) status: u16,
     pub(crate) body: Value,
     pub(crate) error_code: String,
+    pub(crate) error_type_header: String,
 }
 
 /// The Region this harness signs every request in — the credential scope in
@@ -38,6 +41,20 @@ pub(crate) struct Answer {
 /// Region. Named so a fixture that has to build an ARN itself puts it in the Region a
 /// resource minted over the wire lands in.
 pub(crate) const SIGNED_REGION: &str = "us-west-2";
+
+/// The error SHAPE a wire value names, resolved the way every restJson1 client resolves
+/// it: the text before the first ':' — what follows it locates the namespace that declares
+/// the shape and is not part of its name — and after any '#', for a namespaced name.
+pub(crate) fn shape_named(raw: &str) -> String {
+    let raw = raw.trim();
+    let after_namespace = raw.rsplit('#').next().unwrap_or(raw);
+    after_namespace
+        .split(':')
+        .next()
+        .unwrap_or(after_namespace)
+        .trim()
+        .to_string()
+}
 
 impl Client {
     pub(crate) fn new() -> Self {
@@ -212,15 +229,16 @@ impl Client {
 
         let response = self.router.dispatch(request).await;
         let status = response.status().as_u16();
-        let error_code = response
+        let error_type_header = response
             .headers()
             .get("x-amzn-errortype")
             .and_then(|value| value.to_str().ok())
             .unwrap_or_default()
-            .rsplit(['#', '/'])
-            .next()
-            .unwrap_or_default()
             .to_string();
+        // The SHAPE the header names, resolved the way a restJson1 client resolves it:
+        // the text before the first ':' (the locator this service's wire appends is not
+        // part of the name) and after any '#' (a namespaced name).
+        let error_code = shape_named(&error_type_header);
         let bytes = response.into_body();
         let body = if bytes.is_empty() {
             Value::Null
@@ -228,13 +246,11 @@ impl Client {
             serde_json::from_slice(&bytes).unwrap_or(Value::Null)
         };
         let error_code = if error_code.is_empty() {
-            body.get("__type")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .rsplit(['#', '/'])
-                .next()
-                .unwrap_or_default()
-                .to_string()
+            shape_named(
+                body.get("__type")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default(),
+            )
         } else {
             error_code
         };
@@ -242,6 +258,7 @@ impl Client {
             status,
             body,
             error_code,
+            error_type_header,
         }
     }
 

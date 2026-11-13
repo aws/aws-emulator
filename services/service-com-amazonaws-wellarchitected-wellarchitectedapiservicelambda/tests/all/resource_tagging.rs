@@ -19,8 +19,9 @@
 //!    appears, a key it carries takes the new value, and every other key survives.
 //! 3. The ARN is RESOLVED against the store: one naming no stored resource — of a kind
 //!    this emulator holds, of a kind it does not, in another account or Region, or not
-//!    an ARN at all — is answered `404 ResourceNotFoundException` carrying the ARN as
-//!    sent and the missing resource's type, and records nothing.
+//!    an ARN at all — is answered the shared tagging frontend's `404 NotFoundException`,
+//!    stating that frontend's fixed sentence and nothing the request sent, and records
+//!    nothing.
 //! 4. A resource holds at most `TagMap`'s own maximum of tags: a request that would
 //!    raise the stored count past it is refused `400 ValidationException` and changes
 //!    nothing, while one that stays at the maximum (overwriting a key already there) is
@@ -43,6 +44,7 @@ use std::collections::BTreeMap;
 
 use serde_json::{json, Value};
 
+use super::resource_tags::{TAGGING_NOT_FOUND_CODE, TAGGING_NOT_FOUND_MESSAGE};
 use super::workload_harness::{
     created_id, encode_path_segment, minimal_create, template_choice, template_question, Answer,
     Client,
@@ -487,11 +489,12 @@ async fn tagging_merges_into_the_tags_a_resource_already_carries() {
     }
 }
 
-/// Rule 3: the ARN is resolved against the store, and a miss is the modelled 404 naming
-/// the ARN as sent and the type of the resource that was missing.
+/// Rule 3: the ARN is resolved against the store, and a miss is the shared tagging
+/// frontend's 404 `NotFoundException` — its fixed sentence, and nothing of the request
+/// anywhere in the body.
 ///
-/// `ExceptionResourceType` is a free-form string, so the expected type is spelled out
-/// here rather than read back out of the code under test.
+/// The code and the sentence are spelled out in `super::resource_tags` rather than read
+/// back out of the code under test.
 #[tokio::test]
 async fn an_arn_that_names_no_stored_resource_is_a_not_found_and_records_nothing() {
     let client = Client::new();
@@ -523,63 +526,49 @@ async fn an_arn_that_names_no_stored_resource_is_a_not_found_and_records_nothing
         .map(|(_, arn)| arn.clone())
         .unwrap_or_default();
 
-    let rows: Vec<(&str, String, &str)> = vec![
+    let rows: Vec<(&str, String)> = vec![
         (
             "a workload ARN no workload carries",
             format!("arn:aws:wellarchitected:us-west-2:{account}:workload/{absent_id}"),
-            "WORKLOAD",
         ),
         (
             "a review template ARN no template carries",
             format!("arn:aws:wellarchitected:us-west-2:{account}:review-template/{absent_id}"),
-            "REVIEW_TEMPLATE",
         ),
         (
             "a custom lens ARN no lens carries",
             format!("arn:aws:wellarchitected:us-west-2:{account}:lens/{absent_id}"),
-            "LENS",
         ),
         (
             "an agent profile ARN no profile carries",
             format!("arn:aws:wellarchitected:us-west-2:{account}:agent-profile/{absent_id}"),
-            "AGENT_PROFILE",
         ),
         (
             "a profile ARN no profile carries",
             format!("arn:aws:wellarchitected:us-west-2:{account}:profile/{absent_id}"),
-            "PROFILE",
         ),
         (
             "a stored workload's ARN under another account",
             workload_arn.replace(account, "210987654321"),
-            "WORKLOAD",
         ),
         (
             "a stored workload's ARN in another Region",
             workload_arn.replace("us-west-2", "eu-west-1"),
-            "WORKLOAD",
         ),
         (
             "an Amazon Web Services official lens ARN, which names no account's resource",
             "arn:aws:wellarchitected:us-west-2::lens/serverless".to_string(),
-            "LENS",
         ),
-        // An ARN whose resource part names no taggable kind of this service is reported
-        // under the resource type of the member that carried it (`WorkloadArn`) — there is
-        // nothing more specific to say about it.
+        // A value whose resource part names no taggable kind of this service, and one that
+        // is not an ARN at all, name no resource either and are answered the same way.
         (
             "an ARN of another service entirely",
             format!("arn:aws:s3:::a-bucket/{absent_id}"),
-            "WORKLOAD",
         ),
-        (
-            "a value that is not an ARN at all",
-            "not-an-arn".to_string(),
-            "WORKLOAD",
-        ),
+        ("a value that is not an ARN at all", "not-an-arn".to_string()),
     ];
 
-    for (shape, arn, resource_type) in rows {
+    for (shape, arn) in rows {
         assert!(
             !arn.is_empty() && arn != workload_arn,
             "case {shape:?}: the row must not name the resource that exists, got {arn:?}"
@@ -593,26 +582,19 @@ async fn an_arn_that_names_no_stored_resource_is_a_not_found_and_records_nothing
                 "case {shape:?}/{operation}: expected HTTP 404, got {answer:?}"
             );
             assert_eq!(
-                answer.error_code, "ResourceNotFoundException",
-                "case {shape:?}/{operation}: expected ResourceNotFoundException, got {answer:?}"
-            );
-            assert_eq!(
-                answer.body.get("ResourceId").and_then(Value::as_str),
-                Some(arn.as_str()),
-                "case {shape:?}/{operation}: ResourceId is the ARN as sent, got {answer:?}"
-            );
-            assert_eq!(
-                answer.body.get("ResourceType").and_then(Value::as_str),
-                Some(resource_type),
-                "case {shape:?}/{operation}: expected ResourceType {resource_type}, got {answer:?}"
+                answer.error_code, TAGGING_NOT_FOUND_CODE,
+                "case {shape:?}/{operation}: expected {TAGGING_NOT_FOUND_CODE}, got {answer:?}"
             );
             assert_eq!(
                 answer.body.get("Message").and_then(Value::as_str),
-                // The fixed text of this failure class on the tag path, as the service
-                // words it: no ARN, no account and no class tag inside the sentence.
-                Some("Resource was not found"),
-                "case {shape:?}/{operation}: the message is the tag family's fixed text, got \
+                Some(TAGGING_NOT_FOUND_MESSAGE),
+                "case {shape:?}/{operation}: the message is the frontend's fixed text, got \
                  {answer:?}"
+            );
+            assert!(
+                !answer.body.to_string().contains(arn.as_str()),
+                "case {shape:?}/{operation}: the refusal must disclose nothing the request \
+                 sent, got {answer:?}"
             );
         }
     }
@@ -776,14 +758,14 @@ async fn the_tag_write_and_the_tag_read_resolve_the_same_arns() {
             );
             assert_eq!(
                 (written.error_code.as_str(), read.error_code.as_str()),
-                ("ResourceNotFoundException", "ResourceNotFoundException"),
-                "case {kind:?}/{miss}: both refusals are the modelled not-found, got \
-                 {written:?} / {read:?}"
+                (TAGGING_NOT_FOUND_CODE, TAGGING_NOT_FOUND_CODE),
+                "case {kind:?}/{miss}: both refusals are the tagging frontend's not-found, \
+                 got {written:?} / {read:?}"
             );
             assert_eq!(
-                written.body.get("ResourceType"),
-                read.body.get("ResourceType"),
-                "case {kind:?}/{miss}: both refusals name the same resource type, got \
+                written.body.get("Message"),
+                read.body.get("Message"),
+                "case {kind:?}/{miss}: both refusals state the same sentence, got \
                  {written:?} / {read:?}"
             );
         }

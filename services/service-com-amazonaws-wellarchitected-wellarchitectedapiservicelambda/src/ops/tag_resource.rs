@@ -9,8 +9,10 @@
 //! into the resource's stored tag map — "Adds one or more tags to the specified
 //! resource" — so a key the resource already carries takes the request's value and every
 //! other key it carries survives, which is what [`crate::ops::list_tags_for_resource`]
-//! reports back. An ARN that names no resource this store holds answers
-//! `ResourceNotFoundException`, a request carrying a pair the resource's own tag shape
+//! reports back. An ARN that names no resource this store holds answers the tagging
+//! frontend's 404 `NotFoundException`
+//! ([`crate::state::tagged_resource_not_found`]), a request carrying a pair the resource's
+//! own tag shape
 //! cannot hold is refused 400 (see [`crate::state::tag_structure_refusal`]), and a request
 //! that would push the resource past `TagMap`'s maximum is refused before anything is
 //! written.
@@ -163,11 +165,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         let stored = store
             .resource_tags_mut(&input.workload_arn)
-            .ok_or_else(|| {
-                TagResourceErrorModeled::ResourceNotFoundException(
-                    crate::state::tagged_resource_not_found(&input.workload_arn),
-                )
-            })?;
+            // An ARN that names no resource of this store is refused by the tagging
+            // frontend, with ITS error shape rather than this operation's modelled one;
+            // see `crate::state::tagged_resource_not_found`.
+            .ok_or_else(crate::state::tagged_resource_not_found)?;
 
         // A tag has to be READABLE BACK off the resource it is written to, and this
         // service's two tag shapes do not admit the same values: a resource that reports

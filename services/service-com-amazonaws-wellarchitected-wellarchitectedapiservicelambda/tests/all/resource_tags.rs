@@ -52,6 +52,19 @@ const MAX_TAG_KEY: usize = 128;
 /// See [`MAX_TAG_KEY`].
 const MAX_TAG_VALUE: usize = 256;
 
+/// The wire error code the TAG family answers an ARN that names no resource with.
+///
+/// Not the `ResourceNotFoundException` this service's model declares for these three
+/// operations and the rest of the service answers: the ARN-addressed tag operations are
+/// served by the shared tagging frontend, whose own error shape this is. Spelled out here
+/// rather than read off the implementation, so the tag suites pin the code itself.
+pub(crate) const TAGGING_NOT_FOUND_CODE: &str = "NotFoundException";
+
+/// The whole `Message` that refusal carries: the fixed text of that failure class, with no
+/// variable part — no ARN, no account id and no bracketed class tag. Spelled out here for
+/// the same reason as the code above.
+pub(crate) const TAGGING_NOT_FOUND_MESSAGE: &str = "Resource was not found";
+
 /// `GET /tags/{WorkloadArn}`, the wire form of `ListTagsForResource`. The ARN is a
 /// non-greedy `@httpLabel`, so it travels percent-encoded in ONE path segment, exactly as
 /// an SDK sends it.
@@ -86,18 +99,6 @@ pub(crate) const KINDS: [Kind; 5] = [
 ];
 
 impl Kind {
-    /// The modelled `ResourceNotFoundException$ResourceType` a missing resource of this
-    /// kind is reported under.
-    pub(crate) fn resource_type(self) -> &'static str {
-        match self {
-            Kind::Workload => "WORKLOAD",
-            Kind::CustomLens => "LENS",
-            Kind::Profile => "PROFILE",
-            Kind::ReviewTemplate => "REVIEW_TEMPLATE",
-            Kind::AgentProfile => "AGENT_PROFILE",
-        }
-    }
-
     /// Whether a create of this kind can record the tags of a `tag_map_only` row. An
     /// agent profile's tags are a `Tags` LIST of `Tag`, whose `value` is
     /// `@length(1, 256)` with a pattern (`smithy_query(query="shape", shape="Tag")`),
@@ -346,10 +347,11 @@ async fn every_taggable_resource_reports_the_tags_it_carries() {
     }
 }
 
-/// Rule 2: an ARN naming no stored resource is a 404 carrying the ARN as sent and the
-/// resource type the ARN names. One row per taggable type, plus a value that is not an ARN
-/// at all — including the bare lens id of a lens that DOES exist, which is not an ARN and
-/// so names no resource here.
+/// Rule 2: an ARN naming no stored resource is the tagging frontend's 404
+/// `NotFoundException`, stating that frontend's fixed sentence and nothing the request
+/// sent. One row per taggable type, plus a value that is not an ARN at all — including the
+/// bare lens id of a lens that DOES exist, which is not an ARN and so names no resource
+/// here.
 #[tokio::test]
 async fn an_arn_naming_no_stored_resource_is_a_not_found() {
     let client = Client::new();
@@ -372,46 +374,38 @@ async fn an_arn_naming_no_stored_resource_is_a_not_found() {
     }
 
     let absent_id = "0123456789abcdef0123456789abcdef";
-    let mut rows: Vec<(&str, String, Option<&str>)> = vec![
+    let mut rows: Vec<(&str, String)> = vec![
         (
             "absent workload",
             format!("arn:aws:wellarchitected:us-west-2:{account}:workload/{absent_id}"),
-            Some(Kind::Workload.resource_type()),
         ),
         (
             "absent custom lens",
             format!("arn:aws:wellarchitected:us-west-2:{account}:lens/{absent_id}"),
-            Some(Kind::CustomLens.resource_type()),
         ),
         (
             "absent profile",
             format!("arn:aws:wellarchitected:us-west-2:{account}:profile/{absent_id}"),
-            Some(Kind::Profile.resource_type()),
         ),
         (
             "absent review template",
             format!("arn:aws:wellarchitected:us-west-2:{account}:review-template/{absent_id}"),
-            Some(Kind::ReviewTemplate.resource_type()),
         ),
         (
             "absent agent profile",
             format!("arn:aws:wellarchitected:us-west-2:{account}:agent-profile/{absent_id}"),
-            Some(Kind::AgentProfile.resource_type()),
         ),
         (
             // A stored resource of ANOTHER account is a different resource, however much
             // of the ARN agrees.
             "another account's workload",
             format!("arn:aws:wellarchitected:us-west-2:210987654321:workload/{absent_id}"),
-            Some(Kind::Workload.resource_type()),
         ),
         (
-            // The type is unresolvable from the ARN, so the failure takes the resource
-            // type of the member that carried it; only the status, the code and the
-            // ResourceId are asserted for these rows.
+            // A value the frontend cannot read as an ARN names no resource either, and is
+            // answered the same way: the sentence says nothing about what was sent.
             "not an ARN at all",
             "not-an-arn".to_string(),
-            None,
         ),
     ];
     // The bare lens id of the lens that exists: a lens is named by its ARN, so its id on
@@ -425,38 +419,28 @@ async fn an_arn_naming_no_stored_resource_is_a_not_found() {
         .rsplit_once("lens/")
         .map(|(_, id)| id.to_string())
         .expect("a custom lens ARN ends in lens/<id>");
-    rows.push(("a bare lens id, not an ARN", bare_lens_id, None));
+    rows.push(("a bare lens id, not an ARN", bare_lens_id));
 
-    for (case, resource_arn, resource_type) in rows {
+    for (case, resource_arn) in rows {
         let answer = list_tags(&client, &resource_arn).await;
         assert_eq!(
             answer.status, 404,
             "case {case:?}: expected HTTP 404, got {answer:?}"
         );
         assert_eq!(
-            answer.error_code, "ResourceNotFoundException",
-            "case {case:?}: expected ResourceNotFoundException, got {answer:?}"
+            answer.error_code, TAGGING_NOT_FOUND_CODE,
+            "case {case:?}: expected {TAGGING_NOT_FOUND_CODE}, got {answer:?}"
         );
         assert_eq!(
-            answer
-                .body
-                .get("ResourceId")
-                .and_then(Value::as_str)
-                .unwrap_or_default(),
-            resource_arn,
-            "case {case:?}: ResourceId must be the ARN as sent, got {answer:?}"
+            answer.body.get("Message").and_then(Value::as_str),
+            Some(TAGGING_NOT_FOUND_MESSAGE),
+            "case {case:?}: expected the frontend's fixed sentence, got {answer:?}"
         );
-        if let Some(expected) = resource_type {
-            assert_eq!(
-                answer
-                    .body
-                    .get("ResourceType")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default(),
-                expected,
-                "case {case:?}: expected ResourceType {expected}, got {answer:?}"
-            );
-        }
+        // The sentence, and the body around it, say nothing about what was asked for.
+        assert!(
+            !answer.body.to_string().contains(resource_arn.as_str()),
+            "case {case:?}: the refusal must disclose nothing the request sent, got {answer:?}"
+        );
     }
 
     // Every resource that DOES exist still resolves, so the rows above failed on

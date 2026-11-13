@@ -4,7 +4,8 @@
 //! IMPLEMENTED: reports the tag map persisted on the resource the ARN names — a
 //! workload, a custom lens, a profile, a review template or an agent profile, resolved
 //! through [`crate::state::ComAmazonawsWellarchitectedWellarchitectedapiservicelambdaState::resource_tags`]
-//! — or answers `ResourceNotFoundException` when it names no resource this store holds.
+//! — or answers the tagging frontend's 404 `NotFoundException`
+//! ([`crate::state::tagged_resource_not_found`]) when it names no resource this store holds.
 //! Reporting only: it never writes.
 //!
 //! ## Shape of an operation
@@ -145,11 +146,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // ARN, or review template ARN": the ARN is resolved against every taggable
         // resource type at once, and an ARN that names none of them names no resource to
         // report the tags of.
-        let tags = store.resource_tags(&input.workload_arn).ok_or_else(|| {
-            ListTagsForResourceErrorModeled::ResourceNotFoundException(
-                crate::state::tagged_resource_not_found(&input.workload_arn),
-            )
-        })?;
+        let tags = store
+            .resource_tags(&input.workload_arn)
+            // An ARN that names no resource of this store is refused by the tagging
+            // frontend, with ITS error shape rather than this operation's modelled one;
+            // see `crate::state::tagged_resource_not_found`.
+            .ok_or_else(crate::state::tagged_resource_not_found)?;
 
         Ok(ListTagsForResourceOutput {
             // The tags the resource carries, EMPTY when it carries none: `TagMap`'s

@@ -1332,42 +1332,46 @@ pub fn profile_not_found(profile_arn: &str) -> ResourceNotFoundException {
     )
 }
 
-/// The whole `Message` of the tag family's `ResourceNotFoundException`: the FIXED text of
-/// that failure class on the tag path, with no variable part.
+/// The wire error CODE this service's TAGGING surface answers for an ARN that names no
+/// resource.
 ///
-/// The tag operations are served as one family, and their missing-resource refusal reports
-/// the class alone — the ARN the request named travels in `ResourceId` and the resource
-/// type in `ResourceType`, so the sentence interpolates neither it nor the account the
-/// lookup ran in.
+/// It is NOT the `ResourceNotFoundException` the rest of this service answers and the
+/// model declares for these three operations: the ARN-addressed tag operations are served
+/// by the shared tagging frontend in front of this service, and the recorded responses of
+/// `ListTagsForResource` / `TagResource` / `UntagResource` against an ARN no resource
+/// carries name that frontend's own `NotFoundException`. That shape is in no operation's
+/// modelled error set, so the refusal travels through
+/// [`crate::scaffolded::Scaffolded::unmodeled`].
+pub const TAGGING_NOT_FOUND_CODE: &str = "NotFoundException";
+
+/// The HTTP status the tagging frontend answers an absent resource with.
+pub const TAGGING_NOT_FOUND_STATUS: u16 = 404;
+
+/// The whole `Message` the tagging frontend's missing-resource refusal carries: the FIXED
+/// text of that failure class, with no variable part.
+///
+/// The frontend addresses every taggable resource type through the one ARN member, so its
+/// sentence names no resource type, and it carries nothing the request sent — neither the
+/// ARN nor the account the lookup ran in.
 pub const TAGGED_RESOURCE_NOT_FOUND_MESSAGE: &str = "Resource was not found";
 
-/// The `ResourceNotFoundException` (HTTP 404) for an ARN a TAG operation names that
-/// resolves to no resource this store holds
-/// ([`ComAmazonawsWellarchitectedWellarchitectedapiservicelambdaState::resource_tags`]).
+/// The refusal every TAG operation answers for an ARN that resolves to no resource this
+/// store holds
+/// ([`ComAmazonawsWellarchitectedWellarchitectedapiservicelambdaState::resource_tags`]):
+/// the tagging frontend's [`TAGGING_NOT_FOUND_CODE`] at [`TAGGING_NOT_FOUND_STATUS`],
+/// stating [`TAGGED_RESOURCE_NOT_FOUND_MESSAGE`].
 ///
-/// The message is [`TAGGED_RESOURCE_NOT_FOUND_MESSAGE`], the fixed text of this failure
-/// class on the tag path — which is why this does not go through [`resource_not_found`],
-/// whose sentence is built from the request and the owning account. `ResourceType` is read
-/// off the ARN's own resource part ([`TAGGABLE_RESOURCE_KINDS`]), so a caller is still told
-/// which KIND of resource was looked for; an ARN naming no taggable kind at all is reported
-/// under the resource type of the member that carried it (`WorkloadArn`). `ResourceId` is
-/// the ARN AS SENT. Shared by every operation that resolves a resource by tag ARN, so they
-/// cannot word it differently.
-pub fn tagged_resource_not_found(resource_arn: &str) -> ResourceNotFoundException {
-    // partition : service : region : account : resource
-    let resource_part = resource_arn
-        .strip_prefix("arn:")
-        .and_then(|rest| rest.splitn(5, ':').nth(4))
-        .unwrap_or_default();
-    let resource_type = TAGGABLE_RESOURCE_KINDS
-        .iter()
-        .find(|(prefix, _)| resource_part.starts_with(prefix))
-        .map_or(WORKLOAD_RESOURCE_TYPE, |(_, resource_type)| *resource_type);
-    ResourceNotFoundException {
-        message: TAGGED_RESOURCE_NOT_FOUND_MESSAGE.to_string(),
-        resource_id: resource_arn.to_string(),
-        resource_type: resource_type.to_string(),
-    }
+/// Shared by every operation that resolves a resource by tag ARN, so they cannot answer it
+/// differently. The code is not the modelled shape's, which is why this goes out through
+/// the unmodelled channel rather than through [`resource_not_found`] — whose sentence, and
+/// whose `ResourceId` / `ResourceType` members, belong to the refusal the RESOURCE
+/// operations of this service answer.
+pub fn tagged_resource_not_found<E>() -> crate::scaffolded::Scaffolded<E> {
+    crate::scaffolded::Scaffolded::unmodeled(
+        TAGGING_NOT_FOUND_CODE,
+        TAGGING_NOT_FOUND_STATUS,
+        TAGGED_RESOURCE_NOT_FOUND_MESSAGE,
+    )
 }
 
 /// [`resource_not_found`] for a `ProfileVersion` the profile `profile_arn` names does not

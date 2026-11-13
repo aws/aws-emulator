@@ -1588,27 +1588,6 @@ impl WorkloadProfileRecord {
     }
 }
 
-/// Every resource type of this service a TAG operation can name, as
-/// `(ARN resource prefix, modelled `ResourceType`)`.
-///
-/// "The WorkloadArn parameter can be a workload ARN, a custom lens ARN, a profile ARN, or
-/// review template ARN" (`ListTagsForResource` / `TagResource` / `UntagResource` doc) —
-/// the four resource types whose creates take a `TagMap` — plus the agent profile, the
-/// fifth taggable resource this service's model carries (`CreateAgentProfile$tags`,
-/// `smithy_query(query="operation", operation="CreateAgentProfile")`): a tag recorded on a
-/// resource has to be readable back off it.
-///
-/// The prefixes are matched against the RESOURCE PART of the ARN
-/// (`arn:<partition>:<service>:<region>:<account>:<resource>`), so `profile/` cannot also
-/// match an `agent-profile/` ARN.
-const TAGGABLE_RESOURCE_KINDS: &[(&str, &str)] = &[
-    ("workload/", WORKLOAD_RESOURCE_TYPE),
-    ("lens/", LENS_RESOURCE_TYPE),
-    ("profile/", PROFILE_RESOURCE_TYPE),
-    ("review-template/", REVIEW_TEMPLATE_RESOURCE_TYPE),
-    ("agent-profile/", AGENT_PROFILE_RESOURCE_TYPE),
-];
-
 /// Where the tags of the resource a tag ARN names LIVE in this store: which map holds the
 /// record the tags sit on, plus — for a workload, which is keyed by its `WorkloadId`
 /// rather than by its ARN — the key it is held under.

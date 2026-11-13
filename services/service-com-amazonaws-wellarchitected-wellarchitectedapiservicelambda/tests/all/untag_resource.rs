@@ -15,9 +15,10 @@
 //! 2. The delete is a WRITE and nothing else: what it leaves is what the next
 //!    `ListTagsForResource` and the resource's own read report, and repeating the same
 //!    request leaves the same tags (what it asks for is the absence of those keys).
-//! 3. An ARN that names no resource this store holds is a `404
-//!    ResourceNotFoundException` carrying the ARN AS SENT, and writes nothing — one row
-//!    per taggable type, plus a string that is not an ARN at all.
+//! 3. An ARN that names no resource this store holds is the shared tagging frontend's
+//!    `404 NotFoundException`, stating that frontend's fixed sentence and nothing the
+//!    request sent, and writes nothing — one row per taggable type, plus a string that is
+//!    not an ARN at all.
 //! 4. `TagKeyList`'s `@length(1, 50)` holds on both sides: the 50 keys it tops out at are
 //!    all deleted, and a request naming 51 is refused 400 and deletes nothing.
 //!
@@ -31,7 +32,10 @@ use std::collections::BTreeMap;
 
 use serde_json::Value;
 
-use super::resource_tags::{create_tagged, list_tags, reported_tags, tags_of, Kind, KINDS};
+use super::resource_tags::{
+    create_tagged, list_tags, reported_tags, tags_of, Kind, TAGGING_NOT_FOUND_CODE,
+    TAGGING_NOT_FOUND_MESSAGE, KINDS,
+};
 use super::workload_harness::{encode_path_segment, minimal_create, Answer, Client};
 
 use service_com_amazonaws_wellarchitected_wellarchitectedapiservicelambda::state;
@@ -296,17 +300,17 @@ async fn an_arn_naming_no_stored_resource_is_a_not_found() {
             "case {case:?}: expected HTTP 404, got {answer:?}"
         );
         assert_eq!(
-            answer.error_code, "ResourceNotFoundException",
-            "case {case:?}: expected ResourceNotFoundException, got {answer:?}"
+            answer.error_code, TAGGING_NOT_FOUND_CODE,
+            "case {case:?}: expected {TAGGING_NOT_FOUND_CODE}, got {answer:?}"
         );
         assert_eq!(
-            answer
-                .body
-                .get("ResourceId")
-                .and_then(Value::as_str)
-                .unwrap_or_default(),
-            resource_arn,
-            "case {case:?}: ResourceId must be the ARN as sent, got {answer:?}"
+            answer.body.get("Message").and_then(Value::as_str),
+            Some(TAGGING_NOT_FOUND_MESSAGE),
+            "case {case:?}: expected the frontend's fixed sentence, got {answer:?}"
+        );
+        assert!(
+            !answer.body.to_string().contains(resource_arn.as_str()),
+            "case {case:?}: the refusal must disclose nothing the request sent, got {answer:?}"
         );
     }
 

@@ -55,6 +55,16 @@
 //! schema, and a refusal is serialized as the MODELLED error. A valid request is
 //! delegated, untouched, to the generated operation in the routing table — so the
 //! handler, its state and its 501 are exactly as before.
+//!
+//! ## How this service names the error shape of a failure
+//!
+//! `x-amzn-errortype`, the header a restJson1 client resolves an error shape from, belongs
+//! to the RESPONSE rather than to any modelled shape, so no handler can set it, and the
+//! framework's renderers write the bare shape name where this service's wire carries the
+//! QUALIFIED form ([`error_type_locator`]). It is therefore completed at the two layers
+//! every response of this service passes through: [`ModelledValidation`], which every
+//! modelled operation is served through, and the [`error_type_locator::ErrorTypeLocatorDefinition`]
+//! wrapper around the generated entry, which covers a response no operation produced.
 
 use std::collections::HashMap;
 use std::marker::PhantomData;
@@ -63,8 +73,8 @@ use std::sync::Arc;
 use aws_smithy_schema::{Schema, ShapeType};
 use aws_smithy_schema_server::constraints::{self, RangeTrait, Violation, ViolationKind};
 use smithy_server_runtime::{
-    http, BoxFuture, DeserializableStruct, ErasedOperation, Operation, OperationContext, Refusal,
-    Refused, ServerHttpProtocol, Service,
+    http, BoxFuture, DeserializableStruct, ErasedOperation, ErasedServiceDefinition, Operation,
+    OperationContext, Refusal, Refused, ServerHttpProtocol, Service,
 };
 
 /// How this service words a request that NAMES lens content it cannot resolve — the
@@ -72,13 +82,21 @@ use smithy_server_runtime::{
 /// than by the boundary walk, and shared by every operation that resolves such a value.
 pub mod lens_content_validation;
 
+/// How this service names, in `x-amzn-errortype`, the error shape a failure is refused
+/// with — the one form every response of this service carries, success or failure.
+pub mod error_type_locator;
+
+use error_type_locator::{with_error_type_locator, ErrorTypeLocatorDefinition};
+
 /// The `com-amazonaws-wellarchitected-wellarchitectedapiservicelambda` emulated service: the generated [`ServiceDefinition`] plus
 /// the behavioral seams this file owns.
 ///
 /// Generic over the engine type `Eng` so this file names no concrete engine; the
 /// router builds one shared engine and hands it to `new`.
 pub struct EmulatedService<Eng: Send + Sync + 'static> {
-    entry: crate::ServiceDefinition<Eng>,
+    /// The generated entry, with its framework-level error renderers wrapped so a response
+    /// no operation produced names its error shape the way this service names it.
+    entry: ErrorTypeLocatorDefinition<crate::ServiceDefinition<Eng>>,
     /// One [`ModelledValidation`] per modelled operation, keyed by the routing key the
     /// model names that operation by ([`Operation::NAME`], the same key the generated
     /// routing table uses). Built once here, never per request; each entry is
@@ -92,7 +110,7 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
     /// operation's behaviour lives in that operation's own `impl Operation`.
     pub fn new(engine: Arc<Eng>) -> Self {
         Self {
-            entry: crate::ServiceDefinition::new(engine),
+            entry: ErrorTypeLocatorDefinition::new(crate::ServiceDefinition::new(engine)),
             refusals: modelled_validation_table::<Eng>(),
         }
     }
@@ -351,6 +369,9 @@ impl<Op: Operation> ErasedOperation for ModelledValidation<Op> {
         Box::pin(async move {
             let started = std::time::Instant::now();
             let protocol = svc.definition().protocol();
+            // Read off the definition BEFORE any await: `&dyn ErasedServiceDefinition` is
+            // not `Sync`, so holding one across an await would make this future non-`Send`.
+            let locator = error_type_locator::locator(svc.definition().identity().shape_id());
             if let Some(exception) = modelled_refusal::<Op>(protocol, req) {
                 // Serialized through the service's own protocol, exactly as a
                 // handler-returned `ValidationException` is: same body member names
@@ -363,19 +384,22 @@ impl<Op: Operation> ErasedOperation for ModelledValidation<Op> {
                     VALIDATION_EXCEPTION_STATUS,
                 ) {
                     record_refusal::<Op>(ctx, started.elapsed());
-                    return response;
+                    return with_error_type_locator(response, &locator);
                 }
             }
             // Nothing to reword: the request is served by the generated operation,
             // which runs the whole framework sequence (deserialize, validate, handle,
-            // serialize) over the same bytes.
-            match svc.definition().routing_table().get(Op::NAME) {
+            // serialize) over the same bytes. Whatever it answers passes through this one
+            // layer, so every operation's failure names its error shape the way this
+            // service's wire names it and a success keeps every byte.
+            let response = match svc.definition().routing_table().get(Op::NAME) {
                 Some(operation) => operation.run(svc, req, ctx).await,
                 // Unreachable in practice: this wrapper is only reachable under the key
                 // the generated table registered. Answer the framework's own
                 // no-such-operation response rather than inventing one.
                 None => svc.definition().routing_error_response(req),
-            }
+            };
+            with_error_type_locator(response, &locator)
         })
     }
 }

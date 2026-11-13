@@ -7,8 +7,9 @@
 //! ([`crate::state::ComAmazonawsWellarchitectedWellarchitectedapiservicelambdaState::resource_tags_mut`])
 //! — and answers 204 No Content. Every tag whose key the request does not name is left as
 //! it stands, and a key the resource does not carry removes nothing, so repeating the
-//! request changes nothing further. An ARN naming no resource this store holds is a 404
-//! `ResourceNotFoundException` and writes nothing.
+//! request changes nothing further. An ARN naming no resource this store holds is the
+//! tagging frontend's 404 `NotFoundException`
+//! ([`crate::state::tagged_resource_not_found`]) and writes nothing.
 //!
 //! ## Shape of an operation
 //!
@@ -152,11 +153,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // ARN, or review template ARN": the ARN is resolved against every taggable
         // resource type at once — the same resolution the tag READ uses — so an ARN naming
         // none of them names no resource to delete tags from, and nothing is written.
-        let tags = store.resource_tags_mut(&input.workload_arn).ok_or_else(|| {
-            UntagResourceErrorModeled::ResourceNotFoundException(
-                crate::state::tagged_resource_not_found(&input.workload_arn),
-            )
-        })?;
+        let tags = store
+            .resource_tags_mut(&input.workload_arn)
+            // An ARN that names no resource of this store is refused by the tagging
+            // frontend, with ITS error shape rather than this operation's modelled one;
+            // see `crate::state::tagged_resource_not_found`.
+            .ok_or_else(crate::state::tagged_resource_not_found)?;
 
         // "Existing tags of the resource whose keys are members of this list are removed
         // from the resource" (`UntagResourceInput$TagKeys`): exactly the keys named go, and
