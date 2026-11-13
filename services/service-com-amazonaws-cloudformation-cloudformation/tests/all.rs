@@ -149,6 +149,8 @@ mod ecs_elbv2_stack_outputs;
 mod elbv2_resource_provisioning;
 #[path = "all/elbv2_rule_priority_collision.rs"]
 mod elbv2_rule_priority_collision;
+#[path = "all/elbv2_rule_priority_collision_update.rs"]
+mod elbv2_rule_priority_collision_update;
 #[path = "all/elbv2_stack_update_lifecycle.rs"]
 mod elbv2_stack_update_lifecycle;
 #[path = "all/error_envelope.rs"]

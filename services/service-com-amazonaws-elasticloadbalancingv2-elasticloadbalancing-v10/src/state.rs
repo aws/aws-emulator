@@ -823,16 +823,16 @@ pub fn rule_not_found_message(arn: &str) -> String {
     format!("Rule '{arn}' not found")
 }
 
-/// The message `SetRulePriorities` refuses a request it cannot place the asked-for
-/// priorities with: that operation addresses a LIST (`RulePriorities`, one
-/// `RulePriorityPair` per rule) rather than one rule, so the refusal is about the SET of
-/// priorities the request asked for and names no value — the collection-level wording every
-/// list-addressing read of this service answers, worded for the member the list carries.
+/// The message `SetRulePriorities` refuses a request whose `RulePriorities` names a rule
+/// this store does not hold with: that operation addresses a LIST (one `RulePriorityPair`
+/// per rule) rather than one rule, so the refusal is about the SET of priorities the request
+/// asked for and names no value — the collection-level wording every list-addressing read of
+/// this service answers, worded for the member the list carries.
 ///
-/// ONE sentence for the two reasons that set cannot be placed — a pair naming a rule this
-/// store does not hold, and a priority a rule outside the request already evaluates at —
-/// which the ERROR CODE tells apart (`RuleNotFound` and `PriorityInUse`), exactly as the
-/// recorded answers do.
+/// A priority a rule outside the request already evaluates at is NOT this refusal: the
+/// conflict is one rule of the service ("a listener can't have multiple rules with the same
+/// priority"), so it is worded the way every operation that places a priority words it, with
+/// the priority the request asked for in it ([`priority_in_use_message`]).
 pub fn rule_priorities_refusal_message() -> String {
     "One or more priorities not found".to_string()
 }
@@ -840,10 +840,11 @@ pub fn rule_priorities_refusal_message() -> String {
 /// The message Elastic Load Balancing answers a `PriorityInUse` with: the priority the
 /// request asked for, and nothing else.
 ///
-/// The message of `CreateRule`, which places ONE rule at ONE priority, so the value the
-/// caller has to change is the one the refusal states. `SetRulePriorities` places a SET of
-/// them and words its own refusal about that set
-/// ([`rule_priorities_refusal_message`]).
+/// The two operations that place a rule at a priority — `CreateRule`, which places ONE rule
+/// at one priority, and `SetRulePriorities`, which re-points rules at the priorities a list
+/// names — refuse the same conflict, so they state the same sentence: the value the caller
+/// has to change. Neither names the listener whose namespace it is, nor the rule that holds
+/// it.
 pub fn priority_in_use_message(priority: i32) -> String {
     format!("Priority '{priority}' is currently in use")
 }

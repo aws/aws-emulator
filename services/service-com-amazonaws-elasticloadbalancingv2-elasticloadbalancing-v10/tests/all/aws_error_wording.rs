@@ -11,9 +11,9 @@
 //!
 //! 1. A priority another rule of the listener already evaluates at is refused under
 //!    `PriorityInUse` by both operations that place a rule at a priority — the listener is
-//!    not part of either refusal — with `CreateRule` naming the ONE priority it was asked
-//!    for and `SetRulePriorities` stating the collection-level sentence about the SET it
-//!    places ([`a_priority_already_in_use_is_refused_naming_only_the_priority`]).
+//!    not part of either refusal — each naming the ONE priority the request asked for, where
+//!    a `SetRulePriorities` pair naming no rule at all is refused about the SET it addresses
+//!    ([`a_priority_already_in_use_is_refused_naming_only_the_priority`]).
 //! 2. A listener's default rule refuses the three operations that address a rule, each with
 //!    the sentence for what it would have changed
 //!    ([`the_default_rule_guards_state_what_cannot_be_changed`]).
@@ -47,6 +47,10 @@ use crate::target_group_attributes_and_modification::unescaped;
 /// (`smithy_query(query="operation",operation="CreateRule")`).
 const PRIORITY_IN_USE: &str = "PriorityInUse";
 
+/// The awsQuery code of `RuleNotFoundException`, which `SetRulePriorities` models
+/// (`smithy_query(query="operation",operation="SetRulePriorities")`).
+const RULE_NOT_FOUND: &str = "RuleNotFound";
+
 /// The awsQuery code of `OperationNotPermittedException`, which `DeleteRule`, `ModifyRule`
 /// and `SetRulePriorities` each model.
 const OPERATION_NOT_PERMITTED: &str = "OperationNotPermitted";
@@ -62,10 +66,9 @@ const TOO_MANY_CERTIFICATES: &str = "TooManyCertificates";
 /// documents in prose and for a value the framework refused at the boundary alike.
 const VALIDATION_ERROR: &str = "ValidationError";
 
-/// The sentence `SetRulePriorities` refuses a set of priorities it cannot place with: that
-/// operation addresses a LIST of them, so its refusal is about the set rather than about
-/// one value — for a priority something else holds as for a pair naming no rule, which the
-/// error code tells apart.
+/// The sentence `SetRulePriorities` refuses a PAIR NAMING NO RULE with: there the refusal is
+/// about the set of priorities the request asked for rather than about one value, which the
+/// error code tells apart from the conflict below.
 const SET_PRIORITIES_REFUSAL: &str = "One or more priorities not found";
 
 /// How many certificate ARNs one request may carry, from the documentation of the
@@ -123,10 +126,9 @@ fn rule_fields(target_group_arn: &str, path: &str) -> Form {
 ///
 /// "A listener can't have multiple rules with the same priority" is one rule of the
 /// service, so both operations that place a rule at a priority — `CreateRule` and
-/// `SetRulePriorities` — refuse it under `PriorityInUse`, and neither names the listener:
-/// `CreateRule` places ONE rule at ONE priority, so it states that priority, while
-/// `SetRulePriorities` places a SET of them and states the collection-level sentence about
-/// that set.
+/// `SetRulePriorities` — refuse it under `PriorityInUse` with the same sentence: the
+/// priority the request asked for, which is the value the caller has to change. Neither
+/// names the listener whose namespace it is.
 #[tokio::test]
 async fn a_priority_already_in_use_is_refused_naming_only_the_priority() {
     let (router, _engine) = emulator();
@@ -179,7 +181,7 @@ async fn a_priority_already_in_use_is_refused_naming_only_the_priority() {
             &format!("SetRulePriorities onto the taken priority {priority}"),
             &set,
             PRIORITY_IN_USE,
-            SET_PRIORITIES_REFUSAL,
+            &expected,
         );
 
         // The listener the priority lives in is NOT part of the refusal: the message is
@@ -193,6 +195,20 @@ async fn a_priority_already_in_use_is_refused_naming_only_the_priority() {
             );
         }
     }
+
+    // The complement, which is what the sentence above is told apart from: a pair naming a
+    // rule this store does not hold is a refusal about the SET of priorities the request
+    // addresses rather than about one priority, under its own code.
+    let mut form = action("SetRulePriorities");
+    form.push(p("RulePriorities.member.1.RuleArn", "not-a-rule-arn"));
+    form.push(p("RulePriorities.member.1.Priority", "5"));
+    let missing = call(&router, &form).await;
+    assert_refused(
+        "SetRulePriorities naming a rule the store does not hold",
+        &missing,
+        RULE_NOT_FOUND,
+        SET_PRIORITIES_REFUSAL,
+    );
 }
 
 /// One row of the default-rule table: the operation, the fields it addresses the default

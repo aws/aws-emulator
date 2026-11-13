@@ -15,9 +15,12 @@
 //! A priority a rule OUTSIDE the request holds is the modelled `PriorityInUseException`,
 //! while a request LIST that repeats one priority says nothing about which rule evaluates
 //! there and is refused as malformed input (`ValidationError`), before the store is
-//! reached. This operation places a SET of priorities, so the two refusals ABOUT THAT SET
-//! — a pair naming no rule and a priority something else holds — state the one
-//! collection-level sentence and are told apart by their error code.
+//! reached. The conflict is one rule of the service, so it is worded the same way whichever
+//! operation places the priority: the refusal states the PRIORITY the request asked for
+//! (`crate::state::priority_in_use_message`, which `CreateRule` answers too) and names
+//! neither the listener nor the rule that holds it. A pair naming no rule is a refusal about
+//! the SET this operation addresses instead, which is why it states the collection-level
+//! sentence.
 //!
 //! The rules are read and written on their listener's record, the one rule store
 //! `DescribeRules` walks, so a priority this operation persists is the priority that read
@@ -264,12 +267,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 if taken.contains(&priority) {
                     return Err(SetRulePrioritiesErrorModeled::PriorityInUseException(
                         PriorityInUseException {
-                            // This operation places a SET of priorities, so its refusal is
-                            // about that set rather than about one value
-                            // (`crate::state::rule_priorities_refusal_message`) — the same
-                            // sentence it answers a pair naming no rule with, which the
-                            // error CODE tells apart from this one.
-                            message: Some(crate::state::rule_priorities_refusal_message()),
+                            // The value the caller has to change is the PRIORITY the request
+                            // asked for, and a priority left taken is one this request named:
+                            // a repeat between two pairs of the request was refused above, so
+                            // the duplicate here is a move onto a priority a rule outside the
+                            // request holds. One sentence for one rule of the service, which
+                            // `CreateRule` answers the same conflict with.
+                            message: Some(crate::state::priority_in_use_message(priority)),
                         },
                     )
                     .into());

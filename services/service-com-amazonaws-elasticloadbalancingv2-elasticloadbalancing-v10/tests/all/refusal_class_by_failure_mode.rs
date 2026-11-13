@@ -23,8 +23,8 @@
 //! 4. A refusal whose class has no variable part states AWS's fixed sentence whatever the
 //!    request carried ([`a_refusal_with_no_variable_part_states_the_same_sentence`]).
 //! 5. `SetRulePriorities` tells three failures apart by CODE: a priority the request
-//!    repeated, a priority a rule outside the request holds, and a pair naming a rule it
-//!    does not hold — the last two about the SET of priorities it was asked to place
+//!    repeated, a priority a rule outside the request holds — each naming that priority —
+//!    and a pair naming a rule it does not hold, which is about the SET it was asked to place
 //!    ([`set_rule_priorities_tells_a_repeated_priority_from_one_in_use_and_from_a_missing_rule`]).
 //! 6. A target id not written the way a target of the group's TYPE is written names no
 //!    target of any account, so it is the request to fix
@@ -752,15 +752,16 @@ async fn set_priorities(router: &MultiServiceRouter, pairs: &[(&str, i32)]) -> R
     call(router, &form).await
 }
 
-/// Rule 5: `SetRulePriorities` answers three failures under three codes, and words the two
-/// about the SET of priorities it was asked to place with one sentence.
+/// Rule 5: `SetRulePriorities` answers three failures under three codes — a repeated priority
+/// and a priority already in use each naming the value the caller has to change, and a pair
+/// naming no rule worded about the SET of priorities it was asked to place.
 ///
 /// The rows vary the priority the request repeats, the rule the collision is with, and the
 /// shape of the ARN that names no rule — so each code is driven by several inputs rather
 /// than one.
 #[tokio::test]
 async fn set_rule_priorities_tells_a_repeated_priority_from_one_in_use_and_from_a_missing_rule() {
-    /// The one sentence this operation words both refusals ABOUT THE SET with.
+    /// The sentence this operation words a refusal ABOUT THE SET it addresses with.
     const ABOUT_THE_SET: &str = "One or more priorities not found";
 
     let (router, _engine) = emulator();
@@ -822,20 +823,21 @@ async fn set_rule_priorities_tells_a_repeated_priority_from_one_in_use_and_from_
         );
     }
 
-    // A priority a rule OUTSIDE the request holds is the modelled conflict, worded about
-    // the set of priorities the request asked for.
+    // A priority a rule OUTSIDE the request holds is the modelled conflict, worded with the
+    // priority the request asked for — one sentence for one rule of the service, whichever
+    // operation places the priority.
     for priority in [10, 20, 30] {
         let reply = set_priorities(&router, &[(moved.as_str(), priority)]).await;
         assert_refused(
             &format!("the reorder onto the taken priority {priority}"),
             &reply,
             PRIORITY_IN_USE,
-            ABOUT_THE_SET,
+            &format!("Priority '{priority}' is currently in use"),
         );
     }
 
-    // A pair naming a rule this store does not hold is the modelled not-found, worded the
-    // same way — the CODE is what tells the two apart.
+    // A pair naming a rule this store does not hold is the modelled not-found, worded about
+    // the SET the request addresses.
     let deleted = {
         let mut form = action("DeleteRule");
         form.push(p("RuleArn", &rules[2]));
