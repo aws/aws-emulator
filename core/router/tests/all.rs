@@ -1747,3 +1747,9 @@ mod cloudformation_apigateway_base_path_mappings;
 // REST API stage in front of them — spans Elastic Load Balancing v2 and API Gateway at once.
 #[path = "all/apigateway_vpc_link_private_integration.rs"]
 mod apigateway_vpc_link_private_integration;
+// Declared in this same head region, for the reason the entry above records: whether a
+// session an identity pool vends is a credential a client can SIGN a DynamoDB call with
+// spans the request authenticator, Cognito Identity, IAM, STS and DynamoDB at once, so no
+// single service crate's test target can drive it.
+#[path = "all/cognito_signed_session_leading_keys_partition.rs"]
+mod cognito_signed_session_leading_keys_partition;
