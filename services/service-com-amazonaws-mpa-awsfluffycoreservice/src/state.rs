@@ -3451,7 +3451,9 @@ impl ComAmazonawsMpaAwsfluffycoreserviceState {
     /// `ListTagsForResource` agree on which resources exist and read the same map. The
     /// resources this service stores are the approval team and the identity source, so
     /// an ARN naming anything else is not found; when another resource is added here,
-    /// both operations pick it up from this one function.
+    /// both operations pick it up from this one function — and so does every other
+    /// ARN-addressed operation, whose existence decision is this resolution
+    /// ([`ComAmazonawsMpaAwsfluffycoreserviceState::records_resource`]).
     #[must_use]
     pub fn resource_tags(&self, arn: &str) -> Option<&BTreeMap<String, String>> {
         if let Some(team) = self.team(arn) {
@@ -3463,13 +3465,17 @@ impl ComAmazonawsMpaAwsfluffycoreserviceState {
     /// Whether this store records a RESOURCE under `arn`.
     ///
     /// The one place an operation addressing a resource by ARN decides whether it
-    /// exists, so the tagging and the resource-policy operations agree on it. The
-    /// approval team is the only resource this service stores, so an ARN naming anything
-    /// else names no resource; when another resource type is added here, every operation
-    /// that resolves a resource ARN picks it up from this one function.
+    /// exists, so the tagging and the resource-policy operations agree on it. Every
+    /// resource this service stores is taggable, so the decision IS the tag resolution
+    /// ([`ComAmazonawsMpaAwsfluffycoreserviceState::resource_tags`]): whatever resource
+    /// kinds that one resolver holds — the approval team and the identity source — are
+    /// exactly the ones an ARN-addressed operation finds, and an ARN naming anything else
+    /// names no resource. A resource kind added to that resolver is therefore picked up
+    /// by every operation that resolves a resource ARN without a second inventory to keep
+    /// in step.
     #[must_use]
     pub fn records_resource(&self, arn: &str) -> bool {
-        self.team(arn).is_some()
+        self.resource_tags(arn).is_some()
     }
 
     /// The tags of the resource `arn` names, for update. Same resolution as
@@ -3566,16 +3572,25 @@ impl ComAmazonawsMpaAwsfluffycoreserviceState {
     /// what tells a missing resource from a resource with no policy of the name asked
     /// for.
     ///
-    /// An approval team is the only resource this store records that policies attach to,
-    /// and a team's attached policies are the `Policies` references it carries, so the
-    /// resource-policy reads and `GetApprovalTeam$Policies` report one and the same
-    /// attachment list. Each reference is resolved through the CATALOG, so every member
-    /// reported comes from the policy record itself; a reference the catalog does not
-    /// hold names no policy and is reported by nothing. An identity source attaches no
-    /// policy, so an identity-source ARN here resolves to nothing.
+    /// Whether a resource exists is decided by the one existence resolver every
+    /// ARN-addressed operation of this service shares
+    /// ([`ComAmazonawsMpaAwsfluffycoreserviceState::records_resource`]), so a resource
+    /// the tagging reads report cannot be missing here. What a recorded resource CARRIES
+    /// is then its own: an approval team's attached policies are the `Policies`
+    /// references it holds, so the resource-policy reads and `GetApprovalTeam$Policies`
+    /// report one and the same attachment list, and a recorded resource of a kind no
+    /// policy attaches to — an identity source — carries no attachment and resolves to an
+    /// EMPTY list rather than to a missing resource. Each reference is resolved through
+    /// the CATALOG, so every member reported comes from the policy record itself; a
+    /// reference the catalog does not hold names no policy and is reported by nothing.
     #[must_use]
     pub fn resource_policies(&self, resource_arn: &str) -> Option<Vec<ResourcePolicy>> {
-        let team = self.team(resource_arn)?;
+        if !self.records_resource(resource_arn) {
+            return None;
+        }
+        let Some(team) = self.team(resource_arn) else {
+            return Some(Vec::new());
+        };
         Some(
             team.policies
                 .iter()

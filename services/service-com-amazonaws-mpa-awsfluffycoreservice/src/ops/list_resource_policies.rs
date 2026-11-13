@@ -5,7 +5,9 @@
 //! Reports the policies attached to the resource `ResourceArn` names, out of this
 //! service's store — for an approval team, the `Policies` its record holds, in
 //! attachment order, each resolved through the policy catalog by the same resolver
-//! `GetResourcePolicy` uses, so the two reads cannot disagree.
+//! `GetResourcePolicy` uses, so the two reads cannot disagree. A stored resource of a
+//! kind no policy attaches to carries no attachment, so it is an EMPTY page rather than
+//! a missing resource.
 //!
 //! `ResourceArn` is modelled as a bare `String` (`@length(max: 1000)`, no pattern), so
 //! the boundary validator passes ANY string. The outcomes, decided in this order:
@@ -15,7 +17,9 @@
 //!   ([`crate::state::invalid_arn`]), refused before anything is looked up;
 //! * well formed but outside the caller's account — `AccessDeniedException` (403),
 //!   whatever is stored under it ([`crate::state::authorize_resource_arn`]);
-//! * well formed, in the caller's account, naming no stored resource —
+//! * well formed, in the caller's account, naming no resource this store records
+//!   ([`crate::state::ComAmazonawsMpaAwsfluffycoreserviceState::records_resource`], the
+//!   one existence decision every ARN-addressed operation of this service shares) —
 //!   `ResourceNotFoundException` (404).
 //!
 //! A read: it reports what the store holds and changes nothing a later caller sees,

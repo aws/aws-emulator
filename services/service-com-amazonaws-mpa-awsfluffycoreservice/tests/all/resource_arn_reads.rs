@@ -214,7 +214,7 @@ fn well_formed_resource_arns() -> Vec<(&'static str, String, u16)> {
             404,
         ),
         (
-            "an identity source, a resource type this service stores none of",
+            "an identity source, under which nothing was created",
             format!("arn:aws:mpa:{REGION}:{own}:identity-source/ssoins-0001"),
             404,
         ),

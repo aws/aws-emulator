@@ -23,6 +23,8 @@ mod approval_team_lifecycle;
 mod approver_identity_source_arn;
 #[path = "all/approver_mfa_synchronization.rs"]
 mod approver_mfa_synchronization;
+#[path = "all/arn_addressed_resource_inventory.rs"]
+mod arn_addressed_resource_inventory;
 #[path = "all/authorization_gate.rs"]
 mod authorization_gate;
 #[path = "all/baseline_session_minting.rs"]

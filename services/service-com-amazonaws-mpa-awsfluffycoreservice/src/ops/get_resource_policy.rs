@@ -19,11 +19,14 @@
 //! * an ARN outside the caller's own account is denied BEFORE the resource is resolved
 //!   ([`crate::state::authorize_resource_arn`]): `AccessDeniedException` (403);
 //! * a `ResourceArn` this store records no resource under
-//!   ([`crate::state::ComAmazonawsMpaAwsfluffycoreserviceState::records_resource`]) fails
-//!   the RESOURCE lookup, before any policy-name or policy-type matching is reached, so
-//!   the answer to an unrecorded resource does not depend on either:
-//!   `ResourceNotFoundException` (404) with this service's constant not-found message;
-//! * a recorded resource carrying no policy of that name and type is the same 404 with
+//!   ([`crate::state::ComAmazonawsMpaAwsfluffycoreserviceState::records_resource`], the
+//!   one existence decision every ARN-addressed operation of this service shares, so a
+//!   resource the tagging reads report cannot be missing here) fails the RESOURCE
+//!   lookup, before any policy-name or policy-type matching is reached, so the answer to
+//!   an unrecorded resource does not depend on either: `ResourceNotFoundException` (404)
+//!   with this service's constant not-found message;
+//! * a recorded resource carrying no policy of that name and type — including a resource
+//!   of a kind no policy attaches to, which carries none at all — is the same 404 with
 //!   the same message.
 //!
 //! `@readonly`: this handler writes nothing of its own. It calls

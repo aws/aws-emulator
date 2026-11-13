@@ -537,7 +537,7 @@ async fn tagging_an_arn_no_resource_carries_is_not_found() {
             format!("arn:aws:mpa:eu-west-1:{own}:approval-team/{}", "tagged-0"),
         ),
         (
-            "an identity-source ARN, a resource type this service does not store",
+            "an identity-source ARN under which no identity source was created",
             format!("arn:aws:mpa:{REGION}:{own}:identity-source/ssoins-0001"),
         ),
         (
