@@ -38,7 +38,11 @@
 //!    `@connections` management API is published at that same endpoint.
 //! 3. The FRAMES, each dispatched to the route the api's `RouteSelectionExpression` selects
 //!    and answered by that route's integration PERFORMED ([`super::integration`]), and each
-//!    frame pushed TO the connection written back over the same socket.
+//!    frame pushed TO the connection written back over the same socket. A message this plane
+//!    does NOT serve is classified before any route is selected, and refused with the close
+//!    its refusal carries rather than reaching a backend ([`refused`]): a client data frame
+//!    that is not text, and a message past the frame quota ([`MAX_FRAME_BYTES`]) or the
+//!    per-message ceiling ([`MAX_MESSAGE_BYTES`]).
 //! 4. The CLOSE, which invokes the `$disconnect` route's integration and ends the
 //!    connection's record: from then on its `ConnectionId` addresses a connection that no
 //!    longer exists.
@@ -66,7 +70,7 @@ use ::tokio_tungstenite::tungstenite::handshake::server::{
 };
 use ::tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 use ::tokio_tungstenite::tungstenite::protocol::CloseFrame;
-use ::tokio_tungstenite::tungstenite::Message;
+use ::tokio_tungstenite::tungstenite::{Error as SocketError, Message};
 
 use super::event::{Call, Connection};
 use super::{dispatch, event, integration};
@@ -361,20 +365,35 @@ impl Offer {
     }
 }
 
-/// The largest MESSAGE this data plane reads from a client, in bytes: the 128 KiB a frame of
-/// an API Gateway WebSocket api may carry, which is also the modelled maximum of a payload
-/// pushed the other way (`PostToConnection$Data`, `@length(max: 131072)`).
+/// The largest MESSAGE a client may send over a WEBSOCKET api, in bytes: the 128 KiB
+/// per-message ceiling an API Gateway WebSocket api enforces on the way in, which is also the
+/// modelled maximum of a payload pushed the other way (`PostToConnection$Data`,
+/// `@length(max: 131072)`).
 ///
-/// Stated HERE rather than left to the WebSocket implementation's own default, so the bound
-/// a caller's bytes are buffered under is citable and survives a dependency bump: it is what
-/// stands between one local caller and the host's memory, since the message is read into a
-/// buffer sized by what that caller sent.
+/// It is a ceiling of the GATEWAY, not of the implementation that reads the socket: a message
+/// past it — a fragmented message whose ASSEMBLED payload goes past it included — reaches no
+/// route and is answered with the close that states the ceiling ([`refused`],
+/// [`CloseCode::Size`]).
 const MAX_MESSAGE_BYTES: usize = 131_072;
 
-/// The largest FRAME this data plane reads, in bytes: the 32 KiB an API Gateway WebSocket
-/// api fragments a message into, so a message at [`MAX_MESSAGE_BYTES`] arrives as several
-/// frames and no single frame may be larger.
+/// The largest FRAME a client may send over a WEBSOCKET api, in bytes: the 32 KiB an API
+/// Gateway WebSocket api publishes as its frame quota, so a message at [`MAX_MESSAGE_BYTES`]
+/// is fragmented and no single frame may be larger. A frame past it is refused with the same
+/// close the ceiling carries, and the reader is what stops at it.
 const MAX_FRAME_BYTES: usize = 32 * 1024;
+
+/// How many bytes of ASSEMBLED fragments this socket's reader buffers for one message before
+/// it stops reading: twice [`MAX_MESSAGE_BYTES`].
+///
+/// It sits ABOVE the gateway's own per-message ceiling on purpose. A message that passes that
+/// ceiling is REFUSED BY THE GATEWAY, with the close that states the ceiling, and a refusal
+/// the client reads is one written over a socket whose bytes were read in full — so the reader
+/// must not be the thing that stops first for a message only a little past the ceiling. What
+/// is left here is the backstop that stands between one local caller and the host's memory,
+/// since a message is read into a buffer sized by what that caller sent; it is stated rather
+/// than left to the WebSocket implementation's own default, so the bound a caller's bytes are
+/// buffered under is citable and survives a dependency bump.
+const READ_CEILING_BYTES: usize = 2 * MAX_MESSAGE_BYTES;
 
 /// How many bytes may wait on the WRITE side of one socket before the implementation stops
 /// buffering: the depth of the pushes queued for a connection
@@ -383,10 +402,10 @@ const MAX_FRAME_BYTES: usize = 32 * 1024;
 const MAX_WRITE_BUFFER_BYTES: usize = connections::CONNECTION_PUSH_DEPTH * MAX_MESSAGE_BYTES;
 
 /// The explicit size bounds every socket of this data plane is read and written under; see
-/// the three constants above.
+/// the constants above.
 fn socket_limits() -> ::tokio_tungstenite::tungstenite::protocol::WebSocketConfig {
     ::tokio_tungstenite::tungstenite::protocol::WebSocketConfig::default()
-        .max_message_size(Some(MAX_MESSAGE_BYTES))
+        .max_message_size(Some(READ_CEILING_BYTES))
         .max_frame_size(Some(MAX_FRAME_BYTES))
         .write_buffer_size(0)
         .max_write_buffer_size(MAX_WRITE_BUFFER_BYTES)
@@ -764,15 +783,25 @@ async fn carry_frames<S>(
                 }
             }
             frame = incoming.next() => {
-                let Some(Ok(frame)) = frame else { break };
                 let body = match frame {
-                    Message::Text(text) => text.as_str().to_string(),
-                    // A payload that is not text selects no route key of any api, so it is
-                    // served by `$default` if the api has one.
-                    Message::Binary(bytes) => {
-                        String::from_utf8(bytes.to_vec()).unwrap_or_default()
+                    Some(Ok(Message::Text(text))) => text.as_str().to_string(),
+                    // A WEBSOCKET api carries TEXT messages: a client DATA frame of any
+                    // other kind is a payload this plane does not serve, so it selects no
+                    // route, reaches no integration, and ends the connection with the
+                    // close RFC 6455 §7.4.1 states for "data within a message that it does
+                    // not understand" (1003).
+                    Some(Ok(Message::Binary(bytes))) => {
+                        tracing::info!(
+                            %api_id,
+                            %connection_id,
+                            payload_bytes = bytes.len(),
+                            "refusing a client data frame that is not text"
+                        );
+                        refused(&mut outgoing, CloseCode::Unsupported, BINARY_UNSUPPORTED_REASON)
+                            .await;
+                        break;
                     }
-                    Message::Close(frame) => {
+                    Some(Ok(Message::Close(frame))) => {
                         closed = Some(match frame {
                             Some(frame) => (
                                 Some(u16::from(frame.code)),
@@ -793,8 +822,48 @@ async fn carry_frames<S>(
                     }
                     // Ping, Pong and Frame are the protocol's own: the implementation answers
                     // a ping itself and nothing of the api serves them.
-                    _ => continue,
+                    Some(Ok(_)) => continue,
+                    // A message the reader itself stops at carries the SAME refusal the
+                    // ceiling below carries, and for the same reason the gateway states it:
+                    // one frame past [`MAX_FRAME_BYTES`], or fragments past the backstop
+                    // [`READ_CEILING_BYTES`]. The client reads why its message was refused
+                    // instead of losing the connection with nothing said.
+                    Some(Err(SocketError::Capacity(exceeded))) => {
+                        tracing::info!(
+                            %api_id,
+                            %connection_id,
+                            %exceeded,
+                            "refusing a client message past the bounds this socket is read under"
+                        );
+                        refused(&mut outgoing, CloseCode::Size, MESSAGE_TOO_BIG_REASON).await;
+                        break;
+                    }
+                    Some(Err(error)) => {
+                        tracing::debug!(
+                            %api_id,
+                            %connection_id,
+                            %error,
+                            "a WebSocket connection failed while a frame was read"
+                        );
+                        break;
+                    }
+                    None => break,
                 };
+                // The per-message ceiling, which the GATEWAY enforces: a message whose
+                // ASSEMBLED payload passes [`MAX_MESSAGE_BYTES`] reaches no route and ends
+                // the connection with the close RFC 6455 §7.4.1 states for a message "too
+                // big to process" (1009).
+                if body.len() > MAX_MESSAGE_BYTES {
+                    tracing::info!(
+                        %api_id,
+                        %connection_id,
+                        payload_bytes = body.len(),
+                        ceiling_bytes = MAX_MESSAGE_BYTES,
+                        "refusing a client message past the per-message ceiling"
+                    );
+                    refused(&mut outgoing, CloseCode::Size, MESSAGE_TOO_BIG_REASON).await;
+                    break;
+                }
                 if let Some(reply) = served_frame(&state, &callback, &connection, &body).await {
                     if outgoing.send(frame_of(reply)).await.is_err() {
                         break;
@@ -885,6 +954,36 @@ fn server_close() -> CloseFrame {
         reason: String::new().into(),
     }
 }
+
+/// Refuse the client's MESSAGE: state the close its refusal carries and end the connection.
+///
+/// A message a WEBSOCKET api does not serve — one whose frame is not text, one past the
+/// per-message ceiling or the frame quota — is refused with the RFC 6455 §7.4.1 status code of
+/// that refusal (`1003` for data the endpoint does not accept, `1009` for a message too big to
+/// process) and the sentence the gateway words it with, WRITTEN before the socket is let go: a
+/// connection that merely stops tells a client nothing, so nothing keyed on the close code can
+/// run. No route is selected and no integration is invoked for such a message.
+async fn refused<W>(outgoing: &mut W, code: CloseCode, reason: &str)
+where
+    W: ::futures_util::Sink<Message> + Unpin,
+{
+    let _ = outgoing
+        .send(Message::Close(Some(CloseFrame {
+            code,
+            reason: reason.to_string().into(),
+        })))
+        .await;
+    // The write half is closed here rather than left to the socket being dropped, as the
+    // closing handshake of a client's own close is ([`carry_frames`]).
+    let _ = outgoing.close().await;
+}
+
+/// The sentences API Gateway words a refused message's close with, carried in the CLOSE
+/// frame's payload after the status code (RFC 6455 §5.5.1, "the body MAY contain … a reason"):
+/// one for a client data frame that is not text, one for a message past the per-message
+/// ceiling.
+const BINARY_UNSUPPORTED_REASON: &str = "Binary is not supported";
+const MESSAGE_TOO_BIG_REASON: &str = "Message too big";
 
 /// What one frame is answered with, or `None` when the api sends nothing back for it.
 ///

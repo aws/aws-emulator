@@ -62,15 +62,15 @@ fn websocket_api(name: &str) -> Value {
 }
 
 /// One api, created with the socket its `ApiEndpoint` announces.
-struct Api {
-    api_id: String,
+pub(crate) struct Api {
+    pub(crate) api_id: String,
     /// The `host:port` of the api's own socket, read off the announced `ApiEndpoint` rather
     /// than spelled out here, so a case dials the address the service reported.
-    authority: String,
+    pub(crate) authority: String,
 }
 
 /// Create a WEBSOCKET api and read the socket address it announces.
-async fn create_api(emulator: &MultiServiceRouter, case: &str, name: &str) -> Api {
+pub(crate) async fn create_api(emulator: &MultiServiceRouter, case: &str, name: &str) -> Api {
     let (status, created) = call(emulator, "POST", "/v2/apis", Some(websocket_api(name))).await;
     assert_eq!(
         status, 201,
@@ -90,7 +90,7 @@ async fn create_api(emulator: &MultiServiceRouter, case: &str, name: &str) -> Ap
 }
 
 /// Create one integration of the api and answer its `IntegrationId`.
-async fn create_integration(
+pub(crate) async fn create_integration(
     emulator: &MultiServiceRouter,
     case: &str,
     api_id: &str,
@@ -111,7 +111,7 @@ async fn create_integration(
 }
 
 /// Create one integration response of an integration.
-async fn create_integration_response(
+pub(crate) async fn create_integration_response(
     emulator: &MultiServiceRouter,
     case: &str,
     api_id: &str,
@@ -133,7 +133,7 @@ async fn create_integration_response(
 
 /// Create one route over `integration_id`, and a route response for it when `two_way` is
 /// set — "to define a two-way route, create a route response".
-async fn create_route(
+pub(crate) async fn create_route(
     emulator: &MultiServiceRouter,
     case: &str,
     api_id: &str,
@@ -172,7 +172,7 @@ async fn create_route(
 }
 
 /// Create a stage, and release a deployment to it when `deploy` is set.
-async fn create_stage(
+pub(crate) async fn create_stage(
     emulator: &MultiServiceRouter,
     case: &str,
     api_id: &str,
