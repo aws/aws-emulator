@@ -239,15 +239,19 @@ pub fn deliver(
         // apart (`super::async_delivery`).
         let mut runs: u32 = 0;
         let mut throttles: u32 = 0;
+        // WHAT ends the event, which is the condition the record a destination reads reports:
+        // the attempts it was allowed, until the retention window below is what runs out
+        // first (`super::async_completion_delivery::Ending`).
+        let mut ending = super::async_completion_delivery::Ending::AttemptsSpent;
         // Each turn is ONE delivery attempt: the attempt is the entry's from here on, so the
         // clock settles it no further, and what follows an attempt is the retry policy's
         // (`super::async_delivery`) — an errored handler is invoked again, an attempt that
         // found no capacity is made again, and a handler that returned or a run nothing
         // could start are the end of the event.
         loop {
-            if claim(&state, &function_name, &request_id).is_none() {
+            let Some(claimed) = claim(&state, &function_name, &request_id) else {
                 return;
-            }
+            };
             let run = super::execution::run_invocation(invocation.clone()).await;
             // A THROTTLED attempt is not what became of the event: nothing about the event
             // stopped it, so "Lambda returns the event to the queue and attempts to run the
@@ -273,9 +277,25 @@ pub fn deliver(
                     ::tokio::time::sleep(again).await;
                     continue;
                 }
+                // The window the event is retained for is spent, so this is what ENDED it:
+                // its age rather than the attempts it was allowed, which is what the record
+                // a destination reads reports
+                // (`super::async_completion_delivery::Ending`).
+                ending = super::async_completion_delivery::Ending::AgeExceeded;
             }
             if run.is_ok() {
                 runs = runs.saturating_add(1);
+                // The AGE of the event at the moment the function was invoked with it, which
+                // is what `AsyncEventAge` measures: one observation per attempt that RAN the
+                // handler, so a retried event meters the longer wait its retry really had. A
+                // retry is also one more invocation of the function code, which the accepting
+                // call could not have metered (`super::metrics`).
+                if let Some(metrics) = invocation.metrics.as_ref() {
+                    metrics.publish_async_event_age(accepted.elapsed());
+                    if runs > 1 {
+                        metrics.publish_retry_invocation();
+                    }
+                }
             }
             let (outcome, ran, function_error) = match &run {
                 Ok(invoked) => (
@@ -303,10 +323,29 @@ pub fn deliver(
                      function"
                 );
             }
-            let Some(again) =
-                super::async_delivery::next_attempt_in(ran, function_error.as_deref(), runs)
-            else {
+            let Some(again) = super::async_delivery::next_attempt_in(
+                ran,
+                function_error.as_deref(),
+                runs,
+                claimed.allowed,
+            ) else {
                 settle(&state, &function_name, &request_id, outcome);
+                // The event's deliveries to the FUNCTION are over, so what the configuration
+                // of this qualifier and of this version asks for next is owed: the invocation
+                // record to the destination, and the event itself to the dead-letter target
+                // (`super::async_completion_delivery`). It happens on the LAST attempt only,
+                // because an event the retry policy will deliver again has not completed.
+                super::async_completion_delivery::deliver_completion(
+                    &state,
+                    &super::async_completion_delivery::Completion {
+                        invocation: &invocation,
+                        qualifier: &claimed.qualifier,
+                        attempts: runs,
+                        run: &run,
+                        ending,
+                    },
+                )
+                .await;
                 // The run was the durable execution's, so the execution ends in the status
                 // the invocation came to — which is what makes a caller polling it see a
                 // terminal status rather than `RUNNING` for ever. It is settled on the LAST
@@ -327,6 +366,17 @@ pub fn deliver(
             ::tokio::time::sleep(again).await;
         }
     });
+}
+
+/// What claiming one delivery attempt reports about the event it claimed.
+struct Claimed {
+    /// How many delivery attempts the event is allowed in all, as the qualifier's own
+    /// asynchronous-invocation configuration says
+    /// ([`super::async_delivery::attempts_allowed`]).
+    allowed: u32,
+    /// The version label the event was addressed to, which is the qualifier that
+    /// configuration belongs to.
+    qualifier: String,
 }
 
 /// Mark the entry `request_id` names on `function` as having a delivery attempt PENDING, so
@@ -402,7 +452,7 @@ fn requeue(
 
 /// Mark the entry `request_id` names on `function` as being delivered, counting the attempt
 /// that is about to be made, so the clock does not settle an event an attempt is already
-/// making — and answer how many attempts the event has now had.
+/// making — and answer what that leaves known about the event ([`Claimed`]).
 ///
 /// The claim is unconditional: an entry the clock settled in the instant between its attempt
 /// falling due and this attempt taking it is one that IS being delivered, so the attempt's
@@ -414,12 +464,26 @@ fn claim(
     state: &::engine::ServiceState<ComAmazonawsLambdaAwsgirapiserviceState>,
     function: &str,
     request_id: &str,
-) -> Option<u32> {
+) -> Option<Claimed> {
     let mut store = state.lock();
-    let entry = entry_of(&mut store, function, request_id)?;
+    let record = store.functions.get_mut(function)?;
+    let entry = record
+        .async_invocations
+        .iter_mut()
+        .find(|entry| entry.request_id == request_id)?;
     entry.outcome = AsyncInvocationOutcome::Delivering;
     entry.attempts = entry.attempts.saturating_add(1);
-    Some(entry.attempts)
+    let qualifier = entry.version.clone();
+    // How many attempts the event is allowed is the ADDRESSED qualifier's own, read on each
+    // attempt rather than fixed when the event was accepted: the resource is the
+    // configuration, which a caller may replace while the event is still being delivered.
+    let allowed = super::async_delivery::attempts_allowed(
+        record
+            .event_invoke_configs
+            .get(&qualifier)
+            .and_then(|config| config.maximum_retry_attempts),
+    );
+    Some(Claimed { allowed, qualifier })
 }
 
 /// Record what the delivery attempt for `request_id` came to on the entry that holds it, if

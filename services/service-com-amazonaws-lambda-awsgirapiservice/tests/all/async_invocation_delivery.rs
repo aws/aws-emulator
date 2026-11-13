@@ -3,11 +3,19 @@
 //! End-to-end tests for the RETRY of an accepted asynchronous invocation: how many times
 //! `Invoke` with `InvocationType=Event` delivers one event to its function.
 //!
-//! The rule under test: "When an error occurs, your function may be invoked multiple times.
-//! […] if you invoke a function asynchronously and it returns an error, Lambda executes the
-//! function up to two more times" (`Invoke`). So a delivery whose HANDLER errored is followed
-//! by further attempts, three in all, while an event the handler returned from is delivered
-//! once — the attempts are spent on the errors and on nothing else.
+//! The rule under test: a delivery whose HANDLER errored is followed by further attempts, as
+//! many as the qualifier the event was addressed to allows — "the maximum number of times to
+//! retry when the function returns an error" (`MaximumRetryAttempts`) — while an event the
+//! handler returned from is delivered once: the attempts are spent on the errors and on
+//! nothing else.
+//!
+//! The rows drive that over a SET of configured allowances (one retry, and none at all),
+//! because the allowance is what the rule generalises over; the documented default of two
+//! more attempts (`Invoke`: "Lambda executes the function up to two more times") is the
+//! allowance a qualifier nobody configured gets, which `state::async_delivery`'s own table
+//! covers. Waiting that default out end to end would have this suite sleep through the
+//! minute-scale waits AWS publishes between attempts for nothing: the count is the subject,
+//! and the count is what a configuration states.
 //!
 //! That the delivery happens at all, over every form of event, qualifier, runtime and
 //! package, is `asynchronous_invoke_run.rs`'s subject; this suite is about what follows ONE
@@ -25,8 +33,8 @@ use base64::Engine as _;
 use serde_json::json;
 use service_com_amazonaws_lambda_awsgirapiservice::state::execution::FUNCTION_ERROR_UNHANDLED;
 use service_com_amazonaws_lambda_awsgirapiservice::state::{
-    AsyncInvocationOutcome, AsyncInvocationRecord, ComAmazonawsLambdaAwsgirapiserviceState,
-    ACTIVATION_DELAY, MAX_ASYNC_DELIVERY_ATTEMPTS,
+    attempts_allowed, AsyncInvocationOutcome, AsyncInvocationRecord,
+    ComAmazonawsLambdaAwsgirapiserviceState, ACTIVATION_DELAY, FIRST_ASYNC_RETRY_DELAY,
 };
 use service_com_amazonaws_lambda_awsgirapiservice::EmulatedService;
 use smithy_server_runtime::MultiServiceRouter;
@@ -49,9 +57,17 @@ const ROLE: &str = "arn:aws:iam::000000000000:role/service-role/lambda-exec";
 /// the CLOCK, so nothing here sleeps on the emulator's behalf.
 const SLACK: Duration = Duration::from_millis(150);
 
+/// How many retries the qualifier every row below is addressed to allows, and how many
+/// another function allows instead: the two ends of `MaximumRetryAttempts`' own range that
+/// this suite drives end to end (`@range(min: 0, max: 2)`).
+const ONE_RETRY: i64 = 1;
+/// See [`ONE_RETRY`].
+const NO_RETRIES: i64 = 0;
+
 /// How long this suite waits for every accepted event to settle: well past the attempts an
-/// errored handler's event takes, and still a bound on the test.
-const SETTLE_BUDGET: Duration = Duration::from_secs(60);
+/// errored handler's event takes under [`ONE_RETRY`] — the wait AWS publishes before that
+/// retry included ([`FIRST_ASYNC_RETRY_DELAY`]) — and still a bound on the test.
+const SETTLE_BUDGET: Duration = FIRST_ASYNC_RETRY_DELAY.saturating_add(Duration::from_secs(120));
 
 /// How often it re-reads the queue while it waits.
 const POLL_INTERVAL: Duration = Duration::from_millis(25);
@@ -113,8 +129,9 @@ async fn call(
 }
 
 /// Create the function and wait out the provisioning window the create documents ("During
-/// this time, you can't invoke or modify the function").
-async fn create_function(router: &MultiServiceRouter, name: &str) {
+/// this time, you can't invoke or modify the function"), stating how many retries its
+/// unpublished version allows.
+async fn create_function(router: &MultiServiceRouter, name: &str, retries: i64) {
     let created = call(
         router,
         "POST",
@@ -142,6 +159,22 @@ async fn create_function(router: &MultiServiceRouter, name: &str) {
         created.text()
     );
     tokio::time::sleep(ACTIVATION_DELAY + SLACK).await;
+    let configured = call(
+        router,
+        "PUT",
+        &format!("/2019-09-25/functions/{name}/event-invoke-config"),
+        &serde_json::to_vec(&json!({ "MaximumRetryAttempts": retries }))
+            .expect("the configuration body serializes"),
+        &[],
+    )
+    .await;
+    assert_eq!(
+        configured.status,
+        200,
+        "PutFunctionEventInvokeConfig on {name:?} must succeed, got {} {}",
+        configured.status,
+        configured.text()
+    );
 }
 
 /// The queue entries Lambda holds for `name`, in queue order, read out of the service's own
@@ -166,9 +199,10 @@ struct Row {
 }
 
 /// The rows differ along what the handler does with the event — the one thing the policy
-/// decides on — and each kind is sent twice over, so a retry that leaked into another entry
-/// would show up as the wrong count on it.
-fn rows() -> Vec<Row> {
+/// decides on, given the allowance in force — and each kind is sent twice over, so a retry
+/// that leaked into another entry would show up as the wrong count on it.
+fn rows(retries: i64) -> Vec<Row> {
+    let allowed = attempts_allowed(Some(i32::try_from(retries).expect("the row's retries fit")));
     vec![
         Row {
             case: "the handler returns",
@@ -180,13 +214,13 @@ fn rows() -> Vec<Row> {
             case: "the handler raises",
             event: r#"{"id":2,"fail":true}"#,
             function_error: Some(FUNCTION_ERROR_UNHANDLED),
-            attempts: MAX_ASYNC_DELIVERY_ATTEMPTS,
+            attempts: allowed,
         },
         Row {
             case: "the handler raises for another event",
             event: r#"{"id":3,"fail":true}"#,
             function_error: Some(FUNCTION_ERROR_UNHANDLED),
-            attempts: MAX_ASYNC_DELIVERY_ATTEMPTS,
+            attempts: allowed,
         },
         Row {
             case: "the handler returns for another event",
@@ -198,19 +232,30 @@ fn rows() -> Vec<Row> {
 }
 
 /// The whole rule, over one queue holding every row: each event is delivered, and only the
-/// ones the handler errored on are delivered again.
+/// ones the handler errored on are delivered again — as many times as the allowance in force
+/// says and no more.
+///
+/// Driven TWICE, over the two allowances this suite states: one retry, and none at all.
 #[tokio::test]
 async fn only_an_errored_delivery_is_attempted_again() {
+    for (function, retries) in [("attempts", ONE_RETRY), ("attempts-none", NO_RETRIES)] {
+        only_the_allowed_attempts_are_made(function, retries).await;
+    }
+}
+
+/// One pass of the table above, against a function whose unpublished version allows
+/// `retries`.
+async fn only_the_allowed_attempts_are_made(function: &str, retries: i64) {
     let engine = Arc::new(engine::InMemoryEngine::new());
     let router = router_on(&engine);
-    create_function(&router, "attempts").await;
+    create_function(&router, function, retries).await;
 
-    let rows = rows();
+    let rows = rows(retries);
     for row in &rows {
         let accepted = call(
             &router,
             "POST",
-            &format!("{FUNCTIONS_URI}/attempts/invocations"),
+            &format!("{FUNCTIONS_URI}/{function}/invocations"),
             row.event.as_bytes(),
             &[("x-amz-invocation-type", "Event")],
         )
@@ -229,7 +274,7 @@ async fn only_an_errored_delivery_is_attempted_again() {
     // queued or being delivered has an attempt under way.
     let deadline = Instant::now() + SETTLE_BUDGET;
     let settled = loop {
-        let entries = held(&engine, "attempts");
+        let entries = held(&engine, function);
         if entries.len() == rows.len()
             && entries.iter().all(|entry| {
                 !matches!(

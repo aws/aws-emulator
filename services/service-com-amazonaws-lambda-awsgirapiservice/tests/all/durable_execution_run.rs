@@ -184,6 +184,25 @@ async fn given_durable_function(
         String::from_utf8_lossy(&created.body)
     );
     make_activation_due(engine);
+    // No RETRY for an errored handler: no row here is about how many delivery attempts an
+    // event has ("the maximum number of times to retry when the function returns an error",
+    // `MaximumRetryAttempts`, whose floor is 0), and Lambda waits minutes between the attempts
+    // it makes, so a row left on the default would wait those out before the execution could
+    // reach the terminal status it IS about.
+    let configured = json_call(
+        router,
+        "PUT",
+        &format!("/2019-09-25/functions/{name}/event-invoke-config"),
+        &json!({ "MaximumRetryAttempts": 0 }),
+    )
+    .await;
+    assert_eq!(
+        configured.status,
+        200,
+        "case {name}: PutFunctionEventInvokeConfig must answer 200, got {} {}",
+        configured.status,
+        String::from_utf8_lossy(&configured.body)
+    );
 }
 
 /// Start one execution of `function` and answer the ARN it is addressed by.

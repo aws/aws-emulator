@@ -579,7 +579,7 @@ impl Invoked {
 /// The run happens on a thread of its own, holding its own share of this module's run memory
 /// and no state guard of this service, and the caller's wait for it is bounded by
 /// [`HOST_WAIT_CEILING`] however long the function's own timeout is.
-pub async fn run_invocation(invocation: Invocation) -> Result<Invoked, Unrunnable> {
+pub async fn run_invocation(mut invocation: Invocation) -> Result<Invoked, Unrunnable> {
     let Some(engine) = engine_for(invocation.runtime.as_deref()) else {
         return Err(Unrunnable::NoEngine {
             runtime: invocation
@@ -591,6 +591,14 @@ pub async fn run_invocation(invocation: Invocation) -> Result<Invoked, Unrunnabl
     let Some(handler) = invocation.handler.clone() else {
         return Err(Unrunnable::NoHandler);
     };
+    // The AWS SDK a managed runtime ships reads the invocation's own tracing context out of
+    // the environment and stamps it on every request it makes, so the seam the handler calls
+    // through carries this invocation's header ([`aws_api::AwsAccess::tracing`]). That is
+    // what makes the call a handler makes a HOP OF THIS CHAIN to the service that serves it,
+    // which is what the recursive-loop guardrail counts (`super::recursion`).
+    if let Some(header) = invocation.trace.as_ref().map(|trace| trace.header.clone()) {
+        invocation.aws = invocation.aws.take().map(|aws| aws.tracing(header));
+    }
 
     // A host already holding as many runs past their budget as it keeps threads for starts
     // no further one, and is answered BEFORE a byte of the caller's archive is expanded: a

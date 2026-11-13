@@ -81,7 +81,11 @@ const EVENTS_PRINCIPAL: &str = "events.amazonaws.com";
 /// reach its terminal status and both events to be delivered. The publication happens off the
 /// response path, on the clock the store runs, so every wait below is a POLL rather than a
 /// single sleep.
-const DELIVERY_CEILING: Duration = Duration::from_secs(60);
+///
+/// A ceiling on PATIENCE: an execution whose handler RAISED ends only once the attempts the
+/// retry policy has for its event are spent, and AWS publishes a minute-scale wait between
+/// them, so this is far longer than the publication itself takes on any host.
+const DELIVERY_CEILING: Duration = Duration::from_secs(300);
 
 /// How long one poll of the queue waits before asking again.
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
@@ -206,6 +210,26 @@ async fn every_durable_execution_status_change_reaches_a_rule_on_the_default_bus
             String::from_utf8_lossy(&created.body)
         );
         tokio::time::sleep(ACTIVATION_DELAY + POLL_INTERVAL).await;
+        // No RETRY for an errored handler: no row here is about how many delivery attempts an
+        // event has ("the maximum number of times to retry when the function returns an
+        // error", `MaximumRetryAttempts`, whose floor is 0), and Lambda waits minutes between
+        // the attempts it makes, so a row left on the default would wait those out before the
+        // execution could reach the status it IS about.
+        let configured = json_call(
+            &router,
+            "PUT",
+            &format!("/2019-09-25/functions/{name}/event-invoke-config"),
+            &json!({ "MaximumRetryAttempts": 0 }),
+        )
+        .await;
+        assert_eq!(
+            configured.status,
+            200,
+            "case {:?}: expected 200 from PutFunctionEventInvokeConfig, got {} {}",
+            row.case,
+            configured.status,
+            String::from_utf8_lossy(&configured.body)
+        );
 
         let execution = format!("exec-{index}");
         let invoked = send(

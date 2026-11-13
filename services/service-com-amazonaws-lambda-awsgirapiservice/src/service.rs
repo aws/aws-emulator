@@ -101,8 +101,9 @@ use aws_smithy_types::body::SdkBody;
 use service_common::event_stream::EventStreamRoute;
 use service_common::shared_path::SharedPathArn;
 use smithy_server_runtime::{
-    http, BoxFuture, ErasedOperation, Operation, OperationContext, OperationRoutingTable, Refusal,
-    Refused, ServerHttpProtocol, Service, Violation, ViolationKind,
+    http, BoxFuture, ErasedOperation, ErasedServiceDefinition, Operation, OperationContext,
+    OperationRoutingTable, Refusal, Refused, ServerHttpProtocol, Service, Violation,
+    ViolationKind,
 };
 use std::sync::Arc;
 
@@ -115,6 +116,10 @@ pub mod fault_class;
 /// handed out is served by the function that URL is attached to; see the module's own
 /// header.
 pub mod function_url;
+
+/// How a request to a function URL that the emulator's authentication layer turned away is
+/// worded; see the module's own header.
+mod function_url_refusal;
 
 /// The media type an INVOCATION's response announces, which is the media type of the
 /// document the function produced rather than of the binding it travels in; see the
@@ -280,7 +285,7 @@ fn claims_shared_tagging_path(parts: &http::request::Parts) -> bool {
 /// Generic over the engine type `Eng` so this file names no concrete engine; the
 /// router builds one shared engine and hands it to `new`.
 pub struct EmulatedService<Eng: Send + Sync + 'static> {
-    entry: crate::ServiceDefinition<Eng>,
+    entry: function_url_refusal::FunctionUrlRefusals<Eng>,
     /// Serves the download URLs `GetFunction` and `GetLayerVersion` announce, from the
     /// SAME shared engine the generated entry threads into every operation — not a
     /// second copy of the store.
@@ -418,7 +423,7 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
             update_function_url_config::UpdateFunctionUrlConfig,
         );
         Self {
-            entry: crate::ServiceDefinition::new(Arc::clone(&engine)),
+            entry: function_url_refusal::FunctionUrlRefusals::new(Arc::clone(&engine)),
             response_stream: NamingItsRequest(EventStreamRoute(
                 crate::ops::invoke_with_response_stream::ResponseStreamEntry::new(Arc::clone(
                     &engine,

@@ -41,6 +41,8 @@ mod alias_version_not_found_sentence;
 mod alias_write_not_found_sentence;
 #[path = "all/announced_download_locations.rs"]
 mod announced_download_locations;
+#[path = "all/async_completion_destinations.rs"]
+mod async_completion_destinations;
 #[path = "all/async_delivery.rs"]
 mod async_delivery;
 #[path = "all/async_event_delivery_ownership.rs"]
@@ -223,6 +225,8 @@ mod function_url_deletion;
 mod function_url_listing;
 #[path = "all/function_url_reported_members.rs"]
 mod function_url_reported_members;
+#[path = "all/function_url_unauthenticated_refusal.rs"]
+mod function_url_unauthenticated_refusal;
 #[path = "all/function_url_update.rs"]
 mod function_url_update;
 #[path = "all/function_version_listing.rs"]
@@ -243,6 +247,8 @@ mod handler_bucket_administration_sdk;
 mod handler_customer_key_access;
 #[path = "all/handler_db_auth_token.rs"]
 mod handler_db_auth_token;
+#[path = "all/handler_lambda_sdk.rs"]
+mod handler_lambda_sdk;
 #[path = "all/handler_logging_facility.rs"]
 mod handler_logging_facility;
 #[path = "all/handler_metric_timestamp.rs"]
@@ -498,3 +504,5 @@ mod zzprobe;
 // `clippy::duplicate_mod` besides, so this target did not compile. The duplicate lines are
 // gone and the first declaration of each stands. Add a NEW suite in the sorted span its
 // name belongs to, and check it is not declared already before appending it here.
+// `function_url_reported_members` was appended here and now stands in the sorted span above,
+// where its name belongs, so nothing is declared twice.

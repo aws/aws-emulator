@@ -708,11 +708,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     // its CALLER named, read off this request's own tracing header, under
                     // the rule the function's `TracingConfig` mode gives
                     // (`crate::state::execution::trace_context`).
-                    trace: crate::state::invocation_trace_context(
+                    trace: Some(crate::state::invocation_trace_context(
                         supplied_trace.as_deref(),
                         &resolved_config.tracing_mode,
                         now,
-                    ),
+                    )),
                     // A queued event is delivered off the response path, so no execution
                     // environment has been chosen for it at this point and none of the
                     // qualifier's provisioned ones is holding it: the delivery runs on an
@@ -764,6 +764,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // second one, so it is not counted a second time either.
             if let Some(invocation) = delivered {
                 crate::state::publish_invocation(&*self.engine, &function_name, &resource);
+                // It is also one asynchronous event ACCEPTED onto the invocation queue,
+                // metered as one `AsyncEventsReceived` datapoint
+                // (`crate::state::metrics`).
+                crate::state::publish_async_event_received(
+                    &*self.engine,
+                    &function_name,
+                    &resource,
+                );
                 // The run this delivery makes is the durable execution's own run, when the
                 // start above registered one, so the execution it names is settled on what
                 // that run comes to (`crate::state::durable_run`).
@@ -865,11 +873,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // the handler in `_X_AMZN_TRACE_ID`: the chain this caller named, continued or
             // started under the rule the function's `TracingConfig` mode gives
             // (`crate::state::execution::trace_context`).
-            trace: crate::state::invocation_trace_context(
+            trace: Some(crate::state::invocation_trace_context(
                 supplied_trace.as_deref(),
                 &resolved_config.tracing_mode,
                 now,
-            ),
+            )),
             initialization_type: admitted.initialization_type,
             // The AWS SDK this runtime supplies the handler reaches the rest of this
             // emulator through the callback the framework handed THIS request, signing

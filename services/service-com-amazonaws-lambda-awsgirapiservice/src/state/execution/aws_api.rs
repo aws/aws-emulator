@@ -652,6 +652,26 @@ pub const APIS: &[Api] = &[
         protocol: Protocol::CloudFrontRest,
         answer_model: None,
     },
+    // `services/service-com-amazonaws-lambda-awsgirapiservice/smithy-model/
+    // com-amazonaws-lambda-awsgirapiservice.json`: restJson1, sigv4Name `lambda`,
+    // endpointPrefix `lambda`, sdkId `Lambda`. Its requests are bound per operation out of
+    // that same model ([`LAMBDA`]) — this crate's OWN model, so the surface a handler
+    // reaches is exactly the one this service serves.
+    //
+    // A function that INVOKES ANOTHER FUNCTION — or itself — is the shape that reaches this
+    // service: a fan-out handler hands each item to a worker function, a step of a pipeline
+    // calls the next one, and a self-invoking handler carries a chain on. Without it such a
+    // handler can make no progress at all, and the recursive-loop guardrail
+    // ([`super::super::recursion`]) has no chain to detect, because the chain is made of
+    // these very calls.
+    Api {
+        sdk_token: "lambda",
+        signing_name: "lambda",
+        endpoint_prefix: "lambda",
+        model: Some(LAMBDA_MODEL),
+        protocol: Protocol::RestJson(&LAMBDA),
+        answer_model: Some(&LAMBDA_ANSWERS),
+    },
 ];
 
 /// Whether `named` and `asked` name the ONE service.
@@ -795,6 +815,11 @@ pub(super) const CODEDEPLOY_MODEL: &str = include_str!(
     "../../../../service-com-amazonaws-codedeploy-codedeploy-20141006/smithy-model/\
      com-amazonaws-codedeploy-codedeploy-20141006.json"
 );
+/// THIS service's own model, read the same way as every other entry's: a call a handler makes
+/// to Lambda is bound by the model this crate is generated from, so the surface a running
+/// function reaches is the surface this emulator serves.
+pub(super) const LAMBDA_MODEL: &str =
+    include_str!("../../../smithy-model/com-amazonaws-lambda-awsgirapiservice.json");
 
 /// AWS X-Ray's own model, which a call to it is bound by, embedded exactly as the API
 /// Gateway model below is and for the same reason: the wire facts of its operations are that
@@ -901,6 +926,19 @@ static CONFIG_ANSWERS: super::blob_members::ServiceModel = super::blob_members::
 static CODEDEPLOY_ANSWERS: super::blob_members::ServiceModel = super::blob_members::ServiceModel {
     source: CODEDEPLOY_MODEL,
     plan: ::std::sync::OnceLock::new(),
+};
+static LAMBDA_ANSWERS: super::blob_members::ServiceModel = super::blob_members::ServiceModel {
+    source: LAMBDA_MODEL,
+    plan: ::std::sync::OnceLock::new(),
+};
+
+/// THIS service's own model, which a call a handler makes to Lambda is bound by — embedded
+/// exactly as [`APIGATEWAY`] is, and for the same reason: the wire facts of each operation
+/// are that model's, so this seam states none of them.
+static LAMBDA: super::rest_json::RestApi = super::rest_json::RestApi {
+    model: LAMBDA_MODEL,
+    namespace: "com.amazonaws.lambda",
+    parsed: ::std::sync::OnceLock::new(),
 };
 
 /// Amazon API Gateway's own model, which a call to it is bound by.
@@ -1020,6 +1058,19 @@ pub struct AwsAccess {
     /// role, or `None` where no session could be minted for it, in which case the call is
     /// signed with the credential the framework hands this emulator's handlers.
     identity: Option<CallerIdentity>,
+    /// The TRACING HEADER every call carries, which is the invocation's own
+    /// ([`super::trace_context`]) — `None` for a run that has no trace context.
+    ///
+    /// An AWS SDK running inside a Lambda invocation reads the context the runtime reports
+    /// in `_X_AMZN_TRACE_ID` and stamps it on each request it makes, which is what makes the
+    /// hops of ONE request chain recognisable as one chain by the service that serves them —
+    /// the very thing Lambda's recursive-loop guardrail counts ([`super::super::recursion`]).
+    /// So the seam the handler calls through carries it, and a hop that carries none belongs
+    /// to no chain any service can place.
+    ///
+    /// It is the HOST's, like the credential beside it: guest code cannot read it off this
+    /// seam or set one of its own, so a handler cannot hand its call a chain it chose.
+    trace_header: Option<String>,
 }
 
 impl AwsAccess {
@@ -1033,6 +1084,7 @@ impl AwsAccess {
             runtime,
             region: region.to_string(),
             identity: None,
+            trace_header: None,
         })
     }
 
@@ -1045,6 +1097,15 @@ impl AwsAccess {
     #[must_use]
     pub fn signing_as(mut self, identity: Option<CallerIdentity>) -> Self {
         self.identity = identity;
+        self
+    }
+
+    /// The same access, stamping `trace_header` on every call it makes — the tracing header
+    /// of the invocation whose handler is calling, as an SDK inside a function stamps it (see
+    /// [`Self::trace_header`]).
+    #[must_use]
+    pub fn tracing(mut self, trace_header: String) -> Self {
+        self.trace_header = Some(trace_header);
         self
     }
 
@@ -1156,7 +1217,16 @@ impl AwsAccess {
     ) -> Result<Answer, Refusal> {
         match api.protocol {
             Protocol::AwsJson { .. } | Protocol::RestJson(_) => {
-                dispatch(&self.callback, api, region, operation, body, self.identity.as_ref()).await
+                dispatch(
+                    &self.callback,
+                    api,
+                    region,
+                    operation,
+                    body,
+                    self.identity.as_ref(),
+                    self.trace_header.as_deref(),
+                )
+                .await
             }
             Protocol::S3Rest => {
                 super::aws_s3::call(
@@ -1355,8 +1425,9 @@ async fn dispatch(
     operation: &str,
     body: &str,
     identity: Option<&CallerIdentity>,
+    trace_header: Option<&str>,
 ) -> Result<Answer, Refusal> {
-    sent(callback, api, region, operation, body, identity)
+    sent(callback, api, region, operation, body, identity, trace_header)
         .await
         .map_err(|detail| match detail {
             Sent::TooLarge => Refusal::ResponseTooLarge,
@@ -1380,9 +1451,16 @@ async fn sent(
     operation: &str,
     body: &str,
     identity: Option<&CallerIdentity>,
+    trace_header: Option<&str>,
 ) -> Result<Answer, Sent> {
     let host = api.host(region);
     let mut builder = ::http::Request::builder().header("host", host.clone());
+    // The invocation's own tracing context, stamped on the request the way an SDK inside a
+    // function stamps it (see [`AwsAccess::trace_header`]). It is put on BEFORE the signature
+    // below, so it travels signed with the rest of the request.
+    if let Some(trace) = trace_header {
+        builder = builder.header(super::trace_context::TRACE_HEADER, trace);
+    }
     let sent_body = match &api.protocol {
         Protocol::AwsJson {
             target_prefix,

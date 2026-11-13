@@ -43,7 +43,7 @@ use service_com_amazonaws_lambda_awsgirapiservice::state::execution::{
 };
 use service_com_amazonaws_lambda_awsgirapiservice::state::{
     AsyncInvocationOutcome, AsyncInvocationRecord, ComAmazonawsLambdaAwsgirapiserviceState,
-    ASYNC_DELIVERY_DELAY, ASYNC_RETRY_DELAY, THROTTLED_MAX_RETRY,
+    ASYNC_DELIVERY_DELAY, SECOND_ASYNC_RETRY_DELAY, THROTTLED_MAX_RETRY,
 };
 use service_com_amazonaws_lambda_awsgirapiservice::EmulatedService;
 use smithy_server_runtime::MultiServiceRouter;
@@ -86,15 +86,16 @@ const ONE_ATTEMPT_CEILING: Duration = PERMIT_WAIT
 /// retained — six hours by default — and how many such attempts a loaded host costs one event
 /// is not a row's to bound. What a row CAN bound is the emulator going QUIET about the event:
 /// one attempt is bounded by [`ONE_ATTEMPT_CEILING`], the waits the retry policy puts between
-/// two attempts of one event reach [`THROTTLED_MAX_RETRY`] and no further, and the first
-/// attempt falls due [`ASYNC_DELIVERY_DELAY`] after the accepting call. So an event that
-/// neither settles nor has another attempt made for it inside this span is one nothing is
-/// working on — which is the only thing a row here can call a failure, and is what
-/// [`settled_newest`] waits on. A row whose attempts keep being made is waited for however
-/// many of them the host costs it.
+/// two attempts of one event reach the longer of the two AWS publishes for an errored handler
+/// ([`SECOND_ASYNC_RETRY_DELAY`]) and [`THROTTLED_MAX_RETRY`] for one that found no capacity
+/// and no further, and the first attempt falls due [`ASYNC_DELIVERY_DELAY`] after the
+/// accepting call. So an event that neither settles nor has another attempt made for it
+/// inside this span is one nothing is working on — which is the only thing a row here can
+/// call a failure, and is what [`settled_newest`] waits on. A row whose attempts keep being
+/// made is waited for however many of them the host costs it.
 const NO_PROGRESS_CEILING: Duration = ASYNC_DELIVERY_DELAY
     .saturating_add(ONE_ATTEMPT_CEILING)
-    .saturating_add(ASYNC_RETRY_DELAY)
+    .saturating_add(SECOND_ASYNC_RETRY_DELAY)
     .saturating_add(THROTTLED_MAX_RETRY);
 
 /// The `Timeout` every function below is created with: the longest a handler of it may run.
@@ -252,6 +253,30 @@ pub(crate) async fn create_function(
     // the create. That CONDITION is what a row waits for — not a span of time — so a host
     // that takes longer to get there is waited for rather than failed.
     wait_until_active(router, name, name).await;
+    // No RETRY for an errored handler: no row of this suite, or of the suites that share this
+    // helper, is about how many delivery attempts an event has — that is
+    // `async_invocation_delivery.rs`'s subject, which states no configuration and so gets the
+    // documented default. Lambda waits a minute between the first two attempts and two
+    // minutes between the next, so an event left on the default would have a row here waiting
+    // those out for nothing; a configuration of no retries ("the maximum number of times to
+    // retry when the function returns an error", `MaximumRetryAttempts`, whose floor is 0)
+    // settles an errored handler's event on its first attempt instead.
+    let configured = call(
+        router,
+        "PUT",
+        &format!("/2019-09-25/functions/{name}/event-invoke-config"),
+        &serde_json::to_vec(&json!({ "MaximumRetryAttempts": 0 }))
+            .expect("the configuration body serializes"),
+        &[],
+    )
+    .await;
+    assert_eq!(
+        configured.status,
+        200,
+        "PutFunctionEventInvokeConfig on {name:?} must succeed, got {} {}",
+        configured.status,
+        configured.text()
+    );
 }
 
 /// How the invocation this row accepts is submitted.

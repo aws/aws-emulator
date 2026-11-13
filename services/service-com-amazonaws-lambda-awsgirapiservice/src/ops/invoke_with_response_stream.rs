@@ -450,11 +450,11 @@ impl<Eng: Send + Sync + 'static> InvokeWithResponseStream<Eng> {
             // The X-Ray trace context this invocation runs with: the chain the caller
             // named, under the rule the function's `TracingConfig` mode gives
             // (`crate::state::execution::trace_context`).
-            trace: crate::state::invocation_trace_context(
+            trace: Some(crate::state::invocation_trace_context(
                 crate::state::supplied_trace_header(ctx).as_deref(),
                 &resolved_config.tracing_mode,
                 now,
-            ),
+            )),
             // Which kind of environment serves it is the admission's to decide, below:
             // nothing has been admitted while the store guard is still held.
             initialization_type: crate::state::execution_slot::INITIALIZATION_TYPE_ON_DEMAND,

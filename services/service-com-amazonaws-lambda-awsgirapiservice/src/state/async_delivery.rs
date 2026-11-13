@@ -7,8 +7,10 @@
 //! by error type, client, event source, and invocation type. For example, if you invoke a
 //! function asynchronously and it returns an error, Lambda executes the function up to two
 //! more times" (`Invoke`). So a delivery attempt whose handler ERRORED is not the end of the
-//! event: Lambda makes further attempts, up to [`MAX_ASYNC_DELIVERY_ATTEMPTS`] in all, and
-//! only then does the entry keep what the last of them came to
+//! event: Lambda makes further attempts, as many as the qualifier the event was addressed to
+//! allows — "the maximum number of times to retry when the function returns an error"
+//! (`MaximumRetryAttempts`), and the two more above where that states nothing
+//! ([`attempts_allowed`]) — and only then does the entry keep what the last of them came to
 //! ([`super::AsyncInvocationOutcome`]).
 //!
 //! What does NOT get another attempt is an event the function could not be RUN for at all —
@@ -32,24 +34,68 @@
 
 use std::time::Duration;
 
-/// How many delivery attempts one accepted asynchronous event has.
+/// How many delivery attempts one accepted asynchronous event has by default.
 ///
 /// "If you invoke a function asynchronously and it returns an error, Lambda executes the
-/// function up to two more times" (`Invoke`): the first attempt plus those two.
+/// function up to two more times" (`Invoke`): the first attempt plus those two. It is the
+/// count an event gets when the qualifier it was addressed to states no
+/// `MaximumRetryAttempts` of its own, whose own documented default is those two retries.
 pub const MAX_ASYNC_DELIVERY_ATTEMPTS: u32 = 3;
 
-/// How long after a delivery attempt whose handler errored the next attempt is made.
+/// The most retries `MaximumRetryAttempts` may ask for.
 ///
-/// An EMULATOR-CHOSEN span, inside the range this crate chooses for every span of its own
-/// ([`super::ACTIVATION_DELAY`]). AWS publishes a minute-scale wait between the attempts it
-/// makes on an asynchronous invocation; a wait of that order would outlast any caller's
-/// observation of its own event, so what is kept faithful is the part a client can observe —
-/// how many attempts the event has ([`MAX_ASYNC_DELIVERY_ATTEMPTS`]), and that they are
-/// separated in time rather than run back to back.
-pub const ASYNC_RETRY_DELAY: Duration = Duration::from_secs(2);
+/// Source: the member's own `@range(min: 0, max: 2)`
+/// (`smithy_query(query="shape", shape="MaximumRetryAttempts")`). A stored value is held to it
+/// here as well as refused at the boundary, because the count is read back out of state.
+const MAX_CONFIGURED_RETRY_ATTEMPTS: i32 = 2;
+
+/// How many delivery attempts an event addressed to a qualifier whose asynchronous-invocation
+/// configuration states `maximum_retry_attempts` has: the first attempt plus the retries that
+/// configuration asks for.
+///
+/// `MaximumRetryAttempts` is "the maximum number of times to retry when the function returns
+/// an error", so it counts the attempts AFTER the first one — a configuration asking for none
+/// leaves the event one attempt, and one that states nothing at all leaves it
+/// [`MAX_ASYNC_DELIVERY_ATTEMPTS`].
+#[must_use]
+pub fn attempts_allowed(maximum_retry_attempts: Option<i32>) -> u32 {
+    let Some(retries) = maximum_retry_attempts else {
+        return MAX_ASYNC_DELIVERY_ATTEMPTS;
+    };
+    let retries = retries.clamp(0, MAX_CONFIGURED_RETRY_ATTEMPTS);
+    1 + u32::try_from(retries).unwrap_or(0)
+}
+
+/// How long after the FIRST delivery attempt of an event the second one is made.
+///
+/// AWS publishes this wait: "between the first and second attempt, Lambda waits one minute"
+/// for an asynchronous invocation whose function returned an error. It is the service's own
+/// documented span, so it keeps its value: the delay between attempts is what a client
+/// observing its own event — the age of the event each attempt meters
+/// ([`super::metrics::ASYNC_EVENT_AGE_METRIC`]), and when a record reaches a destination —
+/// reads the retry policy through.
+pub const FIRST_ASYNC_RETRY_DELAY: Duration = Duration::from_secs(60);
+
+/// How long after the SECOND delivery attempt the third one is made: "between the second and
+/// third attempt, Lambda waits two minutes", the other wait AWS publishes for the same
+/// policy. It is the wait after every later attempt too, because the policy allows no attempt
+/// past the third ([`MAX_ASYNC_DELIVERY_ATTEMPTS`]).
+pub const SECOND_ASYNC_RETRY_DELAY: Duration = Duration::from_secs(120);
+
+/// The wait before the attempt that FOLLOWS the one numbered `attempts_made`; see the two
+/// spans above.
+#[must_use]
+pub fn retry_delay(attempts_made: u32) -> Duration {
+    if attempts_made <= 1 {
+        FIRST_ASYNC_RETRY_DELAY
+    } else {
+        SECOND_ASYNC_RETRY_DELAY
+    }
+}
 
 /// How long until the next delivery attempt of an event whose attempts that RAN the handler
-/// so far number `runs_made`, or `None` when the event has no further attempt.
+/// so far number `runs_made` and whose configuration allows `allowed` of them in all
+/// ([`attempts_allowed`]), or `None` when the event has no further attempt.
 ///
 /// `function_error` is the `FunctionError` the attempt's run reported — "If present,
 /// indicates that an error occurred during function execution" — and `None` for a handler
@@ -67,9 +113,10 @@ pub fn next_attempt_in(
     ran: bool,
     function_error: Option<&str>,
     runs_made: u32,
+    allowed: u32,
 ) -> Option<Duration> {
     let errored = ran && function_error.is_some();
-    (errored && runs_made < MAX_ASYNC_DELIVERY_ATTEMPTS).then_some(ASYNC_RETRY_DELAY)
+    (errored && runs_made < allowed).then(|| retry_delay(runs_made))
 }
 
 /// How long Lambda keeps an accepted asynchronous event while it tries to get the function
@@ -147,8 +194,16 @@ mod tests {
     use super::*;
 
     /// One row of the table below: the case, whether the run happened, the `FunctionError`
-    /// it reported, how many attempts the event has had, and when the next one is due.
-    type Row = (&'static str, bool, Option<&'static str>, u32, Option<Duration>);
+    /// it reported, how many attempts the event has had, how many it is allowed, and when
+    /// the next one is due.
+    type Row = (
+        &'static str,
+        bool,
+        Option<&'static str>,
+        u32,
+        u32,
+        Option<Duration>,
+    );
 
     /// One row per combination the policy decides over: whether the run happened at all,
     /// whether its handler errored, and how many attempts the event has already had —
@@ -156,25 +211,35 @@ mod tests {
     #[test]
     fn only_an_errored_handler_with_an_attempt_left_is_delivered_again() {
         let rows: &[Row] = &[
-            ("the handler returned on its first attempt", true, None, 1, None),
+            (
+                "the handler returned on its first attempt",
+                true,
+                None,
+                1,
+                MAX_ASYNC_DELIVERY_ATTEMPTS,
+                None,
+            ),
             (
                 "the handler errored on its first attempt",
                 true,
                 Some("Unhandled"),
                 1,
-                Some(ASYNC_RETRY_DELAY),
+                MAX_ASYNC_DELIVERY_ATTEMPTS,
+                Some(FIRST_ASYNC_RETRY_DELAY),
             ),
             (
                 "the handler errored on its second attempt",
                 true,
                 Some("Unhandled"),
                 2,
-                Some(ASYNC_RETRY_DELAY),
+                MAX_ASYNC_DELIVERY_ATTEMPTS,
+                Some(SECOND_ASYNC_RETRY_DELAY),
             ),
             (
                 "the handler errored on the last attempt the event has",
                 true,
                 Some("Unhandled"),
+                MAX_ASYNC_DELIVERY_ATTEMPTS,
                 MAX_ASYNC_DELIVERY_ATTEMPTS,
                 None,
             ),
@@ -183,6 +248,7 @@ mod tests {
                 true,
                 Some("Unhandled"),
                 MAX_ASYNC_DELIVERY_ATTEMPTS + 1,
+                MAX_ASYNC_DELIVERY_ATTEMPTS,
                 None,
             ),
             (
@@ -190,14 +256,16 @@ mod tests {
                 true,
                 Some("Unhandled.OutOfMemory"),
                 1,
-                Some(ASYNC_RETRY_DELAY),
+                MAX_ASYNC_DELIVERY_ATTEMPTS,
+                Some(FIRST_ASYNC_RETRY_DELAY),
             ),
-            ("the run never started", false, None, 1, None),
+            ("the run never started", false, None, 1, MAX_ASYNC_DELIVERY_ATTEMPTS, None),
             (
                 "the run never started, with an error reported for it",
                 false,
                 Some("Unhandled"),
                 1,
+                MAX_ASYNC_DELIVERY_ATTEMPTS,
                 None,
             ),
             (
@@ -205,14 +273,64 @@ mod tests {
                 true,
                 None,
                 MAX_ASYNC_DELIVERY_ATTEMPTS,
+                MAX_ASYNC_DELIVERY_ATTEMPTS,
+                None,
+            ),
+            // A qualifier whose configuration allows FEWER attempts: the event is done once
+            // it has had the attempts that configuration asks for.
+            (
+                "the handler errored on the one attempt a configuration of no retries allows",
+                true,
+                Some("Unhandled"),
+                1,
+                attempts_allowed(Some(0)),
+                None,
+            ),
+            (
+                "the handler errored on the first of the two attempts one retry allows",
+                true,
+                Some("Unhandled"),
+                1,
+                attempts_allowed(Some(1)),
+                Some(FIRST_ASYNC_RETRY_DELAY),
+            ),
+            (
+                "the handler errored on the second of the two attempts one retry allows",
+                true,
+                Some("Unhandled"),
+                2,
+                attempts_allowed(Some(1)),
                 None,
             ),
         ];
-        for (case, ran, function_error, attempts_made, expected) in rows {
-            let answered = next_attempt_in(*ran, *function_error, *attempts_made);
+        for (case, ran, function_error, runs_made, allowed, expected) in rows {
+            let answered = next_attempt_in(*ran, *function_error, *runs_made, *allowed);
             assert_eq!(
                 answered, *expected,
                 "case {case:?}: expected the next attempt in {expected:?}, got {answered:?}"
+            );
+        }
+    }
+
+    /// RULE: an event has one attempt plus the retries its qualifier's configuration asks
+    /// for, and the documented default of two retries where it asks for none. The rows span
+    /// the published range of `MaximumRetryAttempts`, each bound, one past each bound, and a
+    /// configuration that states nothing.
+    #[test]
+    fn an_event_has_one_attempt_plus_the_retries_its_configuration_asks_for() {
+        let rows: &[(&str, Option<i32>, u32)] = &[
+            ("no configured value at all", None, MAX_ASYNC_DELIVERY_ATTEMPTS),
+            ("the published minimum, no retries", Some(0), 1),
+            ("one retry", Some(1), 2),
+            ("the published maximum, two retries", Some(2), 3),
+            ("below the published minimum", Some(-1), 1),
+            ("above the published maximum", Some(3), 3),
+        ];
+        for (case, configured, expected) in rows {
+            let allowed = attempts_allowed(*configured);
+            assert_eq!(
+                allowed, *expected,
+                "case {case:?}: expected {expected} attempts, got {allowed}"
             );
         }
     }

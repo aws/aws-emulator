@@ -138,7 +138,7 @@ const FORWARDED_FOR_HEADER: &str = "x-forwarded-for";
 /// The ADDRESS is read first, with no guard taken: a request that addresses no function URL
 /// at all — every control-plane call, and every other service's traffic, which this runs for
 /// on the way to `can_handle`'s answer — is answered before the store is touched.
-fn target_of<Eng: Send + Sync + 'static>(
+pub(super) fn target_of<Eng: Send + Sync + 'static>(
     engine: &Eng,
     addressed: &crate::state::AddressedFunctionUrl<'_>,
 ) -> Option<crate::state::FunctionUrlTarget> {
@@ -533,11 +533,11 @@ impl<Eng: Send + Sync + 'static> FunctionUrlPlane<Eng> {
             // The X-Ray trace context this invocation runs with: the chain the client
             // named on its own request, under the rule the function's `TracingConfig` mode
             // gives (`crate::state::execution::trace_context`).
-            trace: crate::state::invocation_trace_context(
+            trace: Some(crate::state::invocation_trace_context(
                 crate::state::supplied_trace_header(ctx).as_deref(),
                 &resolved_config.tracing_mode,
                 ::std::time::SystemTime::now(),
-            ),
+            )),
             // Which kind of environment serves it is the admission's to decide, once this
             // store guard is released (`crate::state::execution_slot`).
             initialization_type: crate::state::execution_slot::INITIALIZATION_TYPE_ON_DEMAND,
@@ -786,7 +786,11 @@ fn plane_error(status: u16, message: &str) -> RtResponse {
 /// The member is spelled `Message` here and `message` on the failures above because that is
 /// how the two are answered — the authorization refusal of a Lambda front door carries the
 /// capitalised member, and nothing of the request or the policy is named in it.
-fn forbidden() -> RtResponse {
+///
+/// It is the ONE wording of that refusal, shared with the seam that words the refusal of a
+/// request the emulator's authentication layer turned away before this plane could run
+/// ([`super::function_url_refusal`]), so an endpoint cannot refuse the same caller two ways.
+pub(super) fn forbidden() -> RtResponse {
     let body = ::serde_json::json!({ "Message": FORBIDDEN_MESSAGE }).to_string();
     let mut response = RtResponse::new(plane_status(FORBIDDEN_STATUS), SdkBody::from(body));
     response

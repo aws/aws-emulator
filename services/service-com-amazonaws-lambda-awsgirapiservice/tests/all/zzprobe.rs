@@ -313,27 +313,30 @@ async fn a_reused_environment_hands_an_invocation_no_variable_of_the_one_before_
     create_function(&router, name, REPORTS_ENVIRONMENT).await;
 
     // One row per invocation, in order: the tracing header the caller supplies (if any), and
-    // the header the handler must then read for itself.
+    // the chain the handler must then read for itself — `None` where the caller named none,
+    // which Lambda gives a chain of its OWN rather than the one the invocation before it had
+    // (`_X_AMZN_TRACE_ID` is reported for every invocation).
     let traced = "Root=1-67891233-abcdef012345678912345678;Sampled=1";
     let other = "Root=1-67891234-abcdef012345678912345679;Sampled=1";
-    let cases: &[(&str, Option<&str>, &str)] = &[
+    let cases: &[(&str, Option<&str>, Option<&str>)] = &[
         (
             "the invocation that built the environment, with a tracing header",
             Some(traced),
-            traced,
+            Some(traced),
         ),
         (
             "the next invocation, with no tracing header of its own",
             None,
-            "",
+            None,
         ),
         (
             "an invocation with a tracing header of a different chain",
             Some(other),
-            other,
+            Some(other),
         ),
     ];
     let mut standing = String::new();
+    let mut previous_trace = String::new();
     for (index, (case, supplied, expected)) in cases.iter().enumerate() {
         let headers: Vec<(&str, &str)> = supplied
             .map(|header| vec![("x-amzn-trace-id", header)])
@@ -365,14 +368,30 @@ async fn a_reused_environment_hands_an_invocation_no_variable_of_the_one_before_
             index + 1,
             answered.text()
         );
-        // The tracing header is this invocation's own: the chain it named, or none at all
-        // where it named none — never the chain of the invocation before it.
-        assert!(
-            answered.member("trace").starts_with(*expected)
-                && (!expected.is_empty() || answered.member("trace").is_empty()),
-            "case {case}: expected a tracing header continuing {expected:?}, got {}",
-            answered.text()
-        );
+        // The tracing header is this invocation's own: the chain it named, or a chain Lambda
+        // started for it where it named none — never the chain of the invocation before it.
+        let read = answered.member("trace");
+        match expected {
+            Some(chain) => assert!(
+                read.starts_with(*chain),
+                "case {case}: expected a tracing header continuing {chain:?}, got {}",
+                answered.text()
+            ),
+            None => {
+                assert!(
+                    read.contains("Root=1-"),
+                    "case {case}: expected a tracing header naming a chain of its own, got {}",
+                    answered.text()
+                );
+                assert_ne!(
+                    read, previous_trace,
+                    "case {case}: expected a chain of its own rather than the one the \
+                     invocation before it carried, got {}",
+                    answered.text()
+                );
+            }
+        }
+        previous_trace = read;
         // And nothing the invocation before it wrote into its own environment is here.
         assert_eq!(
             answered.member("left"),

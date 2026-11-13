@@ -24,8 +24,9 @@
 //!   the caller named none" ([`super::super::DEFAULT_TRACING_MODE`]): Lambda records
 //!   nothing of its own, so it has no segment to name as a parent and nothing to decide. A
 //!   caller's tracing header is passed on as written, and an invocation that carried none
-//!   has no trace context at all — so the variable is absent rather than holding a chain
-//!   nobody named.
+//!   runs under a chain Lambda started for it, with the decision `0` — so the variable is
+//!   always reported, and the chain of an invocation nobody traced is still recognisable as
+//!   one chain across the calls it makes ([`super::super::recursion`]).
 //!
 //! Nothing is kept here: the context is computed per invocation from the request and the
 //! resolved configuration, and travels on the [`Invocation`](super::Invocation) the run is
@@ -102,14 +103,18 @@ pub fn supplied_trace_header(ctx: &smithy_server_runtime::OperationContext<'_>) 
         .map(str::to_string)
 }
 
-/// The trace context ONE invocation runs with, or `None` for an invocation that has none —
-/// see the module docs for the rule each `TracingConfig` mode follows.
+/// The trace context ONE invocation runs with — see the module docs for the rule each
+/// `TracingConfig` mode follows.
+///
+/// Every invocation HAS one: `_X_AMZN_TRACE_ID` is a variable the runtime reports for each
+/// invocation, so a function that records nothing of its own and a caller that named no chain
+/// still run inside one, unsampled and unrecorded.
 #[must_use]
 pub fn invocation_trace_context(
     supplied: Option<&str>,
     tracing_mode: &str,
     at: SystemTime,
-) -> Option<InvocationTrace> {
+) -> InvocationTrace {
     let records = tracing_mode == crate::state::TRACING_MODE_ACTIVE;
     // A function that records nothing of its own has no span to name as a parent, so it
     // passes on what it was given; one that records has a span for the run itself.
@@ -118,7 +123,21 @@ pub fn invocation_trace_context(
         supplied,
         function_span.as_deref(),
         at,
-    )?;
+    )
+    // A function that records nothing of its own, called by a client that named no chain —
+    // or named one in no form X-Ray reads — still RUNS inside a chain: Lambda reports
+    // `_X_AMZN_TRACE_ID` for every invocation, so the chain is Lambda's own where the caller
+    // named none, with the span of its own handling as the parent and the decision `0`
+    // because nothing of this invocation is recorded. It is what makes the hops of a chain
+    // this emulator itself started recognisable as one chain, which is what the
+    // recursive-loop guardrail counts ([`crate::state::recursion`]).
+    .unwrap_or_else(|| {
+        ::service_common::xray_trace::stamped_tracing_header(
+            &::service_common::xray_trace::mint_trace_id(at),
+            &::service_common::xray_trace::mint_span_id(),
+            false,
+        )
+    });
     // A chain is RECORDED only where the decision says so: `Sampled=0` is an invocation
     // whose work still happens and whose trace is not recorded.
     let sampled = ::service_common::xray_trace::sampling_decision(&header).unwrap_or(false);
@@ -134,7 +153,7 @@ pub fn invocation_trace_context(
         }),
         _ => None,
     };
-    Some(InvocationTrace { header, recorded })
+    InvocationTrace { header, recorded }
 }
 
 /// The two segment documents a recorded invocation produces, in the order a reader sees
@@ -241,8 +260,6 @@ mod tests {
         let at = UNIX_EPOCH + Duration::from_secs(0x5759_e988);
         // What the invocation's `_X_AMZN_TRACE_ID` must be.
         enum Expected {
-            /// The invocation has no trace context at all.
-            None,
             /// Lambda STAMPS its own: this chain (`None` for one Lambda started), its own
             /// span as the parent, and this decision.
             Stamped(Option<&'static str>, &'static str),
@@ -290,34 +307,25 @@ mod tests {
                 "a pass-through function called with no header at all",
                 "PassThrough",
                 None,
-                Expected::None,
+                Expected::Stamped(None, "0"),
             ),
             (
                 "a pass-through function called with a root that is not a trace id",
                 "PassThrough",
                 Some("Root=not-a-trace-id;Sampled=1".to_string()),
-                Expected::None,
+                Expected::Stamped(None, "0"),
             ),
         ];
         for (case, mode, supplied, expected) in rows {
             let context = invocation_trace_context(supplied.as_deref(), mode, at);
             // The segments an invocation produces follow the same decision: an invocation
             // Lambda records produces two, and one it does not produces none.
-            let recorded = context
-                .as_ref()
-                .and_then(|context| context.recorded.as_ref());
-            let header = context.as_ref().map(|context| context.header.clone());
+            let recorded = context.recorded.as_ref();
+            let header = context.header.clone();
             match expected {
-                Expected::None => {
-                    assert!(
-                        context.is_none(),
-                        "case {case:?}: expected no trace context, got {header:?}"
-                    );
-                    continue;
-                }
                 Expected::Verbatim => {
                     assert_eq!(
-                        header.as_deref(),
+                        Some(header.as_str()),
                         supplied.as_deref(),
                         "case {case:?}: expected the caller's header passed on as written, got \
                          {header:?}"
@@ -329,8 +337,7 @@ mod tests {
                     continue;
                 }
                 Expected::Stamped(chain, decision) => {
-                    let context =
-                        header.unwrap_or_else(|| panic!("case {case:?}: expected a trace context"));
+                    let context = header;
                     let named = ::service_common::xray_trace::trace_field(&context, "Root")
                         .unwrap_or_default();
                     assert!(

@@ -263,6 +263,58 @@ pub const THROTTLES_METRIC: &str = "Throttles";
 /// [`super::recursion`].
 pub const RECURSIVE_INVOCATIONS_DROPPED_METRIC: &str = "RecursiveInvocationsDropped";
 
+/// How many INVOCATION RECORDS of completed asynchronous invocations Lambda could not
+/// deliver to the destination the function's asynchronous-invocation configuration names.
+///
+/// The name is the one Lambda's own series carries in [`METRIC_NAMESPACE`]:
+/// `DestinationDeliveryFailures`, counted in [`COUNT_UNIT`]. One observation of 1 is
+/// published per record the destination did NOT accept, and none at all for one it did — so a
+/// datapoint on this series means a record really was lost, and an empty window means every
+/// record of it arrived (see [`super::async_completion_delivery`]).
+pub const DESTINATION_DELIVERY_FAILURES_METRIC: &str = "DestinationDeliveryFailures";
+
+/// How many EVENTS Lambda could not write to the dead-letter target the function's
+/// `DeadLetterConfig` names.
+///
+/// The name is the one Lambda's own series carries in [`METRIC_NAMESPACE`]:
+/// `DeadLetterErrors`, counted in [`COUNT_UNIT`]. It counts the failures of the DELIVERY and
+/// not the events that were dead-lettered: one observation of 1 per event the target did not
+/// accept, and none at all for an event it took — so a function whose dead-letter queue is
+/// working has no such series at all, however many events it drops there.
+pub const DEAD_LETTER_ERRORS_METRIC: &str = "DeadLetterErrors";
+
+/// How long an asynchronous event sat in the invocation queue before the function was
+/// invoked with it.
+///
+/// The name is the one Lambda's own series carries in [`METRIC_NAMESPACE`]: `AsyncEventAge`,
+/// measured in [`MILLISECONDS_UNIT`]. One observation is published per event the function
+/// was invoked with, so a reader laying periods over the series gets the average and the
+/// worst queueing delay of each period; an event nothing was invoked for measured no age and
+/// publishes no datapoint.
+pub const ASYNC_EVENT_AGE_METRIC: &str = "AsyncEventAge";
+
+/// How many asynchronous EVENTS Lambda dropped without the function having processed them.
+///
+/// The name is the one Lambda's own series carries in [`METRIC_NAMESPACE`]:
+/// `AsyncEventsDropped`, counted in [`COUNT_UNIT`]. An event is dropped once its deliveries
+/// to the function are over and the last of them did not succeed — the attempts it was
+/// allowed are spent, or its function could not be run at all — so one observation of 1 is
+/// published per such event and none at all for an event a handler processed. It counts the
+/// EVENT and not the attempts it had, which is what makes a window's sum the number of events
+/// lost in it rather than the number of failures they produced
+/// (see [`super::async_completion_delivery`]).
+pub const ASYNC_EVENTS_DROPPED_METRIC: &str = "AsyncEventsDropped";
+
+/// How many asynchronous EVENTS Lambda accepted onto the invocation queue.
+///
+/// The name is the one Lambda's own series carries in [`METRIC_NAMESPACE`]:
+/// `AsyncEventsReceived`, counted in [`COUNT_UNIT`]. It counts the events Lambda successfully
+/// QUEUED — "a success response (202 Accepted) indicates that the request is queued for
+/// invocation" — so one observation of 1 is published per accepted event, whatever its
+/// deliveries then come to, and a request Lambda refused before queueing anything is counted
+/// here no more than it is in [`INVOCATIONS_METRIC`].
+pub const ASYNC_EVENTS_RECEIVED_METRIC: &str = "AsyncEventsReceived";
+
 /// The `StorageResolution` these datapoints are published at, in seconds: regular
 /// resolution, "which CloudWatch stores at 1-minute resolution"
 /// (`MetricDatum$StorageResolution`).
@@ -436,6 +488,25 @@ pub fn publish_throttle<Eng: Send + Sync + 'static>(
     FunctionMetrics::new(cloudwatch_state(engine)).publish_throttle(function_name, resource);
 }
 
+/// Publish the ONE datapoint an asynchronous event Lambda ACCEPTED onto the invocation queue
+/// is metered by: a count of 1 on the [`ASYNC_EVENTS_RECEIVED_METRIC`] series of the function
+/// and of the resource the accepting call addressed.
+///
+/// It reaches the same store, under the same conditions, as [`publish_invocation`].
+pub fn publish_async_event_received<Eng: Send + Sync + 'static>(
+    engine: &Eng,
+    function_name: &str,
+    resource: &str,
+) {
+    FunctionMetrics::new(cloudwatch_state(engine)).publish_both(
+        ASYNC_EVENTS_RECEIVED_METRIC,
+        function_name,
+        resource,
+        1.0,
+        COUNT_UNIT,
+    );
+}
+
 /// The AWS/Lambda series ONE invocation is metered on once it has RUN, held by the invocation
 /// itself so that every path that runs a handler meters it the same way — a synchronous call,
 /// a queued event delivered off the response path, a response-streaming call and a function
@@ -493,6 +564,67 @@ impl InvocationMetrics {
     pub fn publish_throttle(&self) {
         self.publisher
             .publish_throttle(&self.function_name, &self.resource);
+    }
+
+    /// Publish that the invocation RECORD of this completed asynchronous invocation did not
+    /// reach its destination ([`DESTINATION_DELIVERY_FAILURES_METRIC`]).
+    pub fn publish_destination_delivery_failure(&self) {
+        self.publisher
+            .publish_both(
+                DESTINATION_DELIVERY_FAILURES_METRIC,
+                &self.function_name,
+                &self.resource,
+                1.0,
+                COUNT_UNIT,
+            );
+    }
+
+    /// Publish that this invocation's event did not reach the function's dead-letter target
+    /// ([`DEAD_LETTER_ERRORS_METRIC`]).
+    pub fn publish_dead_letter_error(&self) {
+        self.publisher.publish_both(
+            DEAD_LETTER_ERRORS_METRIC,
+            &self.function_name,
+            &self.resource,
+            1.0,
+            COUNT_UNIT,
+        );
+    }
+
+    /// Publish how long this invocation's event waited in the asynchronous queue before the
+    /// function was invoked with it ([`ASYNC_EVENT_AGE_METRIC`]).
+    pub fn publish_async_event_age(&self, waited: ::std::time::Duration) {
+        self.publisher.publish_both(
+            ASYNC_EVENT_AGE_METRIC,
+            &self.function_name,
+            &self.resource,
+            waited.as_secs_f64() * 1000.0,
+            MILLISECONDS_UNIT,
+        );
+    }
+
+    /// Publish that this invocation's event was DROPPED without the function having
+    /// processed it ([`ASYNC_EVENTS_DROPPED_METRIC`]).
+    pub fn publish_async_event_dropped(&self) {
+        self.publisher.publish_both(
+            ASYNC_EVENTS_DROPPED_METRIC,
+            &self.function_name,
+            &self.resource,
+            1.0,
+            COUNT_UNIT,
+        );
+    }
+
+    /// Publish that the function code was invoked once more for this invocation
+    /// ([`INVOCATIONS_METRIC`]) — a RETRY of a queued asynchronous event.
+    ///
+    /// `Invocations` is "the number of invocations", counting every time the function code is
+    /// invoked, so a queued event the retry policy delivers again is counted again: the
+    /// accepting call metered the one attempt it admitted, and each further attempt is
+    /// metered here, where that attempt is made.
+    pub fn publish_retry_invocation(&self) {
+        self.publisher
+            .publish_invocation(&self.function_name, &self.resource);
     }
 }
 

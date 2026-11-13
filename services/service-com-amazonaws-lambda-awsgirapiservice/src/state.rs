@@ -233,7 +233,10 @@ pub use capacity_provider::{
 /// handler still names a poller as `crate::state::…`.
 pub mod event_source_poller;
 pub mod metrics;
-pub use metrics::{invoked_resource, publish_invocation, publish_throttle, InvocationMetrics};
+pub use metrics::{
+    invoked_resource, publish_async_event_received, publish_invocation, publish_throttle,
+    InvocationMetrics,
+};
 pub mod sqs_poller;
 pub use sqs_poller::{
     batch_is_due, claim_poll_passes, drive_sqs_pollers, poll_due, poll_passes_once, PollSession,
@@ -3103,6 +3106,12 @@ pub use async_invocation::*;
 /// attempt, and is re-exported here for the same reason.
 pub mod async_delivery;
 pub use async_delivery::*;
+/// What happens once an accepted event's deliveries to the function are OVER: the invocation
+/// record handed to the configured destination, the event written to the configured
+/// dead-letter target, and what each of those deliveries meters. Re-exported here for the
+/// same reason as the two slices above.
+pub mod async_completion_delivery;
+pub use async_completion_delivery::{deliver_completion, Completion, Ending};
 pub use event_source_mapping::{
     created_event_source_mapping_state, default_batch_size, default_batching_window_seconds,
     event_source_is_mappable_by_this_account, event_source_mapping_arn, event_source_vendor,

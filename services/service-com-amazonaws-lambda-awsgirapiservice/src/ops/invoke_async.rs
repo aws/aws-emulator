@@ -420,11 +420,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 // The X-Ray trace context this invocation runs with: the chain the caller
                 // named, under the rule the function's `TracingConfig` mode gives
                 // (`crate::state::execution::trace_context`).
-                trace: crate::state::invocation_trace_context(
+                trace: Some(crate::state::invocation_trace_context(
                     crate::state::supplied_trace_header(ctx).as_deref(),
                     &resolved_config.tracing_mode,
                     now,
-                ),
+                )),
                 // A queued event is delivered off the response path, on an environment
                 // Lambda initialises for that delivery (`crate::state::execution_slot`).
                 initialization_type: crate::state::execution_slot::INITIALIZATION_TYPE_ON_DEMAND,
@@ -464,6 +464,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // metered as one `Invocations` datapoint of the function and of the resource this
             // call addressed (`crate::state::metrics`), exactly as `Invoke` meters its own.
             crate::state::publish_invocation(&*self.engine, &function_name, &resource);
+            // It is also one asynchronous event ACCEPTED onto the invocation queue, which is
+            // the other thing this call does and is metered as one `AsyncEventsReceived`
+            // datapoint (`crate::state::metrics`).
+            crate::state::publish_async_event_received(&*self.engine, &function_name, &resource);
             // `InvokeAsync` is the deprecated invocation API and carries no
             // `DurableExecutionName` member at all, so it starts no durable execution and
             // its delivery settles none.

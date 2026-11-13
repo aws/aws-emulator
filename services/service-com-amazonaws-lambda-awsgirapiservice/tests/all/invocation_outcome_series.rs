@@ -50,7 +50,8 @@ use service_com_amazonaws_lambda_awsgirapiservice::state::execution::{
     HOST_WAIT_CEILING, INIT_PHASE_LIMIT, PERMIT_WAIT,
 };
 use service_com_amazonaws_lambda_awsgirapiservice::state::{
-    AsyncInvocationOutcome, ASYNC_DELIVERY_DELAY, ASYNC_RETRY_DELAY, MAX_ASYNC_DELIVERY_ATTEMPTS,
+    AsyncInvocationOutcome, ASYNC_DELIVERY_DELAY, FIRST_ASYNC_RETRY_DELAY,
+    MAX_ASYNC_DELIVERY_ATTEMPTS, SECOND_ASYNC_RETRY_DELAY,
 };
 use smithy_server_runtime::MultiServiceRouter;
 
@@ -124,12 +125,14 @@ const THROTTLE_ERROR: &str = "TooManyRequestsException";
 /// delay ([`ASYNC_DELIVERY_DELAY`]), then an attempt waits for a share of this process's run
 /// capacity ([`PERMIT_WAIT`]), initializes an execution environment ([`INIT_PHASE_LIMIT`]) and
 /// runs the handler ([`HOST_WAIT_CEILING`]) — with room for every attempt the retry policy has
-/// for one event ([`MAX_ASYNC_DELIVERY_ATTEMPTS`], separated by [`ASYNC_RETRY_DELAY`]). Each
+/// for one event ([`MAX_ASYNC_DELIVERY_ATTEMPTS`], separated by the waits AWS publishes
+/// between them, [`FIRST_ASYNC_RETRY_DELAY`] and [`SECOND_ASYNC_RETRY_DELAY`]). Each
 /// of those spans is shared with every other suite of a whole-workspace run, so only a
 /// delivery that never arrives at all fails the wait below; how fast the host runs decides
 /// nothing this file asserts.
 const DELIVERY_BUDGET: Duration = ASYNC_DELIVERY_DELAY
-    .saturating_add(ASYNC_RETRY_DELAY.saturating_mul(MAX_ASYNC_DELIVERY_ATTEMPTS))
+    .saturating_add(FIRST_ASYNC_RETRY_DELAY)
+    .saturating_add(SECOND_ASYNC_RETRY_DELAY)
     .saturating_add(
         PERMIT_WAIT
             .saturating_add(INIT_PHASE_LIMIT)

@@ -24,7 +24,9 @@ use serde_json::{json, Value};
 use service_com_amazonaws_lambda_awsgirapiservice::state::execution::{
     HOST_WAIT_CEILING, PERMIT_WAIT,
 };
-use service_com_amazonaws_lambda_awsgirapiservice::state::ACTIVATION_DELAY;
+use service_com_amazonaws_lambda_awsgirapiservice::state::{
+    ACTIVATION_DELAY, FIRST_ASYNC_RETRY_DELAY, SECOND_ASYNC_RETRY_DELAY,
+};
 use smithy_server_runtime::MultiServiceRouter;
 
 use crate::function_lifecycle::{create_function, json_call, router_on, send, Answer, ROLE};
@@ -49,13 +51,17 @@ const KMS_KEY: &str = "arn:aws:kms:us-east-1:000000000000:key/durable-executions
 ///
 /// The bound is what the EMULATOR itself allows one invocation, rather than a span picked
 /// here: the wait for a share of the run capacity ([`PERMIT_WAIT`]) and the wait for the
-/// run's own answer ([`HOST_WAIT_CEILING`]), with a margin for the queueing either side of
-/// them. It is patience and not a weakened expectation — the assertions below are unchanged —
-/// and a whole-workspace test run shares its cores with every other suite, so a run really
-/// can wait for capacity before it starts.
+/// run's own answer ([`HOST_WAIT_CEILING`]), with room for every attempt the retry policy has
+/// for an event whose handler raised — separated by the waits AWS publishes between them
+/// ([`FIRST_ASYNC_RETRY_DELAY`], [`SECOND_ASYNC_RETRY_DELAY`]) — and a margin for the queueing
+/// either side of them. It is patience and not a weakened expectation — the assertions below
+/// are unchanged — and a whole-workspace test run shares its cores with every other suite, so
+/// a run really can wait for capacity before it starts.
 const SETTLE_CEILING: Duration = PERMIT_WAIT
     .saturating_add(HOST_WAIT_CEILING)
-    .saturating_add(Duration::from_secs(10));
+    .saturating_add(FIRST_ASYNC_RETRY_DELAY)
+    .saturating_add(SECOND_ASYNC_RETRY_DELAY)
+    .saturating_add(Duration::from_secs(60));
 
 /// How long one poll of the execution waits before asking again.
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
@@ -151,6 +157,26 @@ async fn a_durable_execution_ends_with_what_its_invocation_came_to() {
             String::from_utf8_lossy(&created.body)
         );
         tokio::time::sleep(ACTIVATION_DELAY + POLL_INTERVAL).await;
+        // No RETRY for an errored handler: no row here is about how many delivery attempts an
+        // event has ("the maximum number of times to retry when the function returns an
+        // error", `MaximumRetryAttempts`, whose floor is 0), and Lambda waits minutes between
+        // the attempts it makes, so a row left on the default would wait those out before the
+        // execution could carry what its invocation came to.
+        let configured = json_call(
+            &router,
+            "PUT",
+            &format!("/2019-09-25/functions/{name}/event-invoke-config"),
+            &json!({ "MaximumRetryAttempts": 0 }),
+        )
+        .await;
+        assert_eq!(
+            configured.status,
+            200,
+            "case {:?}: expected 200 from PutFunctionEventInvokeConfig, got {} {}",
+            row.case,
+            configured.status,
+            String::from_utf8_lossy(&configured.body)
+        );
 
         let execution = format!("exec-{index}");
         let invoked = send(
