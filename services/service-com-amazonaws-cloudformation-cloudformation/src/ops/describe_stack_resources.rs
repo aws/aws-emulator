@@ -80,18 +80,21 @@
 use super::types::*;
 use crate::state::{DeployedResource, StoredStack, MAX_DESCRIBED_STACK_RESOURCES};
 
-/// The refusal for a request that names BOTH members that select the stack.
+/// The refusal for a request that does not name EXACTLY ONE of the two members that
+/// select the stack.
 ///
 /// "You must specify either StackName or PhysicalResourceId, but not both. … A
 /// ValidationError is returned if you specify both StackName and PhysicalResourceId in
-/// the same request." Answered AFTER the stack the `StackName` names is resolved: a name
-/// nothing holds is refused about the stack, which is the earlier of the two refusals.
-const BOTH_SELECTORS: &str =
-    "Cannot specify both StackName and PhysicalResourceId in the same request";
-
-/// The refusal for a request that names NEITHER: each member is "Required: Conditional"
-/// on the absence of the other, so a request with neither selects no stack at all.
-const NO_SELECTOR: &str = "Either StackName or PhysicalResourceId must be specified.";
+/// the same request." Each member is "Required: Conditional" on the absence of the other,
+/// and ONE refusal covers both halves of that rule: a request naming neither has
+/// specified no stack, and one naming both has specified no single stack either, so each
+/// is told which member it must specify rather than being told about the combination.
+/// Fixed text, down to the trailing period: nothing of the request appears in it.
+///
+/// The both-selectors spelling is answered AFTER the stack the `StackName` names is
+/// resolved: a name nothing holds is refused about the stack, which is the earlier of the
+/// two refusals.
+const NO_SINGLE_SELECTOR: &str = "Either StackName or PhysicalResourceId must be specified.";
 
 /// One deployed resource as the modelled `StackResource` shape.
 ///
@@ -249,7 +252,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // combination.
         let stack = match (&input.stack_name, &input.physical_resource_id) {
             (None, None) => {
-                return Err(crate::scaffolded::Scaffolded::validation_error(NO_SELECTOR))
+                return Err(crate::scaffolded::Scaffolded::validation_error(
+                    NO_SINGLE_SELECTOR,
+                ))
             }
             // "If StackName is specified, all the associated resources that are part of
             // the stack are returned" — by name for a running stack, by stack id for a
@@ -263,9 +268,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 })?;
                 if also_by_resource.is_some() {
                     // "A ValidationError is returned if you specify both StackName and
-                    // PhysicalResourceId in the same request."
+                    // PhysicalResourceId in the same request" — worded as the request that
+                    // named neither is, since neither has specified the one stack to report.
                     return Err(crate::scaffolded::Scaffolded::validation_error(
-                        BOTH_SELECTORS,
+                        NO_SINGLE_SELECTOR,
                     ));
                 }
                 stack

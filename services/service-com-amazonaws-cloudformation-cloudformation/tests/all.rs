@@ -491,6 +491,8 @@ mod stack_resource_events;
 mod stack_resource_providers;
 #[path = "all/stack_resource_provisioning.rs"]
 mod stack_resource_provisioning;
+#[path = "all/stack_resource_read_contracts.rs"]
+mod stack_resource_read_contracts;
 #[path = "all/stack_resources.rs"]
 mod stack_resources;
 #[path = "all/stack_role_trust.rs"]

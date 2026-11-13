@@ -64,6 +64,16 @@
 use super::types::*;
 use crate::state::{DeployedResource, StoredStack};
 
+/// The `Metadata` a resource whose declaration carries none reports.
+///
+/// `StackResourceDetail$Metadata` is "the content of the `Metadata` attribute declared for
+/// the resource", carried on the wire as a string holding a JSON document. CloudFormation
+/// reports the member for EVERY resource it describes: a declaration that states no
+/// `Metadata` has an EMPTY document rather than no document, so the member is present and
+/// empty — and a client reading `Metadata` off the detail parses a document whichever
+/// resource it asked about.
+const EMPTY_METADATA_DOCUMENT: &str = "{}";
+
 /// One deployed resource as the modelled `StackResourceDetail` shape.
 ///
 /// Every member is read back from what the stack operation that deployed it persisted:
@@ -81,6 +91,10 @@ use crate::state::{DeployedResource, StoredStack};
 /// `DriftInformation` is the resource's own drift result, for exactly the reasons
 /// `ops::describe_stack_resources`'s `stack_resource_view` states once and in full. They
 /// are stated there rather than repeated here so the two readers cannot drift apart.
+///
+/// `Metadata` is the exception among them: it is reported on every resource, because a
+/// declaration stating none has an empty document rather than no document
+/// ([`EMPTY_METADATA_DOCUMENT`]).
 fn stack_resource_detail(stack: &StoredStack, deployed: &DeployedResource) -> StackResourceDetail {
     StackResourceDetail {
         stack_name: Some(stack.stack_name.clone()),
@@ -95,7 +109,13 @@ fn stack_resource_detail(stack: &StoredStack, deployed: &DeployedResource) -> St
         // and nothing for one whose status speaks for itself.
         resource_status_reason: deployed.status_reason.clone(),
         description: None,
-        metadata: deployed.resource.metadata.clone(),
+        metadata: Some(
+            deployed
+                .resource
+                .metadata
+                .clone()
+                .unwrap_or_else(|| EMPTY_METADATA_DOCUMENT.to_string()),
+        ),
         drift_information: crate::state::resource_drift_information(deployed),
         module_info: None,
     }

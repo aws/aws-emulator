@@ -117,18 +117,20 @@ fn as_json(case: &str, raw: &str) -> ::serde_json::Value {
 }
 
 /// Assert a reported `Metadata` against what the declaration carried.
+///
+/// The member is reported for EVERY resource: a declaration stating no `Metadata` has an
+/// EMPTY document rather than no document, so `None` here expects an empty JSON document
+/// on the wire rather than an absent element.
 fn assert_metadata(case: &str, expected: Option<&str>, actual: Option<&str>) {
-    match (expected, actual) {
-        (None, None) => {}
-        (Some(expected), Some(actual)) => assert_eq!(
-            as_json(case, actual),
-            as_json(case, expected),
-            "case {case:?}: expected the declared Metadata {expected:?}, got {actual:?}"
-        ),
-        (expected, actual) => panic!(
-            "case {case:?}: expected Metadata {expected:?}, got {actual:?}"
-        ),
-    }
+    let expected = expected.unwrap_or("{}");
+    let Some(actual) = actual else {
+        panic!("case {case:?}: expected Metadata {expected:?}, got no Metadata element");
+    };
+    assert_eq!(
+        as_json(case, actual),
+        as_json(case, expected),
+        "case {case:?}: expected the declared Metadata {expected:?}, got {actual:?}"
+    );
 }
 
 /// What one declared resource must be described as.
