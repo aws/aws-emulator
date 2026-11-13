@@ -309,12 +309,26 @@ pub(crate) async fn ran(
     machine_arn: &str,
     case: &str,
 ) -> (String, Value) {
-    let started = sfn(
-        router,
-        "StartExecution",
-        &json!({ "stateMachineArn": machine_arn, "name": "only" }),
-    )
-    .await;
+    ran_with_input(router, machine_arn, None, case).await
+}
+
+/// [`ran`] for an execution that carries an `input` document, which is what a definition
+/// reading its states' parameters out of the execution's own data needs.
+///
+/// `pub(crate)` for the same reason the rest of this harness is: `tests/all.rs` is one
+/// crate root, so the one `StartExecution` + poll-to-terminal loop every Step Functions
+/// suite here drives an execution through lives in one place.
+pub(crate) async fn ran_with_input(
+    router: &MultiServiceRouter,
+    machine_arn: &str,
+    input: Option<&str>,
+    case: &str,
+) -> (String, Value) {
+    let mut request = json!({ "stateMachineArn": machine_arn, "name": "only" });
+    if let Some(document) = input {
+        request["input"] = Value::String(document.to_string());
+    }
+    let started = sfn(router, "StartExecution", &request).await;
     let execution_arn = string(&started, "executionArn");
     let began = Instant::now();
     loop {

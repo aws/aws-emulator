@@ -516,9 +516,11 @@ struct Acts<'a> {
 /// not-authorized sentence, followed by the metadata that answer carried — rendered by
 /// the ONE renderer of an SDK exception's message
 /// ([`super::integration::sdk_exception_message`]), so a refusal this gate answers for
-/// the service reads exactly as one the service answered itself. The identifier of the
-/// refused request is not among them: no call was made, so there is no request to name,
-/// and nothing is invented to fill the field.
+/// the service reads exactly as one the service answered itself. That metadata includes
+/// the id of the refused request: an AWS service answers every call it refuses under a
+/// request id of its own, so the answer this gate stands in for carries one too, minted
+/// per refusal through the tree's one minter of a response's own id — a correlation
+/// value, so it is no part of the sentence and two refusals never share it.
 ///
 /// `code` and `status` are what the invoked operation's own answer to an unauthorized
 /// call carries ([`denied_answer`]), because that is the answer this gate is standing
@@ -538,7 +540,7 @@ fn refusal(
         &sentence,
         code,
         status,
-        None,
+        Some(&::service_common::query_error_envelope::new_request_id()),
     ))
 }
 

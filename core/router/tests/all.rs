@@ -710,6 +710,9 @@ mod sfn_task_target_authorization;
 mod sfn_lambda_task_invocation;
 #[path = "all/sfn_integration_error_names.rs"]
 mod sfn_integration_error_names;
+// Declared beside the other Step Functions suites, for the reason the lines above give.
+#[path = "all/sfn_sns_publish_task.rs"]
+mod sfn_sns_publish_task;
 #[path = "all/sfn_parallel_branch_cancellation.rs"]
 mod sfn_parallel_branch_cancellation;
 #[path = "all/cloudformation_sfn_fifo_queue_stack.rs"]

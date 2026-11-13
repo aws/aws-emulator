@@ -60,6 +60,11 @@ struct Row {
     case: &'static str,
     resource: &'static str,
     parameters: Value,
+    /// Spelled with the PREFIX the invoked service publishes its own actions under,
+    /// which is its ARN namespace for all but Amazon SNS — an action of that service is
+    /// `SNS:<ApiName>` ("Actions defined by Amazon Simple Notification Service", IAM
+    /// Service Authorization Reference) — because the refusal is that service's own
+    /// sentence.
     action: &'static str,
     resource_arn: String,
     refusal_error: &'static str,
@@ -126,7 +131,7 @@ async fn an_integration_call_is_judged_by_its_own_action_and_addressed_resource(
             case: "a publish to a topic, addressed by its ARN",
             resource: "arn:aws:states:::sns:publish",
             parameters: json!({ "TopicArn": topic_arn.clone(), "Message": "hello" }),
-            action: "sns:Publish",
+            action: "SNS:Publish",
             resource_arn: topic_arn.clone(),
             refusal_error: "SNS.AuthorizationErrorException",
             refusal_code: "Error Code: AuthorizationError",
@@ -135,7 +140,7 @@ async fn an_integration_call_is_judged_by_its_own_action_and_addressed_resource(
             case: "the same publish through the AWS SDK integration",
             resource: "arn:aws:states:::aws-sdk:sns:publish",
             parameters: json!({ "TopicArn": topic_arn.clone(), "Message": "hello" }),
-            action: "sns:Publish",
+            action: "SNS:Publish",
             resource_arn: topic_arn,
             refusal_error: "SNS.AuthorizationErrorException",
             refusal_code: "Error Code: AuthorizationError",

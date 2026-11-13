@@ -341,6 +341,10 @@ const QUERY_ERROR_HEADER: &str = "x-amzn-query-error";
 pub struct Api {
     /// The ARN namespace a `Resource` names this service by (`awsService.arnNamespace`).
     pub namespace: &'static str,
+    /// The prefix this service publishes its own IAM ACTIONS under, where that is not
+    /// its ARN namespace — the string its authorization refusals spell an action with
+    /// ([`Call::action`]). `None` where the two are the same, which is the usual case.
+    pub action_prefix: Option<&'static str>,
     /// Its SigV4 signing name (`sigv4Name`) — also the credential scope that routes
     /// the call to this service inside this emulator.
     pub signing_name: &'static str,
@@ -894,6 +898,7 @@ pub const APIS: &[Api] = &[
     // endpointPrefix `athena`, sdkId `Athena`, service shape `AmazonAthena`.
     Api {
         namespace: "athena",
+        action_prefix: None,
         signing_name: "athena",
         endpoint_prefix: "athena",
         wire: Wire::Json {
@@ -917,6 +922,7 @@ pub const APIS: &[Api] = &[
     // built from ([`BACKUP_REST`]).
     Api {
         namespace: "backup",
+        action_prefix: None,
         signing_name: "backup",
         endpoint_prefix: "backup",
         wire: Wire::Rest(BACKUP_REST),
@@ -937,6 +943,7 @@ pub const APIS: &[Api] = &[
     // `DynamoDB_20120810`.
     Api {
         namespace: "dynamodb",
+        action_prefix: None,
         signing_name: "dynamodb",
         endpoint_prefix: "dynamodb",
         wire: Wire::Json {
@@ -960,6 +967,7 @@ pub const APIS: &[Api] = &[
     // endpointPrefix `sqs`, sdkId `SQS`, service shape `AmazonSQS`.
     Api {
         namespace: "sqs",
+        action_prefix: None,
         signing_name: "sqs",
         endpoint_prefix: "sqs",
         wire: Wire::Json {
@@ -987,6 +995,12 @@ pub const APIS: &[Api] = &[
     // fields beside the action it names ([`Wire::Query`]).
     Api {
         namespace: SNS_NAMESPACE,
+        // Amazon SNS publishes its actions as `SNS:<ApiName>` ("Actions defined by
+        // Amazon Simple Notification Service", IAM Service Authorization Reference),
+        // which is the ONE spelling this tree holds for them — the same one this
+        // emulator's SNS service words its own refusals with — so a refused publish
+        // names `SNS:Publish` rather than the ARN namespace.
+        action_prefix: Some("SNS"),
         signing_name: SNS_NAMESPACE,
         endpoint_prefix: SNS_NAMESPACE,
         wire: Wire::Query {
@@ -1011,6 +1025,7 @@ pub const APIS: &[Api] = &[
     // endpointPrefix `events`, sdkId `EventBridge`, service shape `AWSEvents`.
     Api {
         namespace: "events",
+        action_prefix: None,
         signing_name: "events",
         endpoint_prefix: "events",
         wire: Wire::Json {
@@ -1034,6 +1049,7 @@ pub const APIS: &[Api] = &[
     // endpointPrefix `states`, sdkId `SFN`, service shape `AWSStepFunctions`.
     Api {
         namespace: STATES_NAMESPACE,
+        action_prefix: None,
         signing_name: STATES_NAMESPACE,
         endpoint_prefix: STATES_NAMESPACE,
         wire: Wire::Json {
@@ -1059,6 +1075,7 @@ pub const APIS: &[Api] = &[
     // `Kinesis_20131202`.
     Api {
         namespace: "kinesis",
+        action_prefix: None,
         signing_name: "kinesis",
         endpoint_prefix: "kinesis",
         wire: Wire::Json {
@@ -1080,6 +1097,7 @@ pub const APIS: &[Api] = &[
     // endpointPrefix `ssm`, sdkId `SSM`, service shape `AmazonSSM`.
     Api {
         namespace: "ssm",
+        action_prefix: None,
         signing_name: "ssm",
         endpoint_prefix: "ssm",
         wire: Wire::Json {
@@ -1102,6 +1120,7 @@ pub const APIS: &[Api] = &[
     // `AmazonEC2ContainerServiceV20141113`.
     Api {
         namespace: "ecs",
+        action_prefix: None,
         signing_name: "ecs",
         endpoint_prefix: "ecs",
         wire: Wire::Json {
@@ -1124,6 +1143,7 @@ pub const APIS: &[Api] = &[
     // `glue`, sdkId `Glue`, service shape `AWSGlue`.
     Api {
         namespace: "glue",
+        action_prefix: None,
         signing_name: "glue",
         endpoint_prefix: "glue",
         wire: Wire::Json {
@@ -1146,6 +1166,7 @@ pub const APIS: &[Api] = &[
     // own bindings are what a request to it is built from ([`LAMBDA_REST`]).
     Api {
         namespace: LAMBDA_NAMESPACE,
+        action_prefix: None,
         signing_name: LAMBDA_NAMESPACE,
         endpoint_prefix: LAMBDA_NAMESPACE,
         wire: Wire::Rest(LAMBDA_REST),
@@ -1166,6 +1187,7 @@ pub const APIS: &[Api] = &[
     // action it names ([`Wire::Query`]).
     Api {
         namespace: "sts",
+        action_prefix: None,
         signing_name: "sts",
         endpoint_prefix: "sts",
         wire: Wire::Query {
@@ -1204,6 +1226,7 @@ pub const APIS: &[Api] = &[
 /// sdkId `S3`, arnNamespace `s3`.
 static S3_API: Api = Api {
     namespace: S3_NAMESPACE,
+    action_prefix: None,
     signing_name: S3_NAMESPACE,
     endpoint_prefix: S3_NAMESPACE,
     wire: Wire::Rest(S3_REST),
@@ -1640,15 +1663,20 @@ impl Call {
         }
     }
 
-    /// The IAM action this call is taken under: the invoked service's action namespace
-    /// and the operation's own name.
+    /// The IAM action this call is taken under: the prefix the invoked service
+    /// publishes its actions under ([`Api::action_prefix`], its ARN namespace for all
+    /// but one) and the operation's own name.
     ///
     /// That is the action for every operation that publishes its permission under its
     /// own name, which is the usual case; an operation that publishes another is
     /// carried by its [`TARGET_RESOURCES`] entry ([`TargetResource::action`]).
     #[must_use]
     pub fn action(&self) -> String {
-        format!("{}:{}", self.api.namespace, self.operation)
+        format!(
+            "{}:{}",
+            self.api.action_prefix.unwrap_or(self.api.namespace),
+            self.operation
+        )
     }
 }
 
@@ -2100,8 +2128,9 @@ pub fn access_request(call: &Call, request: &Value, region: &str) -> Option<(Str
     // call is the same one on the same function either way, so it is judged on the
     // request that is actually made ([`Call::operation_input`]).
     let resource = targets.resource_of(&call.operation_input(request), region)?;
-    // The action is the invoked service's namespace and the operation's own name,
-    // unless the entry states the permission that operation PUBLISHES instead.
+    // The action is the one the invoked service publishes for the operation
+    // ([`Call::action`]), unless the entry states the permission that operation
+    // PUBLISHES instead.
     let action = targets.action.map_or_else(|| call.action(), str::to_string);
     Some((action, resource))
 }
