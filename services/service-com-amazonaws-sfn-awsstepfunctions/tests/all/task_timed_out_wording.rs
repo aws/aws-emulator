@@ -43,7 +43,12 @@ use crate::state_machine_lifecycle::{
 /// the shape's own documentation is "the task token has either expired or the task
 /// associated with the token has already been closed", and either way the task is gone —
 /// so no row below expects any part of it to vary.
-const TIMED_OUT_MESSAGE: &str = "Task Timed Out: 'Provided task does not exist anymore'";
+///
+/// `pub(crate)`, not private: `tests/all.rs` is this binary's crate root, so the suite
+/// that drives the SAME error class for a token a BOUND closed
+/// (`crate::task_timed_out_closed_by_a_bound`) asserts this one spelling rather than
+/// carrying a second copy of it.
+pub(crate) const TIMED_OUT_MESSAGE: &str = "Task Timed Out: 'Provided task does not exist anymore'";
 
 /// Generous room for an outcome the clock owes: far longer than the delay itself, so a
 /// loaded host still settles inside it. The loop below waits for the CONDITION, not for
@@ -55,7 +60,7 @@ const POLL_PAUSE: Duration = Duration::from_millis(20);
 
 /// One `SendTask*` operation, with the members it carries beside the `taskToken`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Reply {
+pub(crate) enum Reply {
     Success,
     Failure,
     Heartbeat,
@@ -88,7 +93,7 @@ impl Reply {
 
 /// Every `SendTask*` operation of this API, so the wording asserted below is the error
 /// class's and not one operation's.
-const REPLIES: &[Reply] = &[Reply::Success, Reply::Failure, Reply::Heartbeat];
+pub(crate) const REPLIES: &[Reply] = &[Reply::Success, Reply::Failure, Reply::Heartbeat];
 
 /// Describe `execution_arn` until it is no longer `RUNNING`, and report what it then says.
 async fn settled(emulator: &Emulator, case: &str, execution_arn: &str) -> Value {
@@ -109,7 +114,13 @@ async fn settled(emulator: &Emulator, case: &str, execution_arn: &str) -> Value 
 /// Send `reply` for `token` and assert the refusal: 400, `TaskTimedOut`, and exactly the
 /// one sentence this error class carries — quoting none of `absent`, the identifiers this
 /// refusal must not leak.
-async fn refused(emulator: &Emulator, case: &str, reply: Reply, token: &str, absent: &[&str]) {
+pub(crate) async fn refused(
+    emulator: &Emulator,
+    case: &str,
+    reply: Reply,
+    token: &str,
+    absent: &[&str],
+) {
     let operation = reply.operation();
     let (status, body) = emulator.call(operation, &reply.request(token)).await;
     let code = error_code(&body);
