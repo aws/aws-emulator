@@ -23,10 +23,14 @@
 //! service that owns them in [`ec2_subnets`].
 
 pub mod authorizer_cache;
+pub mod cors;
+pub mod cors_origin;
 pub mod duplicate_identity;
 pub mod ec2_subnets;
 pub mod integration_response_key;
 pub mod invoke_transport;
+pub mod jwt_issuer;
+pub mod model_template;
 mod network;
 pub mod paging;
 pub mod route_request_parameters;
@@ -1882,8 +1886,10 @@ impl Authorizer {
 /// * `AuthorizerType` — "Specify JWT to use JSON Web Tokens (supported only for HTTP
 ///   APIs)", so a WebSocket api takes only `REQUEST` authorizers.
 /// * `JwtConfiguration` — "Required for the JWT authorizer type", and its `Issuer` is
-///   "the base domain of the identity provider that issues JSON Web Tokens", so a JWT
-///   authorizer cannot validate a token without one.
+///   "the base domain of the identity provider that issues JSON Web Tokens", from which
+///   API Gateway fetches the provider's OpenID discovery document when the authorizer is
+///   created — so a JWT authorizer cannot validate a token without an issuer that can carry
+///   one ([`jwt_issuer`]);
 /// * `AuthorizerUri` — "For REQUEST authorizers, this must be a well-formed Lambda
 ///   function URI": the Lambda to invoke, so that type cannot authorize without it.
 /// * `AuthorizerPayloadFormatVersion` — "Specifies the format of the payload sent to an
@@ -1906,18 +1912,20 @@ pub fn validate_authorizer_config(
     let is_websocket = protocol_type == WEBSOCKET_PROTOCOL_TYPE;
     if authorizer_type == AUTHORIZER_TYPE_JWT {
         if is_websocket {
+            // API Gateway words this one as a statement about the TYPES a WebSocket api
+            // admits rather than about the type the request named: the one type such an
+            // api supports is `REQUEST`, and the sentence names it. Every part of it is
+            // fixed text — the protocol type it names is the only one that restricts the
+            // catalog this way.
             return Err(format!(
-                "AuthorizerType {AUTHORIZER_TYPE_JWT} is supported only for HTTP APIs, \
-                 and this API's ProtocolType is {protocol_type}"
+                "Invalid authorizer type. Only {AUTHORIZER_TYPE_REQUEST} authorizer type \
+                 is supported on {WEBSOCKET_PROTOCOL_TYPE} protocol Apis."
             ));
         }
-        let issuer = jwt_configuration.and_then(|configuration| configuration.issuer.as_deref());
-        if issuer.is_none_or(str::is_empty) {
-            return Err(format!(
-                "JwtConfiguration with an Issuer is required for an authorizer of type \
-                 {AUTHORIZER_TYPE_JWT}"
-            ));
-        }
+        let Some(configuration) = jwt_configuration else {
+            return Err(jwt_issuer::JWT_CONFIGURATION_REQUIRED_MESSAGE.to_string());
+        };
+        jwt_issuer::validate_jwt_issuer(configuration.issuer.as_deref())?;
     }
     if authorizer_type == AUTHORIZER_TYPE_REQUEST {
         if authorizer_uri.is_none_or(str::is_empty) {
@@ -1986,68 +1994,10 @@ pub fn invalid_authorizer_reference_message(authorization_type: &str) -> String 
     UNRESOLVED_AUTHORIZER_MESSAGE.to_string()
 }
 
-/// The entry a CORS list carries to stand for "every value": the wildcard.
-pub const CORS_WILDCARD: &str = "*";
-
-/// `Ok(())`, or why an api of this `ProtocolType` cannot carry a CORS configuration at
-/// all — the message for the operation's `BadRequestException`.
-///
-/// `CorsConfiguration` is documented "Supported only for HTTP APIs", so a request that
-/// configures one on an api of another protocol asks for a setting that protocol has no
-/// behaviour for. API Gateway words THIS member's refusal in the member's own terms,
-/// naming the CORS feature and the protocol type that does not support it, rather than
-/// with either of the sentences [`validate_protocol_restricted_members`] builds for a
-/// restricted member: the refusal a WEBSOCKET create carrying a CORS configuration is
-/// answered with is `Cors is not supported for WEBSOCKET protocolType ` — the fixed text
-/// `Cors is not supported for `, the protocol type the request asked for, then the fixed
-/// text ` protocolType ` down to its trailing space, which API Gateway emits and a client
-/// comparing the sentence byte for byte requires. The protocol type is the only variable
-/// part, so an api of any future non-HTTP protocol is refused in its own name.
-///
-/// Shared by every writer of an api's CORS document, so the create and the patch cannot
-/// word or gate it differently. `configured` is whether THIS request carries one; a
-/// request that carries none asks for nothing.
-pub fn validate_cors_protocol(protocol_type: &str, configured: bool) -> Result<(), String> {
-    if configured && protocol_type != HTTP_PROTOCOL_TYPE {
-        return Err(format!(
-            "Cors is not supported for {protocol_type} protocolType "
-        ));
-    }
-    Ok(())
-}
-
-/// `Ok(())`, or why this CORS configuration cannot hold together — the message for the
-/// operation's `BadRequestException`.
-///
-/// One rule: a configuration that allows CREDENTIALED cross-origin requests cannot
-/// answer them with the wildcard. A browser rejects a credentialed response whose
-/// `Access-Control-Allow-Origin` (or `-Methods`, or `-Headers`) is `*`, so the pair
-/// describes a policy no client could ever use and the service refuses it instead of
-/// storing a document that would never work.
-///
-/// Shared by every writer of an api's CORS document, so the requirement cannot differ
-/// between the create and a later update; an update checks the MERGED configuration,
-/// which is the one the api would carry.
-pub fn validate_cors_configuration(cors: &wire::Cors) -> Result<(), String> {
-    if cors.allow_credentials != Some(true) {
-        return Ok(());
-    }
-    // The message names the response header the wildcard would go into, which is what
-    // the browser rule it states is about: `access-control-allow-origin: *` cannot
-    // answer a credentialed request, and neither can the method or header forms.
-    for (header, values) in [
-        ("allow-origin", cors.allow_origins.as_ref()),
-        ("allow-methods", cors.allow_methods.as_ref()),
-        ("allow-headers", cors.allow_headers.as_ref()),
-    ] {
-        if values.is_some_and(|values| values.iter().any(|value| value == CORS_WILDCARD)) {
-            return Err(format!(
-                "allow-credentials is not supported if '{header}' is {CORS_WILDCARD}"
-            ));
-        }
-    }
-    Ok(())
-}
+/// The CORS configuration an api carries — the wildcard entry, the protocol gate, the
+/// grammar of an allowed origin and of an allowed method — lives in [`cors`], re-exported
+/// in full so a handler reaches each name as `crate::state::…`.
+pub use cors::{validate_cors_configuration, validate_cors_protocol, CORS_WILDCARD};
 
 // Selection expressions — the `$`-variable expressions several members of this service
 // carry, and what each member's protocol lets one select — live in
@@ -3285,6 +3235,11 @@ pub mod rest_endpoint;
 
 pub use rest_endpoint::*;
 
+/// Which data type a model's schema has to declare for a MAPPING TEMPLATE to be generated
+/// from it lives in [`model_template`], re-exported in full like every other part of this
+/// module.
+pub use model_template::{unsupported_template_data_type, unsupported_template_data_type_message};
+
 /// The PORTAL record itself — what a create resolved, how a reader projects it, and the
 /// order the account's portals are reported in — lives in [`portal`], re-exported in full
 /// like every other part of this module.
@@ -3705,24 +3660,28 @@ fn exclusive_choice_required(member: &str, names: &[&str]) -> String {
 /// validator that READS a caller-supplied one cannot drift.
 pub const PORTAL_PRODUCT_RESOURCE_PREFIX: &str = "/portalproducts/";
 
-/// Refuse a member that must hold ARNs of a given resource type but holds a value that
-/// is not one.
+/// Refuse a member that must hold ARNs of a given resource type but holds a value that is
+/// not a WELL-FORMED ARN of one.
 ///
-/// `IncludedPortalProductArns` names portal products — resources of THIS service's ARN
-/// namespace, under the `/portalproducts/` resource path — so a value that is not a
-/// well-formed resource ARN, that names another vendor, or that names another of this
-/// service's resource types (an `/apis/{id}`, say) addresses nothing the member could
-/// include. The parse is [`::service_common::arn::parse_of`], the tree's ONE
-/// caller-supplied-ARN parse (it is also what rejects an ARN with an empty partition,
-/// vendor or resource); `resource_prefix` is what narrows it to one resource type.
-/// `label` names the member in the message; `Err` carries the message for the
-/// operation's `BadRequestException`.
-pub fn validate_arns_of<'a, I>(
-    label: &str,
-    vendor: &str,
-    resource_prefix: &str,
-    arns: I,
-) -> Result<(), String>
+/// `IncludedPortalProductArns` names portal products — account-owned resources of THIS
+/// service's ARN namespace, under the `/portalproducts/` resource path (see
+/// [`portal_product_arn`]) — so a well-formed value carries every field the name of such a
+/// resource carries: the literal `arn`, a partition, this service's vendor, the Region the
+/// product was created in, the ACCOUNT that owns it, and the resource path with a non-empty
+/// id. A value missing any of them, or naming another vendor or another of this service's
+/// resource types (an `/apis/{id}`, say), is not the name of a portal product at all, which
+/// is what API Gateway reports rather than looking for a product under it.
+///
+/// The parse is [`::service_common::arn::parse_of`], the tree's ONE caller-supplied-ARN
+/// parse (it is also what rejects an ARN with an empty partition, vendor or resource);
+/// `resource_prefix` is what narrows it to one resource type, and the Region and account
+/// fields — which that parse leaves empty for a partition-global or account-less resource —
+/// are required here, because the resource this member names is neither.
+///
+/// `Err` carries the message for the operation's `BadRequestException`: API Gateway's own
+/// sentence for a malformed ARN, which states the fact and echoes the value
+/// ([`not_well_formed_arn_message`]).
+pub fn validate_arns_of<'a, I>(vendor: &str, resource_prefix: &str, arns: I) -> Result<(), String>
 where
     I: IntoIterator<Item = &'a str>,
 {
@@ -3731,19 +3690,27 @@ where
         // no id, which names no resource — so the remainder after the prefix must be
         // non-empty.
         let names_the_resource = ::service_common::arn::parse_of(arn, vendor).is_some_and(|parsed| {
-            parsed
-                .resource
-                .strip_prefix(resource_prefix)
-                .is_some_and(|id| !id.is_empty())
+            !parsed.region.is_empty()
+                && !parsed.account.is_empty()
+                && parsed
+                    .resource
+                    .strip_prefix(resource_prefix)
+                    .is_some_and(|id| !id.is_empty())
         });
         if !names_the_resource {
-            return Err(format!(
-                "Invalid ARN specified for {label}: '{arn}'. Expected an ARN of the form \
-                 arn:<partition>:{vendor}:<region>:<account>:{resource_prefix}<id>."
-            ));
+            return Err(not_well_formed_arn_message(arn));
         }
     }
     Ok(())
+}
+
+/// How API Gateway words the refusal of a value that is not a well-formed ARN: the fixed
+/// text `Invalid ARN. ARN is not well formed ` and the value the REQUEST sent, which is the
+/// only thing the caller can act on.
+///
+/// Held here once, so every reader of a caller-supplied ARN states the same sentence.
+pub fn not_well_formed_arn_message(arn: &str) -> String {
+    format!("Invalid ARN. ARN is not well formed {arn}")
 }
 
 /// The ARN of a stored portal product.

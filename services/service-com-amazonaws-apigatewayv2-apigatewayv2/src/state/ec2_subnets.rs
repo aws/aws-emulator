@@ -48,19 +48,12 @@ use std::collections::{HashMap, HashSet};
 
 use super::network::ec2;
 
-/// The `DescribeSubnets` filter that selects subnets BY ID (`subnet-id`, listed by that
-/// operation's own `Filters` documentation).
+/// The most subnet identifiers ONE hop asks about.
 ///
-/// A filter is what asks the question rather than `SubnetIds`: an identifier the account
-/// has no subnet for is then an absent row instead of a failure of the whole call, so
-/// every identifier the request named is still resolved against what EC2 does hold.
-const SUBNET_ID_FILTER: &str = "subnet-id";
-
-/// The most subnet identifiers ONE hop asks about, as values of one `subnet-id` filter.
-///
-/// The owner evaluates a filter against every subnet the account stores, so a hop costs
-/// (identifiers asked x subnets stored): this caps the first factor, so ONE hop costs a
-/// constant times what the account stores rather than something the request chooses.
+/// The owner resolves every identifier a read names against the subnets the account stores,
+/// so a hop costs (identifiers asked x subnets stored): this caps the first factor, so ONE
+/// hop costs a constant times what the account stores rather than something the request
+/// chooses.
 const SUBNET_IDS_PER_HOP: usize = 64;
 
 /// The most DISTINCT subnet identifiers one create resolves at all, which caps how many hops
@@ -79,19 +72,58 @@ const SUBNET_IDS_PER_HOP: usize = 64;
 /// subnet per Availability Zone.
 pub const MAX_SUBNET_IDS_RESOLVED: usize = 1_000;
 
-/// How a refusal names a subnet the account has none of under that id.
+/// The SERVICE whose refusal a relayed message names, as the AWS SDK whose exception API
+/// Gateway relays names Amazon EC2.
+const EC2_SERVICE_NAME: &str = "AmazonEC2";
+
+/// The prefix of every EC2 error code that says a value names no subnet of the account:
+/// `InvalidSubnetID.NotFound` for an id no subnet carries, `InvalidSubnetID.Malformed` for a
+/// value that is not a subnet id at all. Both say the same thing about a placement, and
+/// nothing else EC2 can answer here is evidence about the subnets the request named.
+const SUBNET_ID_REFUSAL_PREFIX: &str = "InvalidSubnetID.";
+
+/// The EC2 code for an id the account holds no subnet for.
+const SUBNET_ID_NOT_FOUND: &str = "InvalidSubnetID.NotFound";
+
+/// The HTTP status EC2 refuses a bad subnet id with, for a refusal that reached this service
+/// without one to read.
+const EC2_REFUSAL_STATUS: u16 = 400;
+
+/// The header AWS reports the id of the request a response answers in, read off EC2's own
+/// refusal so the relayed sentence names the request EC2 refused.
+const REQUEST_ID_HEADER: &str = "x-amzn-requestid";
+
+/// How a refusal names a subnet the account has none of under that id: the sentence the
+/// service that OWNS subnets states for an id it does not hold, built from the id the
+/// REQUEST sent.
 ///
-/// Built from the id the REQUEST sent, in the sentence the service that OWNS subnets
-/// states for an id it does not hold, so a caller reads the same fact however it reached
-/// the lookup.
+/// It is the message EC2 itself answers with, so a caller reads the same fact however it
+/// reached the lookup; [`relayed_ec2_refusal`] is what wraps it the way API Gateway reports
+/// a refusal it got from another service.
 pub fn subnet_does_not_exist_message(subnet_id: &str) -> String {
     format!("The subnet ID '{subnet_id}' does not exist")
+}
+
+/// How API Gateway states a refusal ANOTHER AWS service answered it: that service's own
+/// sentence, then the bracketed clause naming who refused, with what status, under which
+/// error code, and the id of the request that was refused.
+///
+/// A VPC link's subnets are resolved by calling Amazon EC2, so a create naming a subnet the
+/// account does not have is refused BY EC2 — and what API Gateway reports is that exception
+/// as its SDK renders it, which is this form down to the trailing `Proxy: null`. Every
+/// variable part comes from EC2's own answer.
+fn relayed_ec2_refusal(message: &str, status: u16, code: &str, request_id: &str) -> String {
+    format!(
+        "{message} (Service: {EC2_SERVICE_NAME}; Status Code: {status}; Error Code: {code}; \
+         Request ID: {request_id}; Proxy: null)"
+    )
 }
 
 /// The sentence a create is refused with when the subnets it names do not agree on a VPC.
 ///
 /// A VPC link's network interfaces are created in one VPC, so a list spanning two of them
-/// describes no placement at all; this is API Gateway's own sentence for that refusal.
+/// describes no placement at all; this is API Gateway's own sentence for that refusal, which
+/// it decides itself rather than relaying.
 pub const SUBNETS_NOT_IN_ONE_VPC_MESSAGE: &str = "All subnets provided should be in the same VPC";
 
 /// How a request naming more distinct subnets than [`MAX_SUBNET_IDS_RESOLVED`] is refused:
@@ -106,50 +138,94 @@ fn too_many_subnets_message(named: usize) -> String {
 
 /// What the owner of subnets answered about the identifiers one request named.
 enum Answer {
-    /// EC2 could not be asked at all — evidence of nothing.
+    /// EC2 could not be asked at all, or answered something that is not about these
+    /// identifiers — evidence of nothing.
     NotAsked,
-    /// Every subnet EC2 holds of those asked about, by identifier, with the VPC it
-    /// reports for each. An identifier it holds no subnet for is simply absent, and a
-    /// subnet it reports without a VPC of its own carries `None`.
+    /// Every subnet asked about, by identifier, with the VPC EC2 reports for each. A subnet
+    /// it reports without a VPC of its own carries `None`.
     Held(HashMap<String, Option<String>>),
+    /// EC2 REFUSED the read because one of the identifiers names no subnet of the account:
+    /// its message, as API Gateway relays it.
+    Refused(String),
 }
 
 /// Ask EC2 about `subnet_ids`, in hops of at most [`SUBNET_IDS_PER_HOP`] identifiers.
+///
+/// The identifiers go in `SubnetIds` rather than in a `subnet-id` filter, because that is
+/// the read whose answer GROUNDS a refusal: "an id that names no subnet of the account IN
+/// THIS REGION is an error, not an absent row" (`DescribeSubnets$SubnetIds`), so EC2 itself
+/// decides that an identifier names nothing and states the sentence for it, and this service
+/// relays that answer instead of wording a fact it did not resolve.
 async fn account_subnets(
     ctx: &smithy_server_runtime::OperationContext<'_>,
     region: &str,
     subnet_ids: &[&str],
 ) -> Answer {
+    use ::aws_smithy_types::error::metadata::ProvideErrorMetadata;
+
     let Some(client) = ec2(ctx, region) else {
         ::tracing::warn!("the request names no Region label, so EC2 cannot be asked");
         return Answer::NotAsked;
     };
     let mut held: HashMap<String, Option<String>> = HashMap::new();
     for chunk in subnet_ids.chunks(SUBNET_IDS_PER_HOP) {
-        let by_id = ::aws_sdk_ec2::types::Filter::builder()
-            .name(SUBNET_ID_FILTER)
-            .set_values(Some(chunk.iter().map(|id| (*id).to_string()).collect()))
-            .build();
-        match client.describe_subnets().filters(by_id).send().await {
-            Ok(output) => held.extend(output.subnets().iter().filter_map(|subnet| {
-                Some((
-                    subnet.subnet_id()?.to_string(),
-                    subnet.vpc_id().map(str::to_string),
-                ))
-            })),
-            Err(error) => {
-                // At `warn`: this gate refuses nothing on silence, so a deployment where
-                // the hop fails admits a VPC link the account's network does not support,
-                // and that is worth seeing. One failed hop ends the question: a partial
-                // answer would refuse an identifier for not being in a page nobody read.
-                ::tracing::warn!(
-                    %region,
-                    error = %::aws_smithy_types::error::display::DisplayErrorContext(&error),
-                    "the subnets a VPC link named could not be resolved against EC2"
-                );
-                return Answer::NotAsked;
+        let asked = chunk.iter().map(|id| (*id).to_string()).collect();
+        let error = match client
+            .describe_subnets()
+            .set_subnet_ids(Some(asked))
+            .send()
+            .await
+        {
+            Ok(output) => {
+                held.extend(output.subnets().iter().filter_map(|subnet| {
+                    Some((
+                        subnet.subnet_id()?.to_string(),
+                        subnet.vpc_id().map(str::to_string),
+                    ))
+                }));
+                continue;
             }
+            Err(error) => error,
+        };
+        let refused = error.as_service_error();
+        let code = refused
+            .and_then(ProvideErrorMetadata::code)
+            .unwrap_or_default();
+        if code.starts_with(SUBNET_ID_REFUSAL_PREFIX) {
+            // EC2 worded this refusal around the identifier it would not resolve, so the
+            // sentence it stated is the one relayed: it is what names that id to the
+            // caller. A refusal that carried no sentence is still that refusal, and EC2
+            // words it around ONE identifier, so the relay names the first of the ones this
+            // read asked about rather than inventing a sentence listing several.
+            let message = refused
+                .and_then(ProvideErrorMetadata::message)
+                .map(str::to_string)
+                .unwrap_or_else(|| {
+                    subnet_does_not_exist_message(chunk.first().copied().unwrap_or_default())
+                });
+            let status = error
+                .raw_response()
+                .map_or(EC2_REFUSAL_STATUS, |response| response.status().as_u16());
+            // The id of the refused request is EC2's own, read off the answer it refused
+            // with; a refusal that carried none is still a refusal, so the relay names this
+            // request by an id of its own instead.
+            let request_id = error
+                .raw_response()
+                .and_then(|response| response.headers().get(REQUEST_ID_HEADER))
+                .map(str::to_string)
+                .unwrap_or_else(::service_common::query_error_envelope::new_request_id);
+            return Answer::Refused(relayed_ec2_refusal(&message, status, code, &request_id));
         }
+        // At `warn`: this gate refuses nothing on silence, so a deployment where the hop
+        // fails admits a VPC link the account's network does not support, and that is worth
+        // seeing. One failed hop ends the question: a partial answer would refuse an
+        // identifier for not being in a page nobody read.
+        ::tracing::warn!(
+            %region,
+            error = %::aws_smithy_types::error::display::DisplayErrorContext(&error),
+            "the subnets a VPC link named could not be resolved against EC2"
+        );
+        return Answer::NotAsked;
     }
     Answer::Held(held)
 }
@@ -160,9 +236,9 @@ async fn account_subnets(
 /// `Ok(())` for a list every one of whose subnets the account has in one VPC — and for one
 /// EC2 could not be asked about at all, which is evidence of nothing (see this module's
 /// documentation). `Err` carries the message for the operation's `BadRequestException`:
-/// the FIRST identifier the account has no subnet for, in the order the request lists them,
-/// so the answer does not depend on how many of them are wrong, or — when every identifier
-/// resolved — that the subnets span more than one VPC.
+/// EC2's own refusal of the identifier it could not resolve, relayed as API Gateway reports
+/// one ([`relayed_ec2_refusal`]), or — when every identifier resolved — that the subnets
+/// span more than one VPC.
 ///
 /// Deduplicated, so naming one subnet twice costs one resolution and is one subnet. BOUNDED
 /// BY CONSTANTS, not by the request: at most [`MAX_SUBNET_IDS_RESOLVED`] distinct identifiers
@@ -187,16 +263,35 @@ pub async fn resolve_vpc_link_subnets(
     if distinct.is_empty() {
         return Ok(());
     }
-    let Answer::Held(held) = account_subnets(ctx, region, &distinct).await else {
-        return Ok(());
+    let held = match account_subnets(ctx, region, &distinct).await {
+        Answer::Held(held) => held,
+        Answer::Refused(message) => return Err(message),
+        Answer::NotAsked => return Ok(()),
     };
 
     // Existence first, in the order the request named them: an identifier that names no
-    // subnet of the account cannot be placed in, whatever the rest of the list says.
+    // subnet of the account cannot be placed in, whatever the rest of the list says. EC2
+    // refuses such a read outright, so this is the case where it answered a row set that
+    // simply does not carry one of the identifiers asked about — the same fact, worded as
+    // the refusal EC2 states for it.
     let mut vpcs: Vec<Option<&str>> = Vec::with_capacity(distinct.len());
     for subnet_id in &distinct {
         let Some(holder) = held.get(*subnet_id) else {
-            return Err(subnet_does_not_exist_message(subnet_id));
+            // The owner answered a success for a read that NAMED this identifier, so its
+            // own `DescribeSubnets` did not state the refusal it documents for one it holds
+            // no subnet for; the fact is still the owner's, and this is the sentence it
+            // words that fact with.
+            ::tracing::warn!(
+                %subnet_id,
+                "the owner of subnets answered a success for a read that named this \
+                 identifier and reported no subnet for it"
+            );
+            return Err(relayed_ec2_refusal(
+                &subnet_does_not_exist_message(subnet_id),
+                EC2_REFUSAL_STATUS,
+                SUBNET_ID_NOT_FOUND,
+                &::service_common::query_error_envelope::new_request_id(),
+            ));
         };
         vpcs.push(holder.as_deref());
     }

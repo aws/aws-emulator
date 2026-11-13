@@ -33,10 +33,10 @@ use serde_json::{json, Value};
 use smithy_server_runtime::MultiServiceRouter;
 
 use crate::api_lifecycle::{
-    as_str, assert_minted_id, call, call_in_region, emulator, error_code,
+    as_str, assert_minted_id, call, call_in_region, emulator_with_rest_apis, error_code,
 };
 use crate::product_rest_endpoint_page_lifecycle::{
-    content_member, invoke_url, pages_of, product, PRODUCTS, REGION,
+    content_member, held_endpoint, pages_of, product, PRODUCTS, REGION,
 };
 
 /// The identifier parts of one REST endpoint
@@ -206,16 +206,19 @@ fn create_request(
 
 #[tokio::test]
 async fn delete_product_rest_endpoint_page_removes_the_record_and_a_later_read_is_not_found() {
-    let emulator = emulator();
+    // Every endpoint a row documents is created through the service that OWNS REST APIs: a
+    // page may only document an endpoint the account has.
+    let emulator = emulator_with_rest_apis();
 
     for row in rows() {
         let product_id = product(&emulator, row.case).await;
+        let held = held_endpoint(&emulator, &row.parts).await;
         let page_id = create_page(
             &emulator,
             row.case,
             &product_id,
             create_request(
-                &row.parts,
+                &held.parts,
                 row.display_content.as_ref(),
                 row.try_it_state,
             ),
@@ -224,13 +227,14 @@ async fn delete_product_rest_endpoint_page_removes_the_record_and_a_later_read_i
 
         let mut siblings = Vec::new();
         for sibling in &row.siblings {
+            let sibling_held = held_endpoint(&emulator, sibling).await;
             siblings.push((
-                sibling.clone(),
+                sibling_held.parts.clone(),
                 create_page(
                     &emulator,
                     row.case,
                     &product_id,
-                    create_request(sibling, None, None),
+                    create_request(&sibling_held.parts, None, None),
                 )
                 .await,
             ));
@@ -398,7 +402,7 @@ async fn delete_product_rest_endpoint_page_removes_the_record_and_a_later_read_i
             &emulator,
             row.case,
             &product_id,
-            create_request(&row.parts, None, None),
+            create_request(&held.parts, None, None),
         )
         .await;
         assert_minted_id(row.case, "ProductRestEndpointPageId", &recreated);
@@ -419,11 +423,7 @@ async fn delete_product_rest_endpoint_page_removes_the_record_and_a_later_read_i
         // overrides: the delete took the stored content with the record.
         assert_eq!(
             content_member(&fetched, "endpoint"),
-            Some(invoke_url(
-                &as_str(&row.parts, "restApiId"),
-                &as_str(&row.parts, "stage"),
-                REGION,
-            )),
+            Some(held.invoke_url(REGION)),
             "case {:?}: expected the recreated page to report its own derived endpoint, \
              got {fetched}",
             row.case
@@ -437,7 +437,8 @@ async fn delete_product_rest_endpoint_page_removes_the_record_and_a_later_read_i
 /// for another, exactly as `GetProductRestEndpointPage` reads one.
 #[tokio::test]
 async fn a_page_is_deleted_whatever_region_the_request_is_signed_for() {
-    let emulator = emulator();
+    let emulator = emulator_with_rest_apis();
+    let held = held_endpoint(&emulator, &parts("regional02", "prod", "GET", "/orders")).await;
 
     for (created_in, deleted_in) in [
         ("eu-west-1", "us-east-1"),
@@ -466,11 +467,7 @@ async fn a_page_is_deleted_whatever_region_the_request_is_signed_for() {
             created_in,
             "POST",
             &collection,
-            Some(create_request(
-                &parts("regional02", "prod", "GET", "/orders"),
-                None,
-                None,
-            )),
+            Some(create_request(&held.parts, None, None)),
         )
         .await;
         assert_eq!(
@@ -504,7 +501,8 @@ async fn a_page_is_deleted_whatever_region_the_request_is_signed_for() {
 
 #[tokio::test]
 async fn delete_product_rest_endpoint_page_refuses_only_an_unresolved_portal_product() {
-    let emulator = emulator();
+    let emulator = emulator_with_rest_apis();
+    let held = held_endpoint(&emulator, &parts("ownerpage1", "prod", "GET", "/orders")).await;
 
     let owner = product(&emulator, "Owner").await;
     // A second product that holds no page, so a page of the first addressed under it
@@ -515,7 +513,7 @@ async fn delete_product_rest_endpoint_page_refuses_only_an_unresolved_portal_pro
         &emulator,
         "the owning product's page",
         &owner,
-        create_request(&parts("ownerpage1", "prod", "GET", "/orders"), None, None),
+        create_request(&held.parts, None, None),
     )
     .await;
     // The minted id is ten LOWERCASE alphanumerics (`__stringMin10Max30PatternAZ09`,

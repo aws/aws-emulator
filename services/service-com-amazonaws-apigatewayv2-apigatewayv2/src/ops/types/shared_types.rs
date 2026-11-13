@@ -11,7 +11,22 @@ use super::*;
 
 smithy_macros::smithy_model!("smithy-model/com-amazonaws-apigatewayv2-apigatewayv2.json");
 
-#[smithy_macros::smithy(shape = "com.amazonaws.apigatewayv2#Cors")]
+/// The CORS configuration an api carries.
+///
+/// `MaxAge` carries NO constraint trait on its member schema, which is what
+/// `skip_validation` leaves off: the shape it targets
+/// (`IntegerWithLengthBetweenMinus1And86400`) declares `@range min: -1, max: 86400`
+/// (`smithy_query(query="shape", shape="Cors")`), and the recorded service enforces NEITHER
+/// bound — a `CreateApi` whose `corsConfiguration.maxAge` is above 86400 and one whose value
+/// is below -1 are both answered `201`, with the api reporting the value back unchanged. The
+/// boundary validator enforces whatever the member schema carries, before any handler runs,
+/// so a validated bound here would refuse creates API Gateway serves. Every other member of
+/// this shape keeps the constraints the model declares (they declare none), and the rules the
+/// service DOES enforce on a configuration are `crate::state::validate_cors_configuration`.
+#[smithy_macros::smithy(
+    shape = "com.amazonaws.apigatewayv2#Cors",
+    skip_validation = ["MaxAge"]
+)]
 #[derive(Debug, Clone, Default)]
 pub struct Cors {
     pub allow_credentials: Option<bool>,

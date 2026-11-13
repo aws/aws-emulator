@@ -233,18 +233,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     .as_ref()
                     .is_some_and(|models| !models.is_empty()),
             ),
-            crate::state::ProtocolRestrictedMember::websocket_only(
-                "RequestParameters",
-                input
-                    .request_parameters
-                    .as_ref()
-                    .is_some_and(|parameters| !parameters.is_empty()),
-            ),
             crate::state::ProtocolRestrictedMember::websocket_only_selection_expression(
                 "RouteResponseSelectionExpression",
                 input.route_response_selection_expression.is_some(),
             ),
         ];
+        // NOT in that list: `RequestParameters`. Its documentation carries the same
+        // "Supported only for WebSocket APIs" clause, but the recorded service ACCEPTS the
+        // member on a route of an HTTP api and reports the map back, so refusing it there
+        // refuses a create API Gateway answers `201` to — and the api's own
+        // `DeleteRouteRequestParameter` sub-resource addresses the entries of exactly that
+        // map, whatever the api's protocol. What a WEBSOCKET api narrows further is which of
+        // ITS routes may declare any; see below.
         if let Err(message) =
             crate::state::validate_protocol_restricted_members(&api.protocol_type, &restricted)
         {

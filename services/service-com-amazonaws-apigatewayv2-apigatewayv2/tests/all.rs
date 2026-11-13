@@ -61,6 +61,8 @@ mod cors_configuration;
 mod cors_protocol_refusal;
 #[path = "all/constraint_refusal.rs"]
 mod constraint_refusal;
+#[path = "all/control_plane_request_validation.rs"]
+mod control_plane_request_validation;
 #[path = "all/create_api_modelled_outcomes.rs"]
 mod create_api_modelled_outcomes;
 #[path = "all/custom_domain_hosted_zone.rs"]

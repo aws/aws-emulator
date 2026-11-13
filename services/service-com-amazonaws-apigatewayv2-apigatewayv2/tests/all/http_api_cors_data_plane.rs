@@ -67,10 +67,12 @@ const REDIRECT: u16 = 307;
 /// The status a matched route whose integration produced no response is answered with.
 const INTEGRATION_FAULT: u16 = 500;
 
-/// The published bounds of `IntegerWithLengthBetweenMinus1And86400`, the shape `Cors$MaxAge`
-/// targets (`range` min -1 max 86400).
-const MIN_MAX_AGE: i64 = -1;
-const MAX_MAX_AGE: i64 = 86_400;
+/// The modelled bounds of `IntegerWithLengthBetweenMinus1And86400`, the shape `Cors$MaxAge`
+/// targets (`range` min -1 max 86400). NEITHER is a bound the service enforces, so a value
+/// outside them is stored and reported like any other; see the note on
+/// `crate::ops::types::Cors` in the crate under test.
+const MODELLED_MIN_MAX_AGE: i64 = -1;
+const MODELLED_MAX_MAX_AGE: i64 = 86_400;
 
 /// The backend the matched route fronts. The decoration is the api's, so it must not depend
 /// on which of these answered.
@@ -550,12 +552,19 @@ async fn an_apis_cors_configuration_decorates_what_its_stage_answers() {
     }
 }
 
-/// `Cors$MaxAge` is an integer with a declared range, and whatever it holds is the number of
-/// seconds the preflight's answer reports: both published bounds are stored and reported, and
-/// a value past the upper bound is refused by the control plane rather than reported.
+/// `Cors$MaxAge` is an integer, and whatever it holds is the number of seconds the
+/// preflight's answer reports: the modelled bounds are stored and reported, and so is a
+/// value outside either of them, since the service enforces neither.
 #[tokio::test]
 async fn the_configured_max_age_is_what_the_preflight_reports() {
-    for max_age in [MIN_MAX_AGE, 0, 600, MAX_MAX_AGE] {
+    for max_age in [
+        MODELLED_MIN_MAX_AGE - 1,
+        MODELLED_MIN_MAX_AGE,
+        0,
+        600,
+        MODELLED_MAX_MAX_AGE,
+        MODELLED_MAX_MAX_AGE + 1,
+    ] {
         let case = format!("MaxAge {max_age}");
         let emulator = emulator();
         let (_api_id, endpoint_host) = deploy(
@@ -587,28 +596,6 @@ async fn the_configured_max_age_is_what_the_preflight_reports() {
             answer.summary()
         );
     }
-
-    // One past the published upper bound: the configuration is never stored, so no preflight
-    // can report it.
-    let emulator = emulator();
-    let (status, refusal) = call(
-        &emulator,
-        "POST",
-        "/v2/apis",
-        Some(json!({
-            "name": "cors-max-age-past-the-bound",
-            "protocolType": "HTTP",
-            "corsConfiguration": {
-                "allowOrigins": ["https://example.test"],
-                "maxAge": MAX_MAX_AGE + 1
-            }
-        })),
-    )
-    .await;
-    assert_eq!(
-        status, 400,
-        "case \"MaxAge one past the upper bound\": expected 400, got {status} {refusal}"
-    );
 }
 
 /// A preflight is a READ of the api's records: repeating it answers the same decoration, and

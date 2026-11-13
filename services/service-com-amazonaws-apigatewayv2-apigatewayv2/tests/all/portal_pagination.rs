@@ -37,7 +37,7 @@ use service_com_amazonaws_apigatewayv2_apigatewayv2::state::{
 };
 
 use crate::api_lifecycle::{as_str, call, carries_nothing, emulator, error_code};
-use crate::portal_lifecycle::{custom_colors, portal_content};
+use crate::portal_lifecycle::{custom_colors, hold_included_products, portal_content};
 
 /// The region [`call`] signs for, mirrored here because a portal-product ARN names one.
 const REGION: &str = "eu-west-1";
@@ -203,7 +203,7 @@ async fn list_portals_reports_the_record_get_portal_reports() {
 
     // The rows differ in which union alternative each portal names and which optional
     // members it carries: none, some, all.
-    let rows: Vec<(&'static str, Value)> = vec![
+    let mut rows: Vec<(&'static str, Value)> = vec![
         (
             "only the required members, on API Gateway's default domain",
             json!({
@@ -265,7 +265,11 @@ async fn list_portals_reports_the_record_get_portal_reports() {
     ];
 
     let mut expected: BTreeSet<String> = BTreeSet::new();
-    for (case, request) in &rows {
+    for (case, request) in &mut rows {
+        // A portal may only include products the account HOLDS (see
+        // `portal_lifecycle::hold_included_products`), so each row's products are created
+        // before its portal is.
+        let _held = hold_included_products(&emulator, case, request).await;
         let portal_id = create_portal(&emulator, case, request).await;
         expected.insert(portal_id.clone());
 

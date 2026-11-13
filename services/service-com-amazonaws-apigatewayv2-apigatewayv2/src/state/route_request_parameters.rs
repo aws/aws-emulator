@@ -4,10 +4,11 @@
 //! accepts a `Route$RequestParameters` map.
 //!
 //! "The request parameters for the route. Supported only for WebSocket APIs"
-//! (`Route$RequestParameters`) says which PROTOCOL may carry the member — the restriction
-//! every protocol-restricted member of a route shares
-//! ([`crate::state::validate_protocol_restricted_members`]) — and leaves open which route of
-//! such an api may. API Gateway narrows it to one: the request parameters a route declares
+//! (`Route$RequestParameters`) is the member's documented clause, but the recorded service
+//! accepts the member on a route of an api of EITHER protocol — so no protocol gate is
+//! applied to it ([`crate::state::validate_protocol_restricted_members`] does not list it) —
+//! and leaves open which route of a WEBSOCKET api may carry one. API Gateway narrows that to
+//! one: the request parameters a route declares
 //! are the parameters of the CONNECTION REQUEST, the only call a WebSocket api serves that
 //! carries request parameters of its own (a message carries a payload and no request line),
 //! so they are accepted only on the route that serves it. Every other route of the api is
@@ -31,7 +32,9 @@ pub const CONNECT_ONLY_MESSAGE: &str =
 /// `declares_parameters` is whether the route ends up carrying ANY: a map the request sent
 /// empty declares nothing, so it is accepted on any route — a route carries no request
 /// parameters either way, and refusing it would refuse a request that configured nothing.
-/// An api of another protocol is left to the protocol restriction that owns the member.
+/// An api of another protocol carries whatever map it was given: this narrowing is the
+/// WEBSOCKET connection request's, and an HTTP api's routes declare request parameters of
+/// their own.
 pub fn validate_route_request_parameters(
     protocol_type: &str,
     route_key: &str,
@@ -64,7 +67,8 @@ mod tests {
             // A declaration of nothing configures nothing, on any key.
             ("WEBSOCKET", "$default", false, true),
             ("WEBSOCKET", "$connect", false, true),
-            // Another protocol is the protocol restriction's to refuse, not this rule's.
+            // Another protocol's routes declare request parameters of their own, which
+            // this narrowing says nothing about.
             ("HTTP", "GET /orders", true, true),
             ("HTTP", "$connect", true, true),
         ];

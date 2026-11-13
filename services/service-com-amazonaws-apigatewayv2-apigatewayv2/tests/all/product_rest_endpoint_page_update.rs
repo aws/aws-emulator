@@ -37,30 +37,25 @@
 //! value, and the shape of the endpoint the page documents. The recorded lifecycle that
 //! filed the issue — create, patch, read back — is ONE row of the first table.
 
-use std::thread::sleep;
-use std::time::Duration;
-
 use serde_json::{json, Value};
 
-use crate::api_lifecycle::{as_str, call, call_in_region, carries_nothing, emulator, error_code, instant};
+use crate::api_lifecycle::{
+    as_str, call, call_in_region, carries_nothing, emulator_with_rest_apis, error_code, instant,
+    past_the_whole_second_of, read_until, rest_endpoint,
+};
 use crate::product_rest_endpoint_page_lifecycle::{
-    content_member, invoke_url, max_body, max_rest_api_id, max_stage, pages_of, product, PRODUCTS,
+    content_member, held_endpoint, invoke_url, max_body, max_stage, pages_of, product, PRODUCTS,
     REGION,
 };
-
-/// How long to wait so a patch lands in a LATER second than the write before it. The
-/// service reports `LastModified` at whole-second granularity, so only a wait past a
-/// second boundary makes the move observable on the wire. A BLOCKING wait on purpose, for
-/// the reason given in `deployment_stage_release`: this workspace's `tokio` carries no
-/// `time` feature.
-const SECOND_BOUNDARY_WAIT: Duration = Duration::from_millis(1_100);
 
 /// One patch row: the page to create, the patch under test, and what the patched page
 /// must report.
 struct Row {
     case: &'static str,
     /// `RestEndpointIdentifier$IdentifierParts$RestApiId` of the endpoint the page
-    /// documents (len 1..50).
+    /// documents (len 1..50) — written as a PLACEHOLDER naming the REST API each case
+    /// creates through the service that owns REST APIs, and replaced by the id that service
+    /// minted before the page is created.
     rest_api_id: String,
     /// `IdentifierParts$Stage` (len 1..128).
     stage: String,
@@ -275,9 +270,9 @@ fn rows() -> Vec<Row> {
             expected_try_it_state: "DISABLED",
         },
         Row {
-            case: "a REST API id and a stage at their modelled maxima, so the default is \
-                   re-derived from the page's own endpoint",
-            rest_api_id: max_rest_api_id(),
+            case: "a stage at its modelled maximum, so the default is re-derived from the \
+                   page's own endpoint",
+            rest_api_id: "maxstage02".to_string(),
             stage: max_stage(),
             method: "GET",
             path: "/orders",
@@ -393,9 +388,12 @@ fn patchable(document: &Value) -> Value {
 
 #[tokio::test]
 async fn a_patch_replaces_the_members_it_carries_and_leaves_the_others_as_they_were() {
-    let emulator = emulator();
+    // A page documents an endpoint the account HOLDS, so the service that owns REST APIs is
+    // mounted beside this one and each row's endpoint is created through it.
+    let emulator = emulator_with_rest_apis();
 
-    for row in rows() {
+    for mut row in rows() {
+        row.rest_api_id = rest_endpoint(&emulator, &row.rest_api_id, &row.stage).await;
         let (uri, created) = page_under_a_fresh_product(&emulator, row.case, row.create()).await;
         let before = get_page(&emulator, row.case, &uri).await;
 
@@ -502,7 +500,17 @@ async fn a_patch_replaces_the_members_it_carries_and_leaves_the_others_as_they_w
 
 #[tokio::test]
 async fn a_patch_that_carries_a_member_advances_last_modified() {
-    let emulator = emulator();
+    let emulator = emulator_with_rest_apis();
+    let held = held_endpoint(
+        &emulator,
+        &json!({
+            "restApiId": "clockpage1",
+            "stage": "prod",
+            "method": "GET",
+            "path": "/orders"
+        }),
+    )
+    .await;
 
     // One row per patchable member, so neither of them is the only one that records a
     // modification.
@@ -519,20 +527,16 @@ async fn a_patch_that_carries_a_member_advances_last_modified() {
             &emulator,
             case,
             json!({
-                "restEndpointIdentifier": {
-                    "identifierParts": {
-                        "restApiId": "clockpage1",
-                        "stage": "prod",
-                        "method": "GET",
-                        "path": "/orders"
-                    }
-                }
+                "restEndpointIdentifier": { "identifierParts": held.parts.clone() }
             }),
         )
         .await;
         let created_at = instant(case, &created, "lastModified");
 
-        sleep(SECOND_BOUNDARY_WAIT);
+        // The member is reported at whole-second granularity, so the patch has to land in a
+        // LATER second for a move to be visible at all: the wait is for the clock to read
+        // one, never for a fixed time.
+        past_the_whole_second_of(case, created_at).await;
 
         let (status, patched) = call(&emulator, "PATCH", &uri, Some(patch)).await;
         assert_eq!(
@@ -559,32 +563,40 @@ async fn a_patch_that_carries_a_member_advances_last_modified() {
 
 #[tokio::test]
 async fn a_patch_that_carries_no_member_leaves_the_record_exactly_as_it_was() {
-    let emulator = emulator();
+    let emulator = emulator_with_rest_apis();
     let case = "a patch carrying none of the page's members";
+    let held = held_endpoint(
+        &emulator,
+        &json!({
+            "restApiId": "untouched1",
+            "stage": "prod",
+            "method": "GET",
+            "path": "/orders"
+        }),
+    )
+    .await;
 
-    let (uri, _created) = page_under_a_fresh_product(
+    let (uri, created) = page_under_a_fresh_product(
         &emulator,
         case,
         json!({
-            "restEndpointIdentifier": {
-                "identifierParts": {
-                    "restApiId": "untouched1",
-                    "stage": "prod",
-                    "method": "GET",
-                    "path": "/orders"
-                }
-            },
+            "restEndpointIdentifier": { "identifierParts": held.parts.clone() },
             "displayContent": { "overrides": { "body": "nothing in the patch applies" } },
             "tryItState": "ENABLED"
         }),
     )
     .await;
 
-    // Past a second boundary, so a `LastModified` that moved would be visible at the
-    // whole-second granularity the member is reported at. The wait also takes the page
-    // past the span its creation owes, so its `Status` is settled for both readings.
-    sleep(SECOND_BOUNDARY_WAIT);
-    let before = get_page(&emulator, case, &uri).await;
+    // Two conditions this case needs before it reads the record it will compare against,
+    // each waited for rather than timed: the clock has to reach a LATER whole second than
+    // the create's, since the member is reported at whole-second granularity and only a
+    // later reading could show a move at all; and the page's `Status` has to be settled, so
+    // both readings report the same one.
+    past_the_whole_second_of(case, instant(case, &created, "lastModified")).await;
+    let before = read_until(&emulator, case, &uri, |page| {
+        page.get("status").and_then(Value::as_str) != Some("IN_PROGRESS")
+    })
+    .await;
 
     let (status, patched) = call(&emulator, "PATCH", &uri, Some(json!({}))).await;
     assert_eq!(
@@ -619,7 +631,17 @@ async fn a_patch_that_carries_no_member_leaves_the_record_exactly_as_it_was() {
 
 #[tokio::test]
 async fn the_re_derived_endpoint_names_the_region_the_page_was_created_in() {
-    let emulator = emulator();
+    let emulator = emulator_with_rest_apis();
+    let held = held_endpoint(
+        &emulator,
+        &json!({
+            "restApiId": "regional02",
+            "stage": "prod",
+            "method": "GET",
+            "path": "/orders"
+        }),
+    )
+    .await;
 
     // The page's Region comes from the request that created it, so a patch signed for
     // ANOTHER Region re-derives the default endpoint in the page's own Region — the one
@@ -652,14 +674,7 @@ async fn the_re_derived_endpoint_names_the_region_the_page_was_created_in() {
             "POST",
             &collection,
             Some(json!({
-                "restEndpointIdentifier": {
-                    "identifierParts": {
-                        "restApiId": "regional02",
-                        "stage": "prod",
-                        "method": "GET",
-                        "path": "/orders"
-                    }
-                },
+                "restEndpointIdentifier": { "identifierParts": held.parts.clone() },
                 "displayContent": { "overrides": { "endpoint": "https://created.example.com" } }
             })),
         )
@@ -687,7 +702,7 @@ async fn the_re_derived_endpoint_names_the_region_the_page_was_created_in() {
         );
         assert_eq!(
             content_member(&patched, "endpoint"),
-            Some(invoke_url("regional02", "prod", home)),
+            Some(held.invoke_url(home)),
             "case {case:?}: expected the re-derived invoke URL to name the page's own \
              Region, got {patched}"
         );
@@ -702,8 +717,18 @@ async fn the_re_derived_endpoint_names_the_region_the_page_was_created_in() {
 
 #[tokio::test]
 async fn a_page_is_patched_only_through_its_own_product_and_minted_id() {
-    let emulator = emulator();
+    let emulator = emulator_with_rest_apis();
     let case = "a patch addressed at a page nothing minted";
+    let held = held_endpoint(
+        &emulator,
+        &json!({
+            "restApiId": "addressed1",
+            "stage": "prod",
+            "method": "GET",
+            "path": "/orders"
+        }),
+    )
+    .await;
 
     let holder = product(&emulator, "Addressed").await;
     let collection = pages_of(&holder);
@@ -712,14 +737,7 @@ async fn a_page_is_patched_only_through_its_own_product_and_minted_id() {
         "POST",
         &collection,
         Some(json!({
-            "restEndpointIdentifier": {
-                "identifierParts": {
-                    "restApiId": "addressed1",
-                    "stage": "prod",
-                    "method": "GET",
-                    "path": "/orders"
-                }
-            },
+            "restEndpointIdentifier": { "identifierParts": held.parts.clone() },
             "displayContent": { "overrides": { "body": "the only page" } }
         })),
     )
@@ -799,21 +817,24 @@ async fn a_page_is_patched_only_through_its_own_product_and_minted_id() {
 
 #[tokio::test]
 async fn a_patch_whose_values_are_invalid_is_refused_and_persists_nothing() {
-    let emulator = emulator();
+    let emulator = emulator_with_rest_apis();
     let case = "an invalid patch";
+    let held = held_endpoint(
+        &emulator,
+        &json!({
+            "restApiId": "validpage1",
+            "stage": "prod",
+            "method": "GET",
+            "path": "/orders"
+        }),
+    )
+    .await;
 
     let (uri, _created) = page_under_a_fresh_product(
         &emulator,
         case,
         json!({
-            "restEndpointIdentifier": {
-                "identifierParts": {
-                    "restApiId": "validpage1",
-                    "stage": "prod",
-                    "method": "GET",
-                    "path": "/orders"
-                }
-            },
+            "restEndpointIdentifier": { "identifierParts": held.parts.clone() },
             "displayContent": { "overrides": { "body": "a valid record" } },
             "tryItState": "ENABLED"
         }),

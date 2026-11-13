@@ -38,7 +38,9 @@
 use serde_json::{json, Value};
 use smithy_server_runtime::MultiServiceRouter;
 
-use crate::api_lifecycle::{as_str, call, emulator, error_code};
+use crate::api_lifecycle::{
+    as_str, call, emulator_with_rest_apis, error_code, rest_endpoint,
+};
 
 /// The portal products collection (`/v2/portalproducts`).
 const PRODUCTS: &str = "/v2/portalproducts";
@@ -233,17 +235,19 @@ async fn fixture(emulator: &MultiServiceRouter, name: &str) -> Fixture {
     .await;
     let product_page_id = as_str(&page, "productPageId");
 
+    let rest_api = rest_endpoint(emulator, &format!("{name}-rest"), "prod").await;
     let endpoint_page = accepted(
         emulator,
         "the product REST endpoint page",
         "POST",
         &format!("{PRODUCTS}/{product_id}/productrestendpointpages"),
         // `RestEndpointIdentifier$IdentifierParts`: the REST API, stage, method and path
-        // of the endpoint the page documents.
+        // of the endpoint the page documents — one the account HOLDS, created through the
+        // service that owns REST APIs.
         Some(json!({
             "restEndpointIdentifier": {
                 "identifierParts": {
-                    "restApiId": "a1b2c3d4e5",
+                    "restApiId": rest_api,
                     "stage": "prod",
                     "method": "GET",
                     "path": "/orders"
@@ -546,7 +550,7 @@ async fn assert_fixture_intact(emulator: &MultiServiceRouter, case: &str, fixtur
 
 #[tokio::test]
 async fn every_operation_addressing_one_response_of_an_api_answers_that_kinds_sentence() {
-    let emulator = emulator();
+    let emulator = emulator_with_rest_apis();
     let fixture = fixture(&emulator, "response-sentence").await;
 
     for id in unresolvable_ids() {
@@ -561,7 +565,7 @@ async fn every_operation_addressing_one_response_of_an_api_answers_that_kinds_se
 
 #[tokio::test]
 async fn every_operation_addressed_at_a_portal_product_names_the_product_and_the_account() {
-    let emulator = emulator();
+    let emulator = emulator_with_rest_apis();
     let fixture = fixture(&emulator, "product-sentence").await;
     let account = engine::emulator_account_id();
 
@@ -585,7 +589,7 @@ async fn every_operation_addressed_at_a_portal_product_names_the_product_and_the
 
 #[tokio::test]
 async fn every_operation_addressed_at_one_page_answers_that_pages_fixed_sentence() {
-    let emulator = emulator();
+    let emulator = emulator_with_rest_apis();
     let fixture = fixture(&emulator, "page-sentence").await;
     let account = engine::emulator_account_id();
 

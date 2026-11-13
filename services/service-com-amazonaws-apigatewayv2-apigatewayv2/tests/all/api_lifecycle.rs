@@ -47,6 +47,81 @@ pub(crate) fn emulator() -> MultiServiceRouter {
     router
 }
 
+/// A fresh emulator holding this service AND the API Gateway (v1) service that owns REST
+/// APIs — the arrangement the router assembles.
+///
+/// A suite that writes a `ProductRestEndpointPage` needs it: the page documents one REST
+/// endpoint, and a write naming an endpoint the account does not have is refused, so the
+/// endpoint has to be created through the service that OWNS it ([`rest_endpoint`]).
+pub(crate) fn emulator_with_rest_apis() -> MultiServiceRouter {
+    emulator_with_rest_apis_and_engine().0
+}
+
+/// [`emulator_with_rest_apis`] and the engine both services were built from, for a suite
+/// that asserts on the store itself — what a refused write must NOT have persisted.
+pub(crate) fn emulator_with_rest_apis_and_engine(
+) -> (MultiServiceRouter, Arc<engine::InMemoryEngine>) {
+    let engine: Arc<engine::InMemoryEngine> = Arc::new(engine::InMemoryEngine::new());
+    let mut router = MultiServiceRouter::new();
+    router.set_request_authentication(false);
+    router.register_service(
+        service_com_amazonaws_apigatewayv2_apigatewayv2::EmulatedService::new(Arc::clone(&engine)),
+    );
+    router.register_service(
+        service_com_amazonaws_apigateway_backplanecontrolservice::EmulatedService::new(Arc::clone(
+            &engine,
+        )),
+    );
+    (router, engine)
+}
+
+/// Create one REST API with `stage` deployed on it, through the service that OWNS REST APIs,
+/// and answer the `RestApiId` that service MINTED.
+///
+/// A stage serves a DEPLOYMENT, and a deployment is the snapshot of the API's methods, so
+/// the API gets one method on its root resource first — the shortest path a client takes to
+/// a stage it can invoke. What a suite calls "an endpoint the account holds" is therefore
+/// what that service reports, not an identifier a test made up.
+pub(crate) async fn rest_endpoint(
+    emulator: &MultiServiceRouter,
+    name: &str,
+    stage: &str,
+) -> String {
+    let (status, created) =
+        call(emulator, "POST", "/restapis", Some(json!({ "name": name }))).await;
+    assert_eq!(
+        status, 201,
+        "case {name:?}: expected 201 from CreateRestApi, got {status} {created}"
+    );
+    let rest_api_id = as_str(&created, "id");
+    let root = as_str(&created, "rootResourceId");
+
+    let (status, method) = call(
+        emulator,
+        "PUT",
+        &format!("/restapis/{rest_api_id}/resources/{root}/methods/GET"),
+        Some(json!({ "authorizationType": "NONE" })),
+    )
+    .await;
+    assert_eq!(
+        status, 201,
+        "case {name:?}: expected 201 from PutMethod, got {status} {method}"
+    );
+
+    let (status, deployment) = call(
+        emulator,
+        "POST",
+        &format!("/restapis/{rest_api_id}/deployments"),
+        Some(json!({ "stageName": stage })),
+    )
+    .await;
+    assert_eq!(
+        status, 201,
+        "case {name:?}: expected 201 from CreateDeployment, got {status} {deployment}"
+    );
+    rest_api_id
+}
+
 /// Send one request, signed for [`REGION`], and return `(status, parsed body)`. An
 /// empty body parses to `Value::Null`, which is how a 204 is asserted.
 pub(crate) async fn call(
@@ -307,6 +382,66 @@ pub(crate) fn carries_nothing(body: &Value, member: &str) -> bool {
         Value::Array(items) => items.is_empty(),
         _ => false,
     })
+}
+
+/// How long a wait for a CONDITION may take before the test gives up: far beyond any span
+/// this emulator owes a transition, so a loaded host reaches the same outcome as an idle
+/// one. It is not a budget any case tests — only the condition is asserted on.
+const CONDITION_DEADLINE: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Read `uri` until `settled` holds of the answer, and answer that reading.
+///
+/// The wait is for the CONDITION — the record is re-read until it reports what the case
+/// waits for — never for a fixed time, so neither a fast nor a loaded host changes what a
+/// case observes. Between readings the runtime is yielded to, so the transition the clock
+/// owes can come due; the deadline is [`CONDITION_DEADLINE`].
+pub(crate) async fn read_until(
+    emulator: &MultiServiceRouter,
+    case: &str,
+    uri: &str,
+    settled: impl Fn(&Value) -> bool,
+) -> Value {
+    let deadline = std::time::Instant::now() + CONDITION_DEADLINE;
+    loop {
+        let (status, body) = call(emulator, "GET", uri, None).await;
+        assert_eq!(
+            status, 200,
+            "case {case:?}: expected 200 from GET {uri}, got {status} {body}"
+        );
+        if settled(&body) {
+            return body;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "case {case:?}: {uri} never reported what the case waits for, last read {body}"
+        );
+        tokio::task::yield_now().await;
+    }
+}
+
+/// Wait until this test's clock reads a LATER whole second than `seconds`.
+///
+/// The condition a case needs when it asserts that a stored instant did NOT move: the
+/// service reports a timestamp at whole-second granularity, so only a reading in a later
+/// second could show a move at all. The wait is for that reading, not for a fixed time, and
+/// gives up at [`CONDITION_DEADLINE`].
+pub(crate) async fn past_the_whole_second_of(case: &str, seconds: f64) {
+    let deadline = std::time::Instant::now() + CONDITION_DEADLINE;
+    while now_epoch_seconds().floor() <= seconds.floor() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "case {case:?}: the clock never reached a second later than {seconds}"
+        );
+        tokio::task::yield_now().await;
+    }
+}
+
+/// This test's clock reading, in epoch seconds.
+pub(crate) fn now_epoch_seconds() -> f64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|since| since.as_secs_f64())
+        .unwrap_or_default()
 }
 
 /// `value` with every null object entry dropped, recursively.

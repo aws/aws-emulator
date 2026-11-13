@@ -201,12 +201,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         )
         .map_err(bad_request)?;
 
-        // The page's content is generated FROM the REST endpoint it documents, so whether
-        // that generation can succeed is resolved against the service that owns REST APIs
-        // — before this service's own store is locked, which is the lock order every
-        // cross-service question of this crate is asked in.
-        let generation_failure =
-            crate::state::rest_endpoint_generation_failure(&*self.engine, parts);
+        // The page's content is generated FROM the REST endpoint it documents, so an
+        // identifier naming none describes no page at all and the create is refused.
+        // RESOLVED here, before this service's own store is locked — the lock order every
+        // cross-service question of this crate is asked in — and ANSWERED below, after the
+        // product the URI names has been resolved: a request that addresses no product is
+        // told that first, whatever else it carries.
+        let unresolved_endpoint = crate::state::unresolved_rest_endpoint(&*self.engine, parts);
 
         // `TryItState` is a modelled enum, so the boundary validator refuses a value
         // outside its catalog; a request that names none gets the service's default.
@@ -231,6 +232,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             )
             .into());
         };
+
+        // And the endpoint resolved above: a product the account HAS cannot hold a page
+        // documenting an endpoint it does not.
+        if let Some(message) = unresolved_endpoint {
+            return Err(bad_request(message));
+        }
 
         // Bound the growth a caller drives, the way CreateRoute bounds one api's routes:
         // `TooManyRequestsException` is the modelled error for "a limit has been
@@ -272,11 +279,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // The page's content is generated from the REST endpoint it documents, which
             // is not done when this call answers, so the record is due to settle one span
             // from now: a transition the CLOCK owes, stored as its due instant rather than
-            // slept for. What it settles IN was resolved above, against the owner of REST
-            // APIs.
+            // slept for. The endpoint it is generated FROM resolved above.
             settles_at: ::std::time::Instant::now()
                 + crate::state::PRODUCT_REST_ENDPOINT_PAGE_CREATE_SPAN,
-            generation_failure,
         };
 
         // `page_id` comes from the product's own id bijection, so it names no existing

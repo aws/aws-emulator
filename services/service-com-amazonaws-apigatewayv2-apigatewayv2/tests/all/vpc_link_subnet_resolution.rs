@@ -8,7 +8,9 @@
 //!
 //! * every subnet a create names has to be one the ACCOUNT has, in the Region the request
 //!   was signed for, as Amazon EC2 reports it at the time of the call — a create naming one
-//!   EC2 holds no subnet for is refused 400 `BadRequestException` and persists no link;
+//!   EC2 holds no subnet for is refused 400 `BadRequestException`, with the sentence EC2
+//!   answered wrapped the way API Gateway reports another service's refusal, and persists no
+//!   link;
 //! * the interfaces of one link live in one VPC, so the subnets a create names have to
 //!   agree on their VPC — a list spanning two of them is refused the same way;
 //! * a create whose subnets do resolve, in one VPC, is answered 201 and the link it minted
@@ -194,6 +196,25 @@ async fn create(
         Some(json!({ "name": name, "subnetIds": subnet_ids })),
     )
     .await
+}
+
+/// Assert the refusal of a create naming `subnet_id`: the sentence EC2 states for an id it
+/// holds no subnet for, wrapped the way API Gateway reports a refusal another AWS service
+/// answered it — the service, the status, the error code and the id of the refused request.
+///
+/// The REQUEST ID is that refused request's own, one value per call, so what is asserted is
+/// the fixed text around it.
+fn assert_relayed_not_found(case: &str, body: &Value, subnet_id: &str) {
+    let message = as_str(body, "message");
+    let fixed = format!(
+        "The subnet ID '{subnet_id}' does not exist (Service: AmazonEC2; Status Code: 400; \
+         Error Code: InvalidSubnetID.NotFound; Request ID: "
+    );
+    assert!(
+        message.starts_with(&fixed) && message.ends_with("; Proxy: null)"),
+        "case {case:?}: expected {fixed:?} then the refused request's id and \
+         \"; Proxy: null)\", got {message:?}"
+    );
 }
 
 #[tokio::test]
@@ -390,11 +411,7 @@ async fn the_refusal_of_an_unknown_subnet_names_that_subnet() {
             status, 400,
             "case {subnet_id:?}: expected 400, got {status} with {body:?}"
         );
-        assert_eq!(
-            as_str(&body, "message"),
-            format!("The subnet ID '{subnet_id}' does not exist"),
-            "case {subnet_id:?}: expected the refusal to name that subnet, got {body:?}"
-        );
+        assert_relayed_not_found(subnet_id, &body, subnet_id);
     }
 }
 
@@ -419,12 +436,7 @@ async fn a_request_naming_more_subnets_than_one_call_resolves_is_refused_at_the_
         status, 400,
         "at the bound: expected 400, got {status} with {body:?}"
     );
-    assert_eq!(
-        as_str(&body, "message"),
-        format!("The subnet ID '{}' does not exist", at_bound[0]),
-        "at the bound: expected the list to be RESOLVED and refused for its first \
-         unresolvable id, got {body:?}"
-    );
+    assert_relayed_not_found("at the bound", &body, &at_bound[0]);
 
     let past_bound = ids(MAX_SUBNET_IDS_RESOLVED + 1);
     let (status, body) = create(&emulator.router, "past-the-bound", &past_bound).await;

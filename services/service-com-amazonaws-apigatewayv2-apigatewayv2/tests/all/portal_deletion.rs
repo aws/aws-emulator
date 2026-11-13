@@ -48,7 +48,7 @@ use service_com_amazonaws_apigatewayv2_apigatewayv2::state::{
 use service_com_amazonaws_apigatewayv2_apigatewayv2::ComAmazonawsApigatewayv2Apigatewayv2State;
 
 use crate::api_lifecycle::{as_str, call, error_code};
-use crate::portal_lifecycle::{custom_colors, portal_content};
+use crate::portal_lifecycle::{custom_colors, hold_included_products, portal_content};
 use crate::websocket_handshake_data_plane::send;
 
 /// The portals collection URI (`CreatePortal`'s modelled `POST /v2/portals`); one portal
@@ -330,7 +330,7 @@ async fn delete_portal_takes_the_portal_away_and_leaves_it_readable_as_deleted()
          got {PORTAL_NOT_FOUND_MESSAGE:?}"
     );
 
-    for row in rows() {
+    for mut row in rows() {
         let case = row.case;
         let (emulator, engine) = emulator_with_store();
 
@@ -344,6 +344,9 @@ async fn delete_portal_takes_the_portal_away_and_leaves_it_readable_as_deleted()
                     .portal_id,
             );
         }
+        // A portal may only include products the account HOLDS, so this row's products are
+        // created before its portal is.
+        let _held = hold_included_products(&emulator, case, &mut row.create).await;
         let created = create_portal(&emulator, case, row.create.clone()).await;
         let portal_id = created.portal_id.clone();
         let uri = format!("{PORTALS}/{portal_id}");

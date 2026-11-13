@@ -221,14 +221,12 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         // `IncludedPortalProductArns` holds "The ARNs of the portal products included in
         // the portal", so a value that is not an ARN of this service's namespace names no
-        // product at all. Whether each ARN names a product in THIS account's store is
-        // deliberately not checked: a portal product is a shareable resource
-        // (`PutPortalProductSharingPolicy`, and `GetPortalProduct$ResourceOwnerAccountId`
-        // reports the owner), so an ARN naming a product another account shared is a
-        // legitimate inclusion this store holds no record of.
+        // product at all. The FORM is weighed here, before anything is locked; whether each
+        // ARN names a product the account HOLDS is resolved against the store below, since
+        // a portal renders the products it includes and cannot include one that does not
+        // exist.
         let included_portal_product_arns = input.included_portal_product_arns.unwrap_or_default();
         if let Err(message) = crate::state::validate_arns_of(
-            "IncludedPortalProductArns",
             crate::state::ARN_SERVICE,
             crate::state::PORTAL_PRODUCT_RESOURCE_PREFIX,
             included_portal_product_arns.iter().map(String::as_str),
@@ -259,7 +257,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .into());
         }
         // And the growth ONE portal drives: every product it includes is rendered into
-        // the page its domain serves, so the list it stores is bounded here.
+        // the page its domain serves, so the list it stores is bounded here. Weighed BEFORE
+        // each ARN is resolved, so a list past the bound is refused for its length whatever
+        // it names.
         if let Err(message) =
             crate::state::validate_included_portal_product_count(&included_portal_product_arns)
         {
@@ -270,6 +270,18 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 },
             )
             .into());
+        }
+
+        // Every included product has to be one the account HOLDS: the portal renders each
+        // of them, so an ARN naming a product nothing created is refused with the sentence
+        // this API reports an unresolved product with
+        // ([`crate::state::unresolved_included_portal_product`]). Checked before anything is
+        // minted, so a refused create stores nothing.
+        if let Some(message) = crate::state::unresolved_included_portal_product(
+            &store.portal_products,
+            included_portal_product_arns.iter().map(String::as_str),
+        ) {
+            return Err(bad_request(message));
         }
 
         let portal_id = store.mint_portal_id();

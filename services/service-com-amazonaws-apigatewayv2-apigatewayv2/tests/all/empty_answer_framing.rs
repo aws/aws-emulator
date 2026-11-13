@@ -30,7 +30,10 @@
 use serde_json::{json, Value};
 use smithy_server_runtime::MultiServiceRouter;
 
-use crate::api_lifecycle::{as_str, call, call_reading_headers, emulator, error_code};
+use crate::api_lifecycle::{
+    as_str, call, call_reading_headers, emulator, emulator_with_rest_apis, error_code,
+    rest_endpoint,
+};
 use crate::product_page_lifecycle::pages_of as product_pages_of;
 use crate::product_rest_endpoint_page_lifecycle::{
     pages_of as rest_endpoint_pages_of, product, PRODUCTS,
@@ -99,7 +102,9 @@ async fn api_with_cors(emulator: &MultiServiceRouter) -> String {
 
 #[tokio::test]
 async fn every_answer_that_carries_no_content_states_content_length_zero() {
-    let emulator = emulator();
+    // The REST endpoint a product REST endpoint page documents is created through the
+    // service that OWNS REST APIs, so this emulator holds both.
+    let emulator = emulator_with_rest_apis();
 
     // The api family: an api, a route of it, a stage of it, that stage's access log
     // settings, and the api's CORS configuration.
@@ -138,6 +143,7 @@ async fn every_answer_that_carries_no_content_states_content_length_zero() {
     // The portal-product family: a product, a product page, a REST endpoint page and a
     // sharing policy.
     let portal_product = product(&emulator, "Framing product").await;
+    let rest_api = rest_endpoint(&emulator, "framing-rest", "prod").await;
     let (status, created) = call(
         &emulator,
         "POST",
@@ -157,7 +163,7 @@ async fn every_answer_that_carries_no_content_states_content_length_zero() {
         Some(json!({
             "restEndpointIdentifier": {
                 "identifierParts": {
-                    "restApiId": "framingrest",
+                    "restApiId": rest_api,
                     "stage": "prod",
                     "method": "GET",
                     "path": "/orders"

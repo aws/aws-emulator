@@ -159,25 +159,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             ));
         };
 
-        // `PolicyDocument` carries the modelled length bound (len 1..307200), which the
-        // boundary validator refuses before this handler runs. Beyond it this refuses a
-        // document that is not a JSON policy document at all: "the product sharing
-        // policy" (`PutPortalProductSharingPolicy$PolicyDocument`) is a resource policy,
-        // and a policy the service could never evaluate is not stored and then reported
-        // back as if it were one. Checked BEFORE the store is touched, so a refused call
-        // leaves the product's policy exactly as it was.
-        if !is_policy_document(&input.policy_document) {
-            return Err(bad_request(
-                "Invalid value for PolicyDocument: the product sharing policy must be a \
-                 JSON policy document.",
-            ));
-        }
-
         let mut store = state.lock();
 
         // The sharing policy is a sub-resource of the product the URI names
         // (`/v2/portalproducts/{PortalProductId}/sharingpolicy`), so the product is the
-        // resource that has to exist: no product, nothing to hold a policy.
+        // resource that has to exist: no product, nothing to hold a policy. Weighed BEFORE
+        // the document itself, so a request addressing no product is told that rather than
+        // judged on what it carries.
         let Some(record) = store.portal_products.get_mut(&input.portal_product_id) else {
             return Err(
                 PutPortalProductSharingPolicyErrorModeled::NotFoundException(NotFoundException {
@@ -190,6 +178,19 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             );
         };
 
+        // `PolicyDocument` carries the modelled length bound (len 1..307200), which the
+        // boundary validator refuses before this handler runs. Beyond it this refuses a
+        // document that is not a RESOURCE POLICY: "the product sharing policy"
+        // (`PutPortalProductSharingPolicy$PolicyDocument`) is a resource-based policy in the
+        // IAM JSON policy language, whose grammar is the tree's one reading of that language
+        // (`service_common::iam_policy::resource_policy_defect`) — a document breaking any
+        // clause of it is one no policy engine could evaluate, so it is not stored and then
+        // reported back as the product's policy. Checked before anything is written, so a
+        // refused call leaves the product's policy exactly as it was.
+        if ::service_common::iam_policy::resource_policy_defect(&input.policy_document).is_some() {
+            return Err(bad_request(INVALID_POLICY_MESSAGE));
+        }
+
         // A PUT of the sub-resource REPLACES it: the document the request carried is the
         // product's whole sharing policy afterwards, whether it held one before or not,
         // so repeating the call leaves the same policy stored. Nothing else on the record
@@ -201,16 +202,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
     }
 }
 
-/// Whether a `PolicyDocument` is a policy document this service can store: a
-/// well-formed JSON object.
-///
-/// A resource policy is a JSON object (its `Version` and its `Statement`s), so a
-/// document that is not even well-formed JSON, or is JSON that is not an object,
-/// describes no policy. This checks the FORM only — which statements a policy carries is
-/// not something the model constrains, so nothing beyond "a JSON object" is required.
-fn is_policy_document(document: &str) -> bool {
-    serde_json::from_str::<serde_json::Value>(document).is_ok_and(|parsed| parsed.is_object())
-}
+/// How API Gateway words the refusal of a document that is not a policy: one sentence,
+/// naming neither the member nor the clause the document broke — every part of it is fixed
+/// text, so a client comparing it reads the same sentence whichever clause failed.
+const INVALID_POLICY_MESSAGE: &str = "The specified policy was invalid";
 
 /// This operation's refusal of a request it models no more specific error for: the
 /// modelled `BadRequestException` ("The request is not valid, for example, the input is

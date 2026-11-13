@@ -29,7 +29,7 @@
 use serde_json::{json, Value};
 use smithy_server_runtime::MultiServiceRouter;
 
-use crate::api_lifecycle::{as_str, call, emulator, error_code};
+use crate::api_lifecycle::{as_str, call, emulator_with_rest_apis, error_code, rest_endpoint};
 use crate::product_page_lifecycle::pages_of as product_pages_of;
 use crate::product_rest_endpoint_page_lifecycle::{
     pages_of as rest_endpoint_pages_of, product, PRODUCTS,
@@ -55,8 +55,10 @@ impl Kind {
         }
     }
 
-    /// The `Create…` body that mints one page of this kind, distinguished by `label`.
-    fn create_body(self, label: &str) -> Value {
+    /// The `Create…` body that mints one page of this kind, distinguished by `label`. A
+    /// REST endpoint page documents an endpoint the ACCOUNT has, so `rest_api_id` is the id
+    /// the service that owns REST APIs minted for this suite's API.
+    fn create_body(self, label: &str, rest_api_id: &str) -> Value {
         match self {
             Self::ProductPage => json!({
                 "displayContent": { "title": label, "body": format!("The body of {label}") }
@@ -64,7 +66,7 @@ impl Kind {
             Self::RestEndpointPage => json!({
                 "restEndpointIdentifier": {
                     "identifierParts": {
-                        "restApiId": "framingrest",
+                        "restApiId": rest_api_id,
                         "stage": "prod",
                         "method": "GET",
                         "path": format!("/{label}")
@@ -197,12 +199,13 @@ async fn create_page(
     kind: Kind,
     portal_product_id: &str,
     label: &str,
+    rest_api_id: &str,
 ) -> String {
     let (status, created) = call(
         emulator,
         "POST",
         &kind.collection(portal_product_id),
-        Some(kind.create_body(label)),
+        Some(kind.create_body(label, rest_api_id)),
     )
     .await;
     assert_eq!(
@@ -214,7 +217,10 @@ async fn create_page(
 
 #[tokio::test]
 async fn deleting_a_page_that_is_already_gone_answers_the_empty_204() {
-    let emulator = emulator();
+    let emulator = emulator_with_rest_apis();
+    // The one REST endpoint every REST endpoint page below documents, created through the
+    // service that OWNS REST APIs.
+    let rest_api_id = rest_endpoint(&emulator, "absent-page-rest", "prod").await;
 
     for row in rows() {
         let owner = product(&emulator, row.case).await;
@@ -222,7 +228,8 @@ async fn deleting_a_page_that_is_already_gone_answers_the_empty_204() {
         // is minted per product, so the owner's page names nothing under this one.
         let other = product(&emulator, "another product").await;
 
-        let minted = create_page(&emulator, row.case, row.kind, &owner, "target").await;
+        let minted =
+            create_page(&emulator, row.case, row.kind, &owner, "target", &rest_api_id).await;
         let mut siblings = Vec::new();
         for index in 0..row.siblings {
             siblings.push(
@@ -232,6 +239,7 @@ async fn deleting_a_page_that_is_already_gone_answers_the_empty_204() {
                     row.kind,
                     &owner,
                     &format!("sibling{index}"),
+                    &rest_api_id,
                 )
                 .await,
             );
@@ -322,7 +330,8 @@ async fn deleting_a_page_that_is_already_gone_answers_the_empty_204() {
 /// page identifier looks like.
 #[tokio::test]
 async fn deleting_a_page_of_a_product_nothing_minted_is_refused() {
-    let emulator = emulator();
+    let emulator = emulator_with_rest_apis();
+    let rest_api_id = rest_endpoint(&emulator, "absent-product-rest", "prod").await;
 
     // The sentence this API refuses an unresolved portal product with, the one
     // `CreateProductPage` and `DeletePortalProductSharingPolicy` already answer: a
@@ -335,7 +344,15 @@ async fn deleting_a_page_of_a_product_nothing_minted_is_refused() {
     let owner = product(&emulator, "the holder of a real page").await;
 
     for kind in [Kind::ProductPage, Kind::RestEndpointPage] {
-        let minted = create_page(&emulator, "the holder's page", kind, &owner, "target").await;
+        let minted = create_page(
+            &emulator,
+            "the holder's page",
+            kind,
+            &owner,
+            "target",
+            &rest_api_id,
+        )
+        .await;
         for page_id in [
             minted.clone(),
             "nosuchpage1".to_string(),

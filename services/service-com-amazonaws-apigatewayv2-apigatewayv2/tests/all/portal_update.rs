@@ -53,9 +53,10 @@ use service_com_amazonaws_apigatewayv2_apigatewayv2::state::{
 };
 
 use crate::api_lifecycle::{
-    as_str, call, call_in_region, emulator, error_code, instant, strip_nulls,
+    as_str, call, call_in_region, emulator, error_code, instant, past_the_whole_second_of,
+    strip_nulls,
 };
-use crate::portal_lifecycle::{custom_colors, portal_content};
+use crate::portal_lifecycle::{custom_colors, hold_included_products, portal_content};
 
 /// The portals collection URI (`CreatePortal`'s modelled `POST /v2/portals`); one portal
 /// hangs off it as `{COLLECTION}/{id}`, the URI both `GetPortal` and `UpdatePortal` are
@@ -472,8 +473,15 @@ async fn patch_portal(
 async fn a_patch_replaces_the_members_it_carries_and_leaves_the_others_as_they_were() {
     let emulator = emulator();
 
-    for row in rows() {
+    for mut row in rows() {
         let case = row.case;
+        // A portal may only include products the account HOLDS, so every product the row's
+        // create and its patches name is created first and the row is pointed at them.
+        let _held = hold_included_products(&emulator, case, &mut row.create).await;
+        if let Some(earlier) = row.earlier_patch.as_mut() {
+            let _held = hold_included_products(&emulator, case, earlier).await;
+        }
+        let _held = hold_included_products(&emulator, case, &mut row.patch).await;
         let portal_id = create_portal(&emulator, case, &row.create).await;
 
         if let Some(earlier) = &row.earlier_patch {
@@ -706,24 +714,23 @@ async fn a_patch_that_carries_no_member_leaves_the_record_exactly_as_it_was() {
     let emulator = emulator();
     let case = "a patch carrying none of the portal's members";
 
-    let portal_id = create_portal(
-        &emulator,
-        case,
-        &json!({
-            "authorization": { "none": {} },
-            "endpointConfiguration": own_domain("untouched.example.com"),
-            "includedPortalProductArns": [product_arn("prod000010")],
-            "logoUri": "s3://example-portal-assets/untouched.png",
-            "rumAppMonitorName": "untouched-rum",
-            "portalContent": described_content("Untouched", "nothing in the patch applies"),
-            "tags": { "team": "platform" }
-        }),
-    )
-    .await;
+    let mut create = json!({
+        "authorization": { "none": {} },
+        "endpointConfiguration": own_domain("untouched.example.com"),
+        "includedPortalProductArns": [product_arn("prod000010")],
+        "logoUri": "s3://example-portal-assets/untouched.png",
+        "rumAppMonitorName": "untouched-rum",
+        "portalContent": described_content("Untouched", "nothing in the patch applies"),
+        "tags": { "team": "platform" }
+    });
+    let _held = hold_included_products(&emulator, case, &mut create).await;
+    let portal_id = create_portal(&emulator, case, &create).await;
     let before = get_portal(&emulator, case, &portal_id).await;
 
-    // Past a second boundary, so a `LastModified` that moved would be visible.
-    sleep(SECOND_BOUNDARY_WAIT);
+    // The member is reported at whole-second granularity, so the patch has to land in a
+    // LATER second for a move to be visible at all: the wait is for the clock to read one,
+    // never for a fixed time.
+    past_the_whole_second_of(case, instant(case, &before, "lastModified")).await;
 
     let patched = patch_portal(&emulator, case, &portal_id, json!({})).await;
     assert_eq!(
@@ -768,7 +775,8 @@ async fn a_patch_that_carries_a_member_advances_last_modified() {
         ("the RUM app monitor name", json!({ "rumAppMonitorName": "moved-rum" })),
     ];
 
-    for (case, patch) in patches {
+    for (case, mut patch) in patches {
+        let _held = hold_included_products(&emulator, case, &mut patch).await;
         let portal_id = create_portal(
             &emulator,
             case,
@@ -1038,18 +1046,15 @@ async fn a_patch_whose_values_are_invalid_is_refused_and_persists_nothing() {
     let emulator = emulator();
     let case = "an invalid patch";
 
-    let portal_id = create_portal(
-        &emulator,
-        case,
-        &json!({
-            "authorization": { "none": {} },
-            "endpointConfiguration": { "none": {} },
-            "includedPortalProductArns": [product_arn("prod000011")],
-            "rumAppMonitorName": "valid-rum",
-            "portalContent": described_content("Valid", "a valid record")
-        }),
-    )
-    .await;
+    let mut create = json!({
+        "authorization": { "none": {} },
+        "endpointConfiguration": { "none": {} },
+        "includedPortalProductArns": [product_arn("prod000011")],
+        "rumAppMonitorName": "valid-rum",
+        "portalContent": described_content("Valid", "a valid record")
+    });
+    let _held = hold_included_products(&emulator, case, &mut create).await;
+    let portal_id = create_portal(&emulator, case, &create).await;
     let uri = format!("{COLLECTION}/{portal_id}");
     let before = get_portal(&emulator, case, &portal_id).await;
 

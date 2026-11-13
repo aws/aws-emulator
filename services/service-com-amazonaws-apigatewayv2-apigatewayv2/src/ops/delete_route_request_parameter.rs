@@ -193,9 +193,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         };
 
         // The request parameter key is the last path label, so it addresses a resource
-        // too: a key the route does not carry is not found. That also covers a route of
-        // an HTTP api — request parameters are "supported only for WebSocket APIs", so
-        // such a route carries none and every key is absent.
+        // too: a key the route does not carry is not found. A route of an api of either
+        // protocol may carry request parameters (`CreateRoute`), so this resolves against
+        // whatever map the route was given.
         if route
             .request_parameters
             .remove(&input.request_parameter_key)

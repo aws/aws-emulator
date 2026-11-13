@@ -121,15 +121,15 @@ fn rows() -> Vec<Row> {
                        protocol type of HTTP",
         },
         Row {
-            case: "CreateRoute$RequestParameters, a map of structures, on an HTTP api",
+            case: "CreateRoute$RequestModels, a map, on an HTTP api",
             collection: "routes",
             base: json!({ "routeKey": "GET /params" }),
             id_member: "routeId",
-            member: "RequestParameters",
-            json_name: "requestParameters",
-            value: json!({ "route.request.header.x-trace": { "required": true } }),
+            member: "RequestModels",
+            json_name: "requestModels",
+            value: json!({ "default": "Empty" }),
             supported_by: WEBSOCKET_PROTOCOL_TYPE,
-            expected: "Currently, RequestParameters is not permitted for APIs with a \
+            expected: "Currently, RequestModels is not permitted for APIs with a \
                        protocol type of HTTP",
         },
         Row {

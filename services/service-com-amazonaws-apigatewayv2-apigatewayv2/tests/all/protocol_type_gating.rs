@@ -132,22 +132,11 @@ fn rows() -> Vec<Row> {
             supported_by: WEBSOCKET_PROTOCOL_TYPE,
             read_back: ReadBack::Collection,
         },
-        Row {
-            case: "CreateRoute$RequestParameters, a non-empty map of structures",
-            collection: "routes",
-            // `$connect` is the one route key a WEBSOCKET api accepts request parameters
-            // on (`crate::state::route_request_parameters`), and a key of that spelling is
-            // a route of an HTTP api like any other, so the row still weighs both
-            // directions of the PROTOCOL restriction this suite is about.
-            request: json!({
-                "routeKey": "$connect",
-                "requestParameters": {
-                    "route.request.header.x-trace": { "required": true }
-                }
-            }),
-            supported_by: WEBSOCKET_PROTOCOL_TYPE,
-            read_back: ReadBack::Collection,
-        },
+        // NOT a row of this table: `CreateRoute$RequestParameters`. Its documentation
+        // carries the same "Supported only for WebSocket APIs" clause, but the service
+        // accepts the member on a route of an api of EITHER protocol and reports the map
+        // back, so it is no protocol restriction at all; `route_request_parameter` owns what
+        // a route may declare.
         // --- single members of an integration, both directions of the restriction.
         Row {
             case: "CreateIntegration$ContentHandlingStrategy, an enum member",

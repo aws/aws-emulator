@@ -227,13 +227,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         // `IncludedPortalProductArns` holds "The ARNs of the portal products included in
         // the portal", so a value that is not an ARN of this service's portal-product
-        // namespace names no product at all. Whether each ARN names a product THIS
-        // account's store holds is deliberately not checked, for the reason
-        // `create_portal` gives: a product another account shared is a legitimate
-        // inclusion this store holds no record of.
+        // namespace names no product at all. The FORM is weighed here; whether each ARN
+        // names a product the account HOLDS is resolved against the store below, the way
+        // `create_portal` resolves it.
         if let Some(arns) = input.included_portal_product_arns.as_ref() {
             if let Err(message) = crate::state::validate_arns_of(
-                "IncludedPortalProductArns",
                 crate::state::ARN_SERVICE,
                 crate::state::PORTAL_PRODUCT_RESOURCE_PREFIX,
                 arns.iter().map(String::as_str),
@@ -259,6 +257,20 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         };
         let mut store = state.lock();
 
+        // Every included product has to be one the account HOLDS, exactly as the create
+        // requires ([`crate::state::unresolved_included_portal_product`]). RESOLVED here,
+        // while the store is in hand, and ANSWERED below once the portal the URI names has
+        // been resolved: a patch addressing no portal is told that first.
+        let unresolved_product = input
+            .included_portal_product_arns
+            .as_ref()
+            .and_then(|arns| {
+                crate::state::unresolved_included_portal_product(
+                    &store.portal_products,
+                    arns.iter().map(String::as_str),
+                )
+            });
+
         let now = ::std::time::SystemTime::now();
         let Some(record) = store.live_portal_mut(&input.portal_id) else {
             // The message a portal reader answers for an id the account holds no portal
@@ -269,6 +281,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             })
             .into());
         };
+
+        // And the included products resolved above, now that the portal itself has been:
+        // checked before the record is patched, so a refused patch leaves the portal as it
+        // was.
+        if let Some(message) = unresolved_product {
+            return Err(bad_request(message));
+        }
 
         // Materialise a publish or disable the CLOCK has already made due before
         // deciding: that change was owed at its due instant whether or not anyone

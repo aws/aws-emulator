@@ -42,7 +42,9 @@ use service_com_amazonaws_apigatewayv2_apigatewayv2::state::{
     MAX_INCLUDED_PORTAL_PRODUCTS, PORTAL_BUILD, PORTAL_PREVIEW_SEGMENT,
 };
 
-use crate::api_lifecycle::{as_str, call, call_at_host, emulator, error_code};
+use crate::api_lifecycle::{
+    as_str, call, call_at_host, emulator, emulator_with_rest_apis, error_code, rest_endpoint,
+};
 use crate::portal_lifecycle::{custom_colors, portal_content};
 use crate::websocket_handshake_data_plane::{message, send, Answer};
 
@@ -212,6 +214,51 @@ pub(crate) fn served(case: &str, page: &Answer, portal_id: &str) {
         "case {case:?}: the page must name the portal it was built for, got {}",
         page.summary()
     );
+}
+
+/// How long a wait for a CONDITION may take before a case gives up: far beyond the span a
+/// portal's build is owed, so a loaded host reaches the same outcome as an idle one.
+const CONDITION_DEADLINE: Duration = Duration::from_secs(60);
+
+/// Fetch the root page of `host` until the portal's own page is SERVED there — the answer a
+/// portal whose publish has come due gives — and answer that fetch.
+///
+/// The wait is for the CONDITION, never for a fixed time: the page is asked for again until
+/// it is served or [`CONDITION_DEADLINE`] passes, so neither a fast nor a loaded host changes
+/// what the case observes.
+async fn fetch_once_published(emulator: &MultiServiceRouter, case: &str, host: &str) -> Answer {
+    fetch_until(emulator, case, host, "the portal's page", |page| {
+        page.status == 200
+    })
+    .await
+}
+
+/// Fetch the root page of `host` until `holds` is true of the answer, and answer that fetch.
+/// `waited_for` names the condition in the failure message.
+///
+/// The one poll-until reading in this suite: the page is asked for again until the condition
+/// holds or [`CONDITION_DEADLINE`] passes — a wait for what the case waits ON, not for a
+/// fixed time.
+async fn fetch_until(
+    emulator: &MultiServiceRouter,
+    case: &str,
+    host: &str,
+    waited_for: &str,
+    holds: impl Fn(&Answer) -> bool,
+) -> Answer {
+    let deadline = std::time::Instant::now() + CONDITION_DEADLINE;
+    loop {
+        let page = fetch(emulator, host, "/").await;
+        if holds(&page) {
+            return page;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "case {case:?}: {host} never served {waited_for}, last answer {}",
+            page.summary()
+        );
+        tokio::task::yield_now().await;
+    }
 }
 
 /// One row: how the portal is created, and how the request addresses it.
@@ -392,11 +439,14 @@ async fn a_portals_domain_serves_exactly_what_its_last_settled_publish_put_live(
 #[tokio::test]
 async fn the_served_page_is_rendered_from_the_build_the_publish_made() {
     let case = "a portal including two products, each with pages";
-    let emulator = emulator();
+    // A product REST endpoint page documents an endpoint the account HOLDS, so the service
+    // that owns REST APIs is mounted beside this one.
+    let emulator = emulator_with_rest_apis();
 
     // Two portal products with pages of their own, so the page is asserted over the
     // records the control plane stored rather than over the portal's content alone.
     let mut product_arns = Vec::new();
+    let mut invoke_urls = Vec::new();
     for (index, name) in ["Orders API", "Invoices API"].into_iter().enumerate() {
         let (status, created) = call(
             &emulator,
@@ -429,6 +479,9 @@ async fn the_served_page_is_rendered_from_the_build_the_publish_made() {
             "case {case:?}: CreateProductPage must answer 201, got {status} {page}"
         );
 
+        let rest_api = rest_endpoint(&emulator, &format!("portal-rest-{index}"), "prod").await;
+        invoke_urls
+            .push(format!("https://{rest_api}.execute-api.eu-west-1.amazonaws.com/prod"));
         let (status, endpoint_page) = call(
             &emulator,
             "POST",
@@ -436,7 +489,7 @@ async fn the_served_page_is_rendered_from_the_build_the_publish_made() {
             Some(json!({
                 "restEndpointIdentifier": {
                     "identifierParts": {
-                        "restApiId": format!("restapi{index}aa"),
+                        "restApiId": rest_api,
                         "stage": "prod",
                         "method": "GET",
                         "path": "/orders"
@@ -470,9 +523,8 @@ async fn the_served_page_is_rendered_from_the_build_the_publish_made() {
     )
     .await;
     build(&emulator, case, &published.portal_id, Build::Publish).await;
-    sleep(past_the_build());
 
-    let page = fetch(&emulator, &published.default_domain, "/").await;
+    let page = fetch_once_published(&emulator, case, &published.default_domain).await;
     served(case, &page, &published.portal_id);
     let expected: Vec<(&str, String)> = vec![
         ("the display name, as text", "Acme &lt;APIs&gt; &amp; Co".to_string()),
@@ -493,7 +545,7 @@ async fn the_served_page_is_rendered_from_the_build_the_publish_made() {
         ),
         (
             "a REST endpoint page's invoke URL",
-            "https://restapi0aa.execute-api.eu-west-1.amazonaws.com/prod".to_string(),
+            invoke_urls[0].clone(),
         ),
         ("each product's ARN", product_arns[0].clone()),
     ];
@@ -532,12 +584,19 @@ async fn the_served_page_is_rendered_from_the_build_the_publish_made() {
     );
 
     // Publishing again builds the content as it now stands, which is what then goes live.
+    // The wait is for the republished page to be SERVED — the condition — not for a time.
     build(&emulator, case, &published.portal_id, Build::Publish).await;
-    sleep(past_the_build());
-    let page = fetch(&emulator, &published.default_domain, "/").await;
+    let page = fetch_until(
+        &emulator,
+        case,
+        &published.default_domain,
+        "the republished build",
+        |page| page.text.contains("Renamed Portal"),
+    )
+    .await;
     assert!(
-        page.text.contains("Renamed Portal") && !page.text.contains("Acme &lt;APIs&gt;"),
-        "case {case:?}: the republished build must be live, got {}",
+        !page.text.contains("Acme &lt;APIs&gt;"),
+        "case {case:?}: the republished build must replace the one before it, got {}",
         page.summary()
     );
 }

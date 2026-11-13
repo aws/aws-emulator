@@ -8986,6 +8986,7 @@ dependencies = [
  "tokio",
  "tokio-tungstenite",
  "tracing",
+ "url",
  "zip",
 ]
 

@@ -183,15 +183,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             ));
         };
 
-        // An update RE-GENERATES the page's content, so whether that generation can succeed
-        // is resolved against the service that owns the REST API this page documents —
-        // asked, like every cross-service question of this crate, BEFORE this service's own
-        // store lock is taken. The identifier it is asked about belongs to the STORED page
-        // (it is not an input of this operation), so the record is read for it here and
-        // patched under the lock below; a page the store does not hold is answered there,
-        // where every other refusal of this operation is. A page deleted between the two
-        // locks is therefore still refused as absent, and one recreated between them under
-        // the same id only decides which generation outcome this patch records.
+        // An update RE-GENERATES the page's content from the REST endpoint the page
+        // documents, so that endpoint has to be one the account still has — resolved
+        // against the service that owns REST APIs and, like every cross-service question of
+        // this crate, asked BEFORE this service's own store lock is taken. The identifier
+        // it is asked about belongs to the STORED page (it is not an input of this
+        // operation), so the record is read for it here and patched under the lock below; a
+        // page the store does not hold is answered there, where every other refusal of this
+        // operation is. A page deleted between the two locks is therefore still refused as
+        // absent.
         let identified = {
             let store = state.lock();
             store
@@ -204,11 +204,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 })
                 .map(|page| page.rest_endpoint_identifier.clone())
         };
-        let generation_failure = match identified
+        let unresolved_endpoint = match identified
             .as_ref()
             .and_then(|identifier| crate::state::rest_endpoint_identifier_parts(identifier).ok())
         {
-            Some(parts) => crate::state::rest_endpoint_generation_failure(&*self.engine, parts),
+            Some(parts) => crate::state::unresolved_rest_endpoint(&*self.engine, parts),
             None => ::std::option::Option::None,
         };
 
@@ -239,6 +239,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             )
             .into());
         };
+
+        // The endpoint resolved above, answered now that the page itself has been: a patch
+        // RE-GENERATES the page's content from the REST endpoint the page documents, so an
+        // endpoint the account no longer has is refused rather than regenerated from
+        // nothing.
+        if let Some(message) = unresolved_endpoint {
+            return Err(bad_request(message));
+        }
 
         // The update is a PATCH (`PATCH
         // /v2/portalproducts/{PortalProductId}/productrestendpointpages/{Id}`): a member
@@ -285,11 +293,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         //
         // A patch that DID rewrite the record has the page's content generated again from
         // the REST endpoint it documents, so the page reports `IN_PROGRESS` until that
-        // generation comes due and then the status it settles in: a client that waits for
-        // the re-generation to clear observes it, exactly as it does after the create.
+        // generation comes due and `AVAILABLE` after it: a client that waits for the
+        // re-generation to clear observes it, exactly as it does after the create.
         if modified {
             updated.last_modified = ::std::time::SystemTime::now();
-            updated.start_generation(::std::time::Instant::now(), generation_failure);
+            updated.start_generation(::std::time::Instant::now());
         }
 
         // Write the patched record back where it was, then report what the STORE now

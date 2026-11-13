@@ -224,100 +224,91 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        let _ = ctx;
+        // EVERYTHING THE PATCH CAN BE REFUSED FOR ON ITS OWN IS WEIGHED FIRST, under one
+        // guard — the api, the authorizer, the MERGED record's own rules and the growth
+        // bound — so only a patch that passes all of them reaches the one piece of work
+        // beyond this store: the fetch of the provider's OpenID discovery document. The
+        // guard is released for it, since it awaits, and the api is resolved again under a
+        // second one.
+
         let Some(state) = crate::state::service_state(&*self.engine) else {
             // Unreachable in the assembled emulator — see the note in `create_api`.
             return Err(crate::scaffolded::Scaffolded::not_implemented(
                 "UpdateAuthorizer",
             ));
         };
-        let mut store = state.lock();
+        let issuer = {
+            let mut store = state.lock();
 
-        // An authorizer is a CHILD of an api: it is addressed through the api that owns
-        // it, so an api that does not exist holds no authorizer to update.
+            // An authorizer is a CHILD of an api: it is addressed through the api that
+            // owns it, so an api that does not exist holds no authorizer to update.
+            let Some(api) = store.apis.get_mut(&input.api_id) else {
+                return Err(not_found(crate::state::invalid_api_identifier_message(
+                    &input.api_id,
+                )));
+            };
+            // The api's protocol decides which members the MERGED configuration may carry,
+            // read off the record before the patch borrows the api's authorizers.
+            let protocol_type = api.protocol_type.clone();
+
+            // An authorizer is addressed by the api that owns it AND its own id, so an id
+            // that names an authorizer of ANOTHER api is not found here either — the same
+            // addressing `GetAuthorizer` and `DeleteAuthorizer` report on.
+            let Some(existing) = api.authorizers.get(&input.authorizer_id) else {
+                return Err(not_found(crate::state::invalid_identifier_message(
+                    crate::state::AUTHORIZER_RESOURCE,
+                )));
+            };
+
+            // The merged record this patch would store, weighed against every rule it has
+            // to satisfy. It is MERGED AGAIN under the second guard, against the record
+            // stored then, so a write that landed in between is patched rather than
+            // overwritten; what this pass is for is refusing the request before any work
+            // beyond this store is done for it.
+            let updated = patched(existing, &input);
+            refusal_of(&protocol_type, &updated)?;
+
+            // The issuer THIS patch carries, for the one fetch below: a patch that carries
+            // no `JwtConfiguration` names no new issuer, and the stored one was resolved by
+            // the write that stored it.
+            input
+                .jwt_configuration
+                .as_ref()
+                .filter(|_| updated.authorizer_type == crate::state::AUTHORIZER_TYPE_JWT)
+                .and_then(|configuration| configuration.issuer.clone())
+                .filter(|issuer| !issuer.is_empty())
+        };
+
+        // The provider's OpenID discovery document, fetched the way the create fetches it:
+        // ONCE per request, over this emulator's own in-process transport, so nothing
+        // leaves the process whatever host the accepted issuer names. See
+        // `crate::state::jwt_issuer`.
+        if let Some(issuer) = issuer.as_deref() {
+            if let Some(message) =
+                crate::state::jwt_issuer::unfetchable_discovery_document(ctx, issuer).await
+            {
+                return Err(bad_request(&message));
+            }
+        }
+
+        // The guard was released for that fetch, so the api and the authorizer are resolved
+        // again — either one deleted in between leaves nothing to patch, exactly as if the
+        // delete had arrived first — and the patch is applied to the record stored NOW, so a
+        // write that landed in between is patched rather than overwritten.
+        let mut store = state.lock();
         let Some(api) = store.apis.get_mut(&input.api_id) else {
             return Err(not_found(crate::state::invalid_api_identifier_message(
                 &input.api_id,
             )));
         };
-        // The api's protocol decides which members the MERGED configuration may carry,
-        // read off the record before the patch borrows the api's authorizers.
         let protocol_type = api.protocol_type.clone();
-
-        // An authorizer is addressed by the api that owns it AND its own id, so an id
-        // that names an authorizer of ANOTHER api is not found here either — the same
-        // addressing `GetAuthorizer` and `DeleteAuthorizer` report on.
-        let Some(existing) = api.authorizers.get(&input.authorizer_id) else {
+        let Some(current) = api.authorizers.get(&input.authorizer_id) else {
             return Err(not_found(crate::state::invalid_identifier_message(
                 crate::state::AUTHORIZER_RESOURCE,
             )));
         };
-
-        // The update is a PATCH (`PATCH /v2/apis/{ApiId}/authorizers/{AuthorizerId}`): a
-        // member the request carries replaces the stored one, and a member it omits
-        // leaves the stored value exactly as it was. A list member is a VALUE like any
-        // other, so an `IdentitySource` the request carries replaces the stored list
-        // wholesale. Nothing here is defaulted: a default belongs to the create, and
-        // applying one again would silently undo a value a later `GetAuthorizer` reports.
-        let mut updated = existing.clone();
-        if let Some(name) = input.name {
-            updated.name = name;
-        }
-        if let Some(authorizer_type) = input.authorizer_type {
-            updated.authorizer_type = authorizer_type;
-        }
-        if let Some(authorizer_uri) = input.authorizer_uri {
-            updated.authorizer_uri = Some(authorizer_uri);
-        }
-        if let Some(credentials_arn) = input.authorizer_credentials_arn {
-            updated.authorizer_credentials_arn = Some(credentials_arn);
-        }
-        if let Some(version) = input.authorizer_payload_format_version {
-            updated.authorizer_payload_format_version = Some(version);
-        }
-        if let Some(ttl) = input.authorizer_result_ttl_in_seconds {
-            updated.authorizer_result_ttl_in_seconds = Some(ttl);
-        }
-        if let Some(enable_simple_responses) = input.enable_simple_responses {
-            updated.enable_simple_responses = Some(enable_simple_responses);
-        }
-        if let Some(identity_source) = input.identity_source {
-            updated.identity_source = identity_source;
-        }
-        if let Some(expression) = input.identity_validation_expression {
-            updated.identity_validation_expression = Some(expression);
-        }
-        if let Some(jwt_configuration) = input.jwt_configuration {
-            updated.jwt_configuration = Some(jwt_configuration);
-        }
-
-        // The MERGED record is what has to hold together, under the same requirement the
-        // create applies: an authorizer that already carries the member a type needs may
-        // switch to that type without resending it, and one that does not cannot. Checked
-        // before anything is written, so a refused patch leaves the authorizer exactly as
-        // it was and a later reader sees the configuration it had.
-        if let Err(message) = crate::state::validate_authorizer_config(
-            &protocol_type,
-            &updated.authorizer_type,
-            updated.authorizer_uri.as_deref(),
-            updated.authorizer_payload_format_version.as_deref(),
-            updated.jwt_configuration.as_ref(),
-        ) {
-            return Err(bad_request(&message));
-        }
-
-        // And the growth INSIDE one authorizer the create bounds: every request the api's
-        // authorization step serves reads the whole `IdentitySource` list, so a patch
-        // cannot raise it past the bound the create holds it to.
-        if updated.identity_source.len() > crate::state::MAX_IDENTITY_SOURCES_PER_AUTHORIZER {
-            return Err(UpdateAuthorizerErrorModeled::TooManyRequestsException(
-                TooManyRequestsException {
-                    limit_type: Some("IdentitySource".to_string()),
-                    message: Some(crate::state::identity_source_limit_message()),
-                },
-            )
-            .into());
-        }
+        let updated = patched(current, &input);
+        refusal_of(&protocol_type, &updated)?;
 
         // Replace the record rather than minting a second one — the `AuthorizerId` is the
         // key and the clone carried it over — and project the response from the record
@@ -349,6 +340,92 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             name: Some(stored.name),
         })
     }
+}
+
+/// The record this patch would store: the stored authorizer with every member the request
+/// carries replaced.
+///
+/// The update is a PATCH (`PATCH /v2/apis/{ApiId}/authorizers/{AuthorizerId}`): a member the
+/// request carries replaces the stored one, and a member it omits leaves the stored value
+/// exactly as it was. A list member is a VALUE like any other, so an `IdentitySource` the
+/// request carries replaces the stored list wholesale. Nothing here is defaulted: a default
+/// belongs to the create, and applying one again would silently undo a value a later
+/// `GetAuthorizer` reports.
+///
+/// Written as a function because the merge is made TWICE — once to weigh the request before
+/// the discovery-document fetch, and once against the record stored when the write lands —
+/// so the two cannot differ.
+fn patched(
+    existing: &crate::state::Authorizer,
+    input: &UpdateAuthorizerInput,
+) -> crate::state::Authorizer {
+    let mut updated = existing.clone();
+    if let Some(name) = input.name.clone() {
+        updated.name = name;
+    }
+    if let Some(authorizer_type) = input.authorizer_type.clone() {
+        updated.authorizer_type = authorizer_type;
+    }
+    if let Some(authorizer_uri) = input.authorizer_uri.clone() {
+        updated.authorizer_uri = Some(authorizer_uri);
+    }
+    if let Some(credentials_arn) = input.authorizer_credentials_arn.clone() {
+        updated.authorizer_credentials_arn = Some(credentials_arn);
+    }
+    if let Some(version) = input.authorizer_payload_format_version.clone() {
+        updated.authorizer_payload_format_version = Some(version);
+    }
+    if let Some(ttl) = input.authorizer_result_ttl_in_seconds {
+        updated.authorizer_result_ttl_in_seconds = Some(ttl);
+    }
+    if let Some(enable_simple_responses) = input.enable_simple_responses {
+        updated.enable_simple_responses = Some(enable_simple_responses);
+    }
+    if let Some(identity_source) = input.identity_source.clone() {
+        updated.identity_source = identity_source;
+    }
+    if let Some(expression) = input.identity_validation_expression.clone() {
+        updated.identity_validation_expression = Some(expression);
+    }
+    if let Some(jwt_configuration) = input.jwt_configuration.clone() {
+        updated.jwt_configuration = Some(jwt_configuration);
+    }
+    updated
+}
+
+/// `Ok(())`, or how this operation refuses the MERGED record `updated` — everything the
+/// record itself has to satisfy, whatever this emulator holds beyond it.
+///
+/// The merged record is what has to hold together, under the same requirement the create
+/// applies: an authorizer that already carries the member a type needs may switch to that
+/// type without resending it, and one that does not cannot. The issuer's own FORM is one of
+/// those requirements (`crate::state::jwt_issuer`); what the provider at that issuer
+/// publishes is the one question asked outside this store. The growth bound the create holds
+/// an `IdentitySource` list to is here too: every request the api's authorization step
+/// serves reads the whole list, so a patch cannot raise it past that bound.
+fn refusal_of(
+    protocol_type: &str,
+    updated: &crate::state::Authorizer,
+) -> Result<(), UpdateAuthorizerError> {
+    if let Err(message) = crate::state::validate_authorizer_config(
+        protocol_type,
+        &updated.authorizer_type,
+        updated.authorizer_uri.as_deref(),
+        updated.authorizer_payload_format_version.as_deref(),
+        updated.jwt_configuration.as_ref(),
+    ) {
+        return Err(bad_request(&message));
+    }
+    if updated.identity_source.len() > crate::state::MAX_IDENTITY_SOURCES_PER_AUTHORIZER {
+        return Err(UpdateAuthorizerErrorModeled::TooManyRequestsException(
+            TooManyRequestsException {
+                limit_type: Some("IdentitySource".to_string()),
+                message: Some(crate::state::identity_source_limit_message()),
+            },
+        )
+        .into());
+    }
+    Ok(())
 }
 
 /// This operation's refusal of a request it models no more specific error for: the

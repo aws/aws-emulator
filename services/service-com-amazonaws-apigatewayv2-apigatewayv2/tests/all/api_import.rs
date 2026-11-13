@@ -740,12 +740,17 @@ async fn a_definition_this_service_cannot_import_is_refused_and_persists_nothing
             .to_string(),
         ),
         (
-            "a CORS maxAge past the modelled range",
+            // And the CORS value rules every writer of a configuration applies: a value
+            // that is no method allows none.
+            "a CORS configuration allowing a method that is not one",
             "",
             json!({
                 "openapi": "3.0.1",
-                "info": { "title": "cors-max-age" },
-                "x-amazon-apigateway-cors": { "allowOrigins": ["*"], "maxAge": 86401 },
+                "info": { "title": "cors-method" },
+                "x-amazon-apigateway-cors": {
+                    "allowOrigins": ["*"],
+                    "allowMethods": ["BOGUS"]
+                },
                 "paths": {}
             })
             .to_string(),

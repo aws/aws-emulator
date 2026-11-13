@@ -19,17 +19,18 @@
 //!   resets the product to holding none, idempotently, leaving the product itself intact.
 //! * **The product is the resource that has to exist**: a `PortalProductId` nothing
 //!   minted is 404 `NotFoundException` from all three operations.
-//! * **A `PolicyDocument` that is not a JSON policy document is refused 400** and
-//!   persists nothing, as is one outside the modelled bound (`len 1..307200`).
+//! * **A `PolicyDocument` that is not a resource-based IAM policy document is refused
+//!   400** and persists nothing, as is one outside the modelled bound (`len 1..307200`).
 //! * **A GET is a report, not a write**: reading twice reports the same policy and
 //!   leaves what a later caller sees unchanged.
 //!
-//! The rows vary what the rules generalise over: the policy document's form (a bare
-//! object, one statement, several statements, nested conditions), its size (the smallest
-//! JSON object up to the modelled maximum length), its formatting (compact and
-//! pretty-printed, which must round-trip byte for byte) and its script (outside ASCII).
-//! The recorded lifecycle that filed the issue — one put, read back, then deleted — is
-//! ONE row of the first table.
+//! The rows vary what the rules generalise over: the policy document's form (one statement,
+//! several statements with conditions, a statement written as an object rather than a list,
+//! the complement elements, each policy version there is), its size (up to the modelled
+//! maximum length), its formatting (compact and pretty-printed, which must round-trip byte
+//! for byte) and its script (outside ASCII) — and, for the refusals, each clause of the
+//! policy grammar a document can break. The recorded lifecycle that filed the issue — one
+//! put, read back, then deleted — is ONE row of the first table.
 
 use serde_json::{json, Value};
 use service_com_amazonaws_apigatewayv2_apigatewayv2::state::portal_product_not_found_message;
@@ -73,14 +74,24 @@ async fn create_product(
     as_str(&created, "portalProductId")
 }
 
-/// A JSON object exactly `length` characters long: `{"Pad":"…"}` padded to size. The
-/// bound this exercises is on the DOCUMENT's length, so what fills it does not matter.
+/// A resource policy exactly `length` characters long: one statement whose `Sid` is padded
+/// to size. The bound this exercises is on the DOCUMENT's length, so what fills it does not
+/// matter — but it still has to BE a policy, which is the other rule a put applies.
 fn policy_of_length(length: usize) -> String {
-    let wrapper = "{\"Pad\":\"\"}";
-    format!(
-        "{{\"Pad\":\"{}\"}}",
-        "p".repeat(length - wrapper.chars().count())
-    )
+    let prefix = "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Sid\":\"";
+    let suffix = "\",\"Effect\":\"Allow\",\"Principal\":\"*\",\"Action\":\"apigateway:GET\"}]}";
+    let padding = length - prefix.chars().count() - suffix.chars().count();
+    format!("{prefix}{}{suffix}", "p".repeat(padding))
+}
+
+/// One statement every accepted document below can be built around: the three elements a
+/// RESOURCE-based policy's statement has to name (an effect, an action, a principal).
+fn one_statement() -> Value {
+    json!({
+        "Effect": "Allow",
+        "Principal": "*",
+        "Action": "apigateway:GET"
+    })
 }
 
 /// The policy documents a put must store and a get must report back unchanged.
@@ -126,29 +137,51 @@ fn accepted_documents() -> Vec<(&'static str, String)> {
             .to_string(),
         ),
         (
-            "the smallest JSON object there is",
-            "{}".to_string(),
+            // The language writes ONE statement either as a list of one or as the object
+            // itself, and a document may leave `Version` out.
+            "a single statement written as an object rather than a list",
+            json!({ "Statement": one_statement() }).to_string(),
+        ),
+        (
+            // `NotAction` and `NotPrincipal` are the complements of two of those elements.
+            "a statement naming its action and principal by their complements",
+            json!({
+                "Version": "2012-10-17",
+                "Statement": [{
+                    "Effect": "Deny",
+                    "NotPrincipal": { "AWS": "arn:aws:iam::111122223333:root" },
+                    "NotAction": "apigateway:*"
+                }]
+            })
+            .to_string(),
+        ),
+        (
+            "the legacy policy version, which the language still admits",
+            json!({ "Version": "2008-10-17", "Statement": [one_statement()] }).to_string(),
         ),
         (
             "a pretty-printed document, which round-trips byte for byte",
-            "{\n  \"Version\": \"2012-10-17\",\n  \"Statement\": []\n}".to_string(),
+            ::serde_json::to_string_pretty(
+                &json!({ "Version": "2012-10-17", "Statement": [one_statement()] }),
+            )
+            .expect("a JSON value renders"),
         ),
         (
             "a document carrying text outside ASCII",
             json!({
                 "Version": "2012-10-17",
-                "Statement": [],
-                "Comment": "共有ポリシー — ünïcödé, emoji 🎉"
+                "Statement": [{
+                    "Sid": "共有ポリシー — ünïcödé, emoji 🎉",
+                    "Effect": "Allow",
+                    "Principal": "*",
+                    "Action": "apigateway:GET"
+                }]
             })
             .to_string(),
         ),
         (
             "a document at the modelled maximum length",
             policy_of_length(MAX_POLICY_LENGTH),
-        ),
-        (
-            "a document of the modelled minimum useful size, one member",
-            json!({ "Version": "2012-10-17" }).to_string(),
         ),
     ]
 }
@@ -409,7 +442,7 @@ async fn deleting_the_policy_resets_the_product_to_holding_none() {
 async fn a_product_id_nothing_minted_is_not_found_by_any_of_the_three_operations() {
     let emulator = emulator();
     let product_id = create_product(&emulator, "the only product").await;
-    let document = json!({ "Version": "2012-10-17", "Statement": [] }).to_string();
+    let document = json!({ "Version": "2012-10-17", "Statement": [one_statement()] }).to_string();
 
     for (case, id) in [
         ("an id nothing minted", "nosuchprod0".to_string()),
@@ -460,7 +493,7 @@ async fn a_policy_document_that_is_not_a_json_policy_is_refused_and_persists_not
 
     // A policy already stored, so a refused put is observable as "the stored policy did
     // not move" rather than only as a status code.
-    let stored = json!({ "Version": "2012-10-17", "Statement": [] }).to_string();
+    let stored = json!({ "Version": "2012-10-17", "Statement": [one_statement()] }).to_string();
     let (status, put) = call(
         &emulator,
         "PUT",
@@ -473,11 +506,11 @@ async fn a_policy_document_that_is_not_a_json_policy_is_refused_and_persists_not
         "expected 200 from the first PutPortalProductSharingPolicy, got {status} {put}"
     );
 
-    // `PolicyDocument` is a JSON policy document bounded at `len 1..307200`. Two
-    // different refusals, both pinned to the `BadRequestException` the operation models:
-    // a document that is not a JSON policy document is refused by the handler, and a
-    // document outside the modelled length bound is refused at the boundary, before the
-    // handler runs.
+    // `PolicyDocument` is a RESOURCE-BASED IAM policy document bounded at `len 1..307200`.
+    // Two different refusals, both pinned to the `BadRequestException` the operation
+    // models: a document that is not a policy is refused by the handler, and a document
+    // outside the modelled length bound is refused at the boundary, before the handler
+    // runs. The rows span every clause of the grammar a document can break.
     let rows: Vec<(&str, String, &str)> = vec![
         (
             "a document that is not JSON at all",
@@ -501,6 +534,58 @@ async fn a_policy_document_that_is_not_a_json_policy_is_refused_and_persists_not
         ),
         ("a bare JSON number", "17".to_string(), "BadRequestException"),
         ("JSON null", "null".to_string(), "BadRequestException"),
+        (
+            "an object that declares no statement at all",
+            "{}".to_string(),
+            "BadRequestException",
+        ),
+        (
+            "a statement list that holds no statement",
+            json!({ "Version": "2012-10-17", "Statement": [] }).to_string(),
+            "BadRequestException",
+        ),
+        (
+            "a policy version that does not exist",
+            json!({ "Version": "2024-01-01", "Statement": [one_statement()] }).to_string(),
+            "BadRequestException",
+        ),
+        (
+            "a statement that is not an object",
+            json!({ "Version": "2012-10-17", "Statement": ["Allow"] }).to_string(),
+            "BadRequestException",
+        ),
+        (
+            "a statement that declares no Effect",
+            json!({
+                "Statement": [{ "Principal": "*", "Action": "apigateway:GET" }]
+            })
+            .to_string(),
+            "BadRequestException",
+        ),
+        (
+            "a statement whose Effect is neither Allow nor Deny",
+            json!({
+                "Statement": [{
+                    "Effect": "Maybe",
+                    "Principal": "*",
+                    "Action": "apigateway:GET"
+                }]
+            })
+            .to_string(),
+            "BadRequestException",
+        ),
+        (
+            "a statement that names no action",
+            json!({ "Statement": [{ "Effect": "Allow", "Principal": "*" }] }).to_string(),
+            "BadRequestException",
+        ),
+        (
+            // A resource policy is the one that states WHO the permission is granted to.
+            "a statement that names no principal",
+            json!({ "Statement": [{ "Effect": "Allow", "Action": "apigateway:GET" }] })
+                .to_string(),
+            "BadRequestException",
+        ),
         (
             "an empty document, below the modelled minimum",
             String::new(),

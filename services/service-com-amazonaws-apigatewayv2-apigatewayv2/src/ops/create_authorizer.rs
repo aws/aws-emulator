@@ -242,17 +242,116 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        let _ = ctx;
         let Some(state) = crate::state::service_state(&*self.engine) else {
             // Unreachable in the assembled emulator — see the note in `create_api`.
             return Err(crate::scaffolded::Scaffolded::not_implemented(
                 "CreateAuthorizer",
             ));
         };
-        let mut store = state.lock();
 
-        // An authorizer is a CHILD of an api: it is addressed through the api that owns
-        // it, so an api that does not exist holds no authorizer to create.
+        // EVERYTHING THE REQUEST CAN BE REFUSED FOR ON ITS OWN IS WEIGHED FIRST, under one
+        // guard: the api it names, the configuration's own rules (the issuer's FORM among
+        // them) and both growth bounds. Only a request that passes all of them reaches the
+        // one piece of work this operation does beyond its own store — the fetch of the
+        // provider's discovery document below — so a call that is going to be refused
+        // anyway cannot drive that work, and no caller can make this operation do it for an
+        // api the account does not have.
+        //
+        // The guard is released before the fetch (it awaits) and the api is resolved again
+        // under a second one, the way `create_api` opens a WEBSOCKET api's socket.
+        let issuer = {
+            let mut store = state.lock();
+
+            // An authorizer is a CHILD of an api: it is addressed through the api that owns
+            // it, so an api that does not exist holds no authorizer to create.
+            let Some(api) = store.apis.get_mut(&input.api_id) else {
+                return Err(CreateAuthorizerErrorModeled::NotFoundException(
+                    NotFoundException {
+                        message: Some(crate::state::invalid_api_identifier_message(
+                            &input.api_id,
+                        )),
+                        resource_type: ::std::option::Option::None,
+                    },
+                )
+                .into());
+            };
+
+            // `AuthorizerType` is a modelled enum, `Name` and `IdentitySource` are required
+            // members and `AuthorizerResultTtlInSeconds` carries `range 0..3600`, so the
+            // boundary validator has already refused a value outside any of those. What is
+            // left is what the model cannot state: which members one authorizer type (and
+            // one api protocol) requires and another does not — including that a JWT
+            // authorizer's issuer is an https URL a discovery endpoint can be appended to
+            // (`crate::state::jwt_issuer`), which is what bounds the value the fetch below
+            // is made for.
+            if let Err(message) = crate::state::validate_authorizer_config(
+                &api.protocol_type,
+                &input.authorizer_type,
+                input.authorizer_uri.as_deref(),
+                input.authorizer_payload_format_version.as_deref(),
+                input.jwt_configuration.as_ref(),
+            ) {
+                return Err(bad_request(&message));
+            }
+
+            // Bound the growth a caller drives, the way CreateRoute and CreateModel bound
+            // theirs: `TooManyRequestsException` is the modelled error for "a limit has
+            // been exceeded" (it carries the limit's name in `LimitType`).
+            if api.authorizers.len() >= crate::state::MAX_AUTHORIZERS_PER_API {
+                return Err(CreateAuthorizerErrorModeled::TooManyRequestsException(
+                    TooManyRequestsException {
+                        limit_type: Some("Authorizer".to_string()),
+                        message: Some(format!(
+                            "The maximum number of authorizers ({}) for this API has been \
+                             reached.",
+                            crate::state::MAX_AUTHORIZERS_PER_API
+                        )),
+                    },
+                )
+                .into());
+            }
+
+            // And the growth INSIDE one authorizer: `IdentitySourceList` carries no
+            // modelled length constraint, and every request the api's authorization step
+            // serves reads the whole list, so the list one call stores is bounded here.
+            if input.identity_source.len() > crate::state::MAX_IDENTITY_SOURCES_PER_AUTHORIZER
+            {
+                return Err(CreateAuthorizerErrorModeled::TooManyRequestsException(
+                    TooManyRequestsException {
+                        limit_type: Some("IdentitySource".to_string()),
+                        message: Some(crate::state::identity_source_limit_message()),
+                    },
+                )
+                .into());
+            }
+
+            // The issuer this accepted request names, for the one fetch below; a request
+            // for an authorizer of the other type names none.
+            input
+                .jwt_configuration
+                .as_ref()
+                .filter(|_| input.authorizer_type == crate::state::AUTHORIZER_TYPE_JWT)
+                .and_then(|configuration| configuration.issuer.clone())
+                .filter(|issuer| !issuer.is_empty())
+        };
+
+        // A JWT authorizer's `Issuer` names the identity provider whose OpenID discovery
+        // document API Gateway fetches when the authorizer is written, so the fetch is made
+        // — ONCE per request, over this emulator's own in-process transport, so nothing
+        // leaves the process whatever host the accepted issuer names. See
+        // `crate::state::jwt_issuer`.
+        if let Some(issuer) = issuer.as_deref() {
+            if let Some(message) =
+                crate::state::jwt_issuer::unfetchable_discovery_document(ctx, issuer).await
+            {
+                return Err(bad_request(&message));
+            }
+        }
+
+        // The guard above was released for that fetch, so the api is resolved again: one
+        // deleted in between holds no authorizer to create, exactly as if the delete had
+        // arrived first.
+        let mut store = state.lock();
         let Some(api) = store.apis.get_mut(&input.api_id) else {
             return Err(CreateAuthorizerErrorModeled::NotFoundException(
                 NotFoundException {
@@ -264,50 +363,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             )
             .into());
         };
-
-        // `AuthorizerType` is a modelled enum, `Name` and `IdentitySource` are required
-        // members and `AuthorizerResultTtlInSeconds` carries `range 0..3600`, so the
-        // boundary validator has already refused a value outside any of those. What is
-        // left is what the model cannot state: which members one authorizer type (and
-        // one api protocol) requires and another does not.
-        if let Err(message) = crate::state::validate_authorizer_config(
-            &api.protocol_type,
-            &input.authorizer_type,
-            input.authorizer_uri.as_deref(),
-            input.authorizer_payload_format_version.as_deref(),
-            input.jwt_configuration.as_ref(),
-        ) {
-            return Err(bad_request(&message));
-        }
-
-        // Bound the growth a caller drives, the way CreateRoute and CreateModel bound
-        // theirs: `TooManyRequestsException` is the modelled error for "a limit has been
-        // exceeded" (it carries the limit's name in `LimitType`).
-        if api.authorizers.len() >= crate::state::MAX_AUTHORIZERS_PER_API {
-            return Err(CreateAuthorizerErrorModeled::TooManyRequestsException(
-                TooManyRequestsException {
-                    limit_type: Some("Authorizer".to_string()),
-                    message: Some(format!(
-                        "The maximum number of authorizers ({}) for this API has been reached.",
-                        crate::state::MAX_AUTHORIZERS_PER_API
-                    )),
-                },
-            )
-            .into());
-        }
-
-        // And the growth INSIDE one authorizer: `IdentitySourceList` carries no modelled
-        // length constraint, and every request the api's authorization step serves reads
-        // the whole list, so the list one call stores is bounded here.
-        if input.identity_source.len() > crate::state::MAX_IDENTITY_SOURCES_PER_AUTHORIZER {
-            return Err(CreateAuthorizerErrorModeled::TooManyRequestsException(
-                TooManyRequestsException {
-                    limit_type: Some("IdentitySource".to_string()),
-                    message: Some(crate::state::identity_source_limit_message()),
-                },
-            )
-            .into());
-        }
 
         let authorizer_id = api.mint_authorizer_id();
         let record = crate::state::Authorizer {

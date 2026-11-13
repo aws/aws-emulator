@@ -729,12 +729,10 @@ fn websocket_only_members() -> Vec<WebSocketOnlyMember> {
             inert: Some(json!({})),
             route_key: None,
         },
-        WebSocketOnlyMember {
-            member: "requestParameters",
-            configuring: json!({ "route.request.header.x-trace": { "required": true } }),
-            inert: Some(json!({})),
-            route_key: Some("$connect"),
-        },
+        // NOT in this table: `requestParameters`. The service accepts the member on a route
+        // of an api of either protocol (`create_route`), so a patch that configures it on an
+        // HTTP api's route is not refused; `route_request_parameter` owns what a route may
+        // declare.
         WebSocketOnlyMember {
             member: "routeResponseSelectionExpression",
             configuring: json!("$default"),

@@ -32,7 +32,10 @@
 use serde_json::{json, Value};
 use smithy_server_runtime::MultiServiceRouter;
 
-use crate::api_lifecycle::{as_str, assert_minted_id, call, call_in_region, emulator, error_code};
+use crate::api_lifecycle::{
+    as_str, assert_minted_id, call, call_in_region, emulator, emulator_with_rest_apis, error_code,
+    rest_endpoint,
+};
 use crate::product_page_lifecycle::{pages_of, BODY_MAX_LENGTH, TITLE_MAX_LENGTH};
 use crate::product_rest_endpoint_page_lifecycle::{product, PRODUCTS};
 
@@ -120,6 +123,9 @@ struct Row {
     sibling_titles: Vec<String>,
     /// `IdentifierParts$RestApiId`s of the product REST endpoint pages the product also
     /// holds, which a product-page delete must not touch.
+    /// The REST APIs, one per product REST endpoint page this product also holds, named as
+    /// they are created through the service that OWNS REST APIs — a page documents an
+    /// endpoint the account HAS.
     rest_endpoint_pages: &'static [&'static str],
     /// The sharing policy the product carries, if any.
     sharing_policy: Option<&'static str>,
@@ -162,7 +168,7 @@ fn rows() -> Vec<Row> {
             title: "Übersicht — 概要".to_string(),
             body: "Grüße! 価格は無料です。\u{1f680}".to_string(),
             sibling_titles: vec!["Overview".to_string()],
-            rest_endpoint_pages: &["a1b2c3d4e5", "sibling001"],
+            rest_endpoint_pages: &["deletion-rest-one", "deletion-rest-two"],
             sharing_policy: Some(
                 "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\
                  \"Principal\":{\"AWS\":\"*\"},\"Action\":\"apigateway:GET\"}]}",
@@ -183,7 +189,7 @@ fn rows() -> Vec<Row> {
 
 #[tokio::test]
 async fn delete_product_page_removes_the_record_and_a_later_read_is_not_found() {
-    let emulator = emulator();
+    let emulator = emulator_with_rest_apis();
 
     for row in rows() {
         let product_id = product(&emulator, row.case).await;
@@ -200,7 +206,8 @@ async fn delete_product_page_removes_the_record_and_a_later_read_is_not_found() 
         // The other sub-resources of the same product, which a product-page delete must
         // leave where they are.
         let mut rest_endpoint_pages = Vec::new();
-        for rest_api_id in row.rest_endpoint_pages {
+        for rest_api_name in row.rest_endpoint_pages {
+            let rest_api_id = rest_endpoint(&emulator, rest_api_name, "prod").await;
             let (status, created) = call(
                 &emulator,
                 "POST",

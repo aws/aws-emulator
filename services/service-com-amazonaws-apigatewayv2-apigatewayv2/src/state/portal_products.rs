@@ -113,6 +113,53 @@ pub fn shared_portal_products_scope() -> String {
     page_scope(&["portalproducts", OTHER_ACCOUNTS_RESOURCE_OWNER])
 }
 
+/// The message a portal write naming an `IncludedPortalProductArns` entry of THIS account
+/// that it holds no product under is refused with, or `None` when there is no such entry.
+///
+/// "The ARNs of the portal products included in the portal" name the products a published
+/// portal RENDERS, so a portal cannot include one of the account's own products that does
+/// not exist: the write is refused `BadRequestException` carrying the sentence this API
+/// reports an unresolved product id with ([`portal_product_not_found_message`]), with the id
+/// read out of the ARN the request sent. The FIRST unresolved entry is the one reported, in
+/// the order the request lists them.
+///
+/// An ARN naming ANOTHER account's product is not resolved here and not refused: a portal
+/// product is a shareable resource (`PutPortalProductSharingPolicy`, and
+/// `GetPortalProduct$ResourceOwnerAccountId` reports the owner), so such an ARN is a
+/// legitimate inclusion this store holds no record of — the same reading every other
+/// cross-account question of this crate takes of a record it cannot see.
+///
+/// The ARNs have already been held to their FORM by the writer ([`validate_arns_of`]), so an
+/// entry that is not a well-formed portal-product ARN never reaches this; one whose resource
+/// path carries no id resolves to nothing like any other.
+///
+/// Shared by both writers of a portal's included products, so the create and the patch
+/// cannot differ about which products a portal may include.
+pub fn unresolved_included_portal_product<'a, I>(
+    products: &BTreeMap<String, PortalProduct>,
+    arns: I,
+) -> Option<String>
+where
+    I: IntoIterator<Item = &'a str>,
+{
+    for arn in arns {
+        let Some(parsed) = ::service_common::arn::parse_of(arn, ARN_SERVICE) else {
+            continue;
+        };
+        if parsed.account != ::engine::emulator_account_id() {
+            continue;
+        }
+        let id = parsed
+            .resource
+            .strip_prefix(PORTAL_PRODUCT_RESOURCE_PREFIX)
+            .unwrap_or_default();
+        if !products.contains_key(id) {
+            return Some(portal_product_not_found_message(id));
+        }
+    }
+    None
+}
+
 /// A persisted `PortalProduct` resource.
 ///
 /// "Creates a new portal product" (`CreatePortalProduct`): an account-level resource,
@@ -399,14 +446,15 @@ pub const STATUS_IN_PROGRESS: &str = "IN_PROGRESS";
 pub const STATUS_AVAILABLE: &str = "AVAILABLE";
 
 /// The `Status` a resource carries when the service could not assemble it, from
-/// `STATUS_VALUES`. It is the status the modelled `StatusException` explains.
+/// `STATUS_VALUES`. It is the status the modelled `StatusException` explains — and no
+/// product REST endpoint page this store holds reaches it, for the reason
+/// [`ProductRestEndpointPage::status`] states.
 pub const STATUS_FAILED: &str = "FAILED";
 
 /// How long a product REST endpoint page reports [`STATUS_IN_PROGRESS`] after a write that
-/// generates its content, before it reports the status that generation settled in: the
-/// page's content is generated from the REST endpoint it documents, which is not done when
-/// the call answers — the reason the modelled response carries a `Status` and a
-/// `StatusException` at all.
+/// generates its content, before it reports [`STATUS_AVAILABLE`]: the page's content is
+/// generated from the REST endpoint it documents, which is not done when the call answers —
+/// the reason the modelled response carries a `Status` at all.
 ///
 /// AWS documents no duration for it, so this span is the emulator's own, chosen short
 /// enough not to slow a caller down and long enough that a caller reading straight after
@@ -628,19 +676,10 @@ pub struct ProductRestEndpointPage {
     /// named none.
     pub try_it_state: String,
     /// When the generation of this page's content — started by the write that stored this
-    /// record — comes due, after which the page reports the status that generation settled
-    /// in; before it, [`STATUS_IN_PROGRESS`]. See [`ProductRestEndpointPage::status`] and
+    /// record — comes due, after which the page reports [`STATUS_AVAILABLE`]; before it,
+    /// [`STATUS_IN_PROGRESS`]. See [`ProductRestEndpointPage::status`] and
     /// [`PRODUCT_REST_ENDPOINT_PAGE_CREATE_SPAN`].
     pub settles_at: Instant,
-    /// Why that generation cannot succeed, resolved at the WRITE that started it against
-    /// the service that owns the REST API this page documents
-    /// ([`rest_endpoint_generation_failure`]), or `None` when the identified endpoint
-    /// resolved.
-    ///
-    /// Decided once, by the write, rather than per read: the page reports what the
-    /// generation this record's writer started ended in, so two readers never disagree and
-    /// a read asks nothing of anybody.
-    pub generation_failure: Option<wire::StatusException>,
 }
 
 /// The members `CreateProductRestEndpointPage`, `GetProductRestEndpointPage` and
@@ -665,32 +704,32 @@ impl ProductRestEndpointPage {
     ///
     /// A page's content is still being generated when the write that started it answers, so
     /// it is reported [`STATUS_IN_PROGRESS`] until
-    /// [`PRODUCT_REST_ENDPOINT_PAGE_CREATE_SPAN`] has passed. After that it reports what
-    /// that generation settled in: [`STATUS_AVAILABLE`] for a page whose REST endpoint
-    /// resolved, and [`STATUS_FAILED`] for one whose endpoint it could not be generated
-    /// from ([`ProductRestEndpointPage::generation_failure`]). The transition is one the
-    /// CLOCK owes, materialised from the stored due instant rather than by sleeping or by
-    /// being read, so every reader agrees on it and a read changes nothing.
+    /// [`PRODUCT_REST_ENDPOINT_PAGE_CREATE_SPAN`] has passed, and [`STATUS_AVAILABLE`]
+    /// after that. The transition is one the CLOCK owes, materialised from the stored due
+    /// instant rather than by sleeping or by being read, so every reader agrees on it and a
+    /// read changes nothing.
+    ///
+    /// No page this store holds settles [`STATUS_FAILED`]: the generation is from the REST
+    /// endpoint the page's identifier names, and a write whose identifier names no such
+    /// endpoint is REFUSED ([`rest_endpoint::UNRESOLVED_REST_ENDPOINT_MESSAGE`]) rather than
+    /// stored as a page that then fails — so every stored page was generated from an
+    /// endpoint that resolved.
     pub fn status(&self) -> &'static str {
         if Instant::now() < self.settles_at {
             STATUS_IN_PROGRESS
-        } else if self.generation_failure.is_some() {
-            STATUS_FAILED
         } else {
             STATUS_AVAILABLE
         }
     }
 
     /// Start the generation of this page's content, as of `now`: it comes due one
-    /// [`PRODUCT_REST_ENDPOINT_PAGE_CREATE_SPAN`] from here and settles in what `failure`
-    /// says — `None` for an endpoint that resolved, the exception to report otherwise.
+    /// [`PRODUCT_REST_ENDPOINT_PAGE_CREATE_SPAN`] from here.
     ///
     /// This is how a write that REWRITES an existing record starts it over (the update);
-    /// the create sets these same two fields as it constructs the record it stores, since
-    /// there is no earlier generation there to replace.
-    pub fn start_generation(&mut self, now: Instant, failure: Option<wire::StatusException>) {
+    /// the create sets this same field as it constructs the record it stores, since there is
+    /// no earlier generation there to replace.
+    pub fn start_generation(&mut self, now: Instant) {
         self.settles_at = now + PRODUCT_REST_ENDPOINT_PAGE_CREATE_SPAN;
-        self.generation_failure = failure;
     }
 
     /// The page's content as it was supplied, for the reader that asks for it
@@ -704,23 +743,18 @@ impl ProductRestEndpointPage {
 
     /// Project the record onto the members every page reader reports.
     pub fn to_wire(&self) -> ProductRestEndpointPageView {
-        let status = self.status();
         ProductRestEndpointPageView {
             display_content: Some(self.display_content.clone()),
             last_modified: Some(to_timestamp(self.last_modified)),
             product_rest_endpoint_page_arn: Some(self.product_rest_endpoint_page_arn.clone()),
             product_rest_endpoint_page_id: Some(self.product_rest_endpoint_page_id.clone()),
             rest_endpoint_identifier: Some(self.rest_endpoint_identifier.clone()),
-            status: Some(status.to_string()),
+            status: Some(self.status().to_string()),
             // "The status exception information" reports what went WRONG with a page the
-            // service could not assemble, so it is reported with the status it explains and
-            // with no other: a page whose generation is still in flight has not failed yet,
-            // and one that settled available has nothing to explain.
-            status_exception: if status == STATUS_FAILED {
-                self.generation_failure.clone()
-            } else {
-                None
-            },
+            // service could not assemble, and no page this store holds is one: a write whose
+            // `RestEndpointIdentifier` names no REST endpoint is refused rather than stored
+            // (see [`Self::status`]), so there is never anything to explain.
+            status_exception: None,
             try_it_state: Some(self.try_it_state.clone()),
         }
     }

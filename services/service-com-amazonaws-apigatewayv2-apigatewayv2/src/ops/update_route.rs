@@ -233,18 +233,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     .as_ref()
                     .is_some_and(|models| !models.is_empty()),
             ),
-            crate::state::ProtocolRestrictedMember::websocket_only(
-                "RequestParameters",
-                input
-                    .request_parameters
-                    .as_ref()
-                    .is_some_and(|parameters| !parameters.is_empty()),
-            ),
             crate::state::ProtocolRestrictedMember::websocket_only_selection_expression(
                 "RouteResponseSelectionExpression",
                 input.route_response_selection_expression.is_some(),
             ),
         ];
+        // NOT in that list: `RequestParameters`, for the reason `CreateRoute` states — the
+        // recorded service accepts the member on a route of an api of either protocol, so
+        // the two writers of a route accept the same maps.
         if let Err(message) =
             crate::state::validate_protocol_restricted_members(&api.protocol_type, &restricted)
         {

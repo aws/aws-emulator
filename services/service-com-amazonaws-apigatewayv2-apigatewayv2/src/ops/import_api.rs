@@ -396,7 +396,11 @@ const MAX_VERSION_CHARS: usize = crate::state::API_VERSION_LEN.1;
 /// The keys are the OpenAPI Path Item Object's operation fields, plus API Gateway's own
 /// `x-amazon-apigateway-any-method` extension, which is how a definition spells the
 /// catch-all method an HTTP api's `ANY` route key names.
-const OPERATION_KEYS: &[(&str, &str)] = &[
+///
+/// The SINGLE source of the methods this control plane serves a route for: the CORS rules
+/// read the catalog from here ([`crate::state::cors`]) rather than restating it, through
+/// [`route_methods`].
+pub(crate) const OPERATION_KEYS: &[(&str, &str)] = &[
     ("get", "GET"),
     ("put", "PUT"),
     ("post", "POST"),
@@ -406,6 +410,19 @@ const OPERATION_KEYS: &[(&str, &str)] = &[
     ("patch", "PATCH"),
     ("x-amazon-apigateway-any-method", "ANY"),
 ];
+
+/// The catch-all a route key may name instead of an HTTP method: no method a client sends,
+/// so no value a header listing methods may carry.
+pub(crate) const ANY_METHOD: &str = "ANY";
+
+/// The HTTP METHODS of [`OPERATION_KEYS`]: every method this control plane serves a route
+/// for, without the catch-all, which is no HTTP method at all.
+pub(crate) fn route_methods() -> impl Iterator<Item = &'static str> {
+    OPERATION_KEYS
+        .iter()
+        .map(|(_, method)| *method)
+        .filter(|method| *method != ANY_METHOD)
+}
 
 /// OpenAPI operation keys that name no method an HTTP api route key may carry, so an
 /// operation under one is reported as a warning and imported as nothing.
@@ -520,12 +537,10 @@ const MIN_TIMEOUT_MILLIS: i64 = 50;
 /// The largest `TimeoutInMillis` an integration may carry, from the same range.
 const MAX_TIMEOUT_MILLIS: i64 = 30_000;
 
-/// The smallest `MaxAge` a CORS configuration may carry, from the member's modelled range
-/// (`IntegerWithLengthBetweenMinus1And86400`, -1..86400).
-const MIN_CORS_MAX_AGE: i64 = -1;
-
-/// The largest `MaxAge` a CORS configuration may carry, from the same range.
-const MAX_CORS_MAX_AGE: i64 = 86_400;
+// The `MaxAge` a CORS configuration may carry is NOT bounded by this reader: the shape the
+// member targets declares `range -1..86400`, and the service enforces neither end of it (see
+// the note on `crate::ops::types::Cors`), so an imported configuration is held to exactly
+// what `CreateApi` holds a caller-supplied one to.
 
 /// One node of a parsed API definition: the shapes a JSON document carries.
 ///
@@ -1266,14 +1281,6 @@ fn read_cors(document: &Node) -> Result<Option<Cors>, String> {
         ));
     }
     let max_age = extension.integer_member("maxAge")?;
-    if let Some(max_age) = max_age {
-        if !(MIN_CORS_MAX_AGE..=MAX_CORS_MAX_AGE).contains(&max_age) {
-            return Err(format!(
-                "Unable to parse API definition: '{CORS_EXTENSION}.maxAge' must be between \
-                 {MIN_CORS_MAX_AGE} and {MAX_CORS_MAX_AGE}, got {max_age}"
-            ));
-        }
-    }
     let cors = Cors {
         allow_credentials: extension.boolean_member("allowCredentials")?,
         allow_headers: extension.string_list_member("allowHeaders"),

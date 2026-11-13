@@ -67,6 +67,8 @@
 //!
 //! ## Errors
 //!
+//! * `BadRequestException` (HTTP 400) — widened in through `extra_errors` (see below): the
+//!   model's schema declares a data type no mapping template maps.
 //! * `NotFoundException` (HTTP 404) — The resource specified in the request was not found.
 //!   See the message field for more information.
 //! * `TooManyRequestsException` (HTTP 429) — A limit has been exceeded. See the accompanying
@@ -94,9 +96,17 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-apigatewayv2-apigateway
 // here — hence the `GetModelTemplateError` alias below. An operation that models no errors
 // generates an UNINHABITED enum here, which is correct and expected: there is nothing
 // to construct until the model says otherwise.
-#[smithy_macros::operation_error("com.amazonaws.apigatewayv2#GetModelTemplate")]
+// `BadRequestException` — a shape this SERVICE models, and one every writer of a model
+// lists — is widened in through `extra_errors`: a model whose schema declares a data type
+// no mapping template maps is a request API Gateway refuses as one that "is not valid"
+// (HTTP 400), rather than one that found no resource (404) or hit a rate limit (429).
+#[smithy_macros::operation_error(
+    "com.amazonaws.apigatewayv2#GetModelTemplate",
+    extra_errors = ["BadRequestException"]
+)]
 #[derive(Debug)]
 pub enum GetModelTemplateErrorModeled {
+    BadRequestException(BadRequestException),
     NotFoundException(NotFoundException),
     TooManyRequestsException(TooManyRequestsException),
 }
@@ -215,6 +225,22 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     content_type.unwrap_or("unset, so application/json")
                 ))
             })?;
+
+        // A template MAPS a payload onto the structure the schema declares, so the schema
+        // has to declare a structure to map: an `object` whose properties are mapped one by
+        // one, or an `array` whose items are mapped under a `#foreach`
+        // (`::service_common::model_mapping_template`). A schema whose root declares a
+        // SCALAR type declares no members at all, so API Gateway reports that data type as
+        // one it does not generate a mapping template for rather than answering a template
+        // that maps nothing — see [`crate::state::unsupported_template_data_type`].
+        if let Some(message) = crate::state::unsupported_template_data_type(&document) {
+            return Err(GetModelTemplateErrorModeled::BadRequestException(
+                BadRequestException {
+                    message: Some(message),
+                },
+            )
+            .into());
+        }
 
         // Generation is bounded in steps, in depth and in output size, and a schema that
         // does not fit those bounds is REFUSED rather than expanded: one request can

@@ -74,6 +74,12 @@ http-body-util = "0.1"
 # Matches an `IntegrationResponseKey` written as a regular expression (`/2\d\d/`), which is
 # how a WebSocket integration's responses are selected by the status a call produced.
 regex = "1"
+# The URL reader two caller-supplied values of this control plane are held to: a CORS
+# configuration's allowed ORIGIN (`Cors$AllowOrigins`, the `scheme://host[:port]` RFC 6454
+# serializes) and a JWT authorizer's ISSUER (the https URL an OpenID discovery document is
+# published under). Both are URLs a caller sends, so they are read by this maintained parser
+# rather than by splitting the text here.
+url = "2"
 # The ONE renderer of an API Gateway mapping template ("a map of Velocity templates",
 # `Integration$RequestTemplates`): a WEBSOCKET api's MOCK integration carries the same
 # `TemplateMap` values the REST data plane renders, so this crate drives that renderer

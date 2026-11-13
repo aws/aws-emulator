@@ -56,7 +56,7 @@ use service_com_amazonaws_apigatewayv2_apigatewayv2::ops::types::{
 use service_com_amazonaws_apigatewayv2_apigatewayv2::state::{to_timestamp, PORTAL_BUILD};
 use smithy_server_runtime::MultiServiceRouter;
 
-use crate::api_lifecycle::{as_str, call, emulator};
+use crate::api_lifecycle::{as_str, call, emulator_with_rest_apis, rest_endpoint};
 use crate::portal_lifecycle::portal_content;
 
 /// This service's Smithy namespace, the prefix of every shape id below.
@@ -236,8 +236,11 @@ async fn reported_documents(emulator: &MultiServiceRouter) -> Vec<Reported> {
         });
     }
 
-    // ---- The product REST endpoint page: the same member on its own four paths.
+    // ---- The product REST endpoint page: the same member on its own four paths. The REST
+    // endpoint it documents is created through the service that OWNS REST APIs, since a
+    // write naming an endpoint the account does not have is refused.
     let endpoint_pages_uri = format!("{product_uri}/productrestendpointpages");
+    let rest_api = rest_endpoint(emulator, "timestamps-rest", "prod").await;
     let (status, endpoint_page) = call(
         emulator,
         "POST",
@@ -245,7 +248,7 @@ async fn reported_documents(emulator: &MultiServiceRouter) -> Vec<Reported> {
         Some(json!({
             "restEndpointIdentifier": {
                 "identifierParts": {
-                    "restApiId": "a1b2c3d4e5",
+                    "restApiId": rest_api,
                     "stage": "prod",
                     "method": "GET",
                     "path": "/orders"
@@ -664,7 +667,7 @@ async fn reported_control_plane_documents(emulator: &MultiServiceRouter) -> Vec<
 /// date-time string naming the moment the service wrote.
 #[tokio::test]
 async fn every_date_time_member_is_an_rfc_3339_string_naming_the_stored_instant() {
-    let emulator = emulator();
+    let emulator = emulator_with_rest_apis();
     let mut rows = reported_documents(&emulator).await;
     rows.extend(reported_control_plane_documents(&emulator).await);
 

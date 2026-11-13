@@ -65,8 +65,52 @@ pub(crate) fn portal_content(display_name: &str) -> Value {
 
 /// A portal-product ARN of the form `CreatePortalProduct` mints: this service's ARN
 /// namespace and the `/portalproducts/{id}` resource path.
+///
+/// Used where a row needs an ARN whose FORM is right and whose product the account does not
+/// hold; a row whose portal is accepted names products created through
+/// [`hold_included_products`], since a portal may only include products the account has.
 fn product_arn(id: &str) -> String {
     format!("arn:aws:apigateway:{REGION}:{ACCOUNT_ID}:/portalproducts/{id}")
+}
+
+/// Create one portal product per `includedPortalProductArns` entry `request` carries, and
+/// rewrite that member to name the products those calls MINTED; the ARNs now in the request
+/// are answered, for a caller that asserts on what the portal reports back.
+///
+/// A portal includes the products a published portal renders, so a write may only name
+/// products the account HOLDS: the ARNs a row is written with are placeholders for the ones
+/// `CreatePortalProduct` mints here. A request carrying no such member, or an empty list, is
+/// left exactly as it was.
+pub(crate) async fn hold_included_products(
+    emulator: &smithy_server_runtime::MultiServiceRouter,
+    label: &str,
+    request: &mut Value,
+) -> Vec<Value> {
+    let placeholders = request
+        .get("includedPortalProductArns")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let mut held: Vec<Value> = Vec::with_capacity(placeholders.len());
+    for index in 0..placeholders.len() {
+        let (status, created) = call(
+            emulator,
+            "POST",
+            "/v2/portalproducts",
+            Some(json!({ "displayName": format!("{label} product {index}") })),
+        )
+        .await;
+        assert_eq!(
+            status, 201,
+            "case {label:?}: expected 201 from CreatePortalProduct for the product the \
+             portal includes, got {status} {created}"
+        );
+        held.push(Value::String(as_str(&created, "portalProductArn")));
+    }
+    if request.get("includedPortalProductArns").is_some() {
+        request["includedPortalProductArns"] = Value::Array(held.clone());
+    }
+    held
 }
 
 /// One accepted-create row: the request, and what the stored portal must report.
@@ -242,8 +286,16 @@ async fn create_portal_persists_the_record_and_get_portal_reports_it_back() {
     let emulator = emulator();
     let mut minted: Vec<String> = Vec::new();
 
-    for row in accepted_rows() {
+    for mut row in accepted_rows() {
         let case = row.case;
+        // A portal may only include products the account HOLDS, so the products this row
+        // includes are created first and the row is pointed at them.
+        let held = hold_included_products(&emulator, case, &mut row.request).await;
+        for (member, value) in &mut row.expected {
+            if *member == "includedPortalProductArns" && !held.is_empty() {
+                *value = Value::Array(held.clone());
+            }
+        }
         let (status, created) =
             call(&emulator, "POST", "/v2/portals", Some(row.request.clone())).await;
         assert_eq!(
