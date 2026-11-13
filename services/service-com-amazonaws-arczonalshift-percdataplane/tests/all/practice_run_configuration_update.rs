@@ -33,8 +33,8 @@
 use serde_json::{json, Value};
 
 use super::practice_run_configuration::{
-    alarms, assert_holds, create, dates, get_managed_resource, listed_practice_run_status, windows,
-    Row, REGISTERED_ARN, REGISTERED_ZONES, ROWS, UNHELD_TARGETS,
+    alarms, assert_holds, dates, get_managed_resource, hold, listed_practice_run_status, windows,
+    REGISTERED_ARN, REGISTERED_ZONES, ROWS, UNHELD_TARGETS,
 };
 use super::registered_managed_resources::register;
 use super::zonal_shift_lifecycle::{call, emulator, encoded, error_code, seeded};
@@ -169,21 +169,6 @@ fn merged(
         expected.insert(member.clone(), value.clone());
     }
     expected
-}
-
-/// Write `row`'s configuration for `resource`, as the state every change starts from.
-async fn hold(
-    router: &smithy_server_runtime::MultiServiceRouter,
-    row: &Row,
-    resource: &str,
-) -> serde_json::Map<String, Value> {
-    let (status, created) = create(router, &row.create_body(resource)).await;
-    assert_eq!(
-        status, 201,
-        "case {}: the configuration to change is created first, got {status} {created}",
-        row.case
-    );
-    row.configuration()
 }
 
 #[tokio::test]

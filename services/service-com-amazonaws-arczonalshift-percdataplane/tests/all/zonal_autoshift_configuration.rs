@@ -50,7 +50,7 @@ const REGISTERED_ZONES: &[&str] = &["use1-az1", "use1-az2", "use1-az3", "use1-az
 /// `UpdateZonalAutoshiftConfiguration` over the wire: `PUT
 /// /managedresources/{resourceIdentifier}` (`smithy_query(query="operation",
 /// operation="UpdateZonalAutoshiftConfiguration")`).
-async fn update(
+pub(crate) async fn update(
     router: &smithy_server_runtime::MultiServiceRouter,
     resource: &str,
     status: &str,

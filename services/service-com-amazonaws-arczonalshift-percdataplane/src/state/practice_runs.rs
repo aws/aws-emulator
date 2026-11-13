@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! The practice run configuration ARC holds for a managed resource, and the rules every
-//! operation that writes one applies to it.
+//! operation that writes or removes one applies to it.
 //!
 //! A configuration is ARC's own record ABOUT a resource, not part of the resource: ARC
 //! models no operation that registers a managed resource, so a resource either was seeded
@@ -25,12 +25,21 @@
 //!   times and ends after it starts;
 //! * a blocked date is a calendar date in UTC — "Specify blocked dates, in UTC, in the
 //!   format `YYYY-MM-DD`" (`PracticeRunConfiguration$blockedDates`) — so a value of that
-//!   shape that names no day of a month is not one.
+//!   shape that names no day of a month is not one;
+//! * a configuration can only be REMOVED once the authorization that rests on it is
+//!   withdrawn — "Before you can delete a practice run configuration for a resource[,] you
+//!   must disable zonal autoshift for the resource"
+//!   (`smithy_query(query="doc", shape="DeletePracticeRunConfiguration")`) — so a deletion
+//!   asked for while zonal autoshift is enabled is a conflict in the resource's state
+//!   ([`practice_run_configuration_deletion_conflict`]).
 
 use chrono::{NaiveDate, NaiveTime};
 
-use super::ComAmazonawsArczonalshiftPercdataplaneState as ZonalShiftState;
-use crate::ops::types::{ControlCondition, PracticeRunConfiguration};
+use super::{
+    ComAmazonawsArczonalshiftPercdataplaneState as ZonalShiftState, ManagedResource,
+    ZonalAutoshiftStatus,
+};
+use crate::ops::types::{ConflictException, ControlCondition, PracticeRunConfiguration};
 
 /// The message ARC answers when a resource is asked for a practice run configuration it
 /// already has.
@@ -61,6 +70,53 @@ pub const PRACTICE_CONFIGURATION_MISSING_MESSAGE: &str =
 /// where the configuration is kept, so the operations that need one cannot drift apart on
 /// the reason they report.
 pub const PRACTICE_CONFIGURATION_MISSING_REASON: &str = "PracticeConfigurationDoesNotExist";
+
+/// The message ARC answers when a practice run configuration is asked to be deleted while
+/// zonal autoshift is enabled for the resource.
+///
+/// It is worded the way this service words the mirror-image conflict — the one it answers
+/// when zonal autoshift is asked to be enabled for a resource that has no configuration
+/// ([`super::PRACTICE_CONFIGURATION_REQUIRED_MESSAGE`]): the state the resource is in,
+/// then what therefore cannot be done. Like the other refusals of this service it names no
+/// identifier and has no variable part — the requirement is the same for every resource
+/// and every caller, and the caller already named the resource.
+pub const AUTOSHIFT_ENABLED_MESSAGE: &str =
+    "Zonal autoshift is enabled for the resource. Cannot delete the practice run \
+     configuration.";
+
+/// The `ConflictExceptionReason` ARC names for a conflict whose cause is that zonal
+/// autoshift is enabled for the resource
+/// (`smithy_query(query="shape", shape="ConflictExceptionReason")`).
+pub const AUTOSHIFT_ENABLED_REASON: &str = "AutoShiftEnabled";
+
+/// The refusal a caller gets for DELETING the practice run configuration ARC holds for
+/// `resource`, or `None` when the resource's current state admits the deletion.
+///
+/// ONE rule of the resource's current state, from what the operation documents — "Deletes
+/// the practice run configuration for a resource. Before you can delete a practice run
+/// configuration for a resource[,] you must disable zonal autoshift for the resource.
+/// Practice runs must be configured for zonal autoshift to be enabled"
+/// (`smithy_query(query="doc", shape="DeletePracticeRunConfiguration")`): zonal autoshift
+/// depends on the configuration, so the authorization has to be withdrawn before the
+/// configuration it rests on can go, and a deletion asked for while it is `ENABLED` is a
+/// conflict in the resource's state. A resource whose autoshift is enabled always HAS a
+/// configuration ([`super::zonal_autoshift_conflict`]), so this is the branch taken for it.
+///
+/// There is no second rule about the configuration existing: the operation is
+/// `@idempotent`, so a resource that holds none is already in the state the deletion asks
+/// for and the call is served.
+#[must_use]
+pub fn practice_run_configuration_deletion_conflict(
+    resource: &ManagedResource,
+) -> Option<ConflictException> {
+    (resource.zonal_autoshift_status == ZonalAutoshiftStatus::Enabled).then(|| ConflictException {
+        message: AUTOSHIFT_ENABLED_MESSAGE.to_string(),
+        reason: AUTOSHIFT_ENABLED_REASON.to_string(),
+        // The conflict is about the resource's configuration, not about a shift, so there
+        // is no `zonalShiftId` to associate it with.
+        zonal_shift_id: None,
+    })
+}
 
 /// Why a write of a practice run configuration is refused: the
 /// `ValidationExceptionReason` and the message, which the calling operation lifts into
@@ -231,5 +287,17 @@ impl ZonalShiftState {
     ) {
         self.practice_run_configurations
             .insert(resource_identifier.to_string(), configuration);
+    }
+
+    /// Stop holding a practice run configuration for a resource, leaving a resource that
+    /// held none exactly as it was.
+    ///
+    /// The configuration is the only thing ARC holds about the resource that is removed:
+    /// the resource itself is not ARC's to delete (no operation of this service creates
+    /// one), and the zonal autoshift status is written only by the operation that owns it.
+    /// Every value derived from the configuration — `practiceRunConfiguration` and the
+    /// `practiceRunStatus` computed from it — therefore follows from this one removal.
+    pub fn remove_practice_run_configuration(&mut self, resource_identifier: &str) {
+        self.practice_run_configurations.remove(resource_identifier);
     }
 }

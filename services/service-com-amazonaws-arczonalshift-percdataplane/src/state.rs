@@ -32,8 +32,9 @@ pub use published_resources::{managed_resource_registry, published_resources};
 mod practice_runs;
 
 pub use practice_runs::{
-    requested_practice_run_configuration, updated_practice_run_configuration,
-    PracticeRunConfigurationRefused, PRACTICE_CONFIGURATION_EXISTS_MESSAGE,
+    practice_run_configuration_deletion_conflict, requested_practice_run_configuration,
+    updated_practice_run_configuration, PracticeRunConfigurationRefused, AUTOSHIFT_ENABLED_MESSAGE,
+    AUTOSHIFT_ENABLED_REASON, PRACTICE_CONFIGURATION_EXISTS_MESSAGE,
     PRACTICE_CONFIGURATION_MISSING_MESSAGE, PRACTICE_CONFIGURATION_MISSING_REASON,
 };
 

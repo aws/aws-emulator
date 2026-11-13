@@ -196,6 +196,22 @@ pub(crate) async fn get_managed_resource(
     .await
 }
 
+/// Write `row`'s configuration for `resource` through `CreatePracticeRunConfiguration`, as
+/// the state a case that acts on a held configuration starts from.
+pub(crate) async fn hold(
+    router: &smithy_server_runtime::MultiServiceRouter,
+    row: &Row,
+    resource: &str,
+) -> serde_json::Map<String, Value> {
+    let (status, created) = create(router, &row.create_body(resource)).await;
+    assert_eq!(
+        status, 201,
+        "case {}: the configuration under test is created first, got {status} {created}",
+        row.case
+    );
+    row.configuration()
+}
+
 /// The `practiceRunStatus` `ListManagedResources` reports for one resource, walking the
 /// pages it hands out.
 pub(crate) async fn listed_practice_run_status(

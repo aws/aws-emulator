@@ -1,15 +1,11 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op DeletePracticeRunConfiguration
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `DeletePracticeRunConfiguration`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
-//!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`DeletePracticeRunConfiguration::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! STOPS holding the practice run configuration ARC kept for a managed resource, so the
+//! call's own answer and every later read — `GetManagedResource`, `ListManagedResources` —
+//! report the resource as having none, and the `practiceRunStatus` derived from it reads
+//! `DISABLED` again. `@idempotent`: a resource that holds no configuration is already in
+//! the state the call asks for, so the call is served rather than refused.
 //!
 //! ## Shape of an operation
 //!
@@ -83,6 +79,7 @@
 
 #[allow(unused_imports)]
 use super::types::*;
+use crate::state::practice_run_configuration_deletion_conflict;
 
 // `#[operation_error]` below expands to an invocation of the LOCAL declarative
 // `smithy!` macro, which this line is what emits into the module. Without it the
@@ -157,18 +154,55 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `DeletePracticeRunConfiguration` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(DeletePracticeRunConfigurationErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("DeletePracticeRunConfiguration"))
+        let _ = ctx;
+        let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
+            DeletePracticeRunConfigurationError::from(
+                DeletePracticeRunConfigurationErrorModeled::InternalServerException(
+                    InternalServerException {
+                        message: Some("the ARC zonal shift store is unavailable".to_string()),
+                    },
+                ),
+            )
+        })?;
+        // The resources the services that own them have registered with ARC, read before
+        // this store is locked: a resource registered through one of them is as much a
+        // target of this call as one this store was seeded with.
+        let published = crate::state::published_resources(&*self.engine);
+
+        let mut store = state.lock();
+
+        // The caller's authorization on the named target is decided BEFORE the target is
+        // resolved: a resourceIdentifier ARC holds nothing for is refused 403
+        // AccessDeniedException, disclosing nothing about what exists. One helper takes
+        // this branch for every operation that acts on a target.
+        let resource = store
+            .authorized_resource(&published, &input.resource_identifier)
+            .map_err(DeletePracticeRunConfigurationErrorModeled::AccessDeniedException)?;
+
+        // Whether the resource's current state admits the deletion at all: zonal autoshift
+        // rests on the configuration, so it has to have been disabled first. The branch is
+        // the state module's, so what it refuses cannot drift from what the operation that
+        // writes the autoshift status accepts.
+        if let Some(conflict) = practice_run_configuration_deletion_conflict(&resource) {
+            return Err(
+                DeletePracticeRunConfigurationErrorModeled::ConflictException(conflict).into(),
+            );
+        }
+
+        // Removed under the resource's own ARN — the key every reader looks a
+        // configuration up by — so the write stays correct whatever identifier form
+        // resolution accepts. Removing what is not held leaves the store as it was, which
+        // is what makes repeating the call answer the same thing.
+        store.remove_practice_run_configuration(&resource.arn);
+
+        Ok(DeletePracticeRunConfigurationOutput {
+            arn: resource.arn,
+            name: resource.name,
+            // Deleting the configuration does not change whether zonal autoshift is
+            // authorized for the resource — `UpdateZonalAutoshiftConfiguration` is what
+            // writes that, and this call is refused while it is enabled — so what is
+            // reported is the status the resource carries now.
+            zonal_autoshift_status: resource.zonal_autoshift_status.as_wire().to_string(),
+        })
     }
 }
