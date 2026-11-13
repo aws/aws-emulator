@@ -27,6 +27,8 @@ mod component_listing_wire_members;
 mod component_policy;
 #[path = "all/distribution_configuration.rs"]
 mod distribution_configuration;
+#[path = "all/error_response_envelope.rs"]
+mod error_response_envelope;
 #[path = "all/image_creation.rs"]
 mod image_creation;
 #[path = "all/image_packages.rs"]
