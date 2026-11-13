@@ -636,6 +636,51 @@ fn a_call_from_a_chain_at_the_depth_ceiling_is_not_made() {
     }
 }
 
+/// A call that could not be HANDED OVER at all is reported as work that did not
+/// run: [`super::super::asl::RUNTIME_ERROR`] and a cause saying nothing ran, the
+/// same failure every other call this module declines to make carries, rather than
+/// ASL's timeout name — nothing was waiting for a bound that could expire.
+///
+/// The single buffered slot is occupied here, which is what the walk sees while the
+/// operation serving it is still inside a previous call that timed out server-side.
+#[test]
+fn a_call_that_cannot_be_handed_over_is_not_reported_as_a_timeout() {
+    let call = read("arn:aws:states:::dynamodb:putItem").expect("this names a call");
+    let (calls, _handovers) = ::tokio::sync::mpsc::channel::<Handover>(1);
+    // The one slot is taken, and nothing drains it: the next handover cannot be made.
+    let (answer, _answered) = ::std::sync::mpsc::channel();
+    calls
+        .try_send(Handover {
+            call: call.clone(),
+            request: ::serde_json::json!({}),
+            answer,
+        })
+        .expect("the one buffered slot is free");
+    let dispatcher = Dispatcher {
+        calls,
+        depth: 0,
+        role: None,
+        handovers: None,
+        map_runs: None,
+    };
+
+    let answer = dispatcher.perform(&call, &::serde_json::json!({}), None);
+
+    let Err(failed) = answer else {
+        panic!("case \"a call with nowhere to go\": expected no call to be made, got {answer:?}")
+    };
+    assert_eq!(
+        failed.error,
+        super::super::asl::RUNTIME_ERROR,
+        "case \"a call with nowhere to go\": expected {}, got {failed:?}",
+        super::super::asl::RUNTIME_ERROR
+    );
+    assert!(
+        failed.cause.contains("nothing was run for it"),
+        "case \"a call with nowhere to go\": the cause must say nothing ran, got {failed:?}"
+    );
+}
+
 /// A call that does not answer inside the span the task gave it times the task
 /// out and RELEASES the thread it was waiting on, so a state's
 /// `TimeoutSeconds` bounds the span it documents rather than only being

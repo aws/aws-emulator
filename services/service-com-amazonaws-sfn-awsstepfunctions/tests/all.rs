@@ -276,6 +276,8 @@ mod terminal_runtime_errors;
 mod test_state;
 #[path = "all/unhandled_handler_error_task_failure.rs"]
 mod unhandled_handler_error_task_failure;
+#[path = "all/unmade_integration_status_change_error.rs"]
+mod unmade_integration_status_change_error;
 #[path = "all/unresolved_path_cause.rs"]
 mod unresolved_path_cause;
 #[path = "all/unserved_request_refusals.rs"]

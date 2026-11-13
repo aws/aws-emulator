@@ -2068,16 +2068,17 @@ impl Interpreter<'_> {
             }
             // And so is the waiting this run may still do: a run that has spent it does
             // not hand this call over, because there is no span left to wait for its
-            // answer in. The task is therefore not finished, which is the task's OWN
-            // timeout — ASL's own error name, which the state's `Retry` and `Catch` may
-            // answer for — rather than an end to the execution.
+            // answer in. NOTHING is run for the task, which is the failure this service
+            // reports for work it did not perform ([`RUNTIME_ERROR`], as every other
+            // call it declines to make carries) rather than a timeout: no bound the
+            // state declared for its work expired, because the work never began.
             if me.call_wait_left.is_zero() {
                 let failure = Failure {
-                    error: Some(TIMEOUT_ERROR.to_string()),
+                    error: Some(RUNTIME_ERROR.to_string()),
                     cause: Some(format!(
                         "the work of state '{name}' was not handed over: this execution has \
                          spent the {} seconds this emulator waits for the calls its tasks are \
-                         made of",
+                         made of, so nothing was run for it",
                         MAX_CALL_WAIT_DURATION.as_secs()
                     )),
                 };

@@ -3270,12 +3270,14 @@ fn unavailable(call: &Call) -> Failed {
 ///
 /// One call is in flight at a time, and the walk waits for each answer before it
 /// transitions — so this is reachable only after a call TIMED OUT server-side while
-/// its target went on holding it. The walk is not held with it: the task fails with
-/// ASL's own timeout error, which the state's `Retry` and `Catch` may match, and no
-/// call is made for it.
+/// its target went on holding it. The walk is not held with it: NOTHING is handed
+/// over for this call, so the failure is the one every other decline of this module
+/// carries ([`super::asl::RUNTIME_ERROR`], as [`too_deep`] and [`unavailable`] do)
+/// rather than ASL's timeout name, which names work that ran past a bound the state
+/// declared for it.
 fn still_calling(call: &Call) -> Failed {
     Failed {
-        error: super::asl::TIMEOUT_ERROR.to_string(),
+        error: super::asl::RUNTIME_ERROR.to_string(),
         cause: format!(
             "{} could not be made while the call this execution made before it has still not \
              answered, so nothing was run for it",
