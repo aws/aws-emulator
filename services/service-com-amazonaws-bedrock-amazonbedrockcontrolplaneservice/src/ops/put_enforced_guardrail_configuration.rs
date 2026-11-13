@@ -15,7 +15,10 @@
 //! ([`crate::state::EnforcedGuardrailConfiguration`]), so this `@idempotent` put REPLACES
 //! the installed one rather than adding another, keeping its `configId` and the instant
 //! and principal that first installed it. A put that names a `configId` the account does
-//! not hold addresses a configuration that does not exist, and is refused the same 404.
+//! not hold addresses a configuration that does not exist, and is refused the same 404 —
+//! in the one sentence Amazon Bedrock words that resource's not-found class with
+//! ([`crate::state::ENFORCED_GUARDRAIL_CONFIGURATION_NOT_FOUND`]), which carries no part of
+//! the request, so the refusal reads the same here as it does on the delete.
 //!
 //! ## Shape of an operation
 //!
@@ -222,9 +225,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             (None, _) => true,
         };
         if !addresses_installed {
-            let named = input.config_id.as_deref().unwrap_or_default();
             return Err(not_found(
-                crate::state::enforced_guardrail_configuration_not_found(named),
+                crate::state::ENFORCED_GUARDRAIL_CONFIGURATION_NOT_FOUND.to_string(),
             )
             .into());
         }

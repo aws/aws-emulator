@@ -84,25 +84,19 @@ pub struct AccountDataRetention {
     pub updated_at: SystemTime,
 }
 
-/// What this control plane answers when a PUT addresses an enforced guardrail configuration
-/// this account does not hold: the `configId` names no configuration, which is the 404
-/// `ResourceNotFoundException` that put answers.
-///
-/// The emulator's own wording, and NOT the sentence the delete of a configuration answers
-/// ([`ENFORCED_GUARDRAIL_CONFIGURATION_NOT_FOUND`]), which is recorded: the two refusals of
-/// this resource are worded independently, each from its own evidence, so the sentence one
-/// answers is no evidence about the other.
-#[must_use]
-pub fn enforced_guardrail_configuration_not_found(config_id: &str) -> String {
-    format!("no enforced guardrail configuration {config_id} exists in this account")
-}
-
-/// What `DeleteEnforcedGuardrailConfiguration` answers when the `configId` it carries names
-/// no configuration this account holds.
+/// What this control plane answers when a request's `configId` names no enforced guardrail
+/// configuration this account holds — an id nothing minted, and any id at all while the
+/// account holds no configuration — in the 404 `ResourceNotFoundException` both operations
+/// addressed by that id model.
 ///
 /// RECORDED behaviour, and a message with NO variable parts: Amazon Bedrock reports that no
 /// configuration was found for the identifier the request carried without repeating that
-/// identifier, so the wording is the whole requirement.
+/// identifier, so the wording is the whole requirement. ONE sentence for the whole class:
+/// the resource and the error are the same whether the request addressing it is the delete
+/// (`configId` in the path) or the put (`configId` in the body), so each states this
+/// recorded sentence rather than a second wording of the same answer — and in particular
+/// never one interpolating the submitted id, a shape no recording of this service's
+/// not-found refusals carries.
 pub const ENFORCED_GUARDRAIL_CONFIGURATION_NOT_FOUND: &str =
     "No default guardrail configuration found for the specified config identifier.";
 

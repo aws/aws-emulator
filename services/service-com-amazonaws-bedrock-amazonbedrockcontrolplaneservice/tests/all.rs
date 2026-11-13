@@ -69,6 +69,8 @@ mod data_automation_tagging;
 mod default_prompt_routers;
 #[path = "all/enforced_guardrail_configuration.rs"]
 mod enforced_guardrail_configuration;
+#[path = "all/enforced_guardrail_configuration_not_found_message.rs"]
+mod enforced_guardrail_configuration_not_found_message;
 #[path = "all/enforced_guardrail_inference.rs"]
 mod enforced_guardrail_inference;
 #[path = "all/enum_value_set_listing.rs"]
