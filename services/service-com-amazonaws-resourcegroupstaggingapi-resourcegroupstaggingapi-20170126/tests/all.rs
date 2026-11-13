@@ -54,3 +54,6 @@ mod sns_tagged_resource_index;
 
 #[path = "all/arn_list_value_fault_template.rs"]
 mod arn_list_value_fault_template;
+
+#[path = "all/resource_type_filter_spelling.rs"]
+mod resource_type_filter_spelling;

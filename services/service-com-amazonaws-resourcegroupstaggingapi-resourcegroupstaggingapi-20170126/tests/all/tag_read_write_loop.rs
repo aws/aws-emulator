@@ -288,9 +288,10 @@ async fn resource_type_filters_match_the_service_and_resource_type_of_the_arn() 
         }
     }
 
-    // A `service:resourceType` filter whose type no ARN carries matches nothing,
-    // and neither does an unknown service.
-    for filter in ["s3:object", "sns:subscription", "nosuchservice", "ec2:volume"] {
+    // A `service:resourceType` filter whose type no ARN carries matches nothing.
+    // A filter naming no supported service at all is a REFUSAL rather than an
+    // empty answer; its rows live in `resource_type_filter_spelling.rs`.
+    for filter in ["s3:object", "sns:subscription", "ec2:volume"] {
         let (status, body) = call(
             &router,
             "GetResources",

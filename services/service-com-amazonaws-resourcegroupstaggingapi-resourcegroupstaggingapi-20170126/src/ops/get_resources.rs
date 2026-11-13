@@ -7,9 +7,10 @@
 //! resources (`crate::state::owners`), and of what `TagResources` and
 //! `UntagResources` wrote for the resources this service is the tag home for.
 //! `TagFilters` are AND-ed across keys with each filter's `Values` OR-ed,
-//! `ResourceTypeFilters` match the `service[:resourceType]` key of the resource
-//! in either the bare or the qualified form, and `ResourceARNList` restricts the
-//! answer to the named ARNs.
+//! `ResourceTypeFilters` name a supported service in the spelling an ARN carries
+//! — an entry naming any other is refused — and match the
+//! `service[:resourceType]` key of the resource in either the bare or the
+//! qualified form, and `ResourceARNList` restricts the answer to the named ARNs.
 //!
 //! ## Shape of an operation
 //!
@@ -249,21 +250,40 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // "You can't specify both this parameter and the ResourceTypeFilters /
         // TagFilters parameter … and any of the pagination parameters
         // (ResourcesPerPage, TagsPerPage, PaginationToken) in the same request.
-        // If you do, you get an Invalid Parameter exception."
-        if !arn_list.is_empty() {
-            for (member, also_specified) in [
-                ("TagFilters", !tag_filters.is_empty()),
-                ("ResourceTypeFilters", !type_filters.is_empty()),
-                ("ResourcesPerPage", input.resources_per_page.is_some()),
-                ("TagsPerPage", input.tags_per_page.is_some()),
-                ("PaginationToken", !token.is_empty()),
-            ] {
-                if also_specified {
-                    return Err(invalid(format!(
-                        "ResourceARNList and {member} can't both be specified in the same request"
-                    )));
-                }
+        // If you do, you get an Invalid Parameter exception." ONE refusal
+        // answers every one of those combinations, and its text names none of
+        // the members involved.
+        if !arn_list.is_empty()
+            && (!tag_filters.is_empty()
+                || !type_filters.is_empty()
+                || input.resources_per_page.is_some()
+                || input.tags_per_page.is_some()
+                || !token.is_empty())
+        {
+            return Err(invalid(
+                crate::state::FILTERS_WITH_RESOURCE_LIST_MESSAGE.to_string(),
+            ));
+        }
+
+        // A list member of this request selects a SET: naming one value twice
+        // adds nothing to the selection, so the service refuses the whole call
+        // rather than serving the same answer it would have served for the
+        // de-duplicated list.
+        for values in [arn_list, type_filters] {
+            if let Some(message) = crate::state::duplicate_value_refusal(values) {
+                return Err(invalid(message));
             }
+        }
+
+        // A filter entry is `service[:resourceType]` in the spelling an ARN
+        // carries, so a service token that is not a supported service — a
+        // display or upper-case spelling of a real one, or a misspelling — is a
+        // request-level validation failure rather than a query that selects
+        // nothing.
+        if let Some(message) =
+            crate::state::supported_services::unsupported_service_refusal(type_filters)
+        {
+            return Err(invalid(message));
         }
 
         // Documented ranges neither member carries as a modelled constraint.
@@ -318,9 +338,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         // "Each TagFilter must contain a key with values optional."
         if tag_filters.iter().any(|filter| filter.key.is_none()) {
-            return Err(invalid(
-                "each TagFilters entry must contain a Key".to_string(),
-            ));
+            return Err(invalid(crate::state::missing_required_field_message(
+                "TagFilters", "Key",
+            )));
         }
 
         // The token is minted for exactly this projection — the serving Region

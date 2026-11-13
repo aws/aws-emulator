@@ -16,6 +16,7 @@
 //! copies.
 
 pub mod owners;
+pub mod supported_services;
 
 use std::collections::BTreeMap;
 use std::time::{Duration, SystemTime};
@@ -499,6 +500,50 @@ pub fn out_of_range_message(member: &str, min: i32, max: i32) -> String {
     format!("{member} is not in the valid range of {min} and {max}")
 }
 
+/// What `GetResources` answers when `ResourceARNList` is combined with any of
+/// the filtering or pagination members it is mutually exclusive with.
+///
+/// ONE sentence covers every one of those combinations — the documented
+/// prohibition is the same for `TagFilters`, `ResourceTypeFilters`,
+/// `ResourcesPerPage`, `TagsPerPage` and `PaginationToken` — and it is entirely
+/// fixed text: it names no member, value or limit, so there is nothing in it to
+/// substitute from the request.
+pub const FILTERS_WITH_RESOURCE_LIST_MESSAGE: &str =
+    "Filters is not allowed when providing a resource list.";
+
+/// The `InvalidParameterException` message for a list member whose element is
+/// missing a field the element's own shape requires (`TagFilters`' `Key`).
+///
+/// The two variable parts are the member the list arrived in and the field the
+/// element left out, both spelled as the API spells them; the rest is fixed, so
+/// the same text serves every such element of every list member.
+pub fn missing_required_field_message(member: &str, field: &str) -> String {
+    format!("An element of {member} is missing required field {field}")
+}
+
+/// The `InvalidParameterException` message for a list member that names the same
+/// value twice.
+///
+/// The one variable part is the repeated value, echoed as the request wrote it;
+/// the rest is fixed, including the trailing period, so the same text serves
+/// every list member whose entries have to be distinct.
+pub fn duplicate_value_message(value: &str) -> String {
+    format!("{value} is a duplicate, please input unique resources.")
+}
+
+/// The refusal for the FIRST value `values` repeats, or `None` when every value
+/// is distinct.
+///
+/// Values are compared exactly as the request wrote them: two entries differ
+/// unless they are the same string.
+pub fn duplicate_value_refusal(values: &[String]) -> Option<String> {
+    let mut seen: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+    values
+        .iter()
+        .find(|value| !seen.insert(value.as_str()))
+        .map(|value| duplicate_value_message(value))
+}
+
 /// The `InvalidParameterException` message for a request that sets a member the
 /// documentation admits only alongside another one: it names the member that has
 /// to be specified, and the value it has to carry.
@@ -579,20 +624,37 @@ pub fn encode_pagination_token(scope: &[&str], after: &str) -> String {
 /// [`encode_pagination_token`] with the mint instant supplied, which is the seam
 /// a test mints an aged token through.
 ///
-/// `digest` is hex and `issued` is digits, so the first two `:` always separate
-/// the three parts even when `after` is an ARN full of them. The longest token
-/// this builds is 16 hex digits, a 10-digit second count, two separators and a
-/// 1011-character `ResourceARN`: well inside the modelled 2048-character
-/// `PaginationToken` bound.
+/// The token is OPAQUE, as the member's documentation describes it ("a string
+/// that indicates that there is more data available than this response
+/// contains", to be handed back unread): the cursor body is base64 of
+/// `digest:issued:after`, so what a client sees is one unstructured run of
+/// base64 characters rather than the resource ARN and mint instant in clear.
+/// Inside the body `digest` is hex and `issued` is digits, so the first two `:`
+/// always separate the three parts even when `after` is an ARN full of them. The
+/// longest body this builds is 16 hex digits, a 10-digit second count, two
+/// separators and a 1011-character `ResourceARN`, and base64 of that is about
+/// 1.4 K characters: inside the modelled 2048-character `PaginationToken` bound.
 pub fn encode_pagination_token_at(scope: &[&str], after: &str, issued: SystemTime) -> String {
+    use base64::Engine as _;
+
     let issued = epoch_seconds(issued).to_string();
     let digest = token_digest(scope, &issued, after);
-    format!("{digest}:{issued}:{after}")
+    base64::engine::general_purpose::STANDARD.encode(format!("{digest}:{issued}:{after}"))
 }
 
 /// The resume point `token` carries, or why it cannot be resumed.
 pub fn decode_pagination_token(token: &str, scope: &[&str]) -> Result<String, TokenRejection> {
-    let mut parts = token.splitn(3, ':');
+    use base64::Engine as _;
+
+    // A string that is not base64 at all is not a token this service minted, so
+    // it earns the same answer as base64 carrying a body this service never cut.
+    let Ok(body) = base64::engine::general_purpose::STANDARD.decode(token) else {
+        return Err(TokenRejection::NotMinted);
+    };
+    let Ok(body) = String::from_utf8(body) else {
+        return Err(TokenRejection::NotMinted);
+    };
+    let mut parts = body.splitn(3, ':');
     let (Some(digest), Some(issued), Some(after)) = (parts.next(), parts.next(), parts.next())
     else {
         return Err(TokenRejection::NotMinted);

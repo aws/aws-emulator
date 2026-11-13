@@ -24,8 +24,11 @@ tracing = { workspace = true }
 # Digests the request's filters into the opaque pagination token, so a token is
 # only accepted back by the projection it was cut from.
 sha2 = { workspace = true }
-# Renders that digest as the hex half of the pagination token.
+# Renders that digest as the hex half of the pagination token's body.
 hex = { workspace = true }
+# Writes that body as the one opaque run of characters a `PaginationToken` is,
+# and reads a presented token back.
+base64 = "0.22"
 # The services that OWN the resources this API tags: a tag written here is
 # written to the owning service's own tag set, and an ARN that service holds no
 # resource for is reported with ITS not-found code. Reached through the shared
