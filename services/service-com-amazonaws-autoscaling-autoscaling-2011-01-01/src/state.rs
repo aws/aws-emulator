@@ -60,6 +60,15 @@ pub mod ec2_subnets;
 /// the account, not one of this service's own invention.
 pub mod ec2_instances;
 
+/// The tags an Auto Scaling group carries: how a requested tag becomes a stored one, and
+/// the one projection every read of a stored tag reports.
+pub mod group_tags;
+
+pub use group_tags::{
+    propagates_at_launch, stored_tag, tag_description, DEFAULT_PROPAGATE_AT_LAUNCH,
+    GROUP_RESOURCE_TYPE,
+};
+
 /// The Elastic Load Balancing v2 targets a group's instances occupy in the target groups
 /// it is attached to, in that service's own store: an instance of an attached group is a
 /// target of that target group, not a reference this service keeps to itself.

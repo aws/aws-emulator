@@ -129,7 +129,7 @@ pub fn launch<Eng: Send + Sync + 'static>(
     let mut tags: BTreeMap<String, String> = request
         .tags
         .iter()
-        .filter(|tag| tag.propagate_at_launch == Some(true))
+        .filter(|tag| super::propagates_at_launch(tag))
         .map(|tag| (tag.key.clone(), tag.value.clone().unwrap_or_default()))
         .collect();
     tags.insert(GROUP_NAME_TAG.to_string(), request.group_name.to_string());

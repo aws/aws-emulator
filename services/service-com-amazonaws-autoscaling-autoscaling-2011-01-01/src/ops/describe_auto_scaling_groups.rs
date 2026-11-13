@@ -370,19 +370,10 @@ fn group_view(group: &crate::state::StoredGroup, include_instances: bool) -> Aut
         vpc_zone_identifier: group.vpc_zone_identifier.clone(),
         enabled_metrics: Some(Vec::new()),
         status: group.status.clone(),
-        tags: Some(
-            group
-                .tags
-                .iter()
-                .map(|tag| TagDescription {
-                    resource_id: tag.resource_id.clone(),
-                    resource_type: tag.resource_type.clone(),
-                    key: Some(tag.key.clone()),
-                    value: tag.value.clone(),
-                    propagate_at_launch: tag.propagate_at_launch,
-                })
-                .collect(),
-        ),
+        // The group's tags as the wire reports them, through the one projection of a
+        // stored tag ([`crate::state::tag_description`]), so a tag reads the same here as
+        // it does through the account-wide tag read.
+        tags: Some(group.tag_descriptions()),
         termination_policies: Some(group.termination_policies.clone()),
         new_instances_protected_from_scale_in: Some(group.new_instances_protected_from_scale_in),
         service_linked_role_arn: group.service_linked_role_arn.clone(),

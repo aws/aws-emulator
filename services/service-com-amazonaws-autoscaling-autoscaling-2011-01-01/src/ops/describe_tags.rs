@@ -228,7 +228,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let mut matching: Vec<TagDescription> = state
             .groups
             .values()
-            .flat_map(|group| group.tags.iter().map(tag_description))
+            .flat_map(|group| group.tag_descriptions())
             .filter(|tag| filters.iter().all(|filter| matches_filter(tag, filter)))
             .collect();
         matching.sort_by(|left, right| {
@@ -289,8 +289,7 @@ fn is_valid_filter_name(name: &str) -> bool {
 /// Every filter reaching here names a documented filter type and carries at least one
 /// value: the handler refuses the others before any tag is matched. The comparison is
 /// against the tag AS REPORTED, so a filter selects exactly the tags whose reported member
-/// carries the value asked for — a tag reporting no `PropagateAtLaunch` is selected by
-/// neither Boolean.
+/// carries the value asked for.
 fn matches_filter(tag: &TagDescription, filter: &Filter) -> bool {
     let name = filter.name.as_deref().unwrap_or_default();
     // Borrowed, not cloned: the scan asks every filter about every tag, so the values are
@@ -307,24 +306,14 @@ fn matches_filter(tag: &TagDescription, filter: &Filter) -> bool {
             .as_ref()
             .is_some_and(|value| values.contains(value)),
         // "Accepts a Boolean value": only the two spellings of one select anything, so a
-        // value that is neither selects no tag — and a tag reporting no `PropagateAtLaunch`
-        // is selected by neither Boolean rather than by the values that parse as neither.
+        // value that is neither selects no tag. Every tag reports the flag — a tag created
+        // without it carries the service's default for the member
+        // (`crate::state::DEFAULT_PROPAGATE_AT_LAUNCH`) — so each tag is selected by
+        // exactly one of the two Booleans.
         FILTER_PROPAGATE_AT_LAUNCH => values
             .iter()
             .filter_map(|value| value.parse::<bool>().ok())
             .any(|wanted| tag.propagate_at_launch == Some(wanted)),
         _ => false,
-    }
-}
-
-/// The `TagDescription` the service reports for a stored tag — the same five members the
-/// group's own read reports it through, so one tag is reported one way.
-fn tag_description(tag: &Tag) -> TagDescription {
-    TagDescription {
-        resource_id: tag.resource_id.clone(),
-        resource_type: tag.resource_type.clone(),
-        key: Some(tag.key.clone()),
-        value: tag.value.clone(),
-        propagate_at_launch: tag.propagate_at_launch,
     }
 }

@@ -338,12 +338,11 @@ async fn describe_tags_reports_the_stored_tags_the_filters_select() {
 #[tokio::test]
 async fn the_propagate_at_launch_filter_accepts_only_a_boolean() {
     // The filter "accepts a Boolean value", so only the two spellings of one select
-    // anything: a value that is neither selects NO tag, and a tag that carries no
-    // `PropagateAtLaunch` at all is selected by neither Boolean rather than by the values
-    // that are not Booleans. (What the service REPORTS for such a tag's
-    // `PropagateAtLaunch` is another issue's question, which is why this case asserts
-    // which tags a filter selects rather than how that member is projected.)
-    let case = "a tag carrying no PropagateAtLaunch";
+    // anything: a value that is neither selects NO tag. A tag created without
+    // `PropagateAtLaunch` stored the decision the service takes for it — the member's own
+    // default, which is that the tag propagates — so it is selected by `true` and by
+    // neither of the non-Booleans.
+    let case = "a tag created with no PropagateAtLaunch";
     let (router, engine) = emulator();
     let subnet = given_tagged_groups(&router, &engine).await;
     let flagless_group = "tags-flagless";
@@ -383,15 +382,16 @@ async fn the_propagate_at_launch_filter_accepts_only_a_boolean() {
         "case {case:?}: the stored tag must be reported by a filter on its key, got {body}"
     );
 
-    // (the filter value, what it must not select)
-    let rows: &[(&str, &str)] = &[
-        ("true", flagless_key),
-        ("false", flagless_key),
+    // (the filter value, whether it selects the tag that was created without the flag)
+    let rows: &[(&str, bool)] = &[
+        // The decision stored for a tag whose create stated none: it propagates.
+        ("true", true),
+        ("false", false),
         // A non-Boolean: it selects nothing at all, the flagless tag included.
-        ("yes", flagless_key),
-        ("1", flagless_key),
+        ("yes", false),
+        ("1", false),
     ];
-    for (value, excluded) in rows {
+    for (value, selects) in rows {
         let (status, body) = query(
             &router,
             "DescribeTags",
@@ -405,10 +405,11 @@ async fn the_propagate_at_launch_filter_accepts_only_a_boolean() {
             status, 200,
             "case {case:?} / {value:?}: DescribeTags expected 200, got {status}: {body}"
         );
-        assert!(
-            !body.contains(excluded),
-            "case {case:?} / {value:?}: the propagate-at-launch filter must not select the \
-             tag that carries none, got {body}"
+        assert_eq!(
+            body.contains(flagless_key),
+            *selects,
+            "case {case:?} / {value:?}: the filter selects the tag created without the \
+             flag: {selects}, got {body}"
         );
         if value.parse::<bool>().is_err() {
             assert!(

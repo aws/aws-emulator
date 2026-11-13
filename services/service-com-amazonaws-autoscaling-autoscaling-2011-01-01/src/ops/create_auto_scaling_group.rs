@@ -631,19 +631,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         let resource_id = state.mint_resource_id();
         let arn = crate::state::group_arn(&region, &resource_id, &name);
+        // A tag on an Auto Scaling group is stored against that group, under the one
+        // supported resource type, and with the propagation decision the request stated
+        // or the default when it stated none: the members the SERVICE decides are decided
+        // here, once, for every reader of the tag.
         let tags = input
             .tags
             .unwrap_or_default()
             .into_iter()
-            .map(|tag| Tag {
-                // A tag on an Auto Scaling group is reported against that group,
-                // whatever resource the request named.
-                resource_id: Some(name.clone()),
-                resource_type: Some(GROUP_RESOURCE_TYPE.to_string()),
-                key: tag.key,
-                value: tag.value,
-                propagate_at_launch: tag.propagate_at_launch,
-            })
+            .map(|tag| crate::state::stored_tag(&name, tag))
             .collect();
         let group = crate::state::StoredGroup {
             name: name.clone(),
@@ -735,6 +731,3 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         Ok(CreateAutoScalingGroupOutput)
     }
 }
-
-/// The `ResourceType` a tag on an Auto Scaling group is reported under.
-const GROUP_RESOURCE_TYPE: &str = "auto-scaling-group";

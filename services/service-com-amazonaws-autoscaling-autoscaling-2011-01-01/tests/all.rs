@@ -31,6 +31,8 @@ mod describe_lifecycle_hooks_projection;
 mod describe_tags;
 #[path = "all/error_envelope.rs"]
 mod error_envelope;
+#[path = "all/group_tag_propagate_at_launch.rs"]
+mod group_tag_propagate_at_launch;
 #[path = "all/instance_lifecycle_events.rs"]
 mod instance_lifecycle_events;
 #[path = "all/instance_refresh_lifecycle.rs"]
