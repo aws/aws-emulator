@@ -25,7 +25,9 @@
 use std::collections::BTreeMap;
 use std::time::SystemTime;
 
-use crate::ops::types::CloudConnectorConfiguration;
+use crate::ops::types::{
+    CloudConnectorConfiguration, CloudConnectorSummary, ConfigurationTargets,
+};
 
 /// The resource portion a cloud connector's ARN carries before the connector's id, from
 /// the modelled `CloudConnectorArn` pattern
@@ -71,6 +73,81 @@ pub const MAX_CLOUD_CONNECTORS: usize = 100;
 /// named as the emulator's, with the figure it stands at.
 pub fn cloud_connector_ceiling_message() -> String {
     format!("This emulator holds at most {MAX_CLOUD_CONNECTORS} cloud connectors across every Region")
+}
+
+// ---------------------------------------------------------------------------
+// Narrowing and paging a cloud connector listing
+// ---------------------------------------------------------------------------
+
+/// The `CloudConnectorFilterKey` that narrows a listing to the connectors targeting one
+/// Azure subscription (`crate::ops::types::CLOUD_CONNECTOR_FILTER_KEY_VALUES`): "The Azure
+/// subscription ID to filter by. To return only tenant-level connectors, specify `NONE`"
+/// (`CloudConnectorFilter$FilterValues`).
+pub const CLOUD_CONNECTOR_FILTER_KEY_SUBSCRIPTION_ID: &str = "SubscriptionId";
+
+/// The `CloudConnectorFilterKey` that narrows a listing to the connectors of one Azure
+/// tenant (same enum): "The Azure tenant ID to filter by. Filters the results to connectors
+/// that target the specified tenant."
+pub const CLOUD_CONNECTOR_FILTER_KEY_TENANT_ID: &str = "TenantId";
+
+/// The `SubscriptionId` filter value that asks for the connectors targeting NO subscription
+/// at all: "To return only tenant-level connectors, specify `NONE`"
+/// (`CloudConnectorFilter$FilterValues`). It is a keyword of the filter rather than a
+/// subscription id, which the modelled `AzureSubscriptionId` pattern could not take.
+pub const TENANT_LEVEL_SUBSCRIPTION_FILTER_VALUE: &str = "NONE";
+
+/// Whether `key` is a key a cloud connector listing filters on — a value of the modelled
+/// `CloudConnectorFilterKey` enum.
+pub fn is_cloud_connector_filter_key(key: &str) -> bool {
+    crate::ops::types::CLOUD_CONNECTOR_FILTER_KEY_VALUES.contains(&key)
+}
+
+/// What a `Filters` entry naming no filter key at all is refused with. Both members of
+/// `CloudConnectorFilter` are optional in the model, so such an entry reaches the handler,
+/// and it names no property of a connector for the listing to be narrowed by.
+pub const CLOUD_CONNECTOR_FILTER_KEY_MISSING: &str =
+    "A Filters entry carries no filter key to search on";
+
+/// What a `Filters` entry naming a key but no value is refused with, worded as the sibling
+/// listings of this service word it ([`crate::ops::list_documents`]).
+pub fn cloud_connector_filter_value_missing(key: &str) -> String {
+    format!("Filter key '{key}' carries no value to search for")
+}
+
+/// The published ceiling of `CloudConnectorMaxResults` (range 0..10). It is also the page
+/// size a request that bounds its page with no positive `MaxResults` is served: "The maximum
+/// number of items to return for this call" bounds a page the caller asked to be bounded, so
+/// a caller asking for no bound is served the whole page the operation allows.
+pub const MAX_CLOUD_CONNECTOR_PAGE_SIZE: i32 = 10;
+
+/// The smallest page a `MaxResults` can ask for: one connector. The modelled range reaches
+/// down to zero because `CloudConnectorMaxResults` carries the shape default `0`, which is
+/// the value a request naming no page size carries rather than a page of no connectors.
+pub const MIN_CLOUD_CONNECTOR_PAGE_SIZE: i32 = 1;
+
+/// The page size a cloud connector listing serves, or the refusal message for a `MaxResults`
+/// outside the modelled range — which the protocol's boundary validator already refuses, so
+/// this is a backstop rather than the first line of defence.
+///
+/// A request naming no `MaxResults`, and one naming the zero the shape defaults to, are both
+/// served up to [`MAX_CLOUD_CONNECTOR_PAGE_SIZE`]: neither asked for a narrower page.
+pub fn cloud_connector_page_size(max_results: Option<i32>) -> Result<usize, String> {
+    match max_results {
+        None | Some(0) => Ok(MAX_CLOUD_CONNECTOR_PAGE_SIZE as usize),
+        requested => super::page_size(
+            requested,
+            MIN_CLOUD_CONNECTOR_PAGE_SIZE,
+            MAX_CLOUD_CONNECTOR_PAGE_SIZE,
+        ),
+    }
+}
+
+/// Whether `token` is shaped like a `CloudConnectorId`, which is what a listing hands out as
+/// its `NextToken`: the hyphenated lowercase-hex UUID this store mints
+/// ([`new_cloud_connector_id`]), read by the one reader of that shape this crate has
+/// ([`super::is_activation_id`], which is that shape test and nothing more).
+pub fn is_cloud_connector_id(token: &str) -> bool {
+    super::is_activation_id(token)
 }
 
 /// One cloud connector, as the connector reads report it.
@@ -140,6 +217,74 @@ impl CloudConnectorRecord {
         }
         self.updated_at = now;
     }
+
+    /// The tenant this connector's configuration targets — `AzureConfiguration$TenantId`,
+    /// "The ID of the Azure tenant", which the configuration always carries because the
+    /// member is `@required`.
+    pub fn tenant_id(&self) -> &str {
+        match &self.configuration {
+            CloudConnectorConfiguration::AzureConfiguration(azure) => azure.tenant_id.as_str(),
+        }
+    }
+
+    /// The subscriptions this connector targets, in the order its configuration lists them.
+    ///
+    /// Empty for a TENANT-LEVEL connector: `AzureConfiguration$Targets` is optional ("The
+    /// target Azure subscriptions for the cloud connector"), so a configuration that names
+    /// none targets the tenant alone — which is what the `SubscriptionId` filter's `NONE`
+    /// asks for ([`TENANT_LEVEL_SUBSCRIPTION_FILTER_VALUE`]).
+    pub fn subscription_ids(&self) -> Vec<&str> {
+        match &self.configuration {
+            CloudConnectorConfiguration::AzureConfiguration(azure) => match &azure.targets {
+                Some(ConfigurationTargets::Subscriptions(subscriptions)) => subscriptions
+                    .iter()
+                    .map(|subscription| subscription.id.as_str())
+                    .collect(),
+                None => Vec::new(),
+            },
+        }
+    }
+
+    /// Whether this connector meets the filter `key` carrying `values`: the connector is
+    /// reported when ANY value of the filter names what the key filters on, so one filter is
+    /// one criterion however many values it carries.
+    ///
+    /// `TenantId` holds the value against the tenant the connector's configuration targets;
+    /// `SubscriptionId` holds it against the subscriptions it targets, with `NONE` asking
+    /// for the connectors that target none of them. A key outside the two the model declares
+    /// names no property of a connector, so nothing meets it — the boundary refuses such a
+    /// key before a listing reaches this.
+    pub fn matches_filter(&self, key: &str, values: &[String]) -> bool {
+        values.iter().any(|value| match key {
+            CLOUD_CONNECTOR_FILTER_KEY_TENANT_ID => self.tenant_id() == value.as_str(),
+            CLOUD_CONNECTOR_FILTER_KEY_SUBSCRIPTION_ID => {
+                let targeted = self.subscription_ids();
+                if value == TENANT_LEVEL_SUBSCRIPTION_FILTER_VALUE {
+                    targeted.is_empty()
+                } else {
+                    targeted.contains(&value.as_str())
+                }
+            }
+            _ => false,
+        })
+    }
+
+    /// This connector as a listing reports it: the `CloudConnectorSummary` members, each
+    /// read out of what the create persisted and the last update replaced.
+    ///
+    /// A summary is narrower than the single-connector read: it carries neither the ARN, the
+    /// Config connector ARN nor the configuration, which `CloudConnectorSummary` does not
+    /// declare.
+    pub fn to_summary(&self) -> CloudConnectorSummary {
+        CloudConnectorSummary {
+            cloud_connector_id: Some(self.id.clone()),
+            display_name: Some(self.display_name.clone()),
+            description: self.description.clone(),
+            role_arn: Some(self.role_arn.clone()),
+            created_at: Some(::aws_smithy_types::DateTime::from(self.created_at)),
+            updated_at: Some(::aws_smithy_types::DateTime::from(self.updated_at)),
+        }
+    }
 }
 
 impl super::ComAmazonawsSsmAmazonssmState {
@@ -164,5 +309,20 @@ impl super::ComAmazonawsSsmAmazonssmState {
     pub fn insert_cloud_connector(&mut self, record: CloudConnectorRecord) {
         let key = (record.region.clone(), record.id.clone());
         self.cloud_connectors.insert(key, record);
+    }
+
+    /// Every cloud connector `region` holds, in ascending connector-id order.
+    ///
+    /// The order is what makes a listing's resume cursor total: the token a page hands back
+    /// is the id of the connector the next page starts at, not an offset into a list that
+    /// may have grown or shrunk between two requests.
+    pub fn cloud_connectors_in_region<'a>(
+        &'a self,
+        region: &'a str,
+    ) -> impl Iterator<Item = &'a CloudConnectorRecord> + 'a {
+        self.cloud_connectors
+            .iter()
+            .filter(move |((held, _), _)| held == region)
+            .map(|(_, record)| record)
     }
 }

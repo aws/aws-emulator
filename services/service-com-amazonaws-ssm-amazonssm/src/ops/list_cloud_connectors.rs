@@ -1,15 +1,22 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op ListCloudConnectors
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `ListCloudConnectors`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
+//! Report the cloud connectors this account holds — the listing half of this service's
+//! cloud connector slice. This is the ONLY file to touch for this operation.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`ListCloudConnectors::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! Every summary is read out of the one store in [`crate::state::cloud_connectors`], so a
+//! listing reports exactly what `CreateCloudConnector` persisted and `UpdateCloudConnector`
+//! last replaced. Systems Manager is regional, so a listing reports the connectors held at
+//! the endpoint's Region, in ascending `CloudConnectorId` order
+//! ([`crate::state::ComAmazonawsSsmAmazonssmState::cloud_connectors_in_region`]). A read
+//! writes nothing, so what a later caller sees is unchanged by it.
+//!
+//! `Filters` narrows the listing to the connectors meeting EVERY filter the request
+//! carries, each held against the connector's own configuration
+//! ([`crate::state::cloud_connectors::CloudConnectorRecord::matches_filter`]), and
+//! `MaxResults` bounds the page
+//! ([`crate::state::cloud_connectors::cloud_connector_page_size`]); a connector left over
+//! past the page is reported through `NextToken`, the id the next page resumes at.
 //!
 //! ## Shape of an operation
 //!
@@ -142,18 +149,108 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `ListCloudConnectors` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(ListCloudConnectorsErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("ListCloudConnectors"))
+        use crate::state::cloud_connectors::{
+            cloud_connector_filter_value_missing, cloud_connector_page_size,
+            is_cloud_connector_filter_key, is_cloud_connector_id, CloudConnectorRecord,
+            CLOUD_CONNECTOR_FILTER_KEY_MISSING,
+        };
+        use crate::state::{invalid_filter_key_message, request_region, INVALID_NEXT_TOKEN};
+
+        // `MaxResults`'s range, the `Filters` list's length, each filter's
+        // `CloudConnectorFilterKey` and the length of the one value it carries are MODELLED
+        // constraints the centralized walk has already refused anything outside of. What is
+        // read here is which of this Region's connectors the request's criteria select.
+        let state = crate::state::service_state(&*self.engine).ok_or_else(|| {
+            ListCloudConnectorsErrorModeled::InternalServerError(InternalServerError {
+                message: Some("the cloud connector store is unavailable".to_string()),
+            })
+        })?;
+
+        // A filter narrows the listing by a property of a connector, so it has to name the
+        // key it filters on and a value to search for. BOTH members of a
+        // `CloudConnectorFilter` are optional in the model, so an entry carrying neither
+        // reaches here and names nothing the listing could be narrowed by.
+        let mut filters: Vec<(&str, &[String])> = Vec::new();
+        for filter in input.filters.as_deref().unwrap_or_default() {
+            let key = filter.filter_key.as_deref().unwrap_or_default();
+            if key.is_empty() {
+                return Err(crate::scaffolded::Scaffolded::validation(
+                    CLOUD_CONNECTOR_FILTER_KEY_MISSING,
+                ));
+            }
+            // A key outside the modelled enum names no property of a connector. That enum
+            // is enforced before this handler runs, so this is a backstop.
+            if !is_cloud_connector_filter_key(key) {
+                return Err(crate::scaffolded::Scaffolded::validation(
+                    invalid_filter_key_message(
+                        key,
+                        crate::ops::types::CLOUD_CONNECTOR_FILTER_KEY_VALUES,
+                    ),
+                ));
+            }
+            let values = filter.filter_values.as_deref().unwrap_or_default();
+            if values.is_empty() {
+                return Err(crate::scaffolded::Scaffolded::validation(
+                    cloud_connector_filter_value_missing(key),
+                ));
+            }
+            filters.push((key, values));
+        }
+
+        let page_size = cloud_connector_page_size(input.max_results)
+            .map_err(crate::scaffolded::Scaffolded::validation)?;
+
+        // The token a page hands out is the id of the connector the next page starts at, so
+        // a value no `CloudConnectorId` could take was not issued here. This operation
+        // models no `InvalidNextToken`, so a token this listing cannot resume from is
+        // refused as the invalid request it is rather than answered with an arbitrary page.
+        let resume_from = match input.next_token.as_deref() {
+            None | Some("") => None,
+            Some(token) if is_cloud_connector_id(token) => Some(token),
+            Some(_) => return Err(crate::scaffolded::Scaffolded::validation(INVALID_NEXT_TOKEN)),
+        };
+
+        // "Returns a list of cloud connectors in the current Amazon Web Services account and
+        // Amazon Web Services Region": the connectors held at the endpoint this request was
+        // signed for, narrowed to the ones meeting EVERY filter it carries.
+        let region = request_region(ctx.parts());
+        let store = state.lock();
+        let matching: Vec<&CloudConnectorRecord> = store
+            .cloud_connectors_in_region(&region)
+            .filter(|record| {
+                filters
+                    .iter()
+                    .all(|(key, values)| record.matches_filter(key, values))
+            })
+            .collect();
+
+        let start = match resume_from {
+            None => 0,
+            Some(token) => {
+                let Some(at) = matching.iter().position(|record| record.id == token) else {
+                    // The token is shaped like one of this store's ids but names no
+                    // connector this result holds, so it is not a page of this result to
+                    // resume.
+                    return Err(crate::scaffolded::Scaffolded::validation(INVALID_NEXT_TOKEN));
+                };
+                at
+            }
+        };
+        // `start` is a position in `matching`, so the page is a suffix of it; `get` keeps
+        // that in-bounds without indexing on a value the request steers.
+        let page: &[&CloudConnectorRecord] = matching.get(start..).unwrap_or_default();
+        let cloud_connectors = page
+            .iter()
+            .take(page_size)
+            .map(|record| record.to_summary())
+            .collect();
+        // A connector is still waiting past this page: hand the caller the id it resumes at,
+        // so the next request continues where this one stopped.
+        let next_token = page.get(page_size).map(|record| record.id.clone());
+
+        Ok(ListCloudConnectorsOutput {
+            cloud_connectors: Some(cloud_connectors),
+            next_token,
+        })
     }
 }
