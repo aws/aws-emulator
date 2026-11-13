@@ -40,7 +40,7 @@ const REGION: &str = "us-east-1";
 
 /// The service principal this service sends a configuration set's events as, as a role's
 /// trust policy names it.
-const SES_SERVICE_PRINCIPAL: &str = "ses.amazonaws.com";
+pub(crate) const SES_SERVICE_PRINCIPAL: &str = "ses.amazonaws.com";
 
 /// The delivery stream every row's destination names. The attach decides the ROLE; the
 /// stream itself is a resource of a service this suite does not mount, and
@@ -62,12 +62,12 @@ fn iam(ses: &Ses) -> ::aws_sdk_iam::Client {
 }
 
 /// A trust policy document carrying `statements`.
-fn trust(statements: Value) -> Value {
+pub(crate) fn trust(statements: Value) -> Value {
     json!({"Version": "2012-10-17", "Statement": statements})
 }
 
 /// One statement granting `service` the assume of the role.
-fn allow_assume(service: &str) -> Value {
+pub(crate) fn allow_assume(service: &str) -> Value {
     json!({
         "Effect": "Allow",
         "Principal": {"Service": service},
@@ -77,7 +77,7 @@ fn allow_assume(service: &str) -> Value {
 
 /// The role `name`, created through the IAM API with `document` as its trust policy.
 /// Answers the ARN IAM minted for it.
-async fn given_role(ses: &Ses, name: &str, document: &Value) -> String {
+pub(crate) async fn given_role(ses: &Ses, name: &str, document: &Value) -> String {
     let created = iam(ses)
         .create_role()
         .role_name(name)
@@ -97,7 +97,7 @@ async fn given_role(ses: &Ses, name: &str, document: &Value) -> String {
 }
 
 /// Convenience calls for the path these cases drive, over the shared harness.
-trait FirehoseEventDestinations {
+pub(crate) trait FirehoseEventDestinations {
     async fn given_set(&self, name: &str) -> Reply;
     async fn create_destination(&self, set: &str, name: &str, definition: Value) -> Reply;
     async fn update_destination(&self, set: &str, name: &str, definition: Value) -> Reply;
@@ -139,7 +139,7 @@ impl FirehoseEventDestinations for Ses {
 
 /// The definition a Firehose event destination sending its events under `role_arn`
 /// carries.
-fn firehose_definition(role_arn: &str) -> Value {
+pub(crate) fn firehose_definition(role_arn: &str) -> Value {
     json!({
         "Enabled": true,
         "MatchingEventTypes": ["SEND"],
@@ -152,7 +152,7 @@ fn firehose_definition(role_arn: &str) -> Value {
 
 /// The role ARN the destination `name` of `set` reports, or `None` when the set reports no
 /// destination under that name.
-async fn reported_role(ses: &Ses, set: &str, name: &str) -> Option<String> {
+pub(crate) async fn reported_role(ses: &Ses, set: &str, name: &str) -> Option<String> {
     let reply = ses.get_destinations(set).await;
     assert_eq!(
         reply.status,
@@ -181,7 +181,7 @@ async fn reported_role(ses: &Ses, set: &str, name: &str) -> Option<String> {
 /// The sentence a refused destination carries: SES's own fixed could-not-assume-role text,
 /// with the role the definition named taken from the request. Written out here, so the suite
 /// pins the wording rather than reading it back from the code under test.
-fn refusal(role_arn: &str) -> String {
+pub(crate) fn refusal(role_arn: &str) -> String {
     format!("Could not assume IAM role <{role_arn}>.")
 }
 

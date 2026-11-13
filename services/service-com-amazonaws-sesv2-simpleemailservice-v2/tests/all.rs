@@ -47,6 +47,8 @@ mod configuration_set_event_destinations;
 mod configuration_set_event_publication_surface;
 #[path = "all/configuration_set_firehose_destination_role.rs"]
 mod configuration_set_firehose_destination_role;
+#[path = "all/configuration_set_firehose_role_refusal_is_repeatable.rs"]
+mod configuration_set_firehose_role_refusal_is_repeatable;
 #[path = "all/configuration_set_listing.rs"]
 mod configuration_set_listing;
 #[path = "all/configuration_set_message_security.rs"]
