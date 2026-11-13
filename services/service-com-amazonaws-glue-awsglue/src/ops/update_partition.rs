@@ -244,7 +244,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // single update and each entry of the batch refuse the same entries for the
             // same reasons.
             Err(refusal) => {
-                let message = Some(refusal.message());
+                let message = Some(refusal.message(&input.partition_value_list));
                 Err(match refusal {
                     crate::state::PartitionUpdateRefusal::ValuesRequired
                     | crate::state::PartitionUpdateRefusal::ValuesCannotBeChanged => {

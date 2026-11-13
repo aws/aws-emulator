@@ -58,14 +58,26 @@ const OWED_TRANSITION_WINDOW: (Duration, Duration) =
 
 /// An emulator plus the engine it runs on, so a test can read and move the due instants the
 /// run lifecycle turns on instead of waiting for them.
+///
+/// Amazon S3 is mounted on the same engine because an evaluation run READS the objects
+/// behind the data source's table: the run reaches them over the emulator's own in-process
+/// callback, so the object [`store_table`] stages is the data its rules are checked against.
 fn emulator_with_engine() -> (MultiServiceRouter, Arc<engine::InMemoryEngine>) {
     let engine: Arc<engine::InMemoryEngine> = Arc::new(engine::InMemoryEngine::new());
-    (emulator_on(engine.clone()), engine)
+    let mut router = emulator_on(engine.clone());
+    router.register_service(service_com_amazonaws_s3_amazons3::EmulatedService::new(
+        Arc::clone(&engine),
+    ));
+    (router, engine)
 }
 
 /// Store `database` holding `table`, and answer nothing: the catalog state the starts below
 /// are resolved against. A database several rows share is created once — a repeat create is
 /// the catalog's `AlreadyExistsException`, which is not what these tests are about.
+///
+/// The table points at a prefix of this emulator's OWN Amazon S3 and one object is staged
+/// there, because a run evaluates its rules against the table's data: a table pointing at
+/// nothing readable is a run that evaluates nothing, which the refusal suites cover.
 async fn store_table(router: &MultiServiceRouter, database: &str, table: &str) {
     let (status, parsed) = call(
         router,
@@ -78,6 +90,7 @@ async fn store_table(router: &MultiServiceRouter, database: &str, table: &str) {
         "CreateDatabase must answer 200 or report the database is already stored, got {status} \
          with {parsed}"
     );
+    stage_table_data(router, table).await;
     ok(
         router,
         "CreateTable",
@@ -87,13 +100,35 @@ async fn store_table(router: &MultiServiceRouter, database: &str, table: &str) {
                 "Name": table,
                 "TableType": "EXTERNAL_TABLE",
                 "StorageDescriptor": {
-                    "Location": format!("s3://bucket/{}/", table.to_lowercase()),
+                    "Location": format!("s3://{DATA_BUCKET}/{}/", table.to_lowercase()),
                     "Columns": [{ "Name": "id", "Type": "string" }],
                 },
             },
         }),
     )
     .await;
+}
+
+/// The bucket every row's table points its data at.
+const DATA_BUCKET: &str = "dq-evaluation-data";
+
+/// Put one object under the prefix `table`'s storage descriptor names, creating the bucket
+/// the first time: one row carrying the one column those tables declare. The client is the
+/// shared harness's ([`crate::wire::s3_client`]).
+async fn stage_table_data(router: &MultiServiceRouter, table: &str) {
+    let client = crate::wire::s3_client(router);
+    // The bucket is shared by every row, so the create of an existing one is no failure.
+    let _ = client.create_bucket().bucket(DATA_BUCKET).send().await;
+    client
+        .put_object()
+        .bucket(DATA_BUCKET)
+        .key(format!("{}/rows.csv", table.to_lowercase()))
+        .body(aws_sdk_s3::primitives::ByteStream::from(
+            b"row-1\n".to_vec(),
+        ))
+        .send()
+        .await
+        .unwrap_or_else(|error| panic!("the data of {table} must be staged, got {error:?}"));
 }
 
 /// Store a data quality ruleset under `name`, so a start may evaluate it.

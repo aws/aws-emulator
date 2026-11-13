@@ -142,8 +142,9 @@ pub const COLUMN_STATISTICS_PERMIT_WAIT: Duration = Duration::from_secs(5);
 
 /// The permits [`MAX_CONCURRENT_COLUMN_STATISTICS_RUNS`] hands out, for the whole process:
 /// the bound is on how much data this emulator reads at once, whichever table or caller
-/// asked.
-static COLUMN_STATISTICS_RUN_PERMITS: ::tokio::sync::Semaphore =
+/// asked — so every read this service makes of a table's data takes one, the rows a data
+/// quality evaluation run reads included ([`super::table_rows`]).
+pub(super) static COLUMN_STATISTICS_RUN_PERMITS: ::tokio::sync::Semaphore =
     ::tokio::sync::Semaphore::const_new(MAX_CONCURRENT_COLUMN_STATISTICS_RUNS);
 
 /// The Hive field delimiter of a delimited-text table that states none.
@@ -215,7 +216,7 @@ pub struct TableDataLayout {
 
 impl TableDataLayout {
     /// The layout the stored `table` describes.
-    fn of(table: &TableEntry) -> Self {
+    pub(super) fn of(table: &TableEntry) -> Self {
         let descriptor = table.storage_descriptor.as_ref();
         let serde = descriptor.and_then(|descriptor| descriptor.serde_info.as_ref());
         let library = serde
@@ -504,7 +505,7 @@ impl WalkedData {
 /// before any object is fetched.
 ///
 /// `Err` is why the data could not be read, for the run's log.
-async fn list_objects(
+pub(super) async fn list_objects(
     client: &::aws_sdk_s3::Client,
     bucket: &str,
     prefix: &str,
@@ -565,7 +566,7 @@ async fn list_objects(
 /// The bytes of one object, bounded again by [`MAX_COLUMN_STATISTICS_OBJECT_BYTES`]: the
 /// read asks for at most that many plus the one byte that shows the object is past it, so
 /// the bound is enforced by the REQUEST and nothing larger is buffered.
-async fn read_object(
+pub(super) async fn read_object(
     client: &::aws_sdk_s3::Client,
     bucket: &str,
     key: &str,
@@ -616,30 +617,18 @@ async fn observe_object(
 
 /// Read the object as rows of delimited text, one field per declared column.
 ///
-/// The reading is the `csv` crate's, over the delimiter and the quoting the table's serde
-/// states: a Hive text table quotes nothing, so a quote there is an ordinary character,
-/// while the open-CSV layout reads its stated quote character. Rows are read FLEXIBLY — a
-/// row carrying fewer fields than the table declares columns leaves the rest holding no
-/// value, which is how a text-format reader resolves a missing cell.
+/// The reader and the header-line handling are the ONE delimited reading this service makes
+/// of a table's data ([`delimited_rows`]), so the per-column aggregation here and the
+/// row-shaped reading beside it ([`super::table_rows`]) cannot drift on the delimiter, the
+/// quoting or how many leading lines are a header.
 async fn observe_delimited(
     bytes: &[u8],
     layout: &TableDataLayout,
     accumulators: &mut [(PlannedColumn, ColumnStatisticsAccumulator)],
     walked: &mut WalkedData,
 ) -> Result<(), String> {
-    let mut reader = ::csv::ReaderBuilder::new()
-        .delimiter(layout.delimiter)
-        .has_headers(false)
-        .flexible(true)
-        .quoting(layout.quote.is_some())
-        .quote(layout.quote.unwrap_or(b'"'))
-        .from_reader(bytes);
-    for (index, record) in reader.records().enumerate() {
-        let record = record.map_err(|error| format!("a row could not be read: {error}"))?;
-        // The leading header lines of the object are not data.
-        if index < layout.header_lines {
-            continue;
-        }
+    for record in delimited_rows(bytes, layout) {
+        let record = record?;
         walked.walk_row(accumulators.len())?;
         for (column, accumulator) in accumulators.iter_mut() {
             accumulator.observe(cell_value(record.get(column.position), layout));
@@ -652,6 +641,35 @@ async fn observe_delimited(
         }
     }
     Ok(())
+}
+
+/// The DATA rows of one object of delimited text, in the order they are written: the leading
+/// header lines the layout declares are not data and are not among them.
+///
+/// The reading is the `csv` crate's, over the delimiter and the quoting the table's serde
+/// states: a Hive text table quotes nothing, so a quote there is an ordinary character,
+/// while the open-CSV layout reads its stated quote character. Rows are read FLEXIBLY — a
+/// row carrying fewer fields than the table declares columns leaves the rest holding no
+/// value, which is how a text-format reader resolves a missing cell. A row that could not be
+/// read is answered as the reason it could not, for the caller to report.
+pub(super) fn delimited_rows<'bytes>(
+    bytes: &'bytes [u8],
+    layout: &TableDataLayout,
+) -> impl Iterator<Item = Result<::csv::StringRecord, String>> + 'bytes {
+    let header_lines = layout.header_lines;
+    ::csv::ReaderBuilder::new()
+        .delimiter(layout.delimiter)
+        .has_headers(false)
+        .flexible(true)
+        .quoting(layout.quote.is_some())
+        .quote(layout.quote.unwrap_or(b'"'))
+        .from_reader(bytes)
+        .into_records()
+        .enumerate()
+        .filter(move |(index, _)| *index >= header_lines)
+        .map(|(_, record)| {
+            record.map_err(|error| format!("a row could not be read: {error}"))
+        })
 }
 
 /// Read the object as one JSON document per line, each member named by a column.
@@ -701,7 +719,7 @@ async fn observe_json_lines(
 /// The text a JSON member holds, or `None` for a member holding JSON's own null (and for a
 /// member holding a whole array or object, which is not a cell of a column that HAS
 /// column-level statistics).
-fn json_cell(value: &::serde_json::Value) -> Option<String> {
+pub(super) fn json_cell(value: &::serde_json::Value) -> Option<String> {
     match value {
         ::serde_json::Value::Null | ::serde_json::Value::Array(_) | ::serde_json::Value::Object(_) => None,
         ::serde_json::Value::String(text) => Some(text.clone()),
@@ -711,7 +729,7 @@ fn json_cell(value: &::serde_json::Value) -> Option<String> {
 
 /// One cell as the accumulators take it: `None` for a cell the row did not carry, and for
 /// one holding the layout's null marker.
-fn cell_value<'cell>(cell: Option<&'cell str>, layout: &TableDataLayout) -> Option<&'cell str> {
+pub(super) fn cell_value<'cell>(cell: Option<&'cell str>, layout: &TableDataLayout) -> Option<&'cell str> {
     cell.filter(|cell| *cell != layout.null_marker)
 }
 

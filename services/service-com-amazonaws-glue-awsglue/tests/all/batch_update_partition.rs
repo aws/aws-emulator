@@ -25,7 +25,7 @@
 
 use serde_json::{json, Value};
 use service_com_amazonaws_glue_awsglue::state::messages::{
-    PARTITION_NOT_FOUND, PARTITION_VALUES_CANNOT_BE_CHANGED, PARTITION_VALUES_REQUIRED,
+    PARTITION_VALUES_CANNOT_BE_CHANGED, PARTITION_VALUES_REQUIRED,
 };
 use smithy_server_runtime::MultiServiceRouter;
 
@@ -35,6 +35,14 @@ use crate::partitions::{
     without_instants, SETTABLE_MEMBERS,
 };
 use crate::wire::{assert_echoed, emulator, ok, ACCOUNT_ID, ERROR_DETAIL_TAG};
+
+/// The sentence an entry that addresses a value list the table holds no partition for is
+/// refused with, written here independently of the service so the suite pins the wording and
+/// not the code: fixed text around the values that entry addressed, which is NOT the sentence
+/// a partition READ answers for the same absent partition.
+fn update_miss(values: &[&str]) -> String {
+    format!("Partition [{}] not found", values.join(", "))
+}
 
 /// Submit one `BatchUpdatePartition` that must answer 200, and return its body.
 async fn batch_update(
@@ -331,7 +339,7 @@ struct FailureCase {
     /// The batch's `Entries`.
     entries: Vec<Value>,
     /// The `ErrorCode` and `ErrorMessage` of each `Errors` entry, in order.
-    expected: Vec<(&'static str, &'static str)>,
+    expected: Vec<(&'static str, String)>,
     /// The `PartitionValueList` of each `Errors` entry, in order.
     expected_values: Vec<Vec<&'static str>>,
     /// Value lists whose stored definition the batch must have left as the create wrote
@@ -388,7 +396,7 @@ async fn an_entry_that_cannot_be_applied_fails_only_itself() {
             );
             assert_eq!(
                 detail["ErrorMessage"].as_str(),
-                Some(*expected_message),
+                Some(expected_message.as_str()),
                 "case {case}: error {position} must carry ErrorMessage {expected_message:?}, \
                  got {failure}"
             );
@@ -445,7 +453,7 @@ fn failure_cases() -> Vec<FailureCase> {
                     "Parameters": generation("second")
                 }
             })],
-            expected: vec![("EntityNotFoundException", PARTITION_NOT_FOUND)],
+            expected: vec![("EntityNotFoundException", update_miss(&["2026-01-09"]))],
             expected_values: vec![vec!["2026-01-09"]],
             unchanged: vec![vec!["2026-01-01"]],
             applied: vec![],
@@ -458,7 +466,7 @@ fn failure_cases() -> Vec<FailureCase> {
                 "PartitionValueList": ["monday"],
                 "PartitionInput": { "Values": ["monday"], "Parameters": generation("second") }
             })],
-            expected: vec![("EntityNotFoundException", PARTITION_NOT_FOUND)],
+            expected: vec![("EntityNotFoundException", update_miss(&["monday"]))],
             expected_values: vec![vec!["monday"]],
             unchanged: vec![vec!["Monday"]],
             applied: vec![],
@@ -477,7 +485,10 @@ fn failure_cases() -> Vec<FailureCase> {
                     "Parameters": generation("second")
                 }
             })],
-            expected: vec![("InvalidInputException", PARTITION_VALUES_CANNOT_BE_CHANGED)],
+            expected: vec![(
+                "InvalidInputException",
+                PARTITION_VALUES_CANNOT_BE_CHANGED.to_string(),
+            )],
             expected_values: vec![vec!["2026-01-01"]],
             unchanged: vec![vec!["2026-01-01"], vec!["2026-01-02"]],
             applied: vec![],
@@ -490,7 +501,10 @@ fn failure_cases() -> Vec<FailureCase> {
                 "PartitionValueList": ["2026-01-01"],
                 "PartitionInput": { "Parameters": generation("second") }
             })],
-            expected: vec![("InvalidInputException", PARTITION_VALUES_REQUIRED)],
+            expected: vec![(
+                "InvalidInputException",
+                PARTITION_VALUES_REQUIRED.to_string(),
+            )],
             expected_values: vec![vec!["2026-01-01"]],
             unchanged: vec![vec!["2026-01-01"]],
             applied: vec![],
@@ -506,7 +520,10 @@ fn failure_cases() -> Vec<FailureCase> {
                     "Parameters": generation("second")
                 }
             })],
-            expected: vec![("EntityNotFoundException", PARTITION_NOT_FOUND)],
+            expected: vec![(
+                "EntityNotFoundException",
+                update_miss(&["2026-01-01", "us-east-1"]),
+            )],
             expected_values: vec![vec!["2026-01-01", "us-east-1"]],
             unchanged: vec![vec!["2026-01-01"]],
             applied: vec![],
@@ -556,8 +573,14 @@ fn failure_cases() -> Vec<FailureCase> {
                 }),
             ],
             expected: vec![
-                ("EntityNotFoundException", PARTITION_NOT_FOUND),
-                ("InvalidInputException", PARTITION_VALUES_REQUIRED),
+                (
+                    "EntityNotFoundException",
+                    update_miss(&["2026-01-09", "us-east-1"]),
+                ),
+                (
+                    "InvalidInputException",
+                    PARTITION_VALUES_REQUIRED.to_string(),
+                ),
             ],
             expected_values: vec![
                 vec!["2026-01-09", "us-east-1"],

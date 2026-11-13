@@ -327,7 +327,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // reports the columns it was started for — it just has no statistics to
             // generate for a column that is not there.
             let run = crate::state::ColumnStatisticsTaskRunEntry::start(
-                &input,
+                crate::state::ColumnStatisticsRunConfiguration::of_start_request(&input, table),
                 table,
                 &catalog_id,
                 run_id.clone(),

@@ -9,8 +9,10 @@
 //! The settings hang on the table they were created for
 //! ([`crate::state::TableEntry::column_statistics_task_settings`]), so a create for a
 //! table the addressed catalog does not hold is the operation's modelled
-//! `EntityNotFoundException`, and a second create for a table that already carries
-//! settings is its `AlreadyExistsException` rather than an overwrite — the update path is
+//! `EntityNotFoundException`, and a create for a table that already carries SCHEDULED
+//! settings is its `AlreadyExistsException` rather than an overwrite — a scheduled task is a
+//! standing record of that table's, which is the collision the recorded duplicate refusal is
+//! of, and the update path is
 //! `UpdateColumnStatisticsTaskSettings`'s. A statistics run of that table is performed BY
 //! this service acting as the settings' `Role`, so a role the account's own IAM answers
 //! that Glue cannot assume ([`crate::state::glue_role_is_unassumable`]) is refused with the
@@ -22,6 +24,17 @@
 //! `Schedule` is stored only when it is the cron expression the service documents;
 //! anything else is refused as invalid input, the same way every other operation that
 //! writes a schedule refuses it.
+//!
+//! A create that states NO `Schedule` also STARTS the first run those settings configure,
+//! recorded exactly as `StartColumnStatisticsTaskRun` records the one it is asked for
+//! ([`crate::state::ColumnStatisticsTaskRunEntry`]) and over the same configuration
+//! ([`crate::state::ColumnStatisticsRunConfiguration`]), so `GetColumnStatisticsTaskRuns`
+//! lists it in flight straight afterwards, a second create for that table meets the
+//! in-flight refusal above, and `StopColumnStatisticsTaskRun` has a run to end. A create
+//! that states a schedule starts none: the schedule is when its runs are due. So an
+//! on-demand create is accepted again once the run it started is no longer in flight,
+//! reconfiguring the generation and running it afresh, while a scheduled task stands until
+//! it is deleted.
 //!
 //! ## Shape of an operation
 //!
@@ -237,90 +250,175 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         }
 
         let now = ::std::time::SystemTime::now();
-        let mut store = state.lock();
-        // Everything the clock already owed the stored runs is materialised before they
-        // are consulted, so a run the clock has already finished does not block this
-        // create.
-        store.settle_due_column_statistics_task_runs(now);
+        // The whole decision is taken under ONE guard, in a scope of its own, so no guard is
+        // held across the read the run below performs. What leaves the scope is the run that
+        // create started, if it started one.
+        let started = {
+            let mut store = state.lock();
+            // Everything the clock already owed the stored runs is materialised before they
+            // are consulted, so a run the clock has already finished does not block this
+            // create.
+            store.settle_due_column_statistics_task_runs(now);
 
-        // "An exception thrown when you try to start another job while running a column
-        // stats generation job" (`ColumnStatisticsTaskRunningException`, which this
-        // operation models too): the settings of a table are the configuration its
-        // statistics runs use, so they are not rewritten under a run that is already
-        // generating statistics for that table. Read before the catalog is borrowed
-        // mutably, and answered AFTER the entity lookup below: a create addressed at no
-        // stored table is a miss, whatever is running.
-        let run_in_flight = store
-            .running_column_statistics_task_run(&catalog_id, &input.database_name, &input.table_name)
-            .is_some();
-
-        // `DatabaseName`, `TableName` and `Role` are `@required` with `length 1..255`, and
-        // `SampleSize`'s `range 0..100` is refused at the boundary — so reaching here, the
-        // only questions are whether the catalog holds that table, whether a statistics
-        // run of it is in flight and whether it already carries settings.
-        let Some(database) = store.database_mut(&catalog_id, &input.database_name) else {
-            return Err(not_found(crate::state::messages::database_not_found(
-                &input.database_name,
-            )));
-        };
-        let Some(table) = database
-            .tables
-            .get_mut(&crate::state::fold_name(&input.table_name))
-        else {
-            return Err(not_found(
-                crate::state::messages::COLUMN_STATISTICS_TASK_SETTINGS_TABLE_NOT_FOUND
-                    .to_string(),
-            ));
-        };
-        // Decided before anything is persisted, so a refused create leaves the table
-        // carrying exactly the settings it carried — none, if no create has succeeded for
-        // it.
-        if run_in_flight {
-            return Err(
-                CreateColumnStatisticsTaskSettingsErrorModeled::ColumnStatisticsTaskRunningException(
-                    ColumnStatisticsTaskRunningException {
-                        message: Some(
-                            crate::state::messages::COLUMN_STATISTICS_TASK_SETTINGS_RUN_ALREADY_STARTED
-                                .to_string(),
-                        ),
-                    },
+            // "An exception thrown when you try to start another job while running a column
+            // stats generation job" (`ColumnStatisticsTaskRunningException`, which this
+            // operation models too): the settings of a table are the configuration its
+            // statistics runs use, so they are not rewritten under a run that is already
+            // generating statistics for that table. Read before the catalog is borrowed
+            // mutably, and answered AFTER the entity lookup below: a create addressed at no
+            // stored table is a miss, whatever is running.
+            let run_in_flight = store
+                .running_column_statistics_task_run(
+                    &catalog_id,
+                    &input.database_name,
+                    &input.table_name,
                 )
-                .into(),
-            );
-        }
-        // One settings record per table: a second create for the same table is a
-        // duplicate, not an overwrite, so what is stored stays exactly as the first create
-        // left it.
-        if table.column_statistics_task_settings.is_some() {
-            return Err(
-                CreateColumnStatisticsTaskSettingsErrorModeled::AlreadyExistsException(
-                    AlreadyExistsException {
-                        // The refusal names the record that already exists — the catalog
-                        // holding it, and the database and table the settings were written
-                        // for — so a client can tell this duplicate from any other.
-                        message: Some(
-                            crate::state::messages::column_statistics_task_settings_already_exist(
-                                &catalog_id,
-                                &input.database_name,
-                                &input.table_name,
+                .is_some();
+
+            // `DatabaseName`, `TableName` and `Role` are `@required` with `length 1..255`,
+            // and `SampleSize`'s `range 0..100` is refused at the boundary — so reaching
+            // here, the only questions are whether the catalog holds that table, whether a
+            // statistics run of it is in flight and whether it already carries settings.
+            let Some(database) = store.database_mut(&catalog_id, &input.database_name) else {
+                return Err(not_found(crate::state::messages::database_not_found(
+                    &input.database_name,
+                )));
+            };
+            let Some(table) = database
+                .tables
+                .get_mut(&crate::state::fold_name(&input.table_name))
+            else {
+                return Err(not_found(
+                    crate::state::messages::COLUMN_STATISTICS_TASK_SETTINGS_TABLE_NOT_FOUND
+                        .to_string(),
+                ));
+            };
+            // Decided before anything is persisted, so a refused create leaves the table
+            // carrying exactly the settings it carried — none, if no create has succeeded
+            // for it.
+            if run_in_flight {
+                return Err(
+                    CreateColumnStatisticsTaskSettingsErrorModeled::ColumnStatisticsTaskRunningException(
+                        ColumnStatisticsTaskRunningException {
+                            message: Some(
+                                crate::state::messages::COLUMN_STATISTICS_TASK_SETTINGS_RUN_ALREADY_STARTED
+                                    .to_string(),
                             ),
-                        ),
-                    },
-                )
-                .into(),
-            );
-        }
+                        },
+                    )
+                    .into(),
+                );
+            }
+            // A SCHEDULED column statistics task is a standing record of the table's: while
+            // one stands, a create for that table is the duplicate it is and nothing stored
+            // is touched — the recorded `AlreadyExistsException` of a table whose settings
+            // carry a schedule
+            // ([`crate::state::messages::column_statistics_task_settings_already_exist`]).
+            // Settings carrying NO schedule are not a standing task but the configuration of
+            // the on-demand run their create started, and the recorded flow of such a table
+            // SERVES a later create once that run is no longer in flight — a create with a
+            // second role is refused while the first run is in flight and accepted after the
+            // run is stopped. So the two recordings together put the collision on the
+            // standing task, and the in-flight refusal above is the only state an on-demand
+            // create is refused in.
+            if table
+                .column_statistics_task_settings
+                .as_ref()
+                .is_some_and(|settings| settings.schedule_expression.is_some())
+            {
+                return Err(
+                    CreateColumnStatisticsTaskSettingsErrorModeled::AlreadyExistsException(
+                        AlreadyExistsException {
+                            // The refusal names the record that already exists — the catalog
+                            // holding it, and the database and table the settings were
+                            // written for — so a client can tell this duplicate from any
+                            // other.
+                            message: Some(
+                                crate::state::messages::column_statistics_task_settings_already_exist(
+                                    &catalog_id,
+                                    &input.database_name,
+                                    &input.table_name,
+                                ),
+                            ),
+                        },
+                    )
+                    .into(),
+                );
+            }
 
-        table.column_statistics_task_settings = Some(
-            crate::state::ColumnStatisticsTaskSettingsEntry::from_create_input(&input),
-        );
-        ::tracing::info!(
-            operation = "CreateColumnStatisticsTaskSettings",
-            catalog_id = %catalog_id,
-            database = %input.database_name,
-            table = %input.table_name,
-            "created the column statistics task settings of a Data Catalog table"
-        );
+            let settings =
+                crate::state::ColumnStatisticsTaskSettingsEntry::from_create_input(&input);
+            // A create with NO `Schedule` registers the configuration AND starts the first
+            // run it configures: the settings carry no schedule to run the generation on, so
+            // the generation they configure begins at once. A create that states a schedule
+            // starts none — that is what the schedule is for — so nothing is read for it
+            // either.
+            let started = settings.schedule_expression.is_none().then(|| {
+                let configuration =
+                    crate::state::ColumnStatisticsRunConfiguration::of_settings(&settings, table);
+                let plan = crate::state::ColumnStatisticsRunPlan::of(
+                    table,
+                    &configuration.column_name_list,
+                );
+                (plan, configuration)
+            });
+            table.column_statistics_task_settings = Some(settings);
+            ::tracing::info!(
+                operation = "CreateColumnStatisticsTaskSettings",
+                catalog_id = %catalog_id,
+                database = %input.database_name,
+                table = %input.table_name,
+                "created the column statistics task settings of a Data Catalog table"
+            );
+            started
+        };
+
+        // The run the create started is PERFORMED here, with no store guard held, exactly
+        // as `StartColumnStatisticsTaskRun` performs the one it is asked for: it reads the
+        // objects behind the table's location out of the emulator's own Amazon S3, and what
+        // it answered decides the status the clock owes the run. Nothing is published yet —
+        // the statistics land on the table when the run settles.
+        if let Some((plan, configuration)) = started {
+            let outcome = crate::state::compute_column_statistics(ctx, &region, &plan).await;
+            // The instants the run reports are stamped AFTER the reading, so the span the
+            // clock owes it starts when the run was recorded: a caller that reads the runs
+            // of this table straight after the create still observes it in flight.
+            let started_at = ::std::time::SystemTime::now();
+            let mut store = state.lock();
+            store.settle_due_column_statistics_task_runs(started_at);
+            // The catalog is re-read under the guard the run is recorded under: the table
+            // may have been dropped while its data was being read, and a run covers a table
+            // the catalog holds. The settings this create wrote are stored either way, so
+            // the create is served.
+            let run = store
+                .database(&catalog_id, &input.database_name)
+                .and_then(|database| {
+                    database
+                        .tables
+                        .get(&crate::state::fold_name(&input.table_name))
+                })
+                .map(|table| {
+                    crate::state::ColumnStatisticsTaskRunEntry::start(
+                        configuration,
+                        table,
+                        &catalog_id,
+                        crate::state::new_column_statistics_task_run_id(),
+                        started_at,
+                        outcome,
+                    )
+                });
+            if let Some(run) = run {
+                ::tracing::info!(
+                    operation = "CreateColumnStatisticsTaskSettings",
+                    catalog_id = %catalog_id,
+                    database = %input.database_name,
+                    table = %input.table_name,
+                    run = %run.id,
+                    "started the first column statistics task run of those settings"
+                );
+                store.record_column_statistics_task_run(run);
+            }
+        }
 
         Ok(CreateColumnStatisticsTaskSettingsOutput {})
     }

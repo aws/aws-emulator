@@ -399,11 +399,32 @@ async fn created_settings_are_read_back_through_get_column_statistics_task_setti
             "case {case:?}: settings created for one table are sourced from that table, got \
              {settings}"
         );
-        assert!(
-            settings.get("LastExecutionAttempt").is_none(),
-            "case {case:?}: no run has been started, so there is no execution attempt, got \
-             {settings}"
-        );
+        // A create that states a SCHEDULE starts no run — the schedule is when its runs
+        // are due — so the settings report no attempt yet; one that states none starts the
+        // first run it configures, which is the attempt the settings report.
+        match expected_schedule {
+            Some(_) => assert!(
+                settings.get("LastExecutionAttempt").is_none(),
+                "case {case:?}: a scheduled create starts no run, so there is no execution \
+                 attempt, got {settings}"
+            ),
+            None => {
+                let attempt = settings
+                    .get("LastExecutionAttempt")
+                    .unwrap_or_else(|| panic!(
+                        "case {case:?}: a create with no schedule starts the first run it \
+                         configures, which the settings report as the last attempt, got \
+                         {settings}"
+                    ));
+                assert!(
+                    attempt
+                        .get("ColumnStatisticsTaskRunId")
+                        .and_then(Value::as_str)
+                        .is_some_and(|id| !id.is_empty()),
+                    "case {case:?}: the attempt names the run the create started, got {attempt}"
+                );
+            }
+        }
 
         // The settings are addressed by the stored names, so either casing reaches them.
         let folded = get_settings(
@@ -484,8 +505,10 @@ async fn a_create_for_a_table_the_catalog_does_not_hold_is_refused() {
     );
 }
 
-/// A second create for a table that already carries settings is the modelled duplicate,
-/// and the stored settings stay exactly as the first create left them.
+/// A second create for a table that already carries SCHEDULED settings is the modelled
+/// duplicate, and the stored settings stay exactly as the first create left them: a
+/// scheduled column statistics task is a standing record of that table's, which a create
+/// does not replace.
 #[tokio::test]
 async fn a_second_create_for_the_same_table_is_refused_and_changes_nothing() {
     let router = emulator();
@@ -540,6 +563,113 @@ async fn a_second_create_for_the_same_table_is_refused_and_changes_nothing() {
             "case {case:?}: a refused create leaves the first create's settings in place, got \
              {settings}"
         );
+    }
+}
+
+/// Settings that carry NO schedule are the configuration of the on-demand run their create
+/// started, not a standing task: while that run is in flight a second create for the table
+/// is the modelled in-flight refusal, and once the run is no longer in flight the create is
+/// served, reconfiguring the generation and starting it afresh.
+///
+/// The rows differ along what the second create reconfigures: another role, another sample
+/// size, another column list, and a schedule — which turns the table's settings into the
+/// standing scheduled task the duplicate refusal above protects.
+#[tokio::test]
+async fn a_create_over_schedule_less_settings_waits_for_the_run_and_then_reconfigures() {
+    let (router, engine) = emulator_with_engine();
+    store_table(&router, "reconfig_db", "reconfig_table", &["a", "b"]).await;
+
+    // (case, what the second create states, what the read must report afterwards)
+    let rows: Vec<(&str, Value, &str, Value)> = vec![
+        (
+            "another sample size",
+            json!({ "SampleSize": 40.0 }),
+            "SampleSize",
+            json!(40.0),
+        ),
+        (
+            "another column list",
+            json!({ "ColumnNameList": ["b"] }),
+            "ColumnNameList",
+            json!(["b"]),
+        ),
+        (
+            "a schedule, which makes it a standing task",
+            json!({ "Schedule": DAILY_SCHEDULE }),
+            "ScheduleType",
+            json!(COLUMN_STATISTICS_SCHEDULE_TYPE_CRON),
+        ),
+    ];
+
+    for (case, extra, member, expected) in rows {
+        // The create with no schedule starts a run, so the next create meets the in-flight
+        // refusal rather than a duplicate one.
+        ok(
+            &router,
+            "CreateColumnStatisticsTaskSettings",
+            &create_body("reconfig_db", "reconfig_table", json!({})),
+        )
+        .await;
+        let (status, parsed) = call(
+            &router,
+            "CreateColumnStatisticsTaskSettings",
+            &create_body("reconfig_db", "reconfig_table", extra.clone()),
+        )
+        .await;
+        assert_eq!(
+            status, 400,
+            "case {case:?}: a create under the run the first one started is refused, got \
+             {status} with {parsed}"
+        );
+        assert!(
+            error_code(&parsed).ends_with("ColumnStatisticsTaskRunningException"),
+            "case {case:?}: expected ColumnStatisticsTaskRunningException, got {}",
+            error_code(&parsed)
+        );
+
+        // Once the clock has finished that run, the same create is served and what it
+        // states is what the read reports.
+        set_due_instant(&engine, already_past());
+        ok(
+            &router,
+            "CreateColumnStatisticsTaskSettings",
+            &create_body("reconfig_db", "reconfig_table", extra),
+        )
+        .await;
+        let settings = get_settings(&router, &read_body("reconfig_db", "reconfig_table")).await;
+        assert_eq!(
+            settings.get(member),
+            Some(&expected),
+            "case {case:?}: the served create reconfigured {member}, got {settings}"
+        );
+
+        // A scheduled record is a standing task: the next create for the table is the
+        // duplicate refusal, so the row that wrote one deletes it before the next row runs.
+        if member == "ScheduleType" {
+            let (status, parsed) = call(
+                &router,
+                "CreateColumnStatisticsTaskSettings",
+                &create_body("reconfig_db", "reconfig_table", json!({})),
+            )
+            .await;
+            assert_eq!(
+                status, 400,
+                "case {case:?}: a create over a standing scheduled task is refused, got \
+                 {status} with {parsed}"
+            );
+            assert!(
+                error_code(&parsed).ends_with("AlreadyExistsException"),
+                "case {case:?}: expected AlreadyExistsException, got {}",
+                error_code(&parsed)
+            );
+        }
+        ok(
+            &router,
+            "DeleteColumnStatisticsTaskSettings",
+            &read_body("reconfig_db", "reconfig_table"),
+        )
+        .await;
+        set_due_instant(&engine, already_past());
     }
 }
 
@@ -663,10 +793,16 @@ async fn the_read_reports_the_last_run_of_that_table_as_the_execution_attempt() 
     let (router, engine) = emulator_with_engine();
     store_table(&router, "attempt_db", "attempt_table", &["a", "b"]).await;
     store_table(&router, "attempt_db", "other_table", &["a"]).await;
+    // The settings are created WITH a schedule, so the create starts no run of its own and
+    // the attempt below is the one the explicit start makes.
     ok(
         &router,
         "CreateColumnStatisticsTaskSettings",
-        &create_body("attempt_db", "attempt_table", json!({})),
+        &create_body(
+            "attempt_db",
+            "attempt_table",
+            json!({ "Schedule": DAILY_SCHEDULE }),
+        ),
     )
     .await;
 
@@ -777,8 +913,10 @@ async fn the_read_reports_the_last_run_of_that_table_as_the_execution_attempt() 
     );
 }
 
-/// A read for a table that carries no settings, and for a table the catalog does not hold,
-/// is the modelled miss rather than an empty answer.
+/// A read for a table that carries no settings, for a table the catalog does not hold and
+/// for a database it does not hold is the modelled miss rather than an empty answer — and
+/// every one of them is the SAME fixed sentence, which names neither of the two names the
+/// request addressed the entry by.
 #[tokio::test]
 async fn a_read_without_stored_settings_is_the_modelled_miss() {
     let router = emulator();
@@ -789,6 +927,14 @@ async fn a_read_without_stored_settings_is_the_modelled_miss() {
         ("a table that carries no settings", read_body("read_db", "read_table")),
         ("a table the database does not hold", read_body("read_db", "no_such_table")),
         ("a database the catalog does not hold", read_body("no_such_db", "read_table")),
+        (
+            "the shortest names the model admits",
+            read_body("d", "t"),
+        ),
+        (
+            "the longest names the model admits",
+            read_body(&"d".repeat(255), &"t".repeat(255)),
+        ),
     ] {
         let (status, parsed) = call(&router, "GetColumnStatisticsTaskSettings", &body).await;
         assert_eq!(
@@ -799,6 +945,12 @@ async fn a_read_without_stored_settings_is_the_modelled_miss() {
             error_code(&parsed).ends_with("EntityNotFoundException"),
             "case {case:?}: expected EntityNotFoundException, got {}",
             error_code(&parsed)
+        );
+        assert_eq!(
+            error_message(&parsed),
+            READ_SETTINGS_MISS_MESSAGE,
+            "case {case:?}: expected the fixed settings-miss sentence, got {:?}",
+            error_message(&parsed)
         );
     }
 }

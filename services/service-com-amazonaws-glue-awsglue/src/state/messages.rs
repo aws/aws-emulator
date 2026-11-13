@@ -1302,12 +1302,55 @@ pub fn data_quality_ruleset_evaluation_run_not_found(run_id: &str) -> String {
     format!("Data quality ruleset evaluation run with id {run_id} does not exist")
 }
 
+/// A data quality RESULT lookup (`GetDataQualityResult`) for an id no result in this
+/// account has. NOT recorded: the sentence follows the per-resource template of
+/// [`data_quality_ruleset_evaluation_run_not_found`], built from the requested id,
+/// which is the whole address of a result.
+pub fn data_quality_result_not_found(result_id: &str) -> String {
+    format!("Data quality result with id {result_id} does not exist")
+}
+
 /// A data quality run start whose `DataSource` carries neither kind of Glue table. NOT
 /// recorded: what is pinned is the behaviour — 400 with the operation's modelled
 /// `InvalidInputException` — and the sentence names the members the input has to carry
 /// one of, the way [`PARTITION_VALUES_REQUIRED`] names its member.
 pub const DATA_SOURCE_REQUIRES_A_TABLE: &str =
     "DataSource must specify either a GlueTable or a DataQualityGlueTable.";
+
+/// `DataQualityRulesetEvaluationRun$ErrorString` of a run whose data source could not be
+/// read, so none of its rules was evaluated against any data.
+///
+/// NOT recorded: AWS evaluates the rules against the objects behind the table, so a run
+/// whose data this emulator could not read reports that nothing was evaluated rather than a
+/// score nothing computed. Whole fixed text — the table it is about is the data source the
+/// run was started for, which the run already reports; WHY the data could not be read is
+/// logged against the run.
+pub fn data_quality_data_source_unreadable() -> String {
+    "The data source of this run could not be read, so no rule was evaluated.".to_string()
+}
+
+/// `DataQualityRulesetEvaluationRun$ErrorString` of a run carrying a rule whose truth could
+/// not be decided from the data source's rows.
+///
+/// NOT recorded, and the same choice [`data_quality_data_source_unreadable`] makes: a rule
+/// nothing evaluated is reported as evaluated by nothing rather than as a pass or a fail.
+/// The variable part is the rule, as its author wrote it, so a client can tell which rule of
+/// its ruleset was not evaluated.
+pub fn data_quality_rule_not_evaluated(rule: &str) -> String {
+    format!("The rule {rule} was not evaluated, so this run produced no result.")
+}
+
+/// `DataQualityRulesetEvaluationRun$ErrorString` of a run whose rules over its rows were
+/// more than one run carries out ([`super::MAX_DATA_QUALITY_RULE_CHECKS`]).
+///
+/// NOT recorded, and the same choice the two reasons above make: the run reports that it
+/// evaluated nothing rather than a score over part of its rules. Whole fixed text — the
+/// bound is this emulator's own capacity and no figure of the request.
+pub fn data_quality_too_much_to_evaluate() -> String {
+    "This run had more rules and rows to evaluate than one run evaluates, so it produced no \
+     result."
+        .to_string()
+}
 
 /// A data quality ruleset lookup for a name this account holds no ruleset under — the
 /// miss of every operation that addresses one by `Name` (`GetDataQualityRuleset`, and
@@ -1368,12 +1411,25 @@ pub const PARTITION_VALUES_CANNOT_BE_CHANGED: &str =
          property can't be changed.";
 
 /// A partition read (`GetPartition`) for a value list the addressed table holds no
-/// partition for, an update (`UpdatePartition`, one entry of `BatchUpdatePartition`)
-/// of such a value list, which has no partition to write to either, and a delete (one
-/// item of `BatchDeletePartition`) of one, which has none to remove. RECORDED
+/// partition for, and a delete (one item of `BatchDeletePartition`) of one, which has
+/// none to remove. RECORDED
 /// constant: the whole sentence is fixed — it names neither the values the request
 /// addressed nor the table they were looked for in.
 pub const PARTITION_NOT_FOUND: &str = "Cannot find partition.";
+
+/// A partition UPDATE (`UpdatePartition`, one entry of `BatchUpdatePartition`) of a value
+/// list the addressed table holds no partition for, so there is nothing to write to.
+///
+/// RECORDED template, and a DIFFERENT sentence from the read's
+/// ([`PARTITION_NOT_FOUND`]): the mutation names the partition it could not find, while the
+/// read names none. The fixed parts are `Partition [` and `] not found` — no trailing full
+/// stop — around the values the request addressed the partition by, in the order it listed
+/// them. What is RECORDED is the single-value form (`Partition [2023] not found`); the
+/// separator between two of them is CHOSEN, the one a list of values is written with, and is
+/// the only part of this template no recording fixes.
+pub fn partition_to_update_not_found(values: &[String]) -> String {
+    format!("Partition [{}] not found", values.join(", "))
+}
 
 /// A partition-metadata read of the Lake Formation application-integration surface
 /// (`GetUnfilteredPartitionMetadata`, `GetUnfilteredPartitionsMetadata`) made with

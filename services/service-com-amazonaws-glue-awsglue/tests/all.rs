@@ -137,6 +137,8 @@ mod data_catalog_encryption_settings;
 mod data_catalog_export_configuration;
 #[path = "all/data_quality_rule_recommendation_runs.rs"]
 mod data_quality_rule_recommendation_runs;
+#[path = "all/data_quality_results.rs"]
+mod data_quality_results;
 #[path = "all/data_quality_ruleset_deletion.rs"]
 mod data_quality_ruleset_deletion;
 #[path = "all/data_quality_ruleset_evaluation_runs.rs"]

@@ -235,7 +235,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     // client can tell which of its entries failed. Reported exactly as
                     // sent.
                     partition_value_list: Some(entry.partition_value_list.clone()),
-                    error_detail: Some(refusal.to_error_detail()),
+                    error_detail: Some(refusal.to_error_detail(&entry.partition_value_list)),
                 }),
             }
         }

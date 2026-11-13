@@ -361,6 +361,14 @@ async fn an_explicit_catalog_id_addresses_the_default_catalog() {
 // Refusals
 // ---------------------------------------------------------------------------
 
+/// The sentence an update of a value list the table holds no partition for is refused with,
+/// written here independently of the service so the suite pins the wording and not the code:
+/// fixed text around the values the request addressed, which is NOT the sentence a partition
+/// READ answers for the same absent partition.
+fn update_miss(values: &[&str]) -> String {
+    format!("Partition [{}] not found", values.join(", "))
+}
+
 /// One row of the refusal table.
 struct RefusalCase {
     case: &'static str,
@@ -374,7 +382,7 @@ struct RefusalCase {
     /// The `PartitionInput` the refused update submits.
     input: Value,
     /// The error code and `Message` the refusal must carry.
-    expected: (&'static str, &'static str),
+    expected: (&'static str, String),
     /// Value lists whose stored definition the refused update must have left alone.
     unchanged: Vec<Vec<&'static str>>,
 }
@@ -403,7 +411,7 @@ async fn an_update_the_catalog_cannot_apply_is_refused_and_stores_nothing() {
             created["Errors"]
         );
 
-        let (expected_code, expected_message) = row.expected;
+        let (expected_code, expected_message) = &row.expected;
         assert_refusal(
             &router,
             case,
@@ -435,7 +443,7 @@ fn refusal_cases() -> Vec<RefusalCase> {
             created: vec![json!({ "Values": ["2026-01-01"], "Parameters": generation("first") })],
             values: vec!["2026-01-09"],
             input: json!({ "Values": ["2026-01-09"], "Parameters": generation("second") }),
-            expected: ("EntityNotFoundException", PARTITION_NOT_FOUND),
+            expected: ("EntityNotFoundException", update_miss(&["2026-01-09"])),
             unchanged: vec![vec!["2026-01-01"]],
         },
         RefusalCase {
@@ -444,7 +452,7 @@ fn refusal_cases() -> Vec<RefusalCase> {
             created: vec![json!({ "Values": ["Monday"], "Parameters": generation("first") })],
             values: vec!["monday"],
             input: json!({ "Values": ["monday"], "Parameters": generation("second") }),
-            expected: ("EntityNotFoundException", PARTITION_NOT_FOUND),
+            expected: ("EntityNotFoundException", update_miss(&["monday"])),
             unchanged: vec![vec!["Monday"]],
         },
         RefusalCase {
@@ -456,7 +464,10 @@ fn refusal_cases() -> Vec<RefusalCase> {
             ],
             values: vec!["2026-01-01"],
             input: json!({ "Values": ["2026-01-02"], "Parameters": generation("second") }),
-            expected: ("InvalidInputException", PARTITION_VALUES_CANNOT_BE_CHANGED),
+            expected: (
+                "InvalidInputException",
+                PARTITION_VALUES_CANNOT_BE_CHANGED.to_string(),
+            ),
             unchanged: vec![vec!["2026-01-01"], vec!["2026-01-02"]],
         },
         RefusalCase {
@@ -465,7 +476,7 @@ fn refusal_cases() -> Vec<RefusalCase> {
             created: vec![json!({ "Values": ["2026-01-01"], "Parameters": generation("first") })],
             values: vec!["2026-01-01"],
             input: json!({ "Parameters": generation("second") }),
-            expected: ("InvalidInputException", PARTITION_VALUES_REQUIRED),
+            expected: ("InvalidInputException", PARTITION_VALUES_REQUIRED.to_string()),
             unchanged: vec![vec!["2026-01-01"]],
         },
         RefusalCase {
@@ -477,7 +488,10 @@ fn refusal_cases() -> Vec<RefusalCase> {
                 "Values": ["2026-01-01", "us-east-1"],
                 "Parameters": generation("second")
             }),
-            expected: ("EntityNotFoundException", PARTITION_NOT_FOUND),
+            expected: (
+                "EntityNotFoundException",
+                update_miss(&["2026-01-01", "us-east-1"]),
+            ),
             unchanged: vec![vec!["2026-01-01"]],
         },
         RefusalCase {
@@ -489,7 +503,7 @@ fn refusal_cases() -> Vec<RefusalCase> {
             })],
             values: vec!["2026-01-01"],
             input: json!({ "Values": ["2026-01-01"], "Parameters": generation("second") }),
-            expected: ("EntityNotFoundException", PARTITION_NOT_FOUND),
+            expected: ("EntityNotFoundException", update_miss(&["2026-01-01"])),
             unchanged: vec![vec!["2026-01-01", "us-east-1"]],
         },
     ]
@@ -545,6 +559,100 @@ async fn an_update_naming_no_stored_table_is_refused() {
             expected_message,
         )
         .await;
+    }
+}
+
+/// The refusal of a MUTATION of an absent partition names the partition it could not find,
+/// while the READ of that same absent partition names none: the two sentences are each
+/// operation's own and stay distinct, whatever values address the partition — and the entry
+/// of a BATCH update is refused in the mutation's wording too, because it is the same
+/// mutation.
+///
+/// The rows differ along how many values address the partition and what a value holds: one
+/// value, two, three, a value carrying a space, and a value carrying the separator the
+/// sentence lists values with.
+#[tokio::test]
+async fn the_update_miss_names_the_partition_while_the_read_miss_does_not() {
+    let router = emulator();
+
+    // (case, the partition keys the table declares, the values nothing was created under)
+    let rows: Vec<(&str, Vec<&str>, Vec<&str>)> = vec![
+        ("one value", vec!["dt"], vec!["2023"]),
+        ("two values", vec!["dt", "region"], vec!["2023", "us-east-1"]),
+        (
+            "three values",
+            vec!["dt", "region", "tier"],
+            vec!["2023", "us-east-1", "gold"],
+        ),
+        ("a value carrying a space", vec!["dt"], vec!["last quarter"]),
+        (
+            "a value carrying the separator the sentence lists values with",
+            vec!["dt", "region"],
+            vec!["a, b", "us-east-1"],
+        ),
+    ];
+
+    for (index, (case, keys, values)) in rows.iter().enumerate() {
+        let database = format!("distinct_db_{index}");
+        let table = format!("distinct_table_{index}");
+        seed_table(&router, &database, &table, keys).await;
+
+        // The mutation names the partition it could not find.
+        assert_refusal(
+            &router,
+            case,
+            "UpdatePartition",
+            &update_body(
+                &database,
+                &table,
+                values,
+                &json!({ "Values": values, "Parameters": generation("second") }),
+            ),
+            "EntityNotFoundException",
+            &update_miss(values),
+        )
+        .await;
+
+        // The read of the same absent partition does not.
+        assert_refusal(
+            &router,
+            case,
+            "GetPartition",
+            &json!({
+                "DatabaseName": &database,
+                "TableName": &table,
+                "PartitionValues": values,
+            }),
+            "EntityNotFoundException",
+            PARTITION_NOT_FOUND,
+        )
+        .await;
+        assert_ne!(
+            update_miss(values),
+            PARTITION_NOT_FOUND,
+            "case {case}: the mutation's sentence must not be the read's"
+        );
+
+        // One entry of a batch update is the same mutation, refused in the same wording.
+        let batch = ok(
+            &router,
+            "BatchUpdatePartition",
+            &json!({
+                "DatabaseName": &database,
+                "TableName": &table,
+                "Entries": [{
+                    "PartitionValueList": values,
+                    "PartitionInput": { "Values": values },
+                }],
+            }),
+        )
+        .await;
+        assert_eq!(
+            batch["Errors"][0]["ErrorDetail"]["ErrorMessage"].as_str(),
+            Some(update_miss(values).as_str()),
+            "case {case}: an entry of a batch update is refused in the mutation's wording, got \
+             {batch}"
+        );
     }
 }
 

@@ -25,27 +25,34 @@
 //! ([`crate::column_statistics_task_settings`]): one copy drives both suites, so what this
 //! one deletes is exactly what that one creates and reads.
 
+use std::sync::Arc;
+
 use serde_json::{json, Value};
 use smithy_server_runtime::MultiServiceRouter;
 
+// The run lifecycle's clock helper lives with the suite that owns that lifecycle: a create
+// stating no schedule starts a run, and a test that wants the table idle again moves that
+// run's due instant rather than sleeping for it.
+use crate::column_statistics_task_runs::{already_past, set_due_instant};
 use crate::column_statistics_task_settings::{
     create_body, get_settings, read_body, store_table, DAILY_SCHEDULE,
 };
-use crate::wire::{call, emulator, error_code, error_message, ok, ACCOUNT_ID};
+use crate::wire::{call, emulator, emulator_on, error_code, error_message, ok, ACCOUNT_ID};
+
+/// An emulator plus the engine it runs on, so a test can settle the run a create started
+/// instead of waiting for it.
+fn emulator_with_engine() -> (MultiServiceRouter, Arc<engine::InMemoryEngine>) {
+    let engine: Arc<engine::InMemoryEngine> = Arc::new(engine::InMemoryEngine::new());
+    (emulator_on(engine.clone()), engine)
+}
 
 /// The sentence a request that finds no settings entry under the names it addressed is
 /// refused with: fixed text naming the two members the entry is addressed by, with no value
 /// read off the request. The same sentence the read answers with, because it is the same
-/// entry, addressed the same way.
+/// entry, addressed the same way — and the same one for every way the address can miss, the
+/// pair that names no stored table included.
 const SETTINGS_MISS_MESSAGE: &str =
     "ColumnStatisticsTaskSettings entry for input DatabaseName and TableName does not exist";
-
-/// The sentence a request naming a database the catalog does not hold is refused with:
-/// its own wording, carrying the requested database name, so a client can still tell which
-/// half of the address was wrong.
-fn database_miss_message(database: &str) -> String {
-    format!("Database {database} not found.")
-}
 
 /// The delete body addressing one entry, plus whatever `extra` adds (a `CatalogID`).
 fn delete_body(database: &str, table: &str, extra: Value) -> Value {
@@ -154,7 +161,7 @@ struct DeletionCase<'a> {
 /// rather than marking it unusable.
 #[tokio::test]
 async fn a_delete_removes_the_entry_a_create_wrote() {
-    let router = emulator();
+    let (router, engine) = emulator_with_engine();
 
     let cases: Vec<DeletionCase<'_>> = vec![
         DeletionCase {
@@ -310,7 +317,10 @@ async fn a_delete_removes_the_entry_a_create_wrote() {
         assert_delete_is_miss(&router, case, &body, SETTINGS_MISS_MESSAGE).await;
 
         // The table itself survived the delete: it still takes a create of its settings,
-        // and the read reports what that second create stated.
+        // and the read reports what that second create stated. A create stating no schedule
+        // starts a run, and a table with a run in flight takes no create — so the run the
+        // first create started is settled first, which is what the clock owed it anyway.
+        set_due_instant(&engine, already_past());
         ok(
             &router,
             "CreateColumnStatisticsTaskSettings",
@@ -413,10 +423,16 @@ async fn a_delete_leaves_every_other_entry_and_the_table_itself_in_place() {
 async fn a_delete_leaves_the_statistics_runs_of_that_table_in_place() {
     let router = emulator();
     store_table(&router, "history_db", "history_table", &["a", "b"]).await;
+    // The settings state a SCHEDULE, so the create starts no run of its own and the one run
+    // below is the whole history this delete must leave in place.
     ok(
         &router,
         "CreateColumnStatisticsTaskSettings",
-        &create_body("history_db", "history_table", json!({})),
+        &create_body(
+            "history_db",
+            "history_table",
+            json!({ "Schedule": DAILY_SCHEDULE }),
+        ),
     )
     .await;
     let started = ok(
@@ -466,9 +482,8 @@ async fn a_delete_leaves_the_statistics_runs_of_that_table_in_place() {
 // ---------------------------------------------------------------------------
 
 /// A delete that finds no entry under the names it addressed removes nothing and is refused
-/// with the modelled miss — in the settings entry's own fixed sentence, which withholds the
-/// requested table name, except for a database the catalog does not hold, which keeps its
-/// own wording so the two halves of the address stay distinguishable.
+/// with the modelled miss — in the settings entry's own fixed sentence, which withholds both
+/// names the request addressed the entry by, whichever half of that address missed.
 #[tokio::test]
 async fn a_delete_with_no_entry_to_remove_is_the_modelled_miss() {
     let router = emulator();
@@ -522,12 +537,12 @@ async fn a_delete_with_no_entry_to_remove_is_the_modelled_miss() {
         (
             "a catalog of another account",
             delete_body("miss_db", "kept_table", json!({ "CatalogID": "210987654321" })),
-            database_miss_message("miss_db"),
+            SETTINGS_MISS_MESSAGE.to_string(),
         ),
         (
             "a database the catalog does not hold",
             delete_body("no_such_db", "kept_table", json!({})),
-            database_miss_message("no_such_db"),
+            SETTINGS_MISS_MESSAGE.to_string(),
         ),
     ];
 

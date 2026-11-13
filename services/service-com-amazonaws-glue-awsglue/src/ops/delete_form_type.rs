@@ -11,14 +11,14 @@
 //!
 //! Two things this delete does:
 //!
-//! * It HOLDS UP the delete of a form type an ASSET still uses: "a form type cannot be
-//!   deleted if it is still referenced by an asset type", so a request made while an asset
-//!   carries a form of that type is refused with the operation's modelled
-//!   `ConflictException` and the form type stays exactly where it was
-//!   ([`crate::state::ComAmazonawsGlueAwsglueState::asset_types_using_form_type`], whose
-//!   doc carries the evidence for what makes the reference LIVE). An asset TYPE that merely
-//!   declares the form type among its forms does not hold the delete up, so the delete of a
-//!   form type no asset uses removes it as asked and leaves that declaration standing.
+//! * It HOLDS UP the delete of a form type an ASSET TYPE still references: "a form type
+//!   cannot be deleted if it is still referenced by an asset type", so a request made while
+//!   an asset type declares a form of that type — or while an asset carries one — is refused
+//!   with the operation's modelled `ConflictException` and the form type stays exactly where
+//!   it was ([`crate::state::ComAmazonawsGlueAwsglueState::asset_types_using_form_type`],
+//!   whose doc carries what counts as a reference). The guard is a live reference check
+//!   rather than a permanent lock: once the referencing records are gone, the identical
+//!   request removes the form type as asked.
 //! * It reports no miss. `GetFormType` models `EntityNotFoundException` and this operation
 //!   does not model it at all, so an identifier this account holds no form type under is
 //!   answered as the delete of something already absent: the caller asked for the state the
@@ -174,11 +174,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         let mut store = state.lock();
 
-        // An ASSET that still carries a form of this form type HOLDS THE DELETE UP: "a form
+        // An ASSET TYPE that still references this form type HOLDS THE DELETE UP: "a form
         // type cannot be deleted if it is still referenced by an asset type"
         // (`DeleteFormType`), so the request is refused and nothing is removed. Every
-        // dependency that holds it up is named, each by the asset type the using asset is an
-        // instance of. An asset type that only DECLARES the form type is no live use of it.
+        // dependency that holds it up is named, each by the asset type that references the
+        // form type — whether through its own declaration or through an asset of that type.
         let referencing = store.asset_types_using_form_type(&input.identifier);
         if !referencing.is_empty() {
             let form_type = store

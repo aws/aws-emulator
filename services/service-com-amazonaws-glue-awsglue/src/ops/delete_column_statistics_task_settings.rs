@@ -12,7 +12,10 @@
 //! finds no entry under them — a database the catalog does not hold, a table the database
 //! does not hold, or a stored table no create has written settings for — is the operation's
 //! modelled `EntityNotFoundException` and removes nothing, rather than a success that
-//! deleted nothing.
+//! deleted nothing. Every one of those addresses is the SAME miss in the same fixed wording
+//! ([`crate::state::messages::COLUMN_STATISTICS_TASK_SETTINGS_NOT_FOUND`]), the one the read
+//! answers too: the refusal is about the settings entry the pair addresses, so it names
+//! neither of the two names that addressed it.
 //!
 //! This operation models no access error, so a `CatalogID` of another account is simply a
 //! catalog this emulator holds nothing in: the delete reports the modelled miss rather than
@@ -167,15 +170,17 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let mut store = state.lock();
 
         // `DatabaseName` and `TableName` are `@required` with `length 1..255`, so reaching
-        // here the only question is what the addressed catalog holds under them.
+        // here the only question is what the addressed catalog holds under them. The entry
+        // this delete addresses is the settings of the PAIR it names, so every address the
+        // catalog holds no entry under — a database it does not hold, a table that database
+        // does not hold, or a stored table no create has written settings for — is the one
+        // miss, in the one fixed wording: the refusal is about the settings entry, so it
+        // names neither the database nor the table.
         let Some(database) = store.database_mut(&catalog_id, &input.database_name) else {
-            return Err(not_found(crate::state::messages::database_not_found(
-                &input.database_name,
-            )));
+            return Err(not_found(
+                crate::state::messages::COLUMN_STATISTICS_TASK_SETTINGS_NOT_FOUND.to_string(),
+            ));
         };
-        // The entry hangs on a table, so a database holding no table under that name holds
-        // no entry to delete either: the same miss, in the same fixed wording, as a stored
-        // table carrying no settings.
         let Some(table) = database
             .tables
             .get_mut(&crate::state::fold_name(&input.table_name))

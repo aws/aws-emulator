@@ -184,7 +184,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        let _ = ctx;
         let Some(state) = crate::state::service_state(&*self.engine) else {
             // This operation models no server-side store fault of its own, so an
             // unreachable store is reported as its timeout error, the way the catalog's
@@ -238,16 +237,118 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         }
 
         let now = ::std::time::SystemTime::now();
-        let mut store = state.lock();
-        // Everything the clock already owed the stored runs is materialised before they are
-        // consulted, so a run the clock has already finished does not count as one in flight.
-        store.settle_due_data_quality_ruleset_evaluation_runs(now);
+        let region = crate::state::request_region(ctx.parts());
+        // What the run has to evaluate is resolved under the store's guard, in a scope of
+        // its own, and the guard is released before the data source is read: nothing is
+        // awaited while the store is held, and the run evaluates the rulesets and the table
+        // as they stood when it started.
+        let plan = {
+            let mut store = state.lock();
+            // Everything the clock already owed the stored runs is materialised before they
+            // are consulted, so a run the clock has already finished does not count as one in
+            // flight.
+            store.settle_due_data_quality_ruleset_evaluation_runs(now);
 
-        // A `ClientToken` stands for ONE start: "used for idempotency and is recommended to
-        // be set to a random ID (such as a UUID) to avoid creating or starting multiple
-        // instances of the same resource". So a start carrying a token an earlier start
-        // already used is answered as the duplicate it is, before anything else is
-        // considered, and starts no second run.
+            // A `ClientToken` stands for ONE start: "used for idempotency and is recommended to
+            // be set to a random ID (such as a UUID) to avoid creating or starting multiple
+            // instances of the same resource". So a start carrying a token an earlier start
+            // already used is answered as the duplicate it is, before anything else is
+            // considered, and starts no second run.
+            if let Some(token) = input.client_token.as_deref() {
+                if store
+                    .data_quality_ruleset_evaluation_run_of_client_token(token)
+                    .is_some()
+                {
+                    return Err(conflict(
+                        crate::state::messages::idempotent_start_with_token(token),
+                    ));
+                }
+            }
+
+            // What this run evaluates is the STORED rulesets the start lists, so a name this
+            // account holds no ruleset under is bad input — the value of an input member names
+            // no ruleset — worded as every other ruleset miss is. The names are checked in the
+            // order the request listed them, so the refusal names the first one that resolved
+            // to nothing, and the DQDL text of each is read here: the rules the run evaluates
+            // are the ones the stored ruleset holds.
+            let mut rulesets = Vec::with_capacity(input.ruleset_names.len());
+            for name in &input.ruleset_names {
+                let Some(stored) = store.data_quality_rulesets.get(name) else {
+                    return Err(invalid_input(
+                        crate::state::messages::data_quality_ruleset_not_found(name),
+                    ));
+                };
+                rulesets.push((name.clone(), stored.ruleset.clone()));
+            }
+
+            // The tables the run would read have to be there: the data source of an evaluation
+            // run is "the data source (Glue table) associated with this run", so a start that
+            // addresses one the catalog holds nothing for addresses an entity that does not
+            // exist. The refusal carries the catalog's own miss, and the data sources are
+            // resolved in the order the run records them.
+            for evaluated in ::std::iter::once(&primary_table).chain(additional_tables.iter()) {
+                if let Some(miss) = store.catalog_table_miss(
+                    &evaluated.catalog_id,
+                    &evaluated.database_name,
+                    &evaluated.table_name,
+                ) {
+                    return Err(
+                        StartDataQualityRulesetEvaluationRunErrorModeled::EntityNotFoundException(
+                            EntityNotFoundException {
+                                message: Some(miss),
+                                from_federation_source: None,
+                            },
+                        )
+                        .into(),
+                    );
+                }
+            }
+
+            // The rules are evaluated against the rows behind the data source's table, so
+            // where those rows live is read off the STORED table rather than off the request.
+            let Some(table) = store
+                .database(&primary_table.catalog_id, &primary_table.database_name)
+                .and_then(|database| {
+                    database
+                        .tables
+                        .get(&crate::state::fold_name(&primary_table.table_name))
+                })
+                .map(crate::state::TableDataPlan::of)
+            else {
+                return Err(
+                    StartDataQualityRulesetEvaluationRunErrorModeled::EntityNotFoundException(
+                        EntityNotFoundException {
+                            message: Some(crate::state::messages::table_not_found(
+                                &primary_table.table_name,
+                            )),
+                            from_federation_source: None,
+                        },
+                    )
+                    .into(),
+                );
+            };
+            crate::state::DataQualityEvaluationPlan { rulesets, table }
+        };
+
+        // The run is PERFORMED here, with no store guard held: it reads the objects behind
+        // the data source's location out of the emulator's own Amazon S3 and checks every
+        // rule of every ruleset against those rows, and what it answered is what the status
+        // the clock owes this run reports. Nothing is published yet — the results land when
+        // the run settles.
+        let evaluation =
+            crate::state::evaluate_data_quality_rulesets(ctx, &region, &plan).await;
+
+        // The instants the run reports are stamped AFTER the evaluation, so the span the
+        // clock owes the run starts when the run was recorded: a caller that reads the run
+        // straight after this call still observes it in flight, however long the reading
+        // took.
+        let started_at = ::std::time::SystemTime::now();
+        let mut store = state.lock();
+        store.settle_due_data_quality_ruleset_evaluation_runs(started_at);
+        // The `ClientToken` is read again under the guard the run is RECORDED under, not
+        // only under the one the request was admitted under: a token stands for one start,
+        // so two starts carrying one token must not both record a run however they
+        // interleave around the evaluation above.
         if let Some(token) = input.client_token.as_deref() {
             if store
                 .data_quality_ruleset_evaluation_run_of_client_token(token)
@@ -258,45 +359,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 ));
             }
         }
-
-        // What this run evaluates is the STORED rulesets the start lists, so a name this
-        // account holds no ruleset under is bad input — the value of an input member names no
-        // ruleset — worded as every other ruleset miss is. The names are checked in the order
-        // the request listed them, so the refusal names the first one that resolved to
-        // nothing.
-        if let Some(missing) = input
-            .ruleset_names
-            .iter()
-            .find(|name| !store.data_quality_rulesets.contains_key(*name))
-        {
-            return Err(invalid_input(
-                crate::state::messages::data_quality_ruleset_not_found(missing),
-            ));
-        }
-
-        // The tables the run would read have to be there: the data source of an evaluation
-        // run is "the data source (Glue table) associated with this run", so a start that
-        // addresses one the catalog holds nothing for addresses an entity that does not
-        // exist. The refusal carries the catalog's own miss, and the data sources are
-        // resolved in the order the run records them.
-        for evaluated in ::std::iter::once(&primary_table).chain(additional_tables.iter()) {
-            if let Some(miss) = store.catalog_table_miss(
-                &evaluated.catalog_id,
-                &evaluated.database_name,
-                &evaluated.table_name,
-            ) {
-                return Err(
-                    StartDataQualityRulesetEvaluationRunErrorModeled::EntityNotFoundException(
-                        EntityNotFoundException {
-                            message: Some(miss),
-                            from_federation_source: None,
-                        },
-                    )
-                    .into(),
-                );
-            }
-        }
-
         // The id is minted only once the request is going to be served, so a refusal above
         // hands out none.
         let run_id = crate::state::new_data_quality_ruleset_evaluation_run_id();
@@ -305,7 +367,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             primary_table,
             additional_tables,
             run_id.clone(),
-            now,
+            started_at,
+            evaluation,
         );
         store.record_data_quality_ruleset_evaluation_run(run);
         ::tracing::info!(

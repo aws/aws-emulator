@@ -271,6 +271,8 @@ mod crawler_roles_and_connections;
 mod crawlers;
 mod data_assets;
 mod data_catalog_export;
+mod data_quality_results;
+mod data_quality_rules;
 mod hive_types;
 mod identity_center;
 mod integrations;
@@ -284,6 +286,7 @@ mod schema_compatibility;
 mod schema_registry;
 mod security_configurations;
 mod sessions;
+mod table_rows;
 mod triggers;
 mod workflow_runs;
 mod workflows;
@@ -300,6 +303,8 @@ pub use crawler_roles_and_connections::*;
 pub use crawlers::*;
 pub use data_assets::*;
 pub use data_catalog_export::*;
+pub use data_quality_results::*;
+pub use data_quality_rules::*;
 pub use hive_types::*;
 pub use identity_center::*;
 pub use integrations::*;
@@ -313,6 +318,7 @@ pub use schema_compatibility::*;
 pub use schema_registry::*;
 pub use security_configurations::*;
 pub use sessions::*;
+pub use table_rows::*;
 pub use triggers::*;
 pub use workflow_runs::*;
 pub use workflows::*;
@@ -354,6 +360,7 @@ use crate::ops::types::{
     DataQualityRuleRecommendationRunAdditionalRunOptions, DataQualityEvaluationRunAdditionalRunOptions,
     DataQualityRulesetFilterCriteria,
     DataQualityRulesetListDetails, DataQualityTargetTable,
+    DataQualityRuleResult,
     DataSource, Database, DatabaseIdentifier, DatabaseInput,
     Edge, EncryptionAtRest, EncryptionConfiguration, ErrorDetail, EventBatchingCondition,
     ExportEncryptionConfiguration,
@@ -1204,6 +1211,14 @@ pub struct ComAmazonawsGlueAwsglueState {
     /// ([`DataQualityRulesetEvaluationRunEntry`]). Kept in start order and bounded by
     /// [`MAX_DATA_QUALITY_RULESET_EVALUATION_RUNS`].
     pub data_quality_ruleset_evaluation_runs: Vec<DataQualityRulesetEvaluationRunEntry>,
+    /// Every data quality result this emulator holds, oldest first.
+    ///
+    /// A result lives beside the runs that produce them, for the reason a run lives beside
+    /// the catalog tree: `GetDataQualityResult` addresses one by `ResultId` alone, so the
+    /// namespace is per account and the run, the ruleset and the data source a result came
+    /// out of are recorded ON the result ([`DataQualityResultEntry`]). Kept in the order the
+    /// runs produced them and bounded by [`MAX_DATA_QUALITY_RESULTS`].
+    pub data_quality_results: Vec<DataQualityResultEntry>,
     /// Every data quality ruleset this emulator holds, keyed by its name, in name order.
     ///
     /// Per account and beside the catalog tree, like crawlers and custom entity types:
@@ -1592,7 +1607,9 @@ impl ComAmazonawsGlueAwsglueState {
     ///
     /// What a due run settles into is read off the catalog — whether it still holds every
     /// table the run evaluates — so the outcome of every run still due is resolved first and
-    /// applied afterwards: one walk reads the catalog, the next writes the runs.
+    /// applied afterwards: one walk reads the catalog, the next writes the runs. A run that
+    /// finished its evaluation publishes the results it produced
+    /// ([`DataQualityResultEntry`]), which is what `GetDataQualityResult` reads back.
     pub fn settle_due_data_quality_ruleset_evaluation_runs(&mut self, now: SystemTime) {
         let misses: Vec<(usize, Option<String>)> = self
             .data_quality_ruleset_evaluation_runs
@@ -1601,11 +1618,13 @@ impl ComAmazonawsGlueAwsglueState {
             .filter(|(_, run)| run.is_due(now))
             .map(|(index, run)| (index, self.evaluated_tables_miss(run)))
             .collect();
+        let mut produced: Vec<DataQualityResultEntry> = Vec::new();
         for (index, miss) in misses {
             if let Some(run) = self.data_quality_ruleset_evaluation_runs.get_mut(index) {
-                run.settle(miss);
+                produced.extend(run.settle(miss));
             }
         }
+        self.record_data_quality_results(produced);
     }
 
     /// Why the catalog offers `run` nothing to evaluate — the first of its data sources it

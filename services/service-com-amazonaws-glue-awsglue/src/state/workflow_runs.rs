@@ -882,6 +882,14 @@ pub struct DataQualityRulesetEvaluationRunEntry {
     /// per ruleset the run evaluated, minted when the run finishes evaluating them, so a run
     /// still in flight and a run that could not evaluate anything carry none.
     pub result_ids: Vec<String>,
+    /// What this run's evaluation of its rulesets over its data source produced.
+    ///
+    /// The work is done where the run is STARTED (`StartDataQualityRulesetEvaluationRun`
+    /// performs it with no store guard held, see
+    /// [`evaluate_data_quality_rulesets`]), and this is what it answered — so the terminal
+    /// status the clock owes this run is decided by the data, and the results a successful
+    /// run publishes are the ones its own reading produced.
+    pub evaluation: DataQualityEvaluationOutcome,
 }
 
 impl DataQualityRulesetEvaluationRunEntry {
@@ -898,6 +906,7 @@ impl DataQualityRulesetEvaluationRunEntry {
         additional_tables: Vec<EvaluatedTable>,
         id: String,
         now: SystemTime,
+        evaluation: DataQualityEvaluationOutcome,
     ) -> Self {
         Self {
             id,
@@ -926,6 +935,7 @@ impl DataQualityRulesetEvaluationRunEntry {
             // Nothing has been evaluated yet, and nothing has failed.
             error_string: None,
             result_ids: Vec::new(),
+            evaluation,
         }
     }
 
@@ -950,37 +960,57 @@ impl DataQualityRulesetEvaluationRunEntry {
     /// [`DATA_QUALITY_RUN_STATE_STARTING`] at [`Self::settles_at`] whether or not anybody
     /// called.
     ///
-    /// A run the catalog still holds every evaluated table for finishes
+    /// A run that evaluated its rulesets over a data source the catalog still holds finishes
     /// [`DATA_QUALITY_RUN_STATE_SUCCEEDED`], carrying one freshly minted result id per
     /// ruleset it evaluated: "the evaluation computes results which you can retrieve with the
-    /// GetDataQualityResult API", and a result is what one ruleset's evaluation produced. One
-    /// whose table the catalog holds no longer cannot evaluate anything over it, so it
-    /// finishes [`DATA_QUALITY_RUN_STATE_FAILED`] carrying `miss`, the catalog's own reason,
-    /// as its `ErrorString` and no result at all.
+    /// GetDataQualityResult API", and a result is what one ruleset's evaluation produced —
+    /// which is what the returned entries hold, for the store to keep
+    /// ([`ComAmazonawsGlueAwsglueState::record_data_quality_results`] is the one caller,
+    /// because only the store can keep them). One whose table the catalog holds no longer
+    /// cannot have evaluated anything over it, so it finishes
+    /// [`DATA_QUALITY_RUN_STATE_FAILED`] carrying `miss`, the catalog's own reason, as its
+    /// `ErrorString` and no result at all; so does one whose own evaluation answered that it
+    /// evaluated nothing ([`DataQualityEvaluationOutcome::Failed`]), carrying that reason.
     ///
     /// The instants recorded are the DUE instant rather than the instant somebody read the
     /// run, so two reads of a settled run report the same run.
-    pub fn settle(&mut self, miss: Option<String>) {
+    #[must_use]
+    pub fn settle(&mut self, miss: Option<String>) -> Vec<DataQualityResultEntry> {
         let Some(due) = self.settles_at else {
-            return;
+            return Vec::new();
         };
         self.settles_at = None;
         self.completed_on = Some(due);
         self.last_modified_on = due;
-        match miss {
-            Some(reason) => {
-                self.status = DATA_QUALITY_RUN_STATE_FAILED.to_string();
-                self.error_string = Some(reason);
-            }
-            None => {
-                self.status = DATA_QUALITY_RUN_STATE_SUCCEEDED.to_string();
-                self.result_ids = self
-                    .ruleset_names
-                    .iter()
-                    .map(|_| new_data_quality_result_id())
-                    .collect();
-            }
+        // A data source the catalog no longer holds is reported ahead of what the evaluation
+        // answered: the run covers a table that is not there any more.
+        let failure = miss.or_else(|| match &self.evaluation {
+            DataQualityEvaluationOutcome::Failed(reason) => Some(reason.clone()),
+            DataQualityEvaluationOutcome::Evaluated(_) => None,
+        });
+        if let Some(reason) = failure {
+            self.status = DATA_QUALITY_RUN_STATE_FAILED.to_string();
+            self.error_string = Some(reason);
+            return Vec::new();
         }
+        self.status = DATA_QUALITY_RUN_STATE_SUCCEEDED.to_string();
+        let DataQualityEvaluationOutcome::Evaluated(evaluated) = &self.evaluation else {
+            return Vec::new();
+        };
+        let results: Vec<DataQualityResultEntry> = evaluated
+            .iter()
+            .map(|ruleset| {
+                DataQualityResultEntry::of(
+                    ruleset,
+                    &self.id,
+                    self.data_source.clone(),
+                    self.started_on,
+                    due,
+                )
+            })
+            .collect();
+        self.result_ids = results.iter().map(|result| result.id.clone()).collect();
+        results
     }
 }
 
@@ -1077,26 +1107,35 @@ pub(super) const MAX_DQDL_NESTING: usize = 32;
 /// How many rules the DQDL text `ruleset` declares — "the number of rules in the ruleset"
 /// (`DataQualityRulesetListDetails$RuleCount`).
 ///
+/// The entries of the rule list, counted ([`dqdl_rules`] is the one walk over that list), so
+/// the count and the rules an evaluation run evaluates can never disagree.
+pub fn dqdl_rule_count(ruleset: &str) -> i32 {
+    i32::try_from(dqdl_rules(ruleset).len()).unwrap_or(i32::MAX)
+}
+
+/// The rules the DQDL text `ruleset` declares, each as the text the author wrote for it,
+/// trimmed, in the order the list declares them.
+///
 /// A DQDL ruleset declares its rules as one comma-separated list introduced by
-/// `Rules = [ … ]`, so the count is the number of entries in THAT list: the commas that
+/// `Rules = [ … ]`, so the rules are the entries of THAT list: the commas that
 /// separate a rule from the next one sit at the list's own nesting level, while a comma
 /// inside a rule's own brackets, parentheses or quoted string belongs to that rule. Text
-/// declaring no rule list at all holds no rules and counts 0; a trailing separator adds
-/// no rule.
+/// declaring no rule list at all declares no rule; a trailing separator adds none.
 ///
 /// A comment runs from `#` to the end of its line and declares nothing, so neither the
-/// rules it describes nor a separator inside it is counted.
+/// rules it describes nor a separator inside it is read as part of one.
 ///
 /// DQDL is proprietary to this service and no published crate parses it, so the list is
-/// walked here rather than through a dependency. Counting its entries needs none of the
-/// language beyond its nesting and its string literals, so no rule GRAMMAR is assumed:
-/// whatever a rule's own text is, it is one entry. The walk reads at most
-/// [`MAX_DQDL_CHARS_READ`] characters in ONE pass, holds no copy of the text, nests no
+/// walked here rather than through a dependency. Splitting it needs none of the
+/// language beyond its nesting and its string literals, so no rule GRAMMAR is assumed
+/// here: whatever a rule's own text is, it is one entry, and what that text MEANS is read
+/// where a rule is evaluated ([`super::data_quality_rules`]). The walk reads at most
+/// [`MAX_DQDL_CHARS_READ`] characters in ONE pass, nests no
 /// deeper than [`MAX_DQDL_NESTING`] and never recurses, so text a caller chose bounds
 /// neither the memory nor the stack this takes. Text no rule list can be read out of
-/// declares no rules and counts 0: no list at all, a list left unterminated by a truncated
+/// declares no rules at all: no list at all, a list left unterminated by a truncated
 /// text, an unterminated string or comment, or one nested past the limit.
-pub fn dqdl_rule_count(ruleset: &str) -> i32 {
+pub fn dqdl_rules(ruleset: &str) -> Vec<String> {
     let keyword: Vec<char> = DQDL_RULES_KEYWORD.chars().collect();
     let mut phase = DqdlPhase::SeekKeyword(0);
     // Whether the character before this one could be part of a word, which is what decides
@@ -1106,7 +1145,9 @@ pub fn dqdl_rule_count(ruleset: &str) -> i32 {
     let mut in_comment = false;
     let mut escaped = false;
     let mut depth = 0usize;
-    let mut count = 0usize;
+    let mut rules: Vec<String> = Vec::new();
+    // The text of the entry being walked, as its author wrote it.
+    let mut entry = String::new();
     let mut has_content = false;
     let mut closed = false;
 
@@ -1182,13 +1223,14 @@ pub fn dqdl_rule_count(ruleset: &str) -> i32 {
                 // whatever follows the list declares no rule of this list's.
                 ']' if depth == 0 => {
                     if has_content {
-                        count += 1;
+                        rules.push(entry.trim().to_string());
                     }
                     closed = true;
                     break;
                 }
                 '[' | '(' | '{' => {
                     has_content = true;
+                    entry.push(raw);
                     depth += 1;
                     if depth > MAX_DQDL_NESTING {
                         break;
@@ -1196,27 +1238,37 @@ pub fn dqdl_rule_count(ruleset: &str) -> i32 {
                 }
                 ']' | ')' | '}' => {
                     has_content = true;
+                    entry.push(raw);
                     depth = depth.saturating_sub(1);
                 }
                 ',' if depth == 0 => {
                     if has_content {
-                        count += 1;
+                        rules.push(entry.trim().to_string());
                     }
+                    entry.clear();
                     has_content = false;
                 }
-                _ => has_content |= !ch.is_whitespace(),
+                _ => {
+                    has_content |= !ch.is_whitespace();
+                    // A comment's characters declare nothing, so they are no part of the
+                    // rule's own text; everything else is kept exactly as written, the
+                    // characters of a string literal included.
+                    if !in_comment {
+                        entry.push(raw);
+                    }
+                }
             },
         }
         preceded_by_word = is_dqdl_word_char(ch);
     }
 
     if !closed {
-        return 0;
+        return Vec::new();
     }
-    i32::try_from(count).unwrap_or(i32::MAX)
+    rules
 }
 
-/// Where [`dqdl_rule_count`]'s single pass over a ruleset has got to: the three steps that
+/// Where [`dqdl_rules`]' single pass over a ruleset has got to: the three steps that
 /// find the rule list, then the walk over its entries.
 #[derive(Debug, Clone, Copy)]
 pub(super) enum DqdlPhase {

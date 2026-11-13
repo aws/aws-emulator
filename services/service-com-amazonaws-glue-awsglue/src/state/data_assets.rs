@@ -251,45 +251,63 @@ fn stated_business_metadata_constraint(
 /// Which records still USE one form type, and the sentence a delete held up by such a use
 /// is refused with.
 impl ComAmazonawsGlueAwsglueState {
-    /// Every ASSET that carries a form of the form type `identifier` addresses, named by the
-    /// asset TYPE it is an instance of, deduplicated and in the order this namespace holds
-    /// those assets — empty when no asset uses it, and when `identifier` names no form type
-    /// this store holds at all.
+    /// Every ASSET TYPE that still references the form type `identifier` addresses,
+    /// deduplicated and in the order this namespace holds those records — empty when nothing
+    /// references it, and when `identifier` names no form type this store holds at all.
     ///
     /// A form type "cannot be deleted if it is still referenced by an asset type"
-    /// (`DeleteFormType`), and what makes that reference LIVE is an asset carrying a form of
-    /// the type: an asset type that merely declares the form type among its forms does not
-    /// hold the delete up, as the recorded delete of a form type whose only declaring asset
-    /// type is still stored shows. So the delete asks this before removing anything, and the
-    /// refusal names every dependency that holds it up rather than one of them.
+    /// (`DeleteFormType`), so the reference that holds a delete up is an asset type's: one
+    /// that DECLARES the form type among its forms references it for as long as that
+    /// declaration stands, and the delete of the form type is refused until the asset type
+    /// itself is gone. An ASSET that carries a form of the type references it through the
+    /// asset type it is an instance of, so a stored asset is named by that asset type too —
+    /// which keeps the dependency observable where the asset outlives its type's record. The
+    /// delete asks this before removing anything, and the refusal names every dependency that
+    /// holds it up rather than one of them.
     ///
-    /// An asset's forms carry the `FormTypeIdentifier` its own put wrote
-    /// ([`AssetEntry::forms`]) and a form type's identifier is its name
-    /// ([`FormTypeEntry::id`]), so a use names the record exactly as this namespace keys it;
-    /// the asset type each such asset is an instance of is resolved the way every other
-    /// reader of that reference resolves it ([`Self::asset_type_by_reference`]), falling back
-    /// to the identifier the put stored for an asset type that is no longer there. The walk
-    /// is bounded by [`MAX_ASSETS`] records of [`MAX_ASSET_FORMS`] forms.
+    /// An asset type's forms carry the `FormTypeIdentifier` its own put wrote
+    /// ([`AssetTypeEntry::forms`]), an asset's carry the one its put wrote
+    /// ([`AssetEntry::forms`]), and either is resolved the way every reader of a form type
+    /// reference resolves one ([`Self::form_type_by_reference`]), so another spelling of one
+    /// stored form type still counts as the same reference. The asset type an asset is an
+    /// instance of is resolved the same way ([`Self::asset_type_by_reference`]), falling back
+    /// to the identifier the put stored for an asset type that is no longer there. The walk is
+    /// bounded by [`MAX_ASSET_TYPES`] and [`MAX_ASSETS`] records of [`MAX_ASSET_FORMS`] forms.
     pub fn asset_types_using_form_type(&self, identifier: &str) -> Vec<String> {
         let Some(form_type) = self.form_type_by_reference(identifier) else {
             return Vec::new();
         };
+        let references_it = |reference: &str| {
+            self.form_type_by_reference(reference)
+                .is_some_and(|stored| stored.name == form_type.name)
+        };
         let mut dependencies: Vec<String> = Vec::new();
-        for asset in self.assets.values() {
-            let uses_it = asset.forms.values().any(|form| {
-                form.form_type_id
-                    .as_deref()
-                    .is_some_and(|reference| reference == form_type.name)
-            });
-            if !uses_it {
-                continue;
-            }
-            let asset_type = self
-                .asset_type_by_reference(&asset.asset_type_id)
-                .map_or_else(|| asset.asset_type_id.clone(), |stored| stored.name.clone());
+        let mut hold_up = |asset_type: String| {
             if !dependencies.contains(&asset_type) {
                 dependencies.push(asset_type);
             }
+        };
+        for asset_type in self.asset_types.values() {
+            if asset_type
+                .forms
+                .values()
+                .any(|reference| references_it(reference))
+            {
+                hold_up(asset_type.name.clone());
+            }
+        }
+        for asset in self.assets.values() {
+            let uses_it = asset
+                .forms
+                .values()
+                .any(|form| form.form_type_id.as_deref().is_some_and(references_it));
+            if !uses_it {
+                continue;
+            }
+            hold_up(
+                self.asset_type_by_reference(&asset.asset_type_id)
+                    .map_or_else(|| asset.asset_type_id.clone(), |stored| stored.name.clone()),
+            );
         }
         dependencies
     }

@@ -71,6 +71,33 @@ pub fn emulator_on(engine: Arc<engine::InMemoryEngine>) -> MultiServiceRouter {
     router
 }
 
+/// An Amazon S3 client over this emulator's own in-process callback: the seam every Glue
+/// reading of a table's data takes, so what a suite stages through this client is what the
+/// run under test reads.
+///
+/// ONE copy, shared by every suite that stages the objects behind a table — the column
+/// statistics computation, the crawl, a job script and the data quality evaluation — so the
+/// client the suites stage through cannot drift from the one the service reads through. The
+/// router must have Amazon S3 mounted on the same engine as Glue for it to reach anything.
+pub fn s3_client(router: &MultiServiceRouter) -> aws_sdk_s3::Client {
+    let callback = smithy_server_runtime::EmbeddedEmulator::from_router(router.clone());
+    let config = aws_sdk_s3::Config::builder()
+        .behavior_version(aws_sdk_s3::config::BehaviorVersion::latest())
+        .region(aws_sdk_s3::config::Region::new(REGION))
+        .endpoint_url(format!("https://s3.{REGION}.amazonaws.com"))
+        // The in-process transport routes on the request's own path, and a virtual-host
+        // bucket name is not a host this emulator resolves.
+        .force_path_style(true)
+        .credentials_provider(callback.aws_credentials_provider())
+        .http_client(callback.http_client())
+        .retry_config(aws_sdk_s3::config::retry::RetryConfig::disabled())
+        .timeout_config(aws_sdk_s3::config::timeout::TimeoutConfig::disabled())
+        .identity_cache(aws_sdk_s3::config::IdentityCache::no_cache())
+        .stalled_stream_protection(aws_sdk_s3::config::StalledStreamProtectionConfig::disabled())
+        .build();
+    aws_sdk_s3::Client::from_conf(config)
+}
+
 /// Make one awsJson1_1 call and return its HTTP status and parsed body.
 pub async fn call(router: &MultiServiceRouter, operation: &str, body: &Value) -> (u16, Value) {
     call_in_region(router, REGION, operation, body).await

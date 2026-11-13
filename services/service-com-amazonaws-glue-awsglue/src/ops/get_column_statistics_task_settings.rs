@@ -180,11 +180,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         // `DatabaseName` and `TableName` are `@required` with `length 1..255`, so reaching
         // here the only question is what the catalog holds under them. Resolved BEFORE the
-        // attempt is looked up, so a read that is about to be refused walks no runs.
+        // attempt is looked up, so a read that is about to be refused walks no runs. The
+        // entry is the settings of the PAIR the request names, so a database the catalog
+        // does not hold holds no entry either: the same miss, in the same fixed wording, as
+        // a stored table carrying no settings — and the same one the delete answers.
         let Some(database) = store.database(&catalog_id, &input.database_name) else {
-            return Err(not_found(crate::state::messages::database_not_found(
-                &input.database_name,
-            )));
+            return Err(not_found(
+                crate::state::messages::COLUMN_STATISTICS_TASK_SETTINGS_NOT_FOUND.to_string(),
+            ));
         };
         let Some(table) = database
             .tables

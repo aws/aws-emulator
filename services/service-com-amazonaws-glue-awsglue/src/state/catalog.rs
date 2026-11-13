@@ -1021,20 +1021,26 @@ impl PartitionUpdateRefusal {
         }
     }
 
-    /// This refusal's wording. See [`messages`] for how this crate's refusals are worded.
-    pub fn message(self) -> String {
+    /// This refusal's wording, over the values the request addressed the partition by. See
+    /// [`messages`] for how this crate's refusals are worded.
+    ///
+    /// The miss names the partition it could not find
+    /// ([`messages::partition_to_update_not_found`]), which is a different sentence from the
+    /// one a partition READ answers ([`messages::PARTITION_NOT_FOUND`]): a mutation of an
+    /// absent partition and a read of one are worded as this service words each.
+    pub fn message(self, values: &[String]) -> String {
         match self {
             Self::ValuesRequired => messages::PARTITION_VALUES_REQUIRED.to_string(),
             Self::ValuesCannotBeChanged => {
                 messages::PARTITION_VALUES_CANNOT_BE_CHANGED.to_string()
             }
-            Self::NotFound => messages::PARTITION_NOT_FOUND.to_string(),
+            Self::NotFound => messages::partition_to_update_not_found(values),
         }
     }
 
     /// This refusal as the per-item error shape a batch reports it in.
-    pub fn to_error_detail(self) -> ErrorDetail {
-        catalog_error_detail(self.error_code(), self.message())
+    pub fn to_error_detail(self, values: &[String]) -> ErrorDetail {
+        catalog_error_detail(self.error_code(), self.message(values))
     }
 }
 

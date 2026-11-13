@@ -408,11 +408,16 @@ async fn a_stop_ends_the_in_flight_run_and_with_it_the_conflict() {
         "after the stop"
     );
 
-    // With nothing in flight the create is served.
+    // With nothing in flight the create is served. It states a SCHEDULE, so it starts no
+    // run of its own and the table is left with nothing to stop.
     ok(
         &router,
         "CreateColumnStatisticsTaskSettings",
-        &body_for(BUSY_DATABASE, BUSY_TABLE, json!({})),
+        &body_for(
+            BUSY_DATABASE,
+            BUSY_TABLE,
+            json!({ "Schedule": DAILY_SCHEDULE }),
+        ),
     )
     .await;
 

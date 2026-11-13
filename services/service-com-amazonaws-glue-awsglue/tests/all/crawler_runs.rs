@@ -41,7 +41,7 @@ use service_com_amazonaws_glue_awsglue::state::{
 };
 use smithy_server_runtime::MultiServiceRouter;
 
-use crate::wire::{call, error_code, error_message, ok, ACCOUNT_ID, REGION};
+use crate::wire::{call, error_code, error_message, ok, ACCOUNT_ID};
 
 /// The role every crawler here is created with.
 const ROLE: &str = "arn:aws:iam::000000000000:role/service-role/AWSGlueServiceRole-crawl";
@@ -69,22 +69,10 @@ fn emulator_with_s3() -> (MultiServiceRouter, Arc<engine::InMemoryEngine>) {
 }
 
 /// An Amazon S3 client over this emulator's own in-process callback — the seam a crawl reads
-/// through, so what a test stages here is what the crawl reads.
+/// through, so what a test stages here is what the crawl reads. The shared harness owns the
+/// one client configuration ([`crate::wire::s3_client`]).
 fn s3(router: &MultiServiceRouter) -> aws_sdk_s3::Client {
-    let callback = smithy_server_runtime::EmbeddedEmulator::from_router(router.clone());
-    let config = aws_sdk_s3::Config::builder()
-        .behavior_version(aws_sdk_s3::config::BehaviorVersion::latest())
-        .region(aws_sdk_s3::config::Region::new(REGION))
-        .endpoint_url(format!("https://s3.{REGION}.amazonaws.com"))
-        .force_path_style(true)
-        .credentials_provider(callback.aws_credentials_provider())
-        .http_client(callback.http_client())
-        .retry_config(aws_sdk_s3::config::retry::RetryConfig::disabled())
-        .timeout_config(aws_sdk_s3::config::timeout::TimeoutConfig::disabled())
-        .identity_cache(aws_sdk_s3::config::IdentityCache::no_cache())
-        .stalled_stream_protection(aws_sdk_s3::config::StalledStreamProtectionConfig::disabled())
-        .build();
-    aws_sdk_s3::Client::from_conf(config)
+    crate::wire::s3_client(router)
 }
 
 /// Create `bucket` and put every `(key, body)` into it.

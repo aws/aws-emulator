@@ -63,14 +63,14 @@ pub struct ColumnStatisticsTaskRunEntry {
 }
 
 impl ColumnStatisticsTaskRunEntry {
-    /// Record a run of the stored table as the `StartColumnStatisticsTaskRun` request asks
-    /// for it, in [`COLUMN_STATISTICS_TASK_RUN_STATE_STARTING`] with its next status due
+    /// Record a run of the stored table `configuration` describes, in
+    /// [`COLUMN_STATISTICS_TASK_RUN_STATE_STARTING`] with its next status due
     /// [`COLUMN_STATISTICS_TASK_RUN_SETTLES_AFTER`] out.
     ///
-    /// `table` is the stored table the request resolved to, which is where the default
-    /// column list comes from, and `catalog_id` the catalog it was resolved in.
+    /// `table` is the stored table the run covers, which is where the covered database and
+    /// table names come from, and `catalog_id` the catalog it was resolved in.
     pub fn start(
-        input: &StartColumnStatisticsTaskRunInput,
+        configuration: ColumnStatisticsRunConfiguration,
         table: &TableEntry,
         catalog_id: &str,
         id: String,
@@ -83,11 +83,12 @@ impl ColumnStatisticsTaskRunEntry {
             database_name: table.database_name.clone(),
             table_name: table.name.clone(),
             // The columns the run covers, resolved ONCE
-            // ([`covered_column_names`]) — the same list the run was performed over.
-            column_name_list: covered_column_names(input, table),
-            role: input.role.clone(),
-            sample_size: input.sample_size,
-            security_configuration: input.security_configuration.clone(),
+            // ([`ColumnStatisticsRunConfiguration`]) — the same list the run was performed
+            // over.
+            column_name_list: configuration.column_name_list,
+            role: configuration.role,
+            sample_size: configuration.sample_size,
+            security_configuration: configuration.security_configuration,
             status: COLUMN_STATISTICS_TASK_RUN_STATE_STARTING.to_string(),
             settles_at: Some(
                 now.checked_add(COLUMN_STATISTICS_TASK_RUN_SETTLES_AFTER)
@@ -239,6 +240,60 @@ impl ColumnStatisticsTaskRunEntry {
             start_time: Some(to_date_time(self.start_time)),
             end_time: self.end_time.map(to_date_time),
             error_message: self.error_message.clone(),
+        }
+    }
+}
+
+/// What ONE column statistics task run was asked to do, however it was asked for: the
+/// columns it covers and the three members that configure the generation.
+///
+/// A run is started in two ways — `StartColumnStatisticsTaskRun` asks for one directly, and
+/// `CreateColumnStatisticsTaskSettings` registers the configuration its runs use and starts
+/// the first of them — and this is what both resolve to, so a run started either way carries
+/// the same members and is reported the same way.
+#[derive(Debug, Clone)]
+pub struct ColumnStatisticsRunConfiguration {
+    /// The columns the run covers, already resolved against the stored table.
+    pub column_name_list: Vec<String>,
+    /// The role the generation is performed as.
+    pub role: String,
+    /// "The percentage of rows used to generate statistics", whose own default of 0 means
+    /// the entire table.
+    pub sample_size: f64,
+    /// The security configuration the generation's logs are encrypted under, where one was
+    /// named.
+    pub security_configuration: Option<String>,
+}
+
+impl ColumnStatisticsRunConfiguration {
+    /// The configuration a `StartColumnStatisticsTaskRun` request asks for of the stored
+    /// table it addressed.
+    pub fn of_start_request(
+        input: &StartColumnStatisticsTaskRunInput,
+        table: &TableEntry,
+    ) -> Self {
+        Self {
+            column_name_list: covered_column_names(input, table),
+            role: input.role.clone(),
+            sample_size: input.sample_size,
+            security_configuration: input.security_configuration.clone(),
+        }
+    }
+
+    /// The configuration the stored settings of a table state for its runs: the columns
+    /// those settings list, else every column the stored table declares — the same default a
+    /// start that lists none takes ([`table_column_names`]) — and the three members the
+    /// settings record.
+    pub fn of_settings(settings: &ColumnStatisticsTaskSettingsEntry, table: &TableEntry) -> Self {
+        Self {
+            column_name_list: settings
+                .column_name_list
+                .clone()
+                .filter(|names| !names.is_empty())
+                .unwrap_or_else(|| table_column_names(table)),
+            role: settings.role.clone(),
+            sample_size: settings.sample_size,
+            security_configuration: settings.security_configuration.clone(),
         }
     }
 }
