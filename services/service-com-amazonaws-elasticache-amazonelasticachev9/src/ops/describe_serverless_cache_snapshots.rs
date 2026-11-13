@@ -219,9 +219,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     DescribeServerlessCacheSnapshotsErrorModeled::ServerlessCacheSnapshotNotFoundFault(
                         ServerlessCacheSnapshotNotFoundFault {
                             message: Some(
-                                crate::state::serverless_cache_snapshot_not_found_message(
-                                    requested,
-                                ),
+                                crate::state::SERVERLESS_CACHE_SNAPSHOT_NOT_FOUND_MESSAGE
+                                    .to_string(),
                             ),
                         },
                     )

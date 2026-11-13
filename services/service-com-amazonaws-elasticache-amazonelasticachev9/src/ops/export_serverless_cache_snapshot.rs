@@ -166,8 +166,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // "The identifier of the serverless cache snapshot to be exported to
         // S3." A snapshot name "is stored as a lowercase string", so the lookup
         // folds the request's case the same way the store does.
-        let requested = input.serverless_cache_snapshot_name;
-        let stored_name = requested.to_ascii_lowercase();
+        let stored_name = input.serverless_cache_snapshot_name.to_ascii_lowercase();
         let region = crate::state::request_region(ctx.parts());
         let now = ::std::time::SystemTime::now();
 
@@ -181,18 +180,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // owes.
             let Some(snapshot) = store.settled_serverless_cache_snapshot_mut(&stored_name, now)
             else {
-                return Err(
-                    ExportServerlessCacheSnapshotErrorModeled::ServerlessCacheSnapshotNotFoundFault(
-                        ServerlessCacheSnapshotNotFoundFault {
-                            message: Some(
-                                crate::state::serverless_cache_snapshot_not_found_message(
-                                    &requested,
-                                ),
-                            ),
-                        },
-                    )
-                    .into(),
-                );
+                return Err(snapshot_not_found());
             };
             // Only a settled snapshot has a finished data set to export: one
             // still `creating` holds nothing to write out yet, which is what
@@ -243,16 +231,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let Some(snapshot) = store.serverless_cache_snapshots.get(&stored_name) else {
             // The snapshot was there a moment ago and is not any more, so there
             // is nothing left to report the export of.
-            return Err(
-                ExportServerlessCacheSnapshotErrorModeled::ServerlessCacheSnapshotNotFoundFault(
-                    ServerlessCacheSnapshotNotFoundFault {
-                        message: Some(crate::state::serverless_cache_snapshot_not_found_message(
-                            &requested,
-                        )),
-                    },
-                )
-                .into(),
-            );
+            return Err(snapshot_not_found());
         };
         let serverless_cache_snapshot = snapshot.to_modeled();
         // Exporting a snapshot is one of the events this service records, under
@@ -271,6 +250,19 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             serverless_cache_snapshot: Some(serverless_cache_snapshot),
         })
     }
+}
+
+/// The modelled refusal for a `ServerlessCacheSnapshotName` the account holds no
+/// snapshot under: `ServerlessCacheSnapshotNotFoundFault`, HTTP 404, worded as
+/// [`crate::state::SERVERLESS_CACHE_SNAPSHOT_NOT_FOUND_MESSAGE`] — fixed text
+/// that states only that no snapshot is held under the specified name.
+fn snapshot_not_found() -> ExportServerlessCacheSnapshotError {
+    ExportServerlessCacheSnapshotErrorModeled::ServerlessCacheSnapshotNotFoundFault(
+        ServerlessCacheSnapshotNotFoundFault {
+            message: Some(crate::state::SERVERLESS_CACHE_SNAPSHOT_NOT_FOUND_MESSAGE.to_string()),
+        },
+    )
+    .into()
 }
 
 /// The modelled refusal for a parameter value this operation cannot accept:

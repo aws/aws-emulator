@@ -29,7 +29,7 @@
 
 use service_com_amazonaws_elasticache_amazonelasticachev9::state;
 
-use crate::harness::{params, Emulator, Reply, PAST_TRANSITION, REGION};
+use crate::harness::{params, poll_until, Emulator, Reply, REGION};
 
 /// A second Region, for the row that runs the whole flow outside the Region every
 /// other row signs for, and for the bucket that lives outside the snapshot's.
@@ -194,6 +194,48 @@ async fn export(emulator: &Emulator, region: &str, snapshot_name: &str, bucket: 
         .await
 }
 
+/// Wait for the row's cache to reach the status a snapshot of it needs.
+///
+/// A create leaves a serverless cache `creating`, and the handlers never sleep, so the
+/// suite looks again until the CONDITION holds rather than waiting a fixed time: what it
+/// asserts then does not depend on how fast or how loaded the host is.
+async fn await_settled_cache(emulator: &Emulator, case: &ExportCase) {
+    poll_until(
+        emulator,
+        case.region,
+        case.case,
+        &format!(
+            "the serverless cache {} settling at available",
+            case.cache_request_name
+        ),
+        "DescribeServerlessCaches",
+        &params(&[("ServerlessCacheName", case.cache_request_name)]),
+        |reply| reply.text("Status") == Some(state::STATUS_AVAILABLE),
+    )
+    .await;
+}
+
+/// Wait for the row's snapshot to reach the status an export of it needs; see
+/// [`await_settled_cache`] for why this is a poll and not a sleep.
+async fn await_settled_snapshot(emulator: &Emulator, case: &ExportCase) {
+    poll_until(
+        emulator,
+        case.region,
+        case.case,
+        &format!(
+            "the serverless cache snapshot {} settling at available",
+            case.snapshot_request_name
+        ),
+        "DescribeServerlessCacheSnapshots",
+        &params(&[(
+            "ServerlessCacheSnapshotName",
+            case.snapshot_request_name,
+        )]),
+        |reply| reply.text("Status") == Some(state::STATUS_AVAILABLE),
+    )
+    .await;
+}
+
 /// Read one snapshot back by name, asserting the describe itself succeeded.
 async fn describe_snapshot(emulator: &Emulator, case: &ExportCase) -> Reply {
     let described = emulator
@@ -237,14 +279,6 @@ async fn snapshot_event_messages(emulator: &Emulator, case: &ExportCase) -> Vec<
 
 #[tokio::test]
 async fn every_stored_snapshot_is_exported_into_the_bucket_the_request_names() {
-    assert!(
-        PAST_TRANSITION > state::SERVERLESS_CACHE_TRANSITION
-            && PAST_TRANSITION > state::SNAPSHOT_TRANSITION,
-        "these tests wait {PAST_TRANSITION:?}, which must out-last the cache span ({:?}) and the \
-         snapshot span ({:?}) this service publishes",
-        state::SERVERLESS_CACHE_TRANSITION,
-        state::SNAPSHOT_TRANSITION
-    );
     let emulator = Emulator::with_s3();
 
     for case in CASES {
@@ -252,12 +286,14 @@ async fn every_stored_snapshot_is_exported_into_the_bucket_the_request_names() {
         create_bucket(&emulator, case.case, case.bucket, case.region).await;
     }
     // A snapshot is taken of a settled cache, and exported from a settled
-    // snapshot, so the clock has to carry both spans first.
-    tokio::time::sleep(PAST_TRANSITION).await;
+    // snapshot, so each row waits for those two conditions in turn.
     for case in CASES {
+        await_settled_cache(&emulator, case).await;
         create_snapshot(&emulator, case).await;
     }
-    tokio::time::sleep(PAST_TRANSITION).await;
+    for case in CASES {
+        await_settled_snapshot(&emulator, case).await;
+    }
 
     for case in CASES {
         let before = describe_snapshot(&emulator, case).await;
@@ -385,7 +421,7 @@ async fn an_export_that_cannot_be_performed_is_refused_and_writes_nothing() {
     create_cache(&emulator, case).await;
     create_bucket(&emulator, case.case, bucket, case.region).await;
     create_bucket(&emulator, case.case, other_region_bucket, OTHER_REGION).await;
-    tokio::time::sleep(PAST_TRANSITION).await;
+    await_settled_cache(&emulator, case).await;
 
     // A name the account holds no snapshot under: the modelled not-found fault,
     // whichever bucket the request names, and whatever case the name is in.
@@ -405,8 +441,10 @@ async fn an_export_that_cannot_be_performed_is_refused_and_writes_nothing() {
         );
         assert_eq!(
             refused.error_message(),
-            format!("Serverless cache snapshot with name {missing} not found."),
-            "case {missing}: the fault must name the snapshot the request asked for, got {:?}",
+            // The class's own fixed sentence: it states only that no snapshot is held
+            // under the specified name, and names nothing the request sent.
+            "Serverless cache snapshot with specified name does not exists.",
+            "case {missing}: the fault must state the class's own sentence, got {:?}",
             refused.error_message()
         );
     }
@@ -440,9 +478,9 @@ async fn an_export_that_cannot_be_performed_is_refused_and_writes_nothing() {
         );
     }
 
-    // Past the span the snapshot is exportable, so the two bucket refusals below
-    // are about the BUCKET and not about the snapshot.
-    tokio::time::sleep(PAST_TRANSITION).await;
+    // Once the snapshot has settled it is exportable, so the two bucket refusals
+    // below are about the BUCKET and not about the snapshot.
+    await_settled_snapshot(&emulator, case).await;
     let key = format!("{}.rdb", case.snapshot_stored_name);
 
     // A bucket the object store holds nothing under takes no export.
