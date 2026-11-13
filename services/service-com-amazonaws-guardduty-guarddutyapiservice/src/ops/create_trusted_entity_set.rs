@@ -183,12 +183,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // activate the entity set or not"
         // (`smithy_query(query="doc",shape="CreateTrustedEntitySetRequest",member="Location")`),
         // so the check does not depend on `Activate`. It is the shared uploaded-list
-        // reader, read against the Amazon S3 endpoint this caller reaches
-        // ([`crate::state::is_s3_location`], [`crate::state::request_host`]).
-        if !crate::state::is_s3_location(
-            &input.location,
-            crate::state::request_host(ctx).as_deref(),
-        ) {
+        // reader ([`crate::state::is_s3_location`]): an S3 object URL, whatever
+        // Amazon S3 endpoint it names.
+        if !crate::state::is_s3_location(&input.location) {
             return Err(bad_request(crate::state::invalid_parameter_message(
                 crate::state::ENTITY_SET_LOCATION_MEMBER,
             )));

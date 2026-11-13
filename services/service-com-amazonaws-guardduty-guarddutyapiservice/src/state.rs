@@ -2928,28 +2928,6 @@ pub fn request_region(ctx: &smithy_server_runtime::OperationContext<'_>) -> Stri
 /// The Region an unsigned request is attributed to.
 pub const DEFAULT_REGION: &str = "us-east-1";
 
-/// The endpoint host this request addressed — its `Host` header, or the authority
-/// of the request URI when it carries one. `None` when the request names no
-/// endpoint of its own.
-///
-/// It is what tells an uploaded list's `Location` whether it addresses the Amazon
-/// S3 endpoint the CALLER reaches ([`is_s3_location`]): every service this
-/// emulator presents is served at one endpoint, so the endpoint a request arrives
-/// at is also the one its S3 objects are addressed at.
-pub fn request_host(ctx: &smithy_server_runtime::OperationContext<'_>) -> Option<String> {
-    ctx.parts()
-        .headers
-        .get(::http::header::HOST)
-        .and_then(|value| value.to_str().ok())
-        .or_else(|| {
-            ctx.parts()
-                .uri
-                .authority()
-                .map(::http::uri::Authority::as_str)
-        })
-        .map(ToString::to_string)
-}
-
 /// This service's store in the shared engine: call it with a handler's `&*self.engine`.
 ///
 /// Answer `None` with a modelled server error, never with a fresh engine.

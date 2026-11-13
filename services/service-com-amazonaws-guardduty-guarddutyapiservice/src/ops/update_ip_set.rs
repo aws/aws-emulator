@@ -167,13 +167,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // The `Location` an update carries is the same fact the create's member is —
         // "the updated URI of the file that contains the IPSet"
         // (`smithy_query(operation="UpdateIPSet")`) — so it is held to the same S3
-        // URL syntax the create holds it to ([`crate::state::is_s3_location`]),
-        // against the Amazon S3 endpoint this caller reaches
-        // ([`crate::state::request_host`]), and a value the service could never
-        // fetch is refused before the stored location is overwritten with it.
-        if input.location.as_deref().is_some_and(|location| {
-            !crate::state::is_s3_location(location, crate::state::request_host(ctx).as_deref())
-        }) {
+        // URL syntax the create holds it to ([`crate::state::is_s3_location`]) —
+        // an S3 object URL, whatever Amazon S3 endpoint it names — and a value that
+        // is no S3 URL at all is refused before the stored location is overwritten
+        // with it.
+        if input
+            .location
+            .as_deref()
+            .is_some_and(|location| !crate::state::is_s3_location(location))
+        {
             return Err(crate::scaffolded::Scaffolded::invalid_input(
                 crate::state::invalid_parameter_message(crate::state::IP_SET_LOCATION_MEMBER),
             ));

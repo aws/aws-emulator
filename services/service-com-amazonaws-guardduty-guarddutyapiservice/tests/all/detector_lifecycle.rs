@@ -91,8 +91,8 @@ pub(crate) async fn call_in(
 /// [`call`], sent to the endpoint authority `host` rather than to this harness's
 /// default one.
 ///
-/// The authority a request arrives at is what an uploaded list's `Location` is read
-/// against (`state::request_host`), so a suite about that rule has to choose it.
+/// A suite asserting that a rule does NOT depend on the endpoint a request arrived at
+/// has to be able to choose that authority.
 pub(crate) async fn call_at(
     router: &Router,
     host: &str,

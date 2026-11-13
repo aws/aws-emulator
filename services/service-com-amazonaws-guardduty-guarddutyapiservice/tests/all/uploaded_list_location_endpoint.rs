@@ -11,12 +11,13 @@
 //! The rules under test, each asserted over a TABLE of inputs rather than over one
 //! recorded call:
 //!
-//! 1. An uploaded list's `Location` is accepted when it addresses an OBJECT — a
-//!    bucket and a non-empty key — at the Amazon S3 endpoint serving the caller: the
-//!    three public S3 URL spellings, and the path-style object URL on the endpoint
-//!    authority the request itself arrived at, which is the S3 endpoint a caller of
-//!    this emulator reaches. A URL naming any other authority, or naming no object,
-//!    is refused with HTTP 400 under the `InvalidInputException` class and stores
+//! 1. An uploaded list's `Location` is accepted when it addresses an OBJECT — a bucket
+//!    and a non-empty key — at an Amazon S3 endpoint, whatever that endpoint's host,
+//!    port and scheme are: which host serves S3 is environment-specific, so it is no
+//!    part of the rule, and the endpoint the GuardDuty request itself arrived at does
+//!    not decide it either. Every row is therefore sent to EACH of several endpoint
+//!    authorities and must get the same answer. A URL naming no object at all is
+//!    refused with HTTP 400 under the `InvalidInputException` class and stores
 //!    nothing. The rule is the uploaded-list FAMILY's, so the rows span all four
 //!    families — the IPSet, the threat list and the two entity sets — on the create
 //!    that stores a location, and the stored value reads back verbatim.
@@ -54,12 +55,16 @@ const LOOPBACK_ENDPOINT: &str = "127.0.0.1:9297";
 /// A second spelling of a non-public endpoint, so the rule is not read off one host.
 const NAMED_ENDPOINT: &str = "localhost:4566";
 
-/// An endpoint reached on the port the `https` scheme implies, named explicitly in
-/// the authority — and the same endpoint with that port left out. One endpoint, two
-/// legal spellings.
-const DEFAULT_PORT_ENDPOINT: &str = "gd-endpoint.internal:443";
-/// See [`DEFAULT_PORT_ENDPOINT`].
-const PORTLESS_ENDPOINT: &str = "gd-endpoint.internal";
+/// The public authority a GuardDuty client reaches when no endpoint of its own is
+/// configured.
+const PUBLIC_ENDPOINT: &str = "guardduty.us-east-1.amazonaws.com";
+
+/// The endpoint authorities every `Location` row below is sent to in turn. The rule is
+/// about the URL the caller submits, not about where the request landed, so each row
+/// must get the same answer at every one of them.
+fn endpoints() -> [&'static str; 3] {
+    [LOOPBACK_ENDPOINT, NAMED_ENDPOINT, PUBLIC_ENDPOINT]
+}
 
 /// One uploaded-list family: the route segment its sub-resource hangs off, the
 /// `Format` value a create needs and the `jsonName` of the id the create reports.
@@ -102,109 +107,85 @@ fn families() -> Vec<Family> {
     ]
 }
 
-/// One `Location` case: the endpoint the request is addressed to, the location it
-/// carries, and whether the service may store it.
+/// One `Location` case: the location a create carries and whether the service may
+/// store it. Every row is sent to each of [`endpoints`].
 struct LocationCase {
     why: &'static str,
-    endpoint: &'static str,
     location: String,
     accepted: bool,
 }
 
 /// The locations, spanning what the rule generalises over: the SPELLING of the S3
-/// address (the `s3://` scheme, the path-style public endpoint, the virtual-hosted
-/// one, and the path-style object URL on the endpoint the request arrived at), the
-/// ENDPOINT the request is addressed to and how its authority spells the port, the
-/// DEPTH of the object key, and the ways a value fails to address an object at all
-/// (another authority, another port, no key, another scheme).
+/// address (the `s3://` scheme, the path-style endpoint and the virtual-hosted one),
+/// the HOST and PORT of the endpoint the object URL names (a public S3 endpoint, a
+/// loopback address with a port, a name with a port, a name with none), its SCHEME
+/// (`https` and `http`), the DEPTH of the object key, and the ways a value addresses
+/// no object at all (no key, an empty key, no scheme).
 ///
-/// The catalogue of PUBLIC S3 spellings, and of the values that are no S3 URL at all,
-/// is the `ip_set_location_syntax` suite's; the rows here carry one of each as a
-/// control and own the endpoint-relative half of the rule.
+/// The catalogue of values that are no S3 URL at all is the `ip_set_location_syntax`
+/// suite's; the rows here carry one as a control and own the half of the rule that
+/// says the endpoint does not matter — neither the one the object URL names nor the
+/// one the GuardDuty request arrived at.
 fn location_cases() -> Vec<LocationCase> {
     vec![
         LocationCase {
             why: "an s3:// URL",
-            endpoint: LOOPBACK_ENDPOINT,
             location: "s3://my-bucket/lists/trusted.txt".to_string(),
             accepted: true,
         },
         LocationCase {
             why: "a path-style public S3 endpoint",
-            endpoint: LOOPBACK_ENDPOINT,
             location: "https://s3.eu-west-1.amazonaws.com/my-bucket/lists/trusted.txt".to_string(),
             accepted: true,
         },
         LocationCase {
             why: "a virtual-hosted-style public S3 endpoint",
-            endpoint: LOOPBACK_ENDPOINT,
             location: "https://my-bucket.s3.us-west-2.amazonaws.com/lists/trusted.txt".to_string(),
             accepted: true,
         },
         LocationCase {
-            why: "an object URL on the loopback endpoint the request arrived at",
-            endpoint: LOOPBACK_ENDPOINT,
+            why: "an object URL on a loopback endpoint with a port",
             location: format!("https://{LOOPBACK_ENDPOINT}/my-bucket/lists/trusted.txt"),
             accepted: true,
         },
         LocationCase {
-            why: "an object URL on the named endpoint the request arrived at",
-            endpoint: NAMED_ENDPOINT,
+            why: "an object URL on a named endpoint with a port",
             location: format!("https://{NAMED_ENDPOINT}/my-bucket/trusted.txt"),
             accepted: true,
         },
         LocationCase {
             why: "an object URL on that endpoint with a deep key",
-            endpoint: NAMED_ENDPOINT,
             location: format!("https://{NAMED_ENDPOINT}/my-bucket/lists/2026/03/trusted.txt"),
             accepted: true,
         },
         LocationCase {
-            why: "an object URL omitting the default port the request named",
-            endpoint: DEFAULT_PORT_ENDPOINT,
-            location: format!("https://{PORTLESS_ENDPOINT}/my-bucket/trusted.txt"),
+            why: "an object URL on an endpoint naming no port",
+            location: "https://gd-endpoint.internal/my-bucket/trusted.txt".to_string(),
             accepted: true,
         },
         LocationCase {
-            why: "an object URL naming the default port the request omitted",
-            endpoint: PORTLESS_ENDPOINT,
-            location: format!("https://{DEFAULT_PORT_ENDPOINT}/my-bucket/trusted.txt"),
+            why: "an object URL over http rather than https",
+            location: format!("http://{LOOPBACK_ENDPOINT}/my-bucket/trusted.txt"),
             accepted: true,
         },
         LocationCase {
-            why: "an object URL on an endpoint the request did not arrive at",
-            endpoint: LOOPBACK_ENDPOINT,
-            location: format!("https://{NAMED_ENDPOINT}/my-bucket/trusted.txt"),
-            accepted: false,
+            why: "an object URL on an unrelated host",
+            location: "https://files.example-corp.com/my-bucket/trusted.txt".to_string(),
+            accepted: true,
         },
         LocationCase {
-            why: "the endpoint's host on another port than the one the request named",
-            endpoint: LOOPBACK_ENDPOINT,
-            location: "https://127.0.0.1/my-bucket/trusted.txt".to_string(),
-            accepted: false,
-        },
-        LocationCase {
-            why: "the endpoint the request arrived at, naming only a bucket",
-            endpoint: LOOPBACK_ENDPOINT,
+            why: "an object URL naming only a bucket",
             location: format!("https://{LOOPBACK_ENDPOINT}/my-bucket"),
             accepted: false,
         },
         LocationCase {
-            why: "the endpoint the request arrived at, with an empty key",
-            endpoint: LOOPBACK_ENDPOINT,
+            why: "an object URL with an empty key",
             location: format!("https://{LOOPBACK_ENDPOINT}/my-bucket/"),
             accepted: false,
         },
         LocationCase {
-            why: "that endpoint over http rather than https",
-            endpoint: LOOPBACK_ENDPOINT,
-            location: format!("http://{LOOPBACK_ENDPOINT}/my-bucket/trusted.txt"),
-            accepted: false,
-        },
-        LocationCase {
-            why: "an unrelated https host",
-            endpoint: LOOPBACK_ENDPOINT,
-            location: "https://files.example-corp.com/my-bucket/trusted.txt".to_string(),
+            why: "a value that is no URL at all",
+            location: "this is not a valid s3 uri or arn".to_string(),
             accepted: false,
         },
     ]
@@ -251,169 +232,174 @@ async fn read(router: &Router, detector_id: &str, family: &Family, id: &str) -> 
 }
 
 // ---------------------------------------------------------------------------
-// Rule 1: a Location addresses an object at the S3 endpoint serving the caller.
+// Rule 1: a Location addresses an object at an S3 endpoint, whichever one.
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn a_location_is_accepted_exactly_when_it_addresses_an_object_at_the_served_endpoint() {
+async fn a_location_is_accepted_exactly_when_it_addresses_an_object_at_any_s3_endpoint() {
     for family in families() {
         for (index, row) in location_cases().into_iter().enumerate() {
-            // A router per case: a detector holds at most one trusted entity set and
-            // the account may have only one ACTIVATED IPSet, and neither allowance is
-            // this rule's business.
-            let (router, detector_id) = detector().await;
-            let case = format!("{} create at {}: {}", family.case, row.endpoint, row.why);
+            // The same row at each endpoint authority: the answer is a function of
+            // the URL alone, not of where the request landed.
+            for endpoint in endpoints() {
+                // A router per case: a detector holds at most one trusted entity set
+                // and the account may have only one ACTIVATED IPSet, and neither
+                // allowance is this rule's business.
+                let (router, detector_id) = detector().await;
+                let case = format!("{} create at {endpoint}: {}", family.case, row.why);
 
-            let (status, body) = create_at(
-                &router,
-                row.endpoint,
-                &detector_id,
-                &family,
-                json!({
-                    "name": format!("located-{index}"),
-                    "format": family.format,
-                    "location": row.location,
-                    "activate": true
-                }),
-            )
-            .await;
-
-            if row.accepted {
-                assert_eq!(
-                    status, 200,
-                    "case {case:?}: expected the create to be served, got {status} {body:?}"
-                );
-                let id = body[family.id_member]
-                    .as_str()
-                    .unwrap_or_else(|| panic!("case {case:?}: expected an id, got {body:?}"))
-                    .to_string();
-                // Stored, and stored VERBATIM: the location a caller gave is the one
-                // a reader reports.
-                let stored = read(&router, &detector_id, &family, &id).await;
-                let reported = stored["location"].as_str().unwrap_or_default();
-                assert_eq!(
-                    reported, row.location,
-                    "case {case:?}: expected the location {:?} back, got {reported:?}",
-                    row.location
-                );
-            } else {
-                assert_eq!(
-                    status, 400,
-                    "case {case:?}: expected HTTP 400, got {status} {body:?}"
-                );
-                let class = error_code(&body);
-                assert_eq!(
-                    class, INVALID_INPUT,
-                    "case {case:?}: expected the {INVALID_INPUT} class, got {class:?} {body:?}"
-                );
-                let message = body["message"].as_str().unwrap_or_default();
-                assert!(
-                    !message.contains(&row.location),
-                    "case {case:?}: a refusal must not echo {:?}, got {message:?}",
-                    row.location
-                );
-                // A refused create stores nothing: the family's collection is empty.
-                let (status, listed) = call(
+                let (status, body) = create_at(
                     &router,
-                    "GET",
-                    &format!("/detector/{detector_id}/{}", family.segment),
-                    None,
+                    endpoint,
+                    &detector_id,
+                    &family,
+                    json!({
+                        "name": format!("located-{index}"),
+                        "format": family.format,
+                        "location": row.location,
+                        "activate": true
+                    }),
                 )
                 .await;
-                assert_eq!(
-                    status, 200,
-                    "case {case:?}: the listing must be served, got {status} {listed:?}"
-                );
-                let ids = listed[format!("{}s", family.id_member)]
-                    .as_array()
-                    .cloned()
-                    .unwrap_or_default();
-                assert!(
-                    ids.is_empty(),
-                    "case {case:?}: a refused create must store no list, got {ids:?}"
-                );
+
+                if row.accepted {
+                    assert_eq!(
+                        status, 200,
+                        "case {case:?}: expected the create to be served, got {status} {body:?}"
+                    );
+                    let id = body[family.id_member]
+                        .as_str()
+                        .unwrap_or_else(|| panic!("case {case:?}: expected an id, got {body:?}"))
+                        .to_string();
+                    // Stored, and stored VERBATIM: the location a caller gave is the
+                    // one a reader reports.
+                    let stored = read(&router, &detector_id, &family, &id).await;
+                    let reported = stored["location"].as_str().unwrap_or_default();
+                    assert_eq!(
+                        reported, row.location,
+                        "case {case:?}: expected the location {:?} back, got {reported:?}",
+                        row.location
+                    );
+                } else {
+                    assert_eq!(
+                        status, 400,
+                        "case {case:?}: expected HTTP 400, got {status} {body:?}"
+                    );
+                    let class = error_code(&body);
+                    assert_eq!(
+                        class, INVALID_INPUT,
+                        "case {case:?}: expected the {INVALID_INPUT} class, got {class:?} {body:?}"
+                    );
+                    let message = body["message"].as_str().unwrap_or_default();
+                    assert!(
+                        !message.contains(&row.location),
+                        "case {case:?}: a refusal must not echo {:?}, got {message:?}",
+                        row.location
+                    );
+                    // A refused create stores nothing: the family's collection is
+                    // empty.
+                    let (status, listed) = call(
+                        &router,
+                        "GET",
+                        &format!("/detector/{detector_id}/{}", family.segment),
+                        None,
+                    )
+                    .await;
+                    assert_eq!(
+                        status, 200,
+                        "case {case:?}: the listing must be served, got {status} {listed:?}"
+                    );
+                    let ids = listed[format!("{}s", family.id_member)]
+                        .as_array()
+                        .cloned()
+                        .unwrap_or_default();
+                    assert!(
+                        ids.is_empty(),
+                        "case {case:?}: a refused create must store no list, got {ids:?}"
+                    );
+                }
             }
         }
     }
 }
 
-/// The endpoint a list was uploaded through is the one the UPDATE is read against
-/// too: the same location is accepted on an update sent to that endpoint and refused
-/// on one sent elsewhere, and the refusal keeps the stored value.
+/// An update is held to the same rule, and to no endpoint of its own: the object URL
+/// a list was uploaded through is accepted on an update sent to ANY endpoint, while a
+/// value addressing no object is refused on each of them and keeps the stored one.
 #[tokio::test]
-async fn an_update_reads_a_location_against_the_endpoint_it_arrives_at() {
+async fn an_update_reads_a_location_by_its_own_syntax_whatever_endpoint_it_arrives_at() {
     for family in families() {
-        let (router, detector_id) = detector().await;
-        let case = format!("{} update", family.case);
-        let stored_location = "s3://my-bucket/lists/stored.txt";
+        for endpoint in endpoints() {
+            let (router, detector_id) = detector().await;
+            let case = format!("{} update at {endpoint}", family.case);
+            let stored_location = "s3://my-bucket/lists/stored.txt";
 
-        let (status, body) = create_at(
-            &router,
-            LOOPBACK_ENDPOINT,
-            &detector_id,
-            &family,
-            json!({
-                "name": "stored-list",
-                "format": family.format,
-                "location": stored_location,
-                "activate": false
-            }),
-        )
-        .await;
-        assert_eq!(
-            status, 200,
-            "case {case:?}: the baseline create expected 200, got {status} {body:?}"
-        );
-        let id = body[family.id_member]
-            .as_str()
-            .unwrap_or_else(|| panic!("case {case:?}: expected an id, got {body:?}"))
-            .to_string();
+            let (status, body) = create_at(
+                &router,
+                endpoint,
+                &detector_id,
+                &family,
+                json!({
+                    "name": "stored-list",
+                    "format": family.format,
+                    "location": stored_location,
+                    "activate": false
+                }),
+            )
+            .await;
+            assert_eq!(
+                status, 200,
+                "case {case:?}: the baseline create expected 200, got {status} {body:?}"
+            );
+            let id = body[family.id_member]
+                .as_str()
+                .unwrap_or_else(|| panic!("case {case:?}: expected an id, got {body:?}"))
+                .to_string();
+            let path = format!("/detector/{detector_id}/{}/{id}", family.segment);
 
-        let endpoint_location = format!("https://{LOOPBACK_ENDPOINT}/other-bucket/lists/new.txt");
-        let path = format!("/detector/{detector_id}/{}/{id}", family.segment);
+            // A URL that names a bucket but no object is refused, and the stored
+            // location stands.
+            let (status, refused) = call_at(
+                &router,
+                endpoint,
+                "POST",
+                &path,
+                Some(json!({"location": format!("https://{NAMED_ENDPOINT}/other-bucket")})),
+            )
+            .await;
+            assert_eq!(
+                status, 400,
+                "case {case:?}: a URL naming no object must be refused, got {status} {refused:?}"
+            );
+            let kept = read(&router, &detector_id, &family, &id).await;
+            assert_eq!(
+                kept["location"].as_str(),
+                Some(stored_location),
+                "case {case:?}: a refused update must keep the stored location, got {kept:?}"
+            );
 
-        // Sent to another endpoint, the same URL addresses a host this emulator does
-        // not serve, so it is refused and the stored location stands.
-        let (status, refused) = call_at(
-            &router,
-            NAMED_ENDPOINT,
-            "POST",
-            &path,
-            Some(json!({"location": endpoint_location})),
-        )
-        .await;
-        assert_eq!(
-            status, 400,
-            "case {case:?}: an object URL on another endpoint must be refused, got {status} \
-             {refused:?}"
-        );
-        let kept = read(&router, &detector_id, &family, &id).await;
-        assert_eq!(
-            kept["location"].as_str(),
-            Some(stored_location),
-            "case {case:?}: a refused update must keep the stored location, got {kept:?}"
-        );
-
-        // Sent to the endpoint it names, it is the S3 endpoint serving the caller.
-        let (status, updated) = call_at(
-            &router,
-            LOOPBACK_ENDPOINT,
-            "POST",
-            &path,
-            Some(json!({"location": endpoint_location})),
-        )
-        .await;
-        assert_eq!(
-            status, 200,
-            "case {case:?}: an object URL on the served endpoint must be accepted, got {status} \
-             {updated:?}"
-        );
-        let after = read(&router, &detector_id, &family, &id).await;
-        assert_eq!(
-            after["location"].as_str(),
-            Some(endpoint_location.as_str()),
-            "case {case:?}: expected the updated location back, got {after:?}"
-        );
+            // An object URL on an endpoint unrelated to the one this request arrived
+            // at is an S3 object URL all the same.
+            let object_url = format!("https://{NAMED_ENDPOINT}/other-bucket/lists/new.txt");
+            let (status, updated) = call_at(
+                &router,
+                endpoint,
+                "POST",
+                &path,
+                Some(json!({"location": object_url})),
+            )
+            .await;
+            assert_eq!(
+                status, 200,
+                "case {case:?}: an object URL must be accepted, got {status} {updated:?}"
+            );
+            let after = read(&router, &detector_id, &family, &id).await;
+            assert_eq!(
+                after["location"].as_str(),
+                Some(object_url.as_str()),
+                "case {case:?}: expected the updated location back, got {after:?}"
+            );
+        }
     }
 }
 

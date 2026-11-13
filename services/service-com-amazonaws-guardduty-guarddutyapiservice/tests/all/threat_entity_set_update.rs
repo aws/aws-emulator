@@ -619,14 +619,14 @@ async fn a_value_outside_the_documented_rules_is_refused_and_writes_nothing() {
     // so each of these carries a character outside that alphabet.
     let bad_names = ["has space", "dots.in.name", "slash/name", "plus+name", "naïve"];
     // "The format of the Location URL must be a valid Amazon S3 URL format": a
-    // non-S3 host, a fake S3 host, a non-HTTPS scheme, a non-HTTP scheme, a URL with
-    // no object key and a bare path.
+    // scheme no S3 object is addressed by, a URL naming a bucket and no object key,
+    // a URL whose key is empty and a bare path with no scheme.
     let bad_locations = [
-        "https://example.com/guardduty-lists/threat.txt",
-        "https://s3fake.amazonaws.com/guardduty-lists/threat.txt",
-        "http://s3.amazonaws.com/guardduty-lists/threat.txt",
         "ftp://guardduty-lists/threat.txt",
         "s3://guardduty-lists",
+        "s3://guardduty-lists/",
+        "https://s3.amazonaws.com/guardduty-lists",
+        "https://127.0.0.1:9000/guardduty-lists",
         "/guardduty-lists/threat.txt",
     ];
 
@@ -645,7 +645,7 @@ async fn a_value_outside_the_documented_rules_is_refused_and_writes_nothing() {
     // well-formed member travelling with a refused one is not written either.
     rows.push((
         "a bad location beside a good name, activate=true".to_string(),
-        json!({"name": "would_be_fine", "location": "https://example.com/x.txt", "activate": true}),
+        json!({"name": "would_be_fine", "location": "ftp://guardduty-lists/x.txt", "activate": true}),
         LOCATION_MEMBER,
     ));
     rows.push((

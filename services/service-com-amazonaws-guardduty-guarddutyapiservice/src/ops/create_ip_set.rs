@@ -178,14 +178,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // — the file GuardDuty fetches from Amazon S3 — and the modelled constraint
         // on it is a `len 1..300` with no pattern, so the syntax is enforced here,
         // the way it is for every other uploaded list on this service
-        // ([`crate::state::is_s3_location`]), against the Amazon S3 endpoint this
-        // caller reaches ([`crate::state::request_host`]). Checked before anything is
-        // written and whatever `Activate` says, so a list the service could never
-        // fetch is refused instead of provisioned.
-        if !crate::state::is_s3_location(
-            &input.location,
-            crate::state::request_host(ctx).as_deref(),
-        ) {
+        // ([`crate::state::is_s3_location`]): an S3 object URL, whatever Amazon S3
+        // endpoint it names. Checked before anything is written and whatever
+        // `Activate` says, so a value that is no S3 URL at all is refused instead of
+        // provisioned.
+        if !crate::state::is_s3_location(&input.location) {
             return Err(crate::scaffolded::Scaffolded::invalid_input(
                 crate::state::invalid_parameter_message(crate::state::IP_SET_LOCATION_MEMBER),
             ));

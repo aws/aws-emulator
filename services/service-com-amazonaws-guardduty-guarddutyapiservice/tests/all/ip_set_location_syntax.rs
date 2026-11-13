@@ -8,8 +8,9 @@
 //! > Amazon S3, so a value that is not an Amazon S3 URL is refused — HTTP 400 under
 //! > the `InvalidInputException` class, naming the list family's own location
 //! > parameter and echoing nothing of the value — whatever `Activate` says and
-//! > whatever else the request carries, while an S3 URL in any of its three
-//! > spellings is accepted and read back verbatim.
+//! > whatever else the request carries, while an S3 object URL — the `s3://` scheme,
+//! > or an `http`/`https` URL naming a bucket and a non-empty object key at any S3
+//! > endpoint, whatever its host and port — is accepted and read back verbatim.
 //!
 //! The rule is the FAMILY's: it holds for the IPSet and the threat list, on the
 //! create that stores a location and on the update that replaces one. (The entity-set
@@ -65,14 +66,18 @@ fn families() -> Vec<Family> {
     ]
 }
 
-/// Locations that ARE Amazon S3 URLs, spanning the three spellings an S3 object has:
-/// the `s3://` scheme, the path-style HTTPS endpoint and the virtual-hosted-style
-/// one, each with a Region-less and a regional host where the form admits it, plus a
-/// non-ASCII object key and the longest value `Location`'s modelled `len 1..300`
-/// admits.
+/// Locations that ARE Amazon S3 object URLs, spanning what the rule generalises over:
+/// the SPELLING of the address (the `s3://` scheme, the path-style endpoint and the
+/// virtual-hosted-style one), the HOST and PORT of the endpoint the object URL names
+/// (a Region-less and a regional public endpoint, a private endpoint reached by name
+/// or by loopback address, with and without an explicit port), the SCHEME of an object
+/// URL (`https` and `http`), the DEPTH and the CHARACTER SET of the object key, and
+/// the longest value `Location`'s modelled `len 1..300` admits.
 ///
-/// Source for the spellings: the S3 URL forms `state::is_s3_location` accepts, which
-/// is the one reader this service resolves an uploaded list's location through.
+/// Source for the spellings: the S3 URL forms — `s3://bucket/key`, the path-style
+/// `<s3 endpoint>/bucket/key` and the virtual-hosted-style `bucket.s3<...>/key`.
+/// Which host serves S3 is environment-specific and is no part of the rule, so a
+/// non-public endpoint is an S3 endpoint too.
 fn accepted_locations() -> Vec<(String, String)> {
     let longest = format!("s3://my-bucket/{}", "k".repeat(300 - "s3://my-bucket/".len()));
     vec![
@@ -98,6 +103,22 @@ fn accepted_locations() -> Vec<(String, String)> {
             "https://my-bucket.s3.us-west-2.amazonaws.com/lists/trusted.txt".to_string(),
         ),
         (
+            "a path-style object URL on a private endpoint named by host".to_string(),
+            "https://s3.internal.example/my-bucket/lists/trusted.txt".to_string(),
+        ),
+        (
+            "a path-style object URL on an endpoint with an explicit port".to_string(),
+            "https://localhost:4566/my-bucket/lists/trusted.txt".to_string(),
+        ),
+        (
+            "a path-style object URL on a loopback endpoint over http".to_string(),
+            "http://127.0.0.1:9000/my-bucket/lists/trusted.txt".to_string(),
+        ),
+        (
+            "a virtual-hosted-style object URL outside amazonaws.com".to_string(),
+            "https://my-bucket.s3.internal.example/lists/trusted.txt".to_string(),
+        ),
+        (
             "a non-ASCII object key".to_string(),
             "s3://my-bucket/\u{30c8}\u{30e9}\u{30b9}\u{30c8}.txt".to_string(),
         ),
@@ -105,9 +126,10 @@ fn accepted_locations() -> Vec<(String, String)> {
     ]
 }
 
-/// Locations that are NOT Amazon S3 URLs, spanning the ways a value fails to be one:
-/// free text, another scheme, an S3 URL naming no object, a host that only looks like
-/// an S3 endpoint, and a value at the modelled minimum length.
+/// Locations that are NOT Amazon S3 object URLs, spanning the ways a value fails to be
+/// one: free text, no scheme at all, a scheme no S3 object is addressed by, a URL with
+/// no authority, a URL naming no object (a bucket with no key, or an empty key), and a
+/// value at the modelled minimum length.
 fn refused_locations() -> Vec<(&'static str, &'static str)> {
     vec![
         ("free text with spaces", "this is not a valid s3 uri or arn"),
@@ -115,8 +137,7 @@ fn refused_locations() -> Vec<(&'static str, &'static str)> {
         ("a bare bucket and key", "my-bucket/lists/trusted.txt"),
         ("the shortest value the model admits", "s"),
         ("another scheme", "ftp://my-bucket/lists/trusted.txt"),
-        ("an http endpoint rather than https", "http://s3.amazonaws.com/my-bucket/k"),
-        ("an unrelated https host", "https://example.com/lists/trusted.txt"),
+        ("a file URL naming no authority", "file:///my-bucket/lists/trusted.txt"),
         ("an s3:// URL naming only a bucket", "s3://my-bucket"),
         ("an s3:// URL whose key is empty", "s3://my-bucket/"),
         (
@@ -124,12 +145,16 @@ fn refused_locations() -> Vec<(&'static str, &'static str)> {
             "https://s3.amazonaws.com/my-bucket",
         ),
         (
-            "a host whose s3 label is part of another word",
-            "https://nots3.amazonaws.com/my-bucket/k",
+            "a path-style endpoint whose key is empty",
+            "https://s3.amazonaws.com/my-bucket/",
         ),
         (
-            "a bucket-shaped host outside amazonaws.com",
-            "https://my-bucket.s3.example.com/k",
+            "an object URL naming a host and no object",
+            "https://localhost:4566/my-bucket",
+        ),
+        (
+            "a virtual-hosted-style endpoint whose key is empty",
+            "https://my-bucket.s3.amazonaws.com/",
         ),
     ]
 }

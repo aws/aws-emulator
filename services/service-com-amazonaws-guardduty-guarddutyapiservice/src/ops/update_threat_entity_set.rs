@@ -192,9 +192,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // the rule is the entity set's own, so an update cannot leave a location
         // in the store that a create would have refused, and the check does not
         // depend on `Activate`.
-        if input.location.as_deref().is_some_and(|location| {
-            !crate::state::is_s3_location(location, crate::state::request_host(ctx).as_deref())
-        }) {
+        if input
+            .location
+            .as_deref()
+            .is_some_and(|location| !crate::state::is_s3_location(location))
+        {
             return Err(bad_request(crate::state::invalid_parameter_message(
                 crate::state::ENTITY_SET_LOCATION_MEMBER,
             )));

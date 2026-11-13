@@ -150,85 +150,65 @@ pub fn is_entity_set_name(name: &str) -> bool {
 /// The modelled constraint on each of those members is a `len 1..300` with no
 /// pattern, so the handler is the enforcement point.
 ///
-/// The accepted forms are the S3 URL forms: the `s3://bucket/key` scheme, the
-/// path-style HTTPS endpoint (`https://s3[.-]<region>.amazonaws.com/bucket/key`)
-/// and the virtual-hosted-style one
-/// (`https://bucket.s3[.-]<region>.amazonaws.com/key`). Each needs BOTH a bucket
-/// and a non-empty object key: a URL naming only a bucket does not name a list.
+/// The accepted forms are the S3 URL forms, and nothing about the HOST or the PORT
+/// of an object URL narrows them: an uploaded list is addressed either by the
+/// `s3://bucket/key` scheme or by an object URL — an `http`/`https` URL that names
+/// a bucket and a non-empty object key — resolved against whichever Amazon S3
+/// endpoint that URL names. The bucket sits in the first path segment of a
+/// path-style URL (`<s3 endpoint>/bucket/key`) and in the leading host label of a
+/// virtual-hosted-style one (`bucket.s3<...>/key`).
 ///
-/// `endpoint_host` is the endpoint the REQUEST addressed ([`request_host`]), and a
-/// path-style object URL on that endpoint is an S3 object URL too: the Amazon S3
-/// endpoint a caller of this emulator reaches is the emulator's own endpoint, not
-/// a public `amazonaws.com` host, so a list uploaded through it is addressed
-/// `<this endpoint>/<bucket>/<key>`. Nothing else widens: a URL naming any OTHER
-/// authority addresses a host neither Amazon S3 nor this emulator serves, so it is
-/// still refused.
-pub fn is_s3_location(location: &str, endpoint_host: Option<&str>) -> bool {
+/// The host is NOT a requirement: a public `amazonaws.com` S3 endpoint, a
+/// Region-specific one and the endpoint the caller's own S3 client is configured
+/// with are all S3 endpoints, and which of them is in force is environment-specific.
+/// What stays refused is a value that is no S3 URL at all: free text, a bare path,
+/// another scheme, or a URL that names no object (a bucket with no key).
+pub fn is_s3_location(location: &str) -> bool {
     let Ok(url) = ::url::Url::parse(location) else {
         return false;
     };
     let Some(host) = url.host_str() else {
         return false;
     };
+    if host.is_empty() {
+        return false;
+    }
     let key = url.path().trim_start_matches('/');
-    let path_style = || {
-        key.split_once('/')
-            .is_some_and(|(bucket, object_key)| !bucket.is_empty() && !object_key.is_empty())
-    };
     match url.scheme() {
         // `s3://bucket/key`: the authority IS the bucket and the path the key.
-        "s3" => !host.is_empty() && !key.is_empty(),
-        "https" => match s3_endpoint_prefix(host) {
-            // Path-style: the first path segment is the bucket, the rest the key.
-            Some("") => path_style(),
-            // Virtual-hosted style: the host carries the bucket, the path the key.
+        "s3" => !key.is_empty(),
+        // An object URL on an S3 endpoint. Virtual-hosted style carries the bucket
+        // in the host and the key in the path; every other host is read path-style,
+        // the first path segment being the bucket and the rest the key.
+        "http" | "https" => match virtual_hosted_bucket(host) {
             Some(bucket) => !bucket.is_empty() && !key.is_empty(),
-            // The endpoint serving this request, addressed path-style. Compared as
-            // the ENDPOINT and not as its spelling: the port the scheme implies is
-            // filled in on both sides, and a DNS name does not distinguish case, so
-            // one endpoint written two legal ways is one endpoint.
-            None => {
-                endpoint_host.is_some_and(|endpoint| {
-                    let (name, port) = endpoint_authority(endpoint);
-                    name.eq_ignore_ascii_case(host) && url.port_or_known_default() == Some(port)
-                }) && path_style()
-            }
+            None => key
+                .split_once('/')
+                .is_some_and(|(bucket, object_key)| !bucket.is_empty() && !object_key.is_empty()),
         },
         _ => false,
     }
 }
 
-/// The port a caller reaches an `https` endpoint on when its authority names none —
-/// the port the scheme implies, which [`::url::Url::port_or_known_default`] fills in
-/// on the other side of the comparison in [`is_s3_location`].
-pub(super) const HTTPS_PORT: u16 = 443;
-
-/// The endpoint a `host[:port]` authority names: its host, and the port it is
-/// reached on with [`HTTPS_PORT`] filled in where the authority leaves it out.
+/// The bucket a virtual-hosted-style S3 `host` carries — the labels before its `s3`
+/// label — or `None` when `host` names an S3 endpoint directly (so a URL on it is
+/// path-style) or is no S3 endpoint host at all.
 ///
-/// A trailing group that is not a port is part of the host — an IPv6 literal carries
-/// colons of its own — so it is kept rather than stripped.
-pub(super) fn endpoint_authority(authority: &str) -> (&str, u16) {
-    match authority.rsplit_once(':') {
-        Some((host, port)) => match port.parse::<u16>() {
-            Ok(port) => (host, port),
-            Err(_) => (authority, HTTPS_PORT),
-        },
-        None => (authority, HTTPS_PORT),
-    }
+/// Every regional spelling is an S3 endpoint host, dotted
+/// (`s3.us-east-1.amazonaws.com`) or dashed (`s3-us-east-1.amazonaws.com`), as is the
+/// Region-less `s3.amazonaws.com` — and so is an endpoint that serves the S3 API
+/// under any other domain, which is why the domain itself is not part of the test.
+pub(super) fn virtual_hosted_bucket(host: &str) -> Option<&str> {
+    let prefix = s3_endpoint_prefix(host)?;
+    (!prefix.is_empty()).then_some(prefix)
 }
 
 /// What precedes the `s3` label in an S3 endpoint `host`, if `host` is one: the
 /// empty string for a path-style endpoint, and the bucket for a virtual-hosted
-/// one. `None` when the host is not an S3 endpoint at all.
-///
-/// Both the dotted (`s3.us-east-1.amazonaws.com`) and the dashed
-/// (`s3-us-east-1.amazonaws.com`) regional spellings are S3 endpoints, as is the
-/// Region-less `s3.amazonaws.com`.
-pub(super) fn s3_endpoint_prefix(host: &str) -> Option<&str> {
-    let domain = host.strip_suffix(".amazonaws.com")?;
-    for (index, _) in domain.match_indices("s3") {
-        let (prefix, rest) = domain.split_at(index);
+/// one. `None` when the host carries no `s3` label at all.
+fn s3_endpoint_prefix(host: &str) -> Option<&str> {
+    for (index, _) in host.match_indices("s3") {
+        let (prefix, rest) = host.split_at(index);
         // The `s3` label must start a label of its own, and must be the whole
         // label or be followed by a `-<region>` suffix within it.
         if !(prefix.is_empty() || prefix.ends_with('.')) {

@@ -470,27 +470,30 @@ async fn a_create_past_the_per_detector_limit_is_refused() {
 // Rule 4: the location must be a valid Amazon S3 URL.
 // ---------------------------------------------------------------------------
 
-/// The S3 URL forms a location may take: the `s3://` scheme, the path-style HTTPS
-/// endpoint (Region-less, dotted and dashed regional spellings) and the
-/// virtual-hosted-style one. Each names a bucket and an object key.
-const VALID_LOCATIONS: [&str; 6] = [
+/// The S3 object URL forms a location may take: the `s3://` scheme, the path-style
+/// endpoint (Region-less, dotted and dashed regional spellings), the
+/// virtual-hosted-style one, and an object URL on a non-public S3 endpoint — the host
+/// and port of the endpoint are environment-specific and no part of the rule, and so
+/// is the scheme the endpoint is reached over. Each names a bucket and an object key.
+const VALID_LOCATIONS: [&str; 9] = [
     "s3://guardduty-lists/threat.txt",
     "s3://guardduty.lists/deep/nested/threat.txt",
     "https://s3.amazonaws.com/guardduty-lists/threat.txt",
     "https://s3.us-east-2.amazonaws.com/guardduty-lists/threat.txt",
     "https://s3-eu-central-1.amazonaws.com/guardduty-lists/threat.txt",
     "https://guardduty-lists.s3.amazonaws.com/threat.txt",
+    "https://s3.internal.example:4566/guardduty-lists/threat.txt",
+    "http://127.0.0.1:9000/guardduty-lists/threat.txt",
+    "http://s3.amazonaws.com/guardduty-lists/threat.txt",
 ];
 
-/// Locations that are not valid S3 URLs: a non-S3 host, a non-S3 scheme, a URL with
-/// no object key, a bare path and a bucket-only host.
-const INVALID_LOCATIONS: [&str; 7] = [
-    "https://example.com/guardduty-lists/threat.txt",
-    "https://s3fake.amazonaws.com/guardduty-lists/threat.txt",
-    "http://s3.amazonaws.com/guardduty-lists/threat.txt",
+/// Locations that are no S3 object URL at all: a scheme no S3 object is addressed by,
+/// a URL naming a bucket and no object key, and a bare path with no scheme.
+const INVALID_LOCATIONS: [&str; 5] = [
     "ftp://guardduty-lists/threat.txt",
     "s3://guardduty-lists",
     "https://s3.amazonaws.com/guardduty-lists",
+    "https://127.0.0.1:9000/guardduty-lists",
     "/guardduty-lists/threat.txt",
 ];
 
