@@ -87,6 +87,9 @@
 //! * `ResourceAlreadyExistsException` (HTTP 400) — The resource you are trying to create
 //!   already exists.
 //! * `ResourceNotFoundException` (HTTP 400) — An entity that you specified does not exist.
+//! * `AccessDeniedException` (HTTP 400) — You do not have the necessary permissions for this
+//!   action. Widened in through `extra_errors` (see below): the refusal a request naming a
+//!   customer managed key whose own policy does not let this service use it answers with.
 
 #[allow(unused_imports)]
 use super::types::*;
@@ -102,9 +105,19 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-eventbridge-awsevents.j
 // here — hence the `CreateEventBusError` alias below. An operation that models no errors
 // generates an UNINHABITED enum here, which is correct and expected: there is nothing
 // to construct until the model says otherwise.
-#[smithy_macros::operation_error("com.amazonaws.eventbridge#CreateEventBus")]
+//
+// `AccessDeniedException` is widened in with `extra_errors`: this SERVICE models the
+// shape ("You do not have the necessary permissions for this action", HTTP 400) while
+// this OPERATION's own `errors` list does not name it, and it is the refusal a request
+// naming a customer managed key this service may not use answers with (see the key check
+// in the handler below).
+#[smithy_macros::operation_error(
+    "com.amazonaws.eventbridge#CreateEventBus",
+    extra_errors = ["AccessDeniedException"]
+)]
 #[derive(Debug)]
 pub enum CreateEventBusErrorModeled {
+    AccessDeniedException(AccessDeniedException),
     ConcurrentModificationException(ConcurrentModificationException),
     InternalException(InternalException),
     InvalidStateException(InvalidStateException),
@@ -212,6 +225,32 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         {
             return Err(crate::scaffolded::Scaffolded::validation(reason));
         }
+
+        // A bus that names a customer managed key has every event on it encrypted under
+        // that key BY THIS SERVICE, so a key whose own policy does not admit this
+        // service is a bus that could never carry an event: the configuration is refused
+        // here rather than stored and reported back as encrypted
+        // (`crate::state::bus_encryption`). Asked with no store of this service locked,
+        // because the decision is taken in the KMS store.
+        if let Some(message) = input
+            .kms_key_identifier
+            .as_deref()
+            .filter(|identifier| !identifier.is_empty())
+            .and_then(|identifier| {
+                crate::state::bus_encryption::bus_key_denial(
+                    &*self.engine,
+                    &region,
+                    &crate::state::kms_key_identifier(&region, identifier),
+                    &crate::state::event_bus_arn(&region, &input.name),
+                )
+            })
+        {
+            return Err(CreateEventBusErrorModeled::AccessDeniedException(AccessDeniedException {
+                message: Some(message),
+            })
+            .into());
+        }
+
         let mut store = state.lock();
         store.settle_partner_sources(created);
 

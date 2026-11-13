@@ -73,6 +73,8 @@ mod envelope_time_precision;
 mod event_bus_configuration;
 #[path = "all/event_bus_deletion.rs"]
 mod event_bus_deletion;
+#[path = "all/event_bus_key_policy.rs"]
+mod event_bus_key_policy;
 #[path = "all/event_bus_lifecycle.rs"]
 mod event_bus_lifecycle;
 #[path = "all/event_bus_write_semantics.rs"]
@@ -121,6 +123,8 @@ mod or_relationship_branches;
 mod partner_entry_rejection;
 #[path = "all/partner_event_source.rs"]
 mod partner_event_source;
+#[path = "all/pass_role_authorization.rs"]
+mod pass_role_authorization;
 #[path = "all/pattern_and_connection_filters.rs"]
 mod pattern_and_connection_filters;
 #[path = "all/pattern_preflight.rs"]

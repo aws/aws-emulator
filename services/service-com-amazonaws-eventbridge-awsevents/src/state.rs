@@ -4781,5 +4781,15 @@ pub mod role_assumption;
 /// service a referenced resource has to belong to, and the members another
 /// member makes required — each stated once, for every operation that writes it.
 pub mod request_validation;
+
+/// Whether the caller may HAND this service the IAM role a request names — the
+/// `iam:PassRole` pass every operation that takes a role ARN makes.
+pub mod pass_role;
+
+/// The customer managed key an EVENT BUS is configured with, and whether that
+/// key's own policy lets this service use it — asked by every writer of a bus's
+/// `KmsKeyIdentifier`.
+pub mod bus_encryption;
+
 mod replays;
 pub use replays::*;

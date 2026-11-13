@@ -91,6 +91,9 @@
 //!   rule, target, archive, or replay.
 //! * `InternalException` (HTTP 500) — This exception occurs due to unexpected causes.
 //! * `ResourceNotFoundException` (HTTP 400) — An entity that you specified does not exist.
+//! * `AccessDeniedException` (HTTP 400) — You do not have the necessary permissions for this
+//!   action. Widened in through `extra_errors` (see below): the refusal a caller holding no
+//!   `iam:PassRole` on the `RoleArn` replication would run as answers with.
 
 #[allow(unused_imports)]
 use super::types::*;
@@ -106,9 +109,19 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-eventbridge-awsevents.j
 // here — hence the `UpdateEndpointError` alias below. An operation that models no errors
 // generates an UNINHABITED enum here, which is correct and expected: there is nothing
 // to construct until the model says otherwise.
-#[smithy_macros::operation_error("com.amazonaws.eventbridge#UpdateEndpoint")]
+//
+// `AccessDeniedException` is widened in with `extra_errors`: this SERVICE models the
+// shape ("You do not have the necessary permissions for this action", HTTP 400) while
+// this OPERATION's own `errors` list does not name it, and it is the refusal a caller
+// that may not hand this service the role it names answers with (see the `iam:PassRole`
+// pass in the handler below).
+#[smithy_macros::operation_error(
+    "com.amazonaws.eventbridge#UpdateEndpoint",
+    extra_errors = ["AccessDeniedException"]
+)]
 #[derive(Debug)]
 pub enum UpdateEndpointErrorModeled {
+    AccessDeniedException(AccessDeniedException),
     ConcurrentModificationException(ConcurrentModificationException),
     InternalException(InternalException),
     ResourceNotFoundException(ResourceNotFoundException),
@@ -208,6 +221,24 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         let region = crate::state::endpoint_region(None, ctx.parts());
         let now = ::std::time::SystemTime::now();
+
+        // Handing EventBridge the role replication runs as is the action
+        // `iam:PassRole` on that ROLE, which AWS separates from the permission to
+        // update the endpoint: a caller holding no `iam:PassRole` on the role it
+        // names could otherwise make EventBridge act as any role of the account
+        // (`crate::state::pass_role`). WHO this request speaks for is resolved
+        // BEFORE this service's store is locked, so the IAM store is never reached
+        // while this one's guard is held. A write naming no role hands nothing over.
+        let caller = crate::state::authorization::request_caller(&*self.engine, ctx);
+        if let Some(message) =
+            crate::state::pass_role::handed_roles_denial(&caller, [input.role_arn.as_deref()])
+        {
+            return Err(UpdateEndpointErrorModeled::AccessDeniedException(AccessDeniedException {
+                message: Some(message),
+            })
+            .into());
+        }
+
         let mut store = state.lock();
         // An endpoint whose clock has already moved it on is settled first, so
         // the write is applied to, and answered from, one state.

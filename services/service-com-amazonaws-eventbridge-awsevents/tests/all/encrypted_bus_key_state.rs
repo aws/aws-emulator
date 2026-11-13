@@ -31,6 +31,7 @@
 //! one engine, and the queue fixture) is `tests/all/target_dispatch.rs`'s.
 
 use serde_json::{json, Value};
+use service_com_amazonaws_eventbridge_awsevents::state::SERVICE_PRINCIPAL;
 
 use crate::target_dispatch::{
     drain, emulator, events, given_queue, rpc, Emulator, DETAIL_TYPE, SOURCE,
@@ -54,13 +55,51 @@ async fn kms(emulator: &Emulator, case: &str, operation: &str, body: &Value) -> 
     answered
 }
 
-/// A customer managed key, answered as its ARN.
+/// A customer managed key this service may use for an event bus, answered as its ARN.
+///
+/// The key carries the key-policy statement an event bus key needs: the account root's
+/// own authority over the key — which is what `CreateKey` writes and what the lockout
+/// safety check of `PutKeyPolicy` requires of a replacement — and the use this service
+/// makes of the key as its OWN service principal. Without that second statement the bus
+/// could not be configured on the key at all (the configuration is refused at the call
+/// that asks for it, which is what `tests/all/event_bus_key_policy.rs` asserts), and what
+/// these tests vary is the key's STATE: nothing about its policy may withhold the use.
 async fn given_key(emulator: &Emulator, case: &str) -> String {
     let created = kms(emulator, case, "CreateKey", &json!({})).await;
-    created["KeyMetadata"]["Arn"]
+    let arn = created["KeyMetadata"]["Arn"]
         .as_str()
         .unwrap_or_else(|| panic!("case {case:?}: no KeyMetadata.Arn in {created}"))
-        .to_string()
+        .to_string();
+    let policy = json!({
+        "Version": "2012-10-17",
+        "Statement": [
+            {
+                "Sid": "Enable IAM policies",
+                "Effect": "Allow",
+                "Principal": {
+                    "AWS": format!("arn:aws:iam::{}:root", engine::emulator_account_id()),
+                },
+                "Action": "kms:*",
+                "Resource": "*",
+            },
+            {
+                "Sid": "Allow EventBridge to use the key for this account's buses",
+                "Effect": "Allow",
+                "Principal": { "Service": SERVICE_PRINCIPAL },
+                "Action": ["kms:DescribeKey", "kms:GenerateDataKey", "kms:Decrypt"],
+                "Resource": "*",
+            },
+        ],
+    })
+    .to_string();
+    kms(
+        emulator,
+        case,
+        "PutKeyPolicy",
+        &json!({ "KeyId": arn, "PolicyName": "default", "Policy": policy }),
+    )
+    .await;
+    arn
 }
 
 /// An event bus called `bus`, encrypted with `key` when the row names one, carrying a
@@ -143,7 +182,8 @@ async fn publish_onto(emulator: &Emulator, case: &str, bus: &str) -> Value {
 /// What a row does to the bus's key before publishing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum KeyCondition {
-    /// The key is left as `CreateKey` made it.
+    /// The key is left as `CreateKey` made it, carrying the statement that admits this
+    /// service ([`given_key`]).
     Usable,
     /// `DisableKey` was called on it.
     Disabled,

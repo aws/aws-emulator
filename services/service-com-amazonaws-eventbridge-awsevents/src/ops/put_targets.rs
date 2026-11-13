@@ -100,7 +100,8 @@
 //! * `ResourceNotFoundException` (HTTP 400) — An entity that you specified does not exist.
 //! * `AccessDeniedException` (HTTP 400) — You do not have the necessary permissions for this
 //!   action. Widened in through `extra_errors` (see below): the refusal a caller whose
-//!   identity-based policies do not permit this action on the target rule answers with.
+//!   identity-based policies do not permit this action on the target rule answers with, and
+//!   the one a caller holding no `iam:PassRole` on a target's `RoleArn` answers with.
 
 #[allow(unused_imports)]
 use super::types::*;
@@ -199,6 +200,22 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // resolved BEFORE this service's store is locked: the IAM store is never
         // reached while this one's guard is held.
         let caller = crate::state::authorization::request_caller(&*self.engine, ctx);
+        // Handing EventBridge the role a target names is the action `iam:PassRole` on
+        // that ROLE, which AWS separates from the permission to write the target: a
+        // caller that may add targets but holds no `iam:PassRole` on the role it names
+        // could otherwise make EventBridge act as any role of the account
+        // (`crate::state::pass_role`). Judged over every target of the request in its own
+        // order, so the call is refused as a WHOLE and no target is installed.
+        //
+        // Decided HERE, before the store is locked, because it reads nothing of this
+        // service: the work a request carrying many targets asks for is then charged to
+        // that request alone rather than to every other caller of this store. The verdict
+        // is REPORTED below, after the rule's own authorization, so a caller that may not
+        // touch the rule at all still reads that first.
+        let handed_roles_denied = crate::state::pass_role::handed_roles_denial(
+            &caller,
+            input.targets.iter().map(|target| target.role_arn.as_deref()),
+        );
         let mut store = state.lock();
 
         // Adding targets to a rule is the action `events:PutTargets` on that rule, so
@@ -219,6 +236,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             &input.rule,
             input.targets.iter().map(|target| target.arn.as_str()),
         ) {
+            return Err(PutTargetsErrorModeled::AccessDeniedException(AccessDeniedException {
+                message: Some(message),
+            })
+            .into());
+        }
+
+        if let Some(message) = handed_roles_denied {
             return Err(PutTargetsErrorModeled::AccessDeniedException(AccessDeniedException {
                 message: Some(message),
             })

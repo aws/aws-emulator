@@ -109,7 +109,8 @@
 //! * `ResourceNotFoundException` (HTTP 400) — An entity that you specified does not exist.
 //! * `AccessDeniedException` (HTTP 400) — You do not have the necessary permissions for this
 //!   action. Widened in through `extra_errors` (see below): the refusal a caller whose
-//!   identity-based policies do not permit this action on the target rule answers with.
+//!   identity-based policies do not permit this action on the target rule answers with, and
+//!   the one a caller holding no `iam:PassRole` on the rule's `RoleArn` answers with.
 
 #[allow(unused_imports)]
 use super::types::*;
@@ -210,6 +211,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // resolved BEFORE this service's store is locked: the IAM store is never
         // reached while this one's guard is held.
         let caller = crate::state::authorization::request_caller(&*self.engine, ctx);
+        // Handing EventBridge the role this rule names is the action `iam:PassRole` on
+        // that ROLE, which AWS separates from the permission to write the rule: a caller
+        // that may write rules but holds no `iam:PassRole` on the role it names could
+        // otherwise make EventBridge act as any role of the account
+        // (`crate::state::pass_role`). Decided HERE, before the store is locked, because
+        // it reads nothing of this service; REPORTED below, after the rule's own
+        // authorization, so a caller that may not write the rule at all reads that first.
+        let handed_roles_denied =
+            crate::state::pass_role::handed_roles_denial(&caller, [input.role_arn.as_deref()]);
         let mut store = state.lock();
 
         // Writing a rule is the action `events:PutRule` on that rule, so the policies
@@ -227,6 +237,15 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             &bus_name,
             &input.name,
         ) {
+            return Err(PutRuleErrorModeled::AccessDeniedException(AccessDeniedException {
+                message: Some(message),
+            })
+            .into());
+        }
+
+        // The role the request hands over, judged above and reported now: the stored rule
+        // keeps the role it had.
+        if let Some(message) = handed_roles_denied {
             return Err(PutRuleErrorModeled::AccessDeniedException(AccessDeniedException {
                 message: Some(message),
             })

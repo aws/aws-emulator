@@ -79,6 +79,9 @@
 //! * `OperationDisabledException` (HTTP 400) — The operation you are attempting is not
 //!   available in this region.
 //! * `ResourceNotFoundException` (HTTP 400) — An entity that you specified does not exist.
+//! * `AccessDeniedException` (HTTP 400) — You do not have the necessary permissions for this
+//!   action. Widened in through `extra_errors` (see below): the refusal a request naming a
+//!   customer managed key whose own policy does not let this service use it answers with.
 
 #[allow(unused_imports)]
 use super::types::*;
@@ -94,9 +97,19 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-eventbridge-awsevents.j
 // here — hence the `UpdateEventBusError` alias below. An operation that models no errors
 // generates an UNINHABITED enum here, which is correct and expected: there is nothing
 // to construct until the model says otherwise.
-#[smithy_macros::operation_error("com.amazonaws.eventbridge#UpdateEventBus")]
+//
+// `AccessDeniedException` is widened in with `extra_errors`: this SERVICE models the
+// shape ("You do not have the necessary permissions for this action", HTTP 400) while
+// this OPERATION's own `errors` list does not name it, and it is the refusal a request
+// naming a customer managed key this service may not use answers with (see the key check
+// in the handler below).
+#[smithy_macros::operation_error(
+    "com.amazonaws.eventbridge#UpdateEventBus",
+    extra_errors = ["AccessDeniedException"]
+)]
 #[derive(Debug)]
 pub enum UpdateEventBusErrorModeled {
+    AccessDeniedException(AccessDeniedException),
     ConcurrentModificationException(ConcurrentModificationException),
     InternalException(InternalException),
     OperationDisabledException(OperationDisabledException),
@@ -167,13 +180,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // helper every operation of this service addresses a bus through.
         let bus_name = crate::state::effective_bus_name(input.name.as_deref());
         let modified = ::std::time::SystemTime::now();
-        let mut store = state.lock();
 
         // An update changes a bus that exists; it never brings one into being.
         // The bus is resolved BEFORE the request's own members are judged, so a
         // caller naming a bus that is gone reads that rather than a verdict on
-        // its request body.
-        if store.bus(&region, &bus_name).is_none() {
+        // its request body. The guard is taken for the lookup alone, because the
+        // checks below reach another service's store.
+        if state.lock().bus(&region, &bus_name).is_none() {
             return Err(UpdateEventBusErrorModeled::ResourceNotFoundException(
                 ResourceNotFoundException {
                     message: Some(crate::state::no_such_event_bus(&bus_name)),
@@ -210,6 +223,34 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             return Err(crate::scaffolded::Scaffolded::validation(reason));
         }
 
+        // A bus that names a customer managed key has every event on it encrypted
+        // under that key BY THIS SERVICE, so a key whose own policy does not admit
+        // this service is a bus that could never carry an event: the configuration
+        // is refused here rather than written and reported back as encrypted. The
+        // same check `CreateEventBus` makes, so both writers of a bus's key admit
+        // exactly the same keys (`crate::state::bus_encryption`). Asked with no
+        // store of this service locked, because the decision is taken in the KMS
+        // store.
+        if let Some(message) = input
+            .kms_key_identifier
+            .as_deref()
+            .filter(|identifier| !identifier.is_empty())
+            .and_then(|identifier| {
+                crate::state::bus_encryption::bus_key_denial(
+                    &*self.engine,
+                    &region,
+                    &crate::state::kms_key_identifier(&region, identifier),
+                    &crate::state::event_bus_arn(&region, &bus_name),
+                )
+            })
+        {
+            return Err(UpdateEventBusErrorModeled::AccessDeniedException(AccessDeniedException {
+                message: Some(message),
+            })
+            .into());
+        }
+
+        let mut store = state.lock();
         let Some(bus) = store.bus_mut(&region, &bus_name) else {
             return Err(UpdateEventBusErrorModeled::ResourceNotFoundException(
                 ResourceNotFoundException {

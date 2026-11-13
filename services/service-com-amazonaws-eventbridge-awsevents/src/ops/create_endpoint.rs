@@ -92,6 +92,9 @@
 //!   resource beyond the allowed service quota.
 //! * `ResourceAlreadyExistsException` (HTTP 400) — The resource you are trying to create
 //!   already exists.
+//! * `AccessDeniedException` (HTTP 400) — You do not have the necessary permissions for this
+//!   action. Widened in through `extra_errors` (see below): the refusal a caller holding no
+//!   `iam:PassRole` on the `RoleArn` replication would run as answers with.
 
 #[allow(unused_imports)]
 use super::types::*;
@@ -107,9 +110,19 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-eventbridge-awsevents.j
 // here — hence the `CreateEndpointError` alias below. An operation that models no errors
 // generates an UNINHABITED enum here, which is correct and expected: there is nothing
 // to construct until the model says otherwise.
-#[smithy_macros::operation_error("com.amazonaws.eventbridge#CreateEndpoint")]
+//
+// `AccessDeniedException` is widened in with `extra_errors`: this SERVICE models the
+// shape ("You do not have the necessary permissions for this action", HTTP 400) while
+// this OPERATION's own `errors` list does not name it, and it is the refusal a caller
+// that may not hand this service the role it names answers with (see the `iam:PassRole`
+// pass in the handler below).
+#[smithy_macros::operation_error(
+    "com.amazonaws.eventbridge#CreateEndpoint",
+    extra_errors = ["AccessDeniedException"]
+)]
 #[derive(Debug)]
 pub enum CreateEndpointErrorModeled {
+    AccessDeniedException(AccessDeniedException),
     InternalException(InternalException),
     LimitExceededException(LimitExceededException),
     ResourceAlreadyExistsException(ResourceAlreadyExistsException),
@@ -214,6 +227,23 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // The Region the create is signed for is the endpoint's PRIMARY Region,
         // so it is resolved before the failover policy is judged against it.
         let region = crate::state::request_region(ctx.parts());
+
+        // Handing EventBridge the role replication runs as is the action
+        // `iam:PassRole` on that ROLE, which AWS separates from the permission to
+        // create the endpoint: a caller holding no `iam:PassRole` on the role it
+        // names could otherwise make EventBridge act as any role of the account
+        // (`crate::state::pass_role`). WHO this request speaks for is resolved
+        // BEFORE this service's store is locked, so the IAM store is never reached
+        // while this one's guard is held.
+        let caller = crate::state::authorization::request_caller(&*self.engine, ctx);
+        if let Some(message) =
+            crate::state::pass_role::handed_roles_denial(&caller, [input.role_arn.as_deref()])
+        {
+            return Err(CreateEndpointErrorModeled::AccessDeniedException(AccessDeniedException {
+                message: Some(message),
+            })
+            .into());
+        }
 
         // The failover policy's secondary Region is the OTHER Region of the
         // pair, which the model cannot express and the boundary validator
