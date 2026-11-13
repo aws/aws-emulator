@@ -58,7 +58,8 @@ sqlparser = { version = "0.59", features = ["visitor"] }
 shell-words = "1"
 # The AWS SDK for EventBridge, driven over the in-process callback
 # (`OperationContext::callback`): every state a step moves into is published onto the
-# account's default event bus (`state::step_events`). Only the generated client is needed —
+# account's default event bus (`state::step_events`), and so is every state a CLUSTER moves
+# into (`state::cluster_events`). Only the generated client is needed —
 # the emulator supplies the transport, so the SDK's own HTTPS stack and runtime are left out.
 aws-sdk-eventbridge = { version = "1", default-features = false }
 # `state::step_events`: the UTC calendar date and minute a published step event's own message

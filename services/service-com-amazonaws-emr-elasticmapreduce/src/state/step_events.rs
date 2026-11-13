@@ -96,7 +96,9 @@ pub fn state_severity(state: &str) -> &'static str {
 /// The bound the service this publishes to declares: its `PutEventsRequestEntryList` is
 /// `@length(min: 1, max: 10)`, so a call that materialised more transitions than that
 /// publishes them in several requests rather than one the service would refuse.
-const MAX_PUT_EVENTS_ENTRIES: usize = 10;
+///
+/// `pub(super)` for the reason [`epoch_millis`] is.
+pub(super) const MAX_PUT_EVENTS_ENTRIES: usize = 10;
 
 /// How many step transitions ONE call records and publishes.
 ///
@@ -372,7 +374,10 @@ pub async fn publish(
 }
 
 /// `at` as the epoch milliseconds the event's `time` carries.
-fn epoch_millis(at: SystemTime) -> i64 {
+///
+/// `pub(super)` so the sibling publisher of this service's OTHER event class
+/// ([`super::cluster_events`]) renders the same member the same way.
+pub(super) fn epoch_millis(at: SystemTime) -> i64 {
     i64::try_from(
         at.duration_since(UNIX_EPOCH)
             .unwrap_or_default()

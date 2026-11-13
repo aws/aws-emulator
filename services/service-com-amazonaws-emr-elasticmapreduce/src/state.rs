@@ -54,6 +54,11 @@ pub use instance_catalog::*;
 mod step_runner;
 pub use step_runner::*;
 
+/// Announcing a cluster's state changes on the account's default event bus, split out of
+/// this root as its own concern and re-exported the same way.
+mod cluster_events;
+pub use cluster_events::*;
+
 /// A cluster's master node — the address it holds and the DNS name the cluster reports
 /// for it — split out of this root as its own concern and re-exported the same way.
 mod master_node;
@@ -1759,6 +1764,23 @@ pub struct ComAmazonawsEmrElasticmapreduceState {
     /// ([`ComAmazonawsEmrElasticmapreduceState::mint_session_id`]); the sessions
     /// themselves hang off the cluster they were started on.
     pub next_session_seq: u64,
+    /// The cluster state last ANNOUNCED on the event bus, per cluster id: what a
+    /// transition is recognised against ([`Self::record_cluster_state_changes`]), so no
+    /// state change is announced twice and none is missed. Bounded by the cluster map
+    /// itself — an entry goes when its cluster does.
+    announced_cluster_states: BTreeMap<String, String>,
+    /// The cluster state changes waiting to be published, oldest first. Bounded in
+    /// [`cluster_events`].
+    pending_cluster_events: Vec<ClusterStateChange>,
+    /// Whether a cluster clock pump holds this store's single claim
+    /// ([`drive_cluster_clock`]).
+    cluster_clock_pump_running: bool,
+    /// The generation of that claim, so a pump releases its own claim and never a later
+    /// pump's.
+    cluster_clock_pump_generation: u64,
+    /// The running pump's task handle, kept so the pump it replaces is aborted rather
+    /// than merely forgotten.
+    cluster_clock_pump: Option<::tokio::task::JoinHandle<()>>,
 }
 
 /// The account's default configuration is in place before any caller puts one, so the
@@ -1784,6 +1806,11 @@ impl Default for ComAmazonawsEmrElasticmapreduceState {
             next_persistent_app_ui_seq: 0,
             security_configurations: BTreeMap::new(),
             next_session_seq: 0,
+            announced_cluster_states: BTreeMap::new(),
+            pending_cluster_events: Vec::new(),
+            cluster_clock_pump_running: false,
+            cluster_clock_pump_generation: 0,
+            cluster_clock_pump: None,
         }
     }
 }
@@ -2384,6 +2411,17 @@ impl BlockPublicAccessRecord {
 
 /// Whether an IAM `GetInstanceProfile` failure is IAM reporting that the profile
 /// does not exist (`NoSuchEntity`), as opposed to the call not reaching IAM.
+///
+/// The call this classifies is made over the emulator's own IN-PROCESS transport and
+/// reaches nothing outside this process: the one client it is made with is built by
+/// [`::service_common::iam_client::iam_client`] from the framework's operation callback
+/// (`smithy_server_runtime::OperationContext::callback`), which dispatches the request to
+/// the IAM service mounted in this same emulator — no socket is opened, no name is
+/// resolved, the SDK's default endpoint and credential provider chains are never consulted,
+/// and the host's own credentials are never read. Its one caller is
+/// [`instance_profile_violation`] above, which is where that client is constructed; "the
+/// call did not reach IAM" therefore means this emulator has no IAM mounted, not that a
+/// remote endpoint was unreachable.
 fn instance_profile_is_absent(
     error: &::aws_sdk_iam::error::SdkError<
         ::aws_sdk_iam::operation::get_instance_profile::GetInstanceProfileError,
@@ -2719,8 +2757,8 @@ impl ClusterRecord {
         self.stop_once_every_step_has_run(now);
     }
 
-    /// Materialise the shutdown a cluster that does not stay up is owed once it has run its
-    /// last step.
+    /// The instant the shutdown a cluster that does not stay up is owed comes due, or
+    /// `None` for a cluster that is owed none.
     ///
     /// "RunJobFlow creates and starts running a new cluster. The cluster runs the steps
     /// specified. After the steps complete, the cluster stops … If the
@@ -2728,28 +2766,46 @@ impl ClusterRecord {
     /// cluster transitions to the `WAITING` state rather than shutting down after the steps
     /// have completed" (`RunJobFlow` doc) — which is exactly what `Cluster$AutoTerminate`
     /// reports: "specifies whether the cluster should terminate after completing all steps".
-    /// So a cluster that did not ask to stay up shuts itself down when its last step has
-    /// ended, for the modelled reason `ALL_STEPS_COMPLETED`.
+    /// So a cluster that did not ask to stay up shuts itself down once its queue holds no
+    /// step still to run: the step list is "completed" when every step of it has ended, and
+    /// a queue that is EMPTY has completed too — which is the whole of a transient cluster
+    /// launched with no steps at all, the launch `KeepJobFlowAliveWhenNoSteps` is documented
+    /// against ("specifies whether the cluster should remain available after completing all
+    /// steps", default false).
     ///
-    /// The shutdown is owed at the instant that last step ENDED, not at the instant somebody
-    /// looked, so the cluster reports the same timeline however often it is read. A cluster
-    /// that was launched with no steps at all has run no last step and nothing here moves
-    /// it; a caller that submits one is what starts the span. A cluster still running a step
-    /// keeps running.
-    fn stop_once_every_step_has_run(&mut self, now: SystemTime) {
+    /// The shutdown is owed from the instant the queue finished — the last step's end, or
+    /// the instant the cluster became ready to run steps when it has none — so the cluster
+    /// reports the same timeline however often it is read. A cluster still running a step is
+    /// owed nothing yet, which is also what makes a step submitted to a transient cluster
+    /// hold its shutdown off until that step has run.
+    pub(crate) fn auto_terminate_due_at(&self) -> Option<SystemTime> {
         if !self.auto_terminate || self.status.state != cluster_state::RUNNING {
-            return;
+            return None;
         }
-        if self.steps.is_empty() {
-            return;
-        }
-        let mut last_end = self.status.ready_date_time.unwrap_or(self.status.creation_date_time);
+        // A cluster that has just become ready has been ready for no time at all, so the
+        // shutdown is owed from one span after it rather than from the instant itself: a
+        // caller reading straight after the cluster came up still observes it `RUNNING`,
+        // the state a cluster that is up and has work to take reports. A cluster whose
+        // queue ran holds the shutdown off until its last step ended, which is later than
+        // that instant for any step that really ran.
+        let mut finished = self
+            .status
+            .ready_date_time
+            .unwrap_or(self.status.creation_date_time)
+            + TRANSITION_SPAN;
         for step in &self.steps {
-            let Some(ended) = step.end_date_time.filter(|_| step.is_terminal()) else {
-                return;
-            };
-            last_end = last_end.max(ended);
+            let ended = step.end_date_time.filter(|_| step.is_terminal())?;
+            finished = finished.max(ended);
         }
+        Some(finished)
+    }
+
+    /// Materialise the shutdown [`Self::auto_terminate_due_at`] says this cluster is owed,
+    /// once that instant has passed.
+    fn stop_once_every_step_has_run(&mut self, now: SystemTime) {
+        let Some(last_end) = self.auto_terminate_due_at() else {
+            return;
+        };
         if now < last_end {
             return;
         }

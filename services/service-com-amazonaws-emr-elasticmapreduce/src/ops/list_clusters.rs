@@ -225,6 +225,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .map(|cluster| cluster.to_summary(now))
             .collect();
         let marker = matched.get(end).map(|cluster| cluster.id.clone());
+        // The guard is released before anything is announced: a transition this listing
+        // materialised is announced on the default event bus like any other.
+        drop(store);
+        crate::state::settle_cluster_events(
+            &self.engine,
+            ctx,
+            &crate::state::request_region(ctx.parts()),
+        );
 
         Ok(ListClustersOutput {
             clusters: Some(clusters),

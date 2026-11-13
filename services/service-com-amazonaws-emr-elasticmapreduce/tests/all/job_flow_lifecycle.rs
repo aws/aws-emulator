@@ -35,6 +35,14 @@ pub(crate) const PAST_CLUSTER_READY: Duration = CLUSTER_PHASE_SPAN
     .saturating_mul(2)
     .saturating_add(PAST_TRANSITION);
 
+/// How long a wait for a cluster to reach a state the clock owes it may take before the
+/// case gives up: far above every span this service owes a cluster, so a slow or loaded host
+/// delays a wait rather than failing it ([`await_cluster_where`]).
+const CLUSTER_WAIT_DEADLINE: Duration = Duration::from_secs(90);
+
+/// One look at the cluster inside [`CLUSTER_WAIT_DEADLINE`].
+const CLUSTER_POLL_INTERVAL: Duration = Duration::from_millis(50);
+
 /// `ListClusters` / `ListSteps` page size, documented on both operations ("a maximum of
 /// 50 clusters … per call", "a list greater than 50 steps").
 const PAGE_SIZE: usize = 50;
@@ -534,12 +542,22 @@ async fn run_job_flow_persists_each_cluster_and_describe_cluster_reads_it_back()
 /// and then runs its bootstrap actions (`BOOTSTRAPPING`) before it is ready, which is
 /// `WAITING` for a cluster kept alive with no steps and `RUNNING` otherwise — and that is
 /// recorded as `Timeline.ReadyDateTime`. A read never moves it anywhere else.
+///
+/// A cluster that is NOT kept alive does not REST in its ready state: its step list is
+/// complete (it has none), so the shutdown "after the steps complete" is owed from one span
+/// after it became ready and the cluster walks on through `TERMINATING` to `TERMINATED` —
+/// the walk `cluster_self_termination.rs` pins instant by instant. What this case asserts
+/// is the half that walk shares with the kept-alive one: the cluster LEFT `STARTING` for a
+/// state of the shutdown path and recorded its `ReadyDateTime`.
 #[tokio::test]
 async fn a_starting_cluster_reaches_its_ready_state_when_the_clock_makes_it_due() {
     struct Case {
         label: &'static str,
         request: Value,
-        ready_state: &'static str,
+        /// The states the cluster may report once its launch span has passed.
+        ready_states: &'static [&'static str],
+        /// The state it comes to REST in, which nothing but a caller moves it out of.
+        resting_state: &'static str,
     }
 
     let emr = Emr::new();
@@ -547,12 +565,14 @@ async fn a_starting_cluster_reaches_its_ready_state_when_the_clock_makes_it_due(
         Case {
             label: "kept alive with no steps",
             request: kept_alive_request("waiting"),
-            ready_state: "WAITING",
+            ready_states: &["WAITING"],
+            resting_state: "WAITING",
         },
         Case {
             label: "transient",
             request: minimal_request("running"),
-            ready_state: "RUNNING",
+            ready_states: &["RUNNING", "TERMINATING", "TERMINATED"],
+            resting_state: "TERMINATED",
         },
     ];
 
@@ -574,17 +594,22 @@ async fn a_starting_cluster_reaches_its_ready_state_when_the_clock_makes_it_due(
         ids.push(id);
     }
 
-    tokio::time::sleep(PAST_CLUSTER_READY).await;
-
     for (case, id) in cases.iter().zip(&ids) {
-        let cluster = emr.describe_cluster(id).await;
-        assert_eq!(
-            at(&cluster, &["Status", "State"]).as_str(),
-            Some(case.ready_state),
-            "case {:?}: expected {} once the transition is due, got {cluster}",
+        // Waits for the CONDITION — the cluster having left the states it comes up through
+        // for one of its ready path — rather than for a span.
+        let ready_states = case.ready_states;
+        let cluster = await_cluster_where(
+            &emr,
+            id,
             case.label,
-            case.ready_state
-        );
+            "a state of its ready path",
+            |cluster| {
+                ready_states.contains(
+                    &at(cluster, &["Status", "State"]).as_str().unwrap_or_default(),
+                )
+            },
+        )
+        .await;
         let ready = at(&cluster, &["Status", "Timeline", "ReadyDateTime"])
             .as_f64()
             .unwrap_or_else(|| panic!("case {:?}: no ReadyDateTime in {cluster}", case.label));
@@ -597,13 +622,55 @@ async fn a_starting_cluster_reaches_its_ready_state_when_the_clock_makes_it_due(
             case.label
         );
 
-        // A read changes nothing a later caller sees.
+        // A read changes nothing a later caller sees — asserted once the cluster has come
+        // to REST, because a cluster still walking the shutdown it was owed is moved
+        // between two reads by the clock rather than by either read.
+        let rested = await_cluster_state(&emr, id, case.label, case.resting_state).await;
         let again = emr.describe_cluster(id).await;
         assert_eq!(
-            again, cluster,
+            again, rested,
             "case {:?}: two DescribeCluster calls must answer the same cluster",
             case.label
         );
+    }
+}
+
+/// Poll `DescribeCluster` until the cluster reports `state`, and answer what it then
+/// reported.
+///
+/// Waits for the CONDITION rather than for a span: the deadline is far above every span
+/// this service owes a cluster, so a slow host delays this rather than failing it.
+pub(crate) async fn await_cluster_state(emr: &Emr, id: &str, case: &str, state: &str) -> Value {
+    await_cluster_where(emr, id, case, state, |cluster| {
+        at(cluster, &["Status", "State"]).as_str() == Some(state)
+    })
+    .await
+}
+
+/// Poll `DescribeCluster` until `holds` answers true of the cluster, and answer what it then
+/// reported; `wanted` names what is waited for in the report a timeout leaves.
+///
+/// The one wait of this suite: it looks again until the condition holds or a deadline far
+/// above every span this service owes a cluster passes, so a slow or loaded host delays a
+/// case rather than failing it.
+pub(crate) async fn await_cluster_where(
+    emr: &Emr,
+    id: &str,
+    case: &str,
+    wanted: &str,
+    holds: impl Fn(&Value) -> bool,
+) -> Value {
+    let deadline = std::time::Instant::now() + CLUSTER_WAIT_DEADLINE;
+    loop {
+        let cluster = emr.describe_cluster(id).await;
+        if holds(&cluster) {
+            return cluster;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "case {case:?}: the cluster never reached {wanted}, last {cluster}"
+        );
+        tokio::time::sleep(CLUSTER_POLL_INTERVAL).await;
     }
 }
 
@@ -1093,23 +1160,31 @@ async fn list_clusters_filters_by_state_and_creation_window() {
         );
     }
 
-    tokio::time::sleep(PAST_CLUSTER_READY).await;
+    // Each cluster is waited for by its own CONDITION rather than by a span: the two kept
+    // alive resting in WAITING, and the transient one having run its (empty) queue to the
+    // terminal TERMINATED it is owed.
+    await_cluster_state(&emr, &kept_alive, "kept alive", "WAITING").await;
+    await_cluster_state(&emr, &to_terminate, "doomed", "WAITING").await;
+    await_cluster_state(&emr, &transient, "transient", "TERMINATED").await;
     emr.ok("TerminateJobFlows", json!({ "JobFlowIds": [&to_terminate] }))
         .await;
-    tokio::time::sleep(PAST_TRANSITION).await;
+    await_cluster_state(&emr, &to_terminate, "doomed", "TERMINATED").await;
 
     for (label, states, expected) in [
         ("WAITING", json!(["WAITING"]), vec![kept_alive.as_str()]),
-        ("RUNNING", json!(["RUNNING"]), vec![transient.as_str()]),
+        // The transient cluster does not rest in RUNNING: with no steps to run its queue
+        // was complete the instant it became ready, so the shutdown it was owed has since
+        // carried it to TERMINATED.
+        ("RUNNING", json!(["RUNNING"]), vec![]),
         (
             "RUNNING+WAITING",
             json!(["RUNNING", "WAITING"]),
-            vec![transient.as_str(), kept_alive.as_str()],
+            vec![kept_alive.as_str()],
         ),
         (
             "TERMINATED",
             json!(["TERMINATED"]),
-            vec![to_terminate.as_str()],
+            vec![to_terminate.as_str(), transient.as_str()],
         ),
         ("STARTING", json!(["STARTING"]), vec![]),
     ] {

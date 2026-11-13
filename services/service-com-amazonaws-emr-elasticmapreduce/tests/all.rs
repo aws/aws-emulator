@@ -27,6 +27,8 @@ mod cluster_placement;
 mod cluster_read_facts;
 #[path = "all/cluster_sessions.rs"]
 mod cluster_sessions;
+#[path = "all/cluster_self_termination.rs"]
+mod cluster_self_termination;
 #[path = "all/cluster_step_execution.rs"]
 mod cluster_step_execution;
 #[path = "all/created_window.rs"]

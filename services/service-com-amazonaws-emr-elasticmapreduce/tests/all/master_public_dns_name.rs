@@ -24,7 +24,7 @@
 
 use serde_json::{json, Value};
 
-use crate::job_flow_lifecycle::{Emr, PAST_CLUSTER_READY, PAST_TRANSITION};
+use crate::job_flow_lifecycle::{await_cluster_state, await_cluster_where, Emr, PAST_TRANSITION};
 
 /// The Regions a launch below is signed for: the one Region whose private DNS domain is the
 /// short `ec2.internal`, and two that build theirs from the Region name.
@@ -92,8 +92,8 @@ fn assert_hostname_form(case: &str, region: &str, reported: &str) {
 struct Account {
     emr: Emr,
     region: &'static str,
-    /// `(case, the ready state the cluster is owed, its id)` per launch.
-    clusters: Vec<(String, &'static str, String)>,
+    /// `(case, the states the cluster may report once it is up, its id)` per launch.
+    clusters: Vec<(String, &'static [&'static str], String)>,
 }
 
 #[tokio::test]
@@ -121,8 +121,17 @@ async fn a_cluster_reports_its_master_node_dns_name_once_the_node_is_up() {
                  MasterPublicDnsName, got {starting}"
             );
 
-            let ready_state = if kept_alive { "WAITING" } else { "RUNNING" };
-            clusters.push((case, ready_state, cluster_id));
+            // The states the cluster may report once its launch span has passed: a cluster
+            // kept alive with no steps rests in WAITING, and a transient one has by then
+            // run its (empty) step list and is walking, or has walked, the shutdown that
+            // brings — each of which keeps the name of the master node the cluster brought
+            // up, because the cluster was ready at some point.
+            let ready_states: &[&str] = if kept_alive {
+                &["WAITING"]
+            } else {
+                &["RUNNING", "TERMINATING", "TERMINATED"]
+            };
+            clusters.push((case, ready_states, cluster_id));
         }
         accounts.push(Account {
             emr,
@@ -131,18 +140,25 @@ async fn a_cluster_reports_its_master_node_dns_name_once_the_node_is_up() {
         });
     }
 
-    tokio::time::sleep(PAST_CLUSTER_READY).await;
-
     // `(the name reported, the cluster it belongs to)` per launch, in launch order.
     let mut reported_names: Vec<Vec<String>> = Vec::new();
     for account in &accounts {
         let mut seen: Vec<String> = Vec::new();
-        for (case, ready_state, cluster_id) in &account.clusters {
-            let up = account.emr.describe_cluster(cluster_id).await;
-            assert_eq!(
-                up["Status"]["State"].as_str(),
-                Some(*ready_state),
-                "case {case:?}: expected {ready_state}, got {up}"
+        for (case, ready_states, cluster_id) in &account.clusters {
+            // Waits for the CONDITION this case is about — the master node being UP, which
+            // is what the cluster reports a name for — rather than for a span.
+            let up = await_cluster_where(
+                &account.emr,
+                cluster_id,
+                case,
+                "a cluster whose master node is up",
+                |cluster| cluster["MasterPublicDnsName"].as_str().is_some(),
+            )
+            .await;
+            let state = up["Status"]["State"].as_str().unwrap_or_default().to_string();
+            assert!(
+                ready_states.contains(&state.as_str()),
+                "case {case:?}: expected one of {ready_states:?}, got {up}"
             );
             let reported = up["MasterPublicDnsName"]
                 .as_str()
@@ -187,15 +203,12 @@ async fn a_cluster_reports_its_master_node_dns_name_once_the_node_is_up() {
                 .await;
         }
     }
-    tokio::time::sleep(PAST_TRANSITION).await;
     for (account, names) in accounts.iter().zip(&reported_names) {
         for ((case, _, cluster_id), reported) in account.clusters.iter().zip(names) {
-            let terminated = account.emr.describe_cluster(cluster_id).await;
-            assert_eq!(
-                terminated["Status"]["State"].as_str(),
-                Some("TERMINATED"),
-                "case {case:?}: the cluster must have terminated, got {terminated}"
-            );
+            // Waits for the CONDITION the shutdown is owed — the cluster reporting the
+            // terminal state — rather than for a span.
+            let terminated =
+                await_cluster_state(&account.emr, cluster_id, case, "TERMINATED").await;
             assert_eq!(
                 terminated["MasterPublicDnsName"].as_str(),
                 Some(reported.as_str()),

@@ -777,6 +777,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // what attributes the change after the fact.
         crate::state::audit(Self::NAME, &id, ctx, AuditOutcome::ClusterLaunched);
 
+        // The launched cluster has entered the first state of its lifecycle, and the clock
+        // owes it the rest: both are announced on the default event bus as they happen, so
+        // a client that waits for this cluster on an EventBridge rule rather than on
+        // `DescribeCluster` sees it come up and — where the launch asked for no cluster that
+        // stays up — finish.
+        crate::state::settle_cluster_events(&self.engine, ctx, &region);
+
         Ok(RunJobFlowOutput {
             job_flow_id: Some(id),
             cluster_arn: Some(arn),

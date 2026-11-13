@@ -215,6 +215,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             &input.cluster_id,
         )
         .await;
+        // The same for the CLUSTER's own states: a transition this read materialised is
+        // announced on the default event bus like any other, with the store released.
+        crate::state::settle_cluster_events(
+            &self.engine,
+            ctx,
+            &crate::state::request_region(ctx.parts()),
+        );
 
         Ok(output)
     }

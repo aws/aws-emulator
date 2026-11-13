@@ -245,6 +245,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             );
         }
 
+        // The shutdown this call started — and the terminal state the clock owes at the end
+        // of it — are announced on the default event bus as they happen.
+        crate::state::settle_cluster_events(
+            &self.engine,
+            ctx,
+            &crate::state::request_region(ctx.parts()),
+        );
+
         Ok(TerminateJobFlowsOutput)
     }
 }
