@@ -5,7 +5,7 @@
 //! instant from which the clock owes it `RUNNING`, so a caller reading straight after
 //! the call still sees the transient state and one reading later sees a streaming fleet.
 //! A name this account holds no fleet under answers `ResourceNotFoundException`
-//! (HTTP 404).
+//! (HTTP 400).
 //!
 //! ## Shape of an operation
 //!

@@ -5,7 +5,7 @@
 //! what it returns is literally what a create and the later `TagResource`/
 //! `UntagResource` calls left on that resource — an untagged resource reports an empty
 //! collection. An ARN no resource of this service holds answers
-//! `ResourceNotFoundException` (HTTP 404). Reports only; writes nothing.
+//! `ResourceNotFoundException` (HTTP 400). Reports only; writes nothing.
 //!
 //! ## Shape of an operation
 //!

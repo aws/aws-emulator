@@ -561,7 +561,7 @@ async fn a_theme_needs_its_stack_and_a_stack_has_one_theme() {
             case,
             "CreateThemeForStack",
             request.clone(),
-            404,
+            400,
             "ResourceNotFoundException",
         )
         .await;
@@ -619,7 +619,7 @@ async fn an_unbranded_stack_has_no_theme_to_read_update_or_delete() {
             operation,
             operation,
             request.clone(),
-            404,
+            400,
             "ResourceNotFoundException",
         )
         .await;
@@ -638,7 +638,7 @@ async fn an_unbranded_stack_has_no_theme_to_read_update_or_delete() {
             absent,
             "DescribeThemeForStack",
             json!({ "StackName": absent }),
-            404,
+            400,
             "ResourceNotFoundException",
         )
         .await;
@@ -673,7 +673,7 @@ async fn deleting_the_theme_leaves_the_stack_and_frees_the_branding() {
             case,
             "DescribeThemeForStack",
             json!({ "StackName": stack }),
-            404,
+            400,
             "ResourceNotFoundException",
         )
         .await;
@@ -730,7 +730,7 @@ async fn deleting_the_stack_deletes_the_theme_it_owns() {
             case,
             "DescribeThemeForStack",
             json!({ "StackName": stack }),
-            404,
+            400,
             "ResourceNotFoundException",
         )
         .await;

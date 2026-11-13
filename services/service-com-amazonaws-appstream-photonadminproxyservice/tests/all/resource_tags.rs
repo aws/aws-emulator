@@ -18,7 +18,7 @@
 //!   that only overwrites keys it already carries is not growth and is accepted;
 //! * tags belong TO a resource, so they survive every update of the resource they are
 //!   on, and an ARN addressing no resource of this service is refused with
-//!   `ResourceNotFoundException` (HTTP 404) by every tag operation, with AWS's sentence
+//!   `ResourceNotFoundException` (HTTP 400) by every tag operation, with AWS's sentence
 //!   for a resource the account does not hold.
 
 use serde_json::{json, Map, Value};
@@ -718,7 +718,7 @@ async fn every_tag_operation_refuses_an_arn_that_addresses_no_resource() {
                 &case,
                 operation,
                 request,
-                404,
+                400,
                 "ResourceNotFoundException",
             )
             .await;

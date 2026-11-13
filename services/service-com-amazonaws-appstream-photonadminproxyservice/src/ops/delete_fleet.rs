@@ -3,7 +3,7 @@
 //! @op DeleteFleet
 //! IMPLEMENTED: removes the fleet record from this service's store, so the matching
 //! `DescribeFleets` no longer reports it. An unknown name answers
-//! `ResourceNotFoundException` (HTTP 404); a fleet that is not `STOPPED`, or that is
+//! `ResourceNotFoundException` (HTTP 400); a fleet that is not `STOPPED`, or that is
 //! still associated with a stack, answers `ResourceInUseException` (HTTP 400) — the
 //! latter until `DisassociateFleet` clears the edge.
 //!

@@ -6,7 +6,11 @@
 //! the request's `AttributesToDelete` names, and returns the modelled `Stack` rendered
 //! FROM that record, so a later `DescribeStacks` answers with the same configuration.
 //! A cleared field is ABSENT from the rendered stack, not present-and-empty. An unknown
-//! `Name` answers `ResourceNotFoundException` (HTTP 404).
+//! `Name` answers `ResourceNotFoundException` (HTTP 400, the status this service answers
+//! that refusal class with — see `crate::state::modelled_error_status`). An
+//! `AccessEndpoints` list whose entry carries no `VpceId`, or which names one
+//! `EndpointType` twice, is refused on the request's own shape
+//! ([`crate::state::access_endpoints`]) and replaces nothing.
 //!
 //! Clearing an attribute only detaches what the stack referenced: dropping
 //! `ACCESS_ENDPOINTS` removes the stack's reference to the interface VPC endpoints and
@@ -245,6 +249,34 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     },
                 )
                 .into());
+            }
+        }
+
+        // What the request itself settles about the endpoints it would attach, before the
+        // stack is looked up and before the hop below is made: an entry that names no
+        // endpoint references nothing to resolve, and one endpoint type named twice asks
+        // for a type a stack is reached through once
+        // ([`crate::state::access_endpoints`]). Settled from the request, so a refused
+        // update replaces nothing.
+        if let Some(access_endpoints) = input.access_endpoints.as_deref() {
+            if let Some(message) = crate::state::missing_vpce_id_message(access_endpoints) {
+                return Err(crate::scaffolded::Scaffolded::validation(message).into());
+            }
+            if let Some(endpoint_type) =
+                crate::state::duplicate_access_endpoint_type(access_endpoints)
+            {
+                return Err(
+                    UpdateStackErrorModeled::InvalidParameterCombinationException(
+                        InvalidParameterCombinationException {
+                            message: Some(
+                                crate::state::duplicate_access_endpoint_type_message(
+                                    &endpoint_type,
+                                ),
+                            ),
+                        },
+                    )
+                    .into(),
+                );
             }
         }
 

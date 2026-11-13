@@ -3,7 +3,7 @@
 //! @op AssociateApplicationFleet
 //! IMPLEMENTED: records the `(fleet, application)` edge this service's store holds, which
 //! is what `DescribeApplicationFleetAssociations` reports. A fleet name or application ARN
-//! this account holds nothing under answers `ResourceNotFoundException` (HTTP 404); a
+//! this account holds nothing under answers `ResourceNotFoundException` (HTTP 400); a
 //! fleet that is not an Elastic fleet answers `OperationNotPermittedException` (HTTP 400),
 //! because "this is only supported for Elastic fleets"; and an application whose
 //! `Platforms` do not include the fleet's own `Platform` answers

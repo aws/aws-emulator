@@ -11,7 +11,7 @@
 //!
 //! * an application is created against an app block that EXISTS: an `AppBlockArn` that
 //!   addresses no app block this account holds is refused with
-//!   `ResourceNotFoundException` (404) carrying AWS's sentence for that class, and no
+//!   `ResourceNotFoundException` (400) carrying AWS's sentence for that class, and no
 //!   application is created for it — whatever else the request is well-formed about;
 //! * a create that passes that gate persists the application and reports it back from the
 //!   stored record, so a later `DescribeApplications` answers with the same ARN, launch
@@ -596,7 +596,7 @@ async fn an_app_block_arn_that_addresses_no_app_block_is_not_found() {
             case,
             "CreateApplication",
             create_request(&row, &arn),
-            404,
+            400,
             "ResourceNotFoundException",
         )
         .await;
@@ -770,7 +770,7 @@ async fn a_read_the_catalog_cannot_answer_is_refused() {
             case,
             "DescribeApplications",
             json!({ "Arns": [arn.clone()] }),
-            404,
+            400,
             "ResourceNotFoundException",
         )
         .await;

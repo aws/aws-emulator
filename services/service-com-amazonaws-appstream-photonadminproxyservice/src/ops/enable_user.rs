@@ -12,7 +12,7 @@
 //! record is already in, so it answers the same empty success and changes nothing. An
 //! identity the pool holds no record for — including one named under an authentication
 //! type whose users this pool does not manage — is refused with
-//! `ResourceNotFoundException` (HTTP 404). `InvalidAccountStatusException` reports an AWS
+//! `ResourceNotFoundException` (HTTP 400). `InvalidAccountStatusException` reports an AWS
 //! account that is suspended, which this emulator's single account never is, so nothing
 //! here returns it.
 //!

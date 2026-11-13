@@ -4,7 +4,7 @@
 //! IMPLEMENTED: renders the [`crate::state::AppBlockRecord`]s this service's store holds,
 //! a page at a time, so what a reader answers is literally what `CreateAppBlock`
 //! persisted. An `Arns` member selects the app blocks to report and an ARN naming none
-//! answers `ResourceNotFoundException` (HTTP 404).
+//! answers `ResourceNotFoundException` (HTTP 400).
 //!
 //! ## Shape of an operation
 //!

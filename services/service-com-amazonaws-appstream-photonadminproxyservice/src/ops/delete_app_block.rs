@@ -3,7 +3,7 @@
 //! @op DeleteAppBlock
 //! IMPLEMENTED: removes the app block record from this service's store, so the matching
 //! `DescribeAppBlocks` no longer reports it. A name this account holds no app block under
-//! answers `ResourceNotFoundException` (HTTP 404), naming the ARN that name addresses; an
+//! answers `ResourceNotFoundException` (HTTP 400), naming the ARN that name addresses; an
 //! app block a stored application still names as the source of its binaries answers
 //! `ResourceInUseException` (HTTP 400) and removes nothing, until that application is
 //! deleted.

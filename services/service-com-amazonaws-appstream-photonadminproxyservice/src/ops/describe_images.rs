@@ -6,7 +6,7 @@
 //! this API mints — a page at a time, so a client can enumerate the images visible to the
 //! account and pick one for a fleet or an image builder. `Names` or `Arns` select the
 //! images to report and a name or ARN naming none answers `ResourceNotFoundException`
-//! (HTTP 404); `Type` narrows the report to one visibility.
+//! (HTTP 400); `Type` narrows the report to one visibility.
 //!
 //! ## Shape of an operation
 //!

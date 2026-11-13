@@ -488,7 +488,7 @@ async fn a_create_carries_the_script_members_its_packaging_admits() {
             case,
             "DescribeAppBlocks",
             json!({ "Arns": [arn.clone()] }),
-            404,
+            400,
             "ResourceNotFoundException",
         )
         .await;
@@ -574,7 +574,7 @@ async fn a_read_refuses_an_arn_that_addresses_no_app_block() {
             case,
             "DescribeAppBlocks",
             json!({ "Arns": [arn.clone()] }),
-            404,
+            400,
             "ResourceNotFoundException",
         )
         .await;
@@ -592,7 +592,7 @@ async fn a_read_refuses_an_arn_that_addresses_no_app_block() {
         "a stored ARN and an unknown one",
         "DescribeAppBlocks",
         json!({ "Arns": [stored["Arn"].clone(), app_block_arn(region, "absent")] }),
-        404,
+        400,
         "ResourceNotFoundException",
     )
     .await;

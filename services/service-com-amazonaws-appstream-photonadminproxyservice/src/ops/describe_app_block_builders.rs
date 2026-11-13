@@ -3,7 +3,7 @@
 //! @op DescribeAppBlockBuilders
 //! IMPLEMENTED: renders the [`crate::state::AppBlockBuilderRecord`]s this service holds
 //! back as modelled `AppBlockBuilder`s, a page at a time. A request that names `Names`
-//! reports exactly those builders and answers `ResourceNotFoundException` (HTTP 404) for
+//! reports exactly those builders and answers `ResourceNotFoundException` (HTTP 400) for
 //! a name the account does not hold; one that names none reports every stored builder.
 //!
 //! ## Shape of an operation

@@ -3,8 +3,10 @@
 //! The refusals this service answers whose wire identity its own error list does not
 //! express, and the error channel that carries them.
 //!
-//! Two things about an answer are decided by the MODEL for a modelled error: the shape —
-//! and with it the `__type` a client branches on — and the `@httpError` status. AppStream
+//! The MODEL decides the shape of a modelled error — and with it the `__type` a client
+//! branches on. The HTTP status it leaves with is decided here
+//! ([`modelled_error_status`]), because the status AppStream puts on the wire for a
+//! refusal is not the one every error shape's `@httpError` trait states. AppStream
 //! refuses a value one of its members may not carry as `InvalidParameterValueException`,
 //! a shape this service's model declares for no operation, so that refusal cannot be
 //! constructed as a plain variant of an operation's `#[operation_error]` enum. It lives
@@ -23,9 +25,9 @@ use ::smithy_server_runtime::OperationError;
 /// values are not valid").
 pub const INVALID_PARAMETER_VALUE_CODE: &str = "InvalidParameterValueException";
 
-/// The status such a refusal answers with: the 400 of a client error, the status every
-/// error shape this service's model declares for a bad request carries.
-pub const INVALID_PARAMETER_VALUE_STATUS: u16 = 400;
+/// The status such a refusal answers with: the 400 of a client error, the status this
+/// service answers every refusal with ([`CLIENT_REFUSAL_STATUS`]).
+pub const INVALID_PARAMETER_VALUE_STATUS: u16 = CLIENT_REFUSAL_STATUS;
 
 /// The `message` member of the refused-value shape.
 ///
@@ -61,6 +63,39 @@ static INVALID_PARAMETER_VALUE_SCHEMA: Schema = Schema::new_struct(
     ShapeType::Structure,
     &[&INVALID_PARAMETER_VALUE_MESSAGE],
 );
+
+/// The `__type` of the modelled refusal for a resource this account holds nothing under
+/// (`ResourceNotFoundException`), named here because the status this service answers it
+/// with is decided below rather than by the shape's own trait.
+pub const RESOURCE_NOT_FOUND_CODE: &str = "ResourceNotFoundException";
+
+/// The status this service answers a client-side refusal with: AppStream is a JSON RPC
+/// API whose refusals all leave over HTTP 400, which is the `@httpError` every error
+/// shape its model declares carries — except `ResourceNotFoundException`, whose trait
+/// says 404 while the wire says 400 ([`modelled_error_status`]).
+pub const CLIENT_REFUSAL_STATUS: u16 = 400;
+
+/// The HTTP status a modelled error of this service leaves with, given the `__type` it
+/// carries (`shape_name`) and the status its shape's `@httpError` trait declares.
+///
+/// Every error shape this service's model declares is a CLIENT error, and on the wire
+/// this service answers each of them with [`CLIENT_REFUSAL_STATUS`]; the `@httpError` on
+/// `ResourceNotFoundException` ([`RESOURCE_NOT_FOUND_CODE`]) is the one that does not
+/// state that status, so that one refusal class is the one this mapping restates. The
+/// status is the only thing it decides: the `__type` and the message a refusal carries
+/// are the shape's own, and the status of every other error — a server fault, the
+/// scaffold's 501, a synthetic validation refusal — is passed through untouched.
+///
+/// Applied once, in the error channel every operation of this service answers through
+/// (`crate::scaffolded::Scaffolded`), so no handler decides a status itself and two
+/// operations cannot answer one refusal class two ways.
+pub fn modelled_error_status(shape_name: &str, declared_status: u16) -> u16 {
+    if shape_name == RESOURCE_NOT_FOUND_CODE {
+        CLIENT_REFUSAL_STATUS
+    } else {
+        declared_status
+    }
+}
 
 /// The body of such a refusal: the one sentence it states.
 #[derive(Debug, Clone)]

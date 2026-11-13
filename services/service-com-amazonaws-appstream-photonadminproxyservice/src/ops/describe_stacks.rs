@@ -4,7 +4,9 @@
 //! IMPLEMENTED: reads the stacks persisted by `CreateStack` out of this service's store
 //! and renders each stored record as the modelled `Stack`. With no `Names` every stored
 //! stack is reported; with `Names` only those, and a name that was never created answers
-//! `ResourceNotFoundException` (HTTP 404). A reporting operation: it writes nothing.
+//! `ResourceNotFoundException` (HTTP 400, the status this service answers that refusal
+//! class with — see `crate::state::modelled_error_status`). A reporting operation: it
+//! writes nothing.
 //!
 //! ## Shape of an operation
 //!

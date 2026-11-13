@@ -4,7 +4,7 @@
 //! IMPLEMENTED: renders the [`crate::state::ThemeRecord`] stored for the named stack, so
 //! what this reports is literally what `CreateThemeForStack`/`UpdateThemeForStack`
 //! persisted. A stack that does not exist, and a stack that has no custom branding,
-//! answer `ResourceNotFoundException` (HTTP 404). Reports only; writes nothing.
+//! answer `ResourceNotFoundException` (HTTP 400). Reports only; writes nothing.
 //!
 //! ## Shape of an operation
 //!

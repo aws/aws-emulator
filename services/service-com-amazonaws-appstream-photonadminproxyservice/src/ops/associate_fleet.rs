@@ -3,7 +3,7 @@
 //! @op AssociateFleet
 //! IMPLEMENTED: records the `(FleetName, StackName)` edge in this service's store, so a
 //! later `DeleteFleet`/`DeleteStack` can refuse while the edge exists. Either name
-//! missing from the store answers `ResourceNotFoundException` (HTTP 404).
+//! missing from the store answers `ResourceNotFoundException` (HTTP 400).
 //!
 //! ## Shape of an operation
 //!

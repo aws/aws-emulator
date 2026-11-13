@@ -22,7 +22,7 @@
 //!   an update that sets one adds its entry and one that deletes one drops it
 //!   (`tests/all/application_update.rs` asserts that map over the whole attribute class);
 //! * a `Name` the account holds no application under is refused with
-//!   `ResourceNotFoundException` (404) carrying AWS's sentence for that class, as is an
+//!   `ResourceNotFoundException` (400) carrying AWS's sentence for that class, as is an
 //!   `AppBlockArn` that addresses no app block this account holds, and both leave the
 //!   stored application exactly as it was.
 
@@ -429,7 +429,7 @@ async fn update_application_refuses_an_unknown_application_with_resource_not_fou
             &case,
             "UpdateApplication",
             json!({ "Name": name, "Description": "an update nobody applies" }),
-            404,
+            400,
             "ResourceNotFoundException",
         )
         .await;
@@ -486,7 +486,7 @@ async fn an_app_block_arn_that_addresses_no_app_block_is_not_found() {
             case,
             "UpdateApplication",
             json!({ "Name": "rebound", "AppBlockArn": arn, "Description": "not applied" }),
-            404,
+            400,
             "ResourceNotFoundException",
         )
         .await;

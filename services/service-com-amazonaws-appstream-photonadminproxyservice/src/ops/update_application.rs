@@ -6,7 +6,7 @@
 //! `ApplicationAttribute` in `AttributesToDelete` names, and returns the modelled
 //! `Application` rendered FROM that updated record — so a later `DescribeApplications`
 //! answers with exactly what this call stored. A `Name` this account holds no application
-//! under answers `ResourceNotFoundException` (HTTP 404) and stores nothing, as does an
+//! under answers `ResourceNotFoundException` (HTTP 400) and stores nothing, as does an
 //! `AppBlockArn` that addresses no app block this account holds (the same gate
 //! `CreateApplication` applies to the app block an application's binaries come from).
 //!

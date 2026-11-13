@@ -3,7 +3,7 @@
 //! @op DeleteApplication
 //! IMPLEMENTED: removes the application record from this service's store, so the matching
 //! `DescribeApplications` no longer reports it and the app block it streamed from can be
-//! deleted. An unknown name answers `ResourceNotFoundException` (HTTP 404); an
+//! deleted. An unknown name answers `ResourceNotFoundException` (HTTP 400); an
 //! application a fleet is still associated with answers `ResourceInUseException`
 //! (HTTP 400) until `DisassociateApplicationFleet` clears that edge.
 //!

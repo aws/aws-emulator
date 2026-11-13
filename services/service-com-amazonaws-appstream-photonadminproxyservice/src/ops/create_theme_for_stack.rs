@@ -4,7 +4,7 @@
 //! IMPLEMENTED: persists a [`crate::state::ThemeRecord`] for the named stack and returns
 //! the modelled `Theme` rendered FROM that record, so a later `DescribeThemeForStack`
 //! answers with the same branding, asset URLs and `CreatedTime`. Branding exists only for
-//! a stack that exists (`ResourceNotFoundException`, HTTP 404), and a stack has one theme,
+//! a stack that exists (`ResourceNotFoundException`, HTTP 400), and a stack has one theme,
 //! so a second create for the same stack answers `ResourceAlreadyExistsException`
 //! (HTTP 400).
 //!

@@ -426,7 +426,7 @@ async fn a_read_of_a_name_the_account_does_not_hold_is_refused() {
                 &case,
                 "DescribeAppBlockBuilders",
                 request,
-                404,
+                400,
                 "ResourceNotFoundException",
             )
             .await;
@@ -649,7 +649,7 @@ async fn a_builders_tags_live_on_its_own_record() {
             &case,
             "ListTagsForResource",
             json!({ "ResourceArn": builder_arn("us-east-1", &name) }),
-            404,
+            400,
             "ResourceNotFoundException",
         )
         .await;

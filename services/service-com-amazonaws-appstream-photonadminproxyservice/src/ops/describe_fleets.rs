@@ -5,7 +5,7 @@
 //! and renders each stored record as the modelled `Fleet`, with its current `State` and
 //! `ComputeCapacityStatus`. With no `Names` every stored fleet is reported; with `Names`
 //! only those, and a name that was never created answers `ResourceNotFoundException`
-//! (HTTP 404). A reporting operation: it writes nothing.
+//! (HTTP 400). A reporting operation: it writes nothing.
 //!
 //! ## Shape of an operation
 //!

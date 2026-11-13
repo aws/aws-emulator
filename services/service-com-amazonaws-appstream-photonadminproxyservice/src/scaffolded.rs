@@ -183,7 +183,8 @@ impl SerializableStruct for ValidationException {
 pub enum Scaffolded<E> {
     /// The operation is generated but has no implementation. Renders as HTTP 501.
     NotImplemented(NotImplemented),
-    /// A modeled error the operation declares. Renders with the model's own status.
+    /// A modeled error the operation declares. Renders with the status this service
+    /// answers that refusal class with ([`crate::state::modelled_error_status`]).
     Modeled(E),
     /// The request was refused as invalid. Renders as HTTP 400 with the error code
     /// `ValidationException`.
@@ -246,9 +247,10 @@ impl<E: std::error::Error + 'static> std::error::Error for Scaffolded<E> {
 }
 
 /// Every `OperationError` method delegates to the modeled error, so wrapping an
-/// implemented operation's error channel changes NOTHING about how that error is
-/// rendered. Only the synthetic variant behaves differently — and it is the one that
-/// must answer 501.
+/// implemented operation's error channel changes nothing about the shape, the `__type` or
+/// the message of that error. Two variants behave differently: the synthetic scaffold
+/// signal, which must answer 501, and the status of a modelled error, which is this
+/// service's for that refusal class ([`crate::state::modelled_error_status`]).
 impl<E: OperationError> OperationError for Scaffolded<E> {
     fn as_serializable(&self) -> &dyn SerializableStruct {
         match self {
@@ -282,10 +284,18 @@ impl<E: OperationError> OperationError for Scaffolded<E> {
     ///
     /// Keep it 501 and not a 5xx server fault: SDK retry classifiers treat those as
     /// retryable, so a client would retry an operation that can never succeed.
+    ///
+    /// A modelled error leaves with the status this SERVICE answers that refusal class
+    /// with ([`crate::state::modelled_error_status`]), which is the shape's own
+    /// `@httpError` for every class but one. This is the single place that mapping is
+    /// applied: every operation of this service answers through this channel, so no
+    /// handler states a status itself.
     fn http_status(&self) -> u16 {
         match self {
             Self::NotImplemented(_) => 501,
-            Self::Modeled(e) => e.http_status(),
+            Self::Modeled(e) => {
+                crate::state::modelled_error_status(e.shape_name(), e.http_status())
+            }
             Self::ValidationException(_) => 400,
         }
     }

@@ -5,7 +5,7 @@
 //! writing to that resource's own stored record, so `ListTagsForResource` stops
 //! reporting them. A key the resource does not carry leaves it as it is — the request
 //! asks for those keys to be gone, which they then are. An ARN no resource of this
-//! service holds answers `ResourceNotFoundException` (HTTP 404).
+//! service holds answers `ResourceNotFoundException` (HTTP 400).
 //!
 //! ## Shape of an operation
 //!

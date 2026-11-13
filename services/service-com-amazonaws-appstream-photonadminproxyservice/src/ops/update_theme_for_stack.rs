@@ -5,7 +5,7 @@
 //! [`crate::state::ThemeRecord`] stored for the named stack, clears the fields its
 //! `AttributesToDelete` names, and returns the modelled `Theme` rendered from the updated
 //! record. A stack with no stored branding answers `ResourceNotFoundException`
-//! (HTTP 404), and a request that both sets a field and deletes it
+//! (HTTP 400), and a request that both sets a field and deletes it
 //! `InvalidParameterCombinationException` (HTTP 400), leaving the theme untouched.
 //!
 //! ## Shape of an operation

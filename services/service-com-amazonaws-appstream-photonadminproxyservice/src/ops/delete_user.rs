@@ -4,7 +4,7 @@
 //! IMPLEMENTED: removes the `(AuthenticationType, UserName)` identity from the user pool,
 //! with the stack associations that identity was entitled by, so the matching
 //! `DescribeUsers` no longer reports it. An identity the pool does not hold answers
-//! `ResourceNotFoundException` (HTTP 404) — which is also what a repeat delete answers,
+//! `ResourceNotFoundException` (HTTP 400) — which is also what a repeat delete answers,
 //! because a deleted user is gone rather than merely unlisted.
 //!
 //! ## Shape of an operation

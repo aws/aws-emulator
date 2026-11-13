@@ -16,7 +16,7 @@
 //!   `DescribeStacks` — not present-and-empty — while the rest of the stack survives;
 //! * clearing an attribute only detaches what the stack referenced, so the same value
 //!   can be attached again by a later request;
-//! * an unknown stack is refused with the modelled `ResourceNotFoundException` (404),
+//! * an unknown stack is refused with the modelled `ResourceNotFoundException` (400),
 //!   and a request that both sets a field and deletes it with
 //!   `InvalidParameterCombinationException` (400), leaving the stack untouched.
 
@@ -745,7 +745,7 @@ async fn update_stack_refuses_an_unknown_stack_with_resource_not_found() {
             case,
             "UpdateStack",
             json!({ "Name": name, "Description": "anything" }),
-            404,
+            400,
             "ResourceNotFoundException",
         )
         .await;

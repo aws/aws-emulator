@@ -14,7 +14,7 @@
 //!   `OperationNotPermittedException` (400) carrying AWS's sentence for that class, and
 //!   no URL is issued;
 //! * the stack and the fleet have to exist and be associated: a stack or fleet this
-//!   request cannot reach is refused with `ResourceNotFoundException` (404);
+//!   request cannot reach is refused with `ResourceNotFoundException` (400);
 //! * `StartFleet` is what makes a fleet streaming, and it does so on the clock — a fleet
 //!   reports `STARTING` straight after the call and `RUNNING` once the span has passed,
 //!   at which point the same `CreateStreamingURL` request succeeds;
@@ -308,7 +308,7 @@ async fn a_stack_or_fleet_the_request_cannot_reach_is_not_found() {
             case,
             "CreateStreamingURL",
             streaming_request(stack, fleet, USER, &json!({})),
-            404,
+            400,
             "ResourceNotFoundException",
         )
         .await;

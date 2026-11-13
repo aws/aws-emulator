@@ -7,7 +7,7 @@
 //! to apply to the app block builder"), so a role this account's IAM does not hold, or one
 //! whose trust policy does not let `appstream.amazonaws.com` assume it, is refused with
 //! `InvalidRoleException` (HTTP 400) — and nothing is created, so the read that follows
-//! answers `ResourceNotFoundException` (HTTP 404). The role is resolved against the
+//! answers `ResourceNotFoundException` (HTTP 400). The role is resolved against the
 //! ACCOUNT's IAM records, which is why this suite lives here: the role is created through
 //! the real `CreateRole` on the same engine that serves AppStream, so what the check reads
 //! is the document IAM persisted and not a copy.
@@ -196,7 +196,7 @@ async fn assert_no_builder(router: &MultiServiceRouter, case: &str, name: &str) 
     let (status, payload) =
         appstream(router, "DescribeAppBlockBuilders", json!({ "Names": [name] })).await;
     assert_eq!(
-        status, 404,
+        status, 400,
         "case {case:?}: a refused create must leave no builder to describe, got {status} \
          {payload}"
     );

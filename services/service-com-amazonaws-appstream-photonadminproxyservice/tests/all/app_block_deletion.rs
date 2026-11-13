@@ -15,7 +15,7 @@
 //!   and until every one of them is deleted;
 //! * once nothing names it, the delete answers the empty result and the app block is gone
 //!   for every later caller: a read of its ARN and a repeat delete of its name are both
-//!   refused `ResourceNotFoundException` (404) with AWS's sentence, so "gone" means
+//!   refused `ResourceNotFoundException` (400) with AWS's sentence, so "gone" means
 //!   unusable rather than merely unlisted;
 //! * a name this account holds no app block under is refused the same way, whether it was
 //!   never created or has already been deleted.
@@ -226,7 +226,7 @@ async fn an_app_block_an_application_holds_may_not_be_deleted_until_it_is_releas
                 case,
                 operation,
                 request,
-                404,
+                400,
                 "ResourceNotFoundException",
             )
             .await;
@@ -268,7 +268,7 @@ async fn a_name_this_account_holds_no_app_block_under_is_not_found() {
             name,
             "DeleteAppBlock",
             json!({ "Name": name }),
-            404,
+            400,
             "ResourceNotFoundException",
         )
         .await;

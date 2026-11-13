@@ -95,12 +95,16 @@
 //! each of its `AccessEndpoints` entries names, which is Amazon EC2's resource: resolving
 //! that reference against the account that owns it lives in its own module
 //! ([`access_endpoints_refusal`]), and is what every write of the reference —
-//! `CreateStack` and `UpdateStack` — asks before it stores one.
+//! `CreateStack` and `UpdateStack` — asks before it stores one. What a write can settle
+//! from the request alone — an entry that names no endpoint at all, a list naming one
+//! endpoint type twice — is read before that hop is made ([`access_endpoints`]).
 
+mod access_endpoints;
 mod images;
 mod vpc_access_endpoints;
 mod wire_refusals;
 
+pub use access_endpoints::*;
 pub use images::*;
 pub use vpc_access_endpoints::*;
 pub use wire_refusals::*;

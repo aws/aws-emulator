@@ -3,7 +3,7 @@
 //! @op DisassociateFleet
 //! IMPLEMENTED: removes the `(FleetName, StackName)` edge `AssociateFleet` recorded, so
 //! the fleet and the stack become deletable again. Either name missing from the store
-//! answers `ResourceNotFoundException` (HTTP 404).
+//! answers `ResourceNotFoundException` (HTTP 400).
 //!
 //! ## Shape of an operation
 //!

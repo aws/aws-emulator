@@ -4,7 +4,7 @@
 //! IMPLEMENTED: disables usage report generation by dropping the account's stored
 //! subscription, so a later `DescribeUsageReportSubscriptions` reports none. An account
 //! with no subscription has nothing to disable, so the call answers
-//! `ResourceNotFoundException` (HTTP 404).
+//! `ResourceNotFoundException` (HTTP 400).
 //!
 //! ## Shape of an operation
 //!

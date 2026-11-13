@@ -593,9 +593,9 @@ async fn associate_fleet_requires_both_endpoints_to_exist() {
     // Rows: which side of the pair names a stored record.
     let rows: Vec<(&str, &str, &str, Option<u16>)> = vec![
         ("both exist", "live-fleet", "live-stack", None),
-        ("fleet missing", "absent-fleet", "live-stack", Some(404)),
-        ("stack missing", "live-fleet", "absent-stack", Some(404)),
-        ("both missing", "absent-fleet", "absent-stack", Some(404)),
+        ("fleet missing", "absent-fleet", "live-stack", Some(400)),
+        ("stack missing", "live-fleet", "absent-stack", Some(400)),
+        ("both missing", "absent-fleet", "absent-stack", Some(400)),
     ];
 
     for (case, fleet, stack, expected_failure) in rows {
@@ -727,7 +727,7 @@ async fn an_association_blocks_both_deletes_until_it_is_removed() {
             case,
             "DescribeFleets",
             json!({ "Names": ["demo-fleet"] }),
-            404,
+            400,
             "ResourceNotFoundException",
         )
         .await;
@@ -736,7 +736,7 @@ async fn an_association_blocks_both_deletes_until_it_is_removed() {
             case,
             "DescribeStacks",
             json!({ "Names": ["demo-stack"] }),
-            404,
+            400,
             "ResourceNotFoundException",
         )
         .await;
@@ -746,7 +746,7 @@ async fn an_association_blocks_both_deletes_until_it_is_removed() {
                 case,
                 operation,
                 json!({ "Name": name_of(operation) }),
-                404,
+                400,
                 "ResourceNotFoundException",
             )
             .await;
@@ -791,19 +791,19 @@ async fn describe_refuses_a_name_that_was_never_created() {
             "single unknown",
             json!({ "Names": ["nope"] }),
             json!({ "Names": ["nope"] }),
-            Some(404),
+            Some(400),
         ),
         (
             "known then unknown",
             json!({ "Names": ["known-stack", "nope"] }),
             json!({ "Names": ["known-fleet", "nope"] }),
-            Some(404),
+            Some(400),
         ),
         (
             "unknown then known",
             json!({ "Names": ["nope", "known-stack"] }),
             json!({ "Names": ["nope", "known-fleet"] }),
-            Some(404),
+            Some(400),
         ),
         (
             "all known",

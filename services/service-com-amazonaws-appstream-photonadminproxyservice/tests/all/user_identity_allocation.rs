@@ -19,7 +19,7 @@
 //!   there are;
 //! * deleting the identity frees the username: a create afterwards allocates it again,
 //!   while a delete of an identity the pool does not hold is refused
-//!   `ResourceNotFoundException` (404) — gone means unusable, not merely unlisted.
+//!   `ResourceNotFoundException` (400) — gone means unusable, not merely unlisted.
 
 use std::time::Duration;
 
@@ -299,7 +299,7 @@ async fn deleting_an_identity_frees_the_username_and_a_repeat_delete_is_not_foun
             case,
             "DeleteUser",
             identity,
-            404,
+            400,
             "ResourceNotFoundException",
         )
         .await;

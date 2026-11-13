@@ -4,7 +4,7 @@
 //! IMPLEMENTED: removes the [`crate::state::ThemeRecord`] stored for the named stack, so
 //! the stack keeps streaming with the default appearance and a later
 //! `DescribeThemeForStack` answers `ResourceNotFoundException`. A stack with no stored
-//! branding answers that same error (HTTP 404).
+//! branding answers that same error (HTTP 400).
 //!
 //! ## Shape of an operation
 //!

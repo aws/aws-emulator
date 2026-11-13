@@ -35,13 +35,12 @@ use crate::stack_fleet_lifecycle::Emulator;
 const STACK_KIND: &str = "stack";
 
 /// The wire status this service's `ResourceNotFoundException` leaves with, stated once so
-/// the rows below do not each encode it. The model defaults the error's `httpError` to 404
-/// (`smithy_query(query="shape", shape="ResourceNotFoundException")`), which is what the
-/// serializer emits today; the sibling suites assert the same status. The recorded wire
-/// status for this refusal is 400, which the open issue
-/// `appstream-stack-not-found-refusals-diverge-wrong-http` owns: changing it is this one
-/// constant.
-const NOT_FOUND_STATUS: u16 = 404;
+/// the rows below do not each encode it; the sibling suites assert the same status. The
+/// shape's `@httpError` is 404
+/// (`smithy_query(query="shape", shape="ResourceNotFoundException")`) while AppStream
+/// serves this refusal over HTTP 400, which is the status the serializer answers with
+/// (`crate::state::modelled_error_status` in the service crate).
+const NOT_FOUND_STATUS: u16 = 400;
 
 /// A name no row ever creates, so every operation must report it as missing.
 const NEVER_CREATED: &str = "never-created-stack";

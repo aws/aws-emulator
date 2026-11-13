@@ -191,7 +191,7 @@ async fn a_missing_resource_is_refused_with_its_kind_name_and_account() {
                 &case,
                 row.operation,
                 (row.request)(&name),
-                404,
+                400,
                 "ResourceNotFoundException",
             )
             .await;

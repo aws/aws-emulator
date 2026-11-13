@@ -4,7 +4,7 @@
 //! IMPLEMENTED: reports the applications this service's store holds, rendered from the
 //! stored [`crate::state::ApplicationRecord`]s, a page at a time. A request that names
 //! `Arns` is answered about exactly those applications, and an ARN addressing none
-//! answers `ResourceNotFoundException` (HTTP 404).
+//! answers `ResourceNotFoundException` (HTTP 400).
 //!
 //! ## Shape of an operation
 //!

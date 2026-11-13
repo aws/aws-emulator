@@ -4,7 +4,10 @@
 //! IMPLEMENTED: persists a [`crate::state::StackRecord`] in this service's store and
 //! returns the modelled `Stack` rendered FROM that record, so a later `DescribeStacks`
 //! answers with the same ARN, `CreatedTime` and configuration. A second create of the
-//! same `Name` answers `ResourceAlreadyExistsException` (HTTP 400).
+//! same `Name` answers `ResourceAlreadyExistsException` (HTTP 400). An `AccessEndpoints`
+//! list whose entry carries no `VpceId`, or which names one `EndpointType` twice, is
+//! refused on the request's own shape ([`crate::state::access_endpoints`]) and stores
+//! nothing.
 //!
 //! `AccessEndpoints` is the one member that REFERENCES a resource of another service — an
 //! interface VPC endpoint of the account — so each entry's `VpceId` is resolved against
@@ -210,6 +213,32 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             ))
         })?;
         let region = crate::state::request_region(ctx.parts());
+
+        // What the request itself settles comes first, as the boundary walk reports one:
+        // an entry that names no endpoint references nothing to resolve, and one endpoint
+        // type named twice asks for a type a stack is reached through once
+        // ([`crate::state::access_endpoints`]).
+        if let Some(access_endpoints) = input.access_endpoints.as_deref() {
+            if let Some(message) = crate::state::missing_vpce_id_message(access_endpoints) {
+                return Err(crate::scaffolded::Scaffolded::validation(message).into());
+            }
+            if let Some(endpoint_type) =
+                crate::state::duplicate_access_endpoint_type(access_endpoints)
+            {
+                return Err(
+                    CreateStackErrorModeled::InvalidParameterCombinationException(
+                        InvalidParameterCombinationException {
+                            message: Some(
+                                crate::state::duplicate_access_endpoint_type_message(
+                                    &endpoint_type,
+                                ),
+                            ),
+                        },
+                    )
+                    .into(),
+                );
+            }
+        }
 
         // The interface VPC endpoints this create references are another service's
         // resources, so they are resolved THERE — before this service's store is taken, so

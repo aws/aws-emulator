@@ -9,6 +9,8 @@
 // `tests/all.rs` is a test-target CRATE ROOT, so a bare `mod` resolves to a SIBLING
 // (`tests/state_roundtrip.rs`) — which the layout check refuses. The `#[path]` is what
 // points it into `tests/all/`.
+#[path = "all/access_endpoint_request_shape.rs"]
+mod access_endpoint_request_shape;
 #[path = "all/app_block_builder.rs"]
 mod app_block_builder;
 #[path = "all/app_block_builder_app_block_associations.rs"]
@@ -27,6 +29,8 @@ mod applications;
 mod associated_fleets;
 #[path = "all/associated_stacks.rs"]
 mod associated_stacks;
+#[path = "all/not_found_refusal_status.rs"]
+mod not_found_refusal_status;
 #[path = "all/refusal_messages.rs"]
 mod refusal_messages;
 #[path = "all/resource_tags.rs"]

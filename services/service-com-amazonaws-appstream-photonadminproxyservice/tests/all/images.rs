@@ -324,7 +324,7 @@ async fn a_name_or_arn_addressing_no_image_is_refused_with_awss_sentence() {
             &case,
             "DescribeImages",
             json!({ "Names": [name.clone()] }),
-            404,
+            400,
             "ResourceNotFoundException",
         )
         .await;
@@ -374,7 +374,7 @@ async fn a_name_or_arn_addressing_no_image_is_refused_with_awss_sentence() {
             &case,
             "DescribeImages",
             json!({ "Arns": [arn.clone()] }),
-            404,
+            400,
             "ResourceNotFoundException",
         )
         .await;

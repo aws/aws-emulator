@@ -20,7 +20,7 @@
 //!   are untouched;
 //! * an identity the pool holds no record for — a name never created, a name differing
 //!   only in capitalisation, or a name under an authentication type whose users this pool
-//!   does not manage — is refused with `ResourceNotFoundException` (HTTP 404) and changes
+//!   does not manage — is refused with `ResourceNotFoundException` (HTTP 400) and changes
 //!   nothing;
 //! * a request outside a modelled constraint on the user name is refused and changes
 //!   nothing.
@@ -512,7 +512,7 @@ async fn a_transition_for_a_user_the_pool_does_not_hold_is_refused() {
                 &case,
                 operation,
                 transition_request(user_name, authentication_type),
-                404,
+                400,
                 "ResourceNotFoundException",
             )
             .await;

@@ -19,7 +19,7 @@
 //!   one of them;
 //! * "this is only supported for Elastic fleets", so a fleet of any other type is refused
 //!   `OperationNotPermittedException` (400), and either endpoint this account does not
-//!   hold is refused `ResourceNotFoundException` (404);
+//!   hold is refused `ResourceNotFoundException` (400);
 //! * an association holds the application: it may not be deleted until
 //!   `DisassociateApplicationFleet` clears the edge.
 
@@ -549,7 +549,7 @@ async fn an_endpoint_this_account_does_not_hold_is_not_found() {
             label,
             "AssociateApplicationFleet",
             request,
-            404,
+            400,
             "ResourceNotFoundException",
         )
         .await;

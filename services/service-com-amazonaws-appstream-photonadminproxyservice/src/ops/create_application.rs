@@ -3,7 +3,7 @@
 //! @op CreateApplication
 //! IMPLEMENTED: resolves the `AppBlockArn` the request names against this service's
 //! stored app blocks — an ARN that addresses none answers `ResourceNotFoundException`
-//! (HTTP 404) and creates nothing — then persists a
+//! (HTTP 400) and creates nothing — then persists a
 //! [`crate::state::ApplicationRecord`] and returns the modelled `Application` rendered
 //! FROM that record, so a later `DescribeApplications` answers with the same ARN,
 //! `CreatedTime` and launch details. A second create of the same `Name` answers

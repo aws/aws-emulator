@@ -17,7 +17,7 @@
 //!   report date or subscription error is claimed for a report nothing generated;
 //! * an account with usage reporting disabled lists NO subscriptions — an empty
 //!   collection, not a refusal — and disabling a subscription it does not have is
-//!   refused with `ResourceNotFoundException` (404);
+//!   refused with `ResourceNotFoundException` (400);
 //! * disabling and enabling again reports the bucket the account already had, because
 //!   the bucket is unique to the account and Region;
 //! * `MaxResults` sizes the page: every size that can hold a record reports the whole
@@ -210,7 +210,7 @@ async fn disabling_usage_reporting_drops_the_subscription_and_keeps_the_bucket()
             &case,
             "DeleteUsageReportSubscription",
             json!({}),
-            404,
+            400,
             "ResourceNotFoundException",
         )
         .await;
@@ -237,7 +237,7 @@ async fn disabling_usage_reporting_that_was_never_enabled_is_refused() {
         case,
         "DeleteUsageReportSubscription",
         json!({}),
-        404,
+        400,
         "ResourceNotFoundException",
     )
     .await;

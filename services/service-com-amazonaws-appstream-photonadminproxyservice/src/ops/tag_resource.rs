@@ -4,7 +4,7 @@
 //! IMPLEMENTED: adds or overwrites the given tags on the resource the `ResourceArn`
 //! names, writing them to that resource's own stored record, so `ListTagsForResource`
 //! reports them and a key the resource already carried takes the new value. An ARN no
-//! resource of this service holds answers `ResourceNotFoundException` (HTTP 404), and a
+//! resource of this service holds answers `ResourceNotFoundException` (HTTP 400), and a
 //! request that would leave the resource carrying more than
 //! [`crate::state::MAX_TAGS_PER_RESOURCE`] tags answers `LimitExceededException`
 //! (HTTP 400) and persists nothing.

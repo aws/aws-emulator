@@ -16,7 +16,7 @@
 //!   association, while a builder-packaged one associates with HTTP 200 and is then
 //!   reported from either endpoint;
 //! * either endpoint this account does not hold is refused `ResourceNotFoundException`
-//!   (404) with AWS's sentence for that resource kind, and records nothing;
+//!   (400) with AWS's sentence for that resource kind, and records nothing;
 //! * `MaxResults` sizes a page of the read so that following `NextToken` reports every
 //!   association exactly once;
 //! * an association holds the app block, so the app block cannot be deleted while a
@@ -361,7 +361,7 @@ async fn an_endpoint_this_account_does_not_hold_is_not_found() {
             case,
             "AssociateAppBlockBuilderAppBlock",
             json!({ "AppBlockBuilderName": builder, "AppBlockArn": stored }),
-            404,
+            400,
             "ResourceNotFoundException",
         )
         .await;
@@ -385,7 +385,7 @@ async fn an_endpoint_this_account_does_not_hold_is_not_found() {
             case,
             "AssociateAppBlockBuilderAppBlock",
             json!({ "AppBlockBuilderName": "stored-builder", "AppBlockArn": arn }),
-            404,
+            400,
             "ResourceNotFoundException",
         )
         .await;

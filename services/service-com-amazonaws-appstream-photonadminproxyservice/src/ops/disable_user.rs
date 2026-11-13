@@ -13,7 +13,7 @@
 //! the record is already in, so it answers the same empty success and changes nothing. An
 //! identity the pool holds no record for — including one named under an authentication
 //! type whose users this pool does not manage — is refused with the only error this
-//! operation models, `ResourceNotFoundException` (HTTP 404).
+//! operation models, `ResourceNotFoundException` (HTTP 400).
 //!
 //! ## Shape of an operation
 //!

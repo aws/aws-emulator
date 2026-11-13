@@ -38,12 +38,12 @@ const REGION: &str = "us-west-2";
 /// The resource word AWS's refusal sentences use for a stack.
 const STACK_KIND: &str = "stack";
 
-/// The wire status this service's `ResourceNotFoundException` leaves with — the model's
-/// `httpError` for the shape, which is what the serializer emits today. The recorded wire
-/// status for that refusal is 400, which the open issue
-/// `appstream-stack-not-found-refusals-diverge-wrong-http` owns; this suite asserts the
-/// ABSENCE of a stack, not the status of the refusal that reports it.
-const NOT_FOUND_STATUS: u16 = 404;
+/// The wire status this service's `ResourceNotFoundException` leaves with — the status
+/// AppStream serves that refusal over, which the serializer answers for the class
+/// (`crate::state::modelled_error_status` in the service crate) rather than taking the
+/// shape's own `@httpError`. This suite asserts the ABSENCE of a stack, not the status of
+/// the refusal that reports it.
+const NOT_FOUND_STATUS: u16 = 400;
 
 /// The `__type` AppStream answers a member value it cannot act on with.
 const INVALID_PARAMETER_VALUE: &str = "InvalidParameterValueException";
@@ -231,9 +231,13 @@ struct Row {
 
 /// The rows, over a network whose endpoints EC2 minted: an id that resolves to an AppStream
 /// streaming endpoint of the account, ids that resolve to an endpoint of another endpoint
-/// service (AppStream's own API service, and a service that is not AppStream at all), ids
-/// that resolve to no endpoint (one deleted, one never minted, one that is no endpoint id)
-/// and an entry that references no endpoint at all.
+/// service (AppStream's own API service, and a service that is not AppStream at all) and
+/// ids that resolve to no endpoint (one deleted, one never minted, one that is no endpoint
+/// id).
+///
+/// Every row's entry CARRIES an id, because that is what this suite resolves: an entry that
+/// carries none references nothing to resolve and is refused on the request's own shape,
+/// which `tests/all/access_endpoint_request_shape.rs` pins.
 ///
 /// `EndpointType` is `STREAMING` throughout: it is the only member `AccessEndpointType`
 /// declares (`smithy_query(query="shape", shape="AccessEndpointType")`), and each list holds
@@ -256,11 +260,6 @@ async fn rows(emulator: &Emulator) -> Vec<Row> {
         Row {
             case: "an endpoint to the AppStream streaming service".to_string(),
             access_endpoints: streaming_entry(&streaming),
-            refusal: None,
-        },
-        Row {
-            case: "an entry that references no endpoint".to_string(),
-            access_endpoints: json!([{ "EndpointType": "STREAMING" }]),
             refusal: None,
         },
         Row {
