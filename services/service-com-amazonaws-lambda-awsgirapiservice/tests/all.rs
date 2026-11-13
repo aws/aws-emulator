@@ -53,6 +53,8 @@ mod async_invocation;
 mod asynchronous_invoke_run;
 #[path = "all/aws_refusal_wording_and_region_isolation.rs"]
 mod aws_refusal_wording_and_region_isolation;
+#[path = "all/capacity_provider_authorization.rs"]
+mod capacity_provider_authorization;
 #[path = "all/capacity_provider_bounds.rs"]
 mod capacity_provider_bounds;
 #[path = "all/capacity_provider_duplicate_name.rs"]

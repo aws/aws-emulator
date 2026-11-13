@@ -71,6 +71,28 @@ pub fn parse_capacity_provider_name(value: &str) -> Option<String> {
         .map(str::to_string)
 }
 
+/// The ARN an operation addressed at the provider `capacity_provider_name` names, which is
+/// the resource IAM's decision about that call is made on
+/// ([`crate::state::authorize_caller`]).
+///
+/// Built from the REQUEST alone — no store is read — and spelled exactly as the ARN this
+/// module mints for a provider of that name in the Region the caller signed for, so a policy
+/// written about one provider covers exactly the calls that address it, whichever documented
+/// `CapacityProviderName` form the request used. A CREATE is judged on the ARN of the
+/// provider it is about to create, which is the resource such a call names.
+///
+/// [`crate::state::invoke_authorization::ANY_RESOURCE`] for a value that names no provider at
+/// all: there is no ARN of this account to decide on, and IAM writes the resource of such a
+/// request that way. The decision is taken ahead of the service's own reading of the value, so
+/// the refusal of a caller no policy allows does not depend on the value being well formed.
+#[must_use]
+pub fn judged_resource(region: &str, capacity_provider_name: &str) -> String {
+    match parse_capacity_provider_name(capacity_provider_name) {
+        Some(name) => capacity_provider_arn(region, &name),
+        None => super::invoke_authorization::ANY_RESOURCE.to_string(),
+    }
+}
+
 /// The message a `CapacityProviderName` that names no provider is refused with: a
 /// validation message built from the request, naming the member and the constraint it
 /// failed.

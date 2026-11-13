@@ -145,7 +145,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
     async fn handle(
         &self,
         input: Self::Input,
-        _ctx: &smithy_server_runtime::OperationContext<'_>,
+        ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
         let Some(state) = crate::state::service_state(&*self.engine) else {
             return Err(ListCapacityProvidersErrorModeled::ServiceException(
@@ -156,6 +156,19 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             )
             .into());
         };
+
+        // IAM decides this call before the service reads anything: the action is this
+        // operation's own name under this service's prefix, and this request addresses no
+        // single provider — it collects them — so it is judged against the any-resource
+        // wildcard IAM writes for such a request
+        // (`crate::state::caller_authorization`). A refused listing reports nothing, so an
+        // unauthorized caller learns nothing about what the account holds.
+        crate::state::authorize_caller(
+            &*self.engine,
+            ctx,
+            Self::NAME,
+            crate::state::invoke_authorization::ANY_RESOURCE,
+        )?;
 
         // `MaxItems` is modelled `MaxFiftyListItems`, `@range(min: 1, max: 50)`, so the
         // boundary validator has already refused anything outside it; this handler

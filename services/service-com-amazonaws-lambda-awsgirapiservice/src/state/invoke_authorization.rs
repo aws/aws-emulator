@@ -282,31 +282,37 @@ pub fn authorize_invocation<Eng: Send + Sync + 'static>(
 }
 
 /// The principal a request speaks for, and everything the decision is made from.
+///
+/// Visible to the rest of this crate because the CONTROL-PLANE gate
+/// ([`super::caller_authorization`]) asks the same question about the same request: who
+/// signed it and what the documents in force on that principal say. One reading of a
+/// request's principal, shared rather than copied, so the two gates cannot blame different
+/// principals for one credential.
 #[derive(Debug, Clone)]
-struct Caller {
+pub(crate) struct Caller {
     /// The principal's ARN, as `sts:GetCallerIdentity` reports it — what a refusal names.
-    arn: String,
+    pub(crate) arn: String,
     /// Every spelling of the principal: the session ARN STS reports, and the ARN of the IAM
     /// role behind an assumed-role session.
-    principals: Vec<String>,
+    pub(crate) principals: Vec<String>,
     /// The identity-based policy documents in force on the principal.
-    documents: Vec<String>,
+    pub(crate) documents: Vec<String>,
     /// The permissions boundary in force on the principal, when it carries one whose document
     /// this emulator holds.
-    boundary: Option<String>,
+    pub(crate) boundary: Option<String>,
     /// Set when this request presents the account's own published credential, which holds no
     /// IAM policies (see the module docs).
-    account_credential: bool,
+    pub(crate) account_credential: bool,
     /// Set when the principal has a policy attached whose document the IAM store does not hold
     /// — an AWS-managed policy (see the module docs).
-    unreadable_attachment: bool,
+    pub(crate) unreadable_attachment: bool,
 }
 
 impl Caller {
     /// Whether nothing the identity-based decision found can refuse this caller once no
     /// readable document DENIES the action: the account's own credential, which holds no IAM
     /// policies, or a principal carrying a grant this emulator cannot read.
-    fn identity_is_unbounded(&self) -> bool {
+    pub(crate) fn identity_is_unbounded(&self) -> bool {
         self.account_credential || self.unreadable_attachment
     }
 
@@ -331,7 +337,7 @@ impl Caller {
 }
 
 /// The principal this request speaks for, with the identity-based policies in force on it.
-fn caller<Eng: Send + Sync + 'static>(
+pub(crate) fn caller<Eng: Send + Sync + 'static>(
     engine: &Eng,
     ctx: &::smithy_server_runtime::OperationContext<'_>,
 ) -> Caller {

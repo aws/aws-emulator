@@ -165,6 +165,20 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         let now = ::std::time::SystemTime::now();
         let region = crate::state::request_region(ctx);
+
+        // IAM decides this call before the service looks at what it asks for; see
+        // `crate::state::caller_authorization`. A refused delete removes nothing and moves
+        // no status.
+        crate::state::authorize_caller(
+            &*self.engine,
+            ctx,
+            Self::NAME,
+            &crate::state::capacity_provider::judged_resource(
+                &region,
+                &input.capacity_provider_name,
+            ),
+        )?;
+
         let mut store = state.lock();
 
         // "You cannot delete a capacity provider that is currently being used by Lambda

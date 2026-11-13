@@ -307,6 +307,14 @@ pub use invoke_authorization::{
     authorize_invocation, INVOKE_ASYNC_ACTION, INVOKE_FUNCTION_ACTION,
 };
 
+/// Whether IAM lets the principal a CONTROL-PLANE request speaks for perform the action it
+/// asks for on the resource it addresses — the decision taken before such an operation reads
+/// or writes anything — lives in [`caller_authorization`], beside the invocation gate above
+/// whose reading of the request's principal it shares. It is re-exported here for the same
+/// reason as [`capacity_provider`]: a handler names it as `crate::state::…`.
+pub mod caller_authorization;
+pub use caller_authorization::authorize_caller;
+
 /// The ASYNCHRONOUS-INVOCATION CONFIGURATION of a function, version or alias — the record
 /// the `…FunctionEventInvokeConfig` operations read and write, and whether the function's
 /// execution role lets Lambda deliver a record to the destinations one names — lives in

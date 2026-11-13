@@ -189,6 +189,22 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .into());
         };
 
+        // IAM decides this call before the service looks at what it asks for: the action is
+        // this operation's own name under this service's prefix, and the resource is the
+        // provider this create is ABOUT TO create, which is the resource such a call names
+        // (`crate::state::caller_authorization`). A caller the documents in force do not
+        // allow is refused 403 `AccessDeniedException` here, so nothing is minted. Taken
+        // before this service's store is locked, which is the lock order the gate documents.
+        crate::state::authorize_caller(
+            &*self.engine,
+            ctx,
+            Self::NAME,
+            &crate::state::capacity_provider::judged_resource(
+                &crate::state::request_region(ctx),
+                &input.capacity_provider_name,
+            ),
+        )?;
+
         // `CapacityProviderName` is "the name of the capacity provider", and its pattern
         // admits a capacity-provider ARN beside the bare name; both name the same record.
         let name = crate::state::parse_capacity_provider_name(&input.capacity_provider_name)

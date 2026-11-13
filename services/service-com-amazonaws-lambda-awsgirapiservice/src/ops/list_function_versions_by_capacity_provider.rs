@@ -183,6 +183,19 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             );
         };
 
+        // IAM decides this call before the service looks at what it asks for; see
+        // `crate::state::caller_authorization`. A refused listing reports nothing, so an
+        // unauthorized caller does not learn whether the provider it named exists.
+        crate::state::authorize_caller(
+            &*self.engine,
+            ctx,
+            Self::NAME,
+            &crate::state::capacity_provider::judged_resource(
+                &crate::state::request_region(ctx),
+                &input.capacity_provider_name,
+            ),
+        )?;
+
         // `MaxItems` is modelled `MaxFiftyListItems`, `@range(min: 1, max: 50)`, so the
         // boundary validator has already refused anything outside it; this handler
         // enforces the same floor itself rather than letting a page size of zero reach

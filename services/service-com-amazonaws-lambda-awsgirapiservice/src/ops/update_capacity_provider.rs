@@ -168,6 +168,23 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 
         let now = ::std::time::SystemTime::now();
         let region = crate::state::request_region(ctx);
+
+        // IAM decides this call before the service looks at what it asks for: the action is
+        // this operation's own name under this service's prefix, and the resource is the
+        // provider the REQUEST addresses. A caller the documents in force do not allow — or
+        // that an explicit `Deny` covers — is refused 403 `AccessDeniedException` here, so
+        // nothing of the request is applied and nothing is reported back. Taken before this
+        // service's store is locked, which is also the lock order the gate documents.
+        crate::state::authorize_caller(
+            &*self.engine,
+            ctx,
+            Self::NAME,
+            &crate::state::capacity_provider::judged_resource(
+                &region,
+                &input.capacity_provider_name,
+            ),
+        )?;
+
         let mut store = state.lock();
 
         // The provider is addressed the way every capacity-provider operation addresses
