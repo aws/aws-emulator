@@ -59,7 +59,7 @@ pub const IMAGE_TOO_LARGE_MESSAGE: &str = "Image size is too large";
 /// failing to ask its own object store, which establishes nothing about the object — a
 /// synchronous analysis has no result to give either way, so both refuse alike, but only
 /// the second is worth a warning.
-const UNREADABLE_OBJECT_CODES: &[&str] = &[
+pub(super) const UNREADABLE_OBJECT_CODES: &[&str] = &[
     "NoSuchBucket",
     "NoSuchKey",
     "NoSuchVersion",
@@ -156,7 +156,7 @@ pub async fn image_bytes(
     let read = match read {
         Ok(read) => read,
         Err(error) => {
-            if !UNREADABLE_OBJECT_CODES.contains(&error.code().unwrap_or_default()) {
+            if !store_denies_object(error.code()) {
                 // Not the store reporting an unreadable object but this emulator failing to
                 // ask its own object store — worth a warning, because a deployment with no
                 // Amazon S3 mounted to ask is one where no S3-sourced image is ever read.
@@ -204,6 +204,14 @@ pub async fn image_bytes(
     }
 }
 
+/// Whether `code` is the object store's own answer that it does not serve the object a
+/// request named — one of [`UNREADABLE_OBJECT_CODES`] — rather than this emulator failing
+/// to ask its object store at all. Both refuse the request alike; only the second is worth
+/// a warning, and both the image and the video path classify it the same way.
+pub(super) fn store_denies_object(code: Option<&str>) -> bool {
+    UNREADABLE_OBJECT_CODES.contains(&code.unwrap_or_default())
+}
+
 /// The refusal for an object larger than AWS serves an image analysis for.
 ///
 /// [`MAX_S3_IMAGE_BYTES`] is AWS's own published ceiling for an S3-sourced image, so the
@@ -213,7 +221,11 @@ fn too_large() -> UnreadableImage {
     UnreadableImage::TooLarge(IMAGE_TOO_LARGE_MESSAGE.to_string())
 }
 
-/// The Amazon S3 client this service reads an image object with, addressed to `region`.
+/// The Amazon S3 client this service reads a submitted object with, addressed to `region`.
+///
+/// One client for every object this service reads out of the store, whether that is an
+/// `Image`'s bytes here or the metadata of an `Image`/`Video`'s object elsewhere in
+/// [`super`]: they all reach the SAME emulated Amazon S3 the same way.
 ///
 /// The transport is the emulator's own in-process callback, so the `endpoint_url` below is
 /// an ADDRESS the in-process router reads rather than a host any resolver looks up: this
@@ -226,7 +238,7 @@ fn too_large() -> UnreadableImage {
 /// need a sleep implementation this client is not given. The same goes for caching the
 /// identity: the credentials the callback hands over are used directly, and they only sign
 /// this operation's in-process calls.
-fn s3_client(
+pub(super) fn s3_client(
     ctx: &::smithy_server_runtime::OperationContext<'_>,
     region: &str,
 ) -> ::aws_sdk_s3::Client {

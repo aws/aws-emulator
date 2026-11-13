@@ -43,3 +43,5 @@ mod resource_tag_values;
 mod resource_tags;
 #[path = "all/state_roundtrip.rs"]
 mod state_roundtrip;
+#[path = "all/video_face_detection.rs"]
+mod video_face_detection;

@@ -56,6 +56,15 @@
 //! it covers a body part are a judgement no detector here makes, so each person the summary
 //! covers is reported as one whose PPE adornment could not be determined.
 //!
+//! The same rule governs a video: no video decoder runs in this process either, so nothing
+//! measures a property of the media and nothing is found IN it. What IS real about a
+//! stored-video analysis is the JOB — a `Start…` operation establishes with this emulator's
+//! own Amazon S3 that the object it was given is served ([`video_source`]), records the
+//! request as a job of [`video_jobs`] and hands back the identifier the matching `Get…`
+//! operation reads that job by, with the job's status owed by the clock. The analysis
+//! RESULTS belong to the `Get…` operation that reports them, and the ones that would report
+//! them stay unimplemented 501s.
+//!
 //! The one comparison this emulator can make about two STORED faces is IDENTITY:
 //! [`image_signature`] digests what an image is, so two indexed faces can be told to have
 //! come from the same image content or not. `SearchFaces` reports exactly that and no
@@ -66,6 +75,8 @@ pub mod idempotency;
 pub mod image_source;
 pub mod label_detection;
 pub mod modeled_error;
+pub mod video_jobs;
+pub mod video_source;
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -420,6 +431,12 @@ pub struct ComAmazonawsRekognitionRekognitionserviceState {
     /// refused. Service-wide rather than per collection: a token names a REQUEST, and
     /// the request's own collection is one of the parameters compared.
     pub client_request_tokens: idempotency::TokenLedger,
+    /// Every stored-video analysis job a `Start…` operation of this service has
+    /// recorded, keyed by the `JobId` it minted. Service-wide and shared by the whole
+    /// family, with each job naming the analysis that started it, so one `JobId` space
+    /// serves every `Start…`/`Get…` pair rather than a map per operation. Bounded by
+    /// [`video_jobs::MAX_REMEMBERED_JOBS`].
+    pub video_jobs: video_jobs::VideoJobs,
 }
 
 impl ComAmazonawsRekognitionRekognitionserviceState {
@@ -709,12 +726,7 @@ static MINTED_IDS: AtomicU64 = AtomicU64::new(0);
 /// the counter alone makes every input distinct, and the digest of distinct inputs
 /// does not repeat. It names a resource for correlation and is not a secret.
 fn mint_id(domain: &str) -> String {
-    let serial = MINTED_IDS.fetch_add(1, Ordering::Relaxed);
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|since| since.as_nanos())
-        .unwrap_or_default();
-    let digest = Sha256::digest(format!("{domain}:{serial}:{nanos}").as_bytes());
+    let digest = mint_digest(domain);
     let mut bytes = [0_u8; 16];
     bytes.copy_from_slice(&digest[..16]);
     // The version and variant nibbles of a random-form uuid, so the id is a canonical
@@ -732,6 +744,18 @@ fn mint_id(domain: &str) -> String {
     )
 }
 
+/// The digest every identifier this service mints is built from: `domain`, this
+/// process's mint counter and the clock. The counter alone makes every input distinct,
+/// so the digests of two mints never repeat, whatever form the caller renders them in.
+fn mint_digest(domain: &str) -> [u8; 32] {
+    let serial = MINTED_IDS.fetch_add(1, Ordering::Relaxed);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|since| since.as_nanos())
+        .unwrap_or_default();
+    Sha256::digest(format!("{domain}:{serial}:{nanos}").as_bytes()).into()
+}
+
 /// A fresh `FaceId` for a face being indexed.
 pub fn new_face_id() -> String {
     mint_id("face")
@@ -740,6 +764,18 @@ pub fn new_face_id() -> String {
 /// A fresh `ImageId` for the image an `IndexFaces` call submitted.
 pub fn new_image_id() -> String {
     mint_id("image")
+}
+
+/// A fresh `JobId` for a stored-video analysis job a `Start…` operation records.
+///
+/// The model constrains a `JobId` to `length 1..64` and
+/// `pattern ^[a-zA-Z0-9-_]+$` (`smithy_query(query="shape",shape="JobId")`), and the
+/// identifier Rekognition hands out for a video job is a long opaque hexadecimal token
+/// rather than a uuid, so this renders the whole mint digest as hex: 64 characters, the
+/// longest the constraint admits, unique for the same reason [`mint_digest`] is. It
+/// names a job for correlation and is not a secret.
+pub fn new_job_id() -> String {
+    ::hex::encode(mint_digest("job"))
 }
 
 /// This service's store in the shared engine: call it with a handler's `&*self.engine`.

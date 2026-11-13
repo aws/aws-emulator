@@ -96,12 +96,19 @@ pub const FACE_ID_NOT_IN_COLLECTION_MESSAGE: &str = "faceId was not found in the
 /// no position in them.
 pub const INVALID_PAGINATION_TOKEN_MESSAGE: &str = "Invalid pagination token";
 
+/// AWS's fixed wording for the `InvalidParameterException` class: "Input parameter
+/// violated a constraint" is what the exception SHAPE documents, while the `Message` the
+/// service puts on the wire for it is this one sentence. It interpolates nothing — neither
+/// a request value nor the member at fault — so every refusal of this class carries it
+/// byte for byte.
+pub const INVALID_PARAMETERS_MESSAGE: &str = "Request has invalid parameters";
+
 /// The fixed text an analysis that needs a face to work on is refused with when the
 /// image it was given carries none — `CompareFaces` "returns an InvalidParameterException
 /// error" when "no faces are detected in the source or target images". It is AWS's
 /// wording for that class and interpolates nothing: neither which of the two images it
 /// was nor anything else from the request, both of which the caller already knows.
-pub const NO_FACE_IN_IMAGE_MESSAGE: &str = "Request has invalid parameters";
+pub const NO_FACE_IN_IMAGE_MESSAGE: &str = INVALID_PARAMETERS_MESSAGE;
 
 /// The server fault a handler answers with when this service's store cannot be reached.
 pub fn store_unavailable() -> InternalServerError {
@@ -148,6 +155,12 @@ pub fn resource_arn_not_found(resource_arn: &str) -> ResourceNotFoundException {
 /// [`NO_FACE_IN_IMAGE_MESSAGE`].
 pub fn no_face_in_image() -> InvalidParameterException {
     InvalidParameterException::with_message(NO_FACE_IN_IMAGE_MESSAGE)
+}
+
+/// A request whose parameters do not identify what the operation is to work on; see
+/// [`INVALID_PARAMETERS_MESSAGE`].
+pub fn invalid_parameters() -> InvalidParameterException {
+    InvalidParameterException::with_message(INVALID_PARAMETERS_MESSAGE)
 }
 
 /// A `UserId` the named collection already holds, as `CreateUser` refuses it: the
