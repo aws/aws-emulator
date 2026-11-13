@@ -25,7 +25,10 @@
 //!    another pair, or the opposite direction — is refused;
 //! 6. a `DryRun` reports the outcome the request would have had and WRITES NOTHING;
 //! 7. an attachment cannot outlive the trust provider it names: deleting an attached trust
-//!    provider ends its attachments and leaves the instance's other attachments alone.
+//!    provider ends its attachments and leaves the instance's other attachments alone;
+//! 8. every one of those refusals words its `<Message>` as the sentence of its error class
+//!    with the ids the REQUEST named filled in, so the text says which of the two ids was at
+//!    fault and which way the call went.
 //!
 //! Each table row is a distinct input along what the rule generalises over — which kind of
 //! trust provider (every pair the model's `TRUST_PROVIDER_TYPE_VALUES`,
@@ -41,11 +44,17 @@ use ec2::state::{TRUST_PROVIDER_TYPE_USER, USER_TRUST_PROVIDER_TYPE_OIDC};
 use service_com_amazonaws_ec2_amazonec2 as ec2;
 use smithy_server_runtime::MultiServiceRouter;
 
-use super::ec2_query::{call, element, elements, error_code};
+use super::ec2_query::{call, element, elements, error_code, error_message};
 
 /// The Region every call here is signed for. Neither resource's modelled shape names a
 /// Region, so the Region only selects the envelope.
 const REGION: &str = "us-east-2";
+
+/// The sentence EC2 answers beside `IdempotentParameterMismatch`, spelled out here rather
+/// than read from the crate so a change to the wording the handler sends is caught: the text
+/// is FIXED for the class and names nothing of the request.
+const TOKEN_MISMATCH_MESSAGE: &str = "Parameters on this idempotent request are inconsistent \
+                                      with parameters used in previous request(s)";
 
 /// A `(key, value)` request parameter.
 fn p(key: &str, value: impl Into<String>) -> (String, String) {
@@ -753,5 +762,229 @@ async fn deleting_a_trust_provider_ends_its_attachments() {
             .await
             .is_empty(),
         "case {case:?}: every instance that had the deleted trust provider loses it"
+    );
+}
+
+/// RULE 8: a refused attach or detach answers the sentence its error class is worded with,
+/// with the ids the REQUEST named filled into it — never an id the store happens to hold, and
+/// never a text that turns on the form of the id that was sent.
+///
+/// The rows differ along which side of the pair cannot be resolved, the FORM of the id that
+/// cannot be (one reading like a minted id of that resource, a short one, a string of no EC2
+/// form at all, and one carrying XML's own significant characters), which direction the call
+/// went, and — for the refusals that resolve both ids — which impossible change was asked
+/// for. One row sends two unresolvable ids at once, which the instance's own refusal answers
+/// because the instance is the resource being attached to.
+#[tokio::test]
+async fn a_refusal_names_the_ids_the_request_sent() {
+    let case = "refusal wording";
+    let router = emulator();
+    let instance_id = seed_instance(&router, case, "instance under the wording table").await;
+    let other_instance = seed_instance(&router, case, "another instance").await;
+    let attached_provider = seed_provider(
+        &router,
+        case,
+        "user",
+        USER_TRUST_PROVIDER_TYPE_OIDC,
+        "attached",
+    )
+    .await;
+    let loose_provider = seed_provider(
+        &router,
+        case,
+        "device",
+        DEVICE_TRUST_PROVIDER_TYPE_VALUES[0],
+        "never attached",
+    )
+    .await;
+    let (status, body) = attach(&router, &pair(&instance_id, &attached_provider)).await;
+    assert_eq!(
+        status, 200,
+        "case {case:?}: the seeding attach must succeed, got {status} with body {body}"
+    );
+
+    // The forms a request can name a resource the account does not hold by: one that reads
+    // like a minted id of that resource, a short one, and a string of no EC2 form at all. The
+    // sentence is the same for each, so the form is what these rows vary.
+    let unknown_instances = ["vai-04f3a1b2c5d6e7890", "vai-7", "no-instance-at-all"];
+    let unknown_providers = ["vatp-04f3a1b2c5d6e7890", "vatp-7", "no-provider-at-all"];
+
+    // (row, whether the call is the attach, the instance id, the trust provider id, the
+    // expected error code, the expected message).
+    let mut rows: Vec<(String, bool, String, String, &str, String)> = Vec::new();
+    for is_attach in [true, false] {
+        let direction = if is_attach { "attach" } else { "detach" };
+        for unknown in unknown_instances {
+            rows.push((
+                format!("{direction}: the instance id {unknown:?} names no instance"),
+                is_attach,
+                unknown.to_string(),
+                attached_provider.clone(),
+                "InvalidVerifiedAccessInstanceId.NotFound",
+                format!("The verified-access-instance ID '{unknown}' does not exist"),
+            ));
+        }
+        for unknown in unknown_providers {
+            rows.push((
+                format!("{direction}: the trust provider id {unknown:?} names none"),
+                is_attach,
+                instance_id.clone(),
+                unknown.to_string(),
+                "InvalidVerifiedAccessTrustProviderId.NotFound",
+                format!("VerifiedAccessTrustProvider {unknown} does not exist"),
+            ));
+        }
+    }
+    rows.push((
+        "attach: the pair is already attached".to_string(),
+        true,
+        instance_id.clone(),
+        attached_provider.clone(),
+        "Resource.AlreadyAssociated",
+        format!(
+            "VerifiedAccessTrustProvider {attached_provider} is already attached to \
+             VerifiedAccessInstance {instance_id}"
+        ),
+    ));
+    rows.push((
+        "detach: the pair is not attached".to_string(),
+        false,
+        instance_id.clone(),
+        loose_provider.clone(),
+        "InvalidParameterValue",
+        format!(
+            "VerifiedAccessTrustProvider {loose_provider} is not attached to \
+             VerifiedAccessInstance {instance_id}"
+        ),
+    ));
+    rows.push((
+        "detach: attached, but to another instance".to_string(),
+        false,
+        other_instance.clone(),
+        attached_provider.clone(),
+        "InvalidParameterValue",
+        format!(
+            "VerifiedAccessTrustProvider {attached_provider} is not attached to \
+             VerifiedAccessInstance {other_instance}"
+        ),
+    ));
+    rows.push((
+        "attach: neither id names a resource".to_string(),
+        true,
+        unknown_instances[0].to_string(),
+        unknown_providers[0].to_string(),
+        "InvalidVerifiedAccessInstanceId.NotFound",
+        format!(
+            "The verified-access-instance ID '{}' does not exist",
+            unknown_instances[0]
+        ),
+    ));
+
+    for (row, is_attach, instance, provider, expected_code, expected_message) in rows {
+        let params = pair(&instance, &provider);
+        let (status, body) = if is_attach {
+            attach(&router, &params).await
+        } else {
+            detach(&router, &params).await
+        };
+        assert_eq!(
+            status, 400,
+            "case {row:?}: expected HTTP 400, got {status} with body {body}"
+        );
+        assert_eq!(
+            error_code(&body),
+            expected_code,
+            "case {row:?}: expected the code {expected_code}, got {:?} in body {body}",
+            error_code(&body)
+        );
+        assert_eq!(
+            error_message(&body),
+            expected_message,
+            "case {row:?}: expected the message {expected_message:?}, got {:?}",
+            error_message(&body)
+        );
+    }
+
+    // An id of a FOURTH form: one carrying the characters that are significant in XML. The
+    // sentence is the same template, so the text a client reads back is the id it sent, while
+    // the envelope on the wire carries those characters as entities rather than as markup —
+    // and the refusal declares the media type every ec2Query answer does.
+    let markup_instance = "vai-<x>&'\"";
+    let (status, content_type, body) = super::ec2_query::call_with_content_type(
+        &router,
+        REGION,
+        "AttachVerifiedAccessTrustProvider",
+        &pair(markup_instance, &attached_provider),
+    )
+    .await;
+    let row = "attach: an instance id carrying XML markup";
+    assert_eq!(
+        status, 400,
+        "case {row:?}: expected HTTP 400, got {status} with body {body}"
+    );
+    assert_eq!(
+        error_code(&body),
+        "InvalidVerifiedAccessInstanceId.NotFound",
+        "case {row:?}: expected the instance not-found code, got {:?} in body {body}",
+        error_code(&body)
+    );
+    assert_eq!(
+        error_message(&body),
+        format!("The verified-access-instance ID '{markup_instance}' does not exist"),
+        "case {row:?}: expected the id the request sent in the sentence, got {:?}",
+        error_message(&body)
+    );
+    assert!(
+        !body.contains(markup_instance) && body.contains("&lt;x&gt;"),
+        "case {row:?}: the envelope must carry the id's markup characters as entities, got \
+         body {body}"
+    );
+    assert_eq!(
+        content_type.as_deref(),
+        Some(super::ec2_query_envelope::RESPONSE_CONTENT_TYPE),
+        "case {row:?}: expected the ec2Query media type, got {content_type:?}"
+    );
+
+    // The token mismatch is the one refusal of these two calls that names nothing of the
+    // request: it states the condition, so its fixed sentence is the whole wording.
+    let token = "wording-table-token";
+    let mut spent = pair(&instance_id, &loose_provider);
+    spent.push(p("ClientToken", token));
+    let (status, body) = attach(&router, &spent).await;
+    assert_eq!(
+        status, 200,
+        "case {case:?}: the attach the token is spent on must succeed, got {status} with body \
+         {body}"
+    );
+    let mut reused = pair(&other_instance, &loose_provider);
+    reused.push(p("ClientToken", token));
+    let (status, body) = attach(&router, &reused).await;
+    assert_eq!(
+        status, 400,
+        "case {case:?}: a token carrying another pair is refused, got {status} with body {body}"
+    );
+    assert_eq!(
+        error_code(&body),
+        "IdempotentParameterMismatch",
+        "case {case:?}: expected the token mismatch code, got {:?} in body {body}",
+        error_code(&body)
+    );
+    assert_eq!(
+        error_message(&body),
+        TOKEN_MISMATCH_MESSAGE,
+        "case {case:?}: expected the fixed token-mismatch sentence, got {:?}",
+        error_message(&body)
+    );
+
+    // Not one refused row changed an attachment: the only calls that wrote are the seeding
+    // attach and the token's own.
+    assert_eq!(
+        attached_ids(&router, case, &instance_id).await,
+        vec![attached_provider.clone(), loose_provider.clone()],
+        "case {case:?}: only the calls that answered 200 changed the set"
+    );
+    assert!(
+        attached_ids(&router, case, &other_instance).await.is_empty(),
+        "case {case:?}: a refused change attaches nothing to the instance it named"
     );
 }
