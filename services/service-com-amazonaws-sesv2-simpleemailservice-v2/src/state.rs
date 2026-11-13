@@ -58,6 +58,10 @@ mod pricing;
 /// The suppression-list plane: one suppressed address and how a list's entries are
 /// keyed.
 mod suppression;
+/// The template language a template SAVED in the account is written in, and how one is
+/// evaluated against a set of rendering data — the full language, as against the inline
+/// substitution below.
+pub mod template_language;
 /// The email-template plane's one piece of behaviour: how a template's content becomes a
 /// destination's message, which is the message variables a send supplies substituted into
 /// the template's parts.

@@ -17,7 +17,10 @@ emulator-server = { workspace = true }
 emulator-telemetry = { workspace = true }
 aws-smithy-runtime-api = { workspace = true }
 aws-smithy-types = { workspace = true }
-tokio = { workspace = true }
+# `time` and `sync` beyond the workspace's own feature set: evaluating a SAVED email
+# template runs on a thread of its own and the request waits a bounded time for it
+# (`state::template_language`), which is a timeout and a one-shot channel.
+tokio = { workspace = true, features = ["time", "sync"] }
 bytes = { workspace = true }
 http = { workspace = true }
 serde_json = { workspace = true }
@@ -45,6 +48,35 @@ service-com-amazonaws-cloudwatch-graniteserviceversion20100801 = { workspace = t
 # (`state::event_publication::notification`). The same crate the classic SES surface reads
 # a raw message with.
 mailparse = "0.16"
+# `handlebars`: the ONE evaluator of the template language a SAVED email template is
+# written in — the expressions, the conditional blocks and the iteration blocks a stored
+# template may carry, which `TestRenderEmailTemplate` previews
+# (`state::template_language`). The language is not re-implemented here: the engine parses
+# and evaluates it.
+#
+# It is an EXECUTION SUBSTRATE — it evaluates text a caller stored — so what it is allowed
+# to do is stated here and bounded in `state::template_language`: NO feature of the crate
+# is enabled beyond its (empty) default set, which keeps `script_helper`/`rhai` (a second,
+# scripting language), `dir_source`/`walkdir` (templates read from the host filesystem) and
+# `rust-embed` out of the build, and the registry it runs on has no helper, no partial and
+# no template source registered, so a template reaches no host file, no network and no
+# interpreter other than this one. Its own tree is pure Rust and compiles no C
+# (`derive_builder`, `pest`, `num-order`, `thiserror`, `log`, `serde`, `serde_json`),
+# nothing in it ran at build time beyond the proc macros `pest_derive` and
+# `derive_builder_macro`, and no advisory stands against the locked version. What a render
+# may cost is capped there, each cap applied where the cost arises: before the engine's
+# parse, the tags a part writes and the parentheses it carries (the parse costs more than
+# linearly in its tags, and nests on its parentheses); off the engine's own parse tree
+# rather than off the text, how deeply blocks nest, how many block bodies the data could
+# reach, and a refusal of the partials and decorators that would let a template re-enter
+# itself; while the message is written, the bytes one part may produce; and around the
+# whole of it, a thread of its own with a stack of its own, a wall-clock deadline, and a
+# cap on how many renders may be under way at once.
+handlebars = "6"
+# `base64`: the ONE encoder of the RFC 2047 "encoded word" form a rendered subject line
+# goes into a MIME header as when it is not printable US-ASCII
+# (`ops::test_render_email_template`). The same codec `mailparse` decodes one with.
+base64 = "0.22"
 # `csv`: the ONE writer of the comma-separated form of an export job's file
 # (`state::export_file`), so the quoting of a cell that needs it is the codec's rule and
 # not re-derived here. The same crate the other emulated services that publish a CSV

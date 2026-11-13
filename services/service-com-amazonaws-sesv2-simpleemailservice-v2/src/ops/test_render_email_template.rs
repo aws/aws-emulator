@@ -1,15 +1,22 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op TestRenderEmailTemplate
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `TestRenderEmailTemplate`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
+//! Previews the MIME message the email template this account holds under the requested
+//! name renders for one set of rendering data: the stored template is evaluated as the
+//! template language it is written in ([`crate::state::template_language`]) and the
+//! parts it produced are assembled into one MIME document. This is the ONLY file to
+//! touch for this operation.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`TestRenderEmailTemplate::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! Nothing is written: a preview reports what a send of that template would carry, so
+//! the store is read and left exactly as it was.
+//!
+//! Two pieces of this are a crate's rather than this file's: the template language is
+//! evaluated by the engine the state module drives, and the one encoding a header value
+//! may need is `base64`'s. What is written here is the DOCUMENT — the header block, the
+//! part headers and the boundary that separates two parts — which is an assembly of the
+//! rendered parts rather than a reading of anything; reading an RFC 5322 / MIME message is
+//! `mailparse`'s job in this crate, and this operation's own suite parses every document
+//! it produces back with it.
 //!
 //! ## Shape of an operation
 //!
@@ -146,18 +153,338 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `TestRenderEmailTemplate` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(TestRenderEmailTemplateErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("TestRenderEmailTemplate"))
+        // Request metadata is not needed: a template is keyed by its name within the one
+        // emulated account, and the preview is the same for every caller of it.
+        let _ = ctx;
+        let Some(state) = crate::state::service_state(&*self.engine) else {
+            // No store at all, which is not a modelled SES state: answer the scaffold's
+            // 501 rather than a modelled error that reads as one.
+            return Err(crate::scaffolded::Scaffolded::not_implemented(
+                "TestRenderEmailTemplate without the shared emulator state",
+            ));
+        };
+
+        let name = input.template_name;
+
+        // The template the URI addresses is the resource this call is about, so a name
+        // the account holds nothing under is the modelled 404 before anything is read
+        // out of the request's own data. The content is COPIED out of the store and the
+        // lock released: evaluating a template is work the caller sizes, so it is never
+        // done while the store every other request shares is held.
+        let content = {
+            let store = state.lock();
+            let Some(stored) = store.email_templates.get(&name) else {
+                return Err(TestRenderEmailTemplateErrorModeled::NotFoundException(
+                    NotFoundException {
+                        message: Some(crate::state::email_template_not_found(&name)),
+                    },
+                )
+                .into());
+            };
+            stored.content.clone()
+        };
+
+        // "This parameter is a JSON object, typically consisting of key-value pairs in
+        // which the keys correspond to replacement tags in the email template": the one
+        // reading of the rendering data, shared with the send operations that substitute
+        // the same data into a template.
+        let Some(variables) =
+            crate::state::template_rendering::message_variables(&input.template_data)
+        else {
+            return Err(bad_request(INVALID_TEMPLATE_DATA));
+        };
+
+        let rendered = match crate::state::template_language::evaluate(&content, &variables).await {
+            Ok(rendered) => rendered,
+            // The condition this surface exists to report: the data states no value for
+            // an attribute the template's expressions name, so there is no message to
+            // preview. The sentence names the attribute as the template wrote it.
+            Err(crate::state::template_language::EvaluationFailure::MissingAttribute(
+                attribute,
+            )) => return Err(bad_request(missing_rendering_attribute(&attribute))),
+            // A stored template whose text the language does not accept renders no
+            // message for this data or for any other.
+            Err(crate::state::template_language::EvaluationFailure::NotAValidTemplate(reason)) => {
+                return Err(bad_request(format!(
+                    "Template {name} is not a valid template: {reason}"
+                )))
+            }
+            // Beyond what this emulator renders: a construct it does not evaluate, and
+            // the ceilings it evaluates within. These are bounds of the EMULATOR rather
+            // than of SES, so each is reported as one rather than as the caller's
+            // mistake.
+            Err(crate::state::template_language::EvaluationFailure::ConstructNotEvaluated) => {
+                return Err(beyond_this_emulator(
+                    "a template that includes a partial, defines a partial or a decorator, \
+                     or writes a construct this emulator does not evaluate",
+                ))
+            }
+            Err(crate::state::template_language::EvaluationFailure::TooLarge) => {
+                return Err(beyond_this_emulator(&format!(
+                    "a template that renders a part larger than the {} bytes this \
+                     emulator renders",
+                    crate::state::template_rendering::MAX_RENDERED_PART_BYTES
+                )))
+            }
+            Err(crate::state::template_language::EvaluationFailure::NestedTooDeeply) => {
+                return Err(beyond_this_emulator(&format!(
+                    "a template that nests blocks deeper than the {} levels this emulator \
+                     renders, or carries more than the {} parentheses it parses",
+                    crate::state::template_language::MAX_TEMPLATE_NESTING,
+                    crate::state::template_language::MAX_PARENTHESES
+                )))
+            }
+            Err(crate::state::template_language::EvaluationFailure::TooManyTags) => {
+                return Err(beyond_this_emulator(&format!(
+                    "a template that writes more than the {} tags this emulator parses",
+                    crate::state::template_language::MAX_TAGS
+                )))
+            }
+            Err(crate::state::template_language::EvaluationFailure::TooMuchWork) => {
+                return Err(beyond_this_emulator(&format!(
+                    "a template whose blocks, over this rendering data, could evaluate \
+                     more than the {} elements this emulator renders",
+                    crate::state::template_language::MAX_EVALUATIONS
+                )))
+            }
+            Err(crate::state::template_language::EvaluationFailure::OutOfTime) => {
+                return Err(beyond_this_emulator(&format!(
+                    "a template still rendering {} seconds after this emulator began it",
+                    crate::state::template_language::RENDER_DEADLINE.as_secs()
+                )))
+            }
+            // Renders already under way are holding every place there is, which is the
+            // modelled too-many-requests condition on this operation: "Too many requests
+            // have been made to the operation."
+            Err(crate::state::template_language::EvaluationFailure::TooManyInFlight) => {
+                return Err(TestRenderEmailTemplateErrorModeled::TooManyRequestsException(
+                    TooManyRequestsException {
+                        message: Some(TOO_MANY_RENDERS.to_string()),
+                    },
+                )
+                .into())
+            }
+        };
+
+        Ok(TestRenderEmailTemplateOutput {
+            rendered_template: mime_document(&rendered),
+        })
     }
+}
+
+/// Answer a render this emulator's own ceilings stop, naming the ceiling.
+///
+/// These are bounds of the emulator rather than of SES, so none of them is a modelled
+/// refusal of the request: the request is a valid one that this emulator does not render,
+/// which is what its 501 channel says.
+fn beyond_this_emulator(bound: &str) -> TestRenderEmailTemplateError {
+    crate::scaffolded::Scaffolded::not_implemented(&format!(
+        "TestRenderEmailTemplate for {bound}"
+    ))
+}
+
+/// Refuse the request with this operation's input error: "The input you provided is
+/// invalid."
+fn bad_request(message: impl Into<String>) -> TestRenderEmailTemplateError {
+    TestRenderEmailTemplateErrorModeled::BadRequestException(BadRequestException {
+        message: Some(message.into()),
+    })
+    .into()
+}
+
+/// How this operation refuses rendering data that is no set of key-value pairs.
+///
+/// Worded as the sibling send operation words the same absence in the same kind of
+/// member (`SendBulkEmail`'s default template data), so one client sees one sentence for
+/// data that is not the object the model says it has to be.
+const INVALID_TEMPLATE_DATA: &str = "The template data is not a valid JSON object";
+
+/// How this operation refuses a render it has no place to run.
+///
+/// `TooManyRequestsException` is documented as "Too many requests have been made to the
+/// operation", which is the condition: every place this emulator renders in
+/// ([`crate::state::template_language::MAX_RENDERS_IN_FLIGHT`]) is taken by a render
+/// already under way.
+const TOO_MANY_RENDERS: &str = "Too many requests have been made to the operation.";
+
+/// How this surface words the refusal of a render whose data states no value for an
+/// attribute the template names.
+///
+/// The sentence this condition is RECORDED answering with on the classic surface of the
+/// same template store: the fixed text "Attribute '" … "' is not present in the rendering
+/// data." around the attribute's own name as the template wrote it.
+fn missing_rendering_attribute(attribute: &str) -> String {
+    format!("Attribute '{attribute}' is not present in the rendering data.")
+}
+
+/// The line ending the document's structural lines use: RFC 5322 section 2.1 terminates
+/// each line of a message with CRLF. A body part's OWN text is written as the template
+/// rendered it.
+const LINE_ENDING: &str = "\r\n";
+
+/// The character set every part declares, and the one a non-ASCII subject line is
+/// encoded from: the parts are the template's text, which this emulator holds as UTF-8.
+const CHARSET: &str = "UTF-8";
+
+/// What `rendered` looks like as one MIME message — the value of `RenderedTemplate`,
+/// "the complete MIME message rendered by applying the data in the TemplateData
+/// parameter to the template".
+///
+/// The document is the parts the TEMPLATE carries, so its shape follows them:
+///
+/// * both body parts: `multipart/alternative`, the text part first — RFC 2046 section
+///   5.1.4 orders the alternatives "in increasing faithfulness to the original content",
+///   so the plain-text alternative precedes the HTML one and a client shows the last one
+///   it can render;
+/// * one body part: that part's own media type at the top level, with no boundary to
+///   separate anything from;
+/// * neither: an empty `text/plain` body, because a template that carries only a subject
+///   line renders a message with no body rather than no message.
+fn mime_document(rendered: &crate::state::template_rendering::RenderedMessage) -> String {
+    let parts: Vec<(&str, &str)> = [
+        ("text/plain", rendered.text.as_deref()),
+        ("text/html", rendered.html.as_deref()),
+    ]
+    .into_iter()
+    .filter_map(|(media_type, body)| body.map(|body| (media_type, body)))
+    .collect();
+
+    let mut document = String::new();
+    if let Some(subject) = rendered.subject.as_deref() {
+        document.push_str(&format!(
+            "{SUBJECT_FIELD}{}{LINE_ENDING}",
+            header_value(subject)
+        ));
+    }
+    document.push_str(&format!("MIME-Version: 1.0{LINE_ENDING}"));
+
+    match parts.as_slice() {
+        [] => {
+            document.push_str(&part_headers("text/plain", ""));
+            document.push_str(LINE_ENDING);
+        }
+        [(media_type, body)] => {
+            document.push_str(&part_headers(media_type, body));
+            document.push_str(LINE_ENDING);
+            document.push_str(body);
+        }
+        several => {
+            let boundary = boundary(several);
+            document.push_str(&format!(
+                "Content-Type: multipart/alternative; boundary=\"{boundary}\"{LINE_ENDING}\
+                 {LINE_ENDING}"
+            ));
+            for (media_type, body) in several {
+                document.push_str(&format!("--{boundary}{LINE_ENDING}"));
+                document.push_str(&part_headers(media_type, body));
+                document.push_str(LINE_ENDING);
+                document.push_str(body);
+                document.push_str(LINE_ENDING);
+            }
+            document.push_str(&format!("--{boundary}--{LINE_ENDING}"));
+        }
+    }
+    document
+}
+
+/// The header lines one body part carries: its media type with the character set its text
+/// is in, and the encoding that text is written in.
+///
+/// A part is written as it was rendered rather than re-encoded, so the transfer encoding
+/// states which it is: `7bit` for text that is all US-ASCII, `8bit` for text that is not
+/// (RFC 2045 section 6.2 — both are unencoded line-oriented data, and they differ in
+/// exactly that).
+fn part_headers(media_type: &str, body: &str) -> String {
+    let encoding = if body.is_ascii() { "7bit" } else { "8bit" };
+    format!(
+        "Content-Type: {media_type}; charset={CHARSET}{LINE_ENDING}\
+         Content-Transfer-Encoding: {encoding}{LINE_ENDING}"
+    )
+}
+
+/// `subject` as a header field's value.
+///
+/// A header field is one line of US-ASCII text (RFC 5322 section 2.2), its line is at
+/// most 998 octets (section 2.1.1), and a rendered subject line is none of those things in
+/// general: the data substituted into it may carry any text at all, including a line
+/// break, and the only ceiling on its size is what this emulator renders. Text that is
+/// already printable ASCII and fits the line goes in as it is; anything else goes in as
+/// RFC 2047 "encoded words" — the UTF-8 bytes in base64, each word within the 75
+/// characters section 2 of that RFC allows, folded onto continuation lines — which are
+/// ASCII, carry no line break of the value's own, and decode back to exactly what was
+/// rendered. So no value a template substitutes can add a line to the document, end its
+/// header block early, or write a line longer than a message may carry.
+fn header_value(subject: &str) -> String {
+    let printable_ascii = subject
+        .chars()
+        .all(|character| character.is_ascii() && !character.is_ascii_control());
+    if printable_ascii && SUBJECT_FIELD.len() + subject.len() <= MAX_HEADER_LINE_OCTETS {
+        return subject.to_string();
+    }
+    let mut words: Vec<String> = Vec::new();
+    let mut word = String::new();
+    for character in subject.chars() {
+        if word.len() + character.len_utf8() > MAX_ENCODED_WORD_BYTES {
+            words.push(encoded_word(&word));
+            word.clear();
+        }
+        word.push(character);
+    }
+    if !word.is_empty() || words.is_empty() {
+        words.push(encoded_word(&word));
+    }
+    // A header field is folded by breaking it before whitespace (RFC 5322 section 2.2.3),
+    // and the whitespace between two adjacent encoded words is not part of the value
+    // either, so the fold adds nothing to what the subject decodes to.
+    words.join(&format!("{LINE_ENDING} "))
+}
+
+/// `text` as one RFC 2047 encoded word.
+fn encoded_word(text: &str) -> String {
+    let encoded = ::base64::Engine::encode(
+        &::base64::engine::general_purpose::STANDARD,
+        text.as_bytes(),
+    );
+    format!("=?{CHARSET}?B?{encoded}?=")
+}
+
+/// The field the rendered subject line goes in, written as the document writes it.
+const SUBJECT_FIELD: &str = "Subject: ";
+
+/// The longest line a message may carry, excluding its terminator: RFC 5322 section 2.1.1
+/// bounds a line at 998 octets.
+const MAX_HEADER_LINE_OCTETS: usize = 998;
+
+/// How many bytes of the subject go into one encoded word.
+///
+/// RFC 2047 section 2 bounds an encoded word at 75 characters. A word is `=?UTF-8?B?` and
+/// `?=` around base64, which is four characters per three bytes, so forty-five bytes is
+/// the most that fits: 10 + 60 + 2 = 72.
+const MAX_ENCODED_WORD_BYTES: usize = 45;
+
+/// The prefix of the delimiter that separates the parts of a multipart document.
+const BOUNDARY_PREFIX: &str = "----=_Part_";
+
+/// The boundary delimiter `parts` are separated by: one that appears in none of them,
+/// since a delimiter a part's own text carries would end that part early.
+///
+/// It is derived from the parts themselves, so the same rendered message is always
+/// previewed with the same document rather than one that differs per call, and so a part
+/// would have to carry the digest of the very text it is part of to collide. The loop
+/// below is what makes that impossible rather than merely unlikely: each turn lengthens
+/// the candidate, and the parts are bounded
+/// ([`crate::state::template_rendering::MAX_RENDERED_PART_BYTES`]), so it ends.
+fn boundary(parts: &[(&str, &str)]) -> String {
+    let mut digest = ::std::hash::DefaultHasher::new();
+    for (_, body) in parts {
+        ::std::hash::Hash::hash(body, &mut digest);
+    }
+    let mut boundary = format!(
+        "{BOUNDARY_PREFIX}{:016x}",
+        ::std::hash::Hasher::finish(&digest)
+    );
+    while parts.iter().any(|(_, body)| body.contains(&boundary)) {
+        boundary.push('_');
+    }
+    boundary
 }
