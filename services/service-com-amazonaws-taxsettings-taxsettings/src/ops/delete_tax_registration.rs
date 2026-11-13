@@ -160,6 +160,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let account_id = crate::state::resolve_account_id(input.account_id);
         let mut store = state.lock();
 
+        // Where this record's documents are kept, read before it is removed: a
+        // delete retires every access token the record had, so the copies those
+        // tokens named are retired with them.
+        let held = store.held_document_coordinates(&account_id);
+
         // The one delete decision, rendered on this operation's own channel: a
         // refusal is this operation's modelled error and leaves the record
         // exactly as it was, so every later read still reports it.
@@ -174,6 +179,16 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 }
             })?;
         drop(store);
+        // With the store above unlocked, which is the lock order every
+        // cross-service access of this crate keeps.
+        if let Some((revision, documents)) = held {
+            crate::state::documents::release_documents(
+                &*self.engine,
+                &account_id,
+                revision,
+                documents,
+            );
+        }
         Ok(DeleteTaxRegistrationOutput {})
     }
 }

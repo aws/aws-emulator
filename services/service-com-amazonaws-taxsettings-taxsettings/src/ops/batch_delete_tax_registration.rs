@@ -164,31 +164,58 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         })?;
 
         let mut errors: Vec<BatchDeleteTaxRegistrationError2> = Vec::new();
-        let mut store = state.lock();
-        // The registration of every account the request addresses is removed
-        // once, in the order the request names them, so the `errors` rows below
-        // are built in request order — see
-        // [`crate::state::distinct_account_ids`], which is where what a repeated
-        // id means is stated for this whole service.
-        for account_id in crate::state::distinct_account_ids(&input.account_ids) {
-            // The same delete `DeleteTaxRegistration` performs, so one record's
-            // deletion cannot be decided two different ways: the one decision in
-            // `state` answers whether this account's record is removed, and this
-            // handler only renders a refusal on its own channel — a row naming
-            // the account, the message that account's single-account delete
-            // would have failed with and the code that refusal publishes (see
-            // [`crate::state::BatchRowErrorCode`]), the record left in place,
-            // and the rest of the batch still deleted.
-            if let Err(refusal) = store.delete_registration(account_id) {
-                let code = refusal.row_error_code();
-                errors.push(BatchDeleteTaxRegistrationError2 {
-                    account_id: account_id.to_string(),
-                    message: refusal.into_row_message(),
-                    code,
-                });
+        // Where the documents of each record this call removes are kept, read
+        // before it is removed and acted on once the store below is unlocked —
+        // the lock order every cross-service access of this crate keeps. The
+        // guard lives in a block of its own, so it is gone before the loop that
+        // yields below.
+        let removed: Vec<(String, u64, usize)> = {
+            let mut removed: Vec<(String, u64, usize)> = Vec::new();
+            let mut store = state.lock();
+            // The registration of every account the request addresses is removed
+            // once, in the order the request names them, so the `errors` rows
+            // below are built in request order — see
+            // [`crate::state::distinct_account_ids`], which is where what a
+            // repeated id means is stated for this whole service.
+            for account_id in crate::state::distinct_account_ids(&input.account_ids) {
+                // The same delete `DeleteTaxRegistration` performs, so one
+                // record's deletion cannot be decided two different ways: the one
+                // decision in `state` answers whether this account's record is
+                // removed, and this handler only renders a refusal on its own
+                // channel — a row naming the account, the message that account's
+                // single-account delete would have failed with and the code that
+                // refusal publishes (see [`crate::state::BatchRowErrorCode`]),
+                // the record left in place, and the rest of the batch still
+                // deleted.
+                let held = store.held_document_coordinates(account_id);
+                if let Err(refusal) = store.delete_registration(account_id) {
+                    let code = refusal.row_error_code();
+                    errors.push(BatchDeleteTaxRegistrationError2 {
+                        account_id: account_id.to_string(),
+                        message: refusal.into_row_message(),
+                        code,
+                    });
+                } else if let Some((revision, documents)) = held {
+                    removed.push((account_id.to_string(), revision, documents));
+                }
             }
+            removed
+        };
+
+        // The copies of every removed record's documents, dropped with the
+        // access tokens that named them — the same thing
+        // `DeleteTaxRegistration` does for the one account it removes. The task
+        // yields between accounts, so a request naming many of them stays
+        // cancellable.
+        for (account_id, revision, documents) in removed {
+            crate::state::documents::release_documents(
+                &*self.engine,
+                &account_id,
+                revision,
+                documents,
+            );
+            ::tokio::task::yield_now().await;
         }
-        drop(store);
 
         Ok(BatchDeleteTaxRegistrationOutput { errors })
     }

@@ -97,6 +97,8 @@ mod supplemental_tax_registrations;
 mod supplemental_trn_conflict;
 #[path = "all/supplemental_trn_spelling_identity.rs"]
 mod supplemental_trn_spelling_identity;
+#[path = "all/tax_document_delivery.rs"]
+mod tax_document_delivery;
 #[path = "all/tax_exemption_types.rs"]
 mod tax_exemption_types;
 #[path = "all/tax_exemptions.rs"]

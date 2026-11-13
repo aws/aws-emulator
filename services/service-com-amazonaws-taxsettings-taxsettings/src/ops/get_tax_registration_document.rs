@@ -18,16 +18,30 @@
 //!   request that names no destination asked for no download, so there is no
 //!   destination path to report.
 //!
+//! ## What this operation DOES
+//!
+//! It downloads the document: the operation "downloads your tax documents to the
+//! Amazon S3 bucket that you specify in your request", so a request that names a
+//! `destinationS3Location` has the document's own content WRITTEN to the place the
+//! reported path names ([`crate::state::documents::deliver_document`]) — one
+//! object, in the one object store this emulator serves Amazon S3 from, carrying
+//! the content submitted with the registration. A request that names no
+//! destination asked for no download, so nothing is written.
+//!
+//! Nothing of this service's own state is touched: the delivery writes the
+//! caller's named destination and the same request delivers the same object
+//! however often it is made, so a later caller inside the token's window is
+//! answered — and delivered — exactly what this one was. Resolving a token
+//! materialises nothing either.
+//!
 //! Metadata whose token does not resolve is refused with the modelled
 //! `ValidationException` (HTTP 400) carrying the `errorCode` the model publishes
 //! for how the token failed: `MalformedToken` for text this service never
 //! minted, `InvalidToken` for a token of its own that no longer locates a
 //! document, `ExpiredToken` for one presented past the validity window the model
 //! publishes for a `taxDocumentAccessToken`
-//! ([`crate::state::TAX_DOCUMENT_TOKEN_VALIDITY`]).
-//!
-//! A pure read: resolving a token materialises nothing, so a later caller inside
-//! the token's window is answered exactly what this one was.
+//! ([`crate::state::TAX_DOCUMENT_TOKEN_VALIDITY`]) — and a refused request
+//! downloads nothing.
 //!
 //! ## Shape of an operation
 //!
@@ -185,19 +199,56 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 )
                 .map_err(GetTaxRegistrationDocumentErrorModeled::ValidationException)?
         };
+        // The DOWNLOAD the operation is documented to perform, into the location
+        // the request named: the document's own content, written to the very
+        // place the reported path names — the one key below serves both, so what
+        // the response says and what the destination receives cannot disagree.
+        // Performed with this service's store unlocked, which is the lock order
+        // every cross-service access of this crate keeps.
+        let destination_file_path = input.destination_s3_location.as_ref().map(|destination| {
+            let key = destination_object_key(destination, &document.name);
+            crate::state::documents::deliver_document(
+                &*self.engine,
+                &document,
+                &destination.bucket,
+                &key,
+            );
+            destination_file_path(&destination.bucket, &key)
+        });
         Ok(GetTaxRegistrationDocumentOutput {
-            destination_file_path: input
-                .destination_s3_location
-                .as_ref()
-                .map(|destination| destination_file_path(destination, &document.name)),
+            destination_file_path,
             presigned_s3_url: Some(crate::state::document_download_url(&document)),
         })
     }
 }
 
+/// The object key the document is downloaded to in the bucket a request named:
+/// the prefix it asked for, then the document's own name.
+///
+/// `prefix` is documented as "the Amazon S3 object prefix that you specify for
+/// your tax document file", so it PREFIXES the key rather than replacing it, and
+/// exactly one separator joins the two however the request spelled the prefix —
+/// a request whose prefix ends in the separator names the same place in the
+/// bucket as one that leaves it off, so both get the same key.
+///
+/// The ONE statement of where in the destination the document goes: the object
+/// the download writes is written at this key and the reported path names it, so
+/// a caller that reads the path reads the object that is there.
+fn destination_object_key(destination: &DestinationS3Location, name: &str) -> String {
+    match destination
+        .prefix
+        .as_deref()
+        .map(|prefix| prefix.trim_end_matches('/'))
+        .filter(|prefix| !prefix.is_empty())
+    {
+        Some(prefix) => format!("{prefix}/{name}"),
+        None => name.to_string(),
+    }
+}
+
 /// The place in the location a request named that the document is to be
-/// downloaded to: the bucket the request gave, then the prefix it asked for,
-/// then the document's own name.
+/// downloaded to: the bucket the request gave, then the key it occupies there
+/// ([`destination_object_key`]).
 ///
 /// `bucket` is the location's one `@required` member — "the name of your Amazon
 /// S3 bucket that you specify to download your tax documents to" — and the
@@ -207,21 +258,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
 /// buckets is told two different places. It is written in the `s3://` form AWS
 /// writes a path to an S3 object in, which `DestinationFilePath`'s pattern
 /// (`^[\s\S]*$`) admits.
-///
-/// `prefix` is documented as "the Amazon S3 object prefix that you specify for
-/// your tax document file", so it PREFIXES the key rather than replacing it, and
-/// exactly one separator joins the two however the request spelled the prefix —
-/// a request whose prefix ends in the separator names the same place in the
-/// bucket as one that leaves it off, so both get the same key.
-fn destination_file_path(destination: &DestinationS3Location, name: &str) -> String {
-    let key = match destination
-        .prefix
-        .as_deref()
-        .map(|prefix| prefix.trim_end_matches('/'))
-        .filter(|prefix| !prefix.is_empty())
-    {
-        Some(prefix) => format!("{prefix}/{name}"),
-        None => name.to_string(),
-    };
-    format!("s3://{}/{key}", destination.bucket)
+fn destination_file_path(bucket: &str, key: &str) -> String {
+    format!("s3://{bucket}/{key}")
 }

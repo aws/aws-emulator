@@ -9,6 +9,14 @@
 //! deleted — so the document access tokens an earlier write minted no longer
 //! name anything.
 //!
+//! The documents the entry submits are kept, not just named: the content of each
+//! `VerificationDetails$taxRegistrationDocuments` entry — an uploaded file's
+//! bytes, or the object an `s3Location` references — is held as this service's own
+//! copy where a read of that document reports it
+//! ([`crate::state::documents`]), which is what gives
+//! `GetTaxRegistrationDocument` a document to download. The copies of the
+//! revision this write retires go with its access tokens.
+//!
 //! The status is the outcome of validating the submitted TRN, which the model
 //! documents as `Verified`, `Pending` or `Rejected`. Validating takes time, so a
 //! write stores the registration `Pending` and the validation falls due one
@@ -320,6 +328,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 PutTaxRegistrationErrorModeled::ValidationException(refusal.into_validation())
             })?;
 
+        // The CONTENT of the documents this entry submits, read before this
+        // service's store is locked, because a document that REFERENCES an object
+        // is read from the object store (the lock order
+        // [`crate::state::documents`] states). Read whether or not the write goes
+        // through: nothing is held until it has.
+        let submitted = crate::state::documents::submitted_documents(&*self.engine, entry);
+
         // A write replaces the account's record and bumps its revision, which the
         // document access tokens derived from it carry — unless the record it
         // would replace is a TRN whose validation is still outstanding, which the
@@ -338,10 +353,35 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .check_registration_type_against_stored(&account_id, entry)
             .map_err(PutTaxRegistrationErrorModeled::ValidationException)?;
 
+        // Where the documents of the record this write REPLACES are kept, read
+        // before it is replaced: the write retires that revision's access tokens,
+        // so the copies those tokens named are retired with them.
+        let retired = store.held_document_coordinates(&account_id);
         let status = store
             .store_registration(&account_id, entry, ::std::time::Instant::now())
             .map_err(PutTaxRegistrationErrorModeled::ConflictException)?;
+        let revision = store.held_document_coordinates(&account_id).map(|(revision, _)| revision);
         drop(store);
+
+        // The documents themselves, held where a read of one reports it — and the
+        // copies of the revision this write retired, dropped. Both with the store
+        // above unlocked.
+        if let Some((revision, documents)) = retired {
+            crate::state::documents::release_documents(
+                &*self.engine,
+                &account_id,
+                revision,
+                documents,
+            );
+        }
+        if let Some(revision) = revision {
+            let _held = crate::state::documents::hold_documents(
+                &*self.engine,
+                &account_id,
+                revision,
+                &submitted,
+            );
+        }
 
         Ok(PutTaxRegistrationOutput {
             status: Some(status),

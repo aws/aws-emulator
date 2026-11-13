@@ -19,6 +19,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use ::aws_smithy_types::base64;
 
+pub mod documents;
 pub mod organization;
 pub mod registration_number;
 pub mod support_case;
@@ -912,6 +913,26 @@ impl ComAmazonawsTaxsettingsTaxsettingsState {
         } else {
             Err(expired_tax_document_token())
         }
+    }
+
+    /// Where the documents of the registration this store holds for `account_id`
+    /// are kept: that registration's revision, and how many documents it carries.
+    ///
+    /// The coordinates [`documents::document_object_key`] derives a document's
+    /// object key from, so a caller that is about to replace or remove the record
+    /// can retire the copies of the documents it is retiring the access tokens of
+    /// ([`documents::release_documents`]) — read HERE, from the record itself,
+    /// rather than recomputed from anything a request carried.
+    ///
+    /// `None` when the store holds no registration for the account, so there is
+    /// nothing of its to retire.
+    ///
+    /// A pure read: a record's revision and its document list are fixed by the
+    /// write that stored it and no validation falling due changes either.
+    pub fn held_document_coordinates(&self, account_id: &str) -> Option<(u64, usize)> {
+        self.registrations
+            .get(account_id)
+            .map(|stored| (stored.revision, stored.tax_document_metadatas.len()))
     }
 
     /// Refuse a write whose registration type the account's STORED registration
@@ -1998,21 +2019,22 @@ pub fn document_bucket(account_id: &str) -> String {
 ///
 /// It names the document's own object in the account's document bucket by the
 /// coordinates its access token carries — the registration revision and the
-/// document's position in it — so every read of one document reports one URL,
-/// two documents never share one, and rewriting the registration retires the
-/// previous URL exactly as it retires the previous access token.
+/// document's position in it ([`documents::document_object_key`]) — so every read
+/// of one document reports one URL, two documents never share one, and rewriting
+/// the registration retires the previous URL exactly as it retires the previous
+/// access token. The object it names is the copy this service holds there
+/// ([`documents::hold_documents`]), so the location resolves to the document's
+/// own content.
 ///
 /// It carries no query signature: the model caps `Url` at 200 characters, which
 /// no SigV4 query-signed form fits (its signature parameters alone are longer
-/// than that), and this emulator keeps each document's metadata rather than its
-/// content, so there is no object body for a signature to authorise. What the
-/// URL does carry is where the document is, derived from this service's state.
+/// than that). What the URL does carry is where the document is, derived from
+/// this service's state.
 pub fn document_download_url(document: &HeldTaxDocument) -> String {
     format!(
-        "https://{}.s3.amazonaws.com/{}/{}",
+        "https://{}.s3.amazonaws.com/{}",
         document_bucket(&document.account_id),
-        document.revision,
-        document.index
+        documents::document_object_key(document.revision, document.index)
     )
 }
 

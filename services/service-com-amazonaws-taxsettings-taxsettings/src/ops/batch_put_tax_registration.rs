@@ -241,68 +241,153 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // so the single-account write cannot store a number this one refuses.
         let invalid_number = crate::state::check_registration_number(entry).err();
 
+        // The CONTENT of the documents this entry submits, read before this
+        // service's store is locked, because a document that REFERENCES an object
+        // is read from the object store (the lock order
+        // [`crate::state::documents`] states). ONE entry is written to every
+        // account the request addresses, so its documents are the same documents
+        // for each of them.
+        let submitted = crate::state::documents::submitted_documents(&*self.engine, entry);
+
         let mut errors: Vec<BatchPutTaxRegistrationError2> = Vec::new();
         let mut stored_status: Option<String> = None;
+        // Where each written account's documents are to be held, and the revision
+        // whose copies that write retired — collected while the store is locked
+        // and acted on once it is not, which is that lock order again. The guard
+        // lives in a block of its own, so it is gone before the loop that yields
+        // below.
         let written_at = ::std::time::Instant::now();
-        let mut store = state.lock();
-        // One entry is written to every account the request addresses, once, in
-        // the order the request names them, so the `errors` rows below are built
-        // in request order — see [`crate::state::distinct_account_ids`], which is
-        // where what a repeated id means is stated for this whole service.
-        for account_id in crate::state::distinct_account_ids(&input.account_ids) {
-            // The number is a fact about the entry rather than about this
-            // account's record, so it is reported first and the account's own
-            // record is left untouched.
-            if let Some(refusal) = invalid_number {
-                errors.push(BatchPutTaxRegistrationError2 {
-                    account_id: account_id.to_string(),
-                    code: refusal.row_error_code(),
-                    message: refusal.message(),
-                });
-                continue;
+        let written: Vec<WrittenAccount> = {
+            let mut written: Vec<WrittenAccount> = Vec::new();
+            let mut store = state.lock();
+            // One entry is written to every account the request addresses, once,
+            // in the order the request names them, so the `errors` rows below are
+            // built in request order — see
+            // [`crate::state::distinct_account_ids`], which is where what a
+            // repeated id means is stated for this whole service.
+            for account_id in crate::state::distinct_account_ids(&input.account_ids) {
+                // The number is a fact about the entry rather than about this
+                // account's record, so it is reported first and the account's own
+                // record is left untouched.
+                if let Some(refusal) = invalid_number {
+                    errors.push(BatchPutTaxRegistrationError2 {
+                        account_id: account_id.to_string(),
+                        code: refusal.row_error_code(),
+                        message: refusal.message(),
+                    });
+                    continue;
+                }
+                // The same write `PutTaxRegistration` performs, so one entry
+                // cannot be stored two different ways, and neither can one
+                // account's state be judged two different ways. An account the
+                // write refuses — one whose TRN is still pending, or a new record
+                // this emulator has no room for — is reported against that
+                // account with its record left as it was, and the rest of the
+                // batch still goes through.
+                //
+                // What the account already holds can refuse the type this entry
+                // sets, which is a fact about THAT account's record rather than
+                // about the entry the whole call carries, so it is judged here,
+                // per account, and reported against the account it refused. The
+                // `code` of such a row is the refusal's own `errorCode`, the
+                // discriminator the service publishes for a validation refusal —
+                // see [`crate::state::BatchRowErrorCode`], which is where what
+                // this member carries is stated for every batch row of this
+                // service.
+                if let Err(refusal) =
+                    store.check_registration_type_against_stored(account_id, entry)
+                {
+                    errors.push(BatchPutTaxRegistrationError2 {
+                        account_id: account_id.to_string(),
+                        code: refusal.row_error_code(),
+                        message: refusal.message,
+                    });
+                    continue;
+                }
+                // Where this account's documents were kept before this write,
+                // read before it replaces them: the write retires that
+                // revision's access tokens, so the copies those tokens named are
+                // retired with them.
+                let retired = store.held_document_coordinates(account_id);
+                match store.store_registration(account_id, entry, written_at) {
+                    Ok(status) => {
+                        stored_status = Some(status);
+                        written.push(WrittenAccount {
+                            account_id: account_id.to_string(),
+                            retired,
+                            revision: store
+                                .held_document_coordinates(account_id)
+                                .map(|(revision, _)| revision),
+                        });
+                    }
+                    Err(conflict) => errors.push(BatchPutTaxRegistrationError2 {
+                        account_id: account_id.to_string(),
+                        // Both refusals are the `ConflictException`
+                        // `PutTaxRegistration` answers this account's own write
+                        // with, so the row carries that refusal's own envelope:
+                        // the one code the conflict class publishes, and the
+                        // sentence the write words for the state it conflicted
+                        // with.
+                        code: conflict.row_error_code(),
+                        message: conflict.message,
+                    }),
+                }
             }
-            // The same write `PutTaxRegistration` performs, so one entry cannot
-            // be stored two different ways, and neither can one account's state
-            // be judged two different ways. An account the write refuses — one
-            // whose TRN is still pending, or a new record this emulator has no
-            // room for — is reported against that account with its record left
-            // as it was, and the rest of the batch still goes through.
-            //
-            // What the account already holds can refuse the type this entry
-            // sets, which is a fact about THAT account's record rather than
-            // about the entry the whole call carries, so it is judged here, per
-            // account, and reported against the account it refused. The `code`
-            // of such a row is the refusal's own `errorCode`, the discriminator
-            // the service publishes for a validation refusal — see
-            // [`crate::state::BatchRowErrorCode`], which is where what this
-            // member carries is stated for every batch row of this service.
-            if let Err(refusal) = store.check_registration_type_against_stored(account_id, entry) {
-                errors.push(BatchPutTaxRegistrationError2 {
-                    account_id: account_id.to_string(),
-                    code: refusal.row_error_code(),
-                    message: refusal.message,
-                });
-                continue;
+            written
+        };
+
+        // The documents of every account this call wrote, held where a read of
+        // one reports it, and the copies each of those writes retired, dropped —
+        // the same thing `PutTaxRegistration` does for the one account it writes,
+        // with the store above unlocked.
+        //
+        // The entry is ONE submission written to up to 550 accounts, and its
+        // documents are the same bytes for each of them, so the copying this
+        // fan-out does is bounded by the object store's own ceilings rather than
+        // by the product of the accounts and the documents: the first account
+        // whose copies that store will take no more of
+        // ([`crate::state::documents::DocumentsHeld`]) stops the holding, and the
+        // accounts behind it copy nothing. The task yields between accounts, so a
+        // long fan-out stays cancellable and does not hold the runtime's worker
+        // for its whole length.
+        let mut holding = true;
+        for account in written {
+            if let Some((revision, documents)) = account.retired {
+                crate::state::documents::release_documents(
+                    &*self.engine,
+                    &account.account_id,
+                    revision,
+                    documents,
+                );
             }
-            match store.store_registration(account_id, entry, written_at) {
-                Ok(status) => stored_status = Some(status),
-                Err(conflict) => errors.push(BatchPutTaxRegistrationError2 {
-                    account_id: account_id.to_string(),
-                    // Both refusals are the `ConflictException`
-                    // `PutTaxRegistration` answers this account's own write
-                    // with, so the row carries that refusal's own envelope: the
-                    // one code the conflict class publishes, and the sentence
-                    // the write words for the state it conflicted with.
-                    code: conflict.row_error_code(),
-                    message: conflict.message,
-                }),
+            if let (true, Some(revision)) = (holding, account.revision) {
+                holding = crate::state::documents::hold_documents(
+                    &*self.engine,
+                    &account.account_id,
+                    revision,
+                    &submitted,
+                ) == crate::state::documents::DocumentsHeld::Held;
             }
+            ::tokio::task::yield_now().await;
         }
-        drop(store);
 
         Ok(BatchPutTaxRegistrationOutput {
             status: stored_status,
             errors,
         })
     }
+}
+
+/// One account this call wrote the entry to, and where its documents belong.
+///
+/// Collected while this service's store is locked and acted on once it is not,
+/// which is the lock order [`crate::state::documents`] states for every
+/// cross-service access of this crate: `revision` is the revision the write
+/// stored, whose documents are held, and `retired` is where the documents of the
+/// record it REPLACED were kept, whose access tokens the write retired.
+#[derive(Debug)]
+struct WrittenAccount {
+    account_id: String,
+    retired: Option<(u64, usize)>,
+    revision: Option<u64>,
 }

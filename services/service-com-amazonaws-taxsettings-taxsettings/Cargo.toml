@@ -29,6 +29,11 @@ service-com-amazonaws-organizations-awsorganizationsv20161128 = { workspace = tr
 # submits and answers that case's id, so the case is written to the store of the
 # control plane that owns support cases, on the shared engine.
 service-com-amazonaws-support-awssupport-20130415 = { workspace = true }
+# Tax registration documents ARE objects: Amazon S3 owns the object store this
+# service holds each submitted document in and downloads one into the bucket a
+# `GetTaxRegistrationDocument` request names, so both go through that service's
+# own store on the shared engine (`state::documents`).
+service-com-amazonaws-s3-amazons3 = { workspace = true }
 
 [build-dependencies]
 emulator-core-build-support = { workspace = true }
@@ -36,6 +41,10 @@ emulator-core-build-support = { workspace = true }
 [dev-dependencies]
 sha2 = { workspace = true }
 hex = { workspace = true }
+# The objects a download writes are asserted where Amazon S3 holds them, through
+# that service's OWN client over the emulator's in-process callback
+# (`tests/all/tax_document_delivery`).
+aws-sdk-s3 = { version = "1", default-features = false, features = ["rt-tokio", "behavior-version-latest"] }
 
 [lints]
 workspace = true
