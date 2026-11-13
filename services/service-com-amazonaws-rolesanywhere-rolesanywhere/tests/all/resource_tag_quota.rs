@@ -13,7 +13,9 @@
 //! nothing, whichever door the tags come through (the resource's own create, or a later
 //! `TagResource`). The tables below therefore span the doors (every taggable resource
 //! type's create, plus `TagResource`), the number of keys already held and newly
-//! submitted, the bound itself and counts past it, and lists whose entries repeat a key.
+//! submitted, the bound itself and counts past it, lists whose entries repeat a key,
+//! how many of a write's keys the resource already carries (which consume no slot), and
+//! how many slots an `UntagResource` freed before the write is retried.
 //!
 //! The harness below is local to this suite: each sibling suite's client is private to
 //! its own module, and the targets are compiled into one test binary only as separate
@@ -131,6 +133,15 @@ impl Client {
             "POST",
             "/TagResource",
             Some(json!({"resourceArn": resource_arn, "tags": tag_json(tags)})),
+        )
+        .await
+    }
+
+    async fn untag_resource(&self, resource_arn: &str, tag_keys: &[String]) -> Answer {
+        self.send(
+            "POST",
+            "/UntagResource",
+            Some(json!({"resourceArn": resource_arn, "tagKeys": tag_keys})),
         )
         .await
     }
@@ -560,5 +571,187 @@ async fn tag_resource_is_bounded_by_the_set_the_create_left() {
             "case {case:?}: a refused call stores nothing and an accepted one stores \
              exactly the merged set, got {listed:?}"
         );
+    }
+}
+
+/// The quota bounds the RESULTANT set, so a resource sitting exactly at the quota still
+/// accepts a write whose keys it already carries — re-tagging replaces values in place
+/// and consumes no slot — while a write naming even one key it does not carry is
+/// refused, however many of the submitted keys are re-tags.
+#[tokio::test]
+async fn a_resource_at_the_quota_retags_in_place_and_refuses_one_new_key() {
+    // Row: how many of the submitted keys the resource already holds (re-tagged, so no
+    // slot is consumed), and how many are keys it does not hold (one slot each).
+    let rows = [
+        (0, 0),
+        (1, 0),
+        (MAX_TAGS_PER_RESOURCE / 2, 0),
+        (MAX_TAGS_PER_RESOURCE, 0),
+        (0, 1),
+        (1, 1),
+        (MAX_TAGS_PER_RESOURCE - 1, 1),
+        (MAX_TAGS_PER_RESOURCE, 1),
+        (MAX_TAGS_PER_RESOURCE, MAX_TAGS_PER_RESOURCE),
+    ];
+
+    for kind in [Kind::TrustAnchor, Kind::Profile, Kind::Crl] {
+        let client = Client::new();
+        for (index, (retagged, fresh)) in rows.into_iter().enumerate() {
+            let case = format!("{}/retag-{retagged}/new-{fresh}", kind.label());
+            let held = tags("held", MAX_TAGS_PER_RESOURCE);
+            let arn = client
+                .created_arn(kind, &format!("atquota-{}-{index}", kind.label()), &held)
+                .await;
+
+            // The submitted list: `retagged` keys the resource already carries, each
+            // with a value it does not hold yet, then `fresh` keys it has never seen.
+            let mut submitted: Vec<(String, String)> = held
+                .iter()
+                .take(retagged)
+                .map(|(key, value)| (key.clone(), format!("re-{value}")))
+                .collect();
+            submitted.extend(tags("fresh", fresh));
+
+            let answer = client.tag_resource(&arn, &submitted).await;
+            let mut expected: BTreeMap<String, String> = held.iter().cloned().collect();
+            if fresh == 0 {
+                assert_eq!(
+                    answer.status, 201,
+                    "case {case:?}: re-tagging {retagged} held keys leaves the merged set \
+                     at the quota of {MAX_TAGS_PER_RESOURCE}, got {answer:?}"
+                );
+                expected.extend(submitted.iter().cloned());
+            } else {
+                assert_eq!(
+                    (answer.status, answer.error_code.as_str()),
+                    (400, "ValidationException"),
+                    "case {case:?}: {fresh} key(s) the resource does not hold carry it past \
+                     the quota of {MAX_TAGS_PER_RESOURCE} and must be refused, got {answer:?}"
+                );
+                assert_eq!(
+                    answer.body.get("message").and_then(Value::as_str),
+                    Some(past_cap_message().as_str()),
+                    "case {case:?}: expected the quota wording, got {answer:?}"
+                );
+            }
+
+            assert_eq!(
+                expected.len(),
+                MAX_TAGS_PER_RESOURCE,
+                "case {case:?}: the resource stays at the quota either way"
+            );
+            let listed = client.list_tags(&arn).await;
+            assert_eq!(
+                listed_tags(&case, &listed),
+                expected,
+                "case {case:?}: a refused call stores nothing and an accepted re-tag only \
+                 replaces values, got {listed:?}"
+            );
+        }
+    }
+}
+
+/// The quota is judged against the set the resource holds when the write arrives, so
+/// detaching keys moves the bound: the identical `TagResource` that was refused at the
+/// quota is accepted once it fits the freed slots, and one key more than was freed is
+/// still refused.
+#[tokio::test]
+async fn freeing_slots_lets_the_identical_tag_write_through() {
+    // Row: how many of the held keys are detached before the same write is retried.
+    let freed_counts = [
+        1,
+        2,
+        MAX_TAGS_PER_RESOURCE / 2,
+        MAX_TAGS_PER_RESOURCE,
+    ];
+
+    for kind in [Kind::TrustAnchor, Kind::Profile, Kind::Crl] {
+        let client = Client::new();
+        for (index, freed) in freed_counts.into_iter().enumerate() {
+            let case = format!("{}/freed-{freed}", kind.label());
+            let held = tags("held", MAX_TAGS_PER_RESOURCE);
+            let arn = client
+                .created_arn(kind, &format!("freeing-{}-{index}", kind.label()), &held)
+                .await;
+            let incoming = tags("incoming", freed);
+            let at_quota: BTreeMap<String, String> = held.iter().cloned().collect();
+
+            // At the quota the write is refused and stores nothing.
+            let refused = client.tag_resource(&arn, &incoming).await;
+            assert_eq!(
+                (refused.status, refused.error_code.as_str()),
+                (400, "ValidationException"),
+                "case {case:?}: {freed} new key(s) on a resource at the quota of \
+                 {MAX_TAGS_PER_RESOURCE} must be refused, got {refused:?}"
+            );
+            assert_eq!(
+                refused.body.get("message").and_then(Value::as_str),
+                Some(past_cap_message().as_str()),
+                "case {case:?}: expected the quota wording, got {refused:?}"
+            );
+            let listed = client.list_tags(&arn).await;
+            assert_eq!(
+                listed_tags(&case, &listed),
+                at_quota,
+                "case {case:?}: the refused write must leave the stored set alone, got \
+                 {listed:?}"
+            );
+
+            // Detaching keys frees exactly that many slots.
+            let detached: Vec<String> =
+                held.iter().take(freed).map(|(key, _)| key.clone()).collect();
+            let untagged = client.untag_resource(&arn, &detached).await;
+            assert_eq!(
+                untagged.status, 200,
+                "case {case:?}: expected UntagResource 200, got {untagged:?}"
+            );
+            let remaining: BTreeMap<String, String> = held.iter().skip(freed).cloned().collect();
+            let listed = client.list_tags(&arn).await;
+            assert_eq!(
+                listed_tags(&case, &listed),
+                remaining,
+                "case {case:?}: the read must report the set the removal left, got {listed:?}"
+            );
+
+            // One key more than was freed still does not fit.
+            let mut one_too_many = incoming.clone();
+            one_too_many.push(("one-too-many".to_string(), "value".to_string()));
+            let still_refused = client.tag_resource(&arn, &one_too_many).await;
+            assert_eq!(
+                (still_refused.status, still_refused.error_code.as_str()),
+                (400, "ValidationException"),
+                "case {case:?}: {} new keys exceed the {freed} freed slot(s) and must be \
+                 refused, got {still_refused:?}",
+                one_too_many.len()
+            );
+            let listed = client.list_tags(&arn).await;
+            assert_eq!(
+                listed_tags(&case, &listed),
+                remaining,
+                "case {case:?}: the second refusal must store nothing either, got {listed:?}"
+            );
+
+            // The identical write now fits exactly, carrying the resource back to the
+            // quota.
+            let accepted = client.tag_resource(&arn, &incoming).await;
+            assert_eq!(
+                accepted.status, 201,
+                "case {case:?}: the write refused at the quota must be accepted once the \
+                 {freed} freed slot(s) hold it, got {accepted:?}"
+            );
+            let mut expected = remaining.clone();
+            expected.extend(incoming.iter().cloned());
+            assert_eq!(
+                expected.len(),
+                MAX_TAGS_PER_RESOURCE,
+                "case {case:?}: the accepted write lands the resource back at the quota"
+            );
+            let listed = client.list_tags(&arn).await;
+            assert_eq!(
+                listed_tags(&case, &listed),
+                expected,
+                "case {case:?}: the read must report the merged set, got {listed:?}"
+            );
+        }
     }
 }
