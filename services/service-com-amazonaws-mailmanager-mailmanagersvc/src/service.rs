@@ -207,7 +207,7 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
     /// the first: a `PUT` is idempotent. The upload is judged in this order: the method, so
     /// a path this service publishes states which methods it serves rather than appearing
     /// absent; the size this emulator retains; and then the store, because a URL naming a
-    /// job that is gone is no longer a target.
+    /// job that is gone — or one whose address list is gone — is no longer a target.
     /// `None` only if a status this file names is not a status at all, which it is: it is
     /// what keeps this plane free of a conversion that could panic on a request path, and
     /// leaves the framework's own refusal to answer instead.
@@ -237,6 +237,9 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
         let uploaded_at_millis = crate::state::now_millis();
         {
             let mut store = state.lock();
+            // Borrowed once as the state it is, so the job and the lists are reached as two
+            // disjoint fields.
+            let store = &mut *store;
             // A path naming no stored job is not a target this service published: it is
             // refused rather than accepting a file nothing will import.
             let Some(job) = store.import_jobs.get_mut(job_id) else {
@@ -246,6 +249,16 @@ impl<Eng: Send + Sync + 'static> EmulatedService<Eng> {
                     format!("Import job {job_id} not found."),
                 );
             };
+            // Nor is the target one this service still serves once the address list the job
+            // imports into is gone: `DeleteAddressList` leaves the job ORPHANED, and a file
+            // uploaded against one could never be imported into anything.
+            if !store.address_lists.contains_key(&job.address_list_id) {
+                return upload_error(
+                    404,
+                    "ResourceNotFoundException",
+                    crate::state::address_list_not_found_message(&job.address_list_id),
+                );
+            }
             job.uploaded_file = Some(crate::state::UploadedImportFile {
                 content: body.to_vec(),
                 uploaded_at_millis,

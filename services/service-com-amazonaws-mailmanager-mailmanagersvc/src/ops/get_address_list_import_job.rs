@@ -6,6 +6,12 @@
 //! of the import, as far as it has got. A `JobId` that names no stored job is refused with
 //! the modelled `ValidationException` (`crate::state::IMPORT_JOB_ID_INVALID`).
 //!
+//! A job is a job OF an address list (`ImportJob$AddressListId` is "The unique identifier
+//! of the address list the import job was created for"), so this read resolves that list
+//! too: once `DeleteAddressList` has removed it the job is ORPHANED, and the read is
+//! refused with the modelled `ResourceNotFoundException` in the wording and at the status
+//! every address-list lookup miss in this service carries.
+//!
 //! `@readonly`: it writes nothing.
 //!
 //! ## Shape of an operation
@@ -188,6 +194,25 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 .into(),
             );
         };
+
+        // The job belongs to the address list it was created for, so resolving the job is
+        // not enough: a list `DeleteAddressList` has removed leaves the job ORPHANED, and a
+        // read of one cannot report an `AddressListId` (a **required** output member) that
+        // resolves to nothing. The modelled `ResourceNotFoundException` says the resource
+        // the request reached for is not there, in the wording and at the status every
+        // address-list lookup miss in this service carries.
+        if !store.address_lists.contains_key(&record.address_list_id) {
+            return Err(crate::scaffolded::Scaffolded::modeled_with_status(
+                GetAddressListImportJobErrorModeled::ResourceNotFoundException(
+                    ResourceNotFoundException {
+                        message: Some(crate::state::address_list_not_found_message(
+                            &record.address_list_id,
+                        )),
+                    },
+                ),
+                crate::state::ADDRESS_LIST_LOOKUP_STATUS,
+            ));
+        }
 
         Ok(GetAddressListImportJobOutput {
             job_id: record.job_id.clone(),

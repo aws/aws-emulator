@@ -1,15 +1,23 @@
 // SPDX-License-Identifier: CC0-1.0
 
 //! @op DeleteAddressList
-//! SCAFFOLDED, NOT IMPLEMENTED: this operation answers HTTP 501 `NotImplemented` and
-//! asserts NOTHING about `DeleteAddressList`'s real behaviour. Implement it here — this is
-//! the ONLY file to touch for this operation.
+//! Implemented: removes the stored address list the request names, with the membership it
+//! holds (which lives inside the record), so a following `GetAddressList` no longer
+//! resolves it and the freed `AddressListName` can be created again.
 //!
-//! A 501 from this operation means "nobody has written it yet", never "the emulator is
-//! broken". Replace the `Err(..)` in [`DeleteAddressList::handle`] with real behaviour and
-//! delete the SCAFFOLDED marker line above; that line is the machine-readable record of
-//! which operations are still stubs (`grep -rl '^//! SCAFFOLDED, NOT IMPLEMENTED:' */src/ops/`),
-//! so leaving it on an implemented operation under-reports progress.
+//! An `AddressListId` that resolves to no stored list is refused the way every
+//! address-list operation in this service refuses one (the modelled
+//! `ResourceNotFoundException`, the wording of
+//! `crate::state::address_list_not_found_message` and
+//! `crate::state::ADDRESS_LIST_LOOKUP_STATUS`); the shape is widened in through
+//! `extra_errors` below because this operation's own `errors` list omits it while its
+//! siblings (`DeleteRelay`, `DeleteTrafficPolicy`, `DeregisterMemberFromAddressList`)
+//! declare it.
+//!
+//! The import jobs created against the list keep their own records: this call deletes the
+//! list, and a job's `AddressListId` still names it, so reading such an ORPHANED job is
+//! refused for the list that no longer resolves (see
+//! `crate::ops::get_address_list_import_job`) rather than served.
 //!
 //! ## Shape of an operation
 //!
@@ -81,11 +89,20 @@ smithy_macros::smithy_model!("smithy-model/com-amazonaws-mailmanager-mailmanager
 // here — hence the `DeleteAddressListError` alias below. An operation that models no errors
 // generates an UNINHABITED enum here, which is correct and expected: there is nothing
 // to construct until the model says otherwise.
-#[smithy_macros::operation_error("com.amazonaws.mailmanager#DeleteAddressList")]
+//
+// `ResourceNotFoundException` is widened in through `extra_errors`: this SERVICE models
+// the shape (and every other address-list operation declares it) while this operation's
+// own `errors` list omits it, so without the widening an id that resolves to nothing
+// could not be refused the way the rest of the address-list surface refuses one.
+#[smithy_macros::operation_error(
+    "com.amazonaws.mailmanager#DeleteAddressList",
+    extra_errors = ["ResourceNotFoundException"]
+)]
 #[derive(Debug)]
 pub enum DeleteAddressListErrorModeled {
     AccessDeniedException(AccessDeniedException),
     ConflictException(ConflictException),
+    ResourceNotFoundException(ResourceNotFoundException),
     ThrottlingException(ThrottlingException),
     ValidationException(ValidationException),
 }
@@ -141,18 +158,58 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         input: Self::Input,
         ctx: &smithy_server_runtime::OperationContext<'_>,
     ) -> Result<Self::Output, Self::Error> {
-        // The engine is reachable from `&self` (constructor-injected); `ctx` carries
-        // request metadata. Both are bound here so an implementer has them in scope.
-        let _ = (&input, ctx, &self.engine);
-        // Implement `DeleteAddressList` here, then delete the SCAFFOLDED marker at the top of
-        // this file. Return modeled failures as
-        // `Err(DeleteAddressListErrorModeled::Variant(..).into())` — the `From` impl above lifts it.
-        //
-        // To refuse a bad request this operation models no error for, return
-        // `Err(crate::scaffolded::Scaffolded::validation("..."))` — a 400
-        // `ValidationException`. Do NOT answer 501 for it: 501 means "not written yet",
-        // not "bad request". Modeled constraints are already refused BEFORE this
-        // handler runs, so reaching here means the input satisfies every one of them.
-        Err(crate::scaffolded::Scaffolded::not_implemented("DeleteAddressList"))
+        let _ = ctx;
+        let Some(state) = crate::state::service_state(&*self.engine) else {
+            // Unreachable in this emulator: the service is always mounted on the shared
+            // `InMemoryEngine`. Answered with a modelled retryable error rather than a
+            // 501, which would claim the operation is unwritten.
+            return Err(DeleteAddressListErrorModeled::ThrottlingException(ThrottlingException {
+                message: Some(crate::state::STORE_UNAVAILABLE.to_string()),
+            })
+            .into());
+        };
+
+        let mut store = state.lock();
+
+        // The list has to exist for there to be anything to delete: the modelled
+        // `ResourceNotFoundException` ("Occurs when a requested resource is not found") is
+        // what says the named one does not, at the status and in the wording every
+        // address-list lookup miss carries — this service reads an id it cannot resolve as
+        // a fault in the request.
+        let Some(record) = store.address_lists.remove(&input.address_list_id) else {
+            return Err(crate::scaffolded::Scaffolded::modeled_with_status(
+                DeleteAddressListErrorModeled::ResourceNotFoundException(
+                    ResourceNotFoundException {
+                        message: Some(crate::state::address_list_not_found_message(
+                            &input.address_list_id,
+                        )),
+                    },
+                ),
+                crate::state::ADDRESS_LIST_LOOKUP_STATUS,
+            ));
+        };
+
+        // The deleted list no longer holds its name, so a create may take it again. Only
+        // drop the index entry if it still points at THIS list, the way
+        // `purge_permanently_deleted` does for an archive's name.
+        if store.address_list_names.get(&record.address_list_name) == Some(&record.address_list_id)
+        {
+            store.address_list_names.remove(&record.address_list_name);
+        }
+
+        // A `ClientToken` recorded for this create names a list that no longer exists, so
+        // it is dropped with it: a later retry carrying that token must not be answered
+        // with the id of a list nothing can resolve.
+        store
+            .address_list_idempotency
+            .retain(|_, create| create.resource_id != record.address_list_id);
+
+        // The membership lived inside the record, so it went with it. The import jobs
+        // created against the list are stored under their own `JobId` and are NOT erased
+        // here: this call deletes the list, and a job it leaves behind keeps naming the
+        // list it was created for, which no longer resolves — so every read of such a job
+        // is refused for the missing list rather than served from a job record this call
+        // pretended to clean up.
+        Ok(DeleteAddressListOutput {})
     }
 }
