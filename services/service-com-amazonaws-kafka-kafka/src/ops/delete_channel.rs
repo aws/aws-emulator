@@ -7,11 +7,16 @@
 //! model documents: a caller reading the channel straight afterwards still sees it in
 //! `DELETING`, and one that waits sees it gone.
 //!
-//! The channel is resolved exactly as `DescribeChannel` resolves it, so the delete and
-//! the reader cannot disagree about which channels exist: a value that is not shaped
-//! like a cluster or a channel ARN is a `BadRequestException`, and a well-formed one
-//! this endpoint's region holds no such channel under that cluster for is a
-//! `NotFoundException` carrying the service's one fixed not-found sentence.
+//! The cluster in the request path is the FIRST gate, as it is for every channel
+//! operation: a value that is not shaped like a cluster ARN is a
+//! `BadRequestException`, a cluster this endpoint's region does not hold is a
+//! `NotFoundException` carrying the service's one fixed not-found sentence, and only
+//! then is the channel reference judged. Under a cluster that resolves, the channel is
+//! resolved exactly as `DescribeChannel` resolves it, so the delete and the reader
+//! cannot disagree about which channels exist: a channel this cluster held and the
+//! clock has removed is that same fixed `NotFoundException`, while a channel ARN this
+//! cluster never held is the caller's own identifier at fault and is refused as an
+//! invalid link ARN ([`crate::state::invalid_channel_arn`]).
 //!
 //! The operation is modelled `@idempotent`, so repeating it on a channel already
 //! `DELETING` answers the same channel ARN and the same cluster-operation ARN and
@@ -186,53 +191,70 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .into());
         };
         let region = crate::state::request_region(ctx.parts());
-        // The same two request-only checks the channel's reader makes, in the same
-        // order: a value that is not an ARN of the kind the member names is a
-        // request the service cannot act on, whatever the registry holds.
+        // The one request-only check: a value that is not a cluster ARN is a
+        // request this service cannot act on, whatever the registry holds, and
+        // every cluster-scoped operation refuses it the same way. It depends on
+        // nothing stored, so it runs before the lock is taken.
         if !crate::state::is_cluster_arn(&input.cluster_arn) {
             return Err(DeleteChannelErrorModeled::BadRequestException(
                 crate::state::malformed_arn(crate::state::CLUSTER_ARN_MEMBER),
             )
             .into());
         }
-        if !crate::state::is_channel_arn(&input.channel_arn) {
-            return Err(
-                DeleteChannelErrorModeled::BadRequestException(BadRequestException {
-                    invalid_parameter: Some("ChannelArn".to_string()),
-                    message: Some(format!(
-                        "{} is not a valid Amazon MSK channel ARN.",
-                        input.channel_arn
-                    )),
-                })
-                .into(),
-            );
-        }
         let mut state = state.lock();
+        let now = std::time::SystemTime::now();
 
-        // Accepted through the one deletion path, which resolves the channel the
-        // way the reader does (this region, under this cluster, and not already
-        // removed by the clock) before it marks anything, so a refused delete
-        // leaves the registry exactly as it was.
-        let Some(channel) = state.begin_channel_deletion(
-            &region,
-            &input.cluster_arn,
-            &input.channel_arn,
-            std::time::SystemTime::now(),
-        ) else {
+        // The cluster in the path is the FIRST gate, exactly as it is for every
+        // other channel operation: a channel is addressed UNDER its cluster, so a
+        // cluster this endpoint's region does not hold answers the service's one
+        // fixed not-found sentence before anything about the channel reference is
+        // judged.
+        if state.cluster_in(&region, &input.cluster_arn).is_none() {
             return Err(
                 DeleteChannelErrorModeled::NotFoundException(NotFoundException {
-                    invalid_parameter: Some("ChannelArn".to_string()),
+                    invalid_parameter: Some("ClusterArn".to_string()),
                     message: Some(crate::state::RESOURCE_NOT_FOUND_MESSAGE.to_string()),
                 })
                 .into(),
             );
+        }
+
+        // Accepted through the one deletion path, which resolves the channel the
+        // way the reader does (this region, under this cluster, and not already
+        // removed by the clock) before it marks anything, so a refused delete
+        // leaves the registry exactly as it was. What the answer reports is read
+        // off the record here, so the refusal below needs no borrow of it.
+        let accepted = state
+            .begin_channel_deletion(&region, &input.cluster_arn, &input.channel_arn, now)
+            .map(|channel| (channel.arn.clone(), channel.deletion_operation_arn.clone()));
+        let Some((channel_arn, cluster_operation_arn)) = accepted else {
+            // Two different absences, told apart by whether this cluster ever
+            // held the channel: one it held and the clock has removed is a
+            // resource that went missing, answered with the service's fixed
+            // not-found sentence as its reader answers it, while a reference this
+            // cluster never held is the caller's own identifier at fault and is
+            // refused as the invalid link ARN it is.
+            return Err(
+                if state.channel_was_held(&input.cluster_arn, &input.channel_arn) {
+                    DeleteChannelErrorModeled::NotFoundException(NotFoundException {
+                        invalid_parameter: Some("ChannelArn".to_string()),
+                        message: Some(crate::state::RESOURCE_NOT_FOUND_MESSAGE.to_string()),
+                    })
+                    .into()
+                } else {
+                    DeleteChannelErrorModeled::BadRequestException(
+                        crate::state::invalid_channel_arn(),
+                    )
+                    .into()
+                },
+            );
         };
         Ok(DeleteChannelOutput {
-            channel_arn: channel.arn.clone(),
+            channel_arn,
             // The operation carrying the delete out, which the channel stores, so
             // this answer and a `DescribeChannel` inside the `DELETING` window
             // report the same in-flight operation.
-            cluster_operation_arn: channel.deletion_operation_arn.clone(),
+            cluster_operation_arn,
         })
     }
 }

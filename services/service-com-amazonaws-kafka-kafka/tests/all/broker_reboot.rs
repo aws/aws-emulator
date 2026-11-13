@@ -36,14 +36,14 @@ use std::time::SystemTime;
 use serde_json::{json, Value};
 use service_com_amazonaws_iam_awsidentitymanagementv20100508::state as iam;
 use service_com_amazonaws_kafka_kafka::state::{
-    brokers_not_rebootable_message, OPERATION_STATE_COMPLETE, OPERATION_STATE_IN_PROGRESS,
+    OPERATION_STATE_REBOOT_COMPLETE, OPERATION_STATE_REBOOT_IN_PROGRESS,
     OPERATION_TYPE_REBOOT_NODE, PROVISIONED_ONLY_MESSAGE, RESOURCE_NOT_FOUND_MESSAGE,
 };
 use service_com_amazonaws_sts_awssecuritytokenservicev20110615::state as sts;
 
 use crate::kafka_harness::{
-    pct, sleep_past_activation, sleep_past_update, ClusterRequest, Emulator, Reply, ACCOUNT,
-    DEFAULT_ACCESS_KEY_ID, REGION,
+    assert_cluster_state_refusal, pct, sleep_past_activation, sleep_past_broker_reboot,
+    ClusterRequest, Emulator, Reply, ACCOUNT, DEFAULT_ACCESS_KEY_ID, REGION,
 };
 
 /// A cluster id of the form this service mints, for an ARN naming a cluster no
@@ -279,7 +279,7 @@ async fn an_accepted_reboot_runs_as_a_cluster_operation_and_changes_no_attribute
             (
                 200,
                 Some(OPERATION_TYPE_REBOOT_NODE),
-                Some(OPERATION_STATE_IN_PROGRESS),
+                Some(OPERATION_STATE_REBOOT_IN_PROGRESS),
                 Some(arn.as_str()),
             ),
             "case {case}: expected a running {OPERATION_TYPE_REBOOT_NODE} operation on this \
@@ -294,22 +294,12 @@ async fn an_accepted_reboot_runs_as_a_cluster_operation_and_changes_no_attribute
         );
 
         // A second reboot while the first is in flight is refused: a cluster runs
-        // one operation at a time.
+        // one operation at a time, so the cluster is not in a state a change is
+        // accepted from.
         let contended = reboot(&emulator, &arn, &[broker_id]).await;
-        assert_eq!(
-            (contended.status, contended.error_code(), contended.error_message()),
-            (
-                400,
-                "BadRequestException",
-                brokers_not_rebootable_message("REBOOTING_BROKER").as_str()
-            ),
-            "case {case}: expected a reboot of a REBOOTING_BROKER cluster to be refused, got {} \
-             {}",
-            contended.status,
-            contended.body
-        );
+        assert_cluster_state_refusal(&contended, case);
 
-        sleep_past_update();
+        sleep_past_broker_reboot();
 
         // Landed: ACTIVE again, no active operation, the SAME version, and every
         // other member of the record exactly as it was.
@@ -344,8 +334,8 @@ async fn an_accepted_reboot_runs_as_a_cluster_operation_and_changes_no_attribute
             finished
                 .at("/clusterOperationInfo/operationState")
                 .as_str(),
-            Some(OPERATION_STATE_COMPLETE),
-            "case {case}: expected the operation to read {OPERATION_STATE_COMPLETE}, got {}",
+            Some(OPERATION_STATE_REBOOT_COMPLETE),
+            "case {case}: expected the operation to read {OPERATION_STATE_REBOOT_COMPLETE}, got {}",
             finished.body
         );
         assert!(
@@ -400,7 +390,7 @@ async fn every_reboot_files_its_own_operation() {
             described.status, described.body
         );
         operations.push(operation_arn);
-        sleep_past_update();
+        sleep_past_broker_reboot();
     }
     let distinct: std::collections::BTreeSet<&String> = operations.iter().collect();
     assert_eq!(
@@ -494,17 +484,7 @@ async fn a_reboot_is_refused_unless_the_cluster_is_an_active_provisioned_one() {
         .create_ok(&ClusterRequest::named("still-creating"))
         .await;
     let refused = reboot(&emulator, &creating, &["1"]).await;
-    assert_eq!(
-        (refused.status, refused.error_code(), refused.error_message()),
-        (
-            400,
-            "BadRequestException",
-            brokers_not_rebootable_message("CREATING").as_str()
-        ),
-        "case \"a CREATING cluster\": expected the state refusal, got {} {}",
-        refused.status,
-        refused.body
-    );
+    assert_cluster_state_refusal(&refused, "a CREATING cluster");
 
     // A serverless cluster has no customer broker nodes to reboot.
     let serverless = emulator
@@ -787,7 +767,7 @@ async fn an_identity_policy_that_denies_the_action_refuses_the_reboot() {
                  {}",
                 reply.status, reply.body
             );
-            sleep_past_update();
+            sleep_past_broker_reboot();
         }
     }
 }

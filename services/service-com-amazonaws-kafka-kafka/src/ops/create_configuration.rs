@@ -249,18 +249,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // body is bounded whichever call stored it. Checked before the lock is
         // taken: it depends on the request alone.
         if crate::state::server_properties_too_large(&input.server_properties) {
-            return Err(
-                CreateConfigurationErrorModeled::BadRequestException(BadRequestException {
-                    invalid_parameter: Some(
-                        crate::state::server_properties::SERVER_PROPERTIES_MEMBER.to_string(),
-                    ),
-                    message: Some(format!(
-                        "ServerProperties must be at most {} bytes.",
-                        crate::state::MAX_SERVER_PROPERTIES_BYTES
-                    )),
-                })
-                .into(),
-            );
+            return Err(server_properties_too_large_refusal());
         }
 
         // `KafkaVersions` enumerates the Apache Kafka versions this configuration
@@ -370,7 +359,38 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // repeats an earlier one.
         let suffix = state.next_configuration_suffix;
         state.next_configuration_suffix += 1;
-        let configuration = crate::state::ConfigurationRecord::created(&region, suffix, now, input);
+        // The record itself applies the stored-body ceiling, on the same test the
+        // append path applies, so the bound holds whichever path stored the body.
+        // The request-only check above has already refused an oversized body, so
+        // this arm answers the same refusal rather than a second wording.
+        let configuration =
+            match crate::state::ConfigurationRecord::created(&region, suffix, now, input) {
+                Ok(configuration) => configuration,
+                Err(rejected) => {
+                    state.next_configuration_suffix = suffix;
+                    return Err(match rejected {
+                        crate::state::RevisionRejected::BodyTooLarge => {
+                            server_properties_too_large_refusal()
+                        }
+                        // Unreachable: a minted record holds exactly one
+                        // revision, so no history bound can be reached here.
+                        // Reported as a server fault rather than registering a
+                        // record the ceiling was not applied to.
+                        crate::state::RevisionRejected::HistoryFull => {
+                            CreateConfigurationErrorModeled::InternalServerErrorException(
+                                InternalServerErrorException {
+                                    invalid_parameter: None,
+                                    message: Some(
+                                        "the minted configuration holds more revisions than one"
+                                            .to_string(),
+                                    ),
+                                },
+                            )
+                            .into()
+                        }
+                    });
+                }
+            };
 
         let latest = configuration.latest_revision();
         let output = CreateConfigurationOutput {
@@ -437,4 +457,25 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         }
         Ok(output)
     }
+}
+
+/// What this operation answers a `ServerProperties` body longer than
+/// [`crate::state::MAX_SERVER_PROPERTIES_BYTES`]: a `BadRequestException` naming
+/// the member at fault and the ceiling.
+///
+/// One sentence in one place, because the bound is applied twice — once on the
+/// request alone, before anything is locked, and once by the record that stores
+/// the body ([`crate::state::ConfigurationRecord::created`]), so neither path can
+/// store an unbounded body and both refuse it identically.
+fn server_properties_too_large_refusal() -> CreateConfigurationError {
+    CreateConfigurationErrorModeled::BadRequestException(BadRequestException {
+        invalid_parameter: Some(
+            crate::state::server_properties::SERVER_PROPERTIES_MEMBER.to_string(),
+        ),
+        message: Some(format!(
+            "ServerProperties must be at most {} bytes.",
+            crate::state::MAX_SERVER_PROPERTIES_BYTES
+        )),
+    })
+    .into()
 }

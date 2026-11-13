@@ -205,7 +205,7 @@ mod channel;
 mod kafka_versions;
 pub use kafka_versions::*;
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::ops::Bound;
 use std::time::{Duration, SystemTime};
 
@@ -327,11 +327,43 @@ pub const OPERATION_TYPE_UPDATE_CHANNEL: &str = "UPDATE_CHANNEL";
 /// The `OperationType` the cluster operation behind a `DeleteChannel` records.
 pub const OPERATION_TYPE_DELETE_CHANNEL: &str = "DELETE_CHANNEL";
 
-/// The state MSK reports for a cluster operation that is still running.
+/// The state MSK reports for a cluster operation that is still applying a
+/// configuration change.
 pub const OPERATION_STATE_IN_PROGRESS: &str = "UPDATE_IN_PROGRESS";
 
-/// The state MSK reports for a cluster operation that has finished.
+/// The state MSK reports for such an operation once it has finished.
 pub const OPERATION_STATE_COMPLETE: &str = "UPDATE_COMPLETE";
+
+/// The state MSK reports for a cluster operation that is restarting a broker
+/// node, and the state it reports once that node is back.
+///
+/// A cluster operation's state names the WORK it does rather than the fact that
+/// something is in flight, so a node reboot is reported in its own pair of states
+/// — which is what a client polling `DescribeClusterOperation` after a
+/// `RebootBroker` waits for.
+pub const OPERATION_STATE_REBOOT_IN_PROGRESS: &str = "REBOOT_IN_PROGRESS";
+/// See [`OPERATION_STATE_REBOOT_IN_PROGRESS`].
+pub const OPERATION_STATE_REBOOT_COMPLETE: &str = "REBOOT_COMPLETE";
+
+/// The pair of states — (still running, finished) — a cluster operation of
+/// `operation_type` is reported in.
+///
+/// Derived from the operation's own type, in ONE place, so every reader of a
+/// cluster operation (`DescribeClusterOperation`, `DescribeClusterOperationV2`
+/// and the two listings) reports one state for one record: a reboot of a node
+/// walks [`OPERATION_STATE_REBOOT_IN_PROGRESS`] -> [`OPERATION_STATE_REBOOT_COMPLETE`],
+/// and every other type this service files is a change to the cluster's
+/// configuration, which walks the `UPDATE_*` pair.
+pub fn operation_states_of(operation_type: &str) -> (&'static str, &'static str) {
+    if operation_type == OPERATION_TYPE_REBOOT_NODE {
+        (
+            OPERATION_STATE_REBOOT_IN_PROGRESS,
+            OPERATION_STATE_REBOOT_COMPLETE,
+        )
+    } else {
+        (OPERATION_STATE_IN_PROGRESS, OPERATION_STATE_COMPLETE)
+    }
+}
 
 /// The `ClusterState` of a cluster whose brokers are serving and which accepts an
 /// update. One of the model's `ClusterState` values
@@ -402,6 +434,21 @@ pub fn cluster_has_broker_nodes(state: &str) -> bool {
 /// operation ARN and the pre-update configuration, while a caller that waits sees
 /// the new configuration and the new cluster version.
 pub const CLUSTER_UPDATE_DELAY: Duration = Duration::from_millis(500);
+
+/// How long a `RebootBroker` stays in flight before the cluster leaves
+/// `REBOOTING_BROKER` and its operation reports
+/// [`OPERATION_STATE_REBOOT_COMPLETE`].
+///
+/// CHOSEN, not documented: the real service rolls a broker out of the cluster and
+/// waits for it to rejoin, which takes minutes. It is its own span rather than
+/// [`CLUSTER_UPDATE_DELAY`] because what a reboot has to be observable AS is a
+/// rolling restart: the cluster keeps serving throughout it, so a client that
+/// drains or rebalances around the restart — and a reader that checks the broker
+/// inventory never shrinks — must be able to sample the in-flight operation
+/// several times in a row at a few seconds' cadence. Sized for that, and still far
+/// inside the interval a client polling at an AWS-sized cadence waits, so no
+/// poller pays an extra interval for it.
+pub const BROKER_REBOOT_DELAY: Duration = Duration::from_secs(5);
 
 /// Shortest and longest a broker instance type may be, from the `length` trait on
 /// `BrokerNodeGroupInfo$InstanceType` and `MutableClusterInfo$InstanceType`
@@ -910,17 +957,12 @@ pub fn bootstrap_brokers_unavailable_message(state: &str) -> String {
     format!("You can't get bootstrap broker nodes for a cluster in {state} state.")
 }
 
-/// The same refusal, for the reader of a cluster's broker nodes, in the same
-/// form. The subject is this reader's own; the form is the family's.
+/// The same refusal, for the reader of a cluster's broker nodes. The subject is
+/// this reader's own and so is its wording — it names "the nodes" and spells the
+/// state out as "that is in the <STATE> state" — with the state the cluster is
+/// actually in as its one variable part.
 pub fn nodes_unavailable_message(state: &str) -> String {
-    format!("You can't list nodes for a cluster in {state} state.")
-}
-
-/// The same refusal, for a broker REBOOT: a cluster the service is still
-/// provisioning, updating, rebooting or deleting has no settled brokers to
-/// restart. The subject is this call's own; the form is the family's.
-pub fn brokers_not_rebootable_message(state: &str) -> String {
-    format!("You can't reboot brokers for a cluster in {state} state.")
+    format!("You can't list the nodes for a cluster that is in the {state} state.")
 }
 
 /// The input member every replicator operation resolves its target through, named
@@ -1318,6 +1360,32 @@ impl ClusterChange {
         }
     }
 
+    /// How long a cluster operation carrying this change stays in flight: the
+    /// instant the clock owes its completion is this far after the call that
+    /// started it.
+    ///
+    /// One function of the change itself, so the operation record and the
+    /// cluster's own pending change cannot disagree about when the work finished.
+    /// Matched variant by variant for the reason [`Self::in_flight_state`] is: a
+    /// restart of a broker node is a different piece of work from a
+    /// reconfiguration and is observable for its own span
+    /// ([`BROKER_REBOOT_DELAY`]), and a change added later has to say which span
+    /// it takes.
+    pub fn settling_delay(&self) -> Duration {
+        match self {
+            Self::BrokerReboot => BROKER_REBOOT_DELAY,
+            Self::Connectivity { .. }
+            | Self::Storage(_)
+            | Self::BrokerType { .. }
+            | Self::BrokerCount { .. }
+            | Self::KafkaVersion { .. }
+            | Self::Configuration { .. }
+            | Self::Security { .. }
+            | Self::Rebalancing { .. }
+            | Self::Monitoring { .. } => CLUSTER_UPDATE_DELAY,
+        }
+    }
+
     /// Whether completing this change generates a new cluster version.
     ///
     /// "When this update operation is successful, it generates a new cluster
@@ -1394,13 +1462,15 @@ pub struct ClusterOperation {
 }
 
 impl ClusterOperation {
-    /// The operation's state at `now`: MSK reports a running update as
-    /// `UPDATE_IN_PROGRESS` and a finished one as `UPDATE_COMPLETE`.
+    /// The operation's state at `now`: the pair of states its own type is
+    /// reported in ([`operation_states_of`]), chosen by whether the clock has
+    /// reached the instant this operation was due.
     pub fn operation_state(&self, now: SystemTime) -> &'static str {
+        let (in_progress, complete) = operation_states_of(&self.operation_type);
         if now >= self.end_due {
-            OPERATION_STATE_COMPLETE
+            complete
         } else {
-            OPERATION_STATE_IN_PROGRESS
+            in_progress
         }
     }
 
@@ -1753,8 +1823,11 @@ pub const MAX_REVISIONS_PER_CONFIGURATION: usize = 100;
 pub const MAX_SERVER_PROPERTIES_BYTES: usize = 256 * 1024;
 
 /// Whether a submitted `server.properties` body is longer than this emulator
-/// stores for one revision. The one test both paths that store a body (a create
-/// and an update) apply, so a stored body is bounded whichever call stored it.
+/// stores for one revision. The one test both record paths that store a body
+/// apply — [`ConfigurationRecord::created`] for revision 1 and
+/// [`ConfigurationRecord::append_revision`] for every later one — so a stored body
+/// is bounded whichever call stored it, and a handler cannot bypass the ceiling by
+/// minting a record instead of appending to one.
 pub fn server_properties_too_large(body: &[u8]) -> bool {
     body.len() > MAX_SERVER_PROPERTIES_BYTES
 }
@@ -2745,6 +2818,17 @@ pub struct ComAmazonawsKafkaKafkaState {
     /// quota costs a lookup and deleting a cluster drops exactly its own
     /// channels rather than walking the whole registry.
     pub channel_arns_by_cluster: HashMap<String, BTreeSet<String>>,
+    /// cluster ARN -> the ARNs of the channels this registry HELD under that
+    /// cluster and no longer holds, oldest first.
+    ///
+    /// What makes a channel that is GONE distinguishable from one that never
+    /// existed: the first is a resource that went missing, the second a reference
+    /// the caller's own request got wrong, and the service answers the two
+    /// differently. Kept only for as many channels as a cluster may hold at once
+    /// ([`MAX_CHANNELS_PER_CLUSTER`]) and dropped with the cluster, so the record
+    /// of removals cannot grow without bound; past that the oldest removal is
+    /// forgotten, which is the only thing a bound can do.
+    pub removed_channel_arns: HashMap<String, VecDeque<String>>,
     /// Monotonic counter feeding each channel's ARN and its create operation's
     /// ARN, so every channel gets a distinct identity.
     pub next_channel_suffix: u64,
@@ -3093,12 +3177,20 @@ impl ConfigurationRecord {
     /// `region` is the caller's signing region, `now` the creation instant. The
     /// ARN takes the form the real service mints,
     /// `arn:<partition>:kafka:<region>:<account>:configuration/<name>/<id>-<ordinal>`.
+    ///
+    /// Refuses a body longer than [`MAX_SERVER_PROPERTIES_BYTES`], exactly as
+    /// [`Self::append_revision`] refuses one: revision 1 is a stored body like any
+    /// other, so the ceiling lives on BOTH paths that store one and the bound
+    /// cannot be bypassed by minting a record instead of appending to it.
     pub fn created(
         region: &str,
         suffix: u64,
         now: SystemTime,
         input: CreateConfigurationInput,
-    ) -> Self {
+    ) -> Result<Self, RevisionRejected> {
+        if server_properties_too_large(&input.server_properties) {
+            return Err(RevisionRejected::BodyTooLarge);
+        }
         let name = input.name;
         // The registry's counter, as the 1-based ordinal AWS puts at the end of
         // a configuration ARN; the SAME value seeds the opaque id before it.
@@ -3119,7 +3211,7 @@ impl ConfigurationRecord {
         // report it, and an empty description is no description, so the one
         // normalisation decides what is stored.
         let description = stored_description(input.description);
-        Self {
+        Ok(Self {
             arn,
             name,
             region: region.to_string(),
@@ -3134,7 +3226,7 @@ impl ConfigurationRecord {
                 server_properties: input.server_properties,
             }],
             description,
-        }
+        })
     }
 
     /// Whether this configuration is still part of the registry a caller at

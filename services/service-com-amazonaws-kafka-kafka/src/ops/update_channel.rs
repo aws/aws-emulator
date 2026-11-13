@@ -13,18 +13,19 @@
 //! rest of its destination configuration are the stored record's, byte for byte, both
 //! before and after the change ([`crate::state::Channel::begin_update`]).
 //!
-//! The gates, in the order MSK takes them: the request-only checks first (the request
-//! must carry exactly one destination update — "Exactly one of icebergDestinationUpdate
-//! or s3DestinationUpdate must be supplied" — with a `dataFreshnessInSeconds` inside the
-//! range the member documents, [`crate::state::is_data_freshness_in_range`]), as
-//! `CreateChannel` takes them; then the cluster in the path, BEFORE the channel, so a
+//! The gates, in the order MSK takes them: the cluster in the request path FIRST, so a
 //! well-formed `ClusterArn` naming no cluster of this endpoint's region is the service's
-//! one fixed `NotFoundException` rather than a complaint about the channel; then the
-//! channel, where an ARN that cluster holds no channel for is a `BadRequestException`
+//! one fixed `NotFoundException` before anything the request carries is judged — the
+//! same first gate every channel operation applies; then the request's own payload (it
+//! must carry exactly one destination update — "Exactly one of icebergDestinationUpdate
+//! or s3DestinationUpdate must be supplied"); then the channel, where an ARN that
+//! cluster holds no channel for is a `BadRequestException`
 //! ([`crate::state::invalid_channel_arn`]), since once the cluster resolves an unknown
-//! channel ARN is a bad identifier in the caller's own request. The update must then name
-//! the destination kind the channel actually has ("Use only when the channel was created
-//! with an Amazon S3 destination"), and only an `ACTIVE` channel is updatable
+//! channel ARN is a bad identifier in the caller's own request; then the
+//! `dataFreshnessInSeconds` the payload carries, which must be inside the range the
+//! member documents ([`crate::state::is_data_freshness_in_range`]). The update must then
+//! name the destination kind the channel actually has ("Use only when the channel was
+//! created with an Amazon S3 destination"), and only an `ACTIVE` channel is updatable
 //! ([`crate::state::channel_not_updatable`]).
 //!
 //! The operation is modelled `@idempotent`, so a repeat of an accepted update writes
@@ -210,13 +211,34 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .into());
         }
 
-        // Request-only checks next: they depend on nothing in the registry. The
-        // cardinality of the destination payload and the value it carries are read
-        // in ONE step, so the request's shape is decided once and there is no arm
-        // for a state the decision has already excluded. Both payloads carry
+        let mut state = state.lock();
+        // One instant for the whole request, so the resolution, the status gate
+        // and the change the clock will finish all agree about when this call ran.
+        let now = std::time::SystemTime::now();
+
+        // The cluster in the path is the FIRST gate — before anything the request
+        // carries is judged: a channel is addressed under its cluster, so a
+        // cluster this endpoint's region does not hold answers the service's one
+        // fixed not-found sentence, whatever the rest of the request looks like.
+        // Every channel operation applies this gate first, so one ghost cluster
+        // yields one refusal across the whole channel surface.
+        if state.cluster_in(&region, &input.cluster_arn).is_none() {
+            return Err(
+                UpdateChannelErrorModeled::NotFoundException(NotFoundException {
+                    invalid_parameter: Some("ClusterArn".to_string()),
+                    message: Some(crate::state::RESOURCE_NOT_FOUND_MESSAGE.to_string()),
+                })
+                .into(),
+            );
+        }
+
+        // WHICH destination payload the request carries depends on nothing in the
+        // registry, and is read in ONE step with the value it carries, so the
+        // request's shape is decided once and there is no arm for a state the
+        // decision has already excluded. Both payloads carry
         // `dataFreshnessInSeconds` as a REQUIRED member under the same documented
-        // range; WHICH payload arrived is decided here, and the bound on the value
-        // it carries once the resources the URI names have resolved.
+        // range; the bound on the value it carries is applied once the resources
+        // the URI names have resolved.
         let data_freshness_in_seconds = match (
             input.s3_destination_update.as_ref(),
             input.iceberg_destination_update.as_ref(),
@@ -241,25 +263,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 );
             }
         };
-
-        let mut state = state.lock();
-        // One instant for the whole request, so the resolution, the status gate
-        // and the change the clock will finish all agree about when this call ran.
-        let now = std::time::SystemTime::now();
-
-        // The cluster in the path is the FIRST gate: a channel is addressed under
-        // its cluster, so a cluster this endpoint's region does not hold answers
-        // the service's one fixed not-found sentence before anything about the
-        // channel is looked at.
-        if state.cluster_in(&region, &input.cluster_arn).is_none() {
-            return Err(
-                UpdateChannelErrorModeled::NotFoundException(NotFoundException {
-                    invalid_parameter: Some("ClusterArn".to_string()),
-                    message: Some(crate::state::RESOURCE_NOT_FOUND_MESSAGE.to_string()),
-                })
-                .into(),
-            );
-        }
 
         // Resolved exactly as `DescribeChannel` resolves it, so the update and the
         // reader cannot disagree about which channels exist. What the gates below

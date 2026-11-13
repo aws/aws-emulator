@@ -95,6 +95,10 @@ impl ComAmazonawsKafkaKafkaState {
                     .remove(&(channel.cluster_arn, channel.name));
             }
         }
+        // The record of this cluster's removed channels goes with it: a channel
+        // ARN is only ever asked about under its own cluster, and this one is no
+        // longer in the registry to ask about.
+        self.removed_channel_arns.remove(arn);
         Some(cluster)
     }
 
@@ -618,6 +622,11 @@ impl ComAmazonawsKafkaKafkaState {
         let operation_region = cluster.region.clone();
         let cluster_type = cluster.cluster_type.clone();
         let (source_cluster_info, target_cluster_info, change) = plan(cluster);
+        // Read before the change is handed over: how long the work takes is the
+        // change's own property, and the operation record and the cluster's
+        // pending change are both filed from this one value, so they cannot
+        // disagree about when the operation finished.
+        let settling = change.settling_delay();
         // The cluster mints the operation's ARN and holds the pending change:
         // one in-flight operation per cluster, whatever began it.
         let operation_arn = cluster.begin_operation(now, change);
@@ -628,7 +637,7 @@ impl ComAmazonawsKafkaKafkaState {
             cluster_type,
             operation_type: operation_type.to_string(),
             creation_time: now,
-            end_due: now + CLUSTER_UPDATE_DELAY,
+            end_due: now + settling,
             source_cluster_info,
             target_cluster_info,
         };
@@ -1590,7 +1599,9 @@ impl ComAmazonawsKafkaKafkaState {
     }
 
     /// Remove the channel `arn` names from every index, handing it back. The one
-    /// removal path, for the same reason.
+    /// removal path, for the same reason — and so the one place a removal is
+    /// REMEMBERED ([`Self::channel_was_held`]): a channel that is gone is not a
+    /// channel that never existed, and the two are refused differently.
     pub fn unregister_channel(&mut self, arn: &str) -> Option<Channel> {
         let channel = self.channels.remove(arn)?;
         self.channel_arn_by_name
@@ -1601,7 +1612,40 @@ impl ComAmazonawsKafkaKafkaState {
                 self.channel_arns_by_cluster.remove(&channel.cluster_arn);
             }
         }
+        self.remember_removed_channel(&channel.cluster_arn, arn);
         Some(channel)
+    }
+
+    /// Record that `cluster_arn` HELD the channel `channel_arn` names and holds
+    /// it no longer, bounded at [`MAX_CHANNELS_PER_CLUSTER`] removals per cluster
+    /// — the number of channels one cluster can hold at once — by forgetting the
+    /// oldest removal first.
+    fn remember_removed_channel(&mut self, cluster_arn: &str, channel_arn: &str) {
+        let removed = self
+            .removed_channel_arns
+            .entry(cluster_arn.to_string())
+            .or_default();
+        if removed.iter().any(|held| held == channel_arn) {
+            return;
+        }
+        removed.push_back(channel_arn.to_string());
+        while removed.len() > MAX_CHANNELS_PER_CLUSTER {
+            removed.pop_front();
+        }
+    }
+
+    /// Whether this registry once held the channel `channel_arn` names under
+    /// `cluster_arn` and holds it no longer.
+    ///
+    /// A channel-scoped call that cannot resolve its channel asks this to tell the
+    /// two absences apart: a channel this cluster held and lost is a resource that
+    /// went missing, while an ARN it never held is a reference the request got
+    /// wrong. Scoped to the cluster in the request path, as every channel lookup
+    /// is, so one cluster's removals say nothing about another's.
+    pub fn channel_was_held(&self, cluster_arn: &str, channel_arn: &str) -> bool {
+        self.removed_channel_arns
+            .get(cluster_arn)
+            .is_some_and(|removed| removed.iter().any(|held| held == channel_arn))
     }
 
     /// The channel `channel_arn` names, as an endpoint for `region` sees it, and

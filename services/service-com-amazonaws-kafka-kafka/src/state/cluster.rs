@@ -730,7 +730,10 @@ impl Cluster {
         self.state = change.in_flight_state().to_string();
         self.pending_update = Some(PendingUpdate {
             operation_arn: operation_arn.clone(),
-            due: now + CLUSTER_UPDATE_DELAY,
+            // The span the change itself takes, so the cluster leaves the state
+            // the operation put it in at the same instant that operation's own
+            // record reports it finished.
+            due: now + change.settling_delay(),
             change,
         });
         operation_arn

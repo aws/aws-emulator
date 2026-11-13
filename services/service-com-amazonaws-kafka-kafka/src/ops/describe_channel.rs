@@ -2,9 +2,12 @@
 
 //! @op DescribeChannel
 //! Reports one channel of one cluster from [`crate::state::ComAmazonawsKafkaKafkaState`].
-//! A channel is addressed under the cluster it streams from, so a channel ARN presented
-//! with any other cluster's ARN, or in another region, is a `NotFoundException` exactly
-//! as an unknown one is.
+//! The cluster in the request path is the FIRST gate, as it is for every channel
+//! operation: one this endpoint's region does not hold is the service's fixed
+//! `NotFoundException` before the channel reference is judged at all. A channel is
+//! addressed under the cluster it streams from, so a channel ARN presented with any
+//! other cluster's ARN, or in another region, is a `NotFoundException` exactly as an
+//! unknown or an already-removed one is.
 //!
 //! REPORTING, not mutating: the one write it makes is to materialise the
 //! `CREATING` -> `ACTIVE` transition the clock already owed THIS channel, which was due
@@ -198,42 +201,59 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .into());
         };
         let region = crate::state::request_region(ctx.parts());
+        // The one request-only check: a value that is not a cluster ARN is a
+        // request this reader cannot act on, whatever the registry holds, and
+        // every cluster-scoped operation refuses it the same way.
         if !crate::state::is_cluster_arn(&input.cluster_arn) {
             return Err(DescribeChannelErrorModeled::BadRequestException(
                 crate::state::malformed_arn(crate::state::CLUSTER_ARN_MEMBER),
             )
             .into());
         }
-        if !crate::state::is_channel_arn(&input.channel_arn) {
-            return Err(
-                DescribeChannelErrorModeled::BadRequestException(BadRequestException {
-                    invalid_parameter: Some("ChannelArn".to_string()),
-                    message: Some(format!(
-                        "{} is not a valid Amazon MSK channel ARN.",
-                        input.channel_arn
-                    )),
-                })
-                .into(),
-            );
-        }
         let mut state = state.lock();
-        // Reporting only: the one write this makes materialises the
-        // CREATING -> ACTIVE transition the clock already owed THIS channel,
-        // which was due at the same instant whether or not anybody called.
-        let Some(channel) = state.settled_channel_in(
-            &region,
-            &input.cluster_arn,
-            &input.channel_arn,
-            std::time::SystemTime::now(),
-        ) else {
+        let now = std::time::SystemTime::now();
+
+        // The cluster in the path is the FIRST gate, exactly as it is for every
+        // other channel operation: a channel is addressed UNDER its cluster, so a
+        // cluster this endpoint's region does not hold answers the service's one
+        // fixed not-found sentence before anything about the channel reference is
+        // judged.
+        if state.cluster_in(&region, &input.cluster_arn).is_none() {
             return Err(
                 DescribeChannelErrorModeled::NotFoundException(NotFoundException {
-                    invalid_parameter: Some("ChannelArn".to_string()),
+                    invalid_parameter: Some("ClusterArn".to_string()),
                     message: Some(crate::state::RESOURCE_NOT_FOUND_MESSAGE.to_string()),
                 })
                 .into(),
             );
+        }
+
+        // Reporting only: the one write this makes materialises the
+        // CREATING -> ACTIVE transition the clock already owed THIS channel,
+        // which was due at the same instant whether or not anybody called.
+        let described = state
+            .settled_channel_in(&region, &input.cluster_arn, &input.channel_arn, now)
+            .map(crate::state::Channel::to_describe_output);
+        let Some(output) = described else {
+            // A channel this cluster holds nothing for is a resource this reader
+            // cannot report, whether it is gone or was never created: both are
+            // the service's one fixed not-found sentence. A value that is not a
+            // channel ARN at all names no channel to look for, so it is the
+            // caller's own identifier at fault and is refused as the invalid link
+            // ARN it is.
+            return Err(if crate::state::is_channel_arn(&input.channel_arn) {
+                DescribeChannelErrorModeled::NotFoundException(NotFoundException {
+                    invalid_parameter: Some("ChannelArn".to_string()),
+                    message: Some(crate::state::RESOURCE_NOT_FOUND_MESSAGE.to_string()),
+                })
+                .into()
+            } else {
+                DescribeChannelErrorModeled::BadRequestException(
+                    crate::state::invalid_channel_arn(),
+                )
+                .into()
+            });
         };
-        Ok(channel.to_describe_output())
+        Ok(output)
     }
 }

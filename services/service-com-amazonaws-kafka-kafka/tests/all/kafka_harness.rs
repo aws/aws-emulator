@@ -25,8 +25,8 @@ use service_com_amazonaws_kafka_kafka::state::state_gate::{
     CLUSTER_STATES_A_CHANGE_IS_ACCEPTED_FROM,
 };
 use service_com_amazonaws_kafka_kafka::state::{
-    CHANNEL_ACTIVATION_DELAY, CHANNEL_UPDATE_DELAY, CLUSTER_ACTIVATION_DELAY, CLUSTER_UPDATE_DELAY,
-    CONFIGURATION_ARN_NOT_FOUND_MESSAGE, CONFIGURATION_DELETION_DELAY,
+    BROKER_REBOOT_DELAY, CHANNEL_ACTIVATION_DELAY, CHANNEL_UPDATE_DELAY, CLUSTER_ACTIVATION_DELAY,
+    CLUSTER_UPDATE_DELAY, CONFIGURATION_ARN_NOT_FOUND_MESSAGE, CONFIGURATION_DELETION_DELAY,
     CONFIGURATION_STATES_A_CHANGE_IS_ACCEPTED_FROM, VPC_CONNECTION_ACTIVATION_DELAY,
     VPC_CONNECTION_REJECTION_DELAY,
 };
@@ -1285,6 +1285,14 @@ pub fn sleep_past_vpc_connection_rejection() {
 /// waits through one helper.
 pub fn sleep_past_update() {
     std::thread::sleep(CLUSTER_UPDATE_DELAY + Duration::from_millis(250));
+}
+
+/// Sleep past the emulator's own `REBOOTING_BROKER` -> `ACTIVE` span, which a
+/// broker reboot has for its own (it is observable for several client polls, so it
+/// is longer than an update's). Beside [`sleep_past_update`] so every suite that
+/// drives a reboot waits through one helper rather than naming the span itself.
+pub fn sleep_past_broker_reboot() {
+    std::thread::sleep(BROKER_REBOOT_DELAY + Duration::from_millis(250));
 }
 
 /// Sleep past the emulator's own configuration-deletion span, so a later call

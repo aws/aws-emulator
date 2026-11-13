@@ -356,7 +356,9 @@ async fn the_broker_level_reads_are_refused_until_the_cluster_has_brokers() {
         BrokerRead {
             case: "ListNodes",
             suffix: "/nodes",
-            refusal: |state| format!("You can't list nodes for a cluster in {state} state."),
+            refusal: |state| {
+                format!("You can't list the nodes for a cluster that is in the {state} state.")
+            },
         },
     ];
     // Cluster rows, so the refusal is not keyed to one shape of cluster.
@@ -574,5 +576,170 @@ async fn a_delete_is_refused_while_an_update_is_in_flight() {
             row.case
         );
         assert_delete_accepted(&emulator, row.case, &arn).await;
+    }
+}
+
+/// What Amazon MSK answers a call that CHANGES a cluster which is not in a state
+/// that call is accepted from: one fixed sentence naming the states the operation
+/// IS valid for and nothing else — no state the cluster happens to be in, and no
+/// value from the request. Spelled out here rather than built from the service's own
+/// accepted-state set, so this suite pins both the wording and the permitted set;
+/// the space before the colon is the service's own.
+const ALLOWED_STATES_REFUSAL: &str =
+    "This operation is only valid for resources that are in one of the following states :[ACTIVE]";
+
+/// One row of the state-guard wording table: the operation, how it is called, and
+/// the sentence it answers while the cluster is in `state`.
+struct GuardRow {
+    case: &'static str,
+    method: &'static str,
+    suffix: &'static str,
+    body: Option<fn() -> Value>,
+    /// The refusal this operation answers, as a template over the state the cluster
+    /// is in — each operation words its own, and the one a CHANGE answers names the
+    /// accepted states instead of the current one.
+    refusal: fn(&str) -> String,
+    /// Whether this operation is still refused once the cluster HAS its brokers but
+    /// is not settled (a reboot in flight): a change is, a broker-level read is not.
+    refused_once_brokers_exist: bool,
+}
+
+/// RULE: a cluster operation whose pre-condition is the cluster's state answers its
+/// OWN sentence for that refusal — the per-operation ones carry the state the
+/// cluster is actually in, while a call that CHANGES the cluster answers the generic
+/// sentence naming the states it is accepted from — and the code and status are the
+/// same 400 `BadRequestException` naming `ClusterArn` for all of them.
+#[tokio::test]
+async fn each_state_guard_answers_the_sentence_its_own_operation_answers() {
+    // Rows: every operation of this crate whose refusal is the cluster's state —
+    // the delete, the two broker-level reads, and the broker reboot, which is a
+    // change to the cluster rather than a read of it.
+    let rows = [
+        GuardRow {
+            case: "DeleteCluster",
+            method: "DELETE",
+            suffix: "",
+            body: None,
+            refusal: |state| format!("You can't delete cluster in {state} state."),
+            refused_once_brokers_exist: true,
+        },
+        GuardRow {
+            case: "ListNodes",
+            method: "GET",
+            suffix: "/nodes",
+            body: None,
+            refusal: |state| {
+                format!("You can't list the nodes for a cluster that is in the {state} state.")
+            },
+            refused_once_brokers_exist: false,
+        },
+        GuardRow {
+            case: "GetBootstrapBrokers",
+            method: "GET",
+            suffix: "/bootstrap-brokers",
+            body: None,
+            refusal: |state| {
+                format!("You can't get bootstrap broker nodes for a cluster in {state} state.")
+            },
+            refused_once_brokers_exist: false,
+        },
+        GuardRow {
+            case: "RebootBroker",
+            method: "PUT",
+            suffix: "/reboot-broker",
+            body: Some(|| json!({ "brokerIds": ["1"] })),
+            // A change names the states it is accepted from, not the one the
+            // cluster is in, so this template ignores its argument.
+            refusal: |_state| ALLOWED_STATES_REFUSAL.to_string(),
+            refused_once_brokers_exist: true,
+        },
+    ];
+
+    let emulator = Emulator::new();
+
+    // A cluster the service is still provisioning: it has no brokers yet, so every
+    // row is refused — each with its own sentence over CREATING.
+    let creating = emulator.create_ok(&ClusterRequest::named("guard-creating")).await;
+    for row in &rows {
+        let reply = emulator
+            .call(
+                row.method,
+                &format!("/v1/clusters/{}{}", pct(&creating), row.suffix),
+                row.body.map(|build| build()),
+            )
+            .await;
+        assert_eq!(
+            (reply.status, reply.error_code(), reply.error_message()),
+            (
+                400,
+                "BadRequestException",
+                (row.refusal)("CREATING").as_str()
+            ),
+            "case {} while CREATING: expected its own state refusal, got {} {}",
+            row.case,
+            reply.status,
+            reply.body
+        );
+        assert_eq!(
+            reply.body["invalidParameter"].as_str(),
+            Some("ClusterArn"),
+            "case {} while CREATING: expected the refusal to name ClusterArn, got {}",
+            row.case,
+            reply.body
+        );
+    }
+
+    // A cluster whose brokers are being rebooted: it HAS its brokers, so the two
+    // reads are served, while the delete and a second reboot are refused — the
+    // delete naming the state the cluster is in and the reboot naming the states it
+    // would accept.
+    let rebooting = emulator.create_ok(&ClusterRequest::named("guard-rebooting")).await;
+    sleep_past_activation();
+    let accepted = emulator
+        .call(
+            "PUT",
+            &format!("/v1/clusters/{}/reboot-broker", pct(&rebooting)),
+            Some(json!({ "brokerIds": ["1"] })),
+        )
+        .await;
+    assert_eq!(
+        accepted.status, 200,
+        "expected the reboot of a settled cluster to be accepted, got {} {}",
+        accepted.status, accepted.body
+    );
+    assert_eq!(
+        reported_state(&emulator, &rebooting).await,
+        "REBOOTING_BROKER",
+        "an accepted reboot must leave the cluster REBOOTING_BROKER"
+    );
+    for row in &rows {
+        let reply = emulator
+            .call(
+                row.method,
+                &format!("/v1/clusters/{}{}", pct(&rebooting), row.suffix),
+                row.body.map(|build| build()),
+            )
+            .await;
+        if row.refused_once_brokers_exist {
+            assert_eq!(
+                (reply.status, reply.error_code(), reply.error_message()),
+                (
+                    400,
+                    "BadRequestException",
+                    (row.refusal)("REBOOTING_BROKER").as_str()
+                ),
+                "case {} while REBOOTING_BROKER: expected its own state refusal, got {} {}",
+                row.case,
+                reply.status,
+                reply.body
+            );
+        } else {
+            assert_eq!(
+                reply.status, 200,
+                "case {} while REBOOTING_BROKER: a cluster that has its brokers serves this \
+                 read, got {} {}",
+                row.case, reply.status, reply.body
+            );
+        }
     }
 }

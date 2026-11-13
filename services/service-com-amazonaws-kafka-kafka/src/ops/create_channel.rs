@@ -3,8 +3,9 @@
 //! @op CreateChannel
 //! Mints a channel that streams one cluster topic to Amazon S3 or Apache Iceberg and
 //! registers it in [`crate::state::ComAmazonawsKafkaKafkaState`]. A channel is a
-//! sub-resource of the cluster named in the request path, so a cluster this endpoint's
-//! region does not hold is a `NotFoundException`.
+//! sub-resource of the cluster named in the request path, so the cluster is the FIRST
+//! gate — one this endpoint's region does not hold is a `NotFoundException` before
+//! anything the request carries is judged, as it is for every channel operation.
 //!
 //! The documented request rules this refuses with `BadRequestException`: exactly one
 //! topic configuration (`CreateChannelRequest$TopicConfigurationList` — "Currently
@@ -206,16 +207,42 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         };
         let region = crate::state::request_region(ctx.parts());
 
-        // Request-only checks first: they depend on nothing in the registry, so
-        // the state lock below is held only for the state-dependent work.
+        // The shape of the reference itself depends on nothing in the registry, so
+        // it is decided before the lock is taken: a value that is not a cluster ARN
+        // names no cluster to resolve.
         if !crate::state::is_cluster_arn(&input.cluster_arn) {
             return Err(CreateChannelErrorModeled::BadRequestException(
                 crate::state::malformed_arn(crate::state::CLUSTER_ARN_MEMBER),
             )
             .into());
         }
-        // "Currently exactly one topic must be specified" — the model's own
-        // documentation of this member.
+
+        let mut state = state.lock();
+        // One instant for the whole request, so the name lookup, the record and
+        // the insertion path all agree about which channels the clock has already
+        // removed.
+        let now = std::time::SystemTime::now();
+
+        // A channel reads from a cluster, so the cluster in the request path has
+        // to be one this endpoint's region holds BEFORE anything the request
+        // carries is judged — the first gate every channel operation applies, so
+        // one ghost cluster yields one refusal across the whole channel surface.
+        // The refusal carries the service's one fixed not-found sentence, as every
+        // other operation that answers `NotFoundException` does; the parameter at
+        // fault is named by `NotFoundException$InvalidParameter`.
+        if state.cluster_in(&region, &input.cluster_arn).is_none() {
+            return Err(
+                CreateChannelErrorModeled::NotFoundException(NotFoundException {
+                    invalid_parameter: Some("ClusterArn".to_string()),
+                    message: Some(crate::state::RESOURCE_NOT_FOUND_MESSAGE.to_string()),
+                })
+                .into(),
+            );
+        }
+
+        // Only now is what the request CARRIES judged, under the lock the
+        // insertion below takes. "Currently exactly one topic must be specified" —
+        // the model's own documentation of this member.
         if input.topic_configuration_list.len() != crate::state::TOPIC_CONFIGURATIONS_PER_CHANNEL {
             return Err(
                 CreateChannelErrorModeled::BadRequestException(BadRequestException {
@@ -293,17 +320,8 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             );
         }
 
-        let mut state = state.lock();
-        // One instant for the whole request, so the name lookup, the record and
-        // the insertion path all agree about which channels the clock has already
-        // removed.
-        let now = std::time::SystemTime::now();
-
-        // A channel reads from a cluster, so the cluster in the request path has
-        // to be one this endpoint's region holds before anything is minted. The
-        // refusal carries the service's one fixed not-found sentence, as every
-        // other operation that answers `NotFoundException` does; the parameter at
-        // fault is named by `NotFoundException$InvalidParameter`.
+        // Resolved under the same lock the presence gate above took, so the record
+        // is minted from the cluster this call already found.
         let Some(cluster) = state.cluster_in(&region, &input.cluster_arn) else {
             return Err(
                 CreateChannelErrorModeled::NotFoundException(NotFoundException {

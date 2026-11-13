@@ -6,6 +6,11 @@
 //! ASYNCHRONOUS: the call files a cluster operation, leaves the cluster
 //! `REBOOTING_BROKER` with that operation as its `ActiveOperationArn`, and the
 //! cluster is `ACTIVE` again once the clock owes that operation its completion.
+//! That operation reports the work it is doing — `REBOOT_IN_PROGRESS` until it is
+//! due and `REBOOT_COMPLETE` after ([`crate::state::operation_states_of`]) — and it
+//! stays in flight for its own span ([`crate::state::BROKER_REBOOT_DELAY`]), long
+//! enough for a client polling at a few seconds' cadence to observe the rolling
+//! restart while the cluster keeps serving and its broker inventory stays whole.
 //! The reboot changes no cluster attribute — the nodes come back under the same
 //! placement, endpoints and software — so the cluster keeps the `CurrentVersion` it
 //! had, which is why this request quotes none; what the call leaves behind is that
@@ -234,15 +239,19 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 crate::state::PROVISIONED_ONLY_MESSAGE.to_string(),
             ));
         }
-        // A cluster runs one operation at a time, and one that is still being
-        // provisioned, deleted, updated or rebooted has no settled brokers to
-        // restart. Worded in the form this service words that family of refusals
-        // in, so the service says one thing about one condition.
-        if cluster_state != crate::state::CLUSTER_STATE_ACTIVE {
-            return Err(bad_request(
-                "ClusterArn",
-                crate::state::brokers_not_rebootable_message(&cluster_state),
-            ));
+        // A cluster reconfigures or restarts one thing at a time, so a reboot is
+        // accepted only from the states a change to the cluster is accepted from
+        // — one still being provisioned, already applying a change, rebooting or
+        // being deleted has no settled brokers to restart. The refusal is the one
+        // the service answers that condition with: the generic sentence naming
+        // the states the operation IS valid for
+        // ([`crate::state::state_gate::cluster_not_in_accepted_state`]), so a
+        // caller learns which states would be acceptable.
+        if !crate::state::state_gate::cluster_accepts_change(&cluster_state) {
+            return Err(RebootBrokerErrorModeled::BadRequestException(
+                crate::state::state_gate::cluster_not_in_accepted_state(),
+            )
+            .into());
         }
         // The broker named has to be one of THIS cluster's nodes: a reboot acts on
         // a node, so a value naming none of them names nothing to restart. The ids

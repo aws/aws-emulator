@@ -15,12 +15,16 @@
 mod broker_count_update;
 #[path = "all/broker_reboot.rs"]
 mod broker_reboot;
+#[path = "all/broker_reboot_window.rs"]
+mod broker_reboot_window;
 #[path = "all/broker_storage_update.rs"]
 mod broker_storage_update;
 #[path = "all/broker_type_update.rs"]
 mod broker_type_update;
 #[path = "all/channel_admission.rs"]
 mod channel_admission;
+#[path = "all/channel_cluster_first_gate.rs"]
+mod channel_cluster_first_gate;
 #[path = "all/channel_deletion.rs"]
 mod channel_deletion;
 #[path = "all/channel_destination_update.rs"]

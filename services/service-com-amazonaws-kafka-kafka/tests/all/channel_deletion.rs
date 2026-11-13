@@ -23,8 +23,8 @@ use crate::kafka_harness::{
 
 /// A well-formed channel ARN under the cluster `cluster`/`cluster_id` that no
 /// create ever minted. `with_id` appends a channel id after the channel name, the
-/// way the service's own records carry one; both forms are channel ARNs, so each
-/// resolves to a missing resource rather than a malformed request.
+/// way the service's own records carry one; both forms are channel ARNs, and
+/// neither names a channel this cluster ever held.
 fn absent_channel_arn(cluster: &str, cluster_id: &str, with_id: bool) -> String {
     let base = format!("arn:aws:kafka:{REGION}:{ACCOUNT}:channel/{cluster}/{cluster_id}/absent");
     if with_id {
@@ -414,10 +414,13 @@ async fn a_removed_channels_name_is_free_again() {
 }
 
 /// RULE: a delete acts only on a channel this endpoint's region holds under the
-/// cluster named in the request, so a `ClusterArn` or `ChannelArn` that is not an
-/// ARN of its kind is refused with `BadRequestException` (HTTP 400) and a
-/// well-formed one that resolves to no such channel with `NotFoundException`
-/// (HTTP 404) — and neither touches the channel that does exist.
+/// cluster named in the request. The cluster is the first gate: a `ClusterArn` that
+/// is not a cluster ARN is refused with `BadRequestException` (HTTP 400) and a
+/// well-formed one this region holds no cluster for with `NotFoundException`
+/// (HTTP 404). Under a cluster that resolves, a `ChannelArn` that cluster never
+/// held — malformed, of another cluster, or simply never created — is the caller's
+/// own identifier at fault and is refused with `BadRequestException` (HTTP 400).
+/// Neither refusal touches the channel that does exist.
 #[tokio::test]
 async fn a_delete_that_resolves_no_live_channel_is_refused() {
     let emulator = Emulator::new();
@@ -432,28 +435,29 @@ async fn a_delete_that_resolves_no_live_channel_is_refused() {
     // the two ARN grammars can fail.
     let rows: Vec<(&str, String, String, u16, &str)> = vec![
         (
+            // The channel exists, but not under THIS cluster, so this cluster
+            // holds no such link.
             "the channel under another cluster",
             other.clone(),
             arn.clone(),
-            404,
-            "NotFoundException",
+            400,
+            "BadRequestException",
         ),
         (
             "a channel ARN nothing holds",
             owner.clone(),
             absent_channel_arn(&owner_name, &owner_id, true),
-            404,
-            "NotFoundException",
+            400,
+            "BadRequestException",
         ),
         (
-            // The same, in the form that stops at the channel name: the channel
-            // id is not part of what a caller must supply, so this names a
-            // missing channel rather than a bad request.
+            // The same, in the form that stops at the channel name: either way
+            // this cluster never held a channel under that ARN.
             "a channel ARN nothing holds, without a channel id",
             owner.clone(),
             absent_channel_arn(&owner_name, &owner_id, false),
-            404,
-            "NotFoundException",
+            400,
+            "BadRequestException",
         ),
         (
             "a cluster ARN nothing holds",
@@ -576,14 +580,18 @@ async fn every_operation_states_the_same_not_found_sentence() {
 
     // Rows span the operations that resolve a resource by ARN and the kinds of
     // resource they resolve: a channel, a cluster and a VPC connection, read and
-    // deleted and created under.
+    // deleted and created under. The channel rows address a channel under a
+    // cluster this region holds nothing for, which is the gate every channel
+    // operation answers this sentence from; what `DeleteChannel` answers for a
+    // channel reference under a cluster that DOES resolve is its own refusal
+    // (`a_delete_that_resolves_no_live_channel_is_refused`).
     let rows: Vec<(&str, &str, String, Option<Value>)> = vec![
         (
             "DeleteChannel",
             "DELETE",
             format!(
                 "/v1/clusters/{}/channels/{}",
-                pct(&cluster),
+                pct(&absent_cluster),
                 pct(&absent_channel)
             ),
             None,
