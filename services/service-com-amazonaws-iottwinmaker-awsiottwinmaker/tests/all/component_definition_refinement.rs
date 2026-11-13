@@ -497,9 +497,11 @@ struct Refused {
     what: &'static str,
     /// The entity id, also the `entityName`.
     entity_id: &'static str,
-    /// The component type the component instantiates, or `None` where it names
-    /// none at all.
-    component_type_id: Option<&'static str>,
+    /// The component type the component instantiates. A component always names
+    /// one — every writer requires it — so a row that supplies no `dataType`
+    /// from a component type names one whose declarations do not reach the
+    /// property.
+    component_type_id: &'static str,
     /// The property the definition is declared for.
     property: &'static str,
 }
@@ -509,21 +511,15 @@ struct Refused {
 fn refused() -> Vec<Refused> {
     vec![
         Refused {
-            what: "aComponentInstantiatingNoComponentType",
-            entity_id: "no-type",
-            component_type_id: None,
-            property: "Serial",
-        },
-        Refused {
             what: "aComponentTypeTheWorkspaceDoesNotHold",
             entity_id: "absent-type",
-            component_type_id: Some(ABSENT),
+            component_type_id: ABSENT,
             property: "Serial",
         },
         Refused {
             what: "aPropertyNoTypeOnTheChainDeclares",
             entity_id: "undeclared-property",
-            component_type_id: Some(BASE),
+            component_type_id: BASE,
             property: "Spare",
         },
         Refused {
@@ -531,20 +527,15 @@ fn refused() -> Vec<Refused> {
             // on the chain a component of it inherits through.
             what: "aPropertyOnlyATypeOffTheChainDeclares",
             entity_id: "off-chain-property",
-            component_type_id: Some(BASE),
+            component_type_id: BASE,
             property: "Mode",
         },
     ]
 }
 
-/// A component instantiating `component_type_id`, naming none at all where it is
-/// `None` — a member the request leaves OUT rather than sends as null.
-fn component_of(component_type_id: Option<&str>) -> Value {
-    let mut component = serde_json::Map::new();
-    if let Some(component_type_id) = component_type_id {
-        component.insert("componentTypeId".to_string(), json!(component_type_id));
-    }
-    Value::Object(component)
+/// A component instantiating `component_type_id`.
+fn component_of(component_type_id: &str) -> Value {
+    json!({"componentTypeId": component_type_id})
 }
 
 /// The component a refused row declares.

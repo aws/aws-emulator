@@ -660,7 +660,7 @@ fn scoped<'a>(entity_id: &'a str, component: &'a crate::state::ComponentRecord) 
         entity_id,
         component_name: &component.component_name,
         component_path: None,
-        component_type_id: component.component_type_id.as_deref(),
+        component_type_id: Some(component.component_type_id.as_str()),
         properties: &component.properties,
     }
 }

@@ -36,6 +36,12 @@ const BUCKET: &str = "twinmaker-metadata";
 /// The workspace a document is imported into.
 const DESTINATION: &str = "importWorkspace";
 
+/// The component type an entity component a document describes instantiates: a
+/// component names the component type it instantiates, so the destination holds
+/// this one before such a document lands. It defines no property of its own, so
+/// a component of it has exactly the properties the document declares.
+const COMPONENT_HOLDER_TYPE: &str = "com.example.documentHolder";
+
 /// How long a suite here waits for an outcome the clock owes before it gives
 /// up.
 ///
@@ -919,6 +925,7 @@ async fn a_transferred_schema_is_held_to_the_modelled_value_lists() {
                     "entityId": "badTypeEntity",
                     "entityName": "Bad type",
                     "components": {"C": {
+                        "componentTypeId": COMPONENT_HOLDER_TYPE,
                         "properties": {"p": {"definition": {"dataType": {"type": "FOO"}}}},
                     }},
                 }],
@@ -934,6 +941,7 @@ async fn a_transferred_schema_is_held_to_the_modelled_value_lists() {
                     "entityId": "badGroupEntity",
                     "entityName": "Bad group",
                     "components": {"C": {
+                        "componentTypeId": COMPONENT_HOLDER_TYPE,
                         "properties": {"p": {"definition": {"dataType": {"type": "STRING"}}}},
                         "propertyGroups": {"G": {"groupType": "tabular", "propertyNames": ["p"]}},
                     }},
@@ -950,6 +958,7 @@ async fn a_transferred_schema_is_held_to_the_modelled_value_lists() {
                     "entityId": "strandedGroupEntity",
                     "entityName": "Stranded group",
                     "components": {"C": {
+                        "componentTypeId": COMPONENT_HOLDER_TYPE,
                         "properties": {"p": {"definition": {"dataType": {"type": "STRING"}}}},
                         "propertyGroups": {"G": {"propertyNames": ["notAProperty"]}},
                     }},
@@ -966,6 +975,7 @@ async fn a_transferred_schema_is_held_to_the_modelled_value_lists() {
                     "entityId": "goodGroupEntity",
                     "entityName": "Good group",
                     "components": {"C": {
+                        "componentTypeId": COMPONENT_HOLDER_TYPE,
                         "properties": {"p": {"definition": {"dataType": {"type": "STRING"}}}},
                         "propertyGroups": {"G": {"groupType": "TABULAR", "propertyNames": ["p"]}},
                     }},
@@ -988,6 +998,18 @@ async fn a_transferred_schema_is_held_to_the_modelled_value_lists() {
         // One emulator per row, so what the destination holds afterwards is
         // what THIS document described.
         let emulator = emulator_with(&[DESTINATION]).await;
+        // The component type every entity row's component instantiates: a
+        // component names the type it instantiates, and the group rule is
+        // decided against the properties that type gives it, so the destination
+        // has to hold it before the document lands.
+        let holder = emulator
+            .create_component_type(DESTINATION, COMPONENT_HOLDER_TYPE, json!({}))
+            .await;
+        assert_eq!(
+            holder.status, 200,
+            "case {case:?}: expected 200 from CreateComponentType {COMPONENT_HOLDER_TYPE:?}, got \
+             {holder:?}"
+        );
         let key = "documents/schema.json";
         stage_object(
             &emulator,

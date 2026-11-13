@@ -104,7 +104,7 @@ impl Workspace {
         let mut referencing_type_ids = BTreeSet::new();
         for entity in self.entities.values() {
             for component in entity.components.values() {
-                if component.component_type_id.as_deref() == Some(component_type_id) {
+                if component.component_type_id == component_type_id {
                     entity_ids.insert(entity.entity_id.clone());
                 }
                 for composite in component.composite_components.values() {

@@ -661,10 +661,15 @@ fn name_cases() -> Vec<NameCase> {
             accepted: false,
         },
         NameCase {
-            what: "namesAPropertyOfNoComponentTypeAtAll",
-            entity_id: "names-typeless",
+            // A name only the component's COMPOSITE component type defines: a
+            // composite component is a component of its own rather than part of
+            // the holding component's schema, so the name is not one this
+            // component has.
+            what: "namesAPropertyOnlyACompositeComponentTypeDefines",
+            entity_id: "names-composite",
             component: json!({
-                "propertyGroups": {GROUP: {"propertyNames": ["notAProperty"]}},
+                "componentTypeId": SENSOR,
+                "propertyGroups": {GROUP: {"propertyNames": ["depth"]}},
             }),
             accepted: false,
         },

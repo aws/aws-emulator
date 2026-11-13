@@ -26,6 +26,9 @@ mod component_definition_refinement;
 #[path = "all/component_inherited_schema.rs"]
 mod component_inherited_schema;
 
+#[path = "all/component_instantiates_a_component_type.rs"]
+mod component_instantiates_a_component_type;
+
 #[path = "all/component_listing.rs"]
 mod component_listing;
 

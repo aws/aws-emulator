@@ -119,6 +119,11 @@ pub struct EntityEntry {
 /// `ComponentRequest` carries.
 #[derive(Debug, Clone, Default)]
 pub struct ComponentEntry {
+    /// The component type the component instantiates, as the document spells
+    /// it: optional on the wire like the request member it mirrors, and
+    /// required of every component the writer lands
+    /// ([`crate::state::component_type_id_required_message`]), which fails the
+    /// entry that names none.
     pub component_type_id: Option<String>,
     pub description: Option<String>,
     pub properties: BTreeMap<String, crate::ops::types::PropertyRequest>,
@@ -830,7 +835,10 @@ pub fn entity_entry_of(record: &Entity) -> EntityEntry {
 /// One stored component as the document describes it.
 fn component_entry_of(record: &ComponentRecord) -> ComponentEntry {
     ComponentEntry {
-        component_type_id: record.component_type_id.clone(),
+        // Always written: a stored component instantiates a component type
+        // (`crate::state::component_type_id_required_message`), and the entry a
+        // document carries is what another workspace re-creates it from.
+        component_type_id: Some(record.component_type_id.clone()),
         description: record.description.clone(),
         properties: record
             .properties
@@ -870,13 +878,18 @@ fn property_group_request_of(record: &PropertyGroupRecord) -> crate::ops::types:
 
 /// The records a document entry describes, for a writer that lands it in a
 /// workspace: the properties and property groups of one component.
+///
+/// `component_type_id` is the component type the entry named: a component IS an
+/// instance of one, so the writer resolves it (and fails the entry that names
+/// none) before building the record.
 pub fn component_record_of(
     component_name: &str,
+    component_type_id: &str,
     entry: &ComponentEntry,
 ) -> ComponentRecord {
     ComponentRecord {
         component_name: component_name.to_string(),
-        component_type_id: entry.component_type_id.clone(),
+        component_type_id: component_type_id.to_string(),
         description: entry.description.clone(),
         properties: entry
             .properties

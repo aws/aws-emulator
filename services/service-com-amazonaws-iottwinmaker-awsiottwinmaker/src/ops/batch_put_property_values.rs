@@ -620,7 +620,7 @@ fn of_component<'a>(
         entity_id: entity.entity_id.clone(),
         component_name: component.component_name.clone(),
         composite_path: None,
-        component_type_id: component.component_type_id.as_deref(),
+        component_type_id: Some(component.component_type_id.as_str()),
         properties: &component.properties,
     }
 }
@@ -687,7 +687,7 @@ fn by_external_id<'a>(
             scanned = scanned.saturating_add(1);
             if carries_external_ids(
                 workspace,
-                component.component_type_id.as_deref(),
+                Some(component.component_type_id.as_str()),
                 &component.properties,
                 external_ids,
             ) {

@@ -293,15 +293,17 @@ async fn abstractness_is_decided_by_an_unservable_property_and_bars_instantiatio
     }
 
     // Controls: an entity with no components at all, and one whose component
-    // names no component type, are both accepted — the refusal is about
-    // abstractness, not about having components.
+    // names a component type this workspace does not hold, are both accepted —
+    // the refusal is about abstractness, not about having components.
     for (case, request) in [
         ("noComponents", json!({"entityName": "no components"})),
         (
-            "componentWithoutType",
+            "componentOfAnUnheldType",
             json!({
-                "entityName": "component without a type",
-                "components": {"Sensor": {"description": "no componentTypeId"}},
+                "entityName": "component of an unheld type",
+                "components": {
+                    "Sensor": {"componentTypeId": "com.example.not.in.this.workspace"},
+                },
             }),
         ),
     ] {

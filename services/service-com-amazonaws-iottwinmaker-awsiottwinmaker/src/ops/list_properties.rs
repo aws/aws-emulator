@@ -351,7 +351,7 @@ fn addressed_component<'a>(
             .components
             .get(component_name)
             .map(|component| AddressedComponent {
-                component_type_id: component.component_type_id.as_deref(),
+                component_type_id: Some(component.component_type_id.as_str()),
                 properties: &component.properties,
             })
             .ok_or_else(|| {

@@ -1720,6 +1720,13 @@ mod emr_cluster_state_change_events;
 // the sibling suite that drives a whole-router probe the same way.
 #[path = "all/zz_batch_job_probe.rs"]
 mod zz_batch_job_probe;
+// EMPTY, and declared only because the build script requires every file under `tests/all/`
+// to be declared: `zz_probe.rs` held a throwaway probe for the pre-existing stack overflow
+// in `all/s3_notification_invokes_its_lambda_target.rs` and carries no test now. The file
+// stays because this fixer's tool set can write a file but not remove one; the next change
+// to touch this directory should delete both it and this declaration.
+#[path = "all/zz_probe.rs"]
+mod zz_probe;
 // partitions of a table a running function may address under a conditioned execution-role
 // grant spans IAM (the clause), STS (the session the function's call is signed with), Lambda
 // (the handler and the SDK it is given) and DynamoDB (the decision) at once, so no single

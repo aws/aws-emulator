@@ -23,9 +23,14 @@
 //! ORDER: component types first, then entities, because an entity's component
 //! instantiates a component type the document may itself describe. Within the
 //! entities, a parent lands before its children — the document lists them in no
-//! particular order, so the writer takes the entries whose parent is already in
-//! the workspace and repeats until nothing more can land, which leaves an entry
-//! whose parent nothing could write failing for the parent it names.
+//! particular order, so the writer indexes the entries by the parent each one
+//! waits for and walks them in waves from the entries that wait for nothing,
+//! which decides every entry once and leaves an entry whose parent nothing
+//! could write failing for the parent it names. The document's own entry counts
+//! are already bounded when it is read
+//! ([`MAX_ENTITIES_PER_WORKSPACE`], [`MAX_COMPONENT_TYPES_PER_WORKSPACE`] and
+//! [`MAX_DOCUMENT_BYTES`] in [`super::document`]), so the work one run performs
+//! is linear in a bounded number of entries.
 
 use super::*;
 
@@ -47,54 +52,84 @@ pub fn write_document_into_workspace(
     for entry in &document.component_types {
         write_component_type(state, region, workspace_id, entry, now, &mut report);
     }
-    // The entities whose parent is not in the workspace yet are kept back and
-    // tried again, so a document that lists a child before its parent still
-    // lands both; the sweep stops as soon as a pass writes nothing, which is
-    // when the parents that are left will never arrive.
-    let mut pending: Vec<&EntityEntry> = document.entities.iter().collect();
-    while !pending.is_empty() {
-        let mut deferred: Vec<&EntityEntry> = Vec::new();
-        let before = report.entries.len();
-        for entry in pending {
-            if parent_is_absent(state, workspace_id, entry) {
-                deferred.push(entry);
-                continue;
-            }
+    // The entities, parent before child: the document lists them in no
+    // particular order, so an entry whose parent is not in the workspace yet is
+    // kept back until the entry that brings that parent in has landed.
+    //
+    // Walked in WAVES over an index of the entries by the parent each one waits
+    // for, so every entry is decided once and the entries one write unblocks
+    // are reached through that index: a document listing a whole parent chain
+    // backwards costs one pass over its entries rather than one pass per
+    // generation. The first wave is every entry that waits for nothing — it
+    // names no parent, names the root sentinel, or names a parent the workspace
+    // already holds — in document order, and each later wave is the entries the
+    // writes of the one before it unblocked, also in document order.
+    let mut waiting_for: BTreeMap<&str, Vec<usize>> = BTreeMap::new();
+    let mut wave: Vec<usize> = Vec::new();
+    for (index, entry) in document.entities.iter().enumerate() {
+        match deferring_parent(state, workspace_id, entry) {
+            Some(parent_entity_id) => waiting_for.entry(parent_entity_id).or_default().push(index),
+            None => wave.push(index),
+        }
+    }
+    // Which entries were decided, by their place in the document, so two
+    // entries carrying one id are told apart.
+    let mut decided = vec![false; document.entities.len()];
+    while !wave.is_empty() {
+        let mut next: Vec<usize> = Vec::new();
+        for index in wave {
+            let entry = &document.entities[index];
+            decided[index] = true;
             write_entity(state, region, workspace_id, entry, now, &mut report);
-        }
-        if report.entries.len() == before {
-            // Nothing landed in this pass, so no parent any of these entries
-            // waits for is ever going to be written.
-            for entry in deferred {
-                report.failed(
-                    ENTRY_KIND_ENTITY,
-                    &entry.entity_id,
-                    parent_not_in_workspace_message(entry, workspace_id),
-                );
+            // The entries that were waiting for THIS entity: unblocked only if
+            // the write just made left it in the workspace — an entry that
+            // failed brings no parent in, and one skipped because the
+            // workspace already held it does.
+            for waiting in waiting_for
+                .remove(entry.entity_id.as_str())
+                .unwrap_or_default()
+            {
+                if deferring_parent(state, workspace_id, &document.entities[waiting]).is_none() {
+                    next.push(waiting);
+                }
             }
-            return report;
         }
-        pending = deferred;
+        wave = next;
+    }
+    // Every entry still waiting is one whose parent nothing wrote, reported in
+    // document order for the parent it names.
+    for (index, entry) in document.entities.iter().enumerate() {
+        if !decided[index] {
+            report.failed(
+                ENTRY_KIND_ENTITY,
+                &entry.entity_id,
+                parent_not_in_workspace_message(entry, workspace_id),
+            );
+        }
     }
     report
 }
 
-/// Whether `entry` names a parent entity the workspace does not hold yet — the
-/// one reason this writer keeps an entry back rather than deciding it.
+/// The parent entity `entry` has to wait for: the id it names as its parent
+/// when the workspace does not hold that entity yet, and `None` when the entry
+/// waits for nothing.
 ///
-/// An entry that names no parent, or names the root
-/// ([`ROOT_PARENT_ENTITY_ID`]), hangs off nothing and is never kept back.
-fn parent_is_absent(state: &RegionalState, workspace_id: &str, entry: &EntityEntry) -> bool {
-    let Some(parent_entity_id) = entry.parent_entity_id.as_deref() else {
-        return false;
-    };
+/// An entry that names no parent, or names the root ([`ROOT_PARENT_ENTITY_ID`])
+/// or itself, hangs off nothing and is never kept back.
+fn deferring_parent<'entry>(
+    state: &RegionalState,
+    workspace_id: &str,
+    entry: &'entry EntityEntry,
+) -> Option<&'entry str> {
+    let parent_entity_id = entry.parent_entity_id.as_deref()?;
     if parent_entity_id == ROOT_PARENT_ENTITY_ID || parent_entity_id == entry.entity_id {
-        return false;
+        return None;
     }
     state
         .workspaces
         .get(workspace_id)
         .is_none_or(|workspace| !workspace.entities.contains_key(parent_entity_id))
+        .then_some(parent_entity_id)
 }
 
 /// The reason an entry whose parent never arrived could not be written. Built
@@ -309,57 +344,54 @@ fn write_entity(
         return;
     }
     // Every component the entry describes has to be one the workspace could
-    // hold: it instantiates a component type that is not abstract, every
-    // definition it declares leaves the property with a `dataType` the model
-    // defines, every value it carries is a value of that type, and every
-    // property group it declares carries a `groupType` the model admits and
-    // names properties the component has. The rules are the crate's own,
-    // shared with `CreateEntity`, and they are asked of the RECORDS this write
-    // would store, which is what the control plane asks them of.
-    let components: BTreeMap<String, ComponentRecord> = entry
-        .components
-        .iter()
-        .map(|(component_name, component)| {
-            (
-                component_name.clone(),
-                component_record_of(component_name, component),
-            )
-        })
-        .collect();
-    for (component_name, record) in &components {
-        // The entry this record was built from, under the same key: the
-        // property rule is asked of the REQUEST shapes the entry carries, the
-        // group rule of the records the write would store.
-        let requested = entry.components.get(component_name);
-        let refusal = abstract_component_type_violation(
-            workspace,
-            record.component_type_id.as_deref(),
-        )
-        .or_else(|| {
-            workspace.component_property_violation(
-                record.component_type_id.as_deref(),
-                &format!("components.{component_name}"),
-                requested.into_iter().flat_map(|component| {
+    // hold: it NAMES the component type it instantiates, that type is not
+    // abstract, every definition it declares leaves the property with a
+    // `dataType` the model defines, every value it carries is a value of that
+    // type, and every property group it declares carries a `groupType` the
+    // model admits and names properties the component has. The rules are the
+    // crate's own, shared with `CreateEntity`; the property rule is asked of
+    // the REQUEST shapes the entry carries and the group rule of the RECORD
+    // this write would store, which is what the control plane asks them of.
+    let mut component_records: BTreeMap<String, ComponentRecord> = BTreeMap::new();
+    for (component_name, component) in &entry.components {
+        let member = format!("components.{component_name}");
+        // A component IS an instance of a component type, so an entry naming
+        // none describes no component this workspace could hold and no read
+        // could report.
+        let Some(component_type_id) = component.component_type_id.as_deref() else {
+            report.failed(
+                ENTRY_KIND_ENTITY,
+                entity_id,
+                component_type_id_required_message(&member),
+            );
+            return;
+        };
+        let record = component_record_of(component_name, component_type_id, component);
+        let refusal = abstract_component_type_violation(workspace, Some(component_type_id))
+            .or_else(|| {
+                workspace.component_property_violation(
+                    Some(component_type_id),
+                    &member,
                     component
                         .properties
                         .iter()
-                        .map(|(property_name, property)| (property_name.as_str(), property))
-                }),
-            )
-        })
-        .or_else(|| {
-            component_property_groups_violation(
-                workspace,
-                &format!("components.{component_name}"),
-                record.component_type_id.as_deref(),
-                &record.properties,
-                &record.property_groups,
-            )
-        });
+                        .map(|(property_name, property)| (property_name.as_str(), property)),
+                )
+            })
+            .or_else(|| {
+                component_property_groups_violation(
+                    workspace,
+                    &member,
+                    Some(component_type_id),
+                    &record.properties,
+                    &record.property_groups,
+                )
+            });
         if let Some(message) = refusal {
             report.failed(ENTRY_KIND_ENTITY, entity_id, message);
             return;
         }
+        component_records.insert(component_name.clone(), record);
     }
 
     let arn = entity_arn(region, workspace_id, entity_id);
@@ -373,7 +405,7 @@ fn write_entity(
         // when nothing named one.
         description: entry.description.clone().unwrap_or_default(),
         parent_entity_id,
-        components,
+        components: component_records,
         tags: entry.tags.clone(),
         creation_date_time: now,
         update_date_time: now,

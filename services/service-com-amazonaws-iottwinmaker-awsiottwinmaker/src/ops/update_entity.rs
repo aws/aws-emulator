@@ -51,7 +51,13 @@
 //! property group that is there, and an `UPDATE` or `DELETE` of one that is
 //! not, with a property addressed the same way by `DELETE` and `RESET_VALUE`,
 //! which both act on a property that has to be there), a `componentPath` that
-//! does not resolve, a component of an ABSTRACT component type
+//! does not resolve, a `componentUpdates` entry that brings a component into
+//! being naming no `componentTypeId`
+//! ([`crate::state::component_type_id_required_message`], the rule
+//! `CreateEntity` applies to the components it writes: a component IS an
+//! instance of a component type, while an entry that PATCHES a stored component
+//! may leave the member out and keep the id the component has), a component of
+//! an ABSTRACT component type
 //! ([`crate::state::abstract_component_type_violation`]), a property
 //! definition left with no `dataType` — neither its own nor one inherited from
 //! the component type its holder instantiates
@@ -482,18 +488,34 @@ fn apply_component_update(
     ) {
         return Err(validation(message));
     }
-    let component = entity
-        .components
-        .entry(component_name.to_string())
-        .or_insert_with(|| crate::state::ComponentRecord {
-            component_name: component_name.to_string(),
-            ..crate::state::ComponentRecord::default()
-        });
+    let component = match entity.components.entry(component_name.to_string()) {
+        ::std::collections::btree_map::Entry::Occupied(occupied) => occupied.into_mut(),
+        // The entry that brings a component INTO BEING names the component
+        // type it instantiates: that type is where the part of the component's
+        // schema the entity does not declare comes from, and what every read
+        // reports the component as instantiating
+        // (`crate::state::component_type_id_required_message`, the rule
+        // `CreateEntity` applies to the components it writes). An entry that
+        // PATCHES a stored component may leave it out and keep the id the
+        // component already has.
+        ::std::collections::btree_map::Entry::Vacant(vacant) => {
+            let Some(component_type_id) = update.component_type_id.clone() else {
+                return Err(validation(crate::state::component_type_id_required_message(
+                    &member,
+                )));
+            };
+            vacant.insert(crate::state::ComponentRecord {
+                component_name: component_name.to_string(),
+                component_type_id,
+                ..crate::state::ComponentRecord::default()
+            })
+        }
+    };
     // Whether this entry DECLARES the member the `dataType` rule resolves
     // against, captured before the patch moves it onto the component.
     let declares_component_type_id = update.component_type_id.is_some();
     if let Some(component_type_id) = update.component_type_id {
-        component.component_type_id = Some(component_type_id);
+        component.component_type_id = component_type_id;
     }
     if let Some(description) = update.description {
         component.description = Some(description);
@@ -504,7 +526,7 @@ fn apply_component_update(
     let component_type_id = component.component_type_id.clone();
     apply_property_updates(
         workspace,
-        component_type_id.as_deref(),
+        Some(component_type_id.as_str()),
         &mut component.properties,
         &member,
         update.property_updates,
@@ -527,7 +549,7 @@ fn apply_component_update(
     // description, say) of such a component impossible.
     if declares_component_type_id {
         if let Some(property_name) = workspace.stranded_component_property_definition(
-            component_type_id.as_deref(),
+            Some(component_type_id.as_str()),
             &component.properties,
         ) {
             return Err(validation(format!(
@@ -542,7 +564,7 @@ fn apply_component_update(
         // `crate::state::Workspace::component_property_defaults_violation`,
         // asked of the whole patched record.
         if let Some(violation) = workspace.component_property_defaults_violation(
-            component_type_id.as_deref(),
+            Some(component_type_id.as_str()),
             &component.properties,
         ) {
             return Err(validation(violation));
@@ -550,7 +572,7 @@ fn apply_component_update(
     }
     apply_property_group_updates(
         workspace,
-        component_type_id.as_deref(),
+        Some(component_type_id.as_str()),
         &component.properties,
         &mut component.property_groups,
         &member,

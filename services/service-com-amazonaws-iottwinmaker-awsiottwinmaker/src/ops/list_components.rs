@@ -390,18 +390,20 @@ impl Listed<'_> {
         match self {
             Self::Component(component) => ComponentSummary {
                 component_name: component.component_name.clone(),
-                // Required on the summary but optional on the request a
-                // component is created from, so a component stored without one
-                // has no id to report — and is still listed, because a listing
-                // reports the components the entity holds rather than hiding the
-                // ones whose create named no component type.
-                component_type_id: component.component_type_id.clone().unwrap_or_default(),
+                // The component type the component INSTANTIATES, which every
+                // writer of a component requires it to name
+                // (`crate::state::component_type_id_required_message`): the
+                // summary's `componentTypeId` is `@required` and bounded
+                // `@length(min: 1, max: 256)` with
+                // `@pattern(^[a-zA-Z_\.\-0-9:]+$)`, so the stored id is what
+                // this row reports and there is nothing else it could be.
+                component_type_id: component.component_type_id.clone(),
                 defined_in: workspace
-                    .component_defined_in(component.component_type_id.as_deref()),
+                    .component_defined_in(Some(&component.component_type_id)),
                 description: component.description.clone(),
                 property_groups: Some(property_groups(
                     workspace,
-                    component.component_type_id.as_deref(),
+                    Some(&component.component_type_id),
                     &component.property_groups,
                 )),
                 status: status.clone(),

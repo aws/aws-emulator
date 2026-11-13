@@ -7,7 +7,7 @@
 //! terminal `ACTIVE` state, which is the state recorded traffic reads a
 //! just-created entity back in.
 //!
-//! Ten refusals this handler owns, each a `ValidationException` (the model
+//! Eleven refusals this handler owns, each a `ValidationException` (the model
 //! declares no `ResourceNotFoundException` for `CreateEntity`):
 //!
 //! * `tags` names a key in the reserved `aws:` namespace
@@ -16,6 +16,12 @@
 //!   refused and no entity is created;
 //! * the workspace does not exist;
 //! * `parentEntityId` names an entity that does not exist in the workspace;
+//! * a `components` entry names no `componentTypeId`
+//!   ([`crate::state::component_type_id_required_message`]): a component IS an
+//!   instance of a component type — that type is where the part of its schema
+//!   the entity did not declare comes from, and every read reports the
+//!   component as instantiating it — so a component that names none is refused
+//!   rather than stored with nothing to report there;
 //! * a requested property's definition carries a `dataType` whose `type` is
 //!   outside the modelled `Type` value list
 //!   ([`crate::state::property_definition_violation`]): the member is
@@ -353,6 +359,11 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // of the hash map it was deserialized into.
         let components = crate::state::requested_in_key_order(input.components);
         let composite_components = crate::state::requested_in_key_order(input.composite_components);
+        // Each requested component, in component-name order: the component type
+        // it INSTANTIATES, which it has to name
+        // ([`crate::state::component_type_id_required_message`]), and then the
+        // definitions it declares, which inherit through that type.
+        //
         // Every declared property definition must leave the property with the
         // `dataType` the modelled `PropertyDefinitionResponse` requires back —
         // its own, or the one it INHERITS from the component type the component
@@ -363,16 +374,31 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // hold for every writer of a component's properties). Walked in
         // component-name then component-path order, each component's properties
         // in property-name order.
-        for (component_name, component) in &components {
+        let mut component_records: ::std::collections::BTreeMap<
+            String,
+            crate::state::ComponentRecord,
+        > = ::std::collections::BTreeMap::new();
+        for (component_name, component) in components {
+            let member = format!("components.{component_name}");
+            // A component IS an instance of a component type, so a create that
+            // names none has no component to store: the id is what gives the
+            // component the schema a read reports it with, and what every read
+            // reports it as instantiating.
+            let Some(component_type_id) = component.component_type_id.clone() else {
+                return Err(validation(crate::state::component_type_id_required_message(
+                    &member,
+                ))
+                .into());
+            };
             require_property_types(
                 workspace,
-                component.component_type_id.as_deref(),
-                &format!("components.{component_name}"),
+                Some(&component_type_id),
+                &member,
                 component.properties.as_ref(),
             )?;
+            let record = component_record(component_name.clone(), component_type_id, component);
+            component_records.insert(component_name, record);
         }
-
-        let mut component_records = components_from_request(components);
 
         // A property GROUP of a component carries a `groupType` the model's
         // `GroupType` enumeration admits and GROUPS properties the component
@@ -387,7 +413,7 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             if let Some(message) = crate::state::component_property_groups_violation(
                 workspace,
                 &format!("components.{component_name}"),
-                component.component_type_id.as_deref(),
+                Some(component.component_type_id.as_str()),
                 &component.properties,
                 &component.property_groups,
             ) {
@@ -429,9 +455,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // component a refusal names does not depend on the request map's
         // iteration order, and walked BEFORE anything is stored.
         for component in component_records.values() {
-            if let Some(refusal) =
-                abstract_component_type_refusal(workspace, component.component_type_id.as_deref())
-            {
+            if let Some(refusal) = abstract_component_type_refusal(
+                workspace,
+                Some(component.component_type_id.as_str()),
+            ) {
                 return Err(refusal.into());
             }
         }
@@ -561,34 +588,31 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
     }
 }
 
-/// Turn a `ComponentsMapRequest` into the stored component records.
+/// Turn one `ComponentsMapRequest` entry into the stored component record.
 ///
 /// The map key is the component name (`ComponentsMapRequest`'s key is `Name`),
 /// so it is carried onto the record rather than left only in the map, and
 /// `GetEntity` reports it as `ComponentResponse::componentName`.
+/// `component_type_id` is the component type the entry named — required of
+/// every component a write brings into being, so it is resolved by the caller
+/// before anything is built.
 ///
-/// The records come back with no composite components: those are addressed by a
+/// The record comes back with no composite components: those are addressed by a
 /// path that has to be resolved against the workspace's component types, which
 /// the handler does once the components are in hand.
-fn components_from_request(
-    components: ::std::collections::BTreeMap<String, ComponentRequest>,
-) -> ::std::collections::BTreeMap<String, crate::state::ComponentRecord> {
-    components
-        .into_iter()
-        .map(|(component_name, request)| {
-            let record = crate::state::ComponentRecord {
-                component_name: component_name.clone(),
-                component_type_id: request.component_type_id,
-                description: request.description,
-                properties: property_records(request.properties.unwrap_or_default()),
-                property_groups: property_group_records(
-                    request.property_groups.unwrap_or_default(),
-                ),
-                composite_components: ::std::collections::BTreeMap::new(),
-            };
-            (component_name, record)
-        })
-        .collect()
+fn component_record(
+    component_name: String,
+    component_type_id: String,
+    request: ComponentRequest,
+) -> crate::state::ComponentRecord {
+    crate::state::ComponentRecord {
+        component_name,
+        component_type_id,
+        description: request.description,
+        properties: property_records(request.properties.unwrap_or_default()),
+        property_groups: property_group_records(request.property_groups.unwrap_or_default()),
+        composite_components: ::std::collections::BTreeMap::new(),
+    }
 }
 
 /// A requested property map as the stored property records.

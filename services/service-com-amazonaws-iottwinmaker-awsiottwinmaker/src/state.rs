@@ -2093,6 +2093,26 @@ pub fn property_definition_needs_data_type_message(property_name: &str) -> Strin
     format!("propertyDefinitions.{property_name}.dataType is required")
 }
 
+/// How a writer refuses a component it is asked to bring into being that names
+/// no `componentTypeId`, in the form every other missing-member refusal of this
+/// crate takes.
+///
+/// A component IS an instance of a component type — the type is where its
+/// schema comes from — so the id it instantiates is part of the component, and
+/// every response that reports a component states it: `ComponentSummary`'s
+/// `componentTypeId` is `@required` and bounded `@length(min: 1, max: 256)` with
+/// `@pattern(^[a-zA-Z_\.\-0-9:]+$)`, which no component that named none could
+/// be reported on. So a write that would store a component instantiating
+/// nothing is refused here instead, and the id a reader reports is always the
+/// one the write named.
+///
+/// `member_path` is the request member the component hangs off
+/// (`components.<name>`, `componentUpdates.<name>`), so the refusal names the
+/// exact member the caller has to fix.
+pub fn component_type_id_required_message(member_path: &str) -> String {
+    format!("{member_path}.componentTypeId is required")
+}
+
 /// The names under which a component type's `functions` map carries a DATA
 /// CONNECTOR — the function that fetches, or writes, the values of a property
 /// whose values live outside the service.
@@ -3212,7 +3232,12 @@ pub struct TimeSeriesValue {
 #[derive(Debug, Clone, Default)]
 pub struct ComponentRecord {
     pub component_name: String,
-    pub component_type_id: Option<String>,
+    /// The component type this component is an instance of: where the part of
+    /// its schema the entity did not declare comes from. Every writer of a
+    /// component requires it ([`component_type_id_required_message`]), so a
+    /// stored component always has one to report on the `@required`
+    /// `componentTypeId` of the `ComponentSummary` a listing reports it as.
+    pub component_type_id: String,
     pub description: Option<String>,
     /// The component's properties, keyed by property name.
     pub properties: BTreeMap<String, PropertyRecord>,
@@ -3374,12 +3399,7 @@ pub fn resolve_composite_component_path(
              entity does not have"
         ));
     };
-    let Some(mut component_type_id) = component.component_type_id.clone() else {
-        return Err(format!(
-            "{member}.{component_path} names component {component_name}, which \
-             instantiates no componentType and so declares no composite component"
-        ));
-    };
+    let mut component_type_id = component.component_type_id.clone();
     for segment in &segments[1..] {
         // Every declaration that reaches the entry, nearest first: the
         // component type's own, then its `extendsFrom` chain's. The chain is
@@ -3491,12 +3511,14 @@ pub enum ComponentAtPath<'a> {
 }
 
 impl<'a> ComponentAtPath<'a> {
-    /// The component type the addressed component instantiates. Absent only for
-    /// a top-level component created without a `componentTypeId`; a composite
-    /// component always instantiates the type its declaration names.
+    /// The component type the addressed component instantiates: a top-level
+    /// component's own, or — for a composite component — the one its
+    /// declaration named. Both writers require it, so it is always there; the
+    /// `Option` is what the rules that resolve a schema against it take
+    /// ([`Workspace::effective_property_definition`] and its siblings).
     pub fn component_type_id(&self) -> Option<&'a str> {
         match self {
-            Self::TopLevel(component) => component.component_type_id.as_deref(),
+            Self::TopLevel(component) => Some(component.component_type_id.as_str()),
             Self::Composite { composite, .. } => Some(&composite.component_type_id),
         }
     }
@@ -3660,11 +3682,13 @@ pub fn component_level_at_path<'a>(
                 // The declarations normally resolve a step a stored record
                 // hangs beneath, since that record's own create resolved
                 // through them. When a later component-type patch has dropped
-                // the declaration, the step keeps no type to report and reports
-                // the empty string — what a component stored with no
-                // `componentTypeId` already reports for a required member,
-                // rather than hiding a step the stored record is reached
-                // through.
+                // the declaration, nothing left in this service says which
+                // component type the step instantiated — nothing was ever
+                // stored at it — so the step reports none rather than hiding a
+                // step the stored record is reached through. A component the
+                // entity HOLDS is never in that position: every writer requires
+                // the `componentTypeId` it instantiates
+                // ([`component_type_id_required_message`]).
                 .map(|resolved| resolved.component_type_id)
                 .unwrap_or_default();
                 Cow::Owned(CompositeComponentRecord {

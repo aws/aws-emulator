@@ -136,11 +136,12 @@ fn seeded_entities() -> Vec<Seed> {
             composite_components: json!({}),
             composite_component_updates: json!({}),
         },
-        // A component that instantiates no component type at all, so no filter
-        // selects this entity.
+        // A component instantiating a component type this workspace does not
+        // hold, so no filter naming a type the workspace holds selects this
+        // entity.
         Seed {
-            entity_id: "typelessComponent",
-            components: json!({"Bare": {"description": "names no component type"}}),
+            entity_id: "unheldComponentType",
+            components: json!({"Bare": {"componentTypeId": "com.example.unheld"}}),
             composite_components: json!({}),
             composite_component_updates: json!({}),
         },

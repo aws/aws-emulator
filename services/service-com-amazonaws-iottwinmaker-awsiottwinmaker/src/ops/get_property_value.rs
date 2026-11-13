@@ -385,7 +385,7 @@ fn scoped_component<'a>(
         entity_id,
         component_name: &component.component_name,
         component_path: None,
-        component_type_id: component.component_type_id.as_deref(),
+        component_type_id: Some(component.component_type_id.as_str()),
         properties: &component.properties,
         property_groups: &component.property_groups,
     }

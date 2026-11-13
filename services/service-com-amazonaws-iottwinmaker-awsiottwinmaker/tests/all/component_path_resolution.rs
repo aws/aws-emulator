@@ -14,11 +14,11 @@
 //! names, and a path that resolves to nothing is refused by all of them.
 //!
 //! The rows below differ along what the rule generalises over: the DEPTH of the
-//! path (one segment, two, three), whether the component the first segment
-//! names instantiates a `componentTypeId` at all, and — for the paths that
-//! resolve to nothing — the segment that fails to resolve (the first one, a
-//! deeper one, one past the deepest created, one differing only in case, and
-//! the empty segment a trailing separator leaves).
+//! path (one segment, two, three), whether the component type the first
+//! segment's component instantiates declares a write connector, and — for the
+//! paths that resolve to nothing — the segment that fails to resolve (the first
+//! one, a deeper one, one past the deepest created, one differing only in case,
+//! and the empty segment a trailing separator leaves).
 
 use serde_json::{json, Value};
 
@@ -38,6 +38,9 @@ const MID: &str = "com.example.pathmid";
 /// The top component type an entity component instantiates: the same
 /// properties, plus a composite component type of [`MID`] under `inner`.
 const TOP: &str = "com.example.pathtop";
+/// A component type carrying the same properties and NO `functions`, so a
+/// component of it declares no write connector.
+const NO_WRITER: &str = "com.example.pathplain";
 
 /// The property whose stored value says WHICH component answered: every
 /// component below carries a different one.
@@ -58,10 +61,10 @@ fn property_definitions() -> Value {
     })
 }
 
-/// The one path of [`ADDRESSED`] whose component instantiates NO component type,
-/// so it declares no write connector and the time-series data plane sets no
-/// value of its properties.
-const PATH_WITHOUT_A_COMPONENT_TYPE: &str = "Plain";
+/// The one path of [`ADDRESSED`] whose component instantiates a component type
+/// declaring no write connector, so the time-series data plane sets no value of
+/// its properties.
+const PATH_WITHOUT_A_WRITE_CONNECTOR: &str = "Plain";
 
 /// The workspace, the component-type chain and the one entity every case reads.
 async fn seed(emulator: &Emulator) {
@@ -97,6 +100,10 @@ async fn seed(emulator: &Emulator) {
                 "functions": data_writer_functions(),
             }),
         ),
+        (
+            NO_WRITER,
+            json!({"propertyDefinitions": property_definitions()}),
+        ),
     ];
     for (component_type_id, body) in component_types {
         let created = emulator
@@ -119,10 +126,11 @@ async fn seed(emulator: &Emulator) {
                         "componentTypeId": TOP,
                         "properties": {MARKER: {"value": {"stringValue": "Assembly"}}},
                     },
-                    // A component that instantiates no componentTypeId, so the
-                    // definitions a one-segment path has to read are the ones
-                    // the component itself declares.
+                    // A component of a component type that declares no write
+                    // connector, so the definitions a one-segment path reads
+                    // are the ones the component itself declares.
                     "Plain": {
+                        "componentTypeId": NO_WRITER,
                         "properties": {
                             MARKER: {
                                 "definition": {"dataType": {"type": "STRING"}},
@@ -179,7 +187,7 @@ const ADDRESSED: [Addressed; 4] = [
         marker: "Assembly",
     },
     Addressed {
-        case: "a one-segment path naming a top-level component that instantiates no type",
+        case: "a one-segment path naming a top-level component whose type declares no writer",
         path: "Plain",
         component_name: Some("Plain"),
         marker: "Plain",
@@ -336,8 +344,8 @@ async fn one_path_names_one_component_in_every_property_reader() {
 /// RULE (the write side of the same resolution): a time-series write through a
 /// `componentPath` lands on the component that path names, so reading the same
 /// path back answers that write and no other path's. A path whose component
-/// instantiates no component type declares no write connector, so it accepts no
-/// write at all.
+/// instantiates a component type declaring no write connector accepts no write
+/// at all.
 #[tokio::test]
 async fn a_write_through_a_path_lands_on_the_component_the_path_names() {
     let emulator = Emulator::new();
@@ -347,7 +355,7 @@ async fn a_write_through_a_path_lands_on_the_component_the_path_names() {
     // component it was written to.
     let written: Vec<(&Addressed, f64)> = ADDRESSED
         .iter()
-        .filter(|addressed| addressed.path != PATH_WITHOUT_A_COMPONENT_TYPE)
+        .filter(|addressed| addressed.path != PATH_WITHOUT_A_WRITE_CONNECTOR)
         .enumerate()
         .map(|(index, addressed)| (addressed, 10.0 + index as f64))
         .collect();
@@ -379,15 +387,15 @@ async fn a_write_through_a_path_lands_on_the_component_the_path_names() {
         );
     }
 
-    // The component instantiating no component type: nothing declares a write
-    // connector for it, so the whole request is refused.
+    // The component whose component type declares no write connector: nothing
+    // can set a value of its properties, so the whole request is refused.
     let refused = emulator
         .batch_put_property_values(
             WORKSPACE,
             json!([{
                 "entityPropertyReference": {
                     "entityId": ENTITY,
-                    "componentPath": PATH_WITHOUT_A_COMPONENT_TYPE,
+                    "componentPath": PATH_WITHOUT_A_WRITE_CONNECTOR,
                     "propertyName": READING,
                 },
                 "propertyValues": [{"time": T0, "value": {"doubleValue": 99.0}}],
@@ -397,7 +405,7 @@ async fn a_write_through_a_path_lands_on_the_component_the_path_names() {
     assert_eq!(
         (refused.status, refused.error_type.as_deref()),
         (400, Some("ValidationException")),
-        "case {PATH_WITHOUT_A_COMPONENT_TYPE:?}: a component with no component type declares no \
+        "case {PATH_WITHOUT_A_WRITE_CONNECTOR:?}: a component whose component type declares no \
          write connector, so the write must be refused, got {refused:?}"
     );
 

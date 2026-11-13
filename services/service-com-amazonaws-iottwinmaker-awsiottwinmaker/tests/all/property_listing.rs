@@ -135,9 +135,11 @@ async fn seed(emulator: &Emulator) {
                             ]}},
                         },
                     },
-                    // `ComponentRequest`'s componentTypeId is optional, so a
-                    // component can carry properties and inherit nothing.
+                    // A component of a type that defines no property inherits
+                    // nothing, so every property it has is one it stores
+                    // itself.
                     "Plain": {
+                        "componentTypeId": EMPTY,
                         "properties": {
                             "Solo": {
                                 "definition": {"dataType": {"type": "BOOLEAN"}},

@@ -84,9 +84,13 @@ async fn seed(emulator: &Emulator) {
                         },
                     },
                     "Beta": {"componentTypeId": "com.example.plain"},
-                    // `ComponentRequest`'s componentTypeId is optional, so a
-                    // component can be stored carrying none.
-                    "Gamma": {"description": "typeless"},
+                    // A component instantiating a type this workspace does not
+                    // hold: it inherits nothing, which is what `definedIn`
+                    // reports no component type for.
+                    "Gamma": {
+                        "componentTypeId": "com.example.absent",
+                        "description": "unresolved type",
+                    },
                 },
                 "compositeComponents": {
                     "Alpha/inner": {"description": "one level down"},
@@ -144,7 +148,7 @@ fn names(response: &Resp) -> Vec<String> {
 struct Expected {
     name: &'static str,
     /// The component type the component (or the declaration its path resolved
-    /// to) names; the empty string for a component stored with none.
+    /// to) names.
     component_type_id: &'static str,
     /// The whole path a COMPOSITE component was created by; absent for a
     /// top-level component, which its name alone addresses.
@@ -182,9 +186,9 @@ async fn a_page_reports_one_level_of_the_component_tree() {
                 },
                 Expected {
                     name: "Gamma",
-                    component_type_id: "",
+                    component_type_id: "com.example.absent",
                     component_path: None,
-                    description: Some("typeless"),
+                    description: Some("unresolved type"),
                 },
             ],
         ),
@@ -634,7 +638,7 @@ async fn a_page_follows_stored_state_and_changes_nothing() {
             "Delta".to_string(),
             service_com_amazonaws_iottwinmaker_awsiottwinmaker::state::ComponentRecord {
                 component_name: "Delta".to_string(),
-                component_type_id: Some("com.example.plain".to_string()),
+                component_type_id: "com.example.plain".to_string(),
                 description: Some("added later".to_string()),
                 ..Default::default()
             },

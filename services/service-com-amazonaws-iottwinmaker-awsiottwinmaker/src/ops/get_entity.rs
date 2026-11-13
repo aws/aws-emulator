@@ -308,8 +308,9 @@ fn components_response(
             // and the ones the component type it instantiates gives it — in
             // name order, so a truncated map carries the same properties on
             // every read.
-            let property_names = workspace
-                .component_property_names(component.component_type_id.as_deref(), &component.properties);
+            let component_type_id = component.component_type_id.as_str();
+            let property_names =
+                workspace.component_property_names(Some(component_type_id), &component.properties);
             let are_all_properties_returned =
                 property_names.len() <= crate::state::MAX_PROPERTIES_RETURNED;
             let properties: ::std::collections::HashMap<String, PropertyResponse> = property_names
@@ -318,7 +319,7 @@ fn components_response(
                 .map(|property_name| {
                     let response = property_response(
                         workspace,
-                        component.component_type_id.as_deref(),
+                        Some(component_type_id),
                         &component.properties,
                         &property_name,
                     );
@@ -330,20 +331,23 @@ fn components_response(
                 ComponentPropertyGroupResponse,
             > = crate::state::component_property_groups_response(
                 workspace,
-                component.component_type_id.as_deref(),
+                Some(component_type_id),
                 &component.property_groups,
             );
             let response = ComponentResponse {
                 component_name: Some(component.component_name.clone()),
                 description: component.description.clone(),
-                component_type_id: component.component_type_id.clone(),
+                // Present on every read: a component instantiates a component
+                // type, which every writer of one requires it to name
+                // (`crate::state::component_type_id_required_message`), so the
+                // stored id is what this optional member reports.
+                component_type_id: Some(component.component_type_id.clone()),
                 status: Some(status.clone()),
                 // "The name of the property definition set": the component type
                 // the inherited part of this component's schema came from, so a
                 // caller reading a definition it never declared can see where it
                 // is defined. Absent when nothing was resolved.
-                defined_in: workspace
-                    .component_defined_in(component.component_type_id.as_deref()),
+                defined_in: workspace.component_defined_in(Some(component_type_id)),
                 properties: Some(properties),
                 property_groups: Some(property_groups),
                 sync_source: None,

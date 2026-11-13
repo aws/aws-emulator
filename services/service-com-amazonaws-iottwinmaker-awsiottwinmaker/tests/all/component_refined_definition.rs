@@ -23,9 +23,9 @@
 //! component restates (none, one flag, a display name, a default, every member),
 //! HOW FAR away the declaring type is (the type the component instantiates, a
 //! type that type extends), whether the chain declares the property at ALL (a
-//! property only the component declares, a component naming no type), and WHICH
-//! kind of component carries the declaration (a component, a composite
-//! component).
+//! property only the component declares, a component whose type this workspace
+//! does not hold), and WHICH kind of component carries the declaration (a
+//! component, a composite component).
 
 use serde_json::{json, Value};
 
@@ -45,6 +45,11 @@ const TUNED: &str = "com.example.tuned";
 /// A component type whose composite component type is a [`GAUGE`], so a
 /// composite component can carry the same refining declaration a component does.
 const HOLDER: &str = "com.example.holder";
+/// A `componentTypeId` this workspace holds no component type under, so a
+/// component of it inherits nothing: the service stores such a component (a
+/// real workspace carries more built-in component types than this emulator
+/// models) and resolves no declaration through it.
+const ABSENT: &str = "com.example.absent";
 
 /// The property every case resolves.
 const PROPERTY: &str = "Reading";
@@ -122,9 +127,9 @@ struct Case {
     what: &'static str,
     /// The entity id, also the `entityName`.
     entity_id: &'static str,
-    /// The component type the component instantiates, or `None` where it names
-    /// none.
-    component_type_id: Option<&'static str>,
+    /// The component type the component instantiates — every component names
+    /// one, [`ABSENT`] where this workspace holds none under it.
+    component_type_id: &'static str,
     /// The component's own declaration for the property the row resolves, or
     /// `None` where it declares nothing.
     declaration: Option<Value>,
@@ -149,7 +154,7 @@ fn cases() -> Vec<Case> {
         Case {
             what: "declaresNothingSoTheWholeDefinitionIsTheTypes",
             entity_id: "declares-nothing",
-            component_type_id: Some(GAUGE),
+            component_type_id: GAUGE,
             declaration: None,
             property_name: PROPERTY,
             is_inherited: true,
@@ -161,7 +166,7 @@ fn cases() -> Vec<Case> {
         Case {
             what: "refinesOneFlagAndKeepsEveryOtherInheritedMember",
             entity_id: "refines-flag",
-            component_type_id: Some(GAUGE),
+            component_type_id: GAUGE,
             declaration: Some(json!({"dataType": {"type": "DOUBLE"}, "isTimeSeries": true})),
             property_name: PROPERTY,
             is_inherited: true,
@@ -173,7 +178,7 @@ fn cases() -> Vec<Case> {
         Case {
             what: "refinesTheDisplayNameAndKeepsTheInheritedDefault",
             entity_id: "refines-display-name",
-            component_type_id: Some(GAUGE),
+            component_type_id: GAUGE,
             declaration: Some(json!({
                 "dataType": {"type": "DOUBLE"},
                 "displayName": "Reading (psi)",
@@ -188,7 +193,7 @@ fn cases() -> Vec<Case> {
         Case {
             what: "refinesTheDefaultAndKeepsTheInheritedDisplayName",
             entity_id: "refines-default",
-            component_type_id: Some(GAUGE),
+            component_type_id: GAUGE,
             declaration: Some(json!({
                 "dataType": {"type": "DOUBLE"},
                 "defaultValue": {"doubleValue": 7.5},
@@ -203,7 +208,7 @@ fn cases() -> Vec<Case> {
         Case {
             what: "restatingEveryMemberStillReachesThePropertyThroughTheType",
             entity_id: "restates-everything",
-            component_type_id: Some(GAUGE),
+            component_type_id: GAUGE,
             declaration: Some(json!({
                 "dataType": {"type": "LONG"},
                 "displayName": "Reading (counts)",
@@ -223,7 +228,7 @@ fn cases() -> Vec<Case> {
         Case {
             what: "refinesADeclarationTwoTypesAwayAlongTheChain",
             entity_id: "refines-chain",
-            component_type_id: Some(TUNED),
+            component_type_id: TUNED,
             declaration: Some(json!({
                 "dataType": {"type": "DOUBLE"},
                 "defaultValue": {"doubleValue": 3.5},
@@ -241,7 +246,7 @@ fn cases() -> Vec<Case> {
         Case {
             what: "aPropertyNoComponentTypeOnTheChainDeclaresIsTheComponentsOwn",
             entity_id: "own-property",
-            component_type_id: Some(TUNED),
+            component_type_id: TUNED,
             declaration: Some(json!({
                 "dataType": {"type": "BOOLEAN"},
                 "displayName": "Spare",
@@ -254,9 +259,9 @@ fn cases() -> Vec<Case> {
             default_value: None,
         },
         Case {
-            what: "aComponentNamingNoComponentTypeInheritsNothing",
-            entity_id: "no-type",
-            component_type_id: None,
+            what: "aComponentOfAnUnheldComponentTypeInheritsNothing",
+            entity_id: "absent-type",
+            component_type_id: ABSENT,
             declaration: Some(json!({"dataType": {"type": "INTEGER"}})),
             property_name: "Only",
             is_inherited: false,
@@ -271,9 +276,10 @@ fn cases() -> Vec<Case> {
 /// The component the case's create carries, under the name [`COMPONENT`].
 fn component_request(case: &Case) -> Value {
     let mut component = serde_json::Map::new();
-    if let Some(component_type_id) = case.component_type_id {
-        component.insert("componentTypeId".to_string(), json!(component_type_id));
-    }
+    component.insert(
+        "componentTypeId".to_string(),
+        json!(case.component_type_id),
+    );
     if let Some(declaration) = &case.declaration {
         component.insert(
             "properties".to_string(),
@@ -366,7 +372,9 @@ async fn a_refining_component_declaration_is_still_reached_through_the_type() {
 
         // The property the component never mentions is the boundary of the
         // rule's other side: wherever the chain declares one, it is inherited.
-        if case.component_type_id.is_some() {
+        // A component type this workspace does not hold declares nothing, so
+        // that row has no such property.
+        if case.component_type_id != ABSENT {
             let untouched = &component["properties"][OTHER_PROPERTY]["definition"];
             assert_eq!(
                 untouched["isInherited"].as_bool(),

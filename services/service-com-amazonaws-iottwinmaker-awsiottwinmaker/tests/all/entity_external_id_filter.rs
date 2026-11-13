@@ -76,6 +76,9 @@ async fn seed_workspace(emulator: &Emulator) {
                 "isExternalId": true,
             }}}),
         ),
+        // A component type that declares no property at all, so a component of
+        // it inherits no definition and its own declarations are all it has.
+        ("com.example.plain", json!({})),
         // The external id declared on a COMPOSITE component's type.
         (
             "com.example.holder",
@@ -131,13 +134,16 @@ fn seeded_entities() -> Vec<Seed> {
             composite_components: json!({}),
         },
         // The definition is declared INLINE on the entity's own property, by a
-        // component that instantiates no type at all.
+        // component of a type that declares nothing.
         Seed {
             entity_id: "inlineOnly",
-            components: json!({"Tagged": {"properties": {"tag": {
-                "definition": {"dataType": {"type": "STRING"}, "isExternalId": true},
-                "value": {"stringValue": "EXT-INLINE"},
-            }}}}),
+            components: json!({"Tagged": {
+                "componentTypeId": "com.example.plain",
+                "properties": {"tag": {
+                    "definition": {"dataType": {"type": "STRING"}, "isExternalId": true},
+                    "value": {"stringValue": "EXT-INLINE"},
+                }},
+            }}),
             composite_components: json!({}),
         },
         // The component's OWN definition wins over the type's: it says this

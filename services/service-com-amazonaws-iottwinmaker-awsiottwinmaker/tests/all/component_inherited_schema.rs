@@ -192,9 +192,10 @@ fn cases() -> Vec<Case> {
             defined_in: None,
         },
         Case {
-            what: "aComponentNamingNoTypeInheritsNothing",
-            entity_id: "no-type",
+            what: "aComponentOfAnUnresolvedTypeKeepsItsOwnDefinitions",
+            entity_id: "no-inheritance",
             component: json!({
+                "componentTypeId": MISSING,
                 "properties": {"Only": {"definition": {"dataType": {"type": "INTEGER"}}}},
             }),
             properties: vec![("Only", "INTEGER", false)],
