@@ -17,6 +17,12 @@
 // else appends to.
 #[path = "all/cloudformation_fifo_resource_generated_names.rs"]
 mod cloudformation_fifo_resource_generated_names;
+// Declared in this same head region, for the reason the entry above records: an EventBridge
+// replay's redelivery has to be observed where a client observes it — on the SQS queue the
+// destination bus's rule targets — so neither crate's own test target can mount both sides of
+// it.
+#[path = "all/events_replay_redelivers_the_archived_window.rs"]
+mod events_replay_redelivers_the_archived_window;
 // Declared here, in this same head region, for the reason the entry above records: the
 // "an EventBridge rule runs a Fargate task" estate deployed in one stack spans
 // CloudFormation, Amazon S3, CloudWatch Logs, Amazon EC2, IAM, Amazon ECS and Amazon
