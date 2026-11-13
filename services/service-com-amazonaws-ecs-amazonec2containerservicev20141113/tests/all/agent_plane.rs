@@ -1068,12 +1068,20 @@ async fn scale_in_protection_is_set_and_read_back_from_what_was_stored() {
         .to_string();
     let standalone = run_task(&router, CLUSTER, "fixture").await;
 
-    // The cluster is resolved first, for both operations.
+    // The cluster is resolved first, for both operations — for an entry that names the task
+    // by its own ID, which carries no cluster of its own. An entry naming a task by an ARN
+    // scoped to ANOTHER cluster is refused for that disagreement instead, before either
+    // identifier is resolved (`crate::task_protection_scale_in`).
+    let service_task_id = service_task
+        .rsplit('/')
+        .next()
+        .expect("a task ARN ends with the task id")
+        .to_string();
     for operation in ["GetTaskProtection", "UpdateTaskProtection"] {
         let case = format!("{operation} in a missing cluster");
         let mut request = json!({
             "cluster": "ghost-cluster",
-            "tasks": [service_task.clone()],
+            "tasks": [service_task_id.clone()],
         });
         if operation == "UpdateTaskProtection" {
             request["protectionEnabled"] = json!(true);

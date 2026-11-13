@@ -78,7 +78,7 @@ pub struct ContainerSignals {
 
 impl ContainerSignals {
     /// A run that has been sent nothing yet.
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         Self {
             terminating: AtomicBool::new(false),
             raised: ::tokio::sync::Notify::new(),
@@ -212,6 +212,12 @@ impl ComAmazonawsEcsAmazonec2containerservicev20141113State {
                 .unwrap_or_else(|| region.to_string());
             let mut started: Vec<(String, Arc<ContainerSignals>)> = Vec::new();
             for container in &task.containers {
+                // A container that has not STARTED yet runs nothing: one whose
+                // `dependsOn` conditions are not met is still `PENDING`, and its program
+                // begins where its start does ([`super::container_health`]).
+                if container.last_status != STATUS_RUNNING {
+                    continue;
+                }
                 if self.container_runs.contains_key(&container.container_arn) {
                     continue;
                 }
@@ -314,6 +320,16 @@ impl ComAmazonawsEcsAmazonec2containerservicev20141113State {
             .values()
             .filter(|run| !run.ended)
             .count()
+    }
+
+    /// The containers whose programs are still being PERFORMED — the set a task's own end
+    /// waits on ([`TaskRecord::essential_programs_running`]).
+    pub(super) fn performing_containers(&self) -> HashSet<String> {
+        self.container_runs
+            .iter()
+            .filter(|(_, run)| !run.ended)
+            .map(|(container_arn, _)| container_arn.clone())
+            .collect()
     }
 
     /// Keep the in-process task performing one container's run, so the run can be ABORTED
@@ -422,6 +438,10 @@ pub fn settle_container_runtime<Eng: Send + Sync + 'static>(
         // than merely forgotten.
         state.lock().attach_container_run(&container_arn, handle);
     }
+    // A container that is running is a container the agent probes: the health checks whose
+    // instant has come are run beside the programs, off the same pass
+    // ([`super::settle_container_health`]).
+    settle_container_health(callback, engine);
 }
 
 /// Run ONE container's program to its end, delivering what it writes and recording what it

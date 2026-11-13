@@ -61,9 +61,10 @@ const FAMILY: &str = "nsfamily";
 const MAX_NAMESPACE_LENGTH: usize =
     service_com_amazonaws_ecs_amazonec2containerservicev20141113::state::MAX_NAMESPACE_LENGTH;
 
-/// The sentence a namespace this account has nothing in is refused with.
-const NOT_FOUND_MESSAGE: &str =
-    service_com_amazonaws_ecs_amazonec2containerservicev20141113::state::NAMESPACE_NOT_FOUND_MESSAGE;
+/// The fixed half of the refusal a namespace this account has nothing in earns; the
+/// variable half is the `namespace` the request carried.
+const NOT_FOUND_PREFIX: &str =
+    service_com_amazonaws_ecs_amazonec2containerservicev20141113::state::NAMESPACE_NOT_FOUND_PREFIX;
 
 /// The ARN a service of `name` in `cluster` carries.
 fn service_arn(cluster: &str, name: &str) -> String {
@@ -387,13 +388,16 @@ async fn a_namespace_outside_the_pattern_is_refused_for_its_form() {
         let (code, message) = refusal(
             &router,
             "ListServicesByNamespace",
-            json!({ "namespace": namespace }),
+            json!({ "namespace": namespace.clone() }),
             case,
         )
         .await;
+        // The refusal names the namespace the REQUEST asked about, so a client is told
+        // which lookup failed.
+        let expected = format!("{NOT_FOUND_PREFIX}{namespace}");
         assert_eq!(
             (code.as_str(), message.as_str()),
-            ("NamespaceNotFoundException", NOT_FOUND_MESSAGE),
+            ("NamespaceNotFoundException", expected.as_str()),
             "case {case:?}: expected the namespace-not-found refusal, got {code} with \
              {message:?}"
         );

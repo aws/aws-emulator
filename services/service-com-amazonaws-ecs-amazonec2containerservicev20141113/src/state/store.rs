@@ -11,6 +11,10 @@ impl ComAmazonawsEcsAmazonec2containerservicev20141113State {
     /// `now`. Safe to call from a reporting operation: it only applies changes that
     /// were owed at this instant whether or not anybody called.
     pub fn advance_clock(&mut self, now: SystemTime) {
+        // The containers whose programs are still being performed, read once before the task
+        // pass below: the end of a standalone task's work waits on its essential containers
+        // having exited ([`TaskRecord::essential_programs_running`]).
+        let performing = self.performing_containers();
         // The capacity-provider association a cluster mutation started: once the update
         // is due the cluster's attachments have "successfully updated", whether or not
         // anybody called to look.
@@ -110,9 +114,11 @@ impl ComAmazonawsEcsAmazonec2containerservicev20141113State {
                             if task.service_name.is_none() {
                                 task.work_done_due_at = Some(due + CONTAINER_WORK_SPAN);
                             }
-                            for container in &mut task.containers {
-                                container.advance_to(STATUS_RUNNING);
-                            }
+                            // The containers of a task that has started are the containers
+                            // whose dependencies are met: one that waits on another
+                            // (`ContainerDefinition$dependsOn`) stays `PENDING` until they
+                            // are, which the pass below materialises for every running task
+                            // ([`Self::start_due_containers`]).
                             // A task does not run before the interface it was allocated is
                             // in place, so by this instant Amazon ECS has created and
                             // attached it: the attachment reports `ATTACHED` and the
@@ -134,9 +140,14 @@ impl ComAmazonawsEcsAmazonec2containerservicev20141113State {
             // exited, so Amazon ECS stops the task ([`TaskRecord::finish_work`]). Only a
             // task whose work is still going takes that stop — one already on its way out
             // is being stopped for the reason that put it there
-            // ([`TaskRecord::work_is_running`]).
+            // ([`TaskRecord::work_is_running`]) — and only one whose essential containers
+            // really have exited: a container still performing its program has not, so the
+            // task runs on for as long as that program does.
             if let Some(due) = task.work_done_due_at {
-                if due <= now && task.work_is_running() {
+                if due <= now
+                    && task.work_is_running()
+                    && !task.essential_programs_running(&performing)
+                {
                     task.finish_work(due);
                 }
             }
@@ -166,6 +177,12 @@ impl ComAmazonawsEcsAmazonec2containerservicev20141113State {
                 }
             }
         }
+        // The containers a running task has NOT started yet, started now that what each of
+        // them waits on holds: the dependencies a container declares are a transition the
+        // clock owes it, not work a caller asks for ([`super::container_health`]). Run after
+        // the task pass above, so a task that has just reached `RUNNING` has its independent
+        // containers started by the same pass.
+        self.start_due_containers(now);
         // The scheduler's confirmation that a task set has reached a steady state, owed at
         // the instant the write that touched it put on the record: once it is due the task
         // set is stable whether or not anybody called to look.
@@ -1644,6 +1661,15 @@ impl ComAmazonawsEcsAmazonec2containerservicev20141113State {
                     // container either, so the agent has reported neither.
                     image_digest: None,
                     managed_agents: Vec::new(),
+                    // `ContainerDefinition$essential`: "If this parameter is omitted, a
+                    // container is assumed to be essential."
+                    essential: container.essential.unwrap_or(true),
+                    depends_on: container.depends_on.clone().unwrap_or_default(),
+                    // The health check the REVISION declared, copied onto the container it
+                    // is of, so the probes a task's container answers are the ones the
+                    // revision that task runs declared
+                    // ([`ContainerHealthRecord::from_definition`]).
+                    health: ContainerHealthRecord::from_definition(container.health_check.as_ref()),
                 }
             })
             .collect()
@@ -1685,6 +1711,73 @@ impl ComAmazonawsEcsAmazonec2containerservicev20141113State {
             .values()
             .filter(|instance| instance.cluster_name == cluster_name && instance.is_registered())
             .count()
+    }
+
+    /// The container instance of `cluster_name` the scheduler places a task of `launch_type`
+    /// on, or `None` when that launch type is not hosted on the cluster's own capacity (a
+    /// Fargate task runs on capacity AWS owns, so it has no container instance at all) or
+    /// when the cluster has no instance that accepts a placement right now.
+    ///
+    /// "The EC2 launch type runs your tasks on Amazon EC2 instances registered to your
+    /// cluster" ([`needs_registered_capacity`]) — so such a task HAS a host, and
+    /// `Task$containerInstanceArn` is "the ARN of the container instance that hosts the
+    /// task". Which instance is the scheduler's choice: an instance it may place on at all
+    /// ([`ContainerInstanceRecord::accepts_task_placement`], which excludes a `DRAINING`
+    /// one — "prevents new tasks from being scheduled for placement on the container
+    /// instance" — and one whose agent is disconnected), and of those the one carrying the
+    /// FEWEST of the cluster's tasks, which is the `spread` placement that is the service
+    /// scheduler's default ("the default for the service scheduler is spread"). A tie is
+    /// broken by the instance's own ARN, so one cluster's placements are deterministic.
+    pub fn select_task_host(
+        &self,
+        cluster_name: &str,
+        launch_type: Option<&str>,
+    ) -> Option<String> {
+        if !needs_registered_capacity(launch_type) {
+            return None;
+        }
+        self.container_instances
+            .values()
+            .filter(|instance| {
+                instance.cluster_name == cluster_name && instance.accepts_task_placement()
+            })
+            .min_by_key(|instance| {
+                let tally = self.container_instance_tally(&instance.arn);
+                (tally.running + tally.pending, instance.arn.clone())
+            })
+            .map(|instance| instance.arn.clone())
+    }
+
+    /// Stop the SERVICE-managed tasks hosted on the container instance `instance_arn`,
+    /// because it is being taken out of service.
+    ///
+    /// `UpdateContainerInstancesState` on a `DRAINING` instance: "When you set a container
+    /// instance to `DRAINING`, Amazon ECS prevents new tasks from being scheduled for
+    /// placement on the container instance and replacement service tasks are started on
+    /// other container instances in the cluster if the resources are available. ... Any
+    /// tasks that you run manually (`RunTask`) aren't affected by the container instance
+    /// transitioning to `DRAINING` status." So the stop is made HERE for the tasks a service
+    /// owns, and the replacements are the scheduler's own steady-state work
+    /// ([`Self::maintain_service_task_counts`], which will not choose this instance again
+    /// because it no longer accepts a placement).
+    ///
+    /// A task already on its way out is left alone, which is what
+    /// [`Self::stop_service_task`] decides.
+    pub fn drain_container_instance_tasks(&mut self, instance_arn: &str, now: SystemTime) {
+        let hosted: Vec<String> = self
+            .tasks
+            .values()
+            .filter(|task| {
+                task.container_instance_arn.as_deref() == Some(instance_arn)
+                    && task.service_name.is_some()
+                    && task.desired_status == STATUS_RUNNING
+                    && task.is_active()
+            })
+            .map(|task| task.task_arn.clone())
+            .collect();
+        for task_arn in hosted {
+            self.stop_service_task(&task_arn, now, DRAINING_INSTANCE_STOP_REASON);
+        }
     }
 
     /// The stored key of the container instance a `containerInstance` reference names,
@@ -3108,27 +3201,28 @@ impl ComAmazonawsEcsAmazonec2containerservicev20141113State {
         if self.tasks.len() + to_place > MAX_TASKS {
             return Err(TaskCapacityExceeded);
         }
-        for arn in &superseded {
-            self.stop_service_task(
-                arn,
-                now,
-                &format!("Task stopped by deployment {}", service.deployment_id),
-            );
-        }
+        // A task of a superseded deployment is one the service no longer wants, so the
+        // rollout replaces it — unless its caller has taken it out of the scheduler's reach
+        // ([`Self::stop_unprotected_service_tasks`]).
+        self.stop_unprotected_service_tasks(
+            superseded.iter().rev().map(String::as_str),
+            superseded.len(),
+            now,
+            &format!("Task stopped by deployment {}", service.deployment_id),
+        );
         if live.len() > desired {
             // Scaling in stops the newest tasks of the deployment first: nothing here
             // runs on a container instance or in an Availability Zone, so there is no
             // placement balance to break the tie, and newest-first is deterministic.
-            for arn in live[desired..].iter().rev() {
-                self.stop_service_task(
-                    arn,
-                    now,
-                    &format!(
-                        "Scaling activity initiated by deployment {}",
-                        service.deployment_id
-                    ),
-                );
-            }
+            self.stop_unprotected_service_tasks(
+                live.iter().rev().map(String::as_str),
+                live.len() - desired,
+                now,
+                &format!(
+                    "Scaling activity initiated by deployment {}",
+                    service.deployment_id
+                ),
+            );
             return Ok(());
         }
 
@@ -3191,13 +3285,14 @@ impl ComAmazonawsEcsAmazonec2containerservicev20141113State {
             return Err(TaskCapacityExceeded);
         }
         if live.len() > desired {
-            for arn in live[desired..].iter().rev() {
-                self.stop_service_task(
-                    arn,
-                    now,
-                    &format!("Scaling activity initiated by task set {}", task_set.id),
-                );
-            }
+            // The same selection rule the service's own scale-in follows: a task its caller
+            // has protected is passed over ([`Self::stop_unprotected_service_tasks`]).
+            self.stop_unprotected_service_tasks(
+                live.iter().rev().map(String::as_str),
+                live.len() - desired,
+                now,
+                &format!("Scaling activity initiated by task set {}", task_set.id),
+            );
             return Ok(());
         }
         if to_place > 0 {
@@ -3328,10 +3423,12 @@ impl ComAmazonawsEcsAmazonec2containerservicev20141113State {
             task_id,
             cluster_name: service.cluster_name.clone(),
             cluster_arn: service.cluster_arn.clone(),
-            // The scheduler places a service's task under its placement constraints and
-            // strategy, which nothing here evaluates, so no one of the cluster's container
-            // instances is the instance that hosts it.
-            container_instance_arn: None,
+            // `Task$containerInstanceArn`: "The ARN of the container instance that hosts the
+            // task" — the instance the scheduler chose for a launch type that runs on the
+            // cluster's own registered capacity, and `None` for one that does not
+            // ([`Self::select_task_host`]).
+            container_instance_arn: self
+                .select_task_host(&service.cluster_name, placement.launch_type.as_deref()),
             task_definition_arn: definition.arn.clone(),
             family: definition.family.clone(),
             last_status: schedule.last_status.to_string(),
@@ -3401,6 +3498,44 @@ impl ComAmazonawsEcsAmazonec2containerservicev20141113State {
             work_done_due_at: None,
         };
         self.tasks.insert(task_arn, record);
+    }
+
+    /// Ask at most `wanted` of the service tasks `candidates` offers — in the order they are
+    /// offered — to stop, PASSING OVER every one whose caller has protected it.
+    ///
+    /// The scheduler's own selection rule, in the one place both of its stops are made from
+    /// ([`Self::scale_service`]): whenever a service holds tasks it no longer wants, Amazon
+    /// ECS picks which of them to terminate — and scale-in protection is what takes a task
+    /// out of that choice. `UpdateTaskProtection`: "Protects an Amazon ECS task from being
+    /// terminated by scale-in events from Service Auto Scaling or deployments", and
+    /// `ProtectedTask$protectionEnabled`: "If scale-in protection is turned on for a task,
+    /// the value is true." So a protected task is NOT selected; an unprotected one is
+    /// stopped in its place, and when the candidates run out with fewer stops made than were
+    /// wanted the reduction simply waits — the protection expires on its own
+    /// ([`Self::advance_clock`]), and the next scheduler pass makes the stop it could not
+    /// make now.
+    pub(super) fn stop_unprotected_service_tasks<'a>(
+        &mut self,
+        candidates: impl IntoIterator<Item = &'a str>,
+        wanted: usize,
+        now: SystemTime,
+        reason: &str,
+    ) {
+        let mut left = wanted;
+        for task_arn in candidates {
+            if left == 0 {
+                return;
+            }
+            if self
+                .tasks
+                .get(task_arn)
+                .is_none_or(TaskRecord::is_protected)
+            {
+                continue;
+            }
+            self.stop_service_task(task_arn, now, reason);
+            left -= 1;
+        }
     }
 
     /// Ask one of a service's tasks to stop, with `STOPPED` owed by the clock
@@ -3487,29 +3622,55 @@ impl ComAmazonawsEcsAmazonec2containerservicev20141113State {
         })
     }
 
-    /// The capacity providers of `cluster_name` whose CAPACITY its tasks are still running
-    /// on, collected in ONE pass over the task map.
+    /// The capacity providers of `cluster_name` a WORKLOAD of it still depends on, collected
+    /// in one pass over the task map and one over the service and task-set maps.
     ///
     /// `PutClusterCapacityProviders`: "You can only disassociate an existing capacity
-    /// provider from a cluster if it's not being used by any existing tasks" — the use that
-    /// blocks a disassociation is a task running on capacity the provider stands up, which
-    /// is a provider the ACCOUNT created over an Auto Scaling group or Amazon ECS Managed
-    /// Instances. The two providers Amazon ECS publishes for every account
-    /// ([`MANAGED_CAPACITY_PROVIDERS`]) stand nothing up for the cluster — "The Fargate
-    /// capacity providers are available to all accounts and only need to be associated with a
-    /// cluster to be used" — so their association is what a future placement is resolved
-    /// against and not capacity a running task sits on, and dropping one is served while its
-    /// tasks run on.
+    /// provider from a cluster if it's not being used by any existing tasks." A provider is
+    /// being used by a task two ways, and both keep it:
     ///
-    /// A provider no task of the cluster runs on may be dropped however many services still
-    /// name it in a strategy, since the drop is what those services' next placement is
-    /// resolved against.
+    /// * a task of the cluster is RUNNING on the capacity it stands up, which is a provider
+    ///   the ACCOUNT created over an Auto Scaling group or Amazon ECS Managed Instances. The
+    ///   two providers Amazon ECS publishes for every account ([`MANAGED_CAPACITY_PROVIDERS`])
+    ///   stand nothing up for the cluster — "The Fargate capacity providers are available to
+    ///   all accounts and only need to be associated with a cluster to be used" — so their
+    ///   association is what a future placement is resolved against and not capacity a
+    ///   running task sits on, and dropping one is served while its tasks run on;
+    /// * a live SERVICE of the cluster, or a live task set of one, takes its tasks FROM that
+    ///   provider (`Service$capacityProviderStrategy`, `TaskSet$capacityProviderStrategy`):
+    ///   the scheduler keeps placing the service's tasks on it for as long as the service
+    ///   exists, so dropping it would strand a workload Amazon ECS is still maintaining —
+    ///   the next placement would have no capacity to resolve against
+    ///   ([`Self::unassociated_capacity_provider_refusal`]). That holds however many of the
+    ///   service's tasks happen to be running at this instant, which is why it is read off
+    ///   the service's own strategy rather than off its task count.
+    ///
+    /// Each name is read as the provider it REFERS to
+    /// ([`capacity_provider_name_from_reference`]), so naming one provider by ARN on one side
+    /// and by short name on the other is still one provider.
     pub fn capacity_providers_in_use(&self, cluster_name: &str) -> HashSet<String> {
-        self.tasks
+        let placed_on = self
+            .tasks
             .values()
             .filter(|task| task.cluster_name == cluster_name && task.is_active())
             .filter_map(|task| task.capacity_provider_name.clone())
-            .filter(|provider| !MANAGED_CAPACITY_PROVIDERS.contains(&provider.as_str()))
+            .filter(|provider| !MANAGED_CAPACITY_PROVIDERS.contains(&provider.as_str()));
+        let wanted_by_services = self
+            .services
+            .values()
+            .filter(|service| service.cluster_name == cluster_name && service.is_active())
+            .flat_map(|service| service.capacity_provider_strategy.iter())
+            .map(|item| item.capacity_provider.clone());
+        let wanted_by_task_sets = self
+            .task_sets
+            .values()
+            .filter(|task_set| task_set.cluster_name == cluster_name)
+            .flat_map(|task_set| task_set.capacity_provider_strategy.iter())
+            .map(|item| item.capacity_provider.clone());
+        placed_on
+            .chain(wanted_by_services)
+            .chain(wanted_by_task_sets)
+            .map(|reference| capacity_provider_name_from_reference(&reference))
             .collect()
     }
 

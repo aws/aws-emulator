@@ -120,7 +120,8 @@ use ::aws_smithy_types::DateTime;
 use crate::ops::types::{
     Attachment, Attribute, AutoScalingGroupProvider, AwsVpcConfiguration, CapacityProvider,
     CapacityProviderStrategyItem, Cluster, ClusterConfiguration, ClusterServiceConnectDefaults,
-    ClusterSetting, Container, ContainerDefinition, ContainerImage, ContainerInstance,
+    ClusterSetting, Container, ContainerDefinition, ContainerDependency, ContainerImage,
+    ContainerInstance,
     DaemonContainerDefinition,
     DaemonDeploymentConfiguration, DaemonSummary,
     DaemonTaskDefinition, DaemonTaskDefinitionSummary, DaemonVolume, Defaulted, Deployment,
@@ -129,7 +130,8 @@ use crate::ops::types::{
     ECSExpressGatewayService, EphemeralStorage, ExpressGatewayContainer,
     ExpressGatewayScalingTarget, ExpressGatewayServiceConfiguration,
     ExpressGatewayServiceNetworkConfiguration, ExpressGatewayServiceStatus,
-    Failure, KeyValuePair, LoadBalancer, ManagedAgent, ManagedInstancesProvider, NetworkBinding,
+    Failure, HealthCheck, KeyValuePair, LoadBalancer, ManagedAgent, ManagedInstancesProvider,
+    NetworkBinding,
     NetworkConfiguration,
     PlacementConstraint, PlacementStrategy, PlatformDevice, PortMapping, ProtectedTask,
     ProxyConfiguration,
@@ -299,6 +301,11 @@ pub use container_credentials::*;
 /// and the exit code a run records.
 mod container_runtime;
 pub use container_runtime::*;
+
+/// The container HEALTH CHECK: the probe a container definition declares, what running it
+/// makes of `healthStatus`, and the containers whose start waits on it.
+mod container_health;
+pub use container_health::*;
 
 /// The service scheduler's steady state: the replacement a service's stopped task earns,
 /// and the standalone task that earns none.
@@ -1294,6 +1301,16 @@ pub const CAPACITY_PROVIDER_NOT_ASSOCIATED_MESSAGE: &str =
      not associated with the cluster. Associate the capacity provider with the cluster or \
      specify a valid capacity provider and try again.";
 
+/// `ResourceInUseException$message` for a `PutClusterCapacityProviders` that would drop a
+/// capacity provider a workload of the cluster still depends on.
+///
+/// The operation's own rule — "you can only disassociate an existing capacity provider from
+/// a cluster if it's not being used by any existing tasks" — stated as Amazon ECS states the
+/// refusal: one fixed sentence naming neither the provider nor the cluster, like the two
+/// above.
+pub const CAPACITY_PROVIDER_IN_USE_MESSAGE: &str =
+    "The specified capacity provider is in use and cannot be removed.";
+
 /// `InvalidParameterException$message` for a PLACEMENT request — one that says where its
 /// tasks run with a `capacityProviderStrategy` — naming a capacity provider this account
 /// holds none of.
@@ -2167,6 +2184,16 @@ pub fn deployment_configuration_violation(
 /// `stopCode` for a task the service scheduler stopped (scaling in, or replacing the
 /// task set of a superseded deployment), from the `TaskStopCode` enum.
 pub const STOP_CODE_SERVICE_SCHEDULER: &str = "ServiceSchedulerInitiated";
+
+/// `Task$stoppedReason` for a service task the scheduler stopped because the container
+/// instance hosting it is being taken out of service.
+///
+/// `UpdateContainerInstancesState`: setting an instance to `DRAINING` is what makes Amazon
+/// ECS stop the service tasks on it and start "replacement service tasks ... on other
+/// container instances in the cluster", so the reason states the host, not the service.
+/// Fixed text, naming nothing of the request.
+pub const DRAINING_INSTANCE_STOP_REASON: &str =
+    "Task stopped because the container instance it was running on is draining";
 
 
 /// `resourceManagementType` of a service a client created through `CreateService`. The
@@ -3739,7 +3766,7 @@ impl TaskRecord {
             enable_execute_command: self.enable_execute_command,
             execution_stopped_at: self.execution_stopped_at,
             group: Some(self.group.clone()),
-            health_status: Some(HEALTH_UNKNOWN.to_string()),
+            health_status: Some(self.health_status().to_string()),
             last_status: Some(self.last_status.clone()),
             launch_type: self.launch_type.clone(),
             capacity_provider_name: self.capacity_provider_name.clone(),
@@ -3770,6 +3797,24 @@ impl TaskRecord {
     /// `STOPPED` yet.
     pub fn is_active(&self) -> bool {
         self.last_status != STATUS_STOPPED
+    }
+
+    /// The `healthStatus` this task reports.
+    ///
+    /// `Task$healthStatus`: "The health status for the task. It's determined by the health of
+    /// the essential containers in the task. If all essential containers in the task are
+    /// reporting as `HEALTHY`, the task status also reports as `HEALTHY`. If any essential
+    /// containers in the task are reporting as `UNHEALTHY` or `UNKNOWN`, the task status also
+    /// reports as `UNHEALTHY` or `UNKNOWN`" — read off the containers' own readings in the
+    /// priority order the `HealthCheck` doc publishes ([`aggregate_health_status`]), so the
+    /// task and its containers can never disagree.
+    pub fn health_status(&self) -> &'static str {
+        aggregate_health_status(
+            self.containers
+                .iter()
+                .filter(|container| container.essential)
+                .map(ContainerRecord::health_status),
+        )
     }
 
     /// Whether this task is one Amazon ECS has accepted but not PLACED: its capacity
@@ -3817,6 +3862,18 @@ impl TaskRecord {
     /// only supported for tasks belonging to an Amazon ECS service."
     pub fn is_protectable(&self) -> bool {
         self.service_name.is_some()
+    }
+
+    /// Whether scale-in protection is turned ON for this task right now.
+    ///
+    /// `ProtectedTask$protectionEnabled`: "If scale-in protection is turned on for a task,
+    /// the value is true" — which is the expiry the record holds, the same value
+    /// [`Self::protection_view`] reports, so what the scheduler passes over
+    /// ([`ComAmazonawsEcsAmazonec2containerservicev20141113State::stop_unprotected_service_tasks`])
+    /// is exactly what `GetTaskProtection` answers. An expiry the clock has already run past
+    /// is cleared by the clock pass, so a lapsed protection protects nothing.
+    pub fn is_protected(&self) -> bool {
+        self.protection_expires_at.is_some()
     }
 
     /// Report this task `CONNECTED` as of `at`, if the networking it runs with is in place
@@ -3884,6 +3941,22 @@ impl TaskRecord {
     /// pump does not wait for it ([`next_task_due_at`]).
     pub fn work_is_running(&self) -> bool {
         self.last_status == STATUS_RUNNING && self.desired_status == STATUS_RUNNING
+    }
+
+    /// Whether an ESSENTIAL container of this task is still performing its program, given
+    /// the container ARNs whose runs are still going (`running`).
+    ///
+    /// What the end of a standalone task's work waits on: the stop it earns is
+    /// [`STOP_CODE_ESSENTIAL_CONTAINER_EXITED`] — "The task stopped because an essential
+    /// container exited" — so a task whose essential container is STILL RUNNING its program
+    /// ([`container_runtime`]) has not earned it, however long ago the span that end was
+    /// scheduled at fell due. A container whose launch names no program at all runs nothing,
+    /// so it holds nothing open.
+    pub fn essential_programs_running(&self, running: &HashSet<String>) -> bool {
+        self.containers
+            .iter()
+            .filter(|container| container.essential)
+            .any(|container| running.contains(&container.container_arn))
     }
 
     /// Stop this task because the work its containers were placed to do is finished, as of
@@ -4041,4 +4114,10 @@ pub struct ComAmazonawsEcsAmazonec2containerservicev20141113State {
     /// [`container_runtime`]). An entry exists only while the container's program is being
     /// run, so the map is the set of containers that are really executing.
     container_runs: HashMap<String, ContainerRun>,
+    /// `containerArn` -> the in-process task performing that container's HEALTH-CHECK probe
+    /// (see [`container_health`]). Kept for the same reason the runs above keep theirs: a
+    /// probe whose container is gone is ABORTED rather than merely forgotten, so no probe
+    /// outlives the container it reports on or holds its slot against
+    /// [`MAX_HEALTH_PROBES_IN_FLIGHT`].
+    health_probes: HashMap<String, ::tokio::task::JoinHandle<()>>,
 }

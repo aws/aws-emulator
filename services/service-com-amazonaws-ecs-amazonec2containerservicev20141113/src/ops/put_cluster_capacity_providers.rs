@@ -345,9 +345,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // "Any existing capacity providers that are associated with a cluster that are
         // omitted from a PutClusterCapacityProviders API call will be disassociated with
         // the cluster. You can only disassociate an existing capacity provider from a
-        // cluster if it's not being used by any existing tasks." The providers in use are
-        // collected in ONE pass over the task map, so the lock is held for a time that
-        // grows with the records that exist and not with the product of the two lists.
+        // cluster if it's not being used by any existing tasks." What a workload of the
+        // cluster still depends on is collected in ONE pass over each map, so the lock is
+        // held for a time that grows with the records that exist and not with the product of
+        // the two lists ([`crate::state::capacity_providers_in_use`]).
         let disassociated: Vec<String> = cluster
             .capacity_providers
             .iter()
@@ -356,17 +357,23 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             .collect();
         if !disassociated.is_empty() {
             let in_use = guard.capacity_providers_in_use(&cluster_name);
-            if let Some(provider) = disassociated
-                .iter()
-                .find(|provider| in_use.contains(*provider))
-            {
+            // Both sides are read as the provider they REFER to, so a cluster that stored a
+            // provider by ARN and a workload that named the same provider by short name are
+            // still one provider.
+            if let Some(provider) = disassociated.iter().find(|provider| {
+                in_use.contains(&crate::state::capacity_provider_name_from_reference(provider))
+            }) {
+                ::tracing::debug!(
+                    capacity_provider = %provider,
+                    cluster = %cluster_name,
+                    "a capacity provider a workload still depends on cannot be disassociated"
+                );
                 return Err(
                     PutClusterCapacityProvidersErrorModeled::ResourceInUseException(
                         ResourceInUseException {
-                            message: Some(format!(
-                                "capacity provider {provider:?} is still used by a task of \
-                                 cluster {cluster_name:?} and cannot be disassociated"
-                            )),
+                            message: Some(
+                                crate::state::CAPACITY_PROVIDER_IN_USE_MESSAGE.to_string(),
+                            ),
                         },
                     )
                     .into(),

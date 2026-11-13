@@ -221,6 +221,10 @@ impl ComAmazonawsEcsAmazonec2containerservicev20141113State {
                 )
             })
             .flatten()
+            // The next health-check execution a running container is owed is a clock-owed
+            // instant too: Amazon ECS probes a container every `interval` with no further
+            // call from anybody ([`super::container_health`]).
+            .chain(self.next_health_probe_due_at())
             .min()
     }
 

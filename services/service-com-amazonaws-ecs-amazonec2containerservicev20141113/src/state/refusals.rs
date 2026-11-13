@@ -569,10 +569,20 @@ pub fn namespace_pattern_message(namespace: &str) -> String {
     format!("Namespace ({namespace}) must match {NAMESPACE_PATTERN}.")
 }
 
-/// `NamespaceNotFoundException$message`: the sentence the shape documents for a namespace
-/// this account has nothing in ("The specified namespace wasn't found"), as a refusal
-/// states it.
-pub const NAMESPACE_NOT_FOUND_MESSAGE: &str = "The specified namespace wasn't found.";
+/// `NamespaceNotFoundException$message` for a namespace this account has nothing in.
+///
+/// DERIVED from the request: Amazon ECS reports the lookup it could not make and names the
+/// `namespace` reference the caller passed, so a client is told WHICH namespace could not be
+/// resolved rather than that some namespace could not be. The fixed text is
+/// [`NAMESPACE_NOT_FOUND_PREFIX`]; the variable part is the value the request carried,
+/// spelled exactly as it was sent (a name or a full ARN, the two forms every `namespace`
+/// member documents).
+pub fn namespace_not_found_message(namespace: &str) -> String {
+    format!("{NAMESPACE_NOT_FOUND_PREFIX}{namespace}")
+}
+
+/// The fixed half of [`namespace_not_found_message`].
+pub const NAMESPACE_NOT_FOUND_PREFIX: &str = "Failed to retrieve namespace for ";
 
 /// The KEY two Cloud Map namespace references are the same namespace by: the name itself
 /// when the reference is a name, and the last segment of a namespace ARN when it is one —

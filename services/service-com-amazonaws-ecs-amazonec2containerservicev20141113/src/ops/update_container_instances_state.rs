@@ -283,9 +283,10 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         }
 
         let cluster_name = crate::state::cluster_name_from_reference(input.cluster.as_deref());
+        let now = ::std::time::SystemTime::now();
 
         let mut guard = state.lock();
-        guard.advance_clock(::std::time::SystemTime::now());
+        guard.advance_clock(now);
 
         // "The short name or full Amazon Resource Name (ARN) of the cluster that hosts the
         // container instance to update": a cluster this account does not hold hosts none,
@@ -336,12 +337,23 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             // `ContainerInstance$version`: "every time a container instance experiences a
             // change ... the version counter is incremented", so a call that asks for the
             // status the instance already holds moves nothing.
+            let mut draining = false;
             if let Some(instance) = instance {
                 if instance.status != input.status {
                     instance.status = input.status.clone();
                     instance.status_reason = None;
                     instance.version += 1;
+                    draining = input.status == crate::state::CONTAINER_INSTANCE_DRAINING;
                 }
+            }
+            // "When you set a container instance to DRAINING, Amazon ECS prevents new tasks
+            // from being scheduled for placement on the container instance and replacement
+            // service tasks are started on other container instances in the cluster if the
+            // resources are available": the stop is made here, and the replacements are the
+            // scheduler's own steady-state work off the same clock
+            // ([`crate::state::ComAmazonawsEcsAmazonec2containerservicev20141113State::drain_container_instance_tasks`]).
+            if draining {
+                guard.drain_container_instance_tasks(&arn, now);
             }
             if let Some(view) = guard
                 .container_instance_view(&arn, crate::state::ContainerInstanceFields::all())
@@ -349,6 +361,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 container_instances.push(view);
             }
         }
+
+        // The stops this call made are `ECS Task State Change` events, and the
+        // replacements the scheduler owes for them are the clock's work: the guard is
+        // dropped first, so no lock is held across the publication
+        // ([`crate::state::publish_task_state_changes`]).
+        drop(guard);
+        crate::state::publish_task_state_changes(ctx, &self.engine, &region);
 
         Ok(UpdateContainerInstancesStateOutput {
             container_instances: Some(container_instances),

@@ -44,6 +44,19 @@ pub struct ContainerRecord {
     /// with the container", each in the state the agent last reported for it
     /// (`SubmitTaskStateChange$managedAgents`). Empty until the agent reports one.
     pub managed_agents: Vec<ManagedAgentRecord>,
+    /// Whether this container is ESSENTIAL to its task, as the container definition declared
+    /// it. `ContainerDefinition$essential`: "If this parameter is omitted, a container is
+    /// assumed to be essential" — the TASK's own `healthStatus` is read off these containers
+    /// alone ([`TaskRecord::health_status`]).
+    pub essential: bool,
+    /// `ContainerDefinition$dependsOn`: "The dependencies defined for container startup and
+    /// shutdown", as the definition declared them — the conditions this container waits on
+    /// before it starts ([`super::container_health`]).
+    pub depends_on: Vec<ContainerDependency>,
+    /// The health check this container's definition declared and where its evaluation has
+    /// got to, and `None` for a container with no health check — which is one that reports
+    /// `UNKNOWN` for ever ([`ContainerHealthRecord`]).
+    pub health: Option<ContainerHealthRecord>,
 }
 
 /// One Amazon ECS managed agent of a container, in the state the ECS agent last reported
@@ -106,7 +119,7 @@ impl ContainerRecord {
                     .filter_map(AttachmentRecord::container_network_interface)
                     .collect(),
             ),
-            health_status: Some(HEALTH_UNKNOWN.to_string()),
+            health_status: Some(self.health_status().to_string()),
             image_digest: self.image_digest.clone(),
             managed_agents: Some(
                 self.managed_agents
@@ -116,6 +129,19 @@ impl ContainerRecord {
             ),
             ..Container::default()
         }
+    }
+
+    /// The `healthStatus` this container reports.
+    ///
+    /// `Container$healthStatus`: "If health checks aren't configured for this container in
+    /// its task definition, then it reports the health status as `UNKNOWN`" — so a container
+    /// with no health check, and one whose first probe has not produced a result yet, both
+    /// report `UNKNOWN`; a container with one reports what its probes have made of it
+    /// ([`ContainerHealthRecord::status`]).
+    pub fn health_status(&self) -> &str {
+        self.health
+            .as_ref()
+            .map_or(HEALTH_UNKNOWN, |health| health.status.as_str())
     }
 
     /// Move this container ON to `status`, if that is a LATER stage of

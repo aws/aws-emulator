@@ -368,6 +368,22 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             attachment_targets.push((attachment_id, change.status.clone()));
         }
 
+        // "The status of the state change request", weighed against the stage the task has
+        // already reached: the lifecycle runs in ONE direction, so a report naming an
+        // earlier stage is refused rather than recorded
+        // ([`crate::state::out_of_order_task_status_violation`]) and nothing else the report
+        // carries is applied either — it is refused whole. A report of the stage the task is
+        // already at is the agent's RETRY of one that landed, so it is acknowledged and
+        // changes nothing. A stage this service's own lifecycle does not name is not ranked
+        // against the stored one, so the agent's word on it stands.
+        if let Some(reported) = input.status.as_deref() {
+            if let Some(message) =
+                crate::state::out_of_order_task_status_violation(reported, &task.last_status)
+            {
+                return Err(invalid_parameter(message));
+            }
+        }
+
         let task = guard
             .tasks
             .get_mut(&task_arn)
@@ -376,11 +392,6 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         // is incremented" — so a report that moves nothing leaves the counter alone.
         let mut changed = false;
 
-        // "The status of the state change request": a report of a stage the task has
-        // already passed is a RETRY of one that landed, or one overtaken by a later
-        // report, so nothing it carries about the task replaces what the later stage
-        // recorded. A stage this service's own lifecycle does not name is not ranked
-        // against the stored one, so the agent's word on it stands.
         if let Some(reported) = input.status.as_deref() {
             let stale = matches!(
                 (

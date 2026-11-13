@@ -197,26 +197,14 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
         let region = crate::state::request_region(ctx);
         let now = ::std::time::SystemTime::now();
 
-        let mut guard = state.lock();
-        guard.advance_clock(now);
-
-        if !guard.has_active_cluster(&cluster_name) {
-            return Err(GetTaskProtectionErrorModeled::ClusterNotFoundException(
-                ClusterNotFoundException {
-                    message: Some(crate::state::cluster_refusal_message(
-                        guard.clusters.get(&cluster_name),
-                    )),
-                },
-            )
-            .into());
-        }
-
-        // The cluster is resolved first, and then every entry has to be INSIDE it: a task
-        // ARN carries the cluster that holds the task (`task/<cluster>/<id>`), so an entry
-        // naming another cluster than the request's `cluster` names two scopes at once —
-        // and so names no task at all. That is a bad parameter rather than a task that
-        // could not be found ([`crate::state::cluster_from_scoped_arn`]), the same way the
-        // write side of task protection reads these entries.
+        // Every entry has to be INSIDE the cluster the request names: a task ARN carries the
+        // cluster that holds the task (`task/<cluster>/<id>`), so an entry naming another
+        // cluster than the request's `cluster` names two scopes at once — and so names no
+        // task at all. That is a bad parameter rather than a task that could not be found
+        // ([`crate::state::cluster_from_scoped_arn`]), and it is a question about the
+        // IDENTIFIERS the request carries, so — like the ARN check above — it is answered
+        // before either of them is RESOLVED: a request whose two identifiers disagree is
+        // refused for that disagreement however the cluster it names resolves.
         if crate::state::foreign_cluster_reference(
             references.iter().map(String::as_str),
             crate::state::TASK_RESOURCE_TYPE,
@@ -229,6 +217,20 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                     message: Some(
                         crate::state::CLUSTER_IDENTIFIERS_MISMATCH_MESSAGE.to_string(),
                     ),
+                },
+            )
+            .into());
+        }
+
+        let mut guard = state.lock();
+        guard.advance_clock(now);
+
+        if !guard.has_active_cluster(&cluster_name) {
+            return Err(GetTaskProtectionErrorModeled::ClusterNotFoundException(
+                ClusterNotFoundException {
+                    message: Some(crate::state::cluster_refusal_message(
+                        guard.clusters.get(&cluster_name),
+                    )),
                 },
             )
             .into());

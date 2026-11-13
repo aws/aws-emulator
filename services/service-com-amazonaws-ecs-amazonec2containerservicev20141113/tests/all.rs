@@ -4,10 +4,8 @@
 //!
 //! Put a new suite at `tests/all/<name>.rs` and declare it below, keeping the list
 //! sorted.
-//!
 //! A suite that is not declared here compiles nowhere and its tests never run. A
 //! suite left at the top level of `tests/` fails the build.
-
 // `tests/all.rs` is a test-target CRATE ROOT, so a bare `mod` resolves to a SIBLING
 // (`tests/state_roundtrip.rs`) — which the layout check refuses. The `#[path]` is what
 // points it into `tests/all/`.
@@ -27,6 +25,8 @@ mod attachment_state_reports;
 mod awsvpc_configuration_store;
 #[path = "all/awsvpc_interface_subnet_and_identity.rs"]
 mod awsvpc_interface_subnet_and_identity;
+#[path = "all/capacity_provider_in_use.rs"]
+mod capacity_provider_in_use;
 #[path = "all/capacity_provider_surface.rs"]
 mod capacity_provider_surface;
 #[path = "all/capacity_providers.rs"]
@@ -43,6 +43,8 @@ mod cluster_projection;
 mod cluster_scoped_capacity_providers;
 #[path = "all/cluster_tombstone.rs"]
 mod cluster_tombstone;
+#[path = "all/container_health_checks.rs"]
+mod container_health_checks;
 #[path = "all/container_instance_not_found.rs"]
 mod container_instance_not_found;
 #[path = "all/container_instances.rs"]
@@ -75,8 +77,8 @@ mod describe_failure_identifiers;
 mod describe_service_deployments;
 #[path = "all/domain_refusal_wording.rs"]
 mod domain_refusal_wording;
-#[path = "all/ec2_launched_cluster_capacity.rs"]
-mod ec2_launched_cluster_capacity;
+#[path = "all/draining_instance_relocation.rs"]
+mod draining_instance_relocation;
 #[path = "all/ecr_image_pull.rs"]
 mod ecr_image_pull;
 #[path = "all/ecs_wire.rs"]
@@ -227,6 +229,8 @@ mod task_lifecycle;
 mod task_listing_filters;
 #[path = "all/task_override_and_size_validation.rs"]
 mod task_override_and_size_validation;
+#[path = "all/task_protection_scale_in.rs"]
+mod task_protection_scale_in;
 #[path = "all/task_provisioning.rs"]
 mod task_provisioning;
 #[path = "all/task_set_creation.rs"]
@@ -247,3 +251,5 @@ mod task_state_reports;
 mod update_container_instances_state_failures;
 #[path = "all/update_task_set_refusals.rs"]
 mod update_task_set_refusals;
+#[path = "all/ec2_launched_cluster_capacity.rs"]
+mod ec2_launched_cluster_capacity;

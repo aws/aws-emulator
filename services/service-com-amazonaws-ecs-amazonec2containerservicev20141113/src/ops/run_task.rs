@@ -724,11 +724,13 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
                 task_id,
                 cluster_name: cluster_name.clone(),
                 cluster_arn: cluster_arn.clone(),
-                // Which of a cluster's container instances would run this task is the
-                // scheduler's choice, under the placement constraints and strategy the
-                // run carries; nothing here evaluates them, so the task records no host
-                // instance. `StartTask` is the placement whose caller NAMES one.
-                container_instance_arn: None,
+                // `Task$containerInstanceArn`: "The ARN of the container instance that
+                // hosts the task" — chosen by the scheduler for a launch type that runs on
+                // the cluster's own registered capacity, and `None` for one that does not
+                // ([`crate::state::ComAmazonawsEcsAmazonec2containerservicev20141113State::select_task_host`]).
+                // `StartTask` is the placement whose caller NAMES one instead.
+                container_instance_arn: guard
+                    .select_task_host(&cluster_name, launch_type.as_deref()),
                 task_definition_arn: definition.arn.clone(),
                 family: definition.family.clone(),
                 last_status: schedule.last_status.to_string(),

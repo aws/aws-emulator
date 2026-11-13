@@ -67,6 +67,45 @@ pub fn agent_report_task_status_violation(status: Option<&str>) -> Option<String
         .then(|| invalid_task_status_message(reported))
 }
 
+/// `InvalidParameterException$message` for a report that takes a task BACKWARDS: the stage
+/// it names is one the task has already passed.
+///
+/// Worded as the agent plane words a status it cannot read ([`invalid_task_status_message`]):
+/// the value is a valid status, but not one this task can be in, and the sentence says which
+/// stage it has already reached. Both parts are the request's and the record's, so nothing of
+/// one recording is fixed into it.
+pub fn backwards_task_status_message(reported: &str, reached: &str) -> String {
+    format!("The status {reported} is not a valid status for a task in the {reached} status.")
+}
+
+/// The refusal a report of `reported` earns against a task that has reached `reached`, or
+/// `None` when the report is one the plane may record.
+///
+/// The ORDER of the task lifecycle is server-enforced: a task passes through its stages in
+/// one direction ([`TASK_LIFECYCLE`]) and ENDS at the last of them, so two reports describe a
+/// transition that cannot have happened and are refused rather than recorded —
+///
+/// * one naming an EARLIER stage than the one the task has reached, which would run the
+///   lifecycle backwards;
+/// * any stage at all once the task has reached the terminal [`STATUS_STOPPED`], which makes
+///   no further transition, so there is nothing a report can change about it.
+///
+/// That is what keeps `lastStatus` a sequence a client can rely on. A report naming the stage
+/// a LIVE task is already at is the agent's retry of a report that landed, so it is recorded
+/// (changing nothing) and acknowledged. A stage this lifecycle does not name is not ranked at
+/// all, so the agent's word on it stands.
+pub fn out_of_order_task_status_violation(reported: &str, reached: &str) -> Option<String> {
+    if reached == STATUS_STOPPED {
+        return Some(backwards_task_status_message(reported, reached));
+    }
+    match (task_stage_rank(reported), task_stage_rank(reached)) {
+        (Some(reported_rank), Some(reached_rank)) if reported_rank < reached_rank => {
+            Some(backwards_task_status_message(reported, reached))
+        }
+        _ => None,
+    }
+}
+
 /// The refusal the attachment states a report NAMES earn, or `None` when every entry names
 /// one of [`AGENT_REPORT_ATTACHMENT_STATUSES`].
 pub fn agent_report_attachment_status_violation<'a>(

@@ -1505,20 +1505,22 @@ async fn a_namespace_is_named_by_its_name_or_by_its_full_arn() {
     // And an ARN of a namespace nothing holds is read as the ARN it is, so it earns the
     // not-found refusal rather than the form one.
     let case = "an ARN of a namespace nothing holds";
+    let reference =
+        format!("arn:aws:servicediscovery:{SIGNED_REGION}:{ACCOUNT}:namespace/ns-neverminted");
     let (code, message) = refusal(
         &router,
         "ListServicesByNamespace",
-        json!({
-            "namespace": format!(
-                "arn:aws:servicediscovery:{SIGNED_REGION}:{ACCOUNT}:namespace/ns-neverminted"
-            ),
-        }),
+        json!({ "namespace": reference.clone() }),
         case,
     )
     .await;
+    // The refusal names the reference the request carried, spelled as it was sent.
     assert_eq!(
         (code.as_str(), message.as_str()),
-        ("NamespaceNotFoundException", "The specified namespace wasn't found."),
+        (
+            "NamespaceNotFoundException",
+            format!("Failed to retrieve namespace for {reference}").as_str()
+        ),
         "case {case:?}: expected the namespace-not-found refusal, got {code} with {message:?}"
     );
 }

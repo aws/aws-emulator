@@ -256,7 +256,9 @@ impl<Eng: ::std::marker::Send + ::std::marker::Sync + 'static> smithy_server_run
             return Err(
                 ListServicesByNamespaceErrorModeled::NamespaceNotFoundException(
                     NamespaceNotFoundException {
-                        message: Some(crate::state::NAMESPACE_NOT_FOUND_MESSAGE.to_string()),
+                        message: Some(crate::state::namespace_not_found_message(
+                            &input.namespace,
+                        )),
                     },
                 )
                 .into(),

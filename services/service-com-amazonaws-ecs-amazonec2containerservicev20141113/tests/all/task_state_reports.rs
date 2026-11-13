@@ -13,8 +13,11 @@
 //!   `InvalidParameterException` — and a report carrying one unresolved reference records
 //!   none of its entries.
 //! * The agent RETRIES, so what is stored is the furthest stage the task has been reported
-//!   at: a report of a stage it has already passed is acknowledged and changes nothing.
-//!   The same holds for each container entry.
+//!   at: a report of the stage a live task is already at is acknowledged and changes nothing,
+//!   and one naming an EARLIER stage is refused — the task lifecycle runs in one direction
+//!   and the server enforces it. Once the task has reached the terminal `STOPPED` no report
+//!   is taken at all. The container entries keep the retry handling: a stale container entry
+//!   is acknowledged and changes nothing.
 //! * Everything a resolved report observed — the image-pull and execution instants, each
 //!   container's outcome, each attachment's state, each managed agent's status — is
 //!   recorded, and the caller-sized members of a container entry are bounded at the size
@@ -482,16 +485,35 @@ async fn a_task_report_never_runs_backwards_however_often_it_is_retried() {
     let stopped = describe_task(&router, CLUSTER, &task_arn, case).await;
     let version = count(&stopped, "version", case);
 
-    // The rows walk the lifecycle BACKWARDS from where the task now is, plus a replay of
-    // the stage it is at: each is acknowledged and each changes nothing.
+    // A replay of the stage a task is AT is the agent's retry: acknowledged, changing
+    // nothing — but a task that has reached the TERMINAL stage makes no further transition,
+    // so even a replay of that stage is refused.
+    let row = "a replayed STOPPED";
+    let (code, message) = refusal(
+        &router,
+        "SubmitTaskStateChange",
+        json!({ "cluster": CLUSTER, "task": task_arn.clone(), "status": "STOPPED" }),
+        row,
+    )
+    .await;
+    assert_eq!(
+        (code.as_str(), message.as_str()),
+        (
+            "InvalidParameterException",
+            "The status STOPPED is not a valid status for a task in the STOPPED status."
+        ),
+        "case {row:?}: expected the terminal-state refusal, got {code} with {message:?}"
+    );
+
+    // The rows walk the lifecycle BACKWARDS from where the task now is: each names a
+    // transition the task cannot have made, so each is REFUSED and changes nothing.
     for (row, status) in [
-        ("a replayed STOPPED", "STOPPED"),
         ("a stale DEACTIVATING", "DEACTIVATING"),
         ("a stale RUNNING", "RUNNING"),
         ("a stale PENDING", "PENDING"),
         ("a stale PROVISIONING", "PROVISIONING"),
     ] {
-        let acknowledged = ok(
+        let (code, message) = refusal(
             &router,
             "SubmitTaskStateChange",
             json!({ "cluster": CLUSTER, "task": task_arn.clone(), "status": status }),
@@ -499,16 +521,23 @@ async fn a_task_report_never_runs_backwards_however_often_it_is_retried() {
         )
         .await;
         assert_eq!(
-            acknowledged["acknowledgment"].as_str(),
-            Some(ACK),
-            "case {row:?}: a stale report is acknowledged too, got {acknowledged}"
+            (code.as_str(), message.as_str()),
+            (
+                "InvalidParameterException",
+                format!(
+                    "The status {status} is not a valid status for a task in the STOPPED \
+                     status."
+                )
+                .as_str()
+            ),
+            "case {row:?}: expected the out-of-order refusal, got {code} with {message:?}"
         );
 
         let read = describe_task(&router, CLUSTER, &task_arn, row).await;
         assert_eq!(
             (read["lastStatus"].as_str(), count(&read, "version", row)),
             (Some("STOPPED"), version),
-            "case {row:?}: a stale report must change nothing, got {read}"
+            "case {row:?}: a refused report must change nothing, got {read}"
         );
     }
 }
